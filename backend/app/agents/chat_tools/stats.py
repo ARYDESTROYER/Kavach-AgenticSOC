@@ -989,9 +989,10 @@ class CaseStatsTool(ChatTool):
                 result, bucket, coarsened = await run_bucketed(
                     window, bucket, run_with, probe, explicit=requested_bucket != "auto")
                 coarsened = coarsened or planned
-                if len(fields) == 2 and fields[1] in (getattr(result, "multi_valued", ()) or ()):
-                    # The series draws the first grouping per period: summing the second
-                    # (multi-valued) grouping's rows would count a case once per value.
+                if _series_reads_first_grouping(fields, args.top_n, result):
+                    # The series draws the first grouping per period, read on its own
+                    # (never cut by ``top_n``) whenever the rows above cannot be summed
+                    # into it exactly; see :func:`_series_reads_first_grouping`.
                     series_result = await run_case_aggregate(
                         ctx, window, filters=filters, group_by=tuple(fields[:1]), bucket=bucket,
                         metrics=("count",),
@@ -1036,6 +1037,31 @@ class CaseStatsTool(ChatTool):
         if me and outcome.ok:
             outcome.observation["assignee_me"] = ASSIGNEE_ME_OWN
         return outcome
+
+
+def _series_reads_first_grouping(fields: list[str], top_n: int | None, result: Any) -> bool:
+    """Whether a bucketed ``case_stats`` series is read with its own aggregate (the first
+    grouping, every value, no ``top_n``) instead of being summed from the request's rows.
+
+    * A multi-valued second grouping (rule, ATT&CK) counts a case once per value, so its
+      rows would count a case several times on one line.
+    * A ``top_n`` over two groupings keeps the busiest PAIRS: a first-grouping value whose
+      other pairs were cut would be drawn short, the rest hidden in "Other".
+    * A severity series draws all five levels, Critical to Info (Round 14 SPEC §4.7.2):
+      a ``top_n`` over severity alone would hide a level's cases in "Other", where it is
+      drawn as neither its count nor zero. The five levels always fit one chart
+      (``_MAX_SERIES`` lines), so no level is cut, and every line is an exact count that
+      agrees with the same question asked without a bucket.
+
+    The request's own rows (``top_n`` included) still feed the observation's groups.
+    """
+    if not fields:
+        return False
+    if len(fields) == 2 and fields[1] in (getattr(result, "multi_valued", ()) or ()):
+        return True
+    if top_n is None:
+        return False
+    return len(fields) == 2 or fields[0] == "severity"
 
 
 def _auto_bucket(window: Window) -> str:
@@ -1310,21 +1336,47 @@ def _series_artifacts(
             if slot is not None:
                 rest[slot] += _count_of(g)
         ranked = sorted((k for k in totals if totals[k] > 0), key=lambda k: (-totals[k], k))
-        # The busiest values are drawn (the rest fold into "Other"); a severity, verdict,
-        # status or priority breakdown then reads in its canonical order and a severity
-        # or verdict wears its palette colour (Critical is never a categorical green).
-        kept = ranked[:_MAX_SERIES]
         canonical = field in CANONICAL_ORDER
-        if canonical:
-            kept.sort(key=lambda k: (canonical_rank(field, raw_of.get(k)), ranked.index(k)))
+        if field == "severity":
+            # Every severity chart draws the five levels, Critical to Info, zeros included
+            # (Round 14 SPEC §4.7.2), as the board and the rule sheet do: a level with no
+            # case is a flat line at zero, never a missing one, and the levels are never
+            # ranked away or folded into "Other". A case with no readable severity is not
+            # a level (it is never folded into Info); it follows the levels while it has
+            # cases, by volume. ``case_stats`` reads a severity series without a cut
+            # (``_series_reads_first_grouping``); rows a ``top_n`` cut already folded can
+            # hide a level's cases in "Other", so a level such rows hold no row for is left
+            # out rather than drawn at zero.
+            cut = any(rest)
+            kept: list[str] = []
+            for level in SEVERITY_LEVELS:
+                name = group_label(field, level)
+                if name in per or not cut:
+                    kept.append(name)
+                    per.setdefault(name, [0] * len(labels))
+                    raw_of.setdefault(name, level)
+            extras = [name for name in ranked if name not in kept]
+            room = max(0, _MAX_SERIES - len(kept))
+            kept += extras[:room]
+            folded: list[str] = extras[room:]
+        else:
+            # The busiest values are drawn (the rest fold into "Other"); a verdict, status
+            # or priority breakdown then reads in its canonical order and a verdict wears
+            # its palette colour.
+            kept = ranked[:_MAX_SERIES]
+            folded = ranked[_MAX_SERIES:]
+            if canonical:
+                kept.sort(key=lambda k: (canonical_rank(field, raw_of.get(k)), ranked.index(k)))
         series = []
         for i, name in enumerate(kept):
             entry: dict[str, Any] = {"key": f"s{i + 1}", "label": name, "values": per[name]}
+            # A severity or verdict wears its palette colour (Critical is never a
+            # categorical green).
             semantic = series_semantic(field, raw_of.get(name))
             if semantic:
                 entry["semantic"] = semantic
             series.append(entry)
-        for name in ranked[_MAX_SERIES:]:
+        for name in folded:
             rest = [a + b for a, b in zip(rest, per[name])]
         if any(rest):
             series.append({"key": "other", "label": "Other", "values": rest})

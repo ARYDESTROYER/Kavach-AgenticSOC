@@ -1065,14 +1065,13 @@ def test_user_facing_strings_follow_the_copy_rules(module: str) -> None:
 #: may keep the retired word (AGENTS.md naming contract, "Do not mint new playbook
 #: identifiers"): the accepted ``playbook_id`` field, the read-only legacy KV
 #: namespace ``playbooks`` and its pre-Round 14 constants, and the config section
-#: ``Preferences.playbooks``. ``list_playbooks_strict`` is a temporary forwarder for a
-#: caller outside these modules (``api/routes_export.py``) and goes with it.
+#: ``Preferences.playbooks``.
 _NAMING_MODULES = (
     "app/engine/runbook_model.py", "app/engine/runbook_match.py", "app/engine/runbook_lookup.py",
     "app/engine/runbook_catalog.py", "app/engine/runbook_migration.py", "app/engine/runbook_runs.py",
     "app/stores/legacy_procedures.py", "app/stores/runbook_library.py", "app/api/routes_runbooks.py",
 )
-_ACCEPTED_NAMES = frozenset({"playbook_id", "PLAYBOOKS_NS", "PLAYBOOKS_KEY", "list_playbooks_strict"})
+_ACCEPTED_NAMES = frozenset({"playbook_id", "PLAYBOOKS_NS", "PLAYBOOKS_KEY"})
 _ACCEPTED_VALUES = frozenset({"playbook_id", "playbooks", "run_playbook"})
 
 
@@ -1106,6 +1105,21 @@ def test_the_runbook_modules_mint_no_new_identifier_with_the_retired_word(module
     # A stored or wire value too: the procedure folder's migration namespace is
     # ``procedure_dir`` (it was never released under another name).
     assert {v for v in values if "playbook" in v.lower()} <= _ACCEPTED_VALUES
+
+
+def test_the_naming_guard_refuses_the_retired_strict_reader_name(tmp_path: Path) -> None:
+    """The temporary ``list_playbooks_strict`` forwarder is gone (the export reads the
+    legacy catalog through ``list_procedures_strict``), and the name is off the
+    allow-list, so a module that defines it again fails the guard above."""
+    from app.stores.legacy_procedures import LegacyProcedureReader
+
+    assert not hasattr(LegacyProcedureReader, "list_playbooks_strict")
+    assert callable(LegacyProcedureReader.list_procedures_strict)
+    module = tmp_path / "reintroduced.py"
+    module.write_text("class Reader:\n    async def list_playbooks_strict(self):\n        return {}\n",
+                      encoding="utf-8")
+    names, _values = _defined_names_and_values(module)
+    assert {n for n in names if "playbook" in n.lower()} - _ACCEPTED_NAMES == {"list_playbooks_strict"}
 
 
 # ``app/api/routes.py`` keeps the retired procedure routes for one release (AGENTS.md:
@@ -1162,13 +1176,59 @@ def test_issue_messages_follow_the_copy_rules() -> None:
 # --------------------------------------------------------------------------- #
 # Review fixes (WP-A3): bounded work on hostile input
 # --------------------------------------------------------------------------- #
-def _fast(fn, budget: float = 1.0):
+def _timed(fn):
+    """``(result, cpu, wall)`` of one call of ``fn``. ``cpu`` is this thread's CPU
+    time, so other processes on a loaded runner do not count, and garbage collection
+    is paused for the call, so a collection of objects earlier tests left behind does
+    not either. ``wall`` is the elapsed time, for a backstop that bounds the wait."""
+    import gc
     import time
 
-    started = time.perf_counter()
-    result = fn()
-    elapsed = time.perf_counter() - started
-    assert elapsed < budget, f"took {elapsed:.2f} s"
+    collecting = gc.isenabled()
+    gc.disable()
+    try:
+        wall, cpu = time.perf_counter(), time.thread_time()
+        result = fn()
+        return result, time.thread_time() - cpu, time.perf_counter() - wall
+    finally:
+        if collecting:
+            gc.enable()
+
+
+def _fast(fn, budget: float = 1.0):
+    """One call of ``fn`` within ``budget`` seconds of CPU time (:func:`_timed`)."""
+    result, cpu, _wall = _timed(fn)
+    assert cpu < budget, f"took {cpu:.2f} s of CPU time"
+    return result
+
+
+def _grows_linearly(make, fn, small: int, *, factor: int = 8, max_ratio: float = 24.0,
+                    ceiling: float = 10.0, repeats: int = 3):
+    """Guard against a quadratic regression without a tight absolute clock: time
+    ``fn(make(small))`` and ``fn(make(factor * small))`` in turn, ``repeats`` times
+    each, and compare the best CPU time of each (:func:`_timed`). Linear work grows
+    about ``factor`` times and quadratic work about ``factor ** 2`` times, so the
+    larger input must cost less than ``max_ratio`` times the smaller one. The bound is
+    three times the linear growth, and an 8x input still shows a quadratic step that
+    costs half the linear work at the smaller size (with a 4x input it had to cost
+    twice as much). ``ceiling`` is a generous wall-clock backstop on each call of the
+    larger input. Returns the larger input's result, for the caller to check that it
+    was scanned in full."""
+    import time
+
+    small_input, large_input = make(small), make(factor * small)
+    small_best = large_best = float("inf")
+    result = None
+    for _ in range(repeats):
+        _result, cpu, _wall = _timed(lambda: fn(small_input))
+        small_best = min(small_best, cpu)
+        result, cpu, wall = _timed(lambda: fn(large_input))
+        assert wall < ceiling, f"the larger input took {wall:.2f} s"
+        large_best = min(large_best, cpu)
+    ratio = large_best / max(small_best, time.get_clock_info("thread_time").resolution)
+    assert ratio < max_ratio, (
+        f"{factor}x the input took {ratio:.1f}x the time ({small_best * 1000:.1f} ms, then "
+        f"{large_best * 1000:.1f} ms); linear work stays under {max_ratio:g}x")
     return result
 
 
@@ -1237,17 +1297,28 @@ def test_a_field_over_its_limit_is_not_scanned(hostile: str) -> None:
 
 
 def test_markdown_links_are_checked_in_linear_time() -> None:
-    assert _fast(lambda: RM.markdown_problems("[x](" * 16_000)) == ["contain a link that is not an https link"]
-    assert _fast(lambda: RM.markdown_problems("[\n" * 30_000)) == []
+    # The larger inputs (16,000 and 30,000 repeats) sit just under the scan limit, so
+    # both results come from a full scan, not from the "too long" refusal.
+    assert _grows_linearly(lambda n: "[x](" * n, RM.markdown_problems, 2_000) == [
+        "contain a link that is not an https link"]
+    assert _grows_linearly(lambda n: "[\n" * n, RM.markdown_problems, 3_750) == []
+    assert max(len("[x](" * 16_000), len("[\n" * 30_000)) <= RM.MARKDOWN_CHECK_MAX_CHARS
     assert RM.markdown_problems("[x](" * 250_000) == ["are too long to check; shorten them"]
 
 
-def test_many_duplicate_phases_are_checked_in_linear_time() -> None:
-    defn = RunbookDefinition(
-        id="phases", title="t", summary="s", phases=["triage"] * 15_000 + ["contain"],
-        steps=[RunbookStep(id=f"s{i}", phase="contain", kind="check", title="Real?") for i in range(300)],
+def _duplicate_phases(phases: int) -> RunbookDefinition:
+    return RunbookDefinition(
+        id="phases", title="t", summary="s", phases=["triage"] * phases + ["contain"],
+        steps=[RunbookStep(id=f"s{i}", phase="contain", kind="check", title="Real?")
+               for i in range(phases // 50)],
     )
-    issues = _fast(lambda: RM.validate_runbook(defn))
+
+
+def test_many_duplicate_phases_are_checked_in_linear_time() -> None:
+    # Phases and steps grow together (15,000 phases and 300 steps at the larger size),
+    # so a step loop that looks each step's phase up in the phase list grows with the
+    # square of the input.
+    issues = _grows_linearly(_duplicate_phases, RM.validate_runbook, 1_875)
     messages = [i.message for i in issues]
     assert messages.count("A phase is listed twice.") == 1
     assert [i.code for i in issues].count("unused") == 1  # Triage once, not once per listing

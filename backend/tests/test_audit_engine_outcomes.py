@@ -587,25 +587,65 @@ async def test_the_notification_services_own_results_drive_the_notify_outcome(
     ]
 
 
-async def test_the_application_wiring_never_records_an_unsent_notification_as_sent(
-    app_state: AppState, monkeypatch,
+@pytest.mark.parametrize(
+    ("results", "outcome", "note"),
+    [
+        ([{"channel_id": "c1", "type": "email", "ok": False, "detail": "smtp refused"}],
+         "failure", ". Not sent: 1 of 1 channel failed."),
+        ([{"channel_id": "c1", "type": "email", "ok": True, "detail": "sent"},
+          {"channel_id": "c2", "type": "webhook", "ok": True, "detail": "200"}],
+         "success", ""),
+    ],
+    ids=["every-channel-failed", "every-channel-sent"],
+)
+async def test_the_application_wiring_records_the_notification_services_results(
+    app_state: AppState, monkeypatch, results: list[dict[str, Any]], outcome: str, note: str,
 ) -> None:
-    """Through ``app_state.automation`` (the notifier the application wires), a notify
-    action whose every channel failed is never stored as ``success``. While the
-    wiring drops the dispatcher's per-channel results it reads ``unknown``; once it
-    returns them it reads ``failure`` with the note the direct tests above pin."""
-    async def _every_channel_failed(_case: Any, _trigger: str, **_kwargs: Any) -> list[dict[str, Any]]:
-        return [{"channel_id": "c1", "type": "email", "ok": False, "detail": "smtp refused"}]
+    """Through ``app_state.automation`` (the notifier the application wires), the
+    notification service's per-channel results reach the notify action's audit row:
+    a notification whose every channel failed reads ``failure`` with the note the
+    direct tests above pin (and is listed under Failed), one that every channel took
+    reads ``success`` with no note. The wiring never drops the results, which would
+    leave every production notify row reading ``unknown``."""
+    async def _dispatch(_case: Any, _trigger: str, **_kwargs: Any) -> list[dict[str, Any]]:
+        return [dict(r) for r in results]
 
-    monkeypatch.setattr(app_state.notifications, "dispatch", _every_channel_failed)
-    case = _case("case-wired-notify")
+    monkeypatch.setattr(app_state.notifications, "dispatch", _dispatch)
+    case_id = f"case-wired-notify-{outcome}"
+    case = _case(case_id)
     await app_state.cases.save(case)
     rule = AutomationRule(id="page", action="notify", payload={"trigger": "escalated"})
     await app_state.automation.run(case, _prefs(rule), save=app_state.cases.save)
-    rows = await _automation_rows(app_state, "case-wired-notify")
+    rows = await _automation_rows(app_state, case_id)
     assert len(rows) == 1 and rows[0]["actor_type"] == "system"
-    assert rows[0]["outcome"] != "success"
-    assert not matches(build_predicate(AuditFilters(outcome="success")), rows[0])
+    assert rows[0]["outcome"] == outcome
+    assert rows[0]["result_summary"] == f"rule=page action=notify notify=escalated{note}"
+    assert matches(build_predicate(AuditFilters(outcome="failure")), rows[0]) is (outcome == "failure")
+
+
+async def test_the_application_notifier_returns_the_dispatch_results(
+    app_state: AppState, monkeypatch,
+) -> None:
+    """``AppState._automation_notify`` hands back what the notification service
+    returned, less an in-app inbox copy that was due for nobody (it went out to no
+    one, so it is not a channel the notification was sent on), and ``None`` only when
+    no service is wired. An inbox copy that reached someone, or that failed, stays."""
+    email = {"channel_id": "c1", "type": "email", "ok": True, "detail": "sent"}
+    nobody = {"channel_id": "in_app", "type": "in_app", "ok": True, "detail": "no recipients"}
+    reached = {"channel_id": "in_app", "type": "in_app", "ok": True, "detail": "fanned out to 2 recipient(s)"}
+    broken = {"channel_id": "in_app", "type": "in_app", "ok": False, "detail": "inbox fanout failed: KeyError"}
+    returned: list[list[dict[str, Any]]] = [[email, nobody], [email, reached], [broken]]
+
+    async def _dispatch(_case: Any, _trigger: str, **_kwargs: Any) -> list[dict[str, Any]]:
+        return returned.pop(0)
+
+    monkeypatch.setattr(app_state.notifications, "dispatch", _dispatch)
+    notify = app_state._automation_notify  # noqa: SLF001
+    assert await notify(_case("case-notify-direct"), "escalated") == [email]
+    assert await notify(_case("case-notify-reached"), "escalated") == [email, reached]
+    assert await notify(_case("case-notify-broken"), "escalated") == [broken]
+    monkeypatch.setattr(app_state, "notifications", None)
+    assert await notify(_case("case-notify-none"), "escalated") is None
 
 
 async def test_a_demo_notify_rule_is_not_a_failure(app_state: AppState) -> None:

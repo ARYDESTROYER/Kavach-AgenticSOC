@@ -1220,7 +1220,9 @@ class InvestigationPipeline:
                 case_id,
                 cluster,
                 source_surface,
-                str(exc),
+                # The case error is shown to every case reader: an exception's text can
+                # carry an address or a credential, so it is redacted as the row is.
+                redact_text(str(exc))[0],
                 existing,
                 prefs,
                 knowledge_used=(

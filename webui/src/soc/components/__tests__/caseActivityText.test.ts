@@ -8,7 +8,7 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { activityActorLabel, activityKindLabel, activityText } from '../caseActivityText';
+import { activityActorLabel, activityKindLabel, activityText, notifyDelivery } from '../caseActivityText';
 
 const row = (summary: string, kind = 'decision', actor = 'case_manager') => ({ summary, kind, actor });
 
@@ -50,6 +50,87 @@ describe('activityText', () => {
     const out = activityText(row(summary, 'automation', 'automation'));
     expect(out.text).toBe(text);
     expect(out.recorded).toBe(summary);
+  });
+
+  // The notify detail says whether the notification went out (`_maybe_notify` in
+  // `threshold_automation.py`): no note when every channel took it, else "Not sent" or
+  // "Partly sent" with the reason. Each reason below is one the backend writes, verbatim;
+  // an empty result from the notification service ("no channel was due") and a dispatch
+  // that failed as a whole are "Not sent" or "Partly sent" records, never note-less ones.
+  describe('a notify action says whether the notification went out', () => {
+    it('reads a notification that went out', () => {
+      const summary = 'rule=r1 action=notify notify=automation';
+      expect(activityText(row(summary, 'automation', 'automation'))).toEqual({
+        text: 'Automation sent a notification (rule r1).',
+        recorded: summary,
+      });
+      expect(notifyDelivery('notify=automation')).toEqual({ delivery: 'sent', reason: '' });
+    });
+
+    it.each([
+      'no notification service is connected',
+      'the notification service failed (SMTPException)',
+      '1 of 1 channel failed',
+      '2 of 3 channels were rate limited',
+      '1 of 2 channels failed and 1 was rate limited',
+      // The service sent nothing and nothing failed: notifications are off (the default),
+      // no channel takes the trigger, the in-app copy is due for no one, or the send
+      // repeats one inside the dedup window.
+      'no channel was due (notifications are off, no channel takes this trigger, no one is addressed, or it repeated inside the dedup window)',
+      // The service failed as a whole before any channel took it (its own result, `type`
+      // "dispatch"); only the exception's type is recorded.
+      'the notification service failed (RuntimeError)',
+    ])('reads a notification that was not sent: %s', (reason) => {
+      const summary = `rule=r1 action=notify notify=automation. Not sent: ${reason}.`;
+      const out = activityText(row(summary, 'automation', 'automation'));
+      expect(out.text).toBe(`Automation did not send a notification (rule r1). Not sent: ${reason}.`);
+      expect(out.recorded).toBe(summary);
+      expect(out.text).not.toMatch(/sent a notification/);
+      expect(notifyDelivery(`notify=automation. Not sent: ${reason}.`)).toEqual({ delivery: 'not_sent', reason });
+    });
+
+    it.each([
+      '1 of 2 channels failed',
+      '1 of 3 channels was rate limited',
+      '1 of 3 channels failed and 1 was rate limited',
+      // The service failed as a whole after a channel took the notification.
+      'the notification service failed (KeyError)',
+    ])(
+      'reads a notification that went to some channels: %s',
+      (reason) => {
+        const summary = `rule=r1 action=notify notify=case_closed. Partly sent: ${reason}.`;
+        const out = activityText(row(summary, 'automation', 'automation'));
+        expect(out.text).toBe(`Automation sent the notification to some channels (rule r1). Partly sent: ${reason}.`);
+        expect(out.recorded).toBe(summary);
+        expect(notifyDelivery(`notify=case_closed. Partly sent: ${reason}.`)).toEqual({
+          delivery: 'partly_sent',
+          reason,
+        });
+      },
+    );
+
+    it('reads the Demo record, which connects no notification service', () => {
+      // Every Demo notify action carries this note (no notifier is wired on purpose).
+      const out = activityText(
+        row('rule=demo-notify action=notify notify=automation. Not sent: no notification service is connected.', 'automation', 'automation'),
+      );
+      expect(out.text).toBe(
+        'Automation did not send a notification (rule demo-notify). Not sent: no notification service is connected.',
+      );
+    });
+
+    it('keeps a trigger with dots and words a note with no reason', () => {
+      expect(notifyDelivery('notify=team.soc. Not sent: 1 of 1 channel failed.')).toEqual({
+        delivery: 'not_sent',
+        reason: '1 of 1 channel failed',
+      });
+      expect(activityText(row('rule=r1 action=notify notify=automation. Not sent: .', 'automation', 'automation')).text).toBe(
+        'Automation did not send a notification (rule r1).',
+      );
+      // A trigger that only contains the words, with no note after it, is a send.
+      expect(notifyDelivery('notify=Not sent')).toEqual({ delivery: 'sent', reason: '' });
+      expect(notifyDelivery(undefined)).toEqual({ delivery: 'sent', reason: '' });
+    });
   });
 
   it('names a drafted proposal by what approving it does', () => {

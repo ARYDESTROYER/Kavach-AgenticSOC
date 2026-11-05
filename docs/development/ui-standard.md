@@ -417,7 +417,11 @@ its label ("Filter by status" for Status).
 **Page data controls.** A windowed page has one `TimeRangePicker` in the page header's
 controls slot, with the page's own `presets` and `refreshOptions` when it supports fewer
 ranges or cadences, and one `RefreshButton display="icon"` beside it (its name shows in
-the shared tooltip on hover and keyboard focus, never as a native `title`). The
+the shared tooltip on hover and keyboard focus, never as a native `title`). The picker's
+trigger is named from what it shows: its accessible name starts with the words on the
+trigger and then says what they are ("Last 24h, time range"). When the trigger shows
+words other than the whole range (the `chrome="command"` abbreviation, or a range's
+`shortLabel` on a phone), its description and its tooltip give the whole range. The
 auto-refresh cadences read "Off" and "Live" in sentence case. A section that refreshes
 on its own (Users, Sessions) uses the labelled `RefreshButton` in its actions. No other
 spinner exists.
@@ -1247,12 +1251,19 @@ own page instead.
 - **One DOM for both states.** Every row is `[40px icon cell at x 12][fixed-width
   label]`; icons are 18px and sit at the same x and y in both states; nothing is
   swapped. The panel is fixed and always 240px wide; the in-flow spacer
-  (`desktop-navigation-frame`) changes width once, at the click, without a transition,
-  so the page moves once. Expanding fills the panel at the click and fades only the
-  labels in (120ms after 60ms); collapsing slides a clipping layer closed over the page
-  that has already moved while its content slides back the same amount (160ms), so the
-  icons never drift. Group pages collapse at the click and reveal with the labels.
-  Only `transform` and `opacity` animate.
+  (`desktop-navigation-frame`) changes width once per toggle, without a transition, so
+  the page moves once. The panel and the spacer change in consecutive frames and the
+  opaque 240px panel always covers the seam: collapsing moves the spacer first, and the
+  panel (with an open group's pages) closes over the moved page one frame later,
+  sliding a clipping layer closed while its content slides back the same amount
+  (160ms), so the icons never drift; expanding fills the panel and fades the labels in
+  first (120ms after 60ms), and the spacer moves one frame later. An open group's pages
+  leave or rejoin the tab order in the toggle's own commit; only their look follows the
+  panel. The rail preference is mirrored to local storage at once and sent to the server
+  one frame plus one task later, with changes made in that frame merged into one write.
+  The morph animates only `transform` and `opacity`; on expand an open group's pages
+  reveal with the grid-rows and opacity transition of `.nav-children` (after the labels'
+  60ms delay).
 - **Links and groups.** Every row that navigates is an `<a href>`: a plain click goes
   through the router (so route guards still ask; a guard for one URL of a page, such as a
   dashboard board's unsaved edits, registers with `sameRoute` so the way back to the

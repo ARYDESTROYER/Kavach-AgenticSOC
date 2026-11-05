@@ -76,7 +76,9 @@ values, and a runbook needs every condition it lists:
   minimum number of events;
 - verdicts, case statuses and tags; and
 - the fallback, which matches any case and is used only when nothing else matches. The
-  built-in Generic incident runbook is the fallback.
+  built-in Generic incident runbook is the fallback, and
+  **Attach Generic incident when nothing matches** in
+  **Settings → Integrations → Runbooks → Runbooks on cases** turns it on or off.
 
 When several runbooks match, the most specific wins: a rule match first, then a technique
 match, then the other conditions, then the fallback. Ties go to the higher priority, then the
@@ -100,8 +102,9 @@ runbook already on the case, and it never removes one.
 
 ## Writing a runbook
 
-Choose **New runbook**, or **Create a runbook** beside a rule in **Rules with no runbook**,
-which starts with that rule in Applies when. The editor has three views of the same runbook:
+In **Intelligence → Runbooks**, choose **New runbook**, or **Create a runbook** beside a
+rule in **Rules with no runbook**, which starts with that rule in Applies when. The editor
+has three views of the same runbook:
 
 - **Edit** shows an outline of phases and steps beside the selected step's form. Add a step
   by kind from **Add step**, add a phase from **Add phase**, and move a step by dragging it or
@@ -194,7 +197,8 @@ as the runbook attaches; "When the analyst presses Run" waits for an analyst.
 
 ## Review and publishing
 
-A runbook moves through four states: **Draft**, **In review**, **Published** and **Retired**.
+In **Intelligence → Runbooks**, a runbook moves through four states: **Draft**,
+**In review**, **Published** and **Retired**.
 
 - Editing a published runbook creates a draft; the published version stays live until the
   draft is published. Cases already working through a version keep that version, and the
@@ -203,9 +207,10 @@ A runbook moves through four states: **Draft**, **In review**, **Published** and
   or send it back to draft with a reason. A publisher may also publish a draft directly.
 - **Publish** makes that exact version live: it is bound to the version and its contents as
   you reviewed them, so a change made in the meantime is refused and you reload first.
-- When separate approval is on in the Runbooks settings (`runbooks.require_distinct_approver`),
-  nobody who wrote or edited a version can publish it; another person with publish rights
-  must.
+- When separate approval is on (**The publisher must differ from the author** in
+  **Settings → Integrations → Runbooks → Publishing and review**,
+  `runbooks.require_distinct_approver`), nobody who wrote or edited a version can publish
+  it; another person with publish rights must.
 - **Retire** stops a runbook matching new cases. Runs that used it keep working and stay
   readable. A draft that was never published can be discarded; published history is never
   deleted.

@@ -41,9 +41,11 @@ Until a person classifies it, the headline is the AI's assessment, attributed to
 A case closed by the automatic close policy reads as auto-closed; a case closed under
 an operator's "declared benign" rule policy reads **Declared benign**; and a case a
 person closed without recording a classification reads **Outcome not recorded**. The
-same rule drives the case header, the queue rows, the **Cases** list, hover cards, and
-grading, so a case never reads differently in two places. The headline is display only:
-the deterministic case policy still makes every automatic close or escalate decision.
+same rule drives the case header, the queue rows, hover cards, and grading. The
+**Cases** list follows it too once a case is settled this way; before that, its Outcome
+column shows the case's disposition, marked as not yet classified by an analyst (see
+[Cases](cases.md)). The headline is display only: the deterministic case policy still
+makes every automatic close or escalate decision.
 
 ## Queue scope and ordering
 
@@ -67,6 +69,14 @@ The queue provides:
 - latest-updated, highest-risk, newest-created, and title ordering;
 - manual refresh, plus live updates: a case that changes elsewhere updates its row, and
   a case that no longer matches the view leaves it.
+
+A link can also open a case on one of its tabs, for example
+`#/case_manager?caseId=<id>&tab=investigation`. `tab` is one of `overview`, `runbook`,
+`timeline`, `investigation`, `threat`, `collab` or `chat`. `investigation` also opens the
+case's trace, and `runbook` opens only for people who can read runbooks (anyone else sees
+the Overview tab). A link with any other `tab` value, opened in a new tab or from another
+page, opens Case Manager without the case; followed while Case Manager is already open,
+it opens the case and keeps the tab you are on (Overview when no case was open).
 
 Each row shows the case's outcome headline, its status, severity, risk, owner, and age.
 A case with a runbook also shows its progress, for example **4/11**, with "· 1 waiting"
@@ -184,17 +194,21 @@ The **Runbook** tab opens with:
   focus, and its Escalate if and Benign if criteria. Depending on the step you can
   confirm an AI draft note (**Confirm and mark done**), write a note and **Mark done**,
   pick an option and **Record decision**, or record an action; **Not applicable**,
-  **Blocked** and **Assign** are on the card too (in **More** on a phone, where the focus
-  line folds into **Focus and criteria**). A note you are typing goes in the same save as
-  **Mark done**, **Record action** or **Record decision**; otherwise it is saved when you
-  leave it, or at once with **Save note**. If another change to the runbook is still being
-  saved when you press a button, the step says so and you press it again. After you
-  finish the step, focus moves to the new Next step and a screen reader hears "Step 5
-  done. Next, step 6: ..."; recording an action that now waits for approval moves on the
-  same way ("Step 5 recorded."). A step waiting for someone's approval is never the next
-  step; when the required steps left all wait for approval, the card says so and lists
-  them. An action whose approval was rejected shows who rejected it and why, and you can
-  record it again.
+  **Blocked** and **Assign** are on the card too (in **More** on a phone, where the
+  focus line folds into **Focus and criteria**). While an AI draft waits, the buttons
+  come first and the draft follows them, showing its first four lines; a longer draft
+  offers **Show the whole draft** for the rest (and **Show less**). **Edit note** opens
+  the draft's text with **Confirm note and mark done** under it, and **Cancel edit**
+  returns the draft to its place under the buttons. A note you are typing goes in the
+  same save as **Mark done**, **Record action** or **Record decision**; otherwise it is
+  saved when you leave it, or at once with **Save note**. If another change to the
+  runbook is still being saved when you press a button, the step says so and you press
+  it again. After you finish the step, focus moves to the new Next step and a screen
+  reader hears "Step 5 done. Next, step 6: ..."; recording an action that now waits for
+  approval moves on the same way ("Step 5 recorded."). A step waiting for someone's
+  approval is never the next step; when the required steps left all wait for approval,
+  the card says so and lists them. An action whose approval was rejected shows who
+  rejected it and why, and you can record it again.
 - **When every required step is done**, the run is completed and the card says **All
   required steps are done.**, offers **Close case** (it opens the close dialog), and lists
   any optional steps left. A completed run stays workable: you can still do its optional

@@ -158,6 +158,22 @@ def _resolve_author(request: Request, body_author_type: str) -> tuple[str, str]:
     return at, author
 
 
+def _post_actor_type(author_type: str, signed_in: bool) -> str:
+    """The audit actor kind of a thread post. It is decided by the principal, never by
+    a name: a signed-in person who posts is ``human`` whatever the message's label
+    (and whatever their username, which is free text and may itself read ``ai``).
+    With no principal an AI or system post is labelled by its type
+    (:func:`_resolve_author`), and that label is the actor: ``agent`` for ``ai``,
+    ``system`` for ``system``, ``human`` otherwise."""
+    if signed_in:
+        return "human"
+    if author_type == AuthorType.AI.value:
+        return "agent"
+    if author_type == AuthorType.SYSTEM.value:
+        return "system"
+    return "human"
+
+
 def _parse_mentions(body: str, extra: list[str] | None = None) -> list[str]:
     """Extract @mention usernames from a message body + an explicit list, de-duped
     (case-insensitive), bounded. Returns plain lowercased usernames (#9)."""
@@ -235,9 +251,11 @@ async def _fanout_mentions(
         return
     # Append-only audit of each delivery (#2) + a per-user realtime nudge.
     for note in created:
+        # The delivery is the system's, made for the poster (``actor``), as the
+        # notification service's own sends are: the row stays in Agent activity.
         await _audit(
             state, ActionType.INAPP_NOTIFY, actor=actor, case_id=case_id,
-            summary=f"mention -> {note.recipient}",
+            summary=f"mention -> {note.recipient}", actor_type="system",
         )
     bus = _event_bus(state)
     if bus is not None and created:
@@ -294,9 +312,11 @@ def _publish_case_activity(state: AppState, case_id: str, *, kind: str,
 
 
 async def _audit(state: AppState, action: ActionType, *, actor: str, case_id: str,
-                 summary: str) -> None:
-    """Append-only audit of a collaboration mutation (#2). Best-effort — never raises
-    into the handler (a glitchy audit write must not fail a comment)."""
+                 summary: str, actor_type: str = "human") -> None:
+    """Append-only audit of a collaboration mutation (#2). Best-effort: never raises
+    into the handler (a glitchy audit write must not fail a comment). Every row is
+    written after its change was stored, so its outcome is ``success``; ``actor_type``
+    is the kind of ``actor`` (a person by default, see :func:`_post_actor_type`)."""
     audit = getattr(state, "audit", None)
     if audit is None:
         return
@@ -304,6 +324,7 @@ async def _audit(state: AppState, action: ActionType, *, actor: str, case_id: st
         await audit.record(
             action_type=action, surface="case", actor=actor or "",
             case_id=case_id, result_summary=summary,
+            outcome="success", actor_type=actor_type,
         )
     except Exception as exc:  # noqa: BLE001
         logger.info("Collab audit write soft-failed (%s)", exc)
@@ -515,6 +536,7 @@ async def post_case_thread(
         summary=f"thread post ({author_type})"
                 + (f" reply->{parent_id}" if parent_id else "")
                 + (f" mentions={len(mentions)}" if mentions else ""),
+        actor_type=_post_actor_type(author_type, bool(current_username(request))),
     )
     await _activity(
         state, case_id, kind="commented", actor=author,

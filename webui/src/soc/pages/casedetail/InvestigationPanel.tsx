@@ -140,12 +140,15 @@ const CaseManagerInvestigation: React.FC<Omit<InvestigationPanelProps, 'presenta
   timelineLoading,
   timelineError,
   onRetryTimeline,
+  traceRequest,
+  onTraceRequestHandled,
 }) => {
   const [traceOpen, setTraceOpen] = React.useState(false);
   const [evidenceOpen, setEvidenceOpen] = React.useState(false);
   const [decisionOpen, setDecisionOpen] = React.useState(false);
   const [actor, setActor] = React.useState<TraceActor>('all');
   const traceRef = React.useRef<HTMLDivElement | null>(null);
+  const traceSectionRef = React.useRef<HTMLElement | null>(null);
 
   const outcome = caseOutcome(c);
   const humanClosed = isHumanClosed(c);
@@ -175,6 +178,7 @@ const CaseManagerInvestigation: React.FC<Omit<InvestigationPanelProps, 'presenta
     },
     [timeline, timelineLoading, timelineError, onRetryTimeline],
   );
+  useTraceRequest(traceRequest, onTraceRequestHandled, traceOpen, setTraceOpen, handleTraceToggle, traceSectionRef);
 
   const jumpToDecision = React.useCallback(() => {
     setActor('all');
@@ -393,11 +397,22 @@ const CaseManagerInvestigation: React.FC<Omit<InvestigationPanelProps, 'presenta
       />
 
       {/* 4. TRACE — collapsed by default; every step is one click away. */}
-      <section aria-labelledby="case-manager-trace-title" className="space-y-3" data-testid="investigation-trace">
+      <section
+        ref={traceSectionRef}
+        aria-labelledby="case-manager-trace-title"
+        className="scroll-mt-4 space-y-3"
+        data-testid="investigation-trace"
+      >
         <Collapsible open={traceOpen} onOpenChange={handleTraceToggle}>
           <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
             <ListTree className="h-4 w-4 text-muted-foreground" aria-hidden />
-            <h2 id="case-manager-trace-title" className="text-sm font-semibold text-foreground">
+            {/* Where a request to open the trace lands focus that had dropped. */}
+            <h2
+              id="case-manager-trace-title"
+              tabIndex={-1}
+              data-trace-focus=""
+              className="rounded-sm text-sm font-semibold text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+            >
               Investigation trace
             </h2>
             <span className="text-xs tabular-nums text-muted-foreground" data-testid="investigation-trace-counts">
@@ -479,6 +494,68 @@ export interface InvestigationPanelProps {
   timelineError: unknown;
   onRetryTimeline: () => void;
   presentation?: CasePanelPresentation;
+
+  /**
+   * A request to open the full trace and bring it into view, a new number per request
+   * (the audit log's "Open case trace" link names this tab). Focus that dropped lands on
+   * the trace too. The panel handles each one once and reports it, so returning to the
+   * tab never replays it.
+   */
+  traceRequest?: number | null;
+  onTraceRequestHandled?: (tick: number) => void;
+}
+
+/**
+ * Applies a {@link InvestigationPanelProps.traceRequest} once: opens the trace, reports the
+ * request handled, then scrolls `target` to the top of the case's scroll lane once the open
+ * trace has rendered. The open itself does not fetch: in the same commit the case detail
+ * starts the trace's lazy load for the newly selected tab, and a second request would
+ * race it. After a beat (which also lets the case detail reset its lane for the new tab
+ * first) `openTrace` loads the trace if nothing has, a no-op while it loads or once loaded.
+ * A trace closed again before that beat stays closed and is not scrolled to.
+ *
+ * Focus moves to the trace's `[data-trace-focus]` element only when it has dropped, as it
+ * does when the link that asked left with its page (WCAG 2.4.3): keyboard and screen
+ * reader users are taken to the trace they asked for. A control the analyst is using
+ * keeps focus, such as the queue search typed into while the case loads.
+ */
+function useTraceRequest(
+  traceRequest: number | null | undefined,
+  onHandled: ((tick: number) => void) | undefined,
+  traceOpen: boolean,
+  setTraceOpen: (open: boolean) => void,
+  openTrace: (open: boolean) => void,
+  target: React.RefObject<HTMLElement | null>,
+): void {
+  const handledRef = React.useRef<number | null>(null);
+  const [reveal, setReveal] = React.useState(false);
+  React.useEffect(() => {
+    if (traceRequest == null || handledRef.current === traceRequest) return;
+    handledRef.current = traceRequest;
+    setTraceOpen(true);
+    setReveal(true);
+    onHandled?.(traceRequest);
+  }, [traceRequest, onHandled, setTraceOpen]);
+  React.useEffect(() => {
+    if (!reveal) return;
+    if (!traceOpen) {
+      // Closed by hand before it came into view: the analyst's choice stands, and a later
+      // open by hand is an ordinary open.
+      setReveal(false);
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      setReveal(false);
+      openTrace(true);
+      const active = document.activeElement;
+      if (!active || active === document.body || !active.isConnected) {
+        target.current?.querySelector<HTMLElement>('[data-trace-focus]')?.focus({ preventScroll: true });
+      }
+      const reduce = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
+      target.current?.scrollIntoView?.({ block: 'start', behavior: reduce ? 'auto' : 'smooth' });
+    }, 60);
+    return () => window.clearTimeout(timer);
+  }, [reveal, traceOpen, openTrace, target]);
 }
 
 export const InvestigationPanel: React.FC<InvestigationPanelProps> = ({
@@ -492,8 +569,11 @@ export const InvestigationPanel: React.FC<InvestigationPanelProps> = ({
   timelineError,
   onRetryTimeline,
   presentation = 'default',
+  traceRequest,
+  onTraceRequestHandled,
 }) => {
   const [traceOpen, setTraceOpen] = React.useState(false);
+  const traceSectionRef = React.useRef<HTMLDivElement | null>(null);
 
   // Lazy-load the raw trace the first time the disclosure opens, if the parent hasn't
   // already fetched it (the DecisionCard reads its policy_clause from the same data).
@@ -505,6 +585,15 @@ export const InvestigationPanel: React.FC<InvestigationPanelProps> = ({
       }
     },
     [timeline, timelineLoading, timelineError, onRetryTimeline],
+  );
+  // The case-manager presentation applies its own request (it owns its trace).
+  useTraceRequest(
+    presentation === 'case-manager' ? null : traceRequest,
+    onTraceRequestHandled,
+    traceOpen,
+    setTraceOpen,
+    handleTraceToggle,
+    traceSectionRef,
   );
 
   if (presentation === 'case-manager') {
@@ -519,6 +608,8 @@ export const InvestigationPanel: React.FC<InvestigationPanelProps> = ({
         timelineLoading={timelineLoading}
         timelineError={timelineError}
         onRetryTimeline={onRetryTimeline}
+        traceRequest={traceRequest}
+        onTraceRequestHandled={onTraceRequestHandled}
       />
     );
   }
@@ -565,8 +656,11 @@ export const InvestigationPanel: React.FC<InvestigationPanelProps> = ({
       </section>
 
       {/* ============================================== Full trace (disclosure) */}
-      <Collapsible open={traceOpen} onOpenChange={handleTraceToggle}>
-        <CollapsibleTrigger className="inline-flex items-center gap-1.5 rounded text-xs font-medium text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+      <Collapsible ref={traceSectionRef} open={traceOpen} onOpenChange={handleTraceToggle} className="scroll-mt-4">
+        <CollapsibleTrigger
+          data-trace-focus=""
+          className="inline-flex items-center gap-1.5 rounded text-xs font-medium text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
           <ListTree className="h-3.5 w-3.5" aria-hidden />
           {traceOpen ? 'Hide' : 'Show'} full agent trace
           <ChevronDown

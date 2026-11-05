@@ -543,8 +543,12 @@ class Investigator:
                         )[0], 1000),
                     )
                     return (
+                        # The reason becomes the case's recommended action, which every
+                        # case reader sees: redacted as the audit row is.
                         _fail_to_human(
-                            f"investigator model error{detail}: {exc}", cluster, prefs
+                            redact_text(f"investigator model error{detail}: {exc}")[0],
+                            cluster,
+                            prefs,
                         ),
                         cost,
                     )
@@ -671,7 +675,7 @@ class Investigator:
                 # Any exception, so its text can carry an address or a credential.
                 result_summary=truncate(redact_text(f"investigator crash: {exc}")[0], 1000),
             )
-            return _fail_to_human(f"investigator error: {exc}", cluster, prefs), cost
+            return _fail_to_human(redact_text(f"investigator error: {exc}")[0], cluster, prefs), cost
 
 
 def _fail_to_human(reason: str, cluster: Cluster, prefs: Preferences) -> VerdictResult:

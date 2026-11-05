@@ -191,33 +191,179 @@ function niceStep(max: number): number {
   return 10 * pow;
 }
 
-/** Indices of the buckets that get an x label: regular UTC intervals that fit. */
-function pickXLabels(points: readonly HumanVsAiPoint[], plotWidth: number): number[] {
+/* ------------------------------------------------------------------------- */
+/* X ticks: the chart kit's one time-axis rule, in UTC.                       */
+/* ------------------------------------------------------------------------- */
+
+/**
+ * At most five regular ticks: a 24h window then reads every 6h (00, 06, 12, 18), not
+ * every 4h.
+ */
+const MAX_X_LABELS = 5;
+/** The least space between two x labels (the kit's `X_LABEL_GAP`). */
+const X_LABEL_GAP = 6;
+const WEEK_H = 7 * 24;
+const FORTNIGHT_H = 14 * 24;
+/** The widest step of `LABEL_INTERVALS_H` (30 days): read as "the first of each month". */
+const MONTH_H = 30 * 24;
+
+const mod = (a: number, b: number) => ((a % b) + b) % b;
+
+/**
+ * Does a bucket that starts at `ms` (UTC) start a tick step of `hours`? Steps under a week
+ * are whole multiples of the step on the UTC clock (00 · 06 · 12 · 18 for six hours).
+ * Longer steps follow the calendar: a week is a Monday's midnight (the ISO week start), a
+ * fortnight every other Monday, and the widest step the first day of a month. Epoch
+ * multiples would put weekly ticks on Thursdays (1 January 1970 was one) and "monthly"
+ * ones on any date, beside board charts that tick on Mondays.
+ *
+ * A copy of the chart kit's `onTickStep` (src/soc/chat/blocks/charts/x-axis.ts), kept
+ * here on purpose: importing that module would load the kit (its block schema and format
+ * modules) into the landing page's chunk for ten lines. A test pins the two together.
+ */
+export function onTickStep(ms: number, hours: number): boolean {
+  if (hours < WEEK_H) return mod(ms, hours * HOUR_MS) === 0;
+  if (mod(ms, DAY_MS) !== 0) return false;
+  // Days since 1 January 1970 (a Thursday): day + 3 is a whole number of weeks on a Monday.
+  const day = Math.floor(ms / DAY_MS);
+  if (hours === WEEK_H) return mod(day + 3, 7) === 0;
+  if (hours === FORTNIGHT_H) return mod(day + 3, 14) === 0;
+  if (hours === MONTH_H) return new Date(ms).getUTCDate() === 1;
+  return mod(ms, hours * HOUR_MS) === 0;
+}
+
+/** The narrowest step between two consecutive bucket starts that both parse, else null. */
+function narrowestStep(starts: ReadonlyArray<number | null>): number | null {
+  let step = Infinity;
+  for (let i = 1; i < starts.length; i += 1) {
+    const a = starts[i - 1];
+    const b = starts[i];
+    if (a != null && b != null && b - a > 0) step = Math.min(step, b - a);
+  }
+  return Number.isFinite(step) ? step : null;
+}
+
+/**
+ * Does this series bucket by less than a day? The bucket is the narrowest step between
+ * starts (the kit reads it the same way), else a bucket's own span (`end - start`, for a
+ * series of one). With neither, a start off midnight says the buckets carry a clock.
+ */
+function subDayBuckets(points: readonly HumanVsAiPoint[], starts: ReadonlyArray<number | null>): boolean {
+  let step = narrowestStep(starts);
+  for (let i = 0; step == null && i < points.length; i += 1) {
+    const s = starts[i];
+    const e = parseMs(points[i].end);
+    if (s != null && e != null && e > s) step = e - s;
+  }
+  if (step != null) return step < DAY_MS;
+  return starts.some((s) => s != null && mod(s, DAY_MS) !== 0);
+}
+
+/**
+ * The texts of the shown ticks `picks` (ascending), as a sparse array indexed by bucket,
+ * by the kit's one time-axis rule (`tickTexts` in charts/x-axis.ts), read in UTC from each
+ * bucket's own `start`:
+ *
+ *   - a daily bucket reads its day ("Oct 30");
+ *   - on sub-day buckets the first shown tick, and every tick that starts a new UTC day,
+ *     names its day: "Nov 4 06:00", or "Nov 5" alone for a bucket that starts at midnight;
+ *     a later tick on the same day reads its time only ("12:00").
+ *
+ * The chart builds these texts itself rather than printing the caller's `x`, so every
+ * caller (a board widget, the Cyber Defence Center card) ticks the same way whatever form
+ * its own labels take, and two charts over the same buckets read the same. `x` is only
+ * the fallback for a bucket without a parseable start; such a tick says nothing about
+ * the day, so the next one names it.
+ */
+export function xTickTexts(points: readonly HumanVsAiPoint[], picks: readonly number[]): string[] {
+  const starts = points.map((p) => parseMs(p.start));
+  const subDay = subDayBuckets(points, starts);
+  const out: string[] = [];
+  let previousDay: number | null = null;
+  for (const i of picks) {
+    const point = points[i];
+    if (!point) continue;
+    const s = starts[i];
+    if (s == null) {
+      previousDay = null;
+      out[i] = point.x;
+      continue;
+    }
+    // The UTC day itself (days since the epoch), so a "Nov 4" a year apart is a new day.
+    const dayKey = Math.floor(s / DAY_MS);
+    const newDay = dayKey !== previousDay;
+    previousDay = dayKey;
+    if (!subDay) {
+      out[i] = utcDay(s);
+      continue;
+    }
+    const hm = utcHm(s);
+    out[i] = !newDay ? hm : hm === '00:00' ? utcDay(s) : `${utcDay(s)} ${hm}`;
+  }
+  return out;
+}
+
+/**
+ * The candidate tick sets, the most preferred first: every bucket when few enough, then
+ * the regular UTC steps (`onTickStep`, the smallest step first, so the axis gets as many
+ * ticks as fit; a step must hold whole buckets, and one lone tick says nothing about the
+ * scale), then evenly stepped buckets.
+ */
+function xLabelCandidates(points: readonly HumanVsAiPoint[]): number[][] {
   const n = points.length;
-  if (!n) return [];
-  const longest = Math.max(...points.map((p) => p.x.length));
-  const labelWidth = longest * CHAR_W + 14;
-  // At most five: a 24h window then reads every 6h (00, 06, 12, 18), not every 4h.
-  const maxLabels = Math.max(1, Math.min(5, Math.floor(plotWidth / labelWidth)));
+  const out: number[][] = [];
+  if (n <= MAX_X_LABELS) out.push(Array.from({ length: n }, (_, i) => i));
   const starts = points.map((p) => parseMs(p.start));
   if (n > 1 && starts.every((s) => s != null)) {
     const ms = starts as number[];
-    let bucketMs = Infinity;
-    for (let i = 1; i < ms.length; i += 1) {
-      const d = ms[i] - ms[i - 1];
-      if (d > 0) bucketMs = Math.min(bucketMs, d);
-    }
-    if (Number.isFinite(bucketMs)) {
+    const bucketMs = narrowestStep(ms);
+    if (bucketMs != null) {
       for (const h of LABEL_INTERVALS_H) {
         const iv = h * HOUR_MS;
         if (iv < bucketMs || iv % bucketMs !== 0) continue;
-        const idx = ms.flatMap((s, i) => (s % iv === 0 ? [i] : []));
-        if (idx.length && idx.length <= maxLabels) return idx;
+        const idx = ms.flatMap((s, i) => (onTickStep(s, h) ? [i] : []));
+        if (idx.length >= 2 && idx.length <= MAX_X_LABELS) out.push(idx);
       }
     }
   }
-  const step = Math.ceil(n / maxLabels);
-  return Array.from({ length: Math.ceil(n / step) }, (_, k) => k * step);
+  for (let step = Math.max(1, Math.ceil(n / MAX_X_LABELS)); step <= n; step += 1) {
+    out.push(Array.from({ length: Math.ceil(n / step) }, (_, k) => k * step));
+  }
+  return out;
+}
+
+/**
+ * Lay out the x ticks: the first candidate set whose every label fits beside its
+ * neighbours wins, its texts read by `xTickTexts`. Labels are centred on their slot and
+ * clamped inside the figure; a set where a clamp would push one label into its neighbour
+ * is passed over, never drawn overlapped. The last candidate is the first bucket alone,
+ * which always fits.
+ */
+export function layoutXLabels(
+  points: readonly HumanVsAiPoint[],
+  centre: (i: number) => number,
+  width: number,
+): Array<{ index: number; x: number; text: string }> {
+  if (!points.length) return [];
+  const place = (set: readonly number[]) => {
+    const texts = xTickTexts(points, set);
+    const out: Array<{ index: number; x: number; text: string }> = [];
+    let lastRight = -Infinity;
+    for (const index of set) {
+      const text = texts[index] ?? '';
+      const w = text.length * CHAR_W;
+      const c = Math.min(Math.max(centre(index), w / 2), width - w / 2);
+      if (c - w / 2 < lastRight + X_LABEL_GAP) continue;
+      out.push({ index, x: Math.round(c), text });
+      lastRight = c + w / 2;
+    }
+    return out;
+  };
+  for (const set of xLabelCandidates(points)) {
+    const placed = place(set);
+    if (placed.length === set.length) return placed;
+  }
+  return [];
 }
 
 interface Segment {
@@ -331,18 +477,7 @@ function buildGeometry(
     };
   });
 
-  // Labels centred on their slot, clamped inside the figure, and dropped (never
-  // overlapped) if a clamp pushes one into its neighbour.
-  const xLabels: Geometry['xLabels'] = [];
-  let lastRight = -Infinity;
-  for (const index of pickXLabels(points, plotWidth)) {
-    const text = points[index].x;
-    const w = text.length * CHAR_W;
-    const centre = Math.min(Math.max(x0 + (index + 0.5) * slot, w / 2), width - w / 2);
-    if (centre - w / 2 < lastRight + 6) continue;
-    xLabels.push({ index, x: Math.round(centre), text });
-    lastRight = centre + w / 2;
-  }
+  const xLabels = layoutXLabels(points, (i) => x0 + (i + 0.5) * slot, width);
 
   return { width, height, x0, plotTop, baseline, slot, yMax, ticks, slots, xLabels, allZero };
 }
@@ -944,7 +1079,7 @@ export function CloseAttributionChart({
             </text>
           ))}
 
-          {/* X labels: regular UTC intervals, horizontal, centred on the slot. */}
+          {/* X labels: regular UTC steps, the first and each new day dated, centred on the slot. */}
           {geo.xLabels.map((l) => (
             <text
               key={l.index}

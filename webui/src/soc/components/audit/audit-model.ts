@@ -696,17 +696,109 @@ export function buildListItems(
   return out;
 }
 
+/** The actors whose decision row ends an investigation: the case manager's decision and an analyst policy's close. */
+const DECIDING_ACTORS: ReadonlySet<string> = new Set(['case_manager', 'analyst_policy']);
+/** The actors whose error row ends an investigation that reached no decision. */
+const ENDING_ERROR_ACTORS: ReadonlySet<string> = new Set(['pipeline', 'investigator']);
+
 /**
- * One outcome for an investigation's group row: Failed when any step failed, Denied when
- * any was denied, Success when every step shown succeeded, otherwise not recorded.
+ * The newest of `records` by recorded time. A row with a readable time beats one without,
+ * and a tie keeps the row listed first.
  */
-export function groupOutcome(records: readonly AuditRecord[]): AuditOutcome | undefined {
+function newestOf(records: readonly AuditRecord[]): AuditRecord | null {
+  let best: AuditRecord | null = null;
+  let bestAt: number | null = null;
+  for (const r of records) {
+    const at = instantOf(r.ts);
+    if (best === null || (at !== null && (bestAt === null || at > bestAt))) {
+      best = r;
+      bestAt = at;
+    }
+  }
+  return best;
+}
+
+/**
+ * The loaded row that says how an investigation ended, or null when none is loaded: the
+ * case manager's (or an analyst policy's) decision row; else the investigator's verdict
+ * row, unless a pipeline or investigator error row was recorded after it (the run failed
+ * between its verdict and a decision, and the case was handed to a person); else a
+ * pipeline or investigator error row.
+ */
+export function investigationEndRow(records: readonly AuditRecord[]): AuditRecord | null {
+  const decision = newestOf(
+    records.filter((r) => r.action_type === 'decision' && DECIDING_ACTORS.has(r.actor)),
+  );
+  if (decision) return decision;
+  const verdict = newestOf(records.filter((r) => r.action_type === 'verdict' && r.actor === 'investigator'));
+  const error = newestOf(records.filter((r) => r.action_type === 'error' && ENDING_ERROR_ACTORS.has(r.actor)));
+  if (verdict && error) {
+    const verdictAt = instantOf(verdict.ts);
+    const errorAt = instantOf(error.ts);
+    return verdictAt !== null && errorAt !== null && errorAt > verdictAt ? error : verdict;
+  }
+  return verdict ?? error;
+}
+
+/**
+ * One outcome for an investigation's group row, from how the run ended
+ * (`investigationEndRow`); each step reads its own recorded or derived outcome
+ * (`outcomeKey`).
+ *
+ * - The run ended in an error row: Failed (Denied when that row records a refusal, such
+ *   as the AI budget refusing the model call).
+ * - The run reached its decision or verdict: Success when every step shown succeeded,
+ *   Partial when a step failed, was denied or partly happened (a failed log query before
+ *   a close is Partial, not Failed), otherwise not recorded.
+ * - No ending row is loaded (part of the run is shown, or a filter hides the ending):
+ *   Failed when any step shown failed, Denied when any was denied, Partial when any
+ *   partly happened, Success when every step shown succeeded, otherwise not recorded.
+ *
+ * `total` is the run's step count (`GroupItem.total`, from `run_totals`). While fewer rows
+ * are loaded (a run straddles a page boundary, and in the newest-first order its decision
+ * is on the first page and its earlier steps on the next), the group never reads Success:
+ * a step not loaded yet can have failed. A failed, denied or partial step shown keeps its
+ * reading, since no row still to load makes that run a success.
+ */
+export function groupOutcome(
+  records: readonly AuditRecord[],
+  total: number = records.length,
+): AuditOutcome | undefined {
   const keys = records.map((r) => outcomeKey(r));
+  const allLoaded = records.length >= total;
+  const allSucceeded = keys.length > 0 && keys.every((k) => k === 'success');
+  const end = investigationEndRow(records);
+  if (end?.action_type === 'error') return outcomeKey(end) === 'denied' ? 'denied' : 'failure';
+  if (end) {
+    if (keys.some((k) => k === 'failure' || k === 'denied' || k === 'partial')) return 'partial';
+    return allLoaded && allSucceeded ? 'success' : undefined;
+  }
   if (keys.includes('failure')) return 'failure';
   if (keys.includes('denied')) return 'denied';
   if (keys.includes('partial')) return 'partial';
-  if (keys.length > 0 && keys.every((k) => k === 'success')) return 'success';
-  return undefined;
+  return allLoaded && allSucceeded ? 'success' : undefined;
+}
+
+/**
+ * The outcome an investigation's group row shows: `groupOutcome`'s reading, or
+ * `not_known` while part of the run is loaded and the rows shown prove no outcome: a
+ * step still to load can change the reading, and Load more completes the group
+ * (`run_totals` counts only rows it can reach). "Not recorded" stays for a whole run whose
+ * rows do not record an outcome.
+ */
+export type GroupOutcomeKey = OutcomeKey | 'not_known';
+
+/** The words of a group row's outcome: the record words, and "Not known". */
+export const GROUP_OUTCOME_LABEL: Readonly<Record<GroupOutcomeKey, string>> = {
+  ...OUTCOME_LABEL,
+  not_known: 'Not known',
+};
+
+/** The group row's outcome key for `records` of a run of `total` steps (`groupOutcome`). */
+export function groupOutcomeKey(records: readonly AuditRecord[], total: number = records.length): GroupOutcomeKey {
+  const outcome = groupOutcome(records, total);
+  if (outcome === undefined && records.length < total) return 'not_known';
+  return outcomeKey({ outcome });
 }
 
 /** The group row's text: "Investigation of CASE-000214 · 10 steps · closed as false positive". */

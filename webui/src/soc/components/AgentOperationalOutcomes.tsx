@@ -307,10 +307,11 @@ function OutcomeTile(props: OutcomeTileProps) {
       role="group"
       aria-label={`${props.label} comparison`}
       data-testid={`comparison-${props.testId}`}
-      // Two rows of the strip's own grid (subgrid): every tile's figure block takes the
-      // tallest one's height on its strip row, so the lines under it (evidence state,
-      // prior, sample, reason) start at the same height in every tile of that row.
-      className="row-span-2 grid min-w-0 grid-rows-subgrid"
+      // Four rows of the strip's own grid (subgrid): the tile's label, numeral and context
+      // rows (the strip row-aligns them, `rowAlign`), then its evidence lines. Every row is
+      // as tall as the tallest of its strip row, so the numerals share one line and the
+      // lines under them (evidence state, prior, sample, reason) start at the same height.
+      className="row-span-4 grid min-w-0 grid-rows-subgrid"
     >
       <KpiTile
         label={props.label}
@@ -361,6 +362,7 @@ function OutcomeStrip({ outcomes }: { outcomes: AgentOperationalOutcomesContract
       <KpiTileGrid
         count={4}
         surface="panel"
+        rowAlign
         className="grid-cols-1 @[28rem]:grid-cols-2"
         data-testid="operational-outcomes-strip"
       >

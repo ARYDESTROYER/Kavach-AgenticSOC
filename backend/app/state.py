@@ -1288,13 +1288,35 @@ class AppState:
         except Exception as exc:  # noqa: BLE001 — counter wiring must never break a rewire
             logger.warning("noise-counter sink wiring failed (%s); counters disabled", exc)
 
-    async def _automation_notify(self, case, trigger: str) -> None:
+    async def _automation_notify(self, case, trigger: str) -> list[dict[str, Any]] | None:
         """Automation NOTIFY action → dispatch through the existing notification
-        service. Fire-and-forget; never raises into the case path."""
+        service. Returns the per-channel results (``[{"ok": bool, "detail": str,
+        ...}]``) the action's audit outcome is read from
+        (``ThresholdAutomation._maybe_notify``), or ``None`` when no notification
+        service is wired. Never raises into the case path: the service's ``dispatch``
+        catches every channel and dispatch failure itself.
+
+        The in-app inbox copy is always one of the service's results, and it reports
+        ``ok`` even when it was due for nobody (``"no recipients"``: no assignee, no
+        mention, no subscribed role member). Such a copy went out to no one, so it is
+        left out here, as a channel skipped inside its dedup window is: it never counts
+        as a channel the notification was sent on, and a notify action whose only
+        configured channel failed reads ``failure``, not ``partial``. The copy's own
+        NOTIFICATION row is unchanged."""
         notifier = getattr(self, "notifications", None)
         if notifier is None:
-            return
-        await notifier.dispatch(case, trigger)
+            return None
+        results = await notifier.dispatch(case, trigger)
+        if not isinstance(results, list):
+            return results
+        # ``InAppChannel.send``'s two not-due details (pinned against the channel by
+        # tests/test_audit_writer_outcomes.py).
+        not_due = frozenset({"no recipients", "no inbox wired"})
+        return [
+            r for r in results
+            if not (isinstance(r, dict) and r.get("type") == "in_app"
+                    and r.get("ok") is True and r.get("detail") in not_due)
+        ]
 
     # ------------------------------------------------------------------ #
     # Runbooks in the agent path (Round 14 SPEC §4.10.4, §4.10.9, §4.10.18)

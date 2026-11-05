@@ -4,6 +4,10 @@
  * and records whether it attached one (`engine/threshold_automation.py`), so its badge
  * says what happened; a record from before Round 14 keeps its legacy name (SPEC §3.1).
  * Console-authored copy never says "playbook".
+ *
+ * A notify badge says whether the notification went out: the detail notes "Not sent" or
+ * "Partly sent" with the reason when it did not all go (`_maybe_notify`), so "Notified" is
+ * shown only for a send.
  */
 import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
@@ -81,5 +85,79 @@ describe('Automation applied names a runbook attach in runbook words', () => {
     }
     // The stored token appears nowhere on the panel.
     expect(document.body.textContent ?? '').not.toMatch(/playbook/i);
+  });
+});
+
+describe('Automation applied says whether a notification went out', () => {
+  const notify = (detail: string): AutomationActionRecord => ({
+    action: 'notify',
+    rule_id: 'r1',
+    detail,
+    at: '2026-10-28T13:00:00Z',
+  });
+
+  /** The badge that holds `label`, so its tone (the badge variant) can be read. */
+  const badge = (label: string) => {
+    const el = screen.getByText(label);
+    expect(el.textContent).toBe(label);
+    return el;
+  };
+
+  it('says Notified, in the info tone, when every channel took it', () => {
+    showActions([notify('notify=automation')]);
+    expect(badge('Notified')).toHaveClass('text-info-text');
+    expect(screen.queryByText('Not notified')).toBeNull();
+    expect(screen.queryByText('Partly notified')).toBeNull();
+  });
+
+  it.each([
+    'no notification service is connected',
+    'the notification service failed (SMTPException)',
+    '1 of 1 channel failed',
+    '2 of 3 channels were rate limited',
+    '1 of 2 channels failed and 1 was rate limited',
+    // The service sent nothing and nothing failed: notifications are off (the default),
+    // no channel takes the trigger, the in-app copy is due for no one, or the send
+    // repeats one inside the dedup window.
+    'no channel was due (notifications are off, no channel takes this trigger, no one is addressed, or it repeated inside the dedup window)',
+    // The service failed as a whole before any channel took it.
+    'the notification service failed (RuntimeError)',
+  ])('says Not notified, in the high tone, when it was not sent: %s', (reason) => {
+    const detail = `notify=automation. Not sent: ${reason}.`;
+    showActions([notify(detail)]);
+    expect(badge('Not notified')).toHaveClass('text-high-text');
+    expect(screen.queryByText('Notified')).toBeNull();
+    // The recorded detail, with its reason, stays beside the badge as plain text.
+    expect(screen.getByText(detail)).toBeInTheDocument();
+  });
+
+  it.each([
+    '1 of 2 channels failed',
+    '1 of 3 channels was rate limited',
+    '1 of 3 channels failed and 1 was rate limited',
+    // The service failed as a whole after a channel took the notification.
+    'the notification service failed (KeyError)',
+  ])(
+    'says Partly notified, in the medium tone, when some channels did not take it: %s',
+    (reason) => {
+      showActions([notify(`notify=case_closed. Partly sent: ${reason}.`)]);
+      expect(badge('Partly notified')).toHaveClass('text-medium-text');
+      expect(screen.queryByText('Notified')).toBeNull();
+    },
+  );
+
+  it('words each record of a mixed list on its own', () => {
+    showActions([
+      notify('notify=automation'),
+      notify('notify=automation. Not sent: no notification service is connected.'),
+      notify('notify=automation. Partly sent: 1 of 2 channels failed.'),
+    ]);
+    expect(badge('Notified')).toHaveClass('text-info-text');
+    expect(badge('Not notified')).toHaveClass('text-high-text');
+    expect(badge('Partly notified')).toHaveClass('text-medium-text');
+    const EM_DASH = String.fromCharCode(0x2014);
+    for (const label of ['Notified', 'Not notified', 'Partly notified']) {
+      expect(label.includes(EM_DASH)).toBe(false);
+    }
   });
 });

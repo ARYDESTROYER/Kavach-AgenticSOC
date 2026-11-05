@@ -241,13 +241,6 @@ class LegacyProcedureReader:
         (never a partial projection)."""
         return await self._list_strict(PLAYBOOKS_NS)
 
-    async def list_playbooks_strict(self) -> dict[str, dict[str, Any]]:
-        """Temporary forwarder to :meth:`list_procedures_strict` for the legacy export
-        (``api/routes_export.py``), which still calls this name. Remove it once that
-        caller and its export seam test call :meth:`list_procedures_strict` (AGENTS.md
-        naming contract: no new identifiers with the retired word)."""
-        return await self.list_procedures_strict()
-
     async def list_runbooks_strict(self) -> dict[str, dict[str, Any]]:
         """``id -> row`` of the retired operator reference runbook catalog (index
         status fields kept as stored), or :class:`LegacyCatalogDamaged`."""

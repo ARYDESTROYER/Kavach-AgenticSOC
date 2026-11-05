@@ -51,7 +51,7 @@ describe('Cost window-switch race', () => {
     expect(screen.getByRole('status', { name: 'Loading cost data' })).toBeInTheDocument();
 
     // Switch the range to the last 24 hours: a second request is issued.
-    await userEvent.click(screen.getByRole('button', { name: 'Time range: Last 7 days' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Last 7d, time range' }));
     const ranges = await screen.findByRole('group', { name: 'Relative time ranges' });
     await userEvent.click(within(ranges).getByRole('button', { name: /^Last 24 hours/ }));
     await waitFor(() => expect(pending.has(24)).toBe(true));
@@ -66,7 +66,7 @@ describe('Cost window-switch race', () => {
 
     expect(screen.getAllByText('$99.00').length).toBeGreaterThan(0);
     expect(screen.queryByText('$1.00')).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Time range: Last 24 hours' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Last 24h, time range' })).toBeInTheDocument();
   });
 
   it('keeps resolved cost data mounted during a manual refresh', async () => {

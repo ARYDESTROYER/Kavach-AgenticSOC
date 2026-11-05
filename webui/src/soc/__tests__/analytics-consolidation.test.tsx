@@ -244,7 +244,7 @@ function readableText(root: HTMLElement): string {
 
 /** Pick a range in the page header's Overview pill. */
 async function pickRange(label: string) {
-  await userEvent.click(screen.getByRole('button', { name: /^Time range:/ }));
+  await userEvent.click(screen.getByRole('button', { name: /, time range$/ }));
   const group = await screen.findByRole('group', { name: 'Relative time ranges' });
   await userEvent.click(within(group).getByRole('button', { name: new RegExp(`^${label}`) }));
 }
@@ -344,7 +344,7 @@ describe('Metrics page header', () => {
     const header = document.querySelector('[data-page-header="page"]') as HTMLElement;
     expect(header).not.toBeNull();
     const controls = header.querySelector('[data-page-header-controls]') as HTMLElement;
-    expect(within(controls).getByRole('button', { name: 'Time range: Last 7 days' })).toBeInTheDocument();
+    expect(within(controls).getByRole('button', { name: 'Last 7d, time range' })).toBeInTheDocument();
     expect(within(controls).getByRole('button', { name: 'Refresh metrics' })).toBeInTheDocument();
     // Sorting belongs to the ranked module it sorts, never to the page header.
     expect(within(header).queryByRole('radiogroup')).toBeNull();
@@ -565,7 +565,7 @@ describe('captions name the range of the figures on screen', () => {
       await screen.findByText('Could not load the last 24 hours; showing the last 7 days'),
     ).toBeInTheDocument();
     // The pill says what was picked; the figures still say what they are.
-    expect(screen.getByRole('button', { name: 'Time range: Last 24 hours' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Last 24h, time range' })).toBeInTheDocument();
     const spend = screen.getByRole('region', { name: 'LLM spend' });
     expect(spend).toHaveTextContent('last 7 days');
     expect(spend).not.toHaveTextContent('last 24 hours');
@@ -739,7 +739,7 @@ describe('Cost page', () => {
     const header = document.querySelector('[data-page-header="page"]') as HTMLElement;
     const controls = header.querySelector('[data-page-header-controls]') as HTMLElement;
     expect(within(controls).getByRole('button', { name: 'Refresh usage' })).toBeInTheDocument();
-    expect(within(controls).getByRole('button', { name: 'Time range: Last 7 days' })).toBeInTheDocument();
+    expect(within(controls).getByRole('button', { name: 'Last 7d, time range' })).toBeInTheDocument();
   });
 });
 
@@ -754,12 +754,12 @@ describe('the Analytics range is shared for the session', () => {
     render(<Cost />);
     await waitFor(() => expect(apiMock.usageSummary).toHaveBeenCalled());
     expect(apiMock.usageSummary).toHaveBeenLastCalledWith(720);
-    expect(screen.getByRole('button', { name: 'Time range: Last 30 days' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Last 30d, time range' })).toBeInTheDocument();
   });
 
   it('starts a fresh session on the last 7 days', async () => {
     render(<Cost />);
     await waitFor(() => expect(apiMock.usageSummary).toHaveBeenCalledWith(168));
-    expect(screen.getByRole('button', { name: 'Time range: Last 7 days' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Last 7d, time range' })).toBeInTheDocument();
   });
 });

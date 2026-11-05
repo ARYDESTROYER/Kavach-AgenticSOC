@@ -13,9 +13,10 @@ import json
 import logging
 
 from ..audit.audit_log import AuditLogger
+from ..audit.changes import redact_text
 from ..config import ModelConfig, Preferences
 from ..constants import ActionType, Role
-from ..llm.gateway import GatewayError, LLMGateway
+from ..llm.gateway import BudgetBlocked, GatewayError, LLMGateway
 from ..models import VerdictResult
 from ..utils import extract_json, truncate
 from .common import coerce_verdict
@@ -59,6 +60,19 @@ class Formatter:
                 "Formatter unavailable (class=%s): %s; preserving draft verdict",
                 getattr(exc, "failure_class", "") or "unclassified", exc,
             )
+            # The model call failed: record it, so the audit log's Failed filter finds
+            # it (#2). The investigator's draft verdict stands, so the case path goes
+            # on. Inside the pipeline the row carries the run id (``RunStampedAudit``).
+            await self._audit.record(
+                action_type=ActionType.ERROR, surface=surface,
+                actor=Role.FORMATTER.value, case_id=case_id, model=model_cfg.model,
+                # The AI budget refusing the call is a policy refusal, not a fault.
+                outcome="denied" if isinstance(exc, BudgetBlocked) else "failure",
+                # A provider error's text can carry an address or a credential.
+                result_summary=truncate(redact_text(
+                    f"formatter unavailable: {exc}; the investigator's draft verdict was kept"
+                )[0], 1000),
+            )
             return draft, 0.0
 
         formatted = coerce_verdict(extract_json(res.text))
@@ -74,7 +88,7 @@ class Formatter:
         # Audit the formatter step (C3-3) so it appears in the case trace timeline.
         await self._audit.record(
             action_type=ActionType.PROMPT, surface=surface, actor=Role.FORMATTER.value,
-            case_id=case_id, model=model_cfg.model,
+            case_id=case_id, model=model_cfg.model, outcome="success",
             prompt_excerpt=json.dumps(payload, default=str),
             result_summary=(
                 f"formatted verdict {merged.verdict.value} "

@@ -694,6 +694,9 @@ async def record_chat_tool_denial(
             case_id=case_id or None,
             tool_name=tool,
             result_summary=summary,
+            # The asking analyst's grants refused the call (an Access row).
+            outcome="denied",
+            actor_type="human",
         )
         return True
     except Exception as exc:  # noqa: BLE001 — a denial must never fail the turn
@@ -741,6 +744,9 @@ async def _enforce(request: Request, resource: str, action: str):
             surface="rbac",
             actor=getattr(user, "username", "") or "",
             result_summary=f"denied {resource}:{action} for role {role or '?'}",
+            # A signed-in person was refused (auth off never reaches a denial).
+            outcome="denied",
+            actor_type="human",
         )
     except Exception:  # noqa: BLE001
         pass

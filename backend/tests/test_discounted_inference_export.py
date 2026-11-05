@@ -765,7 +765,7 @@ def test_segmented_export_never_calls_a_failed_safe_scope_complete(
     )
 
 
-@pytest.mark.parametrize("seam", ["library", "legacy_runbooks", "legacy_playbooks"])
+@pytest.mark.parametrize("seam", ["library", "legacy_runbooks", "legacy_procedures"])
 def test_segmented_knowledge_export_never_drops_a_corrupt_procedure_catalog(seam, monkeypatch):
     """An unreadable runbook library or retired procedure catalog fails the scope
     (503), never an export that silently leaves it out (Round 14 seams)."""
@@ -782,7 +782,7 @@ def test_segmented_knowledge_export_never_drops_a_corrupt_procedure_catalog(seam
         target = {
             "library": (RunbookLibraryStore, "verified_rows"),
             "legacy_runbooks": (LegacyProcedureReader, "list_runbooks_strict"),
-            "legacy_playbooks": (LegacyProcedureReader, "list_playbooks_strict"),
+            "legacy_procedures": (LegacyProcedureReader, "list_procedures_strict"),
         }[seam]
         monkeypatch.setattr(*target, fail_catalog_read)
         app.state.tlsoc = state

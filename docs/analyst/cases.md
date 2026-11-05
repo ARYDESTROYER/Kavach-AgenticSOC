@@ -38,13 +38,29 @@ needs human or whose AI verdict is Needs human. A closed case is never counted t
 whatever the AI said. When a count cannot be read, the tile falls back to the loaded rows
 and says so.
 
-The **Outcome** column shows each case's outcome of record: the analyst's
-classification once a person has classified the case (for example **False positive**,
-marked as the analyst's), **Declared benign** for an operator rule-policy close,
-**Auto-closed** for an automatic close (the short label; the verdict it closed on, such
-as "Auto-closed as false positive", is its tooltip), and otherwise the AI verdict,
-attributed to the AI (for example "AI: Needs human"). The column follows the same rule as the case header
-in Case Manager; see [The outcome of a case](case-manager.md#the-outcome-of-a-case).
+The **Outcome** column shows each case's outcome of record:
+
+- the analyst's classification once a person has classified the case, for example
+  **False positive** with the person glyph in the badge; its tooltip reads "Closed as
+  false positive by an analyst";
+- **Not recorded** for a case an analyst closed without recording a classification; its
+  tooltip reads "Closed by analyst: outcome not recorded" ("Resolved by analyst: ..."
+  for a resolved case);
+- **Declared benign**, also with the person glyph, for an operator rule-policy close;
+  its tooltip reads "Closed by analyst policy (declared benign)";
+- **Auto-closed**, with the AI glyph, for an automatic close; the verdict it closed on,
+  such as "Auto-closed as false positive", is its tooltip; and
+- otherwise the case's current disposition, which no analyst has classified yet. Its
+  tooltip says where that value came from: "Mapped from the AI verdict", "Recorded on
+  the case", "No outcome recorded yet", or "Not yet assessed by the AI" (the badge then
+  reads Undetermined), each followed by "no analyst has classified this case yet".
+
+The cell uses the Status column's badge size, and a screen reader hears the tooltip's
+words too. Once a person has classified, resolved or closed a case, or a rule policy or
+the automatic close policy closed it, the column reads as the case header in Case
+Manager does. Before that, Case Manager shows the AI's assessment (for example "AI:
+Needs human") and this column shows the case's disposition, marked as no analyst's
+call; see [The outcome of a case](case-manager.md#the-outcome-of-a-case).
 Entity values in the table offer **Ask AI**, which opens a Workspace chat about that
 value.
 

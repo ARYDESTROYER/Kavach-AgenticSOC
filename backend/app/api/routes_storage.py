@@ -88,6 +88,9 @@ async def storage_lifecycle_put(
             action_type=ActionType.STATUS,
             surface="storage",
             actor=current_username(request) or "admin",
+            # Written after the desired policy was saved.
+            outcome="success",
+            actor_type="human",
             result_summary=(
                 "saved own-state lifecycle policy "
                 f"hot={body.hot_days}d warm={body.warm_days}d "

@@ -1145,7 +1145,7 @@ describe('the rule sheet', () => {
   it('reads again over another window from the picker', async () => {
     const user = userEvent.setup();
     const { dialog } = await openSheet();
-    await user.click(within(dialog).getByRole('button', { name: 'Time range: Last 3 days' }));
+    await user.click(within(dialog).getByRole('button', { name: 'Last 3 days, time range' }));
     await user.click(await screen.findByRole('button', { name: /Last 7 days/ }));
     await waitFor(() =>
       expect(summaryMock).toHaveBeenLastCalledWith({ rule: RULE, window: 'now-7d' }, expect.any(AbortSignal)),
@@ -1163,7 +1163,7 @@ describe('the rule sheet', () => {
     expect(region).toHaveTextContent('');
     let land: (summary: RuleSummary) => void = () => {};
     summaryMock.mockImplementationOnce(() => new Promise<RuleSummary>((resolve) => (land = resolve)));
-    await user.click(within(dialog).getByRole('button', { name: 'Time range: Last 3 days' }));
+    await user.click(within(dialog).getByRole('button', { name: 'Last 3 days, time range' }));
     await user.click(await screen.findByRole('button', { name: /Last 7 days/ }));
     await waitFor(() => expect(summaryMock).toHaveBeenCalledTimes(2));
     // The 3-day figures are still on screen while the 7-day read is out: not announced.
@@ -1189,7 +1189,7 @@ describe('the rule sheet', () => {
     );
     const label = windowLabel(window);
     expect(label).toMatch(/^Oct 29(, 2026)?, 12:14 to 12:17 UTC$/);
-    expect(within(dialog).getByRole('button', { name: `Time range: ${label}` })).toBeInTheDocument();
+    expect(within(dialog).getByRole('button', { name: `${label}, time range` })).toBeInTheDocument();
     // The tile reads the picker's label, never the server's day-first form beside it.
     const tile = within(dialog).getByTestId('kpi-rule-alerts');
     expect(tile).toHaveTextContent(`in ${label}`);
@@ -1407,7 +1407,7 @@ describe('the rule sheet', () => {
     }
     const at = (pattern: RegExp) => visited.findIndex((name) => pattern.test(name));
     const order = [
-      at(/^Time range: Last 3 days$/),
+      at(/^Last 3 days, time range$/),
       at(/^Open all 381 in Logs$/),
       at(/^Show the 3 cases$/),
       at(/^Alerts over time by severity/),

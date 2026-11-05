@@ -189,14 +189,14 @@ describe('<TimeRangePicker/> render', () => {
     const range: TimeRange = PRESETS[2]; // Last 24 hours
     render(<TimeRangePicker value={range} onChange={() => {}} />);
     expect(
-      screen.getByRole('button', { name: /Time range: Last 24 hours/i }),
+      screen.getByRole('button', { name: 'Last 24 hours, time range' }),
     ).toBeInTheDocument();
   });
 
   it('emits the picked preset from the popover', () => {
     const onChange = vi.fn();
     render(<TimeRangePicker value={PRESETS[2]} onChange={onChange} />);
-    fireEvent.click(screen.getByRole('button', { name: /Time range:/i }));
+    fireEvent.click(screen.getByRole('button', { name: /, time range$/ }));
     // Presets render as a labelled GROUP of plain buttons (NOT a listbox/option
     // composite — see the a11y fix), with the active range marked via aria-current.
     expect(screen.queryByRole('listbox')).not.toBeInTheDocument();

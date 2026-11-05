@@ -1004,6 +1004,7 @@ async def _effective_prefs(
                 action_type=ActionType.ACCESS_DENIED, surface="chat",
                 actor=current_username(request) or "default",
                 result_summary="denied a non-default chat model (requires models:read)",
+                outcome="denied", actor_type="human",
             )
         except Exception:  # noqa: BLE001 -- the refusal stands without its row
             pass
@@ -2424,6 +2425,8 @@ async def cancel_chat_turn(
         await state.execution_audit.record(
             action_type=ActionType.CONTEXT, surface="chat", actor=author or "default",
             result_summary=f"turn={turn_id} stop requested",
+            # The person pressed Stop; the turn stops at its next step.
+            outcome="success", actor_type="human",
         )
     except Exception:  # noqa: BLE001 -- Stop never fails on its audit row
         pass

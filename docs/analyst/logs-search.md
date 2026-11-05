@@ -10,8 +10,9 @@ sources. This surface is read-only and requires `sources:read` when RBAC is enab
 
 ## Unified logs
 
-The unified view fans out to each source and merges rows newest first. Every row
-includes `source_id` and source name so identical-looking events remain attributable.
+The unified view in **Triage → Logs** fans out to each source and merges rows newest
+first. Every row includes `source_id` and source name so identical-looking events remain
+attributable.
 
 - Pull connectors perform a bounded search with the source's own field mapping,
   index scope, TLS settings, and read-only credential.
@@ -23,7 +24,12 @@ includes `source_id` and source name so identical-looking events remain attribut
 
 The page header holds the time range and Refresh. The time-range pill offers the last
 15 minutes, 1 hour, 4 hours, 24 hours or 7 days, and a refresh choice of **Off** or
-**Live** (a live tail that reads again every 10 seconds). Below it, filter by free text.
+**Live** (a live tail that reads again every 10 seconds). Below it, filter the logs by
+free text, such as a word from the message, a rule or a host name, and press Enter to
+search. The search and the time range apply to pull sources. A push, queue or
+object-store receiver returns its live-tail buffer, which ignores the search and, unless
+an exact filter (below) is set, the time range too; a note above the table names those
+sources.
 
 The events sit on one panel titled with what it holds, for example "Latest 150 events"
 with "from 3 sources" (or "from 2 of 3 sources" when one did not answer) beside it. The
@@ -55,18 +61,21 @@ top source IPs and targets, the latest alerts, the cases, and the rule's facts (
 is defined, its tuning and any "declared benign" policy). Each part checks its own
 permission, so a missing permission hides one part, never the sheet, and the sheet never
 states a zero it did not count. Opening it calls no model. **Open all N in Logs** opens
-this page filtered to that rule (the number only when the count is exact), **Show the N
-cases** opens those cases, and **Ask AI about this rule** asks chat about it.
+**Triage → Logs** filtered to that rule (the number only when the count is exact),
+**Show the N cases** opens those cases, and **Ask AI about this rule** asks chat about
+it.
 
 ## Exact filters
 
-Opened from a rule's sheet or a chat answer, the page can carry exact filters the server
-applies: "Rule is" (the exact rule value), "Severity is High" (one named level) and
-"Severity High or above". Each is a removable chip. While "Rule is" is set the Rule
-column is left out, and the event count above the table is the server's matched count
-("381 events · last 3 days", or "At least 1,000 events" when a source could not count
-exactly), never a sum of the rows shown. A linked window longer than 90 days keeps every
-filter and reads the last 90 days of that window, and the header says so.
+Opened from a rule's sheet or a chat answer, **Triage → Logs** can carry exact filters
+the server applies: "Rule is" (the exact rule value), "Severity is High" (one named
+level) and "Severity High or above". Each is a removable chip. While "Rule is" is set
+the Rule column is left out, and the event count above the table is the server's matched
+count ("381 events · last 3 days", or "At least 1,000 events" when a source could not
+count exactly), never a sum of the rows shown. The filters apply to a live-tail buffer
+too, and while one is set the buffer is also kept to the time range, so its rows match
+the window the header names. A linked window longer than 90 days keeps every filter and
+reads the last 90 days of that window, and the header says so.
 
 !!! warning "Recent push logs are not an archive"
 

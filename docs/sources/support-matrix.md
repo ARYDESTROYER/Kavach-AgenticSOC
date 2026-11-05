@@ -94,7 +94,7 @@ obey the same acknowledgement and audit contracts.
 | Input | Parser status | Notes |
 |---|---|---|
 | JSON object/array | Built in | Generic field mapping; validate entity and severity paths |
-| NDJSON | Built in | One record per line |
+| NDJSON (JSON Lines) | Built in | One record per line, as in `.jsonl` or `.ndjson` files |
 | CEF | Built in | Header and extension parsing; vendor extensions remain in unmapped data |
 | LEEF | Built in | LEEF 1/2 delimiter handling |
 | GELF | Built in | JSON GELF shape |
@@ -102,6 +102,7 @@ obey the same acknowledgement and audit contracts.
 | key/value text | Built in | Best-effort generic mapping |
 | gzip object | Built in | Decompressed before text-format detection |
 | Parquet / OCSF Security Lake | Not implemented | Do not select the advertised `parquet` hint for production |
+| CSV logs | Not implemented | Convert CSV logs to NDJSON (one JSON object per line) before you ingest them |
 
 Every mapping should be evaluated for timestamp, native ID, rule, severity, user,
 host, source/destination address, and source provenance. The target versioned

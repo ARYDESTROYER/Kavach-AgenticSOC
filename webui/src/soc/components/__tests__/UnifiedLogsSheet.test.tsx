@@ -246,7 +246,7 @@ describe('UnifiedLogsView', () => {
     const h1 = screen.getByRole('heading', { level: 1, name: 'Logs' });
     const header = h1.closest('[data-page-header]') as HTMLElement;
     const controls = header.querySelector('[data-page-header-controls]') as HTMLElement;
-    expect(within(controls).getByRole('button', { name: 'Time range: Last 1 hour' })).toBeInTheDocument();
+    expect(within(controls).getByRole('button', { name: 'Last 1h, time range' })).toBeInTheDocument();
     expect(within(controls).getByRole('combobox', { name: 'Auto-refresh interval: Off' })).toBeInTheDocument();
     expect(within(controls).getByRole('button', { name: 'Refresh log events' })).toBeInTheDocument();
     expect(within(header).getByRole('button', { name: 'About Logs' })).toBeInTheDocument();
@@ -376,7 +376,7 @@ describe('UnifiedLogsBody — a starting query, window and source (the Logs deep
     });
     expect(screen.getByRole('textbox', { name: 'Search log events' })).toHaveValue('failed');
     // The one-off window reads as its label in the time-range control.
-    expect(screen.getByRole('button', { name: 'Time range: 2026-10-01 12:00:00 → 2026-10-08 12:00:00 UTC' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '2026-10-01 12:00:00 → 2026-10-08 12:00:00 UTC, time range' })).toBeInTheDocument();
     expect(screen.getByText('Linked summary')).toBeInTheDocument();
     expect(screen.getAllByRole('table')).toHaveLength(1);
   });
@@ -384,7 +384,7 @@ describe('UnifiedLogsBody — a starting query, window and source (the Logs deep
   it('selects the matching preset for an open-ended relative window', async () => {
     render(<UnifiedLogsBody initialFrom="now-24h" />);
     await waitFor(() => expect(fetchUnifiedLogsMock).toHaveBeenCalledWith(expect.objectContaining({ from: 'now-24h', to: 'now' })));
-    expect(screen.getByRole('button', { name: 'Time range: Last 24 hours' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Last 24h, time range' })).toBeInTheDocument();
     expect(fetchUnifiedLogsMock.mock.calls[0][0]).not.toHaveProperty('source_id');
   });
 });

@@ -84,6 +84,9 @@ async def purge_replay_fixtures(
             action_type=ActionType.JOB,
             surface="settings",
             actor=current_username(request) or "admin",
+            # Written after the purge: a person cleared the fixtures.
+            outcome="success",
+            actor_type="human",
             result_summary=f"cleared {removed} replay fixtures",
         )
     except Exception:  # noqa: BLE001 — mirrors the general settings audit path

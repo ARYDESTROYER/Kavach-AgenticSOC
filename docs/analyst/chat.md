@@ -583,10 +583,15 @@ title reads "Brief: {title}" (unless the title already says brief), its window i
 once, and it shows a **Contents** control from four sections. An infographic Brief leads
 with key figures and trend lines and lays its charts out in a grid.
 
-Charts over time read in calendar terms, such as "Mar 2026" or "W14 2026", name their
-time zone, and draw the current period lighter with "(in progress)". A time chart has one
-row of controls above it: **Group by** on the left, and the zoom hint ("Drag to zoom"),
-the zoomed range, and **Reset zoom** on the right. On a time chart you can:
+Charts over time read in calendar terms: months as "Mar 2026", and a weekly chart's
+ticks as the day each week starts ("Mar 30"), with the ISO week in the tooltip and the
+table ("Week of Mar 30 (W14 2026)"); a week the window cuts says so in the same day
+order ("Week of Mar 30 (W14 2026) (from Apr 1)"). On a chart finer than a day, the first
+tick and each tick that starts a new day carry the date ("Nov 2 12:00"), and later ticks
+on that day only the time. Charts name their time zone and draw the current period
+lighter with "(in progress)". A time chart has one row of controls above it:
+**Group by** on the left, and the zoom hint ("Drag to zoom"), the zoomed range, and
+**Reset zoom** on the right. On a time chart you can:
 
 - **Group by** a coarser unit, such as days into weeks or weeks into months, when the
   data allows it; the table, Copy data, and the downloads follow the grouping shown.

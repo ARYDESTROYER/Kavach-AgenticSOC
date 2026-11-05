@@ -688,7 +688,7 @@ async def _knowledge_catalog_groups(state: AppState) -> dict[str, list[Any]]:
     legacy = state.legacy_procedures
     operator_playbooks = [
         _legacy_catalog_record("playbooks", legacy_id, row)
-        for legacy_id, row in sorted((await legacy.list_playbooks_strict()).items())
+        for legacy_id, row in sorted((await legacy.list_procedures_strict()).items())
     ]
     operator_runbooks = [
         _legacy_catalog_record("runbooks", legacy_id, row)

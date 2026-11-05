@@ -261,7 +261,7 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
     const controls = within(hero).getByRole('group', { name: 'Dashboard controls' });
     expect(screen.queryByText('Operational window')).toBeNull();
     expect(screen.queryByText(/^Last polled /)).toBeNull();
-    const range = within(controls).getByRole('button', { name: /Time range: Last 24 hours/i });
+    const range = within(controls).getByRole('button', { name: 'Last 24h, time range' });
     expect(range).toHaveTextContent('Last 24h');
     // 8px like every other button and select (Round 12 concentric radii; was 3px).
     expect(range).toHaveClass('rounded-md', 'bg-transparent');
@@ -1113,7 +1113,7 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
     await waitFor(() => expect(requests).toHaveLength(2));
     expect(requests[1].hours).toBe(24);
 
-    await user.click(screen.getByRole('button', { name: /Time range: Last 24 hours/i }));
+    await user.click(screen.getByRole('button', { name: 'Last 24h, time range' }));
     await user.click(
       within(screen.getByRole('group', { name: /Relative time ranges/i })).getByRole(
         'button',
@@ -1140,7 +1140,7 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
      * is disabled, and one that disabled itself on every LIVE tick threw a keyboard user's
      * focus to the page body.
      */
-    expect(screen.getByRole('button', { name: /Time range: Last 7 days/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Last 7d, time range' })).toBeInTheDocument();
     expect(within(screen.getByTestId('kpi-false-positive-rate')).getByText('48%')).toBeInTheDocument();
     expect(within(screen.getByTestId('kpi-resolved-closed')).getByText('25')).toBeInTheDocument();
     expect(

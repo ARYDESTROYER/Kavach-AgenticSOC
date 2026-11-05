@@ -32,6 +32,7 @@ import {
   AlertTriangle,
   ArrowRight,
   Bell,
+  BellOff,
   BookOpen,
   Bot,
   Check,
@@ -81,6 +82,7 @@ import {
 } from '@/soc/components/badges';
 import { ProvenanceTag, severityProvenance, type Provenance } from '@/soc/components/ProvenanceTag';
 import { RuleLink, RuleSheetHost } from '@/soc/components/RuleLink';
+import { notifyDelivery } from '@/soc/components/caseActivityText';
 import { caseLabel } from '@/lib/format-values';
 import { AskAi } from './AskAi';
 import { DecisionCard } from './DecisionCard';
@@ -591,11 +593,22 @@ const AUTOMATION_META: Record<string, AutomationMeta> = {
 const ATTACH_RUNBOOK_DETAIL = /^attach_runbook=(.*) attached=(True|False)$/s;
 
 /**
- * The badge of a `run_playbook` record (the stored token, kept by the naming contract).
- * Since Round 14 the action is the rule editor's "Attach a runbook" and records whether it
- * attached one; a record from before Round 14 keeps its legacy name (SPEC §3.1).
+ * The badge of an automation record. A `notify` record says whether the notification went
+ * out: its detail notes "Not sent" or "Partly sent" with the reason when it did not all go
+ * (`notifyDelivery`, the reading the case activity uses), so the badge never claims a send
+ * that did not happen.
+ *
+ * A `run_playbook` record keeps its stored token (the naming contract). Since Round 14 the
+ * action is the rule editor's "Attach a runbook" and records whether it attached one; a
+ * record from before Round 14 keeps its legacy name (SPEC §3.1).
  */
 function automationMeta(action: string, detail: unknown): AutomationMeta | undefined {
+  if (action === 'notify') {
+    const { delivery } = notifyDelivery(detail);
+    if (delivery === 'not_sent') return { label: 'Not notified', icon: BellOff, tone: 'high' };
+    if (delivery === 'partly_sent') return { label: 'Partly notified', icon: Bell, tone: 'medium' };
+    return AUTOMATION_META.notify;
+  }
   if (action !== 'run_playbook') return AUTOMATION_META[action];
   const attach = typeof detail === 'string' ? ATTACH_RUNBOOK_DETAIL.exec(detail) : null;
   if (!attach) return AUTOMATION_META.run_playbook;

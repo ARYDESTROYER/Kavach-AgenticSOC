@@ -575,11 +575,18 @@ describe('series over time', () => {
 
   it('Human vs AI ticks use the one day label format, in UTC', () => {
     const ms = Date.parse('2026-10-28T06:00:00Z');
-    expect(humanVsAiTick(ms, 1440, 720)).toBe('Oct 28');
-    expect(humanVsAiTick(ms, 60, 168)).toBe('Oct 28 06:00');
-    expect(humanVsAiTick(ms, 360, 168)).toBe('Oct 28 06:00');
-    expect(humanVsAiTick(ms, 60, 24)).toBe('06:00');
-    expect(humanVsAiTick(Number.NaN, 60, 24)).toBe('');
+    const midnight = Date.parse('2026-10-29T00:00:00Z');
+    expect(humanVsAiTick(ms, 1440)).toBe('Oct 28');
+    expect(humanVsAiTick(midnight, 1440)).toBe('Oct 29');
+    // A sub-day bucket reads the text a tick reads when it names its day: the day and the
+    // hour, or the day alone at midnight, on a board of any length (FX6f: a 7-day board's
+    // midnight read "Oct 29 00:00", beside kit charts that read "Oct 29"). The chart shows
+    // a later tick on the same day as its hour alone.
+    expect(humanVsAiTick(ms, 60)).toBe('Oct 28 06:00');
+    expect(humanVsAiTick(ms, 360)).toBe('Oct 28 06:00');
+    expect(humanVsAiTick(midnight, 60)).toBe('Oct 29');
+    expect(humanVsAiTick(midnight, 360)).toBe('Oct 29');
+    expect(humanVsAiTick(Number.NaN, 60)).toBe('');
   });
 
   it('a window reads outcomes hourly in a day, daily in a week, weekly beyond', () => {

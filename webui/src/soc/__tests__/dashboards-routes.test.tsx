@@ -312,7 +312,7 @@ describe('Board page', () => {
     // The back link comes first, above the title.
     expect(back.compareDocumentPosition(title) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(within(header).getByText('Built-in')).toBeInTheDocument();
-    expect(within(header).getByRole('button', { name: 'Time range: Last 24 hours' })).toBeInTheDocument();
+    expect(within(header).getByRole('button', { name: 'Last 24h, time range' })).toBeInTheDocument();
     expect(within(header).getByRole('button', { name: 'Refresh dashboard' })).toBeInTheDocument();
     expect(within(header).getByRole('button', { name: 'Duplicate to customise' })).toBeInTheDocument();
     expect(within(header).getByRole('button', { name: 'More dashboard actions' })).toHaveAttribute('aria-haspopup', 'menu');
@@ -351,21 +351,21 @@ describe('Board page', () => {
   it('the detection board starts on 7 days, and a new window reaches every windowed read', async () => {
     renderAt('#/dashboards?board=builtin%3Adetection-data-health');
     await boardTitle('Detection and data health');
-    expect(screen.getByRole('button', { name: 'Time range: Last 7 days' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Last 7d, time range' })).toBeInTheDocument();
     await waitFor(() => expect(apiMocks.noiseReduction).toHaveBeenCalledWith(168));
     await waitFor(() =>
       expect(breakdownMock).toHaveBeenCalledWith(expect.objectContaining({ by: 'rule', window: 'now-168h' }), expect.anything()),
     );
 
-    fireEvent.click(screen.getByRole('button', { name: 'Time range: Last 7 days' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Last 7d, time range' }));
     fireEvent.click(await screen.findByRole('button', { name: /^Last 30 days/ }));
-    expect(screen.getByRole('button', { name: 'Time range: Last 30 days' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Last 30d, time range' })).toBeInTheDocument();
     await waitFor(() => expect(apiMocks.noiseReduction).toHaveBeenCalledWith(720));
     await waitFor(() =>
       expect(breakdownMock).toHaveBeenCalledWith(expect.objectContaining({ by: 'rule', window: 'now-720h' }), expect.anything()),
     );
     // Only the four whole windows are offered (no custom range).
-    fireEvent.click(screen.getByRole('button', { name: 'Time range: Last 30 days' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Last 30d, time range' }));
     const group = await screen.findByRole('group', { name: 'Relative time ranges' });
     expect(within(group).getAllByRole('button').map((b) => b.textContent)).toEqual([
       'Last 24 hoursnow-24h',

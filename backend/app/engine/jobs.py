@@ -726,6 +726,10 @@ class JobRunner:
                 surface=case.source_surface.value,
                 actor="reinvestigate",
                 case_id=case_id,
+                # As the direct reinvestigate route records it: the agent pipeline's
+                # own token, in Agent activity; the person is named in the summary.
+                actor_type="agent",
+                outcome="success",
                 result_summary=f"durable job {job.job_id} requested by {job.actor}",
             )
             # The canonical pipeline retains the single gateway, budget gate, usage

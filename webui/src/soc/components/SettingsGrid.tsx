@@ -7,6 +7,9 @@
  *                      by `SettingsSection` / `SettingsGroup` / `SettingRow`
  *                      (`pages/settings/primitives.tsx`, operator choice C9 option A);
  *                      kept only until every section has moved (WP-W9a).
+ * - `SETTINGS_FORM_MAX_WIDTH`, `SETTINGS_ROW_CONTENT_MAX_WIDTH`: the 44rem form section
+ *                      and the content width of a row inside one (a full-width section
+ *                      caps its labelled control rows' content at the same width).
  * - `StickySaveBar`:  a bottom sticky bar with Save / Discard, shown only when a
  *                      page is dirty; respects busy + disabled states. `width="form"`
  *                      caps it to a form section (44rem), so it sits under the settings it
@@ -33,6 +36,19 @@ import { Check, RotateCcw } from 'lucide-react';
  * full content width.
  */
 export const SETTINGS_FORM_MAX_WIDTH = 'max-w-[44rem]';
+
+/**
+ * The content width of a Settings row inside a 44rem form section: `SETTINGS_FORM_MAX_WIDTH`
+ * less the row's inset on each side (`SettingRow` pads `px-4 xl:px-5`: 16px, 20px from
+ * 1280px), so 42rem, then 41.5rem from 1280px. A labelled control row in a full-width
+ * section (Enrichment, Roles) caps its content box at this width while the row itself, its
+ * hairline and hover, still spans the panel: the control sits as near its label as in a
+ * form section. A block row of form-like content (`SettingRow variant="block"
+ * width="form"`) takes the same cap, so its edge meets theirs. Inside a form section the
+ * cap equals the content width and changes nothing. Keep it in step with the form width
+ * and the row inset.
+ */
+export const SETTINGS_ROW_CONTENT_MAX_WIDTH = 'max-w-[42rem] xl:max-w-[41.5rem]';
 
 /* ------------------------------------------------------------------------- */
 /* SettingsGrid                                                               */

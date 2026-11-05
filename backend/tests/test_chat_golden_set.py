@@ -554,13 +554,19 @@ APP_HELP = [
       for q in ("How do I duplicate a dashboard?", "How do I find a built-in dashboard?")),
     # The plainest wording of the audit export task also leads with the Audit log.
     G("How do I export the audit log?", kind="product_help", tools=("app_help",), max_lookups=1,
-      contains=("Start in **Platform › Audit log**",)),
+      contains=("Start in **Platform › Audit log**;",), absent=("Data export",)),
     # The audit record's list and the export rules share words with other tasks ("host",
     # "logs", "CSV", "JSON Lines"); they name no destination, so these never borrow the
     # audit log's page (re-review finding).
     *(G(q, kind="product_help", tools=("app_help",), max_lookups=1, absent=("Platform › Audit log",))
       for q in ("How do I filter logs by host?", "How do I ingest JSON Lines files from S3?",
                 "How do I download logs as CSV?")),
+    # Other pages' CSV tasks never borrow the audit log's Exporting section's page.
+    *(G(q, kind="product_help", tools=("app_help",), max_lookups=1, absent=("Platform › Audit log",))
+      for q in ("How do I export a chart as CSV?", "How do I export cases to CSV?",
+                "How do I export chat answers to CSV?", "How do I export a severity breakdown to CSV?")),
+    G("How do I search logs?", kind="product_help", tools=("app_help",), max_lookups=1,
+      contains=("Start in **Triage › Logs**;",), absent=("Platform › Audit log",)),
     # Publishing happens in the Runbooks library, not in the Runbooks settings (the
     # Case Manager keywords once lowered 'runbook' so far that a link was lost).
     G("How do I publish a runbook?", kind="product_help", tools=("app_help",), max_lookups=1,

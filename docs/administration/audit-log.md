@@ -96,7 +96,7 @@ least 10,000".
 | Column | Holds |
 |---|---|
 | Time | When the event was recorded. The column header menu switches between UTC and your local time (remembered in this browser) and between newest and oldest first. |
-| Outcome | Success, Failed, Denied, Partial or Not recorded, always as a word with a glyph. |
+| Outcome | Success, Failed, Denied, Partial or Not recorded, always as a word with a glyph. An investigation shown in part reads Not known (see below). |
 | Event | The event's friendly name. |
 | Actor | The person, AI agent or system, with a glyph for its kind. |
 | Target | What the event acted on: a case, a user, a source, a setting area, a job or a rule. |
@@ -112,14 +112,44 @@ column folds away; every value is still in the record.
 
 In **Agent activity**, the steps of one investigation fold into one row that names the
 case it worked on, how many steps it took and how it ended (for example "10 steps · closed
-as false positive"), with **Open case trace**. Open the row to list its steps. When only
-part of an investigation is loaded the row says so ("6 of 10 steps shown") and offers
-**Load more**. Rows without an investigation run (older rows and work outside the
-pipeline) are never grouped.
+as false positive"), with **Open case trace**, which opens the case on its Investigation
+tab with the trace open (for people who can read cases). Open the row to list its steps.
+The group's outcome follows how the investigation ended: Failed when it ended in an error
+(Denied when that error was a refusal and no decision followed it), Success when it
+reached its verdict or decision and every step succeeded, and Partial when it reached its
+verdict or decision after a step failed, was refused or only partly happened (for example
+when the AI budget refused the model call and the case went to a person). When only part
+of an investigation is loaded the row says so ("6 of 10 steps shown") and offers
+**Load more**; until the steps shown prove an outcome, the group reads Not known, never
+Success. Rows without an investigation run (older rows and work outside the pipeline)
+are never grouped.
+
+Every row recorded since Round 14 records its outcome, apart from the few listed at the
+end of this section. Among agent and system rows, a tool call that returned an error, a
+router, investigator, formatter or poll failure, and a failed automation action read
+Failed; a step the AI budget refused or a tool the agent may not call reads Denied; a run
+that stopped at a cap before the model gave a verdict, a poll where some feeds failed, and
+a partly applied automation action read Partial. The error text of a model, pipeline,
+poll or automation failure is stored with credentials removed (user names and passwords
+in addresses, Basic and Digest credentials, and the export's secret patterns).
+
+An automation's notify action reads Success when every channel took the notification or
+none was due, Partial when some channels sent it and others did not, Denied when only the
+notification rate limit held every channel back, Failed when nothing went out because a
+channel or the notification service itself failed, and Not recorded when the
+notification service reported nothing per channel. When not everything went out, its
+summary says why, for example "Not sent: 1 of 1 channel failed." or "Partly sent: 1 of 2
+channels failed.", and a notify no channel was due for says "Not sent: no channel was
+due (notifications are off, no channel takes this trigger, no one is addressed, or it
+repeated inside the dedup window)." Demo Mode sends nothing: its notify rows read Success
+with "Not sent: no notification service is connected."
 
 A row recorded before Round 14 carries fewer fields. Its outcome reads Not recorded,
 except that an access-denied row reads Denied and an error row reads Failed; the record
-marks those values as derived.
+marks those values as derived. A few newer rows also read Not recorded on purpose,
+because a retry of them must match the first write exactly: proposal decisions,
+background job transitions (including the storage and replay job rows), update
+supervisor results, and the first-seen session row.
 
 ## The record
 
@@ -158,8 +188,9 @@ The record has six sections:
    the record id (with Copy), the event, request and investigation run ids, and the
    application version and build.
 6. **Related.** Links that apply a filter: the same actor within 15 minutes, all events
-   for this target, all events for this case and its case trace, and the actor's sign-ins
-   in the 30 days before this event.
+   for this target, all events for this case, and the actor's sign-ins in the 30 days
+   before this event. For people who can read cases, **Open case trace** opens the case
+   on its Investigation tab with the trace open.
 
 **Copy link** copies the address of this record with the page's filters. When a change was
 recorded but its save then failed, the record says "Not applied (see the next record)":

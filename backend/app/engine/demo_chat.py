@@ -1162,7 +1162,7 @@ _DEFINITION_RE = re.compile(
     r"how do (?:you|we) (?:calculate|compute|measure))")
 _HELP_RE = re.compile(
     r"^\s*(?:/help\b|how (?:do|can|should) (?:i|we)\b|how to\b|where (?:do|can|should) (?:i|we)\b|"
-    r"where (?:is|are) (?:the )?[a-z &-]{0,40}(?:setting|settings|page|option|button|menu|tab)s?\b|"
+    r"where(?:'s|\u2019s| is| are) (?:the )?[a-z &-]{0,40}(?:setting|settings|page|option|button|menu|tab)s?\b|"
     r"can (?:i|we)\b|is it possible\b|help me\b|what can (?:i|you|chat)\b)")
 # Definitional forms ("Ask about this" topic questions, SPEC A7, and their like): what
 # a KPI counts, what a setting controls, how a figure is calculated. They are answered
@@ -2804,11 +2804,14 @@ def _requested_view(lowered: str) -> str | None:
 
 
 def _help_topic(question: str) -> str:
-    """The Help Center query: the first clause, without question scaffolding."""
+    """The Help Center query: the first clause, without question scaffolding. A
+    contraction reads as its spelled-out form ("Where's the runbook tab?" asks for "the
+    runbook tab", as "Where is the runbook tab?" does), with either apostrophe."""
     text = re.split(r",?\s+and\s+(?=what|how|where|which|who|can|is|are)", question.strip(), maxsplit=1)[0]
     text = re.sub(r"^\s*(?:/help\s+|how (?:do|can|should) (?:i|we)\s+|how to\s+|where (?:do|can|should) "
-                  r"(?:i|we)\s+|where (?:is|are)\s+|what (?:is|are|does|do)\s+|can (?:i|we)\s+|"
-                  r"is it possible to\s+|help me\s+(?:with\s+)?|please\s+)", "", text, flags=re.IGNORECASE)
+                  r"(?:i|we)\s+|where(?:['’]s|\s+(?:is|are))\s+|what(?:['’]s|\s+(?:is|are|does|do))\s+|"
+                  r"can (?:i|we)\s+|is it possible to\s+|help me\s+(?:with\s+)?|please\s+)", "", text,
+                  flags=re.IGNORECASE)
     text = re.sub(r"\s+in this console\b", "", text, flags=re.IGNORECASE)
     text = text.strip(" ?.!")
     return display_text(text or question, 200)
@@ -8301,9 +8304,24 @@ def _help_paragraphs(ref: Reference, limit: int = 2, *, topic: str = "",
 
 
 def _console_ids(ref: Reference, limit: int = 3) -> list[str]:
+    """The answer's console links: the destinations the lookup offered (the ones the
+    caller can open first), then the breadcrumbs of the sections on the BEST section's
+    page, the ``app_help`` rule (``chat_tools.app_help._destinations``). A lower-ranked
+    section of another page that merely shares a word with the question never lends its
+    page ("How do I export a chart as CSV?" never links the locked audit log); the other
+    sections' breadcrumbs answer only when nothing else names a destination."""
+    def page_of(section: HelpSection) -> str | None:
+        # The Help Center page a section is on: its link without the ``#anchor``.
+        return section.href.split("#", 1)[0] if section.href else None
+
     ids = [t.id for t in ref.targets if t.allowed] + [t.id for t in ref.targets if not t.allowed]
-    for section in ref.sections:
-        ids.extend(section.console)
+    if ref.sections:
+        best = ref.sections[0]
+        page = page_of(best)
+        on_page = [section is best or (page is not None and page_of(section) == page) for section in ref.sections]
+        ids.extend(i for section, same in zip(ref.sections, on_page) if same for i in section.console)
+        if not ids:
+            ids.extend(i for section, same in zip(ref.sections, on_page) if not same for i in section.console)
     return list(dict.fromkeys(ids))[:limit]
 
 

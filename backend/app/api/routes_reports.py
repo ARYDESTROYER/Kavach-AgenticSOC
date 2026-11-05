@@ -70,7 +70,7 @@ from ..agents.chat_tools.common import operator_tz
 from ..config import ChatAgentConfig
 from ..constants import MAX_REPORT_ITEMS, MAX_REPORTS_PER_USER, ActionType, Role
 from ..engine.report_digest import bounded_digest, report_summary_messages
-from ..llm.gateway import GatewayError, UsageReceipt, estimate_message_tokens
+from ..llm.gateway import BudgetBlocked, GatewayError, UsageReceipt, estimate_message_tokens
 from ..models import (
     CHAT_COMMANDS,
     REPORT_SCOPE_WINDOW_CHARS,
@@ -256,15 +256,18 @@ _STORE_ERRORS = (
 )
 
 
-async def _audit(state: AppState, owner: str, summary: str, *, action: ActionType = ActionType.REPORT,
-                 model: str | None = None) -> None:
+async def _audit(state: AppState, owner: str, summary: str, *, outcome: str,
+                 action: ActionType = ActionType.REPORT, model: str | None = None,
+                 actor_type: str = "human") -> None:
     """One append-only row per mutation (#2). Ids and counts only: titles and notes
     are user text and stay in the report itself. An audit glitch never fails the
-    mutation that already happened (the platform-wide convention)."""
+    mutation that already happened (the platform-wide convention). Every caller names
+    how its step ended (Round 14 SPEC §4.5.3); ``actor_type`` is the owner's
+    (``human``) except for the summary's model call, which the agent made."""
     try:
         await state.audit.record(
             action_type=action, surface="report", actor=_actor(owner), model=model,
-            result_summary=summary[:500],
+            result_summary=summary[:500], outcome=outcome, actor_type=actor_type,
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("report audit write failed (%s)", exc)
@@ -1094,6 +1097,7 @@ async def save_answer_as_report(
             f"report created from chat: {report.id} items={len(report.items)} "
             f"skipped={max(0, len(items) - len(report.items))} "
             f"message={message_id} template={report.template}",
+            outcome="success",
         )
     return ChatSavedReport(
         id=report.id, title=report.title, items=len(report.items),
@@ -1226,6 +1230,7 @@ async def report_from_conversation(
             state, owner,
             f"report created from conversation: {report.id} items={len(report.items)} "
             f"answers={answers}",
+            outcome="success",
         )
     return ReportFromConversationResponse(
         report=report, items=len(report.items),
@@ -1471,7 +1476,7 @@ async def create_report(
     except _STORE_ERRORS as exc:
         raise _map_store_error(exc) from exc
     await _link_conversation(state, owner, report.conversation_id, report.id)
-    await _audit(state, owner, f"report created: {report.id} (template={report.template})")
+    await _audit(state, owner, f"report created: {report.id} (template={report.template})", outcome="success")
     return report
 
 
@@ -1513,13 +1518,15 @@ async def add_to_report(
         raise _map_store_error(exc) from exc
     if outcome.created_report:
         await _link_conversation(state, owner, body.conversation_id, outcome.report.id)
-        await _audit(state, owner, f"report created: {outcome.report.id} (draft of {body.conversation_id})")
+        await _audit(state, owner, f"report created: {outcome.report.id} (draft of {body.conversation_id})",
+                     outcome="success")
     if outcome.added:
         await _audit(
             state, owner,
             f"report item added: {outcome.report.id} item={outcome.item_id} kind={item.kind} "
             f"parts={1 + len(continuations)} "
             f"message={body.message_id} block={body.block_id or '-'} version={outcome.report.version}",
+            outcome="success",
         )
     return ReportAddResponse(
         report=outcome.report, item_id=outcome.item_id, added=outcome.added,
@@ -1575,6 +1582,7 @@ async def patch_report(
             state, owner,
             f"report updated: {report.id} fields={','.join(changed)} items={len(report.items)} "
             f"version={report.version}",
+            outcome="success",
         )
     return report
 
@@ -1603,7 +1611,7 @@ async def delete_report(
         # It was that conversation's draft (also when this call only completed an
         # interrupted delete): the next "Add to report" starts a new one.
         await _link_conversation(state, owner, deleted.conversation_id, None)
-    await _audit(state, owner, f"report deleted: {report_id}")
+    await _audit(state, owner, f"report deleted: {report_id}", outcome="success")
     return ReportDeleteResponse(ok=True, id=report_id)
 
 
@@ -1739,7 +1747,9 @@ async def _generate_summary(
             guard.bucket.refund(bucket_key)  # refused before any spend: no charge to the bucket
         notice = notice_for_failure(exc)
         code = "report_summary_timeout" if isinstance(exc, asyncio.TimeoutError) else turn_error_code(notice)
-        await _audit(state, owner, f"report summary failed: {report_id} ({code})", model=model_cfg.model)
+        # The AI budget refusing the call is a policy refusal, not a fault.
+        await _audit(state, owner, f"report summary failed: {report_id} ({code})", model=model_cfg.model,
+                     outcome="denied" if isinstance(exc, BudgetBlocked) else "failure")
         message = SUMMARY_FAILURE_MESSAGES.get(code, SUMMARY_FAILURE_MESSAGES["internal"])
         raise _http(504 if code == "report_summary_timeout" else 503, code, message,
                     retryable=notice.retryable) from exc
@@ -1752,7 +1762,7 @@ async def _generate_summary(
     await _audit(
         state, owner,
         f"report summary model call: {report_id} tokens={usage.total_tokens} cost={usage.cost:.6f}",
-        action=ActionType.PROMPT, model=model_name,
+        action=ActionType.PROMPT, model=model_name, outcome="success", actor_type="agent",
     )
     text, steps = parse_report_summary(getattr(result, "text", "") or "")
     if not text:
@@ -1769,7 +1779,7 @@ async def _generate_summary(
         state, owner,
         f"report summary generated: {report_id} based_on_version={report.version} "
         f"tokens={usage.total_tokens}",
-        model=model_name,
+        model=model_name, outcome="success",
     )
     return updated
 

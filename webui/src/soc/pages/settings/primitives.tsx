@@ -13,7 +13,11 @@
  * (`StatusDot`) or an action; wide fields sit under their label; a link row opens
  * another page; a block row holds free content (a table, a preview) on the row inset.
  * Below 640px every field stacks under its label, so a field never draws over its
- * label on a phone.
+ * label on a phone. In a full-width section (Enrichment, Roles) a labelled control row
+ * still spans the panel, but its content is capped at a form row's content width, so the
+ * control sits as near its label as in a 44rem form section; a block row of form-like
+ * content (`width="form"`: fields and a button, a callout between switches) takes the
+ * same cap, so a group keeps one right edge.
  *
  * `SectionTitle` stays as the compatibility title row for section bodies that live
  * outside this folder (branding, appearance, notifications, Demo, danger zone): inside
@@ -42,9 +46,9 @@ import {
   SelectValue,
 } from '@/ui/select';
 
-import { SETTINGS_FORM_MAX_WIDTH } from '@/soc/components/SettingsGrid';
+import { SETTINGS_FORM_MAX_WIDTH, SETTINGS_ROW_CONTENT_MAX_WIDTH } from '@/soc/components/SettingsGrid';
 import { Field, FieldLayoutContext } from '@/soc/components/Field';
-import { inlineFieldLayout, wideFieldLayout } from './field-layouts';
+import { cappedInlineFieldLayout, inlineFieldLayout, wideFieldLayout } from './field-layouts';
 import {
   NumberField,
   defaultNumberFieldSize,
@@ -100,6 +104,20 @@ export interface SettingsSectionContextValue {
 
 export const SettingsSectionContext = React.createContext<SettingsSectionContextValue>({});
 
+/**
+ * The measure of the section a `SettingRow` sits in, provided by `SettingsSection` (and a
+ * standalone `SettingsPageSection`). A row outside one (a section body that lays out its
+ * own content) takes the shell's `SettingsSectionContext.width`; with neither, `form`.
+ */
+const SettingRowMeasureContext = React.createContext<'form' | 'full' | undefined>(undefined);
+
+/** Whether a row sits in a full-width section, so its content box takes the form row's width. */
+function useRowContentCapped(): boolean {
+  const section = React.useContext(SettingRowMeasureContext);
+  const shell = React.useContext(SettingsSectionContext).width;
+  return (section ?? shell ?? 'form') === 'full';
+}
+
 export interface SettingsSectionProps {
   /**
    * The section title, the same words as its entry in `settings-sections-meta.ts`; the
@@ -121,7 +139,8 @@ export interface SettingsSectionProps {
   modified?: boolean;
   /**
    * `form` (the default): capped at 44rem so a control sits within reach of its label.
-   * `full`: a table section. Defaults to the shell's context, then `form`.
+   * `full`: a table section; its labelled control rows still span the panel but cap their
+   * content at a form row's width. Defaults to the shell's context, then `form`.
    */
   width?: 'form' | 'full';
   className?: string;
@@ -204,7 +223,9 @@ export function SettingsSection({
       )}
     >
       <SectionTitleRow id={titleId} title={name} help={helpText} askTopic={topic} actions={actions} />
-      <div className="mt-6 space-y-10 xl:mt-8">{children}</div>
+      <SettingRowMeasureContext.Provider value={measure}>
+        <div className="mt-6 space-y-10 xl:mt-8">{children}</div>
+      </SettingRowMeasureContext.Provider>
     </section>
   );
 }
@@ -268,7 +289,9 @@ export function SettingsPageSection({
   return (
     <div className="space-y-8">
       <PageHeader title={title} help={help} actions={actions} />
-      <div className={cn('space-y-10', width !== 'full' && SETTINGS_FORM_MAX_WIDTH)}>{children}</div>
+      <SettingRowMeasureContext.Provider value={width === 'full' ? 'full' : 'form'}>
+        <div className={cn('space-y-10', width !== 'full' && SETTINGS_FORM_MAX_WIDTH)}>{children}</div>
+      </SettingRowMeasureContext.Provider>
     </div>
   );
 }
@@ -326,10 +349,55 @@ export function SettingsGroup({ title, caption, action, id, className, children,
   );
 }
 
-/** The row inset inside a group panel: 16px, 20px from 1280px. */
+/**
+ * The row inset inside a group panel: 16px, 20px from 1280px. `SETTINGS_ROW_CONTENT_MAX_WIDTH`
+ * is a 44rem form section less this inset on each side; change them together.
+ */
 const ROW_PAD = 'px-4 py-3.5 xl:px-5';
 const ROW_LABEL = 'text-base font-medium leading-5 text-foreground';
 const ROW_HELP = 'mt-0.5 max-w-[42rem] text-sm text-muted-foreground';
+/** A switch row: the label and help, the switch on the row's end. */
+const SWITCH_ROW_LAYOUT = 'flex items-start justify-between gap-6';
+/** A control, status or action row: the text, then the control on the row's end (under the text below 640px). */
+const END_ROW_LAYOUT = 'flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-6';
+
+/**
+ * The element of a labelled control row (`switch`, an inline `control`, `status`,
+ * `action`); `layout` places the text and the control. In a full-width section the row
+ * keeps its inset across the whole panel (the hairline and any hover still span it) and
+ * one content box inside carries the layout, capped at a form row's content width, so the
+ * control sits as near its label as in a 44rem form section. In a form section the cap
+ * would change nothing, so the row stays one element.
+ */
+function ControlRowFrame({
+  variant,
+  layout,
+  capped,
+  className,
+  children,
+}: {
+  variant: 'switch' | 'control' | 'status' | 'action';
+  layout: string;
+  /** The row sits in a full-width section (`useRowContentCapped`). */
+  capped: boolean;
+  className?: string;
+  children: React.ReactNode;
+}) {
+  if (!capped) {
+    return (
+      <div data-setting-row={variant} className={cn(layout, ROW_PAD, className)}>
+        {children}
+      </div>
+    );
+  }
+  return (
+    <div data-setting-row={variant} className={cn(ROW_PAD, className)}>
+      <div data-setting-row-content="" className={cn(layout, SETTINGS_ROW_CONTENT_MAX_WIDTH)}>
+        {children}
+      </div>
+    </div>
+  );
+}
 
 interface SettingRowText {
   /** The setting's name (14px medium). Plain text. */
@@ -410,13 +478,28 @@ export interface SettingControlRowProps extends SettingRowText {
  * Free content on the row inset (a table, a preview, a list that is not a setting): the
  * group panel's padding and hairline, nothing else.
  */
-export interface SettingBlockRowProps {
+export type SettingBlockRowProps = {
   variant: 'block';
   children: React.ReactNode;
   className?: string;
-  /** Let a table bleed to the panel's edges (no inset). */
-  bleed?: boolean;
-}
+} & (
+  | {
+      /** Let a table bleed to the panel's edges (no inset). */
+      bleed: true;
+      width?: 'full';
+    }
+  | {
+      bleed?: false;
+      /**
+       * `full` (the default): the content takes the panel's width (a table, a preview).
+       * `form`: form-like content (a row of fields and a button, a callout between two
+       * switches). In a full-width section it is capped at a form row's content width,
+       * like a labelled control row, so a group that holds both keeps one right edge; in
+       * a form section it is already that width and renders as a plain block.
+       */
+      width?: 'full' | 'form';
+    }
+);
 
 /** One action on the row's end (a button that does something here). */
 export interface SettingActionRowProps extends SettingRowText {
@@ -506,6 +589,10 @@ function SettingLinkRow({ label, help, href, value, className }: SettingLinkRowP
 export function SettingRow(props: SettingRowProps) {
   const id = React.useId();
   const helpId = `${id}-help`;
+  // In a full-width section the Field-based rows lay out on the capped inline layout (its
+  // root is the row's content box); the other labelled rows cap theirs in ControlRowFrame.
+  const capped = useRowContentCapped();
+  const inlineLayout = capped ? cappedInlineFieldLayout : inlineFieldLayout;
 
   if (props.variant === 'field') {
     const { children, wide, mono, controlWidth, className } = props;
@@ -520,7 +607,7 @@ export function SettingRow(props: SettingRowProps) {
         )}
         style={controlWidth ? ({ '--setting-control-w': controlWidth } as React.CSSProperties) : undefined}
       >
-        <FieldLayoutContext.Provider value={wide ? wideFieldLayout : inlineFieldLayout}>{children}</FieldLayoutContext.Provider>
+        <FieldLayoutContext.Provider value={wide ? wideFieldLayout : inlineLayout}>{children}</FieldLayoutContext.Provider>
       </div>
     );
   }
@@ -528,10 +615,7 @@ export function SettingRow(props: SettingRowProps) {
   if (props.variant === 'switch') {
     const { label, help, checked, onCheckedChange, disabled, className } = props;
     return (
-      <div
-        data-setting-row="switch"
-        className={cn('flex items-start justify-between gap-6', ROW_PAD, className)}
-      >
+      <ControlRowFrame variant="switch" layout={SWITCH_ROW_LAYOUT} capped={capped} className={className}>
         <RowText label={label} help={help} htmlFor={id} helpId={help ? helpId : undefined} />
         <Switch
           id={id}
@@ -541,7 +625,7 @@ export function SettingRow(props: SettingRowProps) {
           aria-describedby={help ? helpId : undefined}
           className="mt-0.5"
         />
-      </div>
+      </ControlRowFrame>
     );
   }
 
@@ -553,7 +637,7 @@ export function SettingRow(props: SettingRowProps) {
         className={cn(ROW_PAD, className)}
         style={controlWidth ? ({ '--setting-control-w': controlWidth } as React.CSSProperties) : undefined}
       >
-        <Field label={label} description={help} layout={inlineFieldLayout}>
+        <Field label={label} description={help} layout={inlineLayout}>
           {({ id: controlId, labelledBy, describedBy }) => (
             <Select value={value} onValueChange={onValueChange} disabled={disabled}>
               <SelectTrigger id={controlId} aria-labelledby={labelledBy} aria-describedby={describedBy} className="w-full">
@@ -599,23 +683,29 @@ export function SettingRow(props: SettingRowProps) {
       );
     }
     return (
-      <div
-        data-setting-row="control"
-        className={cn('flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-6', ROW_PAD, className)}
-      >
+      <ControlRowFrame variant="control" layout={END_ROW_LAYOUT} capped={capped} className={className}>
         <div className="min-w-0 flex-1">
           <p className={ROW_LABEL}>{label}</p>
           {helpLine}
         </div>
         <div className="flex shrink-0 items-center">{control}</div>
-      </div>
+      </ControlRowFrame>
     );
   }
 
   if (props.variant === 'block') {
+    // Form-like content in a full-width section takes the same capped content box as a
+    // labelled control row (ControlRowFrame), so it ends where their controls end.
+    const formContent = !props.bleed && props.width === 'form' && capped;
     return (
       <div data-setting-row="block" className={cn(props.bleed ? 'min-w-0' : cn('min-w-0', ROW_PAD), props.className)}>
-        {props.children}
+        {formContent ? (
+          <div data-setting-row-content="" className={SETTINGS_ROW_CONTENT_MAX_WIDTH}>
+            {props.children}
+          </div>
+        ) : (
+          props.children
+        )}
       </div>
     );
   }
@@ -633,13 +723,10 @@ export function SettingRow(props: SettingRowProps) {
       props.action
     );
   return (
-    <div
-      data-setting-row={props.variant}
-      className={cn('flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-6', ROW_PAD, className)}
-    >
+    <ControlRowFrame variant={props.variant} layout={END_ROW_LAYOUT} capped={capped} className={className}>
       <RowText label={label} help={help} />
       <div className="flex shrink-0 flex-wrap items-center gap-3">{end}</div>
-    </div>
+    </ControlRowFrame>
   );
 }
 

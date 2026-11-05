@@ -159,6 +159,8 @@ async def chat_feedback(
     try:
         await state.audit.record(
             action_type=ActionType.FEEDBACK, surface="chat", actor=user or "default",
+            # Written after the rating was saved.
+            outcome="success", actor_type="human",
             result_summary=(
                 f"chat answer rated {body.rating}{' (changed)' if replaced else ''}: "
                 f"conversation={body.conversation_id[:100]} message={body.message_id[:100]} "

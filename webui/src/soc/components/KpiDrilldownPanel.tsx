@@ -372,7 +372,6 @@ export interface KpiDrilldownMetric {
   value: React.ReactNode;
 }
 
-/** The one place a case's display id is resolved (number first, then id). */
 /**
  * First NON-BLANK candidate, trimmed. Trimming after a `||` chain is the wrong order:
  * a whitespace-only earlier field is truthy, so it wins the chain and then trims away to
@@ -433,6 +432,18 @@ export function mergeTokens(
   return added ? Array.from(seen) : previous;
 }
 
+/**
+ * The panel's population named as cases, for the accessible names and the loading label
+ * ("Filter Total cases", "Filter Awaiting a decision cases"). The heading is the tile's
+ * own label, verbatim, and a label that already ends in the word "cases" ("Total cases",
+ * "Open cases") is used as it is, so a name never reads "Total cases cases".
+ */
+export function casesNoun(title: string): string {
+  const name = title.trim();
+  return /(?:^|\s)cases$/i.test(name) ? name : `${name} cases`;
+}
+
+/** The one place a case's display id is resolved (number first, then id). */
 function displayId(c: Case): string {
   return firstNonBlank(c.case_number, c.case_id) || DASH;
 }
@@ -1393,7 +1404,7 @@ export function KpiDrilldownPanel({
               size="sm"
               onClick={exportCsv}
               data-testid="kpi-drilldown-export"
-              aria-label={`Download the ${fmtNumber(visible.length)} listed ${spec.title} cases as CSV`}
+              aria-label={`Download the ${fmtNumber(visible.length)} listed ${casesNoun(spec.title)} as CSV`}
               className="h-8 px-2.5 text-sm"
             >
               <Download className="h-3.5 w-3.5" aria-hidden />
@@ -1512,7 +1523,7 @@ export function KpiDrilldownPanel({
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder="Filter these cases…"
-              aria-label={`Filter ${spec.title} cases`}
+              aria-label={`Filter ${casesNoun(spec.title)}`}
               data-testid="kpi-drilldown-search"
               className="h-8 rounded-md pl-8 text-sm"
             />
@@ -1521,7 +1532,7 @@ export function KpiDrilldownPanel({
           <Select value={band} onValueChange={setBand}>
             <SelectTrigger
               className="h-8 w-auto min-w-36 rounded-md text-sm"
-              aria-label={`Filter ${spec.title} cases by severity`}
+              aria-label={`Filter ${casesNoun(spec.title)} by severity`}
               data-testid="kpi-drilldown-severity"
             >
               <SelectValue placeholder="Severity" />
@@ -1539,7 +1550,7 @@ export function KpiDrilldownPanel({
           <Select value={status} onValueChange={setStatus}>
             <SelectTrigger
               className="h-8 w-auto min-w-36 rounded-md text-sm"
-              aria-label={`Filter ${spec.title} cases by status`}
+              aria-label={`Filter ${casesNoun(spec.title)} by status`}
               data-testid="kpi-drilldown-status"
             >
               <SelectValue placeholder="Status" />
@@ -1562,7 +1573,7 @@ export function KpiDrilldownPanel({
             <Select value={source} onValueChange={setSource}>
               <SelectTrigger
                 className="h-8 w-auto min-w-36 rounded-md text-sm"
-                aria-label={`Filter ${spec.title} cases by detection source`}
+                aria-label={`Filter ${casesNoun(spec.title)} by detection source`}
                 data-testid="kpi-drilldown-source"
               >
                 <SelectValue placeholder="Source" />
@@ -1582,7 +1593,7 @@ export function KpiDrilldownPanel({
             <Select value={sort} onValueChange={(v) => setSort(v as DrilldownSort)}>
               <SelectTrigger
                 className="h-8 w-auto min-w-36 rounded-md text-sm"
-                aria-label={`Sort ${spec.title} cases`}
+                aria-label={`Sort ${casesNoun(spec.title)}`}
                 data-testid="kpi-drilldown-sort"
               >
                 <SelectValue placeholder="Sort" />
@@ -1607,7 +1618,7 @@ export function KpiDrilldownPanel({
             >
               <SelectTrigger
                 className="h-8 w-auto min-w-36 rounded-md text-sm"
-                aria-label={`Time range for ${spec.title} cases`}
+                aria-label={`Time range for ${casesNoun(spec.title)}`}
                 data-testid="kpi-drilldown-range"
               >
                 <SelectValue placeholder="Time range" />
@@ -1645,7 +1656,7 @@ export function KpiDrilldownPanel({
         data-testid="kpi-drilldown-scroll"
         tabIndex={0}
         role="group"
-        aria-label={`${spec.title} cases, scrollable evidence`}
+        aria-label={`${casesNoun(spec.title)}, scrollable evidence`}
         className="min-h-0 min-w-0 flex-1 overflow-auto px-5 pb-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring max-md:flex-none"
       >
       {/* ONE row above the table (Round 12): the trend (60%) beside a column (40%) that
@@ -1755,7 +1766,7 @@ export function KpiDrilldownPanel({
             onRetry={() => void load()}
           />
         ) : loading && rows === null ? (
-          <LoadingState label={`Loading ${spec.title} cases`} layout="inline" />
+          <LoadingState label={`Loading ${casesNoun(spec.title)}`} layout="inline" />
         ) : visible.length === 0 ? (
           <EmptyState
             compact
@@ -1971,7 +1982,7 @@ export function KpiDrilldownPanel({
                   size="sm"
                   onClick={() => setPage((p) => p + 1)}
                   data-testid="kpi-drilldown-more"
-                  aria-label={`Read the next ${fmtNumber(pageSize)} ${spec.title} cases`}
+                  aria-label={`Read the next ${fmtNumber(pageSize)} ${casesNoun(spec.title)}`}
                   className="h-8 px-2.5 text-sm"
                 >
                   <ChevronDown className="h-3.5 w-3.5" aria-hidden />

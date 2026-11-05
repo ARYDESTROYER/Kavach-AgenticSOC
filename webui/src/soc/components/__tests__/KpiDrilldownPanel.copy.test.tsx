@@ -9,6 +9,10 @@
  * a string these four do not cover. The one exception is the design system's own
  * missing-value glyph (`DASH` from `lib/format`), which a cell with no value shows on
  * its own and which is a placeholder, not a sentence.
+ *
+ * The accessible names and the loading label name the panel's population as cases
+ * (`casesNoun`): a tile label that already ends in "cases" ("Total cases", "Open cases")
+ * is used as it is, so no name reads "Total cases cases"; any other label gets the noun.
  */
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, within } from '@testing-library/react';
@@ -20,7 +24,7 @@ import type { Case } from '@/lib/types';
 const { listCasesMock } = vi.hoisted(() => ({ listCasesMock: vi.fn() }));
 vi.mock('@/lib/api', () => ({ api: { listCases: listCasesMock } }));
 
-import { KpiDrilldownPanel, type KpiDrilldownSpec } from '../KpiDrilldownPanel';
+import { casesNoun, KpiDrilldownPanel, type KpiDrilldownSpec } from '../KpiDrilldownPanel';
 
 const CASES = [
   {
@@ -34,6 +38,34 @@ const CASES = [
   },
 ] as unknown as Case[];
 
+const THREE_CASES = [1, 2, 3].map((n) => ({
+  case_id: `case-${n}`,
+  case_number: `SOC-${n}`,
+  created_at: `2026-10-2${n}T15:09:15Z`,
+  title: `Brute force on vpn-gw-${n}`,
+  severity_band: 'high',
+  risk_score: 70 + n,
+  status: 'open',
+  // A detection source on the rows read is what mounts the source filter, so its
+  // accessible name is checked with the others.
+  detection_source: 'rule',
+})) as unknown as Case[];
+
+/** Each control, by test id, carries exactly this accessible name. */
+function expectNames(root: HTMLElement, names: Record<string, string>) {
+  for (const [testId, name] of Object.entries(names)) {
+    const el = within(root).getByTestId(testId);
+    // Radix' Select trigger is a combobox and the search field a textbox: both take their
+    // name from `aria-label`, which is what a screen reader announces.
+    expect({ testId, name: el.getAttribute('aria-label') }).toEqual({ testId, name });
+  }
+}
+
+/** Every rendered string or accessible name that says "cases cases". */
+function repeatedNoun(root: HTMLElement): string[] {
+  return renderedCopy(root).filter((text) => /\bcases\s+cases\b/i.test(text));
+}
+
 const SPEC: KpiDrilldownSpec = {
   key: 'kpi-open-cases',
   title: 'Open cases',
@@ -44,10 +76,10 @@ const SPEC: KpiDrilldownSpec = {
   populationResolvedBy: 'store',
 };
 
-function renderPanel() {
+function renderPanel(spec: KpiDrilldownSpec = SPEC) {
   return render(
     <KpiDrilldownPanel
-      spec={SPEC}
+      spec={spec}
       panelId="kpi-panel"
       headingId="kpi-panel-heading"
       onClose={() => undefined}
@@ -103,7 +135,7 @@ describe('KpiDrilldownPanel copy', () => {
     );
     expect(within(dialog).getByTestId('kpi-drilldown-scroll')).toHaveAttribute(
       'aria-label',
-      'Open cases cases, scrollable evidence',
+      'Open cases, scrollable evidence',
     );
     expect(dialog.querySelector('caption')).toHaveTextContent(
       'Open cases: the cases read for the current filters',
@@ -114,5 +146,89 @@ describe('KpiDrilldownPanel copy', () => {
       (text) => text.includes(EM_DASH) && text.trim() !== DASH,
     );
     expect(dashed).toEqual([]);
+  });
+
+  it('names a population whose label already says cases once', async () => {
+    let resolveFirst: (value: unknown) => void = () => undefined;
+    listCasesMock.mockReset();
+    listCasesMock.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveFirst = resolve;
+      }),
+    );
+    renderPanel({ ...SPEC, key: 'kpi-total-cases', title: 'Total cases' });
+    const dialog = await screen.findByRole('dialog');
+
+    // The loading label, while the first page is still being read.
+    expect(within(dialog).getByRole('status', { name: 'Loading Total cases' })).toBeInTheDocument();
+
+    // Three rows of a population of ten, served three at a time, so "Read more" shows.
+    resolveFirst({ cases: THREE_CASES, total: 10, limit_applied: 3 });
+    await within(dialog).findByText('SOC-3');
+
+    expectNames(dialog, {
+      'kpi-drilldown-search': 'Filter Total cases',
+      'kpi-drilldown-severity': 'Filter Total cases by severity',
+      'kpi-drilldown-status': 'Filter Total cases by status',
+      'kpi-drilldown-source': 'Filter Total cases by detection source',
+      'kpi-drilldown-sort': 'Sort Total cases',
+      'kpi-drilldown-range': 'Time range for Total cases',
+      'kpi-drilldown-scroll': 'Total cases, scrollable evidence',
+      'kpi-drilldown-export': 'Download the 3 listed Total cases as CSV',
+      'kpi-drilldown-more': 'Read the next 3 Total cases',
+    });
+    expect(repeatedNoun(dialog)).toEqual([]);
+  });
+
+  it('adds the noun to a population label that does not end in cases', async () => {
+    let resolveFirst: (value: unknown) => void = () => undefined;
+    listCasesMock.mockReset();
+    listCasesMock.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveFirst = resolve;
+      }),
+    );
+    renderPanel({ ...SPEC, key: 'kpi-awaiting-decision', title: 'Awaiting a decision' });
+    const dialog = await screen.findByRole('dialog');
+
+    expect(
+      within(dialog).getByRole('status', { name: 'Loading Awaiting a decision cases' }),
+    ).toBeInTheDocument();
+
+    resolveFirst({ cases: THREE_CASES, total: 10, limit_applied: 3 });
+    await within(dialog).findByText('SOC-3');
+
+    expectNames(dialog, {
+      'kpi-drilldown-search': 'Filter Awaiting a decision cases',
+      'kpi-drilldown-severity': 'Filter Awaiting a decision cases by severity',
+      'kpi-drilldown-status': 'Filter Awaiting a decision cases by status',
+      'kpi-drilldown-source': 'Filter Awaiting a decision cases by detection source',
+      'kpi-drilldown-sort': 'Sort Awaiting a decision cases',
+      'kpi-drilldown-range': 'Time range for Awaiting a decision cases',
+      'kpi-drilldown-scroll': 'Awaiting a decision cases, scrollable evidence',
+      'kpi-drilldown-export': 'Download the 3 listed Awaiting a decision cases as CSV',
+      'kpi-drilldown-more': 'Read the next 3 Awaiting a decision cases',
+    });
+    expect(repeatedNoun(dialog)).toEqual([]);
+  });
+});
+
+describe('casesNoun', () => {
+  it('uses a label that already ends in the word cases as it is', () => {
+    expect(casesNoun('Total cases')).toBe('Total cases');
+    expect(casesNoun('Open cases')).toBe('Open cases');
+    expect(casesNoun('Open Cases')).toBe('Open Cases');
+    expect(casesNoun('Cases')).toBe('Cases');
+    expect(casesNoun('  Total cases  ')).toBe('Total cases');
+  });
+
+  it('adds the noun to any other label', () => {
+    expect(casesNoun('Awaiting a decision')).toBe('Awaiting a decision cases');
+    expect(casesNoun('Total critical')).toBe('Total critical cases');
+    expect(casesNoun('Auto-closed')).toBe('Auto-closed cases');
+    // A word that merely ends in the letters is not the noun.
+    expect(casesNoun('Showcases')).toBe('Showcases cases');
+    // The noun anywhere but last is not the ending either.
+    expect(casesNoun('Cases closed')).toBe('Cases closed cases');
   });
 });

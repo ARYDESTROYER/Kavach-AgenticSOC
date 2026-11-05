@@ -1,5 +1,5 @@
 /**
- * The two Settings row layouts of `Field` (Round 14, SPEC §4.9.2 and §4.9.6), as
+ * The Settings row layouts of `Field` (Round 14, SPEC §4.9.2 and §4.9.6), as
  * `FieldLayoutRenderer`s. They live with the lazy Settings primitives, not in Field
  * itself, because Field ships at first paint (Login and Wizard import it) and only
  * Settings-style rows use them (SPEC §3.4). `SettingRow` provides one of them to every
@@ -11,12 +11,19 @@
  *   `--setting-control-w` wide (16rem unless the row says otherwise; a narrower control
  *   such as a `NumberField` aligns to the column's end, so every control in a group
  *   shares one right edge); below 640px the control stacks under the description.
+ * - `cappedInlineFieldLayout`: `inlineFieldLayout` in a full-width section. The same row
+ *   with its root capped at a form row's content width (`SETTINGS_ROW_CONTENT_MAX_WIDTH`),
+ *   so the control column sits as near its label as in a 44rem form section; `SettingRow`
+ *   picks it from the section's measure.
  * - `wideFieldLayout`: the Settings row for a wide control (a text area, a tag list, a
  *   segmented control). The same 14px medium label and 13px muted description, in that
  *   order, with the control at full width under them.
  */
+import type * as React from 'react';
+
 import { cn } from '@/lib/cn';
 import type { FieldLayoutRenderer } from '@/soc/components/Field';
+import { SETTINGS_ROW_CONTENT_MAX_WIDTH } from '@/soc/components/SettingsGrid';
 
 /** The row label: 14px medium on a 20px line. */
 const ROW_LABEL = 'text-base leading-5';
@@ -69,6 +76,23 @@ export const inlineFieldLayout: FieldLayoutRenderer = ({
     ) : null}
   </div>
 );
+
+/** The marker every capped row content box carries (`SettingRow` sets it on its own). */
+const ROW_CONTENT_ATTRS: React.HTMLAttributes<HTMLDivElement> & { 'data-setting-row-content': string } = {
+  'data-setting-row-content': '',
+};
+
+/**
+ * `inlineFieldLayout` for a row in a full-width section: the root is the row's content
+ * box, capped at `SETTINGS_ROW_CONTENT_MAX_WIDTH` and marked `data-setting-row-content`.
+ * The cap comes first so the Field's own `className` still applies after it.
+ */
+export const cappedInlineFieldLayout: FieldLayoutRenderer = (parts) =>
+  inlineFieldLayout({
+    ...parts,
+    className: cn(SETTINGS_ROW_CONTENT_MAX_WIDTH, parts.className),
+    rootProps: { ...ROW_CONTENT_ATTRS, ...parts.rootProps },
+  });
 
 export const wideFieldLayout: FieldLayoutRenderer = ({
   label,

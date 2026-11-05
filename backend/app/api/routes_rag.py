@@ -37,6 +37,13 @@ from ..tools.rag import (
     EXCLUSION_SELECTABLE_KEYS,
     PRECEDENT_RATIFICATION_ACKNOWLEDGEMENT,
     PRECEDENT_RATIFICATION_PROVENANCE,
+    REPAIR_REFUSAL_CORPUS_UNREADABLE,
+    REPAIR_REFUSAL_EMBEDDING_DEGRADED,
+    REPAIR_REFUSAL_EMBEDDING_SPACE,
+    REPAIR_REFUSAL_EXCLUSIONS_UNKNOWN,
+    REPAIR_REFUSAL_MASS_EVICTION,
+    REPAIR_REFUSAL_NO_CASE_STORE,
+    REPAIR_REFUSAL_TIER_EMPTIED,
     TRUST_MODEL_UNCONFIRMED,
     is_bulk_ratified,
     precedent_ratification_entry,
@@ -47,6 +54,65 @@ from .deps import current_username, get_state, require_permission
 logger = logging.getLogger("tlsoc.api.rag")
 
 router = APIRouter(prefix="/api")
+
+
+def batch_audit_outcome(*, done: int, failed: int) -> str:
+    """The audit outcome of a batch that ran ``done`` items and failed ``failed``
+    (Round 14 SPEC §4.5.3): ``success`` when nothing failed (a dry run, or an empty
+    batch, included), ``partial`` when some items went through, ``failure`` when
+    every attempted item failed."""
+    if failed <= 0:
+        return "success"
+    return "partial" if done > 0 else "failure"
+
+
+#: A precedent repair's refusals by what stopped it. A GUARD refused a run that would
+#: have done something the policy forbids (the run would empty a tier, evict too much, or
+#: repair into an embedding space the reseed owns): ``denied``. A FAULT is a dependency
+#: the run needed and could not use (no case store, an unreadable exclusion set or
+#: corpus, a write that failed, a degraded embedding provider): ``failure``, so a store
+#: or provider outage is listed under Failed rather than Access denied. Every
+#: ``REPAIR_REFUSAL_*`` code is in exactly one of the two (pinned by a test).
+REPAIR_GUARD_REFUSALS = frozenset({
+    REPAIR_REFUSAL_MASS_EVICTION,
+    REPAIR_REFUSAL_TIER_EMPTIED,
+    REPAIR_REFUSAL_EMBEDDING_SPACE,
+})
+REPAIR_FAULT_REFUSALS = frozenset({
+    REPAIR_REFUSAL_NO_CASE_STORE,
+    REPAIR_REFUSAL_EXCLUSIONS_UNKNOWN,
+    REPAIR_REFUSAL_CORPUS_UNREADABLE,
+    REPAIR_REFUSAL_EMBEDDING_DEGRADED,
+})
+
+
+def repair_audit_outcome(report: dict[str, Any]) -> str:
+    """The audit outcome of a precedent repair, from the report
+    ``RagService.repair_precedent_projection`` returns (Round 14 SPEC §4.5.3).
+
+    - A refusal changes nothing, by construction. It reads ``denied`` when a safety
+      guard refused the run (:data:`REPAIR_GUARD_REFUSALS`) and ``failure`` when a
+      dependency failed (any other code, :data:`REPAIR_FAULT_REFUSALS` included).
+    - ``success`` when the run finished (``ok`` and ``complete``).
+    - Otherwise the run stopped short. It reads ``failure`` when it changed nothing it
+      can show and at least one change it attempted did not land: a repair the
+      read-back could not confirm (the repair counts it outstanding, never repaired),
+      an eviction the re-read still found, or an eviction whose payload could not be
+      recorded first. It reads ``partial`` when some changes were verified, or when
+      nothing it attempted failed and it only stopped short: a truncated corpus read,
+      a chunk whose case could not be read, or candidates past the run's cap."""
+    if report.get("refused"):
+        return "denied" if report.get("reason_code") in REPAIR_GUARD_REFUSALS else "failure"
+    if report.get("ok") and report.get("complete"):
+        return "success"
+    attempted_failed = bool(
+        report.get("unverified_repairs")
+        or report.get("incomplete_evictions")
+        or int(report.get("evictions_unrecorded") or 0)
+    )
+    if int(report.get("mutated") or 0) > 0 or not attempted_failed:
+        return "partial"
+    return "failure"
 
 
 class RagDocumentsResponse(BaseModel):
@@ -179,6 +245,9 @@ async def rag_delete_document(
             action_type=ActionType.CONTEXT,
             surface="rag_document_delete",
             actor=actor,
+            # Written after the delete.
+            outcome="success",
+            actor_type="human",
             result_summary=(
                 f"deleted knowledge document {document_id} "
                 f"chunks={int(result.get('deleted') or 0)} force={bool(force)}"
@@ -318,6 +387,10 @@ async def perform_precedent_candidate(
                 surface="rag_precedent_bootstrap",
                 actor=actor,
                 case_id=case.case_id,
+                # Written after the ratification was saved, for the operator who asked
+                # (directly or through a background job).
+                outcome="success",
+                actor_type="human",
                 result_summary=(
                     "bulk-ratified MODEL verdict as precedent "
                     f"trust_class={TRUST_MODEL_UNCONFIRMED} "
@@ -455,6 +528,8 @@ async def perform_precedent_bootstrap(
         action_type=ActionType.CONTEXT,
         surface="rag_precedent_bootstrap",
         actor=actor,
+        outcome=batch_audit_outcome(done=len(ratified), failed=len(failed)),
+        actor_type="human",
         result_summary=(
             f"precedent bootstrap batch={batch_id} dry_run={body.dry_run} "
             f"eligible={len(candidates)} ratified={len(ratified)} indexed={indexed} "
@@ -661,6 +736,10 @@ async def precedent_exclude(
                 surface="rag_precedent_exclusion",
                 actor=actor,
                 case_id=case_id,
+                # The exclusion is in force either way; a removal that did not finish
+                # (``complete=false``) is ``partial`` until the request is re-issued.
+                outcome="success" if outcome.get("complete") else "partial",
+                actor_type="human",
                 result_summary=(
                     f"excluded case from the precedent corpus reason={reason} "
                     f"chunks_deleted={int(outcome.get('deleted') or 0)} "
@@ -704,6 +783,43 @@ class PrecedentRepairRequest(BaseModel):
     dry_run: bool = True
 
 
+async def _record_incomplete_evictions(
+    state: AppState,
+    *,
+    actor: str,
+    report: dict[str, Any],
+    cases: dict[str, str | None],
+) -> None:
+    """One ``failure`` row for each eviction whose chunk the re-read still found.
+
+    The payload row of an eviction is written before the delete, so on its own it
+    would leave the audit log saying the chunk was evicted while it is still in the
+    corpus. This row follows it, under the same case, and is listed under the audit
+    log's Failed filter (Round 14 SPEC §4.5.3), as an ERROR row follows a PROMPT row
+    whose model call failed. DOCUMENT IDS ONLY: the payload row is the one place a
+    chunk's text reaches the trail. Best effort, like the summary row: the run's
+    result already stands."""
+    for document_id in report.get("incomplete_evictions") or []:
+        doc = str(document_id)
+        try:
+            await state.audit.record(
+                action_type=ActionType.CONTEXT,
+                surface="rag_precedent_repair",
+                actor=actor,
+                case_id=cases.get(doc),
+                outcome="failure",
+                actor_type="human",
+                tool_name="precedent_eviction_incomplete",
+                tool_input={"document_id": doc},
+                result_summary=(
+                    f"eviction did not land document_id={doc}: the chunk is still in "
+                    "the corpus ground_truth_unchanged=true"
+                ),
+            )
+        except Exception as exc:  # noqa: BLE001 (the repair already stands)
+            logger.warning("precedent repair audit failed for %s: %s", doc, exc)
+
+
 @router.post("/rag/precedent/repair")
 async def precedent_repair(
     body: PrecedentRepairRequest,
@@ -731,6 +847,9 @@ async def precedent_repair(
     status, no history rewrite (#3).
     """
     actor = current_username(request) or "operator"
+    #: The case of every payload recorded, by document id, so a removal that did not
+    #: land is recorded against the same case as its payload row.
+    recorded_cases: dict[str, str | None] = {}
 
     async def _record_evicted(payload: dict[str, Any]) -> None:
         """Write the payload BEFORE its chunk is destroyed. Raising blocks the removal.
@@ -739,12 +858,20 @@ async def precedent_repair(
         is deliberate: an eviction is unrecoverable without it. ``record_strict``
         propagates a durability failure, and the caller treats that as "no record, no
         removal" rather than destroying evidence it could not preserve.
+
+        The row is written before the delete, so its ``success`` says the payload was
+        kept, not that the chunk is gone: a removal the re-read still finds gets its own
+        ``failure`` row once the run returns (:func:`_record_incomplete_evictions`).
         """
         await state.audit.record_strict(
             action_type=ActionType.CONTEXT,
             surface="rag_precedent_repair",
             actor=actor,
             case_id=str(payload.get("case_id") or "") or None,
+            # Not keyed (no ``event_id``): each eviction appends its own row, so the
+            # Round 14 fields are written like any new row's.
+            outcome="success",
+            actor_type="human",
             tool_name="precedent_evicted_chunk",
             tool_input=payload,
             result_summary=(
@@ -754,6 +881,9 @@ async def precedent_repair(
                 "ground_truth_unchanged=true"
             ),
         )
+        recorded_cases[str(payload.get("document_id") or "")] = (
+            str(payload.get("case_id") or "") or None
+        )
 
     report = await state.rag_service.repair_precedent_projection(
         dry_run=bool(body.dry_run), on_evict=_record_evicted
@@ -762,12 +892,15 @@ async def precedent_repair(
         # A dry run mutates nothing, so it leaves no trail: an append-only log of
         # "somebody looked" would bury the records that describe an actual change.
         return report
+    await _record_incomplete_evictions(state, actor=actor, report=report, cases=recorded_cases)
     try:
         tiers = report.get("tiers") or {}
         await state.audit.record(
             action_type=ActionType.CONTEXT,
             surface="rag_precedent_repair",
             actor=actor,
+            outcome=repair_audit_outcome(report),
+            actor_type="human",
             # COUNTS, DOCUMENT IDS AND REASON CODES ONLY. The evicted-payload record
             # above is the deliberate, narrow exception and is scoped to the delete
             # path alone; a summary row must never carry corpus text.
@@ -826,6 +959,9 @@ async def precedent_restore(
             surface="rag_precedent_exclusion",
             actor=actor,
             case_id=str(case_id),
+            # Written after the restore.
+            outcome="success",
+            actor_type="human",
             result_summary=(
                 "restored case to the precedent corpus; it is re-derived on the next "
                 "projection ground_truth_unchanged=true"

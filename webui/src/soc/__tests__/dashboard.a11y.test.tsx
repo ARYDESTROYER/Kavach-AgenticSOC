@@ -24,7 +24,7 @@
  */
 import * as React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import { axe, toHaveNoViolations } from 'jest-axe';
 
 expect.extend(toHaveNoViolations);
@@ -131,8 +131,21 @@ describe('Custom dashboard (WidgetGrid view): a11y smoke (jest-axe)', () => {
     await waitFor(() => expect(screen.getByText('Awaiting a decision')).toBeInTheDocument(), {
       timeout: 5000,
     });
+    // Every lazy body has landed too, not only the reads. The timing module's chunk can
+    // arrive after the reads settle (it does under CPU load), so the audit waits for the
+    // whole board: its KPI tiles land with its chunk, and no body's loading fallback is
+    // left. Then the reads the bodies started settle and the last replies commit.
+    await waitFor(() => expect(container.querySelectorAll('[data-testid^="kpi-"]').length).toBeGreaterThan(0), {
+      timeout: 5000,
+    });
+    await waitFor(() => expect(container.querySelector('[data-widget-state="loading"]')).toBeNull(), {
+      timeout: 5000,
+    });
     await settled();
-    expect(await axe(container)).toHaveNoViolations();
+    await act(async () => {});
+    // The audit itself runs inside act, so a late update waits until it ends.
+    const results = await act(() => axe(container));
+    expect(results).toHaveNoViolations();
     // View mode shipped zero grid JS.
     expect(rglEvaluated.count).toBe(0);
   });

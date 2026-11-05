@@ -137,7 +137,7 @@ describe('Overview — Cyber Defence Center', () => {
     await screen.findByTestId('page-hero');
     await waitFor(() => expect(listCasesMock).toHaveBeenCalled());
 
-    expect(screen.getByRole('button', { name: 'Time range: Last 24 hours' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Last 24h, time range' })).toBeInTheDocument();
     // Sentence case since Round 14 (SPEC §3.1): the cadence reads "Live", never "LIVE".
     const live = screen.getByRole('combobox', { name: 'Auto-refresh interval: Live' });
     expect(live).toBeInTheDocument();
@@ -308,7 +308,7 @@ describe('Overview — Cyber Defence Center', () => {
     );
     await user.click(refresh);
     expect(refresh).toHaveAttribute('aria-busy', 'true');
-    const range = screen.getByRole('button', { name: /Time range: Last 24 hours/i });
+    const range = screen.getByRole('button', { name: 'Last 24h, time range' });
     act(() => range.focus());
 
     await act(async () => release());

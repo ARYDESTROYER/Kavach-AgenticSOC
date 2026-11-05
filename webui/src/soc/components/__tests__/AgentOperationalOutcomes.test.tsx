@@ -113,11 +113,14 @@ describe('AgentOperationalOutcomes', () => {
     // from 28rem, four on a wide strip; the base two-column class is replaced, not added.
     expect(strip).toHaveClass('grid-cols-1', '@[28rem]:grid-cols-2', 'md:@[40rem]:grid-cols-4');
     expect(strip).not.toHaveClass('grid-cols-2');
-    // Each tile spans two rows of the strip's grid (subgrid), so the figure blocks share one
-    // height per strip row and the evidence lines under them start level.
+    // Each tile spans four rows of the strip's grid (subgrid): its KpiTile takes the first
+    // three (label, numeral, context: the strip row-aligns them, so the numerals share one
+    // line however a delta or a caption wraps), and the evidence lines the fourth.
+    expect(strip).toHaveAttribute('data-kpi-rows', 'aligned');
     for (const tile of tiles) {
-      expect(tile).toHaveClass('row-span-2', 'grid', 'grid-rows-subgrid');
+      expect(tile).toHaveClass('row-span-4', 'grid', 'grid-rows-subgrid');
       expect(tile.children).toHaveLength(2);
+      expect(tile.children[0]).toHaveClass('row-span-3', 'grid-cols-1', 'grid-rows-subgrid');
       expect(tile.children[1]).toHaveAttribute('data-outcome-tile-details');
     }
   });

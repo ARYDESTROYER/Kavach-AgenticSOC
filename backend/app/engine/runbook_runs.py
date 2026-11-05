@@ -2764,6 +2764,9 @@ async def _ai_call(
         await state.execution_audit.record(
             action_type=ActionType.PROMPT, surface=CASE_RUNBOOK_SURFACE, actor=actor or "analyst",
             case_id=case_id, model=model,
+            # The model answered (a refused or failed call raised above and writes no
+            # row): the AI help ran for the asking analyst, so it is Agent activity.
+            outcome="success", actor_type="agent",
             result_summary=(f"runbook {purpose} model call tokens="
                             f"{receipt.prompt_tokens + receipt.completion_tokens} cost={receipt.cost:.6f}"),
         )

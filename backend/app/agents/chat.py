@@ -326,6 +326,22 @@ class _StepStopped(Exception):
     answer."""
 
 
+def _model_failure(error: BaseException | None, status: str = "error") -> tuple[str, str]:
+    """``(outcome, wording)`` of the ERROR row a chat model call that did not answer
+    writes after its PROMPT row (Round 14 SPEC §4.5.3, as the router's).
+
+    The wording is our own closed vocabulary: a chat row never stores a provider's
+    exception text, which can echo what was sent. A refusal (the optional chat daily
+    cap, or any :class:`BudgetBlocked`) reads ``denied``, as a policy refusal; a
+    timeout or a provider fault reads ``failure``."""
+    if isinstance(error, BudgetBlocked):
+        return "denied", f"refused ({truncate(error.reason or 'budget ceiling exceeded', 120)})"
+    if status == "timeout" or isinstance(error, asyncio.TimeoutError):
+        return "failure", "timed out"
+    failure_class = getattr(error, "failure_class", "") or ""
+    return "failure", f"failed ({failure_class or type(error).__name__})"
+
+
 async def _abandon(task: asyncio.Future[Any]) -> None:
     """Cancel an in-flight gateway call and wait for it to end, so the gateway writes
     the abandoned call's ledger row (#6) before the turn moves on. A cancellation of
@@ -920,6 +936,7 @@ class ChatEngine:
         await self._audit.record(
             action_type=ActionType.PROMPT, surface=Role.CHAT.value, actor=Role.CHAT.value,
             case_id=case_id, model=prefs.chat_model.model, prompt_excerpt=message,
+            outcome="success", actor_type="agent",
         )
 
         try:
@@ -928,6 +945,14 @@ class ChatEngine:
             )
         except GatewayError as exc:
             logger.warning("Chat model unavailable: %s", exc)
+            # The PROMPT row above was written before the call: record that it did not
+            # answer, so the audit log's Failed (or Denied) filter finds it (#2).
+            audit_outcome, wording = _model_failure(exc)
+            await self._audit.record(
+                action_type=ActionType.ERROR, surface=Role.CHAT.value, actor=Role.CHAT.value,
+                case_id=case_id, model=prefs.chat_model.model, outcome=audit_outcome, actor_type="agent",
+                result_summary=f"chat model call {wording}; the assistant answered that it is unavailable",
+            )
             return ChatResponse(
                 answer="The assistant is unavailable (no model configured). "
                        "Configure an LLM provider key in Settings.",
@@ -965,6 +990,7 @@ class ChatEngine:
                 action_type=ActionType.ES_QUERY, surface=Role.CHAT.value, actor=Role.CHAT.value,
                 case_id=case_id, query_text=tr.query, tool_name="es_query",
                 tool_output_summary=tr.summary,
+                outcome="success" if tr.ok else "failure", actor_type="agent",
             )
             if tr.ok and tr.data:
                 hits = tr.data.get("hits", [])
@@ -1209,6 +1235,7 @@ class ChatEngine:
                 await self._audit.record(
                     action_type=ActionType.DECISION, surface=Role.CHAT.value, actor=Role.CHAT.value,
                     case_id=case_id, result_summary=f"memory add (agent): {truncate(entry.text, 200)}",
+                    outcome="success", actor_type="agent",
                 )
             elif op == "remove":
                 removed_ids: list[str] = []
@@ -1223,6 +1250,7 @@ class ChatEngine:
                     await self._audit.record(
                         action_type=ActionType.DECISION, surface=Role.CHAT.value, actor=Role.CHAT.value,
                         case_id=case_id, result_summary=f"memory remove (agent): {removed_ids}",
+                        outcome="success", actor_type="agent",
                     )
                 else:
                     note = "No matching memory to forget."
@@ -1652,13 +1680,16 @@ class _AgentTurn:
     def _audit_logger(self) -> Any:
         return self.ctx.audit if self.ctx.audit is not None else self.engine._audit
 
-    async def _audit(self, **fields: Any) -> None:
+    async def _audit(self, *, outcome: str, **fields: Any) -> None:
+        """Append one chat audit row for this turn. The chat agent acts for the asking
+        analyst (``actor``), so the row is Agent activity (``actor_type="agent"``);
+        every caller names how its step ended (Round 14 SPEC §4.5.3)."""
         logger_ = self._audit_logger()
         if logger_ is None:
             return
         try:
             await logger_.record(surface=Role.CHAT.value, actor=self.ctx.user or "default",
-                                 case_id=self.case_id, **fields)
+                                 case_id=self.case_id, outcome=outcome, actor_type="agent", **fields)
         except Exception as exc:  # noqa: BLE001 -- an audit glitch never drops the turn
             logger.warning("chat audit write failed (%s)", exc)
 
@@ -1868,7 +1899,9 @@ class _AgentTurn:
             if self.wrap_up == "fuse" and not self._fuse_audited:
                 self._fuse_audited = True
                 await self._audit(
-                    action_type=ActionType.PROMPT, model=self.model_cfg.model,
+                    # The fuse stopped the turn short: the answer is written from what
+                    # it has, as a capped investigation's verdict is ``partial``.
+                    action_type=ActionType.PROMPT, model=self.model_cfg.model, outcome="partial",
                     result_summary=(f"turn={self.turn_id} runaway fuse reached after {self.model_calls} model "
                                     f"calls, {self.ordinal} lookups and {int(self._elapsed())} s; "
                                     "writing the answer"),
@@ -2266,11 +2299,14 @@ class _AgentTurn:
         if not no_model and not blocked:
             receipt = UsageReceipt()
             result: Any = None
+            failed: BaseException | None = None
             try:
                 self.model_calls += 1
                 self.outcome.model_calls = self.model_calls
                 await self._audit(
                     action_type=ActionType.PROMPT, model=cfg.model, prompt_excerpt=self.message,
+                    # The call was made; one that does not answer writes an ERROR row below.
+                    outcome="success",
                     result_summary=(f"turn={self.turn_id} step={index} compaction: summarising "
                                     f"{len(fold)} earlier exchange(s)"),
                 )
@@ -2288,8 +2324,16 @@ class _AgentTurn:
                 logger.info("conversation summary call failed (%s); using the extractive summary",
                             type(exc).__name__)
                 status = "error"
+                failed = exc
             finally:
                 self._chat_cap_release()
+            if failed is not None:
+                audit_outcome, wording = _model_failure(failed)
+                await self._audit(
+                    action_type=ActionType.ERROR, model=cfg.model, outcome=audit_outcome,
+                    result_summary=(f"turn={self.turn_id} step={index} compaction model call {wording}; "
+                                    "the extractive summary was used"),
+                )
             usage = self._step_usage(receipt, result)
             if usage is not None:
                 self.model_usages.append(usage)
@@ -2432,7 +2476,9 @@ class _AgentTurn:
         purpose = f" (continuation part {continuation.part})" if continuation is not None else ""
         await self._audit(
             action_type=ActionType.PROMPT, model=self.model_cfg.model,
-            prompt_excerpt=self.message,
+            # The step started its call; one that does not answer (refused by the chat
+            # daily cap, timed out, failed) writes an ERROR row in ``_end_model_step``.
+            prompt_excerpt=self.message, outcome="success",
             result_summary=f"turn={self.turn_id} step={index} model call {self.model_calls}{of}{purpose}",
         )
         receipt = UsageReceipt()
@@ -2546,6 +2592,15 @@ class _AgentTurn:
                 end_label = FUSE_WRAP_UP_LABEL
         status = ("ok" if self._error is None else "cancelled" if self._step_stopped()
                   else "timeout" if isinstance(self._error, asyncio.TimeoutError) else "error")
+        if status in ("error", "timeout"):
+            # The step's PROMPT row was written before the call: record that it did not
+            # answer, so the audit log's Failed (or Denied) filter finds it (#2). Stop is
+            # the analyst's choice, not a failure, and writes no row.
+            audit_outcome, wording = _model_failure(self._error, status)
+            await self._audit(
+                action_type=ActionType.ERROR, model=self.model_cfg.model, outcome=audit_outcome,
+                result_summary=f"turn={self.turn_id} step={start.index} model call {self.model_calls} {wording}",
+            )
         step = start.model_copy(update={
             "label": end_label, "status": status, "usage": usage,
             "duration_ms": int((time.monotonic() - started) * 1000),
@@ -3023,7 +3078,7 @@ class _AgentTurn:
         toolbox writes the rows of every call it handles), in the toolbox's format."""
         await self._audit(
             action_type=ActionType.TOOL_CALL, tool_name=call.request.tool,
-            tool_input=self._display_params(call),
+            tool_input=self._display_params(call), outcome="denied",
             result_summary=(f"turn={self.turn_id} step={call.index} t{call.ordinal} "
                             f"{call.request.tool} {call.status} 0ms: {call.reason}"),
         )
@@ -3078,6 +3133,8 @@ class _AgentTurn:
         """``recall_observation`` (D4): the stored observation of an earlier call of
         this turn, exactly as the model saw it (aggregates, shrunk; never artifacts or
         log rows, #7). Audited like every tool call (#2)."""
+        from .chat_tools.registry import tool_audit_outcome
+
         started = time.monotonic()
         found = recall_tool.recall(self.observation_store, call.request.input)
         if found.ok and found.item is not None:
@@ -3091,6 +3148,7 @@ class _AgentTurn:
         await self._audit(
             action_type=ActionType.TOOL_CALL, tool_name=RECALL_TOOL,
             tool_input=recall_tool.display_params(call.request.input),
+            outcome=tool_audit_outcome(call.status),
             result_summary=(f"turn={self.turn_id} step={call.index} t{call.ordinal} {RECALL_TOOL} "
                             f"{call.status} {call.duration_ms}ms: {found.summary}"),
         )
@@ -3462,7 +3520,7 @@ class _AgentTurn:
         await self._audit(
             action_type=ActionType.ES_QUERY, source_id=self.ctx.source_id, tool_name="search_logs",
             query_text=tr.query if tr is not None else None,
-            tool_input=chips,
+            tool_input=chips, outcome="success" if ok else "failure",
             result_summary=f"turn={self.turn_id} step={index} status={'ok' if ok else 'error'}",
         )
         if not ok:

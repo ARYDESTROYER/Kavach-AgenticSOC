@@ -1,16 +1,25 @@
 /* Left navigation (Round 14, SPEC §4.8.1, C6 A "docked rail with a stable morph").
-   Loaded by NavSidebar. Only transform and opacity animate; the in-flow spacer beside the
-   panel changes width ONCE, at the click, with no transition, so the page moves once.
+   Loaded by NavSidebar. The morph animates only transform and opacity, with one
+   exception: on expand an open group's page list reveals with the grid-rows and opacity
+   transition of `.nav-children` below (after the labels' 60 ms delay), the same reveal a
+   chevron click plays in the drawer. The in-flow spacer beside the panel changes width
+   once per toggle, with no transition, so the page moves once. The panel and the spacer
+   change in consecutive frames and the opaque 240 px panel always covers the seam:
+   collapsing moves the spacer first and closes the panel, and an open group's pages, over
+   the moved page one frame later; expanding fills the panel and fades the labels in
+   first, and the spacer moves one frame later (NavRail in NavSidebar.tsx). An open
+   group's pages leave the tab order in the toggle's own commit; only their look follows
+   the panel.
 
    ONE DOM FOR BOTH STATES: every row is [40 px icon cell at x 12][fixed-width label]; the
    18 px icon sits at the same x and y in the 64 px rail and the 240 px drawer, and
    nothing is swapped. The panel (`.nav-root`) is fixed and always 240 px wide:
-   - expand: the surface fills 240 px at the click; only the labels fade in (120 ms after
-     60 ms), and open groups reveal their pages with them;
+   - expand: the surface fills 240 px in the frame before the spacer moves; only the
+     labels fade in (120 ms after 60 ms), and open groups reveal their pages with them;
    - collapse: a clipping layer (`.nav-clip`) slides closed with `transform` while its
      content (`.nav-content`) slides back the same amount, over the page that has already
-     moved: the visible edge moves and the icons stay put (160 ms). Group pages collapse
-     at the click, with the spacer, so nothing glides afterwards.
+     moved: the visible edge moves and the icons stay put (160 ms). An open group's pages
+     hide with the panel, with no transition, so nothing glides afterwards.
    Timings are the side-pane standard (SPEC §3.2): open 200 ms, close 160 ms, chevrons and
    flyouts 150 ms, tooltips 120 ms, all on `ease-standard`. */
 

@@ -413,7 +413,10 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
   // own `id` in a closure and applies its result ONLY if the case has not changed
   // mid-flight — the SAME CaseDetail instance is reused across cases (related-case
   // drill-through, reopening the sheet on a different row), so a slow response for
-  // case A must never overwrite the freshly-opened case B.
+  // case A must never overwrite the freshly-opened case B. A lazy loader also starts
+  // only for the case on screen: a callback that outlives its case (a post that lands
+  // after the switch, a live refresh timer) would otherwise set the next case's loading
+  // flag for a read whose result is then dropped, leaving that flag set for good.
   const activeIdRef = React.useRef(id);
   React.useEffect(() => {
     activeIdRef.current = id;
@@ -507,10 +510,36 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
   const canRunRunbooks = hasPermission('runbooks', 'run');
   const runbooks = useCaseRunbooks(open ? id : null, { enabled: canReadRunbooks });
   // A deep link's tab, re-applied when the link or its case changes (closing QA integ-06).
+  // The Investigation tab's link is "Open case trace", so it also asks the panel to open
+  // the trace and bring it into view: a new tick per request, kept until the panel
+  // reports it handled and never replayed. The request names the linked case. The panel
+  // sees it only once that case is the one on screen (below), so it never opens the trace
+  // of the case being replaced, and a switch to any other case drops it.
   const requested: CaseTab | null = requestedTab === 'runbook' && !canReadRunbooks ? 'overview' : requestedTab;
+  const [traceRequest, setTraceRequest] = React.useState<{ tick: number; caseId: string } | null>(null);
+  const traceTickRef = React.useRef(0);
   React.useEffect(() => {
-    if (requested) setTab(requested);
+    if (!requested) return;
+    setTab(requested);
+    if (requested === 'investigation') {
+      traceTickRef.current += 1;
+      setTraceRequest({ tick: traceTickRef.current, caseId: id });
+    }
   }, [requested, id]);
+  // The queue can open another case before the linked one arrives, with no tab in the
+  // address: the link was for the other case's trace, so it goes with the switch and is
+  // not replayed if the analyst later opens the linked case again.
+  React.useEffect(() => {
+    setTraceRequest((current) => (current && current.caseId !== id ? null : current));
+  }, [id]);
+  // An analyst who moves to another tab before the request applies has made their own
+  // choice: coming back to Investigation later shows the trace as they left it.
+  React.useEffect(() => {
+    if (tab !== 'investigation') setTraceRequest(null);
+  }, [tab]);
+  const traceRequestHandled = React.useCallback((tick: number) => {
+    setTraceRequest((current) => (current?.tick === tick ? null : current));
+  }, []);
   const [runbookPrefs, setRunbookPrefs] = React.useState<RunbookPrefs>(DEFAULT_RUNBOOK_PREFS);
   const [runbookRequest, setRunbookRequest] = React.useState<RunbookFocusRequest | null>(null);
   // Every request gets a new tick (never reused after one is forgotten), and the Runbook
@@ -627,17 +656,26 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
     // NOT blanked (CM-5): the caller's preview renders at once when it matches, and
     // otherwise the previous case stays on screen, dimmed under a progress bar, until
     // the new one arrives. Actions stay disabled while the shown case is not `id`.
+    //
+    // Each lazy read's loading flag is cleared with its data and error. A read still
+    // running for the case being replaced is dropped when it lands (its id no longer
+    // matches), so it never clears its own flag: left set, the flag would hold off this
+    // case's read on its tab for good and keep the panel loading.
     const preview = previewRef.current;
     if (preview && preview.case_id === id) setC(preview);
     setRationale(null);
     setRationaleError(null);
+    setRationaleLoading(false);
     setTriage(null);
     setTimeline(null);
     setTimelineError(null);
+    setTimelineLoading(false);
     setStages(null);
     setStagesError(null);
+    setStagesLoading(false);
     setThread(null);
     setThreadError(null);
+    setThreadLoading(false);
     setThreadBusyId(null);
     setRunbookRequest(null);
     setRefusedSteps(null);
@@ -649,6 +687,7 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
     // case instead of showing the previous case's IOC/MITRE data.
     setThreat(null);
     setThreatError(null);
+    setThreatLoading(false);
     // The active tab is kept across case switches: an analyst browsing the queue on the
     // Timeline stays on the Timeline (Defender's ↑/↓ behaviour).
     void loadCase();
@@ -658,7 +697,7 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
   // signals as soon as the case opens. Best-effort: a failure leaves the chips null
   // and the overview falls back to its legacy headline panels.
   const loadTriage = React.useCallback(async () => {
-    if (!id) return;
+    if (!id || activeIdRef.current !== id) return;
     setTriageLoading(true);
     try {
       const res = await getTriage(id);
@@ -711,7 +750,7 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
 
   // Typed ReAct timeline (#12) — lazy on the Investigation tab.
   const loadTimeline = React.useCallback(async () => {
-    if (!id) return;
+    if (!id || activeIdRef.current !== id) return;
     setTimelineLoading(true);
     setTimelineError(null);
     try {
@@ -736,7 +775,7 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
   }, [open, tab, timeline, timelineLoading, timelineError, loadTimeline]);
 
   const loadStages = React.useCallback(async () => {
-    if (!id) return;
+    if (!id || activeIdRef.current !== id) return;
     setStagesLoading(true);
     setStagesError(null);
     try {
@@ -759,7 +798,7 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
 
   // ---- Collaboration: thread + tasks + activity (#4) -------------------- //
   const loadThread = React.useCallback(async () => {
-    if (!id) return;
+    if (!id || activeIdRef.current !== id) return;
     setThreadLoading(true);
     setThreadError(null);
     try {
@@ -778,7 +817,7 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
   }, [id]);
 
   const loadActivity = React.useCallback(async () => {
-    if (!id) return;
+    if (!id || activeIdRef.current !== id) return;
     setActivityLoading(true);
     setActivityError(null);
     try {
@@ -845,7 +884,10 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
 
   // Thread mutation handlers — each calls the API then refreshes the thread +
   // activity (so an @mention/new event shows). #3-safe: posting never touches the
-  // case decision (the backend enforces this).
+  // case decision (the backend enforces this). One that lands after the queue moved on
+  // refreshes nothing (the loaders start only for the case on screen) and leaves the
+  // busy marker alone: the switch already cleared it, and it may now be the next
+  // case's own post.
   const postMessage = React.useCallback(
     async (text: string, parentId?: string) => {
       if (!id) return;
@@ -857,7 +899,7 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
       } catch (e) {
         toast.error(e instanceof Error ? e.message : 'Could not post the message.');
       } finally {
-        setThreadBusyId(null);
+        if (activeIdRef.current === id) setThreadBusyId(null);
       }
     },
     [id, loadThread, loadActivity],
@@ -873,7 +915,7 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
       } catch (e) {
         toast.error(e instanceof Error ? e.message : 'Could not edit the message.');
       } finally {
-        setThreadBusyId(null);
+        if (activeIdRef.current === id) setThreadBusyId(null);
       }
     },
     [id, loadThread],
@@ -890,7 +932,7 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
       } catch (e) {
         toast.error(e instanceof Error ? e.message : 'Could not delete the message.');
       } finally {
-        setThreadBusyId(null);
+        if (activeIdRef.current === id) setThreadBusyId(null);
       }
     },
     [id, loadThread, loadActivity],
@@ -906,14 +948,14 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
       } catch (e) {
         toast.error(e instanceof Error ? e.message : 'Could not react.');
       } finally {
-        setThreadBusyId(null);
+        if (activeIdRef.current === id) setThreadBusyId(null);
       }
     },
     [id, loadThread],
   );
 
   const loadRationale = React.useCallback(async () => {
-    if (!id) return;
+    if (!id || activeIdRef.current !== id) return;
     setRationaleLoading(true);
     setRationaleError(null);
     try {
@@ -935,7 +977,7 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
   }, [open, tab, presentation, rationale, rationaleLoading, rationaleError, loadRationale]);
 
   const loadThreat = React.useCallback(async () => {
-    if (!id) return;
+    if (!id || activeIdRef.current !== id) return;
     setThreatLoading(true);
     setThreatError(null);
     try {
@@ -2072,6 +2114,8 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
                           timelineError={timelineError}
                           onRetryTimeline={loadTimeline}
                           presentation="case-manager"
+                          traceRequest={shownIsCurrent && traceRequest?.caseId === id ? traceRequest.tick : null}
+                          onTraceRequestHandled={traceRequestHandled}
                         />
                       </TabPanelMotion>
                     </TabsContent>

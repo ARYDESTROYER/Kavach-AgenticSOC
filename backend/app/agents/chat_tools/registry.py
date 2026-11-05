@@ -230,6 +230,29 @@ def audit_prefix(call: ToolCall | None) -> str:
     return " ".join(parts)
 
 
+#: The audit outcome of a chat tool call by its run-log status (Round 14 SPEC
+#: §4.5.3, ``outcome`` is written by every writer). A refused call (a missing grant,
+#: a policy refusal, a call outside the request's scope, switched off, or held back by
+#: a configured lookup limit) is ``denied``, as the AI budget refusing a model call is;
+#: an error or a timeout is ``failure``; a call stopped while it was in flight may or
+#: may not have reached its source, so it is ``unknown``.
+_TOOL_AUDIT_OUTCOMES: dict[str, str] = {
+    "ok": "success",
+    "error": "failure",
+    "timeout": "failure",
+    "denied": "denied",
+    "skipped": "denied",
+    "cancelled": "unknown",
+}
+
+
+def tool_audit_outcome(status: Any) -> str:
+    """The audit row outcome of a chat tool call whose run-log status is ``status``
+    (:data:`_TOOL_AUDIT_OUTCOMES`); a status this table does not know reads
+    ``failure``, so a new status is never stored as a success by accident."""
+    return _TOOL_AUDIT_OUTCOMES.get(str(status or ""), "failure")
+
+
 @dataclass(frozen=True)
 class ToolCheck:
     """A pre-flight answer for one requested call: ``status`` is ``ok``,
@@ -422,6 +445,10 @@ class ChatToolbox:
                 surface="chat",
                 actor=_actor(self.ctx),
                 case_id=self.ctx.case_id,
+                # The chat agent ran the call for the asking analyst (Agent activity);
+                # how it ended is the call's own (an error is listed under Failed).
+                outcome=tool_audit_outcome(outcome.status),
+                actor_type="agent",
                 query_text=outcome.query,
                 tool_name=tool.name,
                 tool_input=params,

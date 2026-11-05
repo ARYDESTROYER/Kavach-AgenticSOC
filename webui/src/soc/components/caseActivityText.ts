@@ -119,6 +119,48 @@ function approvalKind(kind: string): string {
   return APPROVAL_KIND[kind] ?? humanizeToken(kind).toLowerCase();
 }
 
+/** Whether an automation notification went out, as its record says. */
+export type NotifyDelivery = 'sent' | 'not_sent' | 'partly_sent';
+
+/**
+ * The detail a `notify` action records (`_maybe_notify` in `engine/threshold_automation.py`):
+ * `notify=<trigger>` when every channel took it,
+ * `notify=<trigger>. Not sent: <reason>.` when nothing went out (a channel failed or was
+ * rate limited, the service failed or is not connected, or no channel was due: notifications
+ * are off, no channel takes the trigger, no one is addressed, or a repeat inside the dedup
+ * window), and `notify=<trigger>. Partly sent: <reason>.` when some channels did not take it
+ * (or the service failed after one did). Only a detail without a note reads as a send, so the
+ * backend writes a note on every path on which nothing, or not everything, went out.
+ */
+const NOTIFY_DETAIL = /^notify=(.*?)(?:\. (Not sent|Partly sent): (.*?)\.?)?$/s;
+
+/**
+ * How a notification went, read from its recorded detail, with the recorded reason when
+ * it did not (all) go out. A detail without a note reads `sent`, as it always has.
+ */
+export function notifyDelivery(detail: unknown): { delivery: NotifyDelivery; reason: string } {
+  const m = typeof detail === 'string' ? NOTIFY_DETAIL.exec(detail.trim()) : null;
+  const reason = m?.[3]?.trim() ?? '';
+  if (m?.[2] === 'Not sent') return { delivery: 'not_sent', reason };
+  if (m?.[2] === 'Partly sent') return { delivery: 'partly_sent', reason };
+  return { delivery: 'sent', reason: '' };
+}
+
+/** A `notify` action row in words: whether the notification went out, and why not. */
+function automationNotify(rule: string, detail: string): string {
+  const { delivery, reason } = notifyDelivery(detail);
+  if (delivery === 'not_sent') {
+    return sentences(`Automation did not send a notification${ruleNote(rule)}`, reason ? `Not sent: ${reason}` : '');
+  }
+  if (delivery === 'partly_sent') {
+    return sentences(
+      `Automation sent the notification to some channels${ruleNote(rule)}`,
+      reason ? `Partly sent: ${reason}` : '',
+    );
+  }
+  return `Automation sent a notification${ruleNote(rule)}.`;
+}
+
 /** `threshold_automation` action rows: `rule=<id> action=<action> <detail>`. */
 function automationAction(rule: string, action: string, detail: string): string {
   switch (action) {
@@ -142,7 +184,7 @@ function automationAction(rule: string, action: string, detail: string): string 
         : `Automation made a recommendation${ruleNote(rule)}.`;
     }
     case 'notify':
-      return `Automation sent a notification${ruleNote(rule)}.`;
+      return automationNotify(rule, detail);
     case 'run_playbook': {
       // Before Round 14 the action queued a new investigation with the runbook as context.
       const queued = /^run_playbook=(.*) queued=(True|False)$/s.exec(detail);

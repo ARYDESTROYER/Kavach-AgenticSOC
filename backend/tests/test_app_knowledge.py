@@ -1148,15 +1148,16 @@ def test_other_tasks_never_link_the_audit_log(question: str):
     assert "Platform › Audit log (audit:view)" not in answer.answer, answer.answer
 
 
-@pytest.mark.parametrize("question", [
-    "How do I filter logs by host?",
-    "How do I ingest JSON Lines files from S3?",
-    "How do I download logs as CSV?",
-])
+#: "How do I ingest CSV logs?" still cites the export rules first: no Sources page says
+#: CSV logs are not read, so the rules' page (the audit log) is the best section's page.
+_TOOL_PATH_NOT_THE_AUDIT_LOG = [q for q in _NOT_THE_AUDIT_LOG if q != "How do I ingest CSV logs?"]
+
+
+@pytest.mark.parametrize("question", _TOOL_PATH_NOT_THE_AUDIT_LOG)
 async def test_app_help_tool_never_sends_log_tasks_to_the_audit_log(question: str):
-    """The model's (and the Demo planner's) lookup agrees for the questions whose cited
-    audit-log sections are the record's list or the export rules: those sections name no
-    destination, so no locked Platform › Audit log reaches a tier-1 analyst's answer."""
+    """The model's (and the Demo planner's) lookup agrees: its destinations come from the
+    best section's page, and the audit log's record list and export rules name none, so no
+    locked Platform › Audit log reaches a tier-1 analyst's answer for another task."""
     outcome = await AppHelpTool().run(_ctx(_role_grants("analyst_tier1")), query=question)
     assert outcome.ok and outcome.citations
     assert "page:audit" not in outcome.console_links, (question, outcome.console_links)
@@ -1434,3 +1435,35 @@ def test_an_answer_never_has_an_empty_body_when_its_section_has_text():
     assert list_points(text, 10) == [
         "First item wraps onto two lines. Second sentence.", "Second item:", "Third item.", "Fourth item."]
     assert list_points("No list here.\n\n1. A numbered step.") == []
+
+
+# --------------------------------------------------------------------------- #
+# ``app_help`` destinations come from the best section's page (review finding: a
+# lower-ranked section of another page lent its page to the whole answer).
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize("question, role, expected", [
+    # The 4th hit is Settings › Export portable application state: it no longer adds the
+    # locked Data export destination for an auditor.
+    ("How do I export the audit log?", "auditor", ["page:audit"]),
+    ("How do I read an audit record?", "auditor", ["page:audit"]),
+    ("How do I search logs?", "analyst_tier1", ["page:logs"]),
+    ("What keyboard shortcuts does Case Manager have?", "analyst_tier1", ["page:case_manager"]),
+    ("How do I filter cases by rule?", "analyst_tier1", ["page:cases"]),
+    # The best section's page names none and the labels match nothing: the other cited
+    # sections' breadcrumbs still answer "Where are runbooks?".
+    ("Where are runbooks?", "analyst_tier1", ["page:runbooks"]),
+])
+async def test_app_help_tool_destinations_come_from_the_best_sections_page(question: str, role: str, expected: list[str]):
+    outcome = await AppHelpTool().run(_ctx(_role_grants(role)), query=question)
+    assert outcome.ok and outcome.citations
+    assert outcome.console_links == expected, outcome.console_links
+
+
+async def test_app_help_tool_keeps_a_destination_the_console_labels_confirm():
+    """Another page's section adds its destination only when the console labels and
+    keywords name it too: "Kill the export job" keeps Analytics › Jobs (the Data export
+    section and the 'jobs' keywords both name it), never the Data export section alone."""
+    outcome = await AppHelpTool().run(_ctx(_role_grants("super_admin")), query="Kill the export job")
+    assert outcome.ok
+    assert "page:batchjobs" in outcome.console_links, outcome.console_links
+    assert "settings:data_export" not in outcome.console_links, outcome.console_links

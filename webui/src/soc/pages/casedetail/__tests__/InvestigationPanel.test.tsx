@@ -7,10 +7,12 @@
  * ReAct trace. Verifies the two lanes render in order (AI ASSESSMENT → pinned DECISION),
  * that the AI lane is persistently AI-marked, that the raw ReAct trace stays behind a
  * "Full agent trace" disclosure, and that opening it lazy-loads the timeline when the
- * parent hasn't fetched it yet.
+ * parent hasn't fetched it yet. A request to open the trace (the audit log's "Open case
+ * trace", closing QA integ-06) opens it and brings it into view once, in both
+ * presentations, and lands focus that had dropped on the trace.
  */
-import { describe, it, expect, vi } from 'vitest';
-import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { act, render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { axe, toHaveNoViolations } from 'jest-axe';
 
 import { InvestigationPanel, type InvestigationPanelProps } from '../InvestigationPanel';
@@ -264,5 +266,174 @@ describe('InvestigationPanel — Case Manager presentation (Round 12, CM-6)', ()
   it('has no axe violations', async () => {
     const { container } = renderCm();
     expect(await axe(container)).toHaveNoViolations();
+  });
+});
+
+describe('InvestigationPanel: a request to open the trace (closing QA integ-06)', () => {
+  /** Each element a request brought into view, with the options it asked for. */
+  const scrolled: Array<{ el: Element; options: ScrollIntoViewOptions | boolean | undefined }> = [];
+  const originalScrollIntoView = Element.prototype.scrollIntoView;
+  const originalMatchMedia = window.matchMedia;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    scrolled.length = 0;
+    // jsdom has no layout: record what a request brings into view.
+    Element.prototype.scrollIntoView = function scrollIntoView(this: Element, options?: ScrollIntoViewOptions | boolean) {
+      scrolled.push({ el: this, options });
+    };
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    Element.prototype.scrollIntoView = originalScrollIntoView;
+    window.matchMedia = originalMatchMedia;
+  });
+
+  /** Past the beat the panel waits before it brings the open trace into view. */
+  const pastTheBeat = () =>
+    act(() => {
+      vi.advanceTimersByTime(200);
+    });
+
+  it('opens the full trace, reports the request, and brings it into view once after a beat', () => {
+    const onHandled = vi.fn();
+    const onRetryTimeline = vi.fn();
+    const request = { traceRequest: 1, onTraceRequestHandled: onHandled };
+    const { rerender } = render(<InvestigationPanel {...props({ timeline: null, onRetryTimeline })} {...request} />);
+    const trigger = screen.getByRole('button', { name: /hide full agent trace/i });
+    expect(onHandled).toHaveBeenCalledTimes(1);
+    expect(onHandled).toHaveBeenCalledWith(1);
+    // Opening never reads the trace itself: the case detail's tab load does that, and a
+    // second read would race it.
+    expect(onRetryTimeline).not.toHaveBeenCalled();
+    expect(scrolled).toHaveLength(0);
+
+    expect(document.activeElement).toBe(document.body);
+    pastTheBeat();
+    // Nothing had read it by then, so the beat does, once; the trace comes into view.
+    expect(onRetryTimeline).toHaveBeenCalledTimes(1);
+    expect(scrolled).toHaveLength(1);
+    expect(scrolled[0].el).toContainElement(trigger);
+    expect(scrolled[0].options).toEqual({ block: 'start', behavior: 'smooth' });
+    // Focus had dropped, so it lands on the trace's own control.
+    expect(document.activeElement).toBe(trigger);
+
+    // The same request again, before the parent forgets it, is never replayed.
+    rerender(<InvestigationPanel {...props({ timeline: null, onRetryTimeline })} {...request} />);
+    pastTheBeat();
+    expect(onHandled).toHaveBeenCalledTimes(1);
+    expect(onRetryTimeline).toHaveBeenCalledTimes(1);
+    expect(scrolled).toHaveLength(1);
+  });
+
+  it('leaves a trace closed by hand before the beat closed, and a later open is ordinary', () => {
+    const onRetryTimeline = vi.fn();
+    render(
+      <InvestigationPanel
+        {...props({ timeline: null, onRetryTimeline })}
+        traceRequest={2}
+        onTraceRequestHandled={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /hide full agent trace/i }));
+    pastTheBeat();
+    expect(screen.getByRole('button', { name: /show full agent trace/i })).toBeInTheDocument();
+    expect(onRetryTimeline).not.toHaveBeenCalled();
+    expect(scrolled).toHaveLength(0);
+    expect(document.activeElement).toBe(document.body);
+
+    // Opened by hand later: it reads the trace as any open does, and nothing scrolls.
+    fireEvent.click(screen.getByRole('button', { name: /show full agent trace/i }));
+    expect(onRetryTimeline).toHaveBeenCalledTimes(1);
+    pastTheBeat();
+    expect(onRetryTimeline).toHaveBeenCalledTimes(1);
+    expect(scrolled).toHaveLength(0);
+  });
+
+  it('brings the trace into view without animation for a viewer who asks for reduced motion', () => {
+    window.matchMedia = ((query: string) => ({
+      matches: query.includes('prefers-reduced-motion: reduce'),
+      media: query,
+      onchange: null,
+      addListener: () => undefined,
+      removeListener: () => undefined,
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+      dispatchEvent: () => false,
+    })) as typeof window.matchMedia;
+    render(<InvestigationPanel {...props()} traceRequest={3} onTraceRequestHandled={vi.fn()} />);
+    pastTheBeat();
+    expect(scrolled.map((entry) => entry.options)).toEqual([{ block: 'start', behavior: 'auto' }]);
+  });
+
+  it('leaves the trace collapsed and still with no request', () => {
+    const onRetryTimeline = vi.fn();
+    render(<InvestigationPanel {...props({ timeline: null, onRetryTimeline })} traceRequest={null} />);
+    pastTheBeat();
+    expect(screen.getByRole('button', { name: /show full agent trace/i })).toBeInTheDocument();
+    expect(onRetryTimeline).not.toHaveBeenCalled();
+    expect(scrolled).toHaveLength(0);
+  });
+
+  it('in the Case Manager presentation opens its own trace section, handled once', () => {
+    const onHandled = vi.fn();
+    const onRetryTimeline = vi.fn();
+    render(
+      <InvestigationPanel
+        {...props({ onRetryTimeline })}
+        presentation="case-manager"
+        traceRequest={4}
+        onTraceRequestHandled={onHandled}
+      />,
+    );
+    const trace = screen.getByTestId('investigation-trace');
+    expect(within(trace).getByRole('button', { name: 'Hide trace' })).toBeInTheDocument();
+    // The wrapper hands the request to the Case Manager layout and never applies it too.
+    expect(onHandled).toHaveBeenCalledTimes(1);
+    expect(onHandled).toHaveBeenCalledWith(4);
+
+    pastTheBeat();
+    expect(scrolled.map((entry) => entry.el)).toEqual([trace]);
+    // The trace was already loaded, so the beat read nothing.
+    expect(onRetryTimeline).not.toHaveBeenCalled();
+    // Focus had dropped, so it lands on the trace heading, which takes it without a ring
+    // stop of its own in the tab order.
+    const heading = within(trace).getByRole('heading', { name: 'Investigation trace' });
+    expect(document.activeElement).toBe(heading);
+    expect(heading).toHaveAttribute('tabindex', '-1');
+  });
+
+  it.each(['default', 'case-manager'] as const)(
+    'in the %s presentation keeps focus on a control the analyst is using',
+    (presentation) => {
+      render(
+        <>
+          <input aria-label="Search the queue" />
+          <InvestigationPanel {...props()} presentation={presentation} traceRequest={5} onTraceRequestHandled={vi.fn()} />
+        </>,
+      );
+      const search = screen.getByRole('textbox', { name: 'Search the queue' });
+      search.focus();
+      pastTheBeat();
+      expect(scrolled).toHaveLength(1);
+      expect(document.activeElement).toBe(search);
+    },
+  );
+
+  it('lands focus on the trace when the control that asked left the page', () => {
+    function Page({ link }: { link: boolean }) {
+      return (
+        <>
+          {link ? <a href="#/case_manager">Open case trace</a> : null}
+          <InvestigationPanel {...props()} traceRequest={link ? null : 6} onTraceRequestHandled={vi.fn()} />
+        </>
+      );
+    }
+    const { rerender } = render(<Page link />);
+    screen.getByRole('link', { name: 'Open case trace' }).focus();
+    rerender(<Page link={false} />);
+    pastTheBeat();
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: /hide full agent trace/i }));
   });
 });

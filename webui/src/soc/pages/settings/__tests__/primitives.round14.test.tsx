@@ -5,6 +5,9 @@
  * and `SettingRow` (switch, select, field, status, action and link rows), plus the
  * `StickySaveBar` width that keeps the save bar under the section it saves, and `NumPref`
  * on the shared NumberField (never snapping a value, never rewriting one on focus alone).
+ * In a full-width section a labelled control row still spans the panel but caps its
+ * content at a form row's content width, so the control sits as near its label as in a
+ * 44rem form section; form rows render exactly as they did before that cap existed.
  */
 import * as React from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -13,13 +16,20 @@ import { axe, toHaveNoViolations } from 'jest-axe';
 
 import {
   NumPref,
+  SectionTitle,
   SettingRow,
   SettingsGroup,
+  SettingsPageSection,
   SettingsSection,
   SettingsSectionContext,
   TextPref,
+  type SettingRowProps,
 } from '../primitives';
-import { StickySaveBar } from '@/soc/components/SettingsGrid';
+import {
+  SETTINGS_FORM_MAX_WIDTH,
+  SETTINGS_ROW_CONTENT_MAX_WIDTH,
+  StickySaveBar,
+} from '@/soc/components/SettingsGrid';
 import { RouterProvider, useNavigationBlocker } from '@/soc/router';
 import { StatusDot } from '@/design-system';
 import { Button } from '@/ui/button';
@@ -223,6 +233,268 @@ describe('SettingRow', () => {
     const { container } = chatAssistant();
     expect(await axe(container)).toHaveNoViolations();
     expect(container.textContent).not.toMatch(/[—–]/);
+  });
+});
+
+/** One row of every variant, in one group (the labels name the variants). */
+function everyRow() {
+  return (
+    <SettingsGroup title="Every row">
+      <SettingRow variant="switch" label="A switch" help="Switch help." checked={false} onCheckedChange={() => {}} />
+      <SettingRow
+        variant="select"
+        label="A select"
+        help="Select help."
+        value="a"
+        onValueChange={() => {}}
+        options={[{ value: 'a', label: 'Option A' }]}
+      />
+      <SettingRow variant="field">
+        <NumPref label="A field" help="Field help." value={4} onChange={() => {}} />
+      </SettingRow>
+      <SettingRow variant="field" wide>
+        <TextPref label="A wide field" help="Wide field help." value="x" onChange={() => {}} />
+      </SettingRow>
+      <SettingRow variant="control" label="A control" help="Control help." control={<Button size="sm">Choose</Button>} />
+      <SettingRow variant="control" wide label="A wide control" control={<Button size="sm">Choose wide</Button>} />
+      <SettingRow variant="status" label="A status" status={<StatusDot>On</StatusDot>} action={<Button size="sm">Turn off</Button>} />
+      <SettingRow variant="action" label="An action" action={<Button size="sm">Run</Button>} />
+      <SettingRow variant="link" label="A link" href="#/sources" value="5 of 5 enabled" />
+      <SettingRow variant="block">
+        <p>A block</p>
+      </SettingRow>
+      <SettingRow variant="block" bleed>
+        <p>A bleed block</p>
+      </SettingRow>
+    </SettingsGroup>
+  );
+}
+
+/** The row element whose text includes `text` (the label or the block's content). */
+function rowOf(text: string): HTMLElement {
+  return screen.getByText(text).closest('[data-setting-row]') as HTMLElement;
+}
+
+const CAP_CLASSES = SETTINGS_ROW_CONTENT_MAX_WIDTH.split(' ');
+
+describe('SettingRow in a full-width section (FX6s)', () => {
+  it('caps the content box of every labelled control row, never the row, so the hairline still spans the panel', () => {
+    render(
+      <SettingsSection title="Enrichment" width="full">
+        {everyRow()}
+      </SettingsSection>,
+    );
+    for (const label of ['A switch', 'A select', 'A field', 'A control', 'A status', 'An action']) {
+      const row = rowOf(label);
+      // The row stays a direct child of the panel (its `divide-y` hairline) with its inset.
+      expect(row.parentElement).toHaveAttribute('data-settings-panel');
+      expect(row).toHaveClass('px-4', 'py-3.5', 'xl:px-5');
+      expect(row.className).not.toMatch(/max-w-/);
+      const content = row.querySelectorAll('[data-setting-row-content]');
+      expect(content).toHaveLength(1);
+      expect(content[0]).toHaveClass(...CAP_CLASSES);
+      expect(content[0]).toHaveTextContent(label);
+    }
+    // A Field-based row's content box is the Field's inline layout root.
+    for (const label of ['A select', 'A field']) {
+      const content = rowOf(label).querySelector('[data-setting-row-content]');
+      expect(content).toHaveAttribute('data-field-layout', 'inline');
+    }
+    // A switch, control, status and action row: the content box carries the row layout.
+    expect(rowOf('A switch').querySelector('[data-setting-row-content]')).toHaveClass('flex', 'justify-between');
+    for (const label of ['A control', 'A status', 'An action']) {
+      expect(rowOf(label).querySelector('[data-setting-row-content]')).toHaveClass('sm:flex-row', 'sm:justify-between');
+    }
+  });
+
+  it('leaves block, link and wide rows as they are: a table, a whole-row link or a control under its label', () => {
+    render(
+      <SettingsSection title="Enrichment" width="full">
+        {everyRow()}
+      </SettingsSection>,
+    );
+    for (const text of ['A wide field', 'A wide control', 'A link', 'A block', 'A bleed block']) {
+      const row = rowOf(text);
+      expect(row.querySelector('[data-setting-row-content]')).toBeNull();
+      expect(row.className).not.toMatch(/max-w-/);
+    }
+    expect(screen.getByLabelText('A wide field').closest('[data-field-layout]')).toHaveAttribute('data-field-layout', 'wide');
+  });
+
+  it('keeps every row named and described as before', async () => {
+    const { container } = render(
+      <SettingsSection title="Enrichment" width="full">
+        {everyRow()}
+      </SettingsSection>,
+    );
+    expect(screen.getByRole('switch', { name: 'A switch' })).toHaveAccessibleDescription('Switch help.');
+    expect(screen.getByRole('combobox', { name: 'A select' })).toHaveAccessibleDescription('Select help.');
+    expect(screen.getByRole('spinbutton', { name: 'A field' })).toHaveAccessibleDescription('Field help.');
+    expect(await axe(container)).toHaveNoViolations();
+  });
+
+  it('renders a form section exactly as before the cap: one row element, no content box', () => {
+    render(
+      <SettingsSection title="Advanced" width="form">
+        {everyRow()}
+      </SettingsSection>,
+    );
+    expect(document.querySelector('[data-setting-row-content]')).toBeNull();
+    const before: Array<[string, string]> = [
+      ['A switch', 'flex items-start justify-between gap-6 px-4 py-3.5 xl:px-5'],
+      ['A select', 'px-4 py-3.5 xl:px-5'],
+      ['A field', 'px-4 py-3.5 xl:px-5'],
+      ['A wide field', 'px-4 py-3.5 xl:px-5'],
+      ['A control', 'flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-6 px-4 py-3.5 xl:px-5'],
+      ['A wide control', 'min-w-0 px-4 py-3.5 xl:px-5'],
+      ['A status', 'flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-6 px-4 py-3.5 xl:px-5'],
+      ['An action', 'flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-6 px-4 py-3.5 xl:px-5'],
+      [
+        'A link',
+        'flex items-center gap-4 transition-colors hover:bg-hover px-4 py-3.5 xl:px-5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
+      ],
+      ['A block', 'min-w-0 px-4 py-3.5 xl:px-5'],
+      ['A bleed block', 'min-w-0'],
+    ];
+    for (const [text, className] of before) {
+      expect(rowOf(text).className).toBe(className);
+    }
+    // The inline Field roots take no cap either.
+    for (const label of ['A select', 'A field']) {
+      expect(rowOf(label).querySelector('[data-field-layout="inline"]')?.className).not.toMatch(/max-w-/);
+    }
+  });
+
+  it('follows the measure of the section the row is in: the section, then the Settings shell, then form', () => {
+    // A section body that lays out its own content (SectionTitle, no SettingsSection)
+    // inside a full-width section of the Settings shell.
+    const { unmount } = render(
+      <SettingsSectionContext.Provider value={{ title: 'Appearance', width: 'full' }}>
+        <SectionTitle title="Appearance" />
+        {everyRow()}
+      </SettingsSectionContext.Provider>,
+    );
+    expect(rowOf('A switch').querySelector('[data-setting-row-content]')).toHaveClass(...CAP_CLASSES);
+    unmount();
+
+    // A form section inside the full-width shell measure is still a form.
+    const second = render(
+      <SettingsSectionContext.Provider value={{ width: 'full' }}>
+        <SettingsSection title="Advanced" width="form">
+          {everyRow()}
+        </SettingsSection>
+      </SettingsSectionContext.Provider>,
+    );
+    expect(document.querySelector('[data-setting-row-content]')).toBeNull();
+    second.unmount();
+
+    // Outside any section or shell: a form row.
+    const third = render(everyRow());
+    expect(document.querySelector('[data-setting-row-content]')).toBeNull();
+    third.unmount();
+
+    // A full-width page on its own route caps its rows; a form page does not.
+    const page = render(
+      <SettingsPageSection embedded={false} title="Roles & permissions" width="full">
+        {everyRow()}
+      </SettingsPageSection>,
+    );
+    expect(rowOf('A status').querySelector('[data-setting-row-content]')).toHaveClass(...CAP_CLASSES);
+    page.unmount();
+    render(
+      <SettingsPageSection embedded={false} title="Security">
+        {everyRow()}
+      </SettingsPageSection>,
+    );
+    expect(document.querySelector('[data-setting-row-content]')).toBeNull();
+  });
+
+  it('caps the content at a 44rem form section less the row inset on each side', () => {
+    render(
+      <SettingsSection title="Advanced">
+        {everyRow()}
+      </SettingsSection>,
+    );
+    const rem = (cls: string) => Number(/\[([\d.]+)rem\]/.exec(cls)?.[1]);
+    const spacing = (cls: string) => Number(/px-(\d+(?:\.\d+)?)$/.exec(cls)?.[1]) / 4; // Tailwind: 1 unit = 0.25rem
+    const rowClasses = rowOf('A switch').className.split(' ');
+    const pad = spacing(rowClasses.find((c) => /^px-/.test(c))!);
+    const padXl = spacing(rowClasses.find((c) => /^xl:px-/.test(c))!);
+    const form = rem(SETTINGS_FORM_MAX_WIDTH);
+    const [cap, capXl] = CAP_CLASSES;
+    expect(cap.startsWith('max-w-')).toBe(true);
+    expect(capXl.startsWith('xl:max-w-')).toBe(true);
+    expect(rem(cap)).toBe(form - 2 * pad);
+    expect(rem(capXl)).toBe(form - 2 * padXl);
+  });
+});
+
+describe('SettingRow block of form-like content (width="form")', () => {
+  /** A group like Roles "Permission check": a row of fields and a button, then its result. */
+  function checkGroup() {
+    return (
+      <SettingsGroup title="Permission check">
+        <SettingRow variant="block" width="form">
+          <div data-testid="check-grid">
+            <Button size="sm">Check</Button>
+          </div>
+        </SettingRow>
+        <SettingRow variant="status" label="Super admin on cases:read" status={<StatusDot>Allowed</StatusDot>} />
+        <SettingRow variant="block">
+          <p>A table</p>
+        </SettingRow>
+      </SettingsGroup>
+    );
+  }
+
+  it('in a full-width section caps the block content with the same box as a labelled control row, so the group keeps one right edge', () => {
+    render(
+      <SettingsSection title="Roles & permissions" width="full">
+        {checkGroup()}
+      </SettingsSection>,
+    );
+    const block = screen.getByTestId('check-grid').closest('[data-setting-row]') as HTMLElement;
+    expect(block).toHaveAttribute('data-setting-row', 'block');
+    // The row keeps its inset across the panel; only the content box inside it is capped.
+    expect(block.parentElement).toHaveAttribute('data-settings-panel');
+    expect(block.className).toBe('min-w-0 px-4 py-3.5 xl:px-5');
+    const content = block.querySelectorAll('[data-setting-row-content]');
+    expect(content).toHaveLength(1);
+    expect(content[0]).toBe(screen.getByTestId('check-grid').parentElement);
+    expect(content[0].className).toBe(SETTINGS_ROW_CONTENT_MAX_WIDTH);
+    // The result row under it caps at the same width: one edge for the button and the badge.
+    const status = rowOf('Super admin on cases:read').querySelector('[data-setting-row-content]');
+    expect(status).toHaveClass(...CAP_CLASSES);
+    // A plain block (a table) in the same group still takes the whole panel.
+    expect(rowOf('A table').querySelector('[data-setting-row-content]')).toBeNull();
+  });
+
+  it('in a form section renders as a plain block: no content box, the same classes as before', () => {
+    render(
+      <SettingsSection title="Advanced">
+        {checkGroup()}
+      </SettingsSection>,
+    );
+    expect(document.querySelector('[data-setting-row-content]')).toBeNull();
+    const block = screen.getByTestId('check-grid').closest('[data-setting-row]') as HTMLElement;
+    expect(block.className).toBe('min-w-0 px-4 py-3.5 xl:px-5');
+    expect(screen.getByTestId('check-grid').parentElement).toBe(block);
+  });
+
+  it('never caps a bleed block: a table that reaches the panel edges has no form width', () => {
+    // The props type rejects the pair; the renderer ignores it too.
+    // @ts-expect-error a bleed block takes the panel's width only
+    const bleedForm: SettingRowProps = { variant: 'block', bleed: true, width: 'form', children: <p>A bleed table</p> };
+    render(
+      <SettingsSection title="Enrichment" width="full">
+        <SettingsGroup title="Providers">
+          <SettingRow {...bleedForm} />
+        </SettingsGroup>
+      </SettingsSection>,
+    );
+    const row = rowOf('A bleed table');
+    expect(row.className).toBe('min-w-0');
+    expect(row.querySelector('[data-setting-row-content]')).toBeNull();
   });
 });
 

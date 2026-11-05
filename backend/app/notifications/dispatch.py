@@ -491,6 +491,11 @@ class NotificationService:
             logger.debug("in-app event publish failed: %s", exc)
 
     async def _audit_send(self, case_id: str, rec: dict[str, Any], trigger: str) -> None:
+        """One NOTIFICATION row per channel send. Its outcome is the send's own:
+        ``success`` only when the channel confirmed it (``ok`` is ``True``), otherwise
+        ``failure``, so a channel that did not take the notification is listed under
+        the audit log's Failed filter (Round 14 SPEC §4.5.3). A rate-limited channel is
+        not sent and writes no row here; the automation row says so."""
         if self._audit is None:
             return
         try:
@@ -499,6 +504,8 @@ class NotificationService:
             await self._audit.record(
                 action_type=ActionType.NOTIFICATION, surface="notification",
                 actor="notification", case_id=case_id,
+                outcome="success" if rec.get("ok") is True else "failure",
+                actor_type="system",
                 result_summary=(
                     f"channel={rec.get('channel_id')} type={rec.get('type')} "
                     f"trigger={trigger} ok={rec.get('ok')} detail={rec.get('detail')}"

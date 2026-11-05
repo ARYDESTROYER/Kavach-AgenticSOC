@@ -20,6 +20,7 @@ import logging
 from typing import Any
 
 from ..audit.audit_log import AuditLogger
+from ..audit.changes import redact_text
 from ..config import Preferences
 from ..constants import (
     CASES_READ_PATTERN,
@@ -30,10 +31,10 @@ from ..constants import (
 from ..engine import shift_report
 from ..es.base import BaseESClient
 from ..es.querybuilder import standup_aggregations
-from ..llm.gateway import GatewayError, LLMGateway
+from ..llm.gateway import BudgetBlocked, GatewayError, LLMGateway
 from ..stores.base import CaseRepository
 from ..stores.shift_handoff import ShiftHandoffStore
-from ..utils import iso_now, now_utc, parse_es_timestamp, to_millis
+from ..utils import iso_now, now_utc, parse_es_timestamp, to_millis, truncate
 # fence_block now lives in the shared prompt seam (used by standup, investigator, and
 # overview). Re-exported here so ``app.agents.standup.fence_block`` keeps resolving.
 from .prompts import fence_block  # noqa: F401 (re-export)
@@ -317,6 +318,9 @@ class StandupService:
         await self._audit.record(
             action_type=ActionType.PROMPT, surface=Role.STANDUP.value, actor=Role.STANDUP.value,
             model=prefs.standup_model.model, prompt_excerpt="<aggregate JSON>",
+            # The prompt was handed to the gateway. A refused or failed call writes its
+            # own ERROR row below, as the router and the formatter do.
+            outcome="success", actor_type="agent",
         )
         try:
             res = await self._gateway.complete(
@@ -325,6 +329,20 @@ class StandupService:
             return res.text, res.cost
         except GatewayError as exc:
             logger.info("Standup model unavailable (%s); using deterministic summary", exc)
+            failure_class = getattr(exc, "failure_class", "") or ""
+            detail = f" [{failure_class}]" if failure_class else ""
+            # The model call did not answer: record it, so the audit log's Failed (or,
+            # for the AI budget's refusal, Denied) filter finds it (#2).
+            await self._audit.record(
+                action_type=ActionType.ERROR, surface=Role.STANDUP.value, actor=Role.STANDUP.value,
+                model=prefs.standup_model.model, actor_type="agent",
+                # The AI budget refusing the call is a policy refusal, not a fault.
+                outcome="denied" if isinstance(exc, BudgetBlocked) else "failure",
+                # A provider error's text can carry an address or a credential.
+                result_summary=truncate(redact_text(
+                    f"standup model unavailable{detail}: {exc}; the deterministic summary was used"
+                )[0], 1000),
+            )
             return _deterministic_summary(aggregate), 0.0
 
 

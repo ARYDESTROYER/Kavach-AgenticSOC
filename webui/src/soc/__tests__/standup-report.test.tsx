@@ -208,7 +208,7 @@ describe('Standup shift handoff (Round 3 / F11)', () => {
     await screen.findByText('Suspicious PowerShell on host-12');
     const header = document.querySelector('[data-page-header="page"]') as HTMLElement;
     const controls = header.querySelector('[data-page-header-controls]') as HTMLElement;
-    expect(within(controls).getByRole('button', { name: 'Time range: Last 24 hours' })).toBeInTheDocument();
+    expect(within(controls).getByRole('button', { name: 'Last 24h, time range' })).toBeInTheDocument();
     expect(within(controls).getByRole('button', { name: 'Refresh standup' })).toBeInTheDocument();
     const stamp = within(header).getByTestId('standup-stamp');
     expect(stamp).toHaveTextContent(/^Swing shift · Generated /);
@@ -221,7 +221,7 @@ describe('Standup shift handoff (Round 3 / F11)', () => {
     // 150 hours is closest to the 7-day preset.
     await waitFor(() => expect(fetchReportMock).toHaveBeenCalledWith(168));
     expect(standupMock).toHaveBeenCalledWith(168);
-    await userEvent.click(await screen.findByRole('button', { name: 'Time range: Last 7 days' }));
+    await userEvent.click(await screen.findByRole('button', { name: 'Last 7d, time range' }));
     const group = await screen.findByRole('group', { name: 'Relative time ranges' });
     // The handoff offers two ranges only.
     expect(within(group).getAllByRole('button').map((b) => b.textContent)).toEqual([
@@ -460,7 +460,7 @@ describe('Standup review fixes (Round 14 W8a)', () => {
     }));
     render(<Standup onNavigate={vi.fn()} />);
     await waitFor(() => expect(pending.has(24)).toBe(true));
-    await userEvent.click(screen.getByRole('button', { name: 'Time range: Last 24 hours' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Last 24h, time range' }));
     const group = await screen.findByRole('group', { name: 'Relative time ranges' });
     await userEvent.click(within(group).getByRole('button', { name: /^Last 7 days/ }));
     await waitFor(() => expect(pending.has(168)).toBe(true));
@@ -474,7 +474,7 @@ describe('Standup review fixes (Round 14 W8a)', () => {
     expect(screen.queryByText('Suspicious PowerShell on host-12')).toBeNull();
     expect(screen.getByText('The 7 day summary.')).toBeInTheDocument();
     expect(screen.queryByText('The 24 hour summary.')).toBeNull();
-    expect(screen.getByRole('button', { name: 'Time range: Last 7 days' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Last 7d, time range' })).toBeInTheDocument();
   });
 
   it('names both ranges when a new range fails and the previous report stays', async () => {
@@ -482,7 +482,7 @@ describe('Standup review fixes (Round 14 W8a)', () => {
     const strip = await screen.findByRole('group', { name: 'Shift counts, last 24 hours' });
     expect(within(strip).getByTestId('kpi-delta-open')).toHaveTextContent('was 8');
     fetchReportMock.mockRejectedValue(new Error('Network error'));
-    await userEvent.click(screen.getByRole('button', { name: 'Time range: Last 24 hours' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Last 24h, time range' }));
     const group = await screen.findByRole('group', { name: 'Relative time ranges' });
     await userEvent.click(within(group).getByRole('button', { name: /^Last 7 days/ }));
     await waitFor(() => expect(fetchReportMock).toHaveBeenLastCalledWith(168));
@@ -492,7 +492,7 @@ describe('Standup review fixes (Round 14 W8a)', () => {
     expect(alert).toHaveTextContent('Could not load the last 7 days; showing the last 24 hours');
     expect(screen.getByRole('group', { name: 'Shift counts, last 24 hours' })).toBeInTheDocument();
     expect(screen.getByText('Suspicious PowerShell on host-12')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Time range: Last 7 days' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Last 7d, time range' })).toBeInTheDocument();
   });
 
   it('keeps the plain refresh error when the same range fails again', async () => {

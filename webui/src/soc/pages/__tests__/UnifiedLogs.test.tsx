@@ -205,7 +205,7 @@ describe('Logs page', () => {
 
   it('keeps Live available for a relative linked window', async () => {
     show('#/logs?logQuery=failed&from=now-24h');
-    await screen.findByRole('button', { name: 'Time range: Last 24 hours' });
+    await screen.findByRole('button', { name: 'Last 24h, time range' });
     expect(liveControl()).toHaveAccessibleName('Auto-refresh interval: Off');
     expect(screen.queryByTestId('unified-live-tail-reason')).toBeNull();
   });
@@ -380,7 +380,7 @@ describe('Logs page: exact filters', () => {
     expect(await screen.findByTestId('logs-matched')).toHaveTextContent(
       /^381 events · 2026-10-05 00:00 → 2026-10-08 00:00 UTC · Sources/,
     );
-    await user.click(screen.getByRole('button', { name: /^Time range: / }));
+    await user.click(screen.getByRole('button', { name: /, time range$/ }));
     await user.click(await screen.findByRole('button', { name: /^Last 7 days/ }));
     await waitFor(() => expect(fetchUnifiedLogs).toHaveBeenLastCalledWith(expect.objectContaining({ from: 'now-7d', rule: RULE })));
     await waitFor(() => expect(screen.getByTestId('logs-matched')).toHaveTextContent(/^381 events · last 7 days · Sources/));
@@ -406,7 +406,7 @@ describe('Logs page: exact filters', () => {
       const full = '2026-11-02 00:00:00 → 2026-11-04 13:46:55 UTC';
       // WCAG 2.5.3 (Label in Name): a voice user says the words the pill shows; the whole
       // range is its description (and its tooltip).
-      const pill = await screen.findByRole('button', { name: 'Time range: Nov 2 00:00 → Nov 4 13:46 UTC' });
+      const pill = await screen.findByRole('button', { name: 'Nov 2 00:00 → Nov 4 13:46 UTC, time range' });
       expect(pill).toHaveAccessibleDescription(full);
       // Below `sm` the pill reads the short form; from `sm` up the full one. Either label
       // truncates rather than push the pill past its container (closing QA qa2-02).

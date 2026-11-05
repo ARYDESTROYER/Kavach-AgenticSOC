@@ -262,17 +262,20 @@ export function humanVsAiTotals(posture: PostureResponse | null | undefined): Hu
 }
 
 /**
- * A bucket's tick label in the chart kit's one day format, in UTC (the card says so):
- * "Oct 28" for a day, "Oct 28 06:00" for an hour on a board longer than a day, "06:00"
- * for an hour within one day.
+ * A bucket's label in the chart kit's one day format, in UTC (the card says so): "Oct 28"
+ * for a daily bucket; for a sub-day bucket "Oct 28 06:00", or "Oct 29" alone for the
+ * bucket that starts at midnight, on a board of any length. It is the text a tick reads
+ * when it names its day: the chart dates its ticks from each bucket's start itself (the
+ * one time-axis rule, charts/x-axis.ts), and this label agrees with it. A bucket whose
+ * start does not parse keeps the payload's raw `t` as its label instead.
  */
-export function humanVsAiTick(startMs: number, bucketMinutes: number, windowHours: number): string {
+export function humanVsAiTick(startMs: number, bucketMinutes: number): string {
   const d = new Date(startMs);
   if (!Number.isFinite(d.getTime())) return '';
   const day = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' });
   const hour = d.toISOString().slice(11, 16);
   if (bucketMinutes >= 1440) return day;
-  return windowHours > 24 ? `${day} ${hour}` : hour;
+  return hour === '00:00' ? day : `${day} ${hour}`;
 }
 
 /** One stacked column per trends bucket, or null when the server does not split closers. */
@@ -286,7 +289,7 @@ export function humanVsAiSeries(trends: MetricsTrends | null | undefined): Human
     const startMs = Date.parse(String(b.t ?? ''));
     const endMs = Number.isFinite(startMs) && bucketMs > 0 ? startMs + bucketMs : Number.NaN;
     const iso = Number.isFinite(startMs) ? new Date(startMs).toISOString() : '';
-    const x = iso ? humanVsAiTick(startMs, bucketMinutes, Number(trends.window_hours) || 0) : String(b.t ?? '');
+    const x = iso ? humanVsAiTick(startMs, bucketMinutes) : String(b.t ?? '');
     return {
       x,
       ai: finite(b.auto_closed),

@@ -248,7 +248,7 @@ describe('Overview — Round 12 data inventory (every datum survives the redesig
     const hero = screen.getByTestId('page-hero');
     expect(within(hero).getByRole('heading', { level: 1, name: PAGE_TITLE })).toBeInTheDocument();
     const controls = within(hero).getByRole('group', { name: 'Dashboard controls' });
-    expect(within(controls).getByRole('button', { name: /Time range: Last 24 hours/i })).toBeInTheDocument();
+    expect(within(controls).getByRole('button', { name: 'Last 24h, time range' })).toBeInTheDocument();
     expect(within(controls).getByRole('combobox', { name: /Auto-refresh interval/i })).toBeInTheDocument();
     expect(within(controls).getByRole('button', { name: 'Refresh dashboard' })).toBeInTheDocument();
     // The page's ONE freshness stamp (Round 14): a `<time>` on the dashbar that names the
@@ -1421,7 +1421,7 @@ describe('Overview, Round 14: no band headers, one freshness stamp (SPEC §4.3)'
     expect(flowCaption()).toHaveTextContent(/^last 24 hours$/);
 
     noiseMock.mockRejectedValue(new Error('noise counters unavailable'));
-    await userEvent.click(screen.getByRole('button', { name: /Time range: Last 24 hours/i }));
+    await userEvent.click(screen.getByRole('button', { name: 'Last 24h, time range' }));
     await userEvent.click(
       within(screen.getByRole('group', { name: /Relative time ranges/i })).getByRole('button', {
         name: /Last 7 days/i,

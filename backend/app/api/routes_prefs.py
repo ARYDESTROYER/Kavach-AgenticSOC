@@ -212,6 +212,8 @@ async def prefs_user_put(
                 await state.control_audit.record(
                     action_type=ActionType.USER_MGMT, surface="chat",
                     actor=current_username(request) or "default",
+                    # Written after the prompt library was saved.
+                    outcome="success", actor_type="human",
                     result_summary=(
                         f"chat prompt library updated: added={changes['added']} "
                         f"edited={changes['edited']} removed={changes['removed']} "
