@@ -95,7 +95,7 @@ describe('motion variant tokens', () => {
       expect(hidden.opacity).toBe(0);
       expect(show.opacity).toBe(1);
     }
-    // Only transform + opacity animate (GPU-composited house style) — no width/shadow.
+    // Only transform + opacity animate (GPU-composited house style), never width or shadow.
     const show = pageVariants.show as Record<string, unknown>;
     expect(Object.keys(show).every((k) => ['opacity', 'y', 'x', 'scale', 'transition'].includes(k))).toBe(
       true,

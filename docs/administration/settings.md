@@ -79,7 +79,9 @@ and one tinted panel that holds its settings as rows divided by hairlines:
 Form sections are at most 44 rem (704 px) wide so a switch stays close to its label.
 Sections built around a table or a wide editor, such as Users, Roles & permissions,
 Sessions & activity, Active sessions and Enrichment, use the full width, and their
-tables reach the edges of their panel.
+tables reach the edges of their panel. Their switches, fields and statuses still sit as
+close to their names as in a form section, and a short form or a notice among them, such
+as the permission check on **Roles & permissions**, ends where they end.
 
 Explanations live in the help tips. A callout appears only for a condition that is true
 right now, for example **Settings are read-only** while the settings lock is on, **You
@@ -258,6 +260,16 @@ model call timeout and 2 questions per user and 8 in total, first takes 300 seco
 (Unlimited only), 4 and 16, and then the current 900 seconds, 12 and 48; a Bounded
 configuration keeps its 30 seconds. Values an administrator had chosen are kept, even
 when one equals a later default. Each move happens once and is never repeated.
+
+## Case numbers
+
+**Settings → General → Cases** sets the format of the case number people see and say,
+such as `CASE-2026-000123`. Turn on **Use a custom case number format** first; until then
+the Console shows the internal case ID. A live preview shows sample numbers from
+**Sequence start**. The template takes
+placeholders such as `{prefix}`, `{year}`, and `{seq:06d}`, and the sequence can start
+again each calendar year, fiscal year, or fiscal quarter. The internal case ID never
+changes, and changing the format never renumbers existing cases.
 
 ## Updates and release channels
 

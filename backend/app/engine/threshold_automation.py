@@ -476,9 +476,14 @@ class ThresholdAutomation:
           its text, which can carry a channel's URL or address.
         * The notifier returned per-channel results (the notification service's
           ``[{"ok": bool, "detail": str, ...}]``): ``success`` when every channel took
-          the notification or none was due (an empty list: notifications switched off,
-          no channel for the trigger, a repeat inside the dedup window). Otherwise the
-          note counts the channels that failed and the ones the notification rate
+          the notification. An empty list is ``success`` with the note "Not sent: no
+          channel was due (...)": nothing failed, but nothing went out either
+          (notifications switched off, no channel for the trigger, an inbox copy due
+          for no one, a repeat inside the dedup window). The service's own result for
+          a dispatch that failed as a whole (``type`` "dispatch") reads ``failure``
+          with the note "Not sent: the notification service failed (<type>)", or
+          ``partial`` with "Partly sent: ..." when a channel took it first. Otherwise
+          the note counts the channels that failed and the ones the notification rate
           limit held back (a dropped send, not a queued one): ``partial`` when some
           channels took it; when none did, ``denied`` if only the rate limit held them
           back (a configured limit refused the send, as the AI budget refusing a model
@@ -498,6 +503,16 @@ class ThresholdAutomation:
         if not isinstance(result, list):
             return "unknown", ""
         results = [r for r in result if isinstance(r, Mapping)]
+        if not results:
+            return "success", _NOTHING_DUE_NOTE
+        broken = next((r for r in results if r.get("type") == _DISPATCH_FAILED_TYPE), None)
+        if broken is not None:
+            # The service failed as a whole; any channel it reached first is kept.
+            kind = str(broken.get("detail") or "").removeprefix("dispatch error: ").strip()
+            reason = f"the notification service failed ({kind if kind.isidentifier() else 'error'})"
+            if any(r.get("ok") is True for r in results):
+                return "partial", f"Partly sent: {reason}"
+            return "failure", f"Not sent: {reason}"
         held = [r for r in results if r.get("ok") is not True]
         if not held:
             return "success", ""
@@ -562,6 +577,17 @@ class ThresholdAutomation:
 #: channel was over its hourly rate limit (``NotificationService.dispatch``,
 #: ``notifications/dispatch.py``); pinned by a test that drives the real service.
 _RATE_LIMITED_DETAIL = "rate limit exceeded"
+
+#: The ``type`` of the result the notification service adds when a dispatch failed as
+#: a whole rather than on one channel (``NotificationService.dispatch``); pinned by a
+#: test that drives the real service.
+_DISPATCH_FAILED_TYPE = "dispatch"
+
+#: The note of a notify action no channel was due for (the service returned no result).
+_NOTHING_DUE_NOTE = (
+    "Not sent: no channel was due (notifications are off, no channel takes this "
+    "trigger, no one is addressed, or it repeated inside the dedup window)"
+)
 
 #: What each action does, for the sentence of an action that could not run.
 _ACTION_VERBS: Mapping[str, str] = {

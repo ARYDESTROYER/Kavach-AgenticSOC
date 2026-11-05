@@ -103,7 +103,7 @@ const PAGE_KEYWORDS: Record<string, string[]> = {
     'widgets',
     'layout',
   ],
-  standup: ['shift', 'handoff', 'daily summary', 'attention queue'],
+  standup: ['shift', 'handoff', 'daily summary', 'attention queue', 'shift brief'],
   // Round 14: Cases has an exact Rule filter ("the cases one rule opened").
   cases: ['triage', 'queue', 'alerts', 'incidents', 'rule filter', 'cases for a rule'],
   // Round 14: Start runbook lives in a case's Take action menu and its Runbook tab, so
@@ -178,10 +178,13 @@ const KPI_TOPICS: readonly Topic[] = [
  * helps one can mislead the other: 'audit' finds Data export in the Settings search (it
  * exports an Audit scope), while in chat it would send "How do I export the audit log?"
  * to the whole-application export (`data_export:export`, which auditors lack) instead of
- * the Audit log's own Export menu (`audit:export`). Keys must be real target ids.
+ * the Audit log's own Export menu (`audit:export`). The bare 'export', 'download' and
+ * 'cases' do the same to "How do I export a chart as CSV?", which is done in Workspace
+ * Chat; Data export keeps its label, 'backup', 'portable' and 'analysis bundle' for the
+ * questions about exporting application state. Keys must be real target ids.
  */
 const CONSOLE_KEYWORD_DROP: Record<string, readonly string[]> = {
-  'settings:data_export': ['audit'],
+  'settings:data_export': ['audit', 'export', 'download', 'cases'],
 };
 
 const consoleKeywords = (id: string, keywords: readonly string[]): string[] =>

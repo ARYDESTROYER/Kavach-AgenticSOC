@@ -90,6 +90,7 @@ export const AUDIT_LEGACY_EVENTS: readonly AuditLegacyEventEntry[] = [
   { action_type: 'context', surface: 'rag_precedent_repair', category: 'config', label: 'Precedent index repaired' },
   { action_type: 'context', surface: 'dashboards', category: 'config', label: 'Dashboard changed' },
   { action_type: 'context', surface: 'chat_history', category: 'config', label: 'Chat conversation changed' },
+  { action_type: 'job', surface: 'settings', category: 'config', label: 'Replay fixtures cleared' },
   { action_type: 'prompt', surface: '*', category: 'agent', label: 'Model prompt' },
   { action_type: 'es_query', surface: '*', category: 'agent', label: 'Log query' },
   { action_type: 'tool_call', surface: '*', category: 'agent', label: 'Tool call' },

@@ -848,7 +848,7 @@ server field named here on the Demo dataset and a fixture; a field marked "new" 
 | operations · Unassigned | `breakdown?by=assignee&status_group=open&window=all`, the unassigned group (`key: null`) | Open cases with no assignee | `metrics:view` |
 | operations · SLA breached | `GET /api/standup/report` `sla_aging.breached` | Open cases past their response or resolve target | `cases:read` |
 | operations · New cases | posture `case_count` (window W) | Cases created in the window | `metrics:view` |
-| operations · Closed | posture `quality.terminal_cases` (window W) | Cases created in the window that are now closed or resolved | `metrics:view` |
+| operations · Closed | posture `quality.terminal_cases` (window W) | Cases created in the window that are now closed or resolved, not counting closes by an analyst policy (its "of N" line counts `quality.total_cases` and names the policy closes) | `metrics:view` |
 | detection · Sources reporting | `GET /api/sources/health`: enabled rows whose last event is inside W | Enabled sources that sent at least one event in the window | `sources:read` |
 | detection · Silent sources | `GET /api/sources/health`: enabled rows flagged silent | Enabled sources the silent-source detector flags | `sources:read` |
 | detection · Events per minute | `GET /api/metrics/noise-reduction` `events_per_min` (with `events_per_min_since` and `events_per_min_reason`; named `events_per_min_from_ticks` in the first draft, §11.1) | Mean events per minute over the measured part of the window, from the poller's tallies | `metrics:view` |
@@ -904,9 +904,9 @@ urgency; captions start with the window or "Open now" ("Open now · oldest 9 day
 [ Auto-close health (4) ][ Telemetry gaps (8)                                  ]
 ```
 
-The heatmap fits all tactics with a 96 px column minimum below 1600 px and becomes the Top
-techniques list on a phone; Connector health uses two-line rows on a phone; Top detection rules
-names are `RuleLink`s (§4.6.5).
+The heatmap fits all tactics with a 96 px column minimum below 1600 px (as built: §11.1 "ATT&CK
+heatmap columns") and becomes the Top techniques list on a phone; Connector health uses two-line
+rows on a phone; Top detection rules names are `RuleLink`s (§4.6.5).
 
 **Executive summary** (default last 30 days, compared with the previous 30):
 
@@ -1087,7 +1087,9 @@ group's open state unchanged; no em dash in any board copy.
   response carries `run_totals: {run_id: n}` for every `run_id` on the page, and a group whose rows
   on screen are fewer than its total reads "Investigation of CASE-000214 · 6 of 10 steps shown ·
   Load more" (Load more fetches the next page, which completes the group in place). Rows without a
-  `run_id` (legacy rows and non-pipeline rows) are never grouped. The scope line counts events
+  `run_id` (legacy rows and non-pipeline rows) are never grouped. (As built: the group's outcome
+  follows how the run ended, and a group shown in part reads "Not known" until a loaded row proves
+  one, §11.1 "An investigation group's outcome follows how it ended".) The scope line counts events
   ("Showing 1 to 50 of 18,406 events"), never groups.
 - Paging: server-side, 50 rows, "Load more" at the foot (the Case Manager queue grammar), never a
   client filter over a window.
@@ -1651,7 +1653,8 @@ the rule table and the severity table of the same sample ([P-C4] and [P-C5] used
   top-bar hairline) fills 240 px at the click and only the labels fade in (120 ms after a 60 ms
   delay); on collapse the panel closes over the already-moved page in 160 ms. Open 200 ms, close
   160 ms, `ease-standard`. Group children collapse at the click with the spacer (no transition) and
-  reveal with the labels on expand.
+  reveal with the labels on expand. (As built: the panel and the spacer change in consecutive
+  frames, §11.1 "The rail toggle takes two consecutive frames".)
 - **The toggle** (fixes D3) is one element in a fixed slot at the top of the icon column under the
   brand, never unmounted, so focus and the pointer stay on it. It is a quiet 28 px row (12 px muted
   text, 16 px icon, 8 px of air before the first destination); visible text "Collapse navigation"
@@ -1921,7 +1924,7 @@ Specific contracts carried from the prototypes ([P-C7]):
 - Measured targets ([P-C9]): first control at 367 px (Chat assistant) and 473 px (Data scope) at
   1440, switch-to-label distance at most 465 px at 1440 and 1920, zero label overlaps at 390;
   verified by the live QA harness and recorded (§8.3, §11.4). (As built: the switch distance
-  measured 467 to 527 px, a failed target recorded in §11.1 "Settings switch distance".)
+  measured 467 to 527 px; §11.1 "Settings switch distance" amends the target to the approved prototype.)
 
 ### 4.10 Ask 9: one Runbooks feature, rebuilt (C10 B, C11 A)
 
@@ -3559,8 +3562,18 @@ built" pointer.
   paint stays out and the next first-paint addition is measured against the shipped entry,
   inside the same +1,024 B budget; the 400,000 B ceiling does not move. §11.4 records the final
   gates.
+  The FX5 closing fixes measured 337,215 B on the merged tree (gate run r8-final-fix), 999 B over
+  the 336,216 B baseline and 25 B inside the 1,024 B budget (`bundle-first-paint.test.ts:158-159`).
+  Shares measured on separate snapshots: FX5n about +496 B (`NavSidebar.tsx` +222, `nav-store.ts`
+  +270), FX5s +267 B (`session-key.ts` +155, `prefs.tsx` +138, `demo.tsx` -26); the r8-final-fix
+  source maps also attribute FX5p +187 B (`case-tabs.ts` +141, `router.tsx` +46); the rest is within
+  ±18 B of noise. FX6 added no entry script bytes (the entry stylesheet grew 168 B with FX6h's
+  `nav.css`, which the budget does not count): the r9b-fx6-complete gate build measured 337,215 B
+  again, 0 B against `44efc6e`. WP-GEN re-measures the final tree
+  and decides whether to rebase `PRE_REVAMP_ENTRY_BYTES`, recording the figure here and in
+  AGENTS.md "Round 14 baseline".
 
-#### Console grammar, navigation and pages (W2a, W2b, W3, W4a, W8a, W8b, W9a, W9b, FX3wa, FX3wb, FX3wc)
+#### Console grammar, navigation and pages (W2a, W2b, W3, W4a, W8a, W8b, W9a, W9b, FX3wa, FX3wb, FX3wc, FX5n, FX5p, FX6s, FX6t)
 
 - **Settings groups and where the two new sections sit (W9a, supersedes §4.9.4 and §4.9.6).**
   Settings has five groups: Account, General, Integrations, Security & access and Organization;
@@ -3575,13 +3588,33 @@ built" pointer.
   the enrollment or turn-off steps open under the row and Cancel closes them. `MfaSetupCard`
   gained a controlled start for this, its final button reads "Verify and turn on", and Login reads
   "Verify and continue" (FX4w) for one vocabulary.
-- **Settings switch distance (W9a, §4.9.6, a failed target).** At 1440 px the switch-to-label
-  distance measured 467 px on Chat assistant ("Daily chat spending limit"), 527 px on Data scope and
-  516 px on Standup, against the 465 px target. The approved prototype measured 465, 526 and 515 px
-  for the same rows, so the target matched only the prototype's chat row. Under §8.3 this is a
-  finding for W9a, not a softened target: WP-GEN re-measures at 1440 and 1920 and records the
-  values in §11.4, and the orchestrator decides with the operator whether to fix the layout or
-  amend the target.
+- **Settings switch distance (W9a, FX6s, §4.9.6, target amended).** In a form section the
+  switch-to-label distance measures 467 px on Chat assistant ("Daily chat spending limit"), 527 px
+  on Data scope ("Polling enabled") and 516 px on Standup ("Standup enabled"), the same at 1440 and
+  1920 px (re-measured by the first closing acceptance pass, §11.4), against the 465 px target. The
+  approved prototype measured 465, 526 and 515 px for the same three rows, so these three match the
+  prototype within 2 px. Across all 31 sections, 99 of 129 labelled switch rows measured over 465 px
+  at 1440 and at 1920. 97 of them are in form sections, where a short label in the 44rem row leaves
+  its switch farther away (All settings up to 578 px, Advanced "Kill switch" 561, SLA "SLA tracking"
+  544, Notifications "On escalated" 541); FX6s leaves form sections as they are. The 2 rows in the
+  full-width Enrichment section sat at the panel's far edge ("Enrichment enabled" 664 and 1,144 px).
+  Decision (orchestrator, 2026-11-05, WP-GEN): the §4.9.6 target is amended to the geometry of the
+  approved C9 A prototype: a labelled control stays inside a form row's width (44rem), so its
+  distance from a short label is at most that row's content width. The 465 px figure came from one
+  prototype row; the operator approved the prototype as a whole (C9 A, recorded in the Journal
+  entry that lists the operator's choices), and the three named rows match it within 2 px. The
+  operator can overrule this; the decision is named in the pull request. FX6s caps a labelled control row in
+  a full-width section (`switch`, `select`, an inline `field`, `control`, `status`, `action`) at a
+  form row's content width (`SETTINGS_ROW_CONTENT_MAX_WIDTH`: 42rem, 41.5rem from 1280 px), the row
+  and its hairline still spanning the panel, and a `block` row of form-like content takes the same
+  cap with `width="form"`: "Enrichment enabled" 664 to 496 px at 1440 and 1,144 to 496 px at 1920;
+  the Enrichment "Cache lifetime" field 610 to 442 and 1,090 to 442 px; the Roles permission check
+  result 588 to 420 and 1,068 to 420 px, with the check form ending on the same edge. Form sections
+  are unchanged. The Enrichment provider list keeps its switches at the panel's far edge by
+  decision: it is a list whose rows carry a long description and a trailing status and switch, like
+  a table's last column. The first control sits higher than the §4.9.6 targets (339 against 367 px
+  on Chat assistant and 453 against 473 px on Data scope at 1440), because the section description
+  moved into its help tip (`SettingsSection help`); recorded, not changed.
 - **Cases keeps the Outcome column (W8b, deviation from §4.9.4).** The §4.9.4 default columns
   leave Outcome out, but the approved C7 prototype shows it and Round 12 D15 makes the analyst
   classification the case headline, so Cases keeps it. To fit beside a 280 px title at 1,440 px,
@@ -3590,6 +3623,16 @@ built" pointer.
   outcome 9.25rem, assignee 7.5rem, updated 5.5rem, actions 4rem; at 1,280 px the table scrolls
   with its edge fade. The selection checkboxes read "Select CASE-000048" and the header box
   "Select all cases on this page" (`DataTable` `getRowLabel`, FX3wc).
+  The cell's compact grammar now covers every settled outcome, not only an automatic close (FX5p):
+  short labels from `outcomeCellText`, the table badge size of the Status column, and the analyst
+  glyph inside the badge in place of the separate Analyst tag. An analyst close with no
+  classification reads "Not recorded", with tooltip and accessible name "Closed by analyst:
+  outcome not recorded". A human outcome's sentence ("Closed as false positive by an analyst") is
+  its tooltip and read text. A case no analyst has classified shows its disposition, with a note
+  saying where it came from: "Mapped from the AI verdict" when triage maps that value from the
+  verdict, "Not yet assessed by the AI" before there is a verdict (the badge reads Undetermined),
+  "No outcome recorded yet" for a verdict with no disposition, and "Recorded on the case" for any
+  other value; each ends "no analyst has classified this case yet".
 - **Analytics group id and Metrics deep links (FX3wa).** The Analytics navigation group has its
   own id, `analytics`, targeting Metrics, so on `#/metrics` the current-page mark lands on the
   Metrics child and the breadcrumb matches the page title. `#/metrics?tab=performance` and
@@ -3618,8 +3661,39 @@ built" pointer.
   the same as inside a row); each module names its window in a 13 px caption beside its 15 px
   title; one header stamp shows the oldest slice on screen, with a UTC tooltip. The Human vs AI
   card keeps its window in its footer.
+- **The rail toggle takes two consecutive frames (FX5n, supersedes "at the click" in §4.8.1).**
+  Restyling the panel and moving the page in one frame put the toggle's longest frame on the
+  production Overview at 100 to 117 ms in FX5n's final base runs and 117 to 150 ms in the acceptance
+  lane under heavier load (median of 15 toggles each way at 4x CPU; §11.4), at or over the §4.8.3
+  100 ms budget; in consecutive frames it measures 67 to 83 ms (FX5n). The in-flow
+  spacer (`desktop-navigation-frame`) still changes width once per toggle, with no transition, so
+  the page moves once, and the opaque 240 px panel always covers the seam: collapsing moves the
+  spacer first and closes the panel, with an open group's pages, over the moved page one frame
+  later; expanding fills the panel and fades the labels in first, and the spacer moves one frame
+  later. An open group's pages leave or rejoin the tab order in the toggle's own commit; only
+  their look follows the panel. The morph animates only `transform` and `opacity`; on expand an
+  open group's pages reveal with the grid-rows and opacity transition of `.nav-children` (after
+  the labels' 60 ms delay). The toggle's accessible name follows the state at once.
+  Plain rail icons answer keyboard focus with their tooltip in both states, and the tooltip
+  follows its icon if the layout moves. Measured at 4x CPU by FX5n (collapse and expand medians
+  per run, ms): key toggles 50/50 and 33/67 at a load of about 1; FX5n's interleaved runs 83/67,
+  67/83 and 83/67 against the base 100/117, 100/100 and 100/100. Persistence: the local mirror is
+  written at once and `PUT /api/prefs/user` leaves one frame plus one task after the change;
+  changes made in that frame merge into one write, a scheduled write sends only its own batch,
+  `pagehide` or `visibilitychange` to hidden sends a waiting batch at once, and `beginSession`
+  drops a batch left from the previous session. The flush on unload is best effort (no
+  `keepalive`; ROADMAP).
+- **Short range labels and tuning rows (FX5p, FX6t).** A `TimeRange` may carry `shortLabel`
+  (`windowShortLabel` in `UnifiedLogs.tsx` builds one for a Logs window), which the Logs pills and
+  the trigger show below 640 px. The trigger's accessible name is the words it shows followed by
+  ", time range" for every range and chrome (`timeRangeTriggerName`, FX6t), so it starts with its
+  visible label (WCAG 2.5.3 Label in Name): "Last 24h, time range" on the command chrome. When it
+  shows other words than the whole range (the command chrome's abbreviation, or a `shortLabel`
+  below 640 px), the whole range is its description and its tooltip. In the Auto-tuning rule list
+  each row's inspect control and its `RuleLink` are siblings, so a keyboard user passes two stops
+  per row (Inspect, then Open rule), as §4.6.5 intends.
 
-#### Dashboards and metrics (A2, W4c, W4b)
+#### Dashboards and metrics (A2, W4c, W4b, FX5c, FX5d, FX6c, FX6f)
 
 - **Breakdown metrics are read by a fold (A2, §4.4.2).** `GET /api/metrics/breakdown` computes
   every metric by reading each case in the window under a projected read, with no store
@@ -3677,8 +3751,46 @@ built" pointer.
   and a `board=new` link shows the limit with Save disabled. Every rule name on a board shares one
   rule sheet (`WidgetGrid` is one `RuleSheetHost`), and Top detection rules opens it on the
   breakdown's own bounds.
+- **One time axis (FX5c, FX6f).** Every Cartesian chart (chat answers, board widgets, the rule
+  sheet, PNG and SVG export) lays out its x axis through `charts/x-axis.ts`. The first tick and each
+  tick that starts a new day carry the day ("Nov 2 12:00", or "Nov 2" at midnight); later ticks on
+  the same day show only the time. A day reads "Aug 1" (previously "1 Aug") and a week tick reads
+  the day it starts ("Oct 5", never "W41 2026"); months, quarters and years keep the server label.
+  Ticks of a week or more follow the calendar in the axis zone: Mondays, every other Monday, then
+  the first of the month. Tooltips name a week "Week of Oct 5 (W41 2026)". "(in progress)" is
+  centred under the newest bucket's own tick, on line charts too, and an earlier tick that would
+  collide with it is dropped. Line-end labels sit inside the plot one 14 px line apart, above the
+  baseline, with a leader in the series colour when moved (starting at the plot edge when the
+  series' newest buckets are unmeasured); when they cannot fit, the legend names the series. Board
+  breakdown axes are kit time axes and name no zone. The rule sheet marks its newest bucket in
+  progress whenever the bucket has not ended (not only for windows ending now), names only the
+  part of each bucket the window counted, and reads bucket names like "Oct 22, 12:00 to 24:00
+  UTC". The Human vs AI chart follows the same day and Monday rules (FX6f): it dates its own ticks
+  from each bucket's start in UTC with a copy of the kit's step rule (`CloseAttributionChart.tsx`
+  `onTickStep`, pinned to the kit by `close-attribution-axis.test.tsx` so the landing chunk does not
+  load the kit), and the Overview's own bucket label is only the plain-text fallback.
+- **ATT&CK heatmap columns (FX5c, supersedes §4.4.4's 96 px minimum).** Tactic columns share the
+  width equally (`repeat(n, minmax(min-content, 1fr))`) and never shrink below their own content
+  (the tactic name's longest word or the widest technique id) or below 4.5rem; where they still do
+  not fit, the grid scrolls inside a named, focusable region. Seven tactics then fit chat's 42rem
+  lane and a 1280 px board without scrolling (a strict 96 px floor would make the 1280 board scroll:
+  7 x 96 + 24 = 696 px against 615 px).
+- **Severity over time keeps all five levels (FX5c, FX6c; closes qa2-05 and integ-03 against
+  §4.7.2).** The Executive severity widget, the rule sheet and chat `case_stats` severity series
+  stack Critical to Info with zeros, in canonical order and kept out of the top-N and "Other"
+  folding (§11.1 "Severity in case trend charts").
+- **Edit mode on a narrow board (FX5d, refines §4.4.5 Phone).** Below a 640 px board width Edit mode
+  is a one-column list in reading order with Move up and Move down (44 px targets); it goes back to
+  the 12-column grid only from 664 px (a 24 px band, so a classic scrollbar appearing or leaving
+  cannot flip it every frame). A phone never writes one-column geometry: two side-by-side
+  neighbours of one row trade places; any other pair keeps both sizes and the board is laid out
+  again from the pair on; where keeping both sizes would leave a gap on a wider screen, the pair
+  trades places and sizes instead, unless a widget's minimum size does not fit the other's place.
+  Every other widget keeps its size. Toasts keep clear of the edit bar (`useToastClearance`), and
+  the SOC operations Closed cell counts the population its words name (§4.4.3: closes by an
+  analyst policy are not counted).
 
-#### Audit log (A4a, A4b-1, A4b-2, A5, W5, FX1, FX3wc)
+#### Audit log (A4a, A4b-1, A4b-2, A5, W5, FX1, FX3wc, FX5a, FX6a, FX6e)
 
 - **Record ids (WP-0, amends E12).** Elasticsearch ids carry a base64url segment of the stored
   `_id` (`es:<index>:<base64url>`), SQL ids are signed (keyed rows can be negative), and every id
@@ -3779,14 +3891,82 @@ built" pointer.
   in its action row's category; the Console mirror (`components/audit/events.ts`) is held to it
   entry for entry. Restoring a version as a draft is recorded as `runbook.draft_updated`;
   `runbook.restored` means only un-retire.
+- **Engine and agent rows record their outcome (FX5a, FX6a; §4.5.3).** The router and the
+  investigator write an ERROR row when their model call fails, the poller writes a failure row
+  when a tick raises, and automation writes one when an action raises. FX6a adds an ERROR row
+  for every other model call that did not answer (denied when the AI budget, or the chat daily
+  cap, refused it): the formatter's, the standup's, the event overview's and the chat assistant's
+  (compatibility mode, each agent step and compaction; chat rows word the failure in a closed
+  vocabulary and never store the provider's text); and a precedent repair writes a failure row
+  (`tool_name=precedent_eviction_incomplete`, document id only) for each eviction the re-read
+  still finds, after the payload row written before the delete. Before, these failures left no
+  row; now the Failed filter finds them. Inside the investigation pipeline `RunStampedAudit`
+  stamps `run_id`, the actor's kind and, when a writer names none, the outcome the reader derives
+  for that action type (failure for `error`, denied for `access_denied`, otherwise success). A
+  poll row's summary gains a trailing ` failed=N` when feeds fail (nothing parses it).
+  `audit.viewed` rows read as sentences ("Searched the audit log: People and settings, last 7
+  days."), not `k=v` pairs (`audit/views.py`). Exception text in the poll, automation, ingest,
+  router, investigator, formatter and other model-failure rows is redacted before it is stored
+  (address user names and passwords, Basic and Digest credentials, the export's secret patterns),
+  and (FX6a) so are the failure reasons stored on the case. Every other Round 14 writer names its
+  outcome explicitly, and an AST guard (`test_audit_writer_outcomes.py`) fails on a new audit call
+  without one, except the keyed rows of §11.3.
+- **Notify outcomes (FX5a, FX6a).** A notify action reads Success when every channel took the
+  notification or none was due; Partial when some channels sent it; Denied when only the
+  notification rate limit held every channel back; Failed when a channel failed or the
+  notification service failed as a whole; Unknown (shown as Not recorded) when the notifier reports
+  no per-channel results. Its summary carries the reason ("notify=escalated. Not sent: 1 of 1
+  channel failed."); a notify no channel was due for (notifications off, no channel for the
+  trigger, an inbox copy due for no one, a repeat inside the dedup window) reads "Not sent: no
+  channel was due (...)", and a dispatch that failed as a whole reads "Not sent: the notification
+  service failed (<exception type>)", or "Partly sent: ..." after a channel took it. The service
+  then adds a `type: "dispatch"` result of its own and writes a failed NOTIFICATION row
+  (`channel=dispatch`), naming the exception's type only, never its text; on the case-event path
+  (`NotificationService.notify`) the case's `notifications_sent` lists it, while an automation
+  notify action records it only in its audit rows. The manual Notify
+  (`POST /api/cases/{id}/notify`) returns the same record, and its toast sets it apart from the
+  channels ("Sent to 1 channel(s), then the notification service failed (KeyError).", or "Not
+  sent: the notification service failed (KeyError)." when no channel took it;
+  `casedetail/notifyResult.ts`). A stack that wires no notifier (Demo Mode) records Success with
+  "Not sent: no notification service is connected." The application's notifier returns the
+  per-channel results (`AppState._automation_notify`), leaving out an inbox copy due for nobody
+  (`notifications/inapp.py` `INAPP_NOT_DUE_DETAILS`); case activity and the Overview word "Not
+  sent" and "Partly sent" rows as such (FX6e).
+- **An investigation group's outcome follows how it ended (FX6e, refines §4.5.1).** In Agent
+  activity a group's outcome is read from its ending row: the decision row, else the
+  investigator's verdict, unless a pipeline or investigator error row was recorded after it, else
+  such an error row. An error ending reads Failed (Denied when that row records a refusal); a
+  decision or verdict reads Success when every step shown succeeded and Partial when a step
+  failed, was refused or partly happened. With no ending row loaded, the worst step shown decides
+  (Failed, Denied, Partial, then Success). A group shown in part (fewer steps loaded than
+  `run_totals` counts) never reads Success: it reads "Not known", with a muted glyph and the
+  screen-reader text "Not known until every step is loaded", until a loaded step proves its
+  outcome or Load more completes the group; a failed, denied or partial step already shown keeps
+  its reading. Not recorded stays for a whole run whose rows record no outcome (`groupOutcomeKey`,
+  `GroupOutcomeMark`). The Outcome column is 8.5rem (8rem on a phone), 112 px of content after
+  the cell padding, so the longest label, "Not recorded" with its glyph, is never cut (§4.5.1
+  named 104 px).
+- **Replay fixtures cleared (FX6a).** The replay fixture purge (`DELETE /api/replay/fixtures`,
+  action type `job`, surface `settings`) is a person's action: the `(job, settings)` key in
+  `audit/event_categories.json` names it "Replay fixtures cleared" in Configuration and data, so a
+  row written before Round 14 (no `actor_type`) reads in People and settings beside a new one;
+  `(job, jobs)` stays the System "Background job".
 
-#### Rules, Logs and severity (A6a, A6b, W6a, W6b, FX2b, FX2w)
+#### Rules, Logs and severity (A6a, A6b, W6a, W6b, FX2b, FX2w, FX5p, FX6c)
 
 - **Closed by values (A6a, supersedes §4.6.1).** `GET /api/cases` `closed_by` takes the engine's
   values `agent`, `analyst`, `analyst_policy` and `system` (case-folded); any other value,
   `human` included, answers 400 naming the four. The applied value is echoed as
   `closed_by_applied`, and the Case Manager `closedBy` key and the `#/scans` redirect (`agent`)
   use the same values.
+- **The Case Manager `tab` key (FX5p, FX6d).** `#/case_manager?caseId=<id>&tab=<tab>` opens a case
+  on one of `overview`, `runbook`, `timeline`, `investigation`, `threat`, `collab` or `chat`
+  (`case-tabs.ts`); `runbook` applies only with `runbooks:read`. Like every hash key, an invalid
+  value fails closed and drops the whole Case Manager query, `caseId` included; CaseDetail ignores
+  any other value it receives in memory. The audit log's Open case trace writes `tab=investigation`
+  and the case-chat toast writes `tab=chat`. A `tab=investigation` link also opens the trace once
+  and brings it into view (FX6d): the request names the linked case, is dropped when another case
+  opens or the analyst picks another tab first, and is never replayed.
 - **Filtered Logs counts (A6a, §4.6.1).** With `rule`, `severity` or `severity_gte`,
   `GET /api/logs` returns `matched: {count, relation: "eq" | "gte"}` beside `filters`, and each
   `sources[]` item carries `exact`, `total` and `total_relation`. Logs states its count from
@@ -3840,8 +4020,16 @@ built" pointer.
   hour, 24 hours, 7 days or 30 days, `CASES_LIST_WINDOW_HOURS`), never for a calendar period, and
   only when no filter but the level narrowed the count, because the Cases page takes only those
   windows and would otherwise open a list wider than the figure.
+- **Severity in case trend charts (FX6c, refines §4.7.2).** A `case_stats` severity series draws
+  Critical to Info in that order, zeros included, even under a `top_n`: the series reads severity
+  on its own, with no cut (`_series_reads_first_grouping`), so every line is an exact count that
+  agrees with the same question asked without a bucket. A case with no readable severity is its
+  own "No severity" line after the levels, only while it has cases; it is never counted as Info.
+  Over two groupings the first grouping's lines are exact under a `top_n` too. A compact report
+  digest keeps the lines that carry cases first, in the chart's order, and names the omitted lines
+  that measured zero (`zero_series`).
 
-#### Runbooks (A3, A7a, A7b, A7c, A8a, A8b, A8c, FX1, FX2b, FX3b, FX3b2, W7a, W7b)
+#### Runbooks (A3, A7a, A7b, A7c, A8a, A8b, A8c, FX1, FX2b, FX3b, FX3b2, W7a, W7b, FX5b, FX5m, FX5r)
 
 - **Lookup field names (A3, refines §4.10.8).** Seven logical names (`ip`, `user`, `host`, `rule`,
   `rule_name`, `severity`, `action`) mean the source's mapped field; any other name is a physical
@@ -3986,6 +4174,17 @@ built" pointer.
   `POST /api/runbooks/progress` sums every run that is not abandoned; a case without one is
   absent. `case.runbook` frames go on the new SSE topic `runbooks`, served only to holders of
   both `runbooks:read` and `cases:read`, with `{case_id, run_id, progress, revision}`.
+- **The Next step card while an AI draft waits (FX5r, refines §4.10.11).** Confirm and mark done,
+  Edit note, Not applicable, Blocked and Assign (More on a narrow pane) sit under the step question,
+  and the draft follows as a four-line preview with Show the whole draft and Show less. The full
+  text stays in the page for screen readers, an opened step row shows it whole, and the toggle
+  never leaves from under focus. Edit note puts the field first, with the caret at the end and in
+  view, and Confirm note and mark done under it. Only the draft box moves between the two places, so
+  a draft landing never rebuilds the buttons: an open reason dialog keeps its text, an open menu
+  stays open and a focused button keeps its focus. When a draft takes Draft note away, focus goes
+  to the Next step heading (to Edit note in an opened step row) and the live region says "The AI
+  drafted a note. It is not part of the case until you confirm it." Landing on the card with a
+  draft (Review draft) brings the draft into view, then the heading.
 - **Start runbook placement (W7b, deviation from §4.10.11).** There is no header Start runbook
   button: at 1440 px the case header already holds Close case, Escalate, Take action and Share, so
   Start runbook is an item in the Take action menu (shown with `runbooks:read`, `runbooks:run` and
@@ -3995,6 +4194,14 @@ built" pointer.
   `404 {"detail": "playbook not found"}`); every old write, dry run and reload, and
   `POST /api/cases/{id}/run-playbook`, answer `410 {code: "runbooks_moved", detail, see:
   "/api/runbooks"}`. No DELETE route was ever there, so none is added.
+  `GET /api/playbooks/coverage` follows its successor `GET /api/runbooks/metrics` (FX5b): it needs
+  `cases:read` as well as `runbooks:read`, reads the Demo overlay in Demo Mode (as do the match
+  preview and the analyst preview), answers `409 runbook_scope_unsupported` while row-level data
+  scope applies to the caller and `503 case_store_unavailable` when cases cannot be read, and its
+  `truncated` flag marks every figure a lower bound. The identifiers new in Round 14 that carried
+  the retired word are renamed (`LegacyProcedureConfig`, `LEGACY_BUNDLED_PROCEDURE_IDS`, the
+  migration namespace `procedure_dir`, and with FX6b `list_procedures_strict` and the export seam
+  id `legacy_procedures`).
 - **Runbooks in the agent path (A8a).** When nothing else matches, `generic-incident` is both the
   investigator's guidance and the attachment (`runbooks.fallback` switches it off). After the
   decision is saved, the matching runbook attaches to cases that need a person (trigger
@@ -4004,13 +4211,25 @@ built" pointer.
   consulted it), the `runbook.selected` decision row and `procedure_provenance.runbook`. A real
   case whose investigation finishes while Demo Mode is on is attached when Demo Mode ends.
   Re-investigation keeps the case's tags so matching can read them.
-- **Demo runbooks (A8a, A8b, FX3b, FX3b2).** The Demo pipeline and attachment read the real
+- **Demo runbooks (A8a, A8b, FX3b, FX3b2, FX5m).** The Demo pipeline and attachment read the real
   library read-only through an overlay that maps the Demo storyline and seeded telemetry rules
   (including `demo_insider_staging`, `osquery_process_event`, `web_access` and the Entra sign-in)
   onto built-ins, so every storyline gets its own runbook at tier 3. Seeded cases use rules the
   Demo sources raise, with their member rows held by the sources, so a seeded case's rule sheet
   shows its alerts; seeded runs carry bounded lookup results and step rows. Demo chat lists the
   read-only library.
+  Every seeded person (assignee, comment author, the analyst who acknowledges and closes a case,
+  whoever works a run) is on the Demo SOC team (asha.iyer, farhan.qureshi, meera.pillai) or is the
+  triage automation, never Demo organisation staff and never the case's subject, and a run is
+  worked by its case's analyst. Every seeded case carries the decision record decide() writes under
+  the shipped default AutoClosePolicy (`SEED_AUTO_CLOSE_POLICY`), not the operator's sandboxed
+  copy, and the runbook the investigator read (`runbook_id`, `runbook_version`, from the same match
+  as the seeded runs). An analyst-closed case is routed by the system when opened, acknowledged by
+  its analyst 2 to 12 minutes later (`acknowledged_at` and a move to investigating) and closed by
+  the same analyst 30 to 240 minutes after opening, so the Demo measures MTTA. Investigator
+  guidance is stamped from the post-verdict attachment match (`seed_demo_runbook_guidance`, the
+  Demo catalog with its overlay, the fallback and guidance switches and the character budget), not
+  from the live pre-verdict selection.
 - **Retrieval (A8b; resolutions (a) to (i)).** (a) The retriever never serves a `runbook` chunk
   that lacks the projection's document id shape and a runbook trust class, permanently, not only
   until `projection_completed_at`. (b) Projection documents are `runbook-library:<id>:v<n>-<hash12>`,
@@ -4115,6 +4334,29 @@ built" pointer.
   ROADMAP and CHANGELOG (DOCB); the last web leftovers (FX4w: the stored `metrics` group id, the
   Analytics row target without `metrics:view`, `ConfirmDialog busy` adoption, the Login label,
   `ComparisonMetric` figures, Case activity lookup wording and the guard backlog).
+- **FX5a, FX5b, FX5c, FX5d, FX5k, FX5m, FX5n, FX5p, FX5r, FX5s** (`44efc6e`): the first closing
+  acceptance pass (live QA at 390, 1440 and 1920 in both themes, the §8.3 geometry and timing
+  checks, a non-negotiables and security review and an integration review) found 39 defects, each
+  confirmed by a skeptic. Charts: one time axis, line-end labels, five severity levels, the heatmap
+  columns (FX5c). Dashboards: the phone Edit list, toasts clear of the edit bar, the Closed cell
+  (FX5d). Navigation and KPI tiles: one change per frame on the rail toggle, strip numerals on one
+  line (FX5n). Pages: the Cases Outcome cell, the Logs pill, rule links in Auto-tuning, the case
+  number beside the runbook chip, Open case trace on the Investigation tab (FX5p). Sign-in and
+  exports: no signed-out 401 requests, one formula-lead rule set (FX5s). The runbook card's draft
+  layout (FX5r). Audit outcomes on engine rows and worded audit-view summaries (FX5a). The Demo
+  overlay in coverage and previews, renamed identifiers, the coverage alias grants (FX5b). Demo
+  runs credited to the SOC team with real durations and decision records (FX5m). App help
+  destinations and the corpus (FX5k).
+- **FX6a to FX6j, FX6s, FX6t** (`2370dac`, and the integration change after it that applied their
+  orchestrator patches and these records): the FX5 leftovers (FX6 TRIAGE.md): notify outcomes and
+  every writer's outcome (FX6a), the forwarder rename (FX6b), app help destinations and severity
+  series in chat (FX6c), Open case trace opens the trace (FX6d), notify wording and the group
+  outcome (FX6e), the Human vs AI axis (FX6f), the effectiveness strip and drilldown names (FX6g),
+  the strict-gate flakes (FX6h), the Help Center pages (FX6j), Settings control rows in full-width
+  sections (FX6s) and the time-range trigger named from the words it shows (FX6t). The integration
+  also moved the inbox not-due details into `notifications/inapp.py`, widened the audit Outcome
+  column, and made the Logs live-tail caveat say only the search box does not apply while an exact
+  filter is applied.
 
 ### 11.3 Known limitations
 
@@ -4149,6 +4391,19 @@ Runbooks and Demo Mode:
   filtered to what the viewer can see, so for a viewer without `runbooks:manage` or
   `runbooks:publish` a retired bundled id whose migrated runbook is a hidden Draft falls through to
   the built-in map: the Console says the rule attaches while the server skips it.
+- **Seeded history has no investigation audit rows (FX5m).** Seeded cases carry no
+  `runbook.selected` or decision audit rows, so for a seeded case the Investigation tab shows no
+  runbook provenance rows and the audit log's Agent activity scope shows no guidance or decision
+  rows, while the facts rail shows "Investigator runbook". Live Demo mode writes them.
+- **Open seeded cases with an assignee have no acknowledgement (FX5m).** Escalated and on-hold
+  seeded cases have no acknowledgement in their status history, so their response clock reads as
+  breached (25 response breaches on the 14-day board, as before).
+- **A seed's analyst-closed case can resolve at once (FX5m).** A case is resolved no later than the
+  moment the seed runs, so one opened only minutes before enable gets a very short or zero-length
+  resolution and run; the tested seeds (1337, 7, 42, 20261104) do not hit it.
+- **Demo library rule names (FX5b).** In Demo Mode the library's Applies to column and the editor's
+  Applies when chips show the built-ins' own rule names (`impossible_travel`, `identity_signin`)
+  while matching uses the Demo overlay, so "Gets it" can count cases from rules not listed there.
 - **The migration acceptance fixture has no known exceptions** (`KNOWN_FIXTURE_EXCEPTIONS` in
   `test_runbook_migration.py` is empty).
 
@@ -4180,6 +4435,31 @@ Audit log:
   `/api/diagnostics/health`; the error log is the signal.
 - **Legacy lazy session row.** First-seen session registration in `api/deps.py` still writes the
   legacy `session_register` row without the Round 14 fields.
+- **Keyed rows keep no outcome (FX5a, FX6a).** Proposal decisions (`routes.py` approve and reject),
+  the background job transition rows (`JobRunner.reconcile_audits`), the storage policy apply's
+  intent and result rows, the replay spend row and the update supervisor's terminal row are
+  written with an `event_id`, and their retry compares every field except `ts`, `app_version` and
+  `build_sha` with the first write, so adding `outcome` would reject a retry across the upgrade.
+  They read Not recorded (the access-denied and error derivation still applies), and the writer
+  guard lists them exactly (`_EXEMPT` in `test_audit_writer_outcomes.py`, with the lazy session
+  row). Adding `outcome` and `actor_type` to the retry metadata in both `audit/audit_log.py` and
+  `stores/sql/repositories.py` would let them carry one.
+- **Case work rows carry no request context (FX5a).** Case status, feedback, comment, tags,
+  assign, Demo, chat history and RAG import rows in `routes.py` record `outcome` and `actor_type`
+  and the middleware request id, but not `client`, `session_ref` or `actor_role` (§4.5.4 does not
+  list case work writers); `**audit_context(request).record_fields()` at each would add them.
+- **A group shown in part can read Failed early (FX6e).** In Oldest first order a partly loaded
+  investigation can read Failed from a pipeline or investigator error row that a decision not
+  loaded yet would turn into Partial. Per-run outcome counts in the page response beside
+  `run_totals` (`routes_audit.py`, `models.py`, `types-audit.ts`) would let a group read the whole
+  run before Load more.
+- **Notify rows written before Round 14 read as sent (FX6e).** Their detail is a bare
+  `notify=<trigger>` with no note, and so is a custom or legacy notifier's that returns no
+  per-channel list (recorded Unknown); the application's notifier always returns one.
+- **A short Basic or Digest credential is kept (FX6a).** The shared redaction
+  (`audit/changes.py` `_HEADER_CREDENTIAL_RE`) removes a Basic or Digest credential of 8 or more
+  characters, so `Authorization: Basic abc` is stored as written; widening it is the owner's
+  decision.
 - **Some failure rows cannot be written.** The dashboard, price overlay and custom model stores
   write through `kv_mutate`, which never raises, so `dashboard.*_failed`,
   `model.pricing_update_failed` and `model.add_failed` rows cannot appear for a failed save.
@@ -4216,6 +4496,23 @@ Dashboards and pages:
   Demo mode pill is amber; §4.8.1 asks for a dot and a neutral pill.
 - **Inbox result actions are buttons that navigate (FX3wc).** §3.3 asks for links.
 - **Overview top signatures group by case title (W6a)**, as before Round 14.
+- **Product help limits (FX5k, FX6c).** 'How do I export logs to CSV?' cites and links the audit log
+  export (the Logs page documents no export), the generic 'What are the keyboard shortcuts?' leads
+  with the audit log's shortcuts, 'What is the raw record?' links nothing, and 'How do I ingest CSV
+  logs?' has no section to find (it cites the source support matrix). 'How do I write a shift
+  brief?' leads with Workspace Chat › Charts, tables, and other blocks and its $0 answer links only
+  the Chat page; the app help tool keeps Standup (the console keyword "shift brief"). A docs or
+  retrieval follow-up. A chart, case or severity CSV question now links only Triage › Workspace ›
+  Chat, for every role; the chart and case export questions lead with Workspace Chat › Export, and
+  the severity one leads with Workspace Chat › Severity breakdowns ('How do I download the cases
+  as CSV?' leads with Workspace Chat › Charts, tables, and other blocks; FX6c: the Chat
+  breadcrumbs in `docs/analyst/chat.md` and the Data export keywords "export", "download" and
+  "cases" dropped from the chat side); the new "Case numbers" section of
+  `docs/administration/settings.md` keeps 'How do I change the case ID format?' on Settings ›
+  General › Cases.
+- **The Overview's Human vs AI fallback label (FX6f).** `bucketAxisLabel` in `Overview.tsx` still
+  builds a label of its own (`MM-DD`, `HH:mm`) that only a bucket whose start does not parse can
+  show; the call could pass the raw value and the function could go.
 
 ### 11.4 Verification record
 
@@ -4255,9 +4552,71 @@ shared tree):
 
 - W7b live check (Demo 8730/5730): Confirm on CASE-000044 (a Demo AI draft) at y 525 (1440 by
   900), 697 with its bottom at 729 (390 by 844) and 469 (1920 by 1080), inside the 567 and 768
-  targets; Mark done on a pending-lookup step (CASE-000046) at 583, 725 and 501 (the §4.10.11
-  target is Confirm's, not Mark done's; Run lookup sits at about 490 at 1440); 12 to 15 Tab stops
-  in the Runbook tab (limit 19); no horizontal overflow and no page errors.
+  targets (taken with a one-line draft; superseded by the FX5r line below); Mark done on a
+  pending-lookup step (CASE-000046) at 583, 725 and 501 (the §4.10.11 target is Confirm's, not Mark
+  done's; Run lookup sits at about 490 at 1440); 12 to 15 Tab stops in the Runbook tab (limit 19);
+  no horizontal overflow and no page errors.
+- First closing acceptance pass (`8af0df4`, 2026-11-04 and 05; `SP/r14/impl/final/`): seven
+  lanes (live QA in three lanes at 390, 1440 and 1920 in both themes, geometry and timing, the
+  operator's composites, safety and the non-negotiables, integration), every finding re-checked
+  by an independent skeptic: 39 confirmed (none uncertain), 2 refuted; FX5 (`44efc6e`) and FX6
+  fixed them. The geometry lane measured: the Overview cases row at 777 (1440), 801 (1280), 896
+  (1920) and 1576 (390, at the edge of 1568 ±8), with no band headers; the page header title at
+  89 on 19 pages at 1440 and 88 at 1920; first content at 144 at 1440 (Settings 140, Runbooks 148
+  with the Demo Mode notice) and 148 at 1920; no label overlaps in 31 Settings sections at 390,
+  1440 and 1920 and no horizontal overflow; 0 px of nav icon drift in every frame from 0 to 420 ms
+  of a toggle (production 1440 light and 1920 dark, development 1440); no horizontal scroll in the
+  audit log at 1280 and 1440 with the inspector open; the case sheet's close button hit at its
+  centre (F1); 12 to 16 Tab stops in the Runbook tab. It failed: the toggle's median longest frame
+  at 4x CPU on the production Overview, 117 to 150 ms per run (133 ms pooled; Inbox 67 ms), fixed
+  by FX5n (§11.1 "The rail toggle takes two consecutive frames"); the Runbook tab's Confirm with a
+  Demo AI draft (below); the Settings switch distance and the first-control offsets (§11.1
+  "Settings switch distance"). The second acceptance pass (`SP/r14/impl/final2/`) runs on the
+  merged tree.
+- FX5r live re-measure (seeded Demo 8746/5746, the three-lookup Demo AI drafts; while a draft
+  waits, the action row sits under the step question and a long draft shows four lines with Show
+  the whole draft, so Confirm no longer moves with draft length). Confirm top and bottom:
+  CASE-000044 at 500/532 (1440 by 900, light and dark), 674/706 (390 by 844, light and dark) and
+  478/510 (1920 by 1080, dark); CASE-000043 at 540/572, 614/646 and 478/510; CASE-000028 (the step
+  "Were MFA settings, mail rules or app consents changed?", which CASE-000023 shows once its lookup
+  is done) at 451/483, 651/683 and 455/487. Before the change: 643, 909 (below the fold) and 621;
+  661, 795 and 599; 572, 832 (below the fold) and 576. elementFromPoint hits Confirm in every case;
+  the Runbook tab has 13 to 16 Tab stops (limit 19); no horizontal overflow. On the one-line strip
+  under 640 px only the title truncates, so " · vN" stays visible (CASE-000044 and CASE-000047 at
+  390).
+- r8-final-fix (FX5r, FX5c, FX5a, FX5d, FX5n, FX5k, FX5b, FX5p, FX5m, FX5s; `44efc6e`): backend
+  12,158 tests, 12,146 passed, 6 skipped, 6 failed (five sandbox-only: dshield through the agent
+  proxy and an injected AWS key in the wave2b config tests, all 55 tests of their files pass with
+  the proxy and AWS variables unset; one wall-clock test under load,
+  `test_markdown_links_are_checked_in_linear_time` at 1.33 s against 1.0 s, which passes alone and
+  which FX6b made relative: it compares the CPU time of an 8x input against a 24x bound, three
+  times linear growth, so a quadratic rescan fails clearly, 33.4x in a local probe, where a 4x
+  input passed it at 11.4x); Vitest 6,993 passed over about 500 affected files with six 5,000 ms
+  timeouts under shared CPU (settings.render, spec-independent-drilldown B30, B31 and B34,
+  Tuning.render, PromptLibrary) that pass alone; tsc 0, eslint 0/0, design gates pass; the corpus
+  current (862 chunks); OpenAPI and the generated client regenerated for the
+  `/api/playbooks/coverage` description; entry 337,215 B (§11.1 "Entry bundle"). Strict-gate
+  flakes found in the run and fixed in FX6: CaseDetail.requested-tab (an `@/lib/api` mock without
+  `ApiError`, FX6d) and cases.a11y and dashboard.a11y (axe before late reads settle, FX6h);
+  appshell.search's Escape test failed once under load and stays on the watch list.
+- FX6 triage: the FX5k E3 destination rule (`app_help.patch` with its two test patches) passed
+  `test_app_knowledge.py` and `test_chat_golden_set.py` in a scratch copy of `44efc6e` before FX6c
+  applied it.
+- FX6s live re-measure (switch or field to label, 1440 and 1920): Enrichment "Enrichment enabled"
+  664 to 496 px and 1,144 to 496 px, "Cache lifetime" 610 to 442 and 1,090 to 442 px, the Roles
+  permission check result 588 to 420 and 1,068 to 420 px; the Roles Check button and the Allowed
+  or Denied badge, and the Enrichment off notice and its switches, end on one edge (1,228 px at
+  1440 and 1920, 1,404 px at 2560); every form section and Notifications unchanged; no overflow at
+  390.
+- r9b-fx6-complete (FX6a, FX6c, FX6d, FX6e, FX6f, FX6g, FX6h, FX6s, FX6j, FX6t; before `2370dac`;
+  FX6b's four files from run r9 were in the tree): backend 12,272 tests, 12,259 passed, 6
+  skipped, 7 failed (the five sandbox-only tests, which pass with the proxy and AWS variables
+  unset, and two legacy tests that FX6c's patches rewrite, 81 of 81 in a scratch copy); ruff fatal clean; tsc 0; eslint 0/0; design gates pass; Vitest 460 files,
+  6,765 passed, 1 skipped, with one act() warning under load
+  (`overview.drilldown.depth.test.tsx`, not reproduced in 6 reruns); entry 337,215 B, 25 B under
+  337,240 B and 0 B against `HEAD`; OpenAPI without drift; `check_docs`, `check_version` and the CI
+  contract pass; the knowledge corpus was stale from FX6j's pages until the integration
+  regenerated it.
 
 **Final gates on the merged tree (TO BE FILLED BY WP-GEN):** backend `pytest` count, ruff fatal,
 web `test:strict` count and files, tsc, lint, design gates, `check:types`, full build, the final

@@ -616,9 +616,11 @@ export function EnrichmentProvidersEditor({ className, embedded = false }: Enric
               onCheckedChange={(v) => void setMasterFlag('enabled', v)}
             />
             {/* Off is a live condition, stated in words; the provider list below stays at
-                full contrast because it remains editable (WCAG 1.4.3, no dimming). */}
+                full contrast because it remains editable (WCAG 1.4.3, no dimming). Between
+                two switches it takes their form row width, so the group keeps one right
+                edge in this full-width section. */}
             {!enrichmentEnabled && !loading ? (
-              <SettingRow variant="block">
+              <SettingRow variant="block" width="form">
                 <Callout intent="warning" data-testid="enrichment-off-callout">
                   Enrichment is off. No provider is queried until you turn it on.
                 </Callout>
@@ -663,6 +665,9 @@ export function EnrichmentProvidersEditor({ className, embedded = false }: Enric
                 />
               </SettingRow>
             ) : (
+              // A list on the panel's full width: each provider's long description needs
+              // the room, and its status and switch sit on the row's end like a table's
+              // last column (only labelled setting rows cap their content).
               <SettingRow variant="block" bleed>
                 <ListRows aria-label="Enrichment providers">
                   {providers.map((p) => (

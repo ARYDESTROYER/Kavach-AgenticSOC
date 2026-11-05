@@ -78,16 +78,20 @@ async def test_severity_by_day_series_read_critical_first_in_severity_colours() 
     assert out.ok, out.error
     assert_artifacts_render(out)
     series = next(a for a in out.artifacts if a.kind == "series")
-    assert [s["label"] for s in series.data["series"]] == ["Critical", "High", "Medium", "Low"]
-    assert [s["semantic"] for s in series.data["series"]] == ["critical", "high", "medium", "low"]
+    # Round 14 (SPEC §4.7.2): a severity chart draws all five levels in the canonical
+    # order, a level with no case included (Info, a flat line at zero here).
+    levels = ["Critical", "High", "Medium", "Low", "Info"]
+    assert [s["label"] for s in series.data["series"]] == levels
+    assert [s["semantic"] for s in series.data["series"]] == ["critical", "high", "medium", "low", "info"]
+    assert not any(series.data["series"][-1]["values"])
     assert series.data["ordered"] is True
     for view in ("stacked_bar", "line", "table"):
         block = _block(series, view)
         if block["type"] == "chart":
-            assert [s["label"] for s in block["series"]] == ["Critical", "High", "Medium", "Low"]
-            assert [s.get("semantic") for s in block["series"]] == ["critical", "high", "medium", "low"]
+            assert [s["label"] for s in block["series"]] == levels
+            assert [s.get("semantic") for s in block["series"]] == ["critical", "high", "medium", "low", "info"]
         else:
-            assert [c["label"] for c in block["columns"][1:]] == ["Critical", "High", "Medium", "Low"]
+            assert [c["label"] for c in block["columns"][1:]] == levels
 
 
 async def test_severity_categories_and_breakdown_table_read_in_canonical_order() -> None:

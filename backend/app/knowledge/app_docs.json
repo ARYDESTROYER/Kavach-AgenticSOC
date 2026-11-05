@@ -995,6 +995,16 @@
    "console": []
   },
   {
+   "id": "getting-started/demo#reset-the-demo:0",
+   "page": "getting-started/demo.md",
+   "anchor": "reset-the-demo",
+   "heading": "Reset the demo",
+   "text": "**Reset (re-seed)** in **Settings → Organization → Experimental & Demo** deletes this\nrun's synthetic data and seeds it again from the same seed, so the demo starts over\nwith the same story. The Demo Mode indicator in the top bar offers the same **Reset**.\nResetting the demo needs `demo:manage`; it never touches real tenant data.",
+   "console": [
+    "settings:demo"
+   ]
+  },
+  {
    "id": "getting-started/demo#exit-safely:0",
    "page": "getting-started/demo.md",
    "anchor": "exit-safely",
@@ -1359,7 +1369,7 @@
    "page": "analyst/cases.md",
    "anchor": "find-the-work-that-matters",
    "heading": "Find the work that matters",
-   "text": "The summary strip above the table counts the whole store, not only the loaded rows:\n**Active**, **Resolved or closed**, **Needs human**, and the severity bands. Active,\nResolved or closed and each severity band show their share of the loaded cases under them;\nNeeds human reads \"awaiting an analyst\". Pressing a tile filters the table to it.\n**Needs human** counts open cases that need a person: an active case whose status is\nneeds human or whose AI verdict is Needs human. A closed case is never counted there,\nwhatever the AI said. When a count cannot be read, the tile falls back to the loaded rows\nand says so.\n\nThe **Outcome** column shows each case's outcome of record: the analyst's\nclassification once a person has classified the case (for example **False positive**,\nmarked as the analyst's), **Declared benign** for an operator rule-policy close,\n**Auto-closed** for an automatic close (the short label; the verdict it closed on, such\nas \"Auto-closed as false positive\", is its tooltip), and otherwise the AI verdict,\nattributed to the AI (for example \"AI: Needs human\"). The column follows the same rule as the case header\nin Case Manager; see The outcome of a case.\nEntity values in the table offer **Ask AI**, which opens a Workspace chat about that\nvalue.",
+   "text": "The summary strip above the table counts the whole store, not only the loaded rows:\n**Active**, **Resolved or closed**, **Needs human**, and the severity bands. Active,\nResolved or closed and each severity band show their share of the loaded cases under them;\nNeeds human reads \"awaiting an analyst\". Pressing a tile filters the table to it.\n**Needs human** counts open cases that need a person: an active case whose status is\nneeds human or whose AI verdict is Needs human. A closed case is never counted there,\nwhatever the AI said. When a count cannot be read, the tile falls back to the loaded rows\nand says so.\n\nThe **Outcome** column shows each case's outcome of record:",
    "console": [
     "page:cases",
     "page:batchjobs"
@@ -1370,7 +1380,7 @@
    "page": "analyst/cases.md",
    "anchor": "find-the-work-that-matters",
    "heading": "Find the work that matters",
-   "text": "Case Manager is the intended successor. The Cases table itself remains available for\nits mature table/saved-view workflow, but opening a row or case deep link shows a\nshort announced handoff and opens that exact record in Case Manager. The selected\n`caseId` survives refresh and browser history. Use Case Manager directly when you\nwant queue, detail, and bulk operations in one continuous workspace. See the\ndedicated Case Manager guide for exact selection, resize,\npermission, and failure semantics.\n\nSelecting rows opens bulk actions. Closing or resolving cases, from the bulk bar or with\na row's one-click **Close** (shown only on an open row, and only with `cases:close`),\nopens a dialog that requires a disposition, so every closed case records what it was.\nWhen a case's runbook still has required steps open, the dialog also asks why; the close\nis never blocked (see Runbooks). Bulk changes are unavailable in Demo Mode. Long-running Case\nManager operations snapshot the\nselected case IDs and submit one server-owned background job. The dialog closes after\n`202 Accepted`; work continues across navigation or reload and reports progress in\n**Analytics → Jobs** and **Inbox**. A partial terminal result keeps successful changes\nand reports bounded per-case failures rather than rolling the whole selection back.",
+   "text": "- the analyst's classification once a person has classified the case, for example\n  **False positive** with the person glyph in the badge; its tooltip reads \"Closed as\n  false positive by an analyst\";\n- **Not recorded** for a case an analyst closed without recording a classification; its\n  tooltip reads \"Closed by analyst: outcome not recorded\" (\"Resolved by analyst: ...\"\n  for a resolved case);\n- **Declared benign**, also with the person glyph, for an operator rule-policy close;\n  its tooltip reads \"Closed by analyst policy (declared benign)\";\n- **Auto-closed**, with the AI glyph, for an automatic close; the verdict it closed on,\n  such as \"Auto-closed as false positive\", is its tooltip; and\n- otherwise the case's current disposition, which no analyst has classified yet. Its\n  tooltip says where that value came from: \"Mapped from the AI verdict\", \"Recorded on\n  the case\", \"No outcome recorded yet\", or \"Not yet assessed by the AI\" (the badge then\n  reads Undetermined), each followed by \"no analyst has classified this case yet\".",
    "console": [
     "page:cases",
     "page:batchjobs"
@@ -1381,7 +1391,18 @@
    "page": "analyst/cases.md",
    "anchor": "find-the-work-that-matters",
    "heading": "Find the work that matters",
-   "text": "The terminal action opens a safely allow-listed Cases context such as active status,\nresulting status, assignee, or tag. That destination is a useful current filter, not\nan immutable cohort of every attempted ID: cases can change again and other cases can\nmatch the same filter. Use job counts, case history, and Audit for exact accountability.",
+   "text": "The cell uses the Status column's badge size, and a screen reader hears the tooltip's\nwords too. Once a person has classified, resolved or closed a case, or a rule policy or\nthe automatic close policy closed it, the column reads as the case header in Case\nManager does. Before that, Case Manager shows the AI's assessment (for example \"AI:\nNeeds human\") and this column shows the case's disposition, marked as no analyst's\ncall; see The outcome of a case.\nEntity values in the table offer **Ask AI**, which opens a Workspace chat about that\nvalue.\n\nCase Manager is the intended successor. The Cases table itself remains available for\nits mature table/saved-view workflow, but opening a row or case deep link shows a\nshort announced handoff and opens that exact record in Case Manager. The selected\n`caseId` survives refresh and browser history. Use Case Manager directly when you\nwant queue, detail, and bulk operations in one continuous workspace. See the\ndedicated Case Manager guide for exact selection, resize,\npermission, and failure semantics.",
+   "console": [
+    "page:cases",
+    "page:batchjobs"
+   ]
+  },
+  {
+   "id": "analyst/cases#find-the-work-that-matters:4",
+   "page": "analyst/cases.md",
+   "anchor": "find-the-work-that-matters",
+   "heading": "Find the work that matters",
+   "text": "Selecting rows opens bulk actions. Closing or resolving cases, from the bulk bar or with\na row's one-click **Close** (shown only on an open row, and only with `cases:close`),\nopens a dialog that requires a disposition, so every closed case records what it was.\nWhen a case's runbook still has required steps open, the dialog also asks why; the close\nis never blocked (see Runbooks). Bulk changes are unavailable in Demo Mode. Long-running Case\nManager operations snapshot the\nselected case IDs and submit one server-owned background job. The dialog closes after\n`202 Accepted`; work continues across navigation or reload and reports progress in\n**Analytics → Jobs** and **Inbox**. A partial terminal result keeps successful changes\nand reports bounded per-case failures rather than rolling the whole selection back.\n\nThe terminal action opens a safely allow-listed Cases context such as active status,\nresulting status, assignee, or tag. That destination is a useful current filter, not\nan immutable cohort of every attempted ID: cases can change again and other cases can\nmatch the same filter. Use job counts, case history, and Audit for exact accountability.",
    "console": [
     "page:cases",
     "page:batchjobs"
@@ -1474,7 +1495,7 @@
    "page": "analyst/case-manager.md",
    "anchor": "the-outcome-of-a-case",
    "heading": "The outcome of a case",
-   "text": "Until a person classifies it, the headline is the AI's assessment, attributed to the AI.\nA case closed by the automatic close policy reads as auto-closed; a case closed under\nan operator's \"declared benign\" rule policy reads **Declared benign**; and a case a\nperson closed without recording a classification reads **Outcome not recorded**. The\nsame rule drives the case header, the queue rows, the **Cases** list, hover cards, and\ngrading, so a case never reads differently in two places. The headline is display only:\nthe deterministic case policy still makes every automatic close or escalate decision.",
+   "text": "Until a person classifies it, the headline is the AI's assessment, attributed to the AI.\nA case closed by the automatic close policy reads as auto-closed; a case closed under\nan operator's \"declared benign\" rule policy reads **Declared benign**; and a case a\nperson closed without recording a classification reads **Outcome not recorded**. The\nsame rule drives the case header, the queue rows, hover cards, and grading. The\n**Cases** list follows it too once a case is settled this way; before that, its Outcome\ncolumn shows the case's disposition, marked as not yet classified by an analyst (see\nCases). The headline is display only: the deterministic case policy still\nmakes every automatic close or escalate decision.",
    "console": []
   },
   {
@@ -1490,7 +1511,7 @@
    "page": "analyst/case-manager.md",
    "anchor": "queue-scope-and-ordering",
    "heading": "Queue scope and ordering",
-   "text": "Each row shows the case's outcome headline, its status, severity, risk, owner, and age.\nA case with a runbook also shows its progress, for example **4/11**, with \"· 1 waiting\"\nor \"· 1 blocked\" when a step waits for approval or is blocked; it updates live as\nsteps change.\nSelecting a row opens the case in the workspace without leaving the queue, and switching\ncases never blanks the pane: the new case shows at once from its row and fills in as the\nfull record arrives. On a narrow viewport, the queue is the complete first screen and\nthe case workspace opens after selection.",
+   "text": "A link can also open a case on one of its tabs, for example\n`#/case_manager?caseId=&tab=investigation`. `tab` is one of `overview`, `runbook`,\n`timeline`, `investigation`, `threat`, `collab` or `chat`. `investigation` also opens the\ncase's trace, and `runbook` opens only for people who can read runbooks (anyone else sees\nthe Overview tab). A link with any other `tab` value, opened in a new tab or from another\npage, opens Case Manager without the case; followed while Case Manager is already open,\nit opens the case and keeps the tab you are on (Overview when no case was open).\n\nEach row shows the case's outcome headline, its status, severity, risk, owner, and age.\nA case with a runbook also shows its progress, for example **4/11**, with \"· 1 waiting\"\nor \"· 1 blocked\" when a step waits for approval or is blocked; it updates live as\nsteps change.\nSelecting a row opens the case in the workspace without leaving the queue, and switching\ncases never blanks the pane: the new case shows at once from its row and fills in as the\nfull record arrives. On a narrow viewport, the queue is the complete first screen and\nthe case workspace opens after selection.",
    "console": []
   },
   {
@@ -1558,7 +1579,7 @@
    "page": "analyst/case-manager.md",
    "anchor": "work-the-runbook",
    "heading": "Work the runbook",
-   "text": "- **The strip**: the runbook's title, its version, how and when it attached (\"Matched\n  automatically · 12:52 UTC\", \"Fallback\", \"Added by Asha Rao\", \"Suggested by the AI,\n  accepted by Asha Rao\"), **Why attached** (the criteria that matched and how matching\n  works), **Add runbook**, and a menu with **Switch to version N** when a newer one is\n  Published, **Export as Markdown**, **Open in the Runbooks library**, and **Abandon run**.\n- **The progress line**, for example \"4 of 11 steps done · 1 not applicable · 5\n  required open · 1 waiting\", as the strip's last line (its own short line on a phone).\n- **The Next step card**: the first required step not yet done, with its phase, kind,\n  focus, and its Escalate if and Benign if criteria. Depending on the step you can\n  confirm an AI draft note (**Confirm and mark done**), write a note and **Mark done**,\n  pick an option and **Record decision**, or record an action; **Not applicable**,\n  **Blocked** and **Assign** are on the card too (in **More** on a phone, where the focus\n  line folds into **Focus and criteria**). A note you are typing goes in the same save as\n  **Mark done**, **Record action** or **Record decision**; otherwise it is saved when you\n  leave it, or at once with **Save note**. If another change to the runbook is still being\n  saved when you press a button, the step says so and you press it again. After you",
+   "text": "- **The strip**: the runbook's title, its version, how and when it attached (\"Matched\n  automatically · 12:52 UTC\", \"Fallback\", \"Added by Asha Rao\", \"Suggested by the AI,\n  accepted by Asha Rao\"), **Why attached** (the criteria that matched and how matching\n  works), **Add runbook**, and a menu with **Switch to version N** when a newer one is\n  Published, **Export as Markdown**, **Open in the Runbooks library**, and **Abandon run**.\n- **The progress line**, for example \"4 of 11 steps done · 1 not applicable · 5\n  required open · 1 waiting\", as the strip's last line (its own short line on a phone).\n- **The Next step card**: the first required step not yet done, with its phase, kind,\n  focus, and its Escalate if and Benign if criteria. Depending on the step you can\n  confirm an AI draft note (**Confirm and mark done**), write a note and **Mark done**,\n  pick an option and **Record decision**, or record an action; **Not applicable**,\n  **Blocked** and **Assign** are on the card too (in **More** on a phone, where the\n  focus line folds into **Focus and criteria**). While an AI draft waits, the buttons\n  come first and the draft follows them, showing its first four lines; a longer draft\n  offers **Show the whole draft** for the rest (and **Show less**). **Edit note** opens\n  the draft's text with **Confirm note and mark done** under it, and **Cancel edit**",
    "console": [
     "page:case_manager"
    ]
@@ -1568,7 +1589,7 @@
    "page": "analyst/case-manager.md",
    "anchor": "work-the-runbook",
    "heading": "Work the runbook",
-   "text": "finish the step, focus moves to the new Next step and a screen reader hears \"Step 5\n  done. Next, step 6: ...\"; recording an action that now waits for approval moves on the\n  same way (\"Step 5 recorded.\"). A step waiting for someone's approval is never the next\n  step; when the required steps left all wait for approval, the card says so and lists\n  them. An action whose approval was rejected shows who rejected it and why, and you can\n  record it again.\n- **When every required step is done**, the run is completed and the card says **All\n  required steps are done.**, offers **Close case** (it opens the close dialog), and lists\n  any optional steps left. A completed run stays workable: you can still do its optional\n  steps, and **Reopen step** on a finished step makes the run active again. Only an\n  abandoned run is read only.\n- **Phase tabs**, one per phase with its counts (\"Contain 0/2\") and a dot when a step\n  waits for approval; arrow keys move between them, and the selected phase keeps an\n  outline in forced colours. Below, each step is one row: open it for its instructions,\n  lookup evidence, note, decision or action, approval, and the buttons **Mark done**,\n  **Not applicable** and **Blocked** (each asks a reason), **Assign**, and **Reopen\n  step**.\n- **Other tasks**: the case's free-form tasks, with who added each one. They never count\n  toward runbook progress. **Open the Runbook tab** in Collaboration brings you here.",
+   "text": "returns the draft to its place under the buttons. A note you are typing goes in the\n  same save as **Mark done**, **Record action** or **Record decision**; otherwise it is\n  saved when you leave it, or at once with **Save note**. If another change to the\n  runbook is still being saved when you press a button, the step says so and you press\n  it again. After you finish the step, focus moves to the new Next step and a screen\n  reader hears \"Step 5 done. Next, step 6: ...\"; recording an action that now waits for\n  approval moves on the same way (\"Step 5 recorded.\"). A step waiting for someone's\n  approval is never the next step; when the required steps left all wait for approval,\n  the card says so and lists them. An action whose approval was rejected shows who\n  rejected it and why, and you can record it again.\n- **When every required step is done**, the run is completed and the card says **All\n  required steps are done.**, offers **Close case** (it opens the close dialog), and lists\n  any optional steps left. A completed run stays workable: you can still do its optional\n  steps, and **Reopen step** on a finished step makes the run active again. Only an\n  abandoned run is read only.\n- **Phase tabs**, one per phase with its counts (\"Contain 0/2\") and a dot when a step\n  waits for approval; arrow keys move between them, and the selected phase keeps an\n  outline in forced colours. Below, each step is one row: open it for its instructions,\n  lookup evidence, note, decision or action, approval, and the buttons **Mark done**,\n  **Not applicable** and **Blocked** (each asks a reason), **Assign**, and **Reopen\n  step**.\n- **Other tasks**: the case's free-form tasks, with who added each one. They never count\n  toward runbook progress. **Open the Runbook tab** in Collaboration brings you here.",
    "console": [
     "page:case_manager"
    ]
@@ -2097,7 +2118,9 @@
    "anchor": "charts-tables-and-other-blocks",
    "heading": "Charts, tables, and other blocks",
    "text": "Numbers in blocks come only from lookups. The model chooses which result to show and\nhow, but it never writes the numbers, so every chart is backed by a lookup in the run\nlog. Each block shows its title and a caption with the window, the source, and how the\nnumber was counted (for example \"6,438 cases · exact\"). The first line of its `⋯` menu\nsays who produced the values: **Measured by a lookup** for values read from a connected\nsystem, **Computed by code** for values the platform computed, and **Stated by the\nmodel** for text the assistant wrote, such as a brief's narrative or a callout; such a\nblock also says \"Values stated by the model, not measured\" under it. A chart, table, or\nkey figure is never AI-written. When a block shows the top N of a larger total, its\ncaption says so.\n\nWhen several blocks in a row share the same caption parts and the same time, the answer\nstates them once, in a quiet line above the first block, for example \"44 cases · exact ·\nlast 24 hours · as of 11:13\", and each block's caption keeps only what differs. A\nprintout, an export, a report item, and the expanded view keep each block's full\ncaption, because a block can travel alone.",
-   "console": []
+   "console": [
+    "page:chat"
+   ]
   },
   {
    "id": "analyst/chat#charts-tables-and-other-blocks:1",
@@ -2105,7 +2128,9 @@
    "anchor": "charts-tables-and-other-blocks",
    "heading": "Charts, tables, and other blocks",
    "text": "Cases are named by their case number and title. A case without a number shows its title\nfollowed by a short form of its ID (the full ID is in its tooltip). Verdicts, statuses,\nand kinds read in words, such as \"True positive\", \"Open · awaiting analyst\", and \"IP\".\nA case card's status history reads each move and its reason in words, such as \"Open to\nEscalated\" with \"Automatic close of a confirmed threat is off (by the system)\"; a reason\nan analyst wrote stays as written. An answer saved by an earlier version reads in the same\nwords. A detail on any other timeline, such as an audit timeline's result, is shown as\nwritten even when it reads like a status reason. An answer saved before a case had a\nnumber shows a short form of its ID, with the full ID in its tooltip, and still links to\nthe case. A case card's **Rules** fact names each of the case's rules (up to five), and\neach opens its rule sheet over the case's own window, with \"From\nCASE-000214\" in the sheet's header. A rule that cannot be carried exactly, and every rule\nin an answer saved before this version, is plain text.",
-   "console": []
+   "console": [
+    "page:chat"
+   ]
   },
   {
    "id": "analyst/chat#charts-tables-and-other-blocks:2",
@@ -2113,39 +2138,59 @@
    "anchor": "charts-tables-and-other-blocks",
    "heading": "Charts, tables, and other blocks",
    "text": "Figures in an answer's text read the way its blocks show them, so one figure never\nappears in two forms: a rate is a whole percent from 10% up (\"78%\"), with one decimal\nunder 10% and \"<1%\" for a sliver, rounded half up; a change in a rate is in points the\nsame way (\"+36 points\"); an average risk reads \"7/100\". The run log's step summaries\nwrite a rate the same way (\"FP rate 76%\").\n\nCase counts in chat are exact across your whole case store, however large: chat never\npresents a sample as a total. If the store fails part-way through a count, the answer\nsays how much was counted instead of showing a smaller number as exact.",
-   "console": []
+   "console": [
+    "page:chat"
+   ]
   },
   {
    "id": "analyst/chat#charts-tables-and-other-blocks:3",
    "page": "analyst/chat.md",
    "anchor": "charts-tables-and-other-blocks",
    "heading": "Charts, tables, and other blocks",
-   "text": "Block types include key-figure groups (the Active Risk Index tile shows a small gauge\nbeside its figure, with the band, such as \"High\", above \"/100\"); bar,\ngrouped bar, horizontal bar, stacked bar, line, area, donut, sparkline, and funnel\ncharts; heatmaps; tables; case lists; timelines; entity cards; ATT&CK technique cards;\nquery blocks; and guides with console links. A **comparison** sets two or more periods\nside by side, for example this quarter against the last: tiles with the absolute and\npercentage change, grouped columns, and a table. A change from zero reads \"new\", never\ninfinity, and a figure based on fewer than 20 cases is marked as a small sample. A\n**Brief** groups several results into sections, for example for a shift handoff. Its\ntitle reads \"Brief: {title}\" (unless the title already says brief), its window is stated\nonce, and it shows a **Contents** control from four sections. An infographic Brief leads\nwith key figures and trend lines and lays its charts out in a grid.\n\nCharts over time read in calendar terms, such as \"Mar 2026\" or \"W14 2026\", name their\ntime zone, and draw the current period lighter with \"(in progress)\". A time chart has one\nrow of controls above it: **Group by** on the left, and the zoom hint (\"Drag to zoom\"),\nthe zoomed range, and **Reset zoom** on the right. On a time chart you can:",
-   "console": []
+   "text": "Block types include key-figure groups (the Active Risk Index tile shows a small gauge\nbeside its figure, with the band, such as \"High\", above \"/100\"); bar,\ngrouped bar, horizontal bar, stacked bar, line, area, donut, sparkline, and funnel\ncharts; heatmaps; tables; case lists; timelines; entity cards; ATT&CK technique cards;\nquery blocks; and guides with console links. A **comparison** sets two or more periods\nside by side, for example this quarter against the last: tiles with the absolute and\npercentage change, grouped columns, and a table. A change from zero reads \"new\", never\ninfinity, and a figure based on fewer than 20 cases is marked as a small sample. A\n**Brief** groups several results into sections, for example for a shift handoff. Its\ntitle reads \"Brief: {title}\" (unless the title already says brief), its window is stated\nonce, and it shows a **Contents** control from four sections. An infographic Brief leads\nwith key figures and trend lines and lays its charts out in a grid.",
+   "console": [
+    "page:chat"
+   ]
   },
   {
    "id": "analyst/chat#charts-tables-and-other-blocks:4",
    "page": "analyst/chat.md",
    "anchor": "charts-tables-and-other-blocks",
    "heading": "Charts, tables, and other blocks",
-   "text": "- **Group by** a coarser unit, such as days into weeks or weeks into months, when the\n  data allows it; the table, Copy data, and the downloads follow the grouping shown.\n- **Zoom** a line or area chart: drag across it, or select one point and Shift-select\n  another; with the keyboard, Shift+←/→ then Enter. **Reset zoom** shows the whole\n  series again.\n- **Hide or show a series** by selecting it in the legend; at least one stays visible.\n  When every line is labelled at its end, the chart draws no legend, and **Series** in\n  the block's `⋯` menu shows or hides lines instead.\n\nAll of these change only the view of the same numbers; nothing is looked up again. A\nhorizontal bar shows its value just after the bar, and a donut's legend sits beside it on\na wide card and under it on a narrow one.\n\nAt rest a block shows only its `⋯` menu. **Add to report** appears beside it when you\npoint at or tab into the block, and stays while the block is in the report. The menu:",
-   "console": []
+   "text": "Charts over time read in calendar terms: months as \"Mar 2026\", and a weekly chart's\nticks as the day each week starts (\"Mar 30\"), with the ISO week in the tooltip and the\ntable (\"Week of Mar 30 (W14 2026)\"); a week the window cuts says so in the same day\norder (\"Week of Mar 30 (W14 2026) (from Apr 1)\"). On a chart finer than a day, the first\ntick and each tick that starts a new day carry the date (\"Nov 2 12:00\"), and later ticks\non that day only the time. Charts name their time zone and draw the current period\nlighter with \"(in progress)\". A time chart has one row of controls above it:\n**Group by** on the left, and the zoom hint (\"Drag to zoom\"), the zoomed range, and\n**Reset zoom** on the right. On a time chart you can:\n\n- **Group by** a coarser unit, such as days into weeks or weeks into months, when the\n  data allows it; the table, Copy data, and the downloads follow the grouping shown.\n- **Zoom** a line or area chart: drag across it, or select one point and Shift-select\n  another; with the keyboard, Shift+←/→ then Enter. **Reset zoom** shows the whole\n  series again.\n- **Hide or show a series** by selecting it in the legend; at least one stays visible.\n  When every line is labelled at its end, the chart draws no legend, and **Series** in\n  the block's `⋯` menu shows or hides lines instead.",
+   "console": [
+    "page:chat"
+   ]
   },
   {
    "id": "analyst/chat#charts-tables-and-other-blocks:5",
    "page": "analyst/chat.md",
    "anchor": "charts-tables-and-other-blocks",
    "heading": "Charts, tables, and other blocks",
-   "text": "| Action | What it does |\n|---|---|\n| Add to report | Adds the block to this conversation's report, or removes it (also beside the menu, see above) |\n| Expand | Opens the block in a wide view |\n| Full width | Lets the block use the whole conversation width (offered when there is room to gain) |\n| Show as | Switches to another view of the same numbers, such as bars as a donut. Only views that tell the truth are offered: a donut or stacked bar appears only when the parts add up to a whole. A severity breakdown also offers **Rules by level** when a rule falls in two or more levels (see Severity breakdowns). |\n| Series | Shows or hides each line of a chart whose lines are labelled at their ends |\n| Show table / Show chart | Flips between the chart and its data |\n| Copy data | Copies the rows as tab-separated text. Indicators are defanged by default (`hxxp`, `[.]`), and the menu has a toggle. |\n| Download CSV / Download JSON | Saves the block's data. CSV cells that look like formulas are neutralized. |\n| Download PNG / Download SVG | Saves the chart as shown, with its grouping, zoom, and hidden series stated on the image |\n| Copy query | Copies the exact query behind the block |\n| Open in Logs / Open in Cases | Opens the console view of exactly this data, with the same query, source, and absolute time window. Offered only when the console can show the same filter. |",
-   "console": []
+   "text": "All of these change only the view of the same numbers; nothing is looked up again. A\nhorizontal bar shows its value just after the bar, and a donut's legend sits beside it on\na wide card and under it on a narrow one.\n\nAt rest a block in **Triage → Workspace → Chat** shows only its `⋯` menu.\n**Add to report** appears beside it when you point at or tab into the block, and stays\nwhile the block is in the report. The menu:",
+   "console": [
+    "page:chat"
+   ]
   },
   {
    "id": "analyst/chat#charts-tables-and-other-blocks:6",
    "page": "analyst/chat.md",
    "anchor": "charts-tables-and-other-blocks",
    "heading": "Charts, tables, and other blocks",
+   "text": "| Action | What it does |\n|---|---|\n| Add to report | Adds the block to this conversation's report, or removes it (also beside the menu, see above) |\n| Expand | Opens the block in a wide view |\n| Full width | Lets the block use the whole conversation width (offered when there is room to gain) |\n| Show as | Switches to another view of the same numbers, such as bars as a donut. Only views that tell the truth are offered: a donut or stacked bar appears only when the parts add up to a whole. A severity breakdown also offers **Rules by level** when a rule falls in two or more levels (see Severity breakdowns). |\n| Series | Shows or hides each line of a chart whose lines are labelled at their ends |\n| Show table / Show chart | Flips between the chart and its data |\n| Copy data | Copies the rows as tab-separated text. Indicators are defanged by default (`hxxp`, `[.]`), and the menu has a toggle. |\n| Download CSV / Download JSON | Saves the block's data. CSV cells that look like formulas are neutralized. |\n| Download PNG / Download SVG | Saves the chart as shown, with its grouping, zoom, and hidden series stated on the image |\n| Copy query | Copies the exact query behind the block |\n| Open in Logs / Open in Cases | Opens the console view of exactly this data, with the same query, source, and absolute time window. Offered only when the console can show the same filter. |",
+   "console": [
+    "page:chat"
+   ]
+  },
+  {
+   "id": "analyst/chat#charts-tables-and-other-blocks:7",
+   "page": "analyst/chat.md",
+   "anchor": "charts-tables-and-other-blocks",
+   "heading": "Charts, tables, and other blocks",
    "text": "A list of cases names each case by its case number (**CASE-000045**) in **Show table**,\n**Expand**, and **Copy data**, as the list does, and its link opens that case. A case\nwithout a number shows its case ID. The CSV writes the number under **Case** and adds a\n**Case ID** column with the internal ID, so other tools can match it; JSON keeps the\nstored values.\n\nA table shows ten rows inline, and **View all** opens the rest. A cell with no value is\nleft blank (a screen reader reads \"None\", or \"Not measured\" for a number), and a list of\nATT&CK techniques in a cell shows one chip per technique. A lookup that returns\nno rows adds no empty chart or table; the answer says so in words. A count of zero is\nstill a figure and is shown, and a duration of zero reads in its unit, such as \"0 min\";\na duration measured in minutes or hours that is under one second reads \"< 1 min\". You\ncan also ask for a different view in words, such as \"show that as a donut\" or \"now by\nhost\": the assistant reuses the earlier lookup or its stored result.",
-   "console": []
+   "console": [
+    "page:chat"
+   ]
   },
   {
    "id": "analyst/chat#rules-in-an-answer:0",
@@ -2208,16 +2253,30 @@
    "page": "analyst/chat.md",
    "anchor": "severity-breakdowns",
    "heading": "Severity breakdowns",
-   "text": "A question such as \"Show alerts by severity for the last 3 days\" answers with a severity\nbreakdown: a table of the five named levels in a fixed order (Critical, High, Medium, Low,\nInfo), zeros included.\n\n| Column | What it shows |\n|---|---|\n| Severity | The level, with the raw source values it holds, such as \"High (73, 8)\"; its help tip names each source's scale (\"73 on a 0 to 100 scale and 8 on a 0 to 10 scale\") |\n| Events (or Cases) | How many fell in the level |\n| Share | Its share of the events counted, to one decimal, such as \"0.0%\" |\n| Trend | A small line over the window; dots when there are fewer than five points |\n| Top rules | Up to three rule names with their counts, each opening the rule sheet, then \"+7 more rules\" |",
-   "console": []
+   "text": "In **Triage → Workspace → Chat**, a question such as \"Show alerts by severity for the\nlast 3 days\" answers with a severity breakdown: a table of the five named levels in a\nfixed order (Critical, High, Medium, Low, Info), zeros included.\n\n| Column | What it shows |\n|---|---|\n| Severity | The level, with the raw source values it holds, such as \"High (73, 8)\"; its help tip names each source's scale (\"73 on a 0 to 100 scale and 8 on a 0 to 10 scale\") |\n| Events (or Cases) | How many fell in the level |\n| Share | Its share of the events counted, to one decimal, such as \"0.0%\" |\n| Trend | A small line over the window; dots when there are fewer than five points |\n| Top rules | Up to three rule names with their counts, each opening the rule sheet, then \"+7 more rules\" |",
+   "console": [
+    "page:chat"
+   ]
   },
   {
    "id": "analyst/chat#severity-breakdowns:1",
    "page": "analyst/chat.md",
    "anchor": "severity-breakdowns",
    "heading": "Severity breakdowns",
-   "text": "- **One ladder for every source.** Each event's raw severity is read on its own source's\n  scale before sources are merged, so a Wazuh 0 to 15, a QRadar 0 to 10 and a 0 to 100\n  source land in the same five levels. The footnote says so.\n- **Open a level** with the chevron in its first cell (a button: Enter or Space). The\n  opened row lists the level's rules (up to 20, then \"+N more rules\"), each with its count,\n  its rule sheet and a Logs view of that rule at that level, then the level's own Logs\n  view.\n- **Split by**, in the block header when the answer carries more than one split (on a\n  phone or in the Case Manager column, in the block's `⋯` menu, so the title keeps the\n  full width): None, Rule or Source. Source swaps the Top column for the top sources, and\n  an opened level then lists its sources. **Host** is listed but not available (\"Ask\n  again to add it\"). Switching never looks anything up again and never calls the model.\n- **Rules by level.** When a rule falls in two or more levels, **Show as** in the block's\n  `⋯` menu offers a matrix: rules down the side, levels across. In an events breakdown\n  each count opens those events in Logs; a cases breakdown's counts are plain numbers.\n  **Split by** is not offered with the matrix. It takes the wide lane; on a phone it shows\n  as the levels table.\n- **Honest counts.** When the levels do not cover every event, the caption says so, for\n  example \"1,000 of 2,500 events sampled, newest 200 per source\", and says both when some\n  sources were counted exactly and others sampled. Shares are then of the events counted.\n- On a narrow card (a phone, the Case Manager column) Trend and Top rules drop; open a\n  level to see its rules. On a phone, a level with more raw values than its line can hold\n  wraps them inside its badge, and the help tip stays beside it.\n- Reports, print and the exports (CSV, Word, Excel) carry the plain table: each level\n  with its raw values, its count, its share and its top rules.",
-   "console": []
+   "text": "- **One ladder for every source.** Each event's raw severity is read on its own source's\n  scale before sources are merged, so a Wazuh 0 to 15, a QRadar 0 to 10 and a 0 to 100\n  source land in the same five levels. The footnote says so.\n- **Open a level** with the chevron in its first cell (a button: Enter or Space). The\n  opened row lists the level's rules (up to 20, then \"+N more rules\"), each with its count,\n  its rule sheet and a Logs view of that rule at that level, then the level's own Logs\n  view.\n- **Split by**, in the block header when the answer carries more than one split (on a\n  phone or in the Case Manager column, in the block's `⋯` menu, so the title keeps the\n  full width): None, Rule or Source. Source swaps the Top column for the top sources, and\n  an opened level then lists its sources. **Host** is listed but not available (\"Ask\n  again to add it\"). Switching never looks anything up again and never calls the model.\n- **Rules by level.** When a rule falls in two or more levels, **Show as** in the block's\n  `⋯` menu offers a matrix: rules down the side, levels across. In an events breakdown\n  each count opens those events in Logs; a cases breakdown's counts are plain numbers.\n  **Split by** is not offered with the matrix. It takes the wide lane; on a phone it shows\n  as the levels table.",
+   "console": [
+    "page:chat"
+   ]
+  },
+  {
+   "id": "analyst/chat#severity-breakdowns:2",
+   "page": "analyst/chat.md",
+   "anchor": "severity-breakdowns",
+   "heading": "Severity breakdowns",
+   "text": "- **Honest counts.** When the levels do not cover every event, the caption says so, for\n  example \"1,000 of 2,500 events sampled, newest 200 per source\", and says both when some\n  sources were counted exactly and others sampled. Shares are then of the events counted.\n- On a narrow card (a phone, the Case Manager column) Trend and Top rules drop; open a\n  level to see its rules. On a phone, a level with more raw values than its line can hold\n  wraps them inside its badge, and the help tip stays beside it.\n- **Cases over time.** A trend of cases by severity, such as \"Cases by severity per day\n  this month\", draws the same five levels, Critical to Info, zeros included, even when\n  the question asks for the top few. Cases with no readable severity get their own\n  **No severity** line while there are any.\n- Reports, print and the exports (CSV, Word, Excel) carry the plain table: each level\n  with its raw values, its count, its share and its top rules.",
+   "console": [
+    "page:chat"
+   ]
   },
   {
    "id": "analyst/chat#sources-citations-and-console-links:0",
@@ -2378,8 +2437,10 @@
    "page": "analyst/chat.md",
    "anchor": "export",
    "heading": "Export",
-   "text": "**Download PDF** opens the browser's print dialog, already named after the report, where\nyou choose Save as PDF. **Export** opens one menu with every format:\n\n| Format | Contents |\n|---|---|\n| PDF (`.pdf`) | The browser's print dialog, laid out for A4 |\n| Word (`.docx`) | The whole document, with headings, tables, and notes, ready to edit |\n| Excel (`.xlsx`) | A **Report** sheet with the document, then one sheet per table with exact values |\n| Markdown (`.md`) | The whole document as text |\n| HTML (`.html`) | A self-contained file with no scripts and a strict content security policy |\n| CSV (all tables) | Every table-like block, each labelled |\n| JSON | The report exactly as stored, for other tools |",
-   "console": []
+   "text": "In a report's panel in **Triage → Workspace → Chat**, **Download PDF** opens the\nbrowser's print dialog, already named after the report, where you choose Save as PDF.\n**Export** opens one menu with every format:\n\n| Format | Contents |\n|---|---|\n| PDF (`.pdf`) | The browser's print dialog, laid out for A4 |\n| Word (`.docx`) | The whole document, with headings, tables, and notes, ready to edit |\n| Excel (`.xlsx`) | A **Report** sheet with the document, then one sheet per table with exact values |\n| Markdown (`.md`) | The whole document as text |\n| HTML (`.html`) | A self-contained file with no scripts and a strict content security policy |\n| CSV (all tables) | Every table-like block, each labelled |\n| JSON | The report exactly as stored, for other tools |",
+   "console": [
+    "page:chat"
+   ]
   },
   {
    "id": "analyst/chat#export:1",
@@ -2387,7 +2448,9 @@
    "anchor": "export",
    "heading": "Export",
    "text": "Every format except JSON writes severity, verdict, and status in the words the report\nshows on screen, such as **Critical**, **True positive**, **Needs human**, and **On hold**.\nYes/no values read **Yes** and **No**, in the CSV too, and a query is labelled with its\nlanguage as the screen names it, such as **ES|QL** or **Query DSL**. JSON keeps the stored\nvalues (`true_positive`, `on_hold`, `true`, `esql`) so other tools can read them.\nCases are named as the report shows them, by case number (**CASE-000045**), in PDF,\nWord, Excel, Markdown, HTML, and the CSV's **Case** column; a case without a number keeps\nits case ID. The CSV adds a **Case ID** column with the internal ID, and JSON keeps it as\nstored, so other tools can match it.\n\nA table cell with no value is left blank in every format, as on screen, such as a\ncampaign with no ATT&CK technique. In Word, Markdown, and HTML, a dash (`—`) marks only\na figure that was not measured, such as a missing count or risk score, and the\n**Methodology & limitations** section says how many there are. Excel and CSV leave both\nkinds of cell empty, never 0.",
-   "console": []
+   "console": [
+    "page:chat"
+   ]
   },
   {
    "id": "analyst/chat#export:2",
@@ -2395,7 +2458,9 @@
    "anchor": "export",
    "heading": "Export",
    "text": "PDF, Word, Markdown, and HTML exports, and the Excel **Report** sheet, carry a header\n(title, author, time generated, app version, source conversations, and each item's\nwindow and sources), the AI summary, the items with their notes, a **Methodology &\nlimitations** section built from the lookups behind the numbers (queries, sampling,\ntruncation, unavailable sources, tokens, and cost), and an appendix of queries. Text\nfrom logs is escaped in Markdown so it cannot turn into formatting or links.\n\n**Defang indicators** in the export menu is on by default: addresses, domains, URLs, and\ne-mail addresses in PDF, Word, Markdown, and HTML exports and on the Excel **Report**\nsheet are rewritten so they cannot be clicked (`hxxp://`, `example[.]com`), and the\nchoice is remembered in this browser. The Excel table sheets, CSV, and JSON are data and\nare never defanged, so they round-trip exactly; CSV and spreadsheet cells that look like\nformulas are neutralized. While an export is being prepared, the menu shows its progress\nand cannot start a second one; a failed export says why and offers **Retry**.",
-   "console": []
+   "console": [
+    "page:chat"
+   ]
   },
   {
    "id": "analyst/chat#the-reports-library:0",
@@ -2591,32 +2656,40 @@
    "page": "analyst/logs-search.md",
    "anchor": "unified-logs",
    "heading": "Unified logs",
-   "text": "The unified view fans out to each source and merges rows newest first. Every row\nincludes `source_id` and source name so identical-looking events remain attributable.\n\n- Pull connectors perform a bounded search with the source's own field mapping,\n  index scope, TLS settings, and read-only credential.\n- Push, queue, and object-store receivers show their recent in-process browse buffer.\n- A source timeout or read error is returned as a per-source failure; successful\n  sources still render.\n- The result is capped at 200 rows per source and 200 merged rows (the page asks for\n  150).\n\nThe page header holds the time range and Refresh. The time-range pill offers the last\n15 minutes, 1 hour, 4 hours, 24 hours or 7 days, and a refresh choice of **Off** or\n**Live** (a live tail that reads again every 10 seconds). Below it, filter by free text.\n\nThe events sit on one panel titled with what it holds, for example \"Latest 150 events\"\nwith \"from 3 sources\" (or \"from 2 of 3 sources\" when one did not answer) beside it. The\ntable reads newest first:",
-   "console": []
+   "text": "The unified view in **Triage → Logs** fans out to each source and merges rows newest\nfirst. Every row includes `source_id` and source name so identical-looking events remain\nattributable.\n\n- Pull connectors perform a bounded search with the source's own field mapping,\n  index scope, TLS settings, and read-only credential.\n- Push, queue, and object-store receivers show their recent in-process browse buffer.\n- A source timeout or read error is returned as a per-source failure; successful\n  sources still render.\n- The result is capped at 200 rows per source and 200 merged rows (the page asks for\n  150).\n\nThe page header holds the time range and Refresh. The time-range pill offers the last\n15 minutes, 1 hour, 4 hours, 24 hours or 7 days, and a refresh choice of **Off** or\n**Live** (a live tail that reads again every 10 seconds). Below it, filter the logs by\nfree text, such as a word from the message, a rule or a host name, and press Enter to\nsearch. The search and the time range apply to pull sources. A push, queue or\nobject-store receiver returns its live-tail buffer, which ignores the search and, unless\nan exact filter (below) is set, the time range too; a note above the table names those\nsources.",
+   "console": [
+    "page:logs"
+   ]
   },
   {
    "id": "analyst/logs-search#unified-logs:1",
    "page": "analyst/logs-search.md",
    "anchor": "unified-logs",
    "heading": "Unified logs",
-   "text": "- **Time (UTC)** shows each event's time of day; the date is a group row above the\n  events of that day, shown once when the day changes.\n- **Source** shows the source's short name (its configured name without a trailing\n  part in brackets, so \"Splunk Enterprise Security (HEC)\" reads \"Splunk Enterprise\n  Security\"); the full name is the cell's tooltip.\n- **Rule** is a link: pressing it opens the rule's sheet (see below).\n- **Severity** shows the named level only (Info, Low, Medium, High or Critical); the\n  tooltip gives the raw score and the scale it was read on (\"Score 12 on a 0 to 16\n  scale\"), because each source declares its own severity scale.\n- The message, and a row's expansion into its source and destination IP, user, host\n  and the raw payload, kept for provenance.\n\nOn a phone the events are a list rather than a table.",
-   "console": []
+   "text": "The events sit on one panel titled with what it holds, for example \"Latest 150 events\"\nwith \"from 3 sources\" (or \"from 2 of 3 sources\" when one did not answer) beside it. The\ntable reads newest first:\n\n- **Time (UTC)** shows each event's time of day; the date is a group row above the\n  events of that day, shown once when the day changes.\n- **Source** shows the source's short name (its configured name without a trailing\n  part in brackets, so \"Splunk Enterprise Security (HEC)\" reads \"Splunk Enterprise\n  Security\"); the full name is the cell's tooltip.\n- **Rule** is a link: pressing it opens the rule's sheet (see below).\n- **Severity** shows the named level only (Info, Low, Medium, High or Critical); the\n  tooltip gives the raw score and the scale it was read on (\"Score 12 on a 0 to 16\n  scale\"), because each source declares its own severity scale.\n- The message, and a row's expansion into its source and destination IP, user, host\n  and the raw payload, kept for provenance.\n\nOn a phone the events are a list rather than a table.",
+   "console": [
+    "page:logs"
+   ]
   },
   {
    "id": "analyst/logs-search#a-rules-sheet:0",
    "page": "analyst/logs-search.md",
    "anchor": "a-rules-sheet",
    "heading": "A rule's sheet",
-   "text": "Pressing a rule anywhere in the Console (a log row, a case's facts, Auto-tuning, the\nCyber Defence Center's top signatures, a dashboard rule widget) opens the same rule\nsheet, on the last 3 days unless it was opened from a page with its own window. A strip\nat the top counts the rule's alerts in the window (exact, or a floor when a source could\nnot count all of its data) and, for every case the rule ever opened, the cases, how many\nare still open and the analyst outcome. Below it are alerts over time by severity, the\ntop source IPs and targets, the latest alerts, the cases, and the rule's facts (where it\nis defined, its tuning and any \"declared benign\" policy). Each part checks its own\npermission, so a missing permission hides one part, never the sheet, and the sheet never\nstates a zero it did not count. Opening it calls no model. **Open all N in Logs** opens\nthis page filtered to that rule (the number only when the count is exact), **Show the N\ncases** opens those cases, and **Ask AI about this rule** asks chat about it.",
-   "console": []
+   "text": "Pressing a rule anywhere in the Console (a log row, a case's facts, Auto-tuning, the\nCyber Defence Center's top signatures, a dashboard rule widget) opens the same rule\nsheet, on the last 3 days unless it was opened from a page with its own window. A strip\nat the top counts the rule's alerts in the window (exact, or a floor when a source could\nnot count all of its data) and, for every case the rule ever opened, the cases, how many\nare still open and the analyst outcome. Below it are alerts over time by severity, the\ntop source IPs and targets, the latest alerts, the cases, and the rule's facts (where it\nis defined, its tuning and any \"declared benign\" policy). Each part checks its own\npermission, so a missing permission hides one part, never the sheet, and the sheet never\nstates a zero it did not count. Opening it calls no model. **Open all N in Logs** opens\n**Triage → Logs** filtered to that rule (the number only when the count is exact),\n**Show the N cases** opens those cases, and **Ask AI about this rule** asks chat about\nit.",
+   "console": [
+    "page:logs"
+   ]
   },
   {
    "id": "analyst/logs-search#exact-filters:0",
    "page": "analyst/logs-search.md",
    "anchor": "exact-filters",
    "heading": "Exact filters",
-   "text": "Opened from a rule's sheet or a chat answer, the page can carry exact filters the server\napplies: \"Rule is\" (the exact rule value), \"Severity is High\" (one named level) and\n\"Severity High or above\". Each is a removable chip. While \"Rule is\" is set the Rule\ncolumn is left out, and the event count above the table is the server's matched count\n(\"381 events · last 3 days\", or \"At least 1,000 events\" when a source could not count\nexactly), never a sum of the rows shown. A linked window longer than 90 days keeps every\nfilter and reads the last 90 days of that window, and the header says so.\n\nWarning: Recent push logs are not an archive\n\nThe push browse buffer is volatile. Restarting the backend clears it. Cases keep\nselected identifiers and evidence, but the authoritative raw event should remain\nin the sending system, broker, or object store.",
-   "console": []
+   "text": "Opened from a rule's sheet or a chat answer, **Triage → Logs** can carry exact filters\nthe server applies: \"Rule is\" (the exact rule value), \"Severity is High\" (one named\nlevel) and \"Severity High or above\". Each is a removable chip. While \"Rule is\" is set\nthe Rule column is left out, and the event count above the table is the server's matched\ncount (\"381 events · last 3 days\", or \"At least 1,000 events\" when a source could not\ncount exactly), never a sum of the rows shown. The filters apply to a live-tail buffer\ntoo, and while one is set the buffer is also kept to the time range, so its rows match\nthe window the header names. A linked window longer than 90 days keeps every filter and\nreads the last 90 days of that window, and the header says so.\n\nWarning: Recent push logs are not an archive\n\nThe push browse buffer is volatile. Restarting the backend clears it. Cases keep\nselected identifiers and evidence, but the authoritative raw event should remain\nin the sending system, broker, or object store.",
+   "console": [
+    "page:logs"
+   ]
   },
   {
    "id": "analyst/logs-search#browse-one-source:0",
@@ -3544,24 +3617,30 @@
    "page": "intelligence/runbooks.md",
    "anchor": "which-runbook-a-case-gets",
    "heading": "Which runbook a case gets",
-   "text": "**Applies when** lists the conditions a runbook needs. Each condition matches any of its\nvalues, and a runbook needs every condition it lists:\n\n- rules (exact rule values) and ATT&CK techniques (a parent technique matches its\n  sub-techniques);\n- entity types, sources (a source id or `type:`), a minimum severity and a\n  minimum number of events;\n- verdicts, case statuses and tags; and\n- the fallback, which matches any case and is used only when nothing else matches. The\n  built-in Generic incident runbook is the fallback.\n\nWhen several runbooks match, the most specific wins: a rule match first, then a technique\nmatch, then the other conditions, then the fallback. Ties go to the higher priority, then the\nrunbook that matched the most conditions, then the newest published, then the id in\nalphabetical order. The case's Runbook tab says why a runbook was attached (\"Matched rule\nssh_auth_failed and technique T1110\").\n\nMatching happens twice. Before the investigation, a cluster has no verdict, status, tags and\noften no techniques yet. A condition whose fact is not known yet is tolerated only behind a\nrule match, so a runbook that names its rules still guides the investigator; without a rule\nmatch, an unknown fact blocks the match. When the case needs a person, every fact is known\nand every condition the runbook lists must match.",
-   "console": []
+   "text": "**Applies when** lists the conditions a runbook needs. Each condition matches any of its\nvalues, and a runbook needs every condition it lists:\n\n- rules (exact rule values) and ATT&CK techniques (a parent technique matches its\n  sub-techniques);\n- entity types, sources (a source id or `type:`), a minimum severity and a\n  minimum number of events;\n- verdicts, case statuses and tags; and\n- the fallback, which matches any case and is used only when nothing else matches. The\n  built-in Generic incident runbook is the fallback, and\n  **Attach Generic incident when nothing matches** in\n  **Settings → Integrations → Runbooks → Runbooks on cases** turns it on or off.\n\nWhen several runbooks match, the most specific wins: a rule match first, then a technique\nmatch, then the other conditions, then the fallback. Ties go to the higher priority, then the\nrunbook that matched the most conditions, then the newest published, then the id in\nalphabetical order. The case's Runbook tab says why a runbook was attached (\"Matched rule\nssh_auth_failed and technique T1110\").",
+   "console": [
+    "settings:runbooks.runbooks-cases"
+   ]
   },
   {
    "id": "intelligence/runbooks#which-runbook-a-case-gets:1",
    "page": "intelligence/runbooks.md",
    "anchor": "which-runbook-a-case-gets",
    "heading": "Which runbook a case gets",
-   "text": "Tags carried over from an earlier version of a runbook (its tags and keywords) are\nconditions like any other: the case must carry the tag. Every converted runbook that gained\none carries an import note saying so.\n\nMatching is free: no model is called. A runbook attaches to a case at most once; a later\nchange to the case attaches another runbook only when it matches more specifically than every\nrunbook already on the case, and it never removes one.",
-   "console": []
+   "text": "Matching happens twice. Before the investigation, a cluster has no verdict, status, tags and\noften no techniques yet. A condition whose fact is not known yet is tolerated only behind a\nrule match, so a runbook that names its rules still guides the investigator; without a rule\nmatch, an unknown fact blocks the match. When the case needs a person, every fact is known\nand every condition the runbook lists must match.\n\nTags carried over from an earlier version of a runbook (its tags and keywords) are\nconditions like any other: the case must carry the tag. Every converted runbook that gained\none carries an import note saying so.\n\nMatching is free: no model is called. A runbook attaches to a case at most once; a later\nchange to the case attaches another runbook only when it matches more specifically than every\nrunbook already on the case, and it never removes one.",
+   "console": [
+    "settings:runbooks.runbooks-cases"
+   ]
   },
   {
    "id": "intelligence/runbooks#writing-a-runbook:0",
    "page": "intelligence/runbooks.md",
    "anchor": "writing-a-runbook",
    "heading": "Writing a runbook",
-   "text": "Choose **New runbook**, or **Create a runbook** beside a rule in **Rules with no runbook**,\nwhich starts with that rule in Applies when. The editor has three views of the same runbook:\n\n- **Edit** shows an outline of phases and steps beside the selected step's form. Add a step\n  by kind from **Add step**, add a phase from **Add phase**, and move a step by dragging it or\n  with Alt and the arrow keys. **Runbook details** at the top of the outline holds the title,\n  summary, use when, prerequisites, priority, owner, review cadence, the techniques the\n  runbook covers, search phrases and references (https links only).\n- **Preview as analyst** shows the Runbook tab as an analyst will see it before anyone\n  starts. **Fill with** a recent matching case resolves the lookup values from that case, and\n  the meter shows the investigator guidance against its budget, for example \"Investigator\n  guidance: 2,140 of 3,000 characters\".\n- **Source** shows the Markdown. Chips and front matter are the same fields; edit either, and\n  the outline follows as you type.",
-   "console": []
+   "text": "In **Intelligence → Runbooks**, choose **New runbook**, or **Create a runbook** beside a\nrule in **Rules with no runbook**, which starts with that rule in Applies when. The editor\nhas three views of the same runbook:\n\n- **Edit** shows an outline of phases and steps beside the selected step's form. Add a step\n  by kind from **Add step**, add a phase from **Add phase**, and move a step by dragging it or\n  with Alt and the arrow keys. **Runbook details** at the top of the outline holds the title,\n  summary, use when, prerequisites, priority, owner, review cadence, the techniques the\n  runbook covers, search phrases and references (https links only).\n- **Preview as analyst** shows the Runbook tab as an analyst will see it before anyone\n  starts. **Fill with** a recent matching case resolves the lookup values from that case, and\n  the meter shows the investigator guidance against its budget, for example \"Investigator\n  guidance: 2,140 of 3,000 characters\".\n- **Source** shows the Markdown. Chips and front matter are the same fields; edit either, and\n  the outline follows as you type.",
+   "console": [
+    "page:runbooks"
+   ]
   },
   {
    "id": "intelligence/runbooks#writing-a-runbook:1",
@@ -3569,7 +3648,9 @@
    "anchor": "writing-a-runbook",
    "heading": "Writing a runbook",
    "text": "The editor checks the runbook as you work and lists each problem beside its field and in a\nsummary under the outline; each entry in the summary moves to its field. A problem you fix\ngoes away at once. A new runbook shows a problem only once you leave its field or try to\nsave, and its summary once you try to save; a save the server refuses lists every problem\nand moves focus to the summary. Publish stays unavailable while problems remain and says how\nmany (\"Fix 2 problems to publish\"). A new runbook's id must not be taken: the Id field says\nso, and the rest of what you wrote is kept.",
-   "console": []
+   "console": [
+    "page:runbooks"
+   ]
   },
   {
    "id": "intelligence/runbooks#writing-a-runbook:2",
@@ -3577,7 +3658,9 @@
    "anchor": "writing-a-runbook",
    "heading": "Writing a runbook",
    "text": "Nothing you type is lost to a save that is still running: an edit made meanwhile stays, and\nthe page shows it as unsaved. This holds for the first save of a new runbook too: its own page\nopens with what you typed meanwhile as unsaved changes. While you have unsaved changes, the\nactions that would replace them (Mark reviewed, Retire, Send back to draft and restoring a\nversion) wait until you save or discard. Changing a step's kind keeps what you wrote for the\nold kind, such as Escalate if or the decision options, and brings it back if you switch back;\na field you cleared stays cleared, and removing the step, **Reload** or discarding the draft\nlets go of anything kept this way. If the Markdown in **Source**\nhas a problem when you switch to another view, the editor asks first, because the outline\nkeeps only the last version that read correctly.\n\n**Which cases would this match?** tests the runbook you are editing against the last 500\ncases of the last 30 days: the cases that would get it, the cases where another runbook wins\n(named), and the near misses with the condition that failed. Nothing is attached and no\nmetric changes. It needs `cases:read`.\n\nA Lookup step's **Test with a case** runs the lookup once against a case you choose, without\nsaving anything. It needs `runbooks:manage`, `sources:read`, `cases:read` and the lookup's own\ngrant.",
-   "console": []
+   "console": [
+    "page:runbooks"
+   ]
   },
   {
    "id": "intelligence/runbooks#writing-a-runbook:3",
@@ -3585,7 +3668,9 @@
    "anchor": "writing-a-runbook",
    "heading": "Writing a runbook",
    "text": "If someone else saves the draft while you edit it, saving says \"Someone else changed this\ndraft. Reload it to see their changes.\" Your edit stays in the Source view until you reload,\nso you can copy it.",
-   "console": []
+   "console": [
+    "page:runbooks"
+   ]
   },
   {
    "id": "intelligence/runbooks#lookups:0",
@@ -3608,8 +3693,11 @@
    "page": "intelligence/runbooks.md",
    "anchor": "review-and-publishing",
    "heading": "Review and publishing",
-   "text": "A runbook moves through four states: **Draft**, **In review**, **Published** and **Retired**.\n\n- Editing a published runbook creates a draft; the published version stays live until the\n  draft is published. Cases already working through a version keep that version, and the\n  editor says how many (\"3 open cases stay on v4\").\n- **Send for review** asks someone with `runbooks:publish` to look at it. They can publish it\n  or send it back to draft with a reason. A publisher may also publish a draft directly.\n- **Publish** makes that exact version live: it is bound to the version and its contents as\n  you reviewed them, so a change made in the meantime is refused and you reload first.\n- When separate approval is on in the Runbooks settings (`runbooks.require_distinct_approver`),\n  nobody who wrote or edited a version can publish it; another person with publish rights\n  must.\n- **Retire** stops a runbook matching new cases. Runs that used it keep working and stay\n  readable. A draft that was never published can be discarded; published history is never\n  deleted.\n- Each runbook has a review cadence (180 days by default). The library shows when a review\n  is due, and **Mark reviewed** records the review without making a new version.",
-   "console": []
+   "text": "In **Intelligence → Runbooks**, a runbook moves through four states: **Draft**,\n**In review**, **Published** and **Retired**.\n\n- Editing a published runbook creates a draft; the published version stays live until the\n  draft is published. Cases already working through a version keep that version, and the\n  editor says how many (\"3 open cases stay on v4\").\n- **Send for review** asks someone with `runbooks:publish` to look at it. They can publish it\n  or send it back to draft with a reason. A publisher may also publish a draft directly.\n- **Publish** makes that exact version live: it is bound to the version and its contents as\n  you reviewed them, so a change made in the meantime is refused and you reload first.\n- When separate approval is on (**The publisher must differ from the author** in\n  **Settings → Integrations → Runbooks → Publishing and review**,\n  `runbooks.require_distinct_approver`), nobody who wrote or edited a version can publish\n  it; another person with publish rights must.\n- **Retire** stops a runbook matching new cases. Runs that used it keep working and stay\n  readable. A draft that was never published can be discarded; published history is never\n  deleted.\n- Each runbook has a review cadence (180 days by default). The library shows when a review\n  is due, and **Mark reviewed** records the review without making a new version.",
+   "console": [
+    "page:runbooks",
+    "settings:runbooks.runbooks-publishing"
+   ]
   },
   {
    "id": "intelligence/runbooks#review-and-publishing:1",
@@ -3617,7 +3705,10 @@
    "anchor": "review-and-publishing",
    "heading": "Review and publishing",
    "text": "**History** lists every version with who published it, compares any two versions step by\nstep (steps added, removed, moved or edited, and which fields changed), and restores an old\nversion as a new draft. Restore waits while a draft or a version in review exists (discard or\npublish it first) and while the editor holds unsaved changes.\n\nOnly a published version guides the investigator or enters the knowledge search. A draft,\na version in review and anything the AI writes never do.",
-   "console": []
+   "console": [
+    "page:runbooks",
+    "settings:runbooks.runbooks-publishing"
+   ]
   },
   {
    "id": "intelligence/runbooks#the-built-in-library:0",
@@ -3800,7 +3891,7 @@
    "page": "administration/settings.md",
    "anchor": "how-the-settings-page-is-laid-out",
    "heading": "How the Settings page is laid out",
-   "text": "Form sections are at most 44 rem (704 px) wide so a switch stays close to its label.\nSections built around a table or a wide editor, such as Users, Roles & permissions,\nSessions & activity, Active sessions and Enrichment, use the full width, and their\ntables reach the edges of their panel.\n\nExplanations live in the help tips. A callout appears only for a condition that is true\nright now, for example **Settings are read-only** while the settings lock is on, **You\ncan view these settings but not change them** for someone without the settings\nmanagement permission, or **The kill switch is on**. Such a callout states what is saved:\nflipping the kill switch in an unsaved draft does not show it, and turning it off in a\ndraft does not hide it until you save. The same goes for the **Posture** rows on\n**Single sign-on & policy**, which state what the backend enforces now.\n\nTheme selection is a compact **System / Light / Dark** control under\n**Settings → Account → Appearance**. Personal theme changes apply immediately and follow\nthe signed-in user; System follows the organization default when one is configured,\notherwise the device preference.",
+   "text": "Form sections are at most 44 rem (704 px) wide so a switch stays close to its label.\nSections built around a table or a wide editor, such as Users, Roles & permissions,\nSessions & activity, Active sessions and Enrichment, use the full width, and their\ntables reach the edges of their panel. Their switches, fields and statuses still sit as\nclose to their names as in a form section, and a short form or a notice among them, such\nas the permission check on **Roles & permissions**, ends where they end.\n\nExplanations live in the help tips. A callout appears only for a condition that is true\nright now, for example **Settings are read-only** while the settings lock is on, **You\ncan view these settings but not change them** for someone without the settings\nmanagement permission, or **The kill switch is on**. Such a callout states what is saved:\nflipping the kill switch in an unsaved draft does not show it, and turning it off in a\ndraft does not hide it until you save. The same goes for the **Posture** rows on\n**Single sign-on & policy**, which state what the backend enforces now.\n\nTheme selection is a compact **System / Light / Dark** control under\n**Settings → Account → Appearance**. Personal theme changes apply immediately and follow\nthe signed-in user; System follows the organization default when one is configured,\notherwise the device preference.",
    "console": [
     "settings:customization"
    ]
@@ -3931,6 +4022,16 @@
    "text": "**Upgrading from an earlier build.** The first time a stored configuration is read, it\nmoves to **Unlimited** unless an administrator had changed a per-question limit from\nits shipped value; then it stays **Bounded** with those values. Values that still hold\nthe shipped default of the build that saved them move to today's defaults (see\n**Timeouts and capacity** above). A configuration from an older build, with a 30-second\nmodel call timeout and 2 questions per user and 8 in total, first takes 300 seconds\n(Unlimited only), 4 and 16, and then the current 900 seconds, 12 and 48; a Bounded\nconfiguration keeps its 30 seconds. Values an administrator had chosen are kept, even\nwhen one equals a later default. Each move happens once and is never repeated.",
    "console": [
     "settings:chat_agent"
+   ]
+  },
+  {
+   "id": "administration/settings#case-numbers:0",
+   "page": "administration/settings.md",
+   "anchor": "case-numbers",
+   "heading": "Case numbers",
+   "text": "**Settings → General → Cases** sets the format of the case number people see and say,\nsuch as `CASE-2026-000123`. Turn on **Use a custom case number format** first; until then\nthe Console shows the internal case ID. A live preview shows sample numbers from\n**Sequence start**. The template takes\nplaceholders such as `{prefix}`, `{year}`, and `{seq:06d}`, and the sequence can start\nagain each calendar year, fiscal year, or fiscal quarter. The internal case ID never\nchanges, and changing the format never renumbers existing cases.",
+   "console": [
+    "settings:cases"
    ]
   },
   {
@@ -4164,7 +4265,7 @@
    "page": "administration/audit-log.md",
    "anchor": "reading-the-list",
    "heading": "Reading the list",
-   "text": "**Platform → Audit log** lists 50 events at a time, newest first; **Load more** reads the\nnext 50 from the server. **Refresh** reads the view again and keeps the rows on screen until the new\nones arrive; if the read fails, the rows stay under the error and **Load more** still reads\non from them. Load more is unavailable while a read is in progress. The line above the\nlist says what you are looking at, for example \"Showing 1 to 50 of 1,284 events · last 7\ndays · times in UTC · newest first\". On Elasticsearch a total above 10,000 is shown as \"at\nleast 10,000\".\n\n| Column | Holds |\n|---|---|\n| Time | When the event was recorded. The column header menu switches between UTC and your local time (remembered in this browser) and between newest and oldest first. |\n| Outcome | Success, Failed, Denied, Partial or Not recorded, always as a word with a glyph. |\n| Event | The event's friendly name. |\n| Actor | The person, AI agent or system, with a glyph for its kind. |\n| Target | What the event acted on: a case, a user, a source, a setting area, a job or a rule. |\n| Summary | The stored one-line summary. |\n\nWhen a scope has no events in the time range, the page says so in that scope's words\n(\"No agent activity in the last 7 days.\") and offers a longer range and **Show all\nscopes**, so an empty scope is never mistaken for an empty log.",
+   "text": "**Platform → Audit log** lists 50 events at a time, newest first; **Load more** reads the\nnext 50 from the server. **Refresh** reads the view again and keeps the rows on screen until the new\nones arrive; if the read fails, the rows stay under the error and **Load more** still reads\non from them. Load more is unavailable while a read is in progress. The line above the\nlist says what you are looking at, for example \"Showing 1 to 50 of 1,284 events · last 7\ndays · times in UTC · newest first\". On Elasticsearch a total above 10,000 is shown as \"at\nleast 10,000\".\n\n| Column | Holds |\n|---|---|\n| Time | When the event was recorded. The column header menu switches between UTC and your local time (remembered in this browser) and between newest and oldest first. |\n| Outcome | Success, Failed, Denied, Partial or Not recorded, always as a word with a glyph. An investigation shown in part reads Not known (see below). |\n| Event | The event's friendly name. |\n| Actor | The person, AI agent or system, with a glyph for its kind. |\n| Target | What the event acted on: a case, a user, a source, a setting area, a job or a rule. |\n| Summary | The stored one-line summary. |",
    "console": [
     "page:audit"
    ]
@@ -4174,7 +4275,37 @@
    "page": "administration/audit-log.md",
    "anchor": "reading-the-list",
    "heading": "Reading the list",
-   "text": "On a phone the list shows Time, Outcome and Event, and the filters fold into **Filters**\n(its count leaves out the search, which stays on the page). Below 1,280 pixels the Target\ncolumn folds away; every value is still in the record.\n\nIn **Agent activity**, the steps of one investigation fold into one row that names the\ncase it worked on, how many steps it took and how it ended (for example \"10 steps · closed\nas false positive\"), with **Open case trace**. Open the row to list its steps. When only\npart of an investigation is loaded the row says so (\"6 of 10 steps shown\") and offers\n**Load more**. Rows without an investigation run (older rows and work outside the\npipeline) are never grouped.\n\nA row recorded before Round 14 carries fewer fields. Its outcome reads Not recorded,\nexcept that an access-denied row reads Denied and an error row reads Failed; the record\nmarks those values as derived.",
+   "text": "When a scope has no events in the time range, the page says so in that scope's words\n(\"No agent activity in the last 7 days.\") and offers a longer range and **Show all\nscopes**, so an empty scope is never mistaken for an empty log.\n\nOn a phone the list shows Time, Outcome and Event, and the filters fold into **Filters**\n(its count leaves out the search, which stays on the page). Below 1,280 pixels the Target\ncolumn folds away; every value is still in the record.",
+   "console": [
+    "page:audit"
+   ]
+  },
+  {
+   "id": "administration/audit-log#reading-the-list:2",
+   "page": "administration/audit-log.md",
+   "anchor": "reading-the-list",
+   "heading": "Reading the list",
+   "text": "In **Agent activity**, the steps of one investigation fold into one row that names the\ncase it worked on, how many steps it took and how it ended (for example \"10 steps · closed\nas false positive\"), with **Open case trace**, which opens the case on its Investigation\ntab with the trace open (for people who can read cases). Open the row to list its steps.\nThe group's outcome follows how the investigation ended: Failed when it ended in an error\n(Denied when that error was a refusal and no decision followed it), Success when it\nreached its verdict or decision and every step succeeded, and Partial when it reached its\nverdict or decision after a step failed, was refused or only partly happened (for example\nwhen the AI budget refused the model call and the case went to a person). When only part\nof an investigation is loaded the row says so (\"6 of 10 steps shown\") and offers\n**Load more**; until the steps shown prove an outcome, the group reads Not known, never\nSuccess. Rows without an investigation run (older rows and work outside the pipeline)\nare never grouped.",
+   "console": [
+    "page:audit"
+   ]
+  },
+  {
+   "id": "administration/audit-log#reading-the-list:3",
+   "page": "administration/audit-log.md",
+   "anchor": "reading-the-list",
+   "heading": "Reading the list",
+   "text": "Every row recorded since Round 14 records its outcome, apart from the few listed at the\nend of this section. Among agent and system rows, a tool call that returned an error, a\nrouter, investigator, formatter or poll failure, and a failed automation action read\nFailed; a step the AI budget refused or a tool the agent may not call reads Denied; a run\nthat stopped at a cap before the model gave a verdict, a poll where some feeds failed, and\na partly applied automation action read Partial. The error text of a model, pipeline,\npoll or automation failure is stored with credentials removed (user names and passwords\nin addresses, Basic and Digest credentials, and the export's secret patterns).",
+   "console": [
+    "page:audit"
+   ]
+  },
+  {
+   "id": "administration/audit-log#reading-the-list:4",
+   "page": "administration/audit-log.md",
+   "anchor": "reading-the-list",
+   "heading": "Reading the list",
+   "text": "An automation's notify action reads Success when every channel took the notification or\nnone was due, Partial when some channels sent it and others did not, Denied when only the\nnotification rate limit held every channel back, Failed when nothing went out because a\nchannel or the notification service itself failed, and Not recorded when the\nnotification service reported nothing per channel. When not everything went out, its\nsummary says why, for example \"Not sent: 1 of 1 channel failed.\" or \"Partly sent: 1 of 2\nchannels failed.\", and a notify no channel was due for says \"Not sent: no channel was\ndue (notifications are off, no channel takes this trigger, no one is addressed, or it\nrepeated inside the dedup window).\" Demo Mode sends nothing: its notify rows read Success\nwith \"Not sent: no notification service is connected.\"\n\nA row recorded before Round 14 carries fewer fields. Its outcome reads Not recorded,\nexcept that an access-denied row reads Denied and an error row reads Failed; the record\nmarks those values as derived. A few newer rows also read Not recorded on purpose,\nbecause a retry of them must match the first write exactly: proposal decisions,\nbackground job transitions (including the storage and replay job rows), update\nsupervisor results, and the first-seen session row.",
    "console": [
     "page:audit"
    ]
@@ -4200,7 +4331,7 @@
    "page": "administration/audit-log.md",
    "anchor": "the-record",
    "heading": "The record",
-   "text": "input as an expandable tree with **Copy JSON**, and any prompt excerpt or tool output\n   in a block labelled as containing untrusted log data.\n4. **Raw record.** The record exactly as it is stored, with Copy. The values the page works\n   out to show a row (its category, its friendly name, the record id, and an outcome or\n   actor kind derived for an older row) are not part of the stored record, so they are\n   left out here and shown, labelled, in the other sections. A text field longer than\n   1,000 characters is stored cut at 1,000, and the record says which.\n5. **Record.** The event and action tokens, the surface, the target and its revision, the\n   case (a link to it), the source (a link to its logs, for people who can read sources),\n   the record id (with Copy), the event, request and investigation run ids, and the\n   application version and build.\n6. **Related.** Links that apply a filter: the same actor within 15 minutes, all events\n   for this target, all events for this case and its case trace, and the actor's sign-ins\n   in the 30 days before this event.",
+   "text": "input as an expandable tree with **Copy JSON**, and any prompt excerpt or tool output\n   in a block labelled as containing untrusted log data.\n4. **Raw record.** The record exactly as it is stored, with Copy. The values the page works\n   out to show a row (its category, its friendly name, the record id, and an outcome or\n   actor kind derived for an older row) are not part of the stored record, so they are\n   left out here and shown, labelled, in the other sections. A text field longer than\n   1,000 characters is stored cut at 1,000, and the record says which.\n5. **Record.** The event and action tokens, the surface, the target and its revision, the\n   case (a link to it), the source (a link to its logs, for people who can read sources),\n   the record id (with Copy), the event, request and investigation run ids, and the\n   application version and build.\n6. **Related.** Links that apply a filter: the same actor within 15 minutes, all events\n   for this target, all events for this case, and the actor's sign-ins in the 30 days\n   before this event. For people who can read cases, **Open case trace** opens the case\n   on its Investigation tab with the trace open.",
    "console": []
   },
   {
@@ -4819,7 +4950,7 @@
    "page": "sources/support-matrix.md",
    "anchor": "format-and-schema-coverage",
    "heading": "Format and schema coverage",
-   "text": "| Input | Parser status | Notes |\n|---|---|---|\n| JSON object/array | Built in | Generic field mapping; validate entity and severity paths |\n| NDJSON | Built in | One record per line |\n| CEF | Built in | Header and extension parsing; vendor extensions remain in unmapped data |\n| LEEF | Built in | LEEF 1/2 delimiter handling |\n| GELF | Built in | JSON GELF shape |\n| RFC 3164/5424 syslog | Built in | Transport and payload format are separate concerns |\n| key/value text | Built in | Best-effort generic mapping |\n| gzip object | Built in | Decompressed before text-format detection |\n| Parquet / OCSF Security Lake | Not implemented | Do not select the advertised `parquet` hint for production |\n\nEvery mapping should be evaluated for timestamp, native ID, rule, severity, user,\nhost, source/destination address, and source provenance. The target versioned\nmapping-assistant workflow is described in\nIngestion and investigation.",
+   "text": "| Input | Parser status | Notes |\n|---|---|---|\n| JSON object/array | Built in | Generic field mapping; validate entity and severity paths |\n| NDJSON (JSON Lines) | Built in | One record per line, as in `.jsonl` or `.ndjson` files |\n| CEF | Built in | Header and extension parsing; vendor extensions remain in unmapped data |\n| LEEF | Built in | LEEF 1/2 delimiter handling |\n| GELF | Built in | JSON GELF shape |\n| RFC 3164/5424 syslog | Built in | Transport and payload format are separate concerns |\n| key/value text | Built in | Best-effort generic mapping |\n| gzip object | Built in | Decompressed before text-format detection |\n| Parquet / OCSF Security Lake | Not implemented | Do not select the advertised `parquet` hint for production |\n| CSV logs | Not implemented | Convert CSV logs to NDJSON (one JSON object per line) before you ingest them |\n\nEvery mapping should be evaluated for timestamp, native ID, rule, severity, user,\nhost, source/destination address, and source provenance. The target versioned\nmapping-assistant workflow is described in\nIngestion and investigation.",
    "console": []
   },
   {

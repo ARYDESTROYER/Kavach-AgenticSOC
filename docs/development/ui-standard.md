@@ -1973,8 +1973,16 @@ admin cards:
   `RefreshButton`, Add user) on the same row, and nothing else above the settings. A
   form section is capped at 44rem (704px) so a switch sits within reach of its label;
   a table section (Users, Roles, Sessions, Admin sessions, Enrichment providers) takes
-  the full width. The Settings shell hands the section its "Ask about this" topic and
-  unsaved state through `SettingsSectionContext`.
+  the full width. In a full-width section a labelled control row (`switch`, `select`, an
+  inline `field`, `control`, `status`, `action`) still spans the panel, its hairline and
+  hover included, but caps its content at a form row's content width
+  (`SETTINGS_ROW_CONTENT_MAX_WIDTH`: 42rem, 41.5rem from 1280px, which is 44rem less the
+  row inset), so its control sits as near its label as in a form section. A `block` row
+  of form-like content (fields and a button, a callout between two switches) takes the
+  same cap with `width="form"`, so a group keeps one right edge; tables, lists, `bleed`,
+  `link` and `wide` rows keep the full width. In a form section the cap changes nothing.
+  The Settings shell hands the section its "Ask about this" topic and unsaved state
+  through `SettingsSectionContext`.
 - Related settings form a `SettingsGroup`: its title (15px semibold) and an optional
   one-line caption sit above one tinted panel, on the rows' inset (16px, 20px from
   1280px), with an optional trailing action; 40px between groups. The panel holds

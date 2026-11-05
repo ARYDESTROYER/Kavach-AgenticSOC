@@ -212,6 +212,33 @@ describe('UnifiedLogsView', () => {
     expect(within(strip).getByText('2').className).not.toMatch(/\bopacity-/);
   });
 
+  it('says only the search box does not apply to a live tail while an exact filter is applied', async () => {
+    // With a rule or severity filter the server keeps each live-tail ring to the read's
+    // window (it echoes `filters`), so the caveat no longer says the time range is ignored.
+    fetchUnifiedLogsMock.mockResolvedValue({
+      ...RESPONSE,
+      filters: { rule: 'auth.failed_login', severity: null, severity_gte: null },
+    });
+    render(<UnifiedLogsView />);
+
+    const caveat = within(await screen.findByTestId('unified-source-status')).getByTestId('unified-buffer-caveat');
+    expect(caveat).toHaveTextContent(/in-memory buffer: the search box does not apply to it/i);
+    expect(caveat).not.toHaveTextContent(/time range/i);
+    expect(caveat).toHaveTextContent(/does not survive a backend restart/i);
+  });
+
+  it('keeps the whole live-tail caveat when the server echoes no applied filter', async () => {
+    // An echo with every filter null (or none at all, an older backend) changes nothing.
+    fetchUnifiedLogsMock.mockResolvedValue({
+      ...RESPONSE,
+      filters: { rule: null, severity: null, severity_gte: null },
+    });
+    render(<UnifiedLogsView />);
+
+    const caveat = within(await screen.findByTestId('unified-source-status')).getByTestId('unified-buffer-caveat');
+    expect(caveat).toHaveTextContent(/the time range and search box do not apply to it/i);
+  });
+
   it('omits the live-tail caveat when every source was read by search', async () => {
     fetchUnifiedLogsMock.mockResolvedValue({
       ...RESPONSE,

@@ -38,6 +38,25 @@ History is reconstructed from `git log`.
 - Chat: Timeouts and capacity defaults tripled (stored values that equal the old defaults move
   once). The report summary wait stays below the web proxy limit.
 - Sign-in: the automatic sign-out notice no longer states how long the session lasted.
+- Closing fixes: chart time axes date their first tick and each new day, weeks read their start
+  day, severity charts keep all five levels, and the ATT&CK heatmap fits at 1,280 px; on a phone,
+  board Edit mode is a list with Move up and Move down; the rail toggle restyles the panel and
+  moves the page in consecutive frames (the page still moves once) and KPI numerals share one
+  line; the Cases Outcome cell names an unclassified case's source; "Open case trace" opens the
+  Investigation tab with the trace open; the runbook card keeps Confirm in place while an AI
+  draft waits; signed-out pages make no 401 requests and every spreadsheet writer defuses the
+  same formula leads; the Logs live-tail note says only the search box is ignored while a rule or
+  severity filter is applied.
+- Audit outcomes: engine, agent and notification rows record whether they succeeded, failed, were
+  denied or partly applied (a notify row says which channels did not send, or that none was
+  due), error text is stored with credentials removed, and an investigation group's outcome
+  follows how it ended (a group shown in part reads Not known until its steps are loaded).
+- Product help in chat links the page the answer is about, and Demo help follows the same rule.
+- Settings: in full-width sections a labelled switch or field stays next to its label, as in the
+  other sections.
+- Time range: the time range control is named from the words it shows ("Last 24h, time range"),
+  so a speech-input user can say what they see; the whole range stays its description and
+  tooltip.
 
 Details:
 

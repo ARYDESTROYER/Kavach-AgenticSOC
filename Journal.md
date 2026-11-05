@@ -11743,3 +11743,32 @@
 - Tests: eslint 0/0; tsc 0; check:types no drift (after gen:types); design gates pass; ruff fatal pass; check_version, check_ci_contract (3 workflows, 3 Dockerfiles), check_docs (84 pages), docs:check pass; build_app_knowledge --check current; full build clean; Vitest strict 7,913 passed, 1 skipped, 1 failed / 620 files (the governance strip date, fixed, 83 related tests pass); records tests pass; full backend suite running.
 - Status: in progress. A closing acceptance workflow (SPEC §8.3 live QA of every changed surface at 390/1440/1920 in both themes, the geometry and timing checks, the operator's BEFORE | AFTER composites, a non-negotiables and security review and a cross-package integration review, every finding verified by an independent skeptic) is running on 8af0df4.
 - Next: fix confirmed findings, re-gate, fill the AGENTS.md Round 14 baseline and SPEC §11.4, send the composites, open the PR into Testing.
+
+### 2026-11-05 07:40Z - gates sub-agent - Round 14 r8-final-fix run gates
+- Context: RUN GATES for FX5r, FX5c, FX5a, FX5d, FX5n, FX5k, FX5b, FX5p, FX5m, FX5s.
+- Did: full backend suite, ruff fatal, tsc, lint, design gates, Vitest over 500 affected files, entry chunk build with per-file attribution, docs, knowledge, version and CI checks. No tree edits.
+- Tests: backend 12,158 (12,146 passed, 6 failed, 6 skipped; 5 sandbox-env and 1 wall-clock flake under load, all pass when rerun); Vitest 6,993 passed and 6 load timeouts that pass alone; entry 337,215 B of 337,240 B (+999 B over the baseline); tsc, lint and gates clean.
+- Status: done; nothing in this run's packages fails.
+- Next: regenerate the API types for the /api/playbooks/coverage description (done in 44efc6e); entry headroom is 25 B.
+
+### 2026-11-05 07:45Z - orchestrator - Round 14 closing fixes FX5 committed (44efc6e)
+- Context: the closing acceptance pass on 8af0df4 (39 skeptic-confirmed defects) and its ten fix packages FX5a to FX5s.
+- Did: committed 44efc6e (charts, boards, rail and KPI tiles, pages, sign-in and exports, the runbook card, audit outcomes, runbooks backend, Demo data, app help); regenerated the corpus (862 chunks), openapi.json and api-types.gen.ts.
+- Tests: as the gates entry above.
+- Status: done; 132 leftover notes triaged by FX6 (FX6/TRIAGE.md).
+- Next: run FX6a to FX6j and FX6s, apply the FX6 records, re-gate, fill §11.4 and the AGENTS.md baseline, open the PR.
+- Note: development stacks that ran the runbook migration from an earlier build of this unreleased branch with a configured procedure folder store the namespace `playbook_dir` in the migration marker; FX5b renamed it `procedure_dir` with no read alias, so wipe that dev marker (or rerun the migration on a fresh store) if such a stack exists.
+
+### 2026-11-05 08:01Z - FX6 triage sub-agent - FX5 open issues triaged into FX6 packages
+- Context: 132 open-issue notes left by FX5a to FX5s and the r8-final-fix gates.
+- Did: checked each against 44efc6e (TRIAGE.md): 10 resolved, 33 records, 13 docs, 43 code (23 distinct items), 16 follow-ups, 17 not defects; wrote FX6a to FX6h, FX6j and FX6s briefs and these records; verified the FX5k E3 app-help patch and its two test patches in a scratch copy (test_app_knowledge.py and test_chat_golden_set.py pass) and that every ready patch still applies.
+- Tests: the scratch run above; build_app_knowledge --check current (862 chunks).
+- Status: done.
+- Next: run the packages; apply R1 to R19.
+
+### 2026-11-05 16:58Z - gates sub-agent - Round 14 r9b-fx6-complete run gates (FX6a, FX6c, FX6d, FX6e, FX6f, FX6g, FX6h, FX6s, FX6j, FX6t)
+- Context: run every gate for the FX6 completion run; FX6b's four files from run r9 were in the tree.
+- Did: no edits to the tree; full backend suite, ruff fatal, tsc, lint, design gates, 460 Vitest files, an out-of-tree vite build with the entry measured against HEAD, OpenAPI drift, docs checks and the strict Help Center build.
+- Tests: backend 12,272 (12,259 passed, 7 failed: 5 sandbox env that pass with the proxy and AWS variables unset, plus 2 legacy tests pinned by pending FX6c patches that pass 81/81 in a scratch copy; 6 skipped); ruff clean; tsc 0; lint 0; gates passed; Vitest 460 files, 6,765 passed, 1 skipped, one load-only act warning; entry 337,215 B (25 B under 337,240, +0 B vs HEAD); OpenAPI no drift; check_docs, check_version and the CI contract pass; knowledge corpus stale from FX6j's docs.
+- Status: done.
+- Next: apply the FX6c test patches and the other FX6 orchestrator patches, regenerate the console map and the app knowledge corpus, then rerun the backend suite and build_app_knowledge --check.

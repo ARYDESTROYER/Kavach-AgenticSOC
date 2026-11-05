@@ -115,8 +115,8 @@ function tableTable(block: TableBlock): Tabular {
 }
 
 /**
- * A KPI group as a table: Metric, Value (numeric), Unit, Context, then — only when a
- * figure carries one — Bound ("at least": a scan-bounded lower bound is never read as an
+ * A KPI group as a table: Metric, Value (numeric), Unit, Context, then, only when a
+ * figure carries one, Bound ("at least": a scan-bounded lower bound is never read as an
  * exact count) and the change the tile's delta chip shows, as a signed number plus its
  * period (Round 12 WP-REP: the CSV says what the screen, the PDF and Word say). Appended
  * columns keep the first four where every consumer expects them.

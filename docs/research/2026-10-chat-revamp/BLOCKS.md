@@ -321,6 +321,18 @@ Where the two disagree, the **v2 amendments** below win, then `SPEC.md`, then th
     the rows render as a plain table; a stored severity table switched to a chart and back keeps
     its counts and level drills but not its per-level rules (chart blocks carry no severity
     payload).
+39. **One time axis for every chart (Round 14 SPEC §11.1 "One time axis"; amends 25 and 31).** A
+    `series` block's x axis is laid out by the chart kit's one rule (`charts/x-axis.ts`): the
+    first tick and each tick that starts a new day carry the day ("Nov 2 12:00"), later ticks that
+    day only the time; a day reads "Aug 1"; a week tick reads the day the week starts ("Oct 5")
+    and its tooltip and table "Week of Oct 5 (W41 2026)"; ticks of a week or more fall on Mondays,
+    every other Monday or the first of the month in the axis zone; months, quarters and years keep
+    `x.labels`. "(in progress)" sits under the newest bucket's own tick. Line-end labels
+    (amendment 31) are spread one 14 px line apart inside the plot, with a leader in the series
+    colour when moved, and fall back to the legend when they cannot fit. PNG and SVG export draw
+    the same axis. A severity series carries all five levels with zeros, Critical to Info, even
+    under a `top_n`, and a "No severity" line after them only while cases have no readable
+    severity (Round 14 SPEC §11.1 "Severity in case trend charts").
 
 ---
 

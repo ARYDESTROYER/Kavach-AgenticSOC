@@ -1306,16 +1306,16 @@ class AppState:
         notifier = getattr(self, "notifications", None)
         if notifier is None:
             return None
+        from .notifications.inapp import INAPP_NOT_DUE_DETAILS
+
         results = await notifier.dispatch(case, trigger)
         if not isinstance(results, list):
             return results
-        # ``InAppChannel.send``'s two not-due details (pinned against the channel by
-        # tests/test_audit_writer_outcomes.py).
-        not_due = frozenset({"no recipients", "no inbox wired"})
+        # ``InAppChannel.send``'s own not-due details.
         return [
             r for r in results
             if not (isinstance(r, dict) and r.get("type") == "in_app"
-                    and r.get("ok") is True and r.get("detail") in not_due)
+                    and r.get("ok") is True and r.get("detail") in INAPP_NOT_DUE_DETAILS)
         ]
 
     # ------------------------------------------------------------------ #

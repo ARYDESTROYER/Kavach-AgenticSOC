@@ -644,12 +644,16 @@ function SimulatePanel({
       title="Permission check"
       caption="Whether a role is allowed one resource and action, resolved against the live matrix."
     >
-      <SettingRow variant="block">
-        {/* Three equal selects and the Check button at its own width on the end. */}
+      <SettingRow variant="block" width="form">
+        {/* Three equal selects and the Check button at its own width on the end. Form-like
+            content: in this full-width section it takes a form row's width, like the result
+            row under it, so Check and the Allowed or Denied badge end on one edge. */}
         <div className="grid gap-3 sm:grid-cols-[repeat(3,minmax(0,1fr))_auto]">
           <div className="space-y-1.5">
             <Label htmlFor="simulate-role">Role</Label>
-            <Select value={role || undefined} onValueChange={setRole}>
+            {/* Controlled from the first render: an empty value shows the placeholder, so
+                choosing a role never switches the Select from uncontrolled to controlled. */}
+            <Select value={role} onValueChange={setRole}>
               <SelectTrigger id="simulate-role" aria-label="Role to simulate">
                 <SelectValue placeholder="Choose a role" />
               </SelectTrigger>

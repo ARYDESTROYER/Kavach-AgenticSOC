@@ -606,8 +606,9 @@ All of these change only the view of the same numbers; nothing is looked up agai
 horizontal bar shows its value just after the bar, and a donut's legend sits beside it on
 a wide card and under it on a narrow one.
 
-At rest a block shows only its `⋯` menu. **Add to report** appears beside it when you
-point at or tab into the block, and stays while the block is in the report. The menu:
+At rest a block in **Triage → Workspace → Chat** shows only its `⋯` menu.
+**Add to report** appears beside it when you point at or tab into the block, and stays
+while the block is in the report. The menu:
 
 | Action | What it does |
 |---|---|
@@ -750,9 +751,9 @@ view keeps the rule.
 
 ### Severity breakdowns
 
-A question such as "Show alerts by severity for the last 3 days" answers with a severity
-breakdown: a table of the five named levels in a fixed order (Critical, High, Medium, Low,
-Info), zeros included.
+In **Triage → Workspace → Chat**, a question such as "Show alerts by severity for the
+last 3 days" answers with a severity breakdown: a table of the five named levels in a
+fixed order (Critical, High, Medium, Low, Info), zeros included.
 
 | Column | What it shows |
 |---|---|
@@ -785,6 +786,10 @@ Info), zeros included.
 - On a narrow card (a phone, the Case Manager column) Trend and Top rules drop; open a
   level to see its rules. On a phone, a level with more raw values than its line can hold
   wraps them inside its badge, and the help tip stays beside it.
+- **Cases over time.** A trend of cases by severity, such as "Cases by severity per day
+  this month", draws the same five levels, Critical to Info, zeros included, even when
+  the question asks for the top few. Cases with no readable severity get their own
+  **No severity** line while there are any.
 - Reports, print and the exports (CSV, Word, Excel) carry the plain table: each level
   with its raw values, its count, its share and its top rules.
 
@@ -1066,8 +1071,9 @@ tokens before you generate, and the estimated cost when you hold `models:read`.
 
 ### Export
 
-**Download PDF** opens the browser's print dialog, already named after the report, where
-you choose Save as PDF. **Export** opens one menu with every format:
+In a report's panel in **Triage → Workspace → Chat**, **Download PDF** opens the
+browser's print dialog, already named after the report, where you choose Save as PDF.
+**Export** opens one menu with every format:
 
 | Format | Contents |
 |---|---|

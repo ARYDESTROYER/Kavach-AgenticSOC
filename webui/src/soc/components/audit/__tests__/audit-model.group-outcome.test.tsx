@@ -11,7 +11,7 @@
  * Success: a step still to load can have failed. Its row then reads "Not known", never
  * "Not recorded", unless a row shown already proves the outcome.
  */
-import { render, screen, within } from '@testing-library/react';
+import { cleanup, render, screen, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { AuditRecord } from '@/lib/types-audit';
@@ -316,13 +316,18 @@ describe('the group row words a run shown in part', () => {
 });
 
 describe('the group row shows the run outcome', () => {
-  function renderGroup(rows: AuditRecord[]) {
-    const items = buildListItems(newestFirst(rows), 'agent', { 'inv-1': rows.length }, new Set());
+  /**
+   * The group row of `rows` with the run's newest `loaded` rows on screen (all of them by
+   * default) and, when some are still to load, a next page that Load more fetches.
+   */
+  function renderGroup(rows: AuditRecord[], { loaded = rows.length, layout = 'wide' as 'wide' | 'phone' } = {}) {
+    const items = buildListItems(newestFirst(rows).slice(0, loaded), 'agent', { 'inv-1': rows.length }, new Set());
+    const more = loaded < rows.length;
     render(
       <TooltipProvider>
         <AuditTable
           items={items}
-          layout="wide"
+          layout={layout}
           zone="utc"
           onZoneChange={vi.fn()}
           order="desc"
@@ -330,8 +335,8 @@ describe('the group row shows the run outcome', () => {
           selectedId={null}
           onOpen={vi.fn()}
           onToggleGroup={vi.fn()}
-          hasMore={false}
-          canLoadMore={false}
+          hasMore={more}
+          canLoadMore={more}
           onLoadMore={vi.fn().mockResolvedValue(false)}
           canOpenCase
           registerRow={vi.fn()}
@@ -351,5 +356,56 @@ describe('the group row shows the run outcome', () => {
   it('shows Failed for a run that ended in a pipeline error', () => {
     const row = renderGroup([router(), prompt(), error('pipeline', 'pipeline error: store unavailable')]);
     expect(within(row).getByText('Failed')).toBeInTheDocument();
+  });
+
+  it.each(['wide', 'phone'] as const)(
+    'shows Not known, never Success or Not recorded, for a run shown in part (%s layout)',
+    (layout) => {
+      // Newest first, the decision and the last steps are on the first page; the failed
+      // first log query is on the next one.
+      const rows = [router(), prompt(), query('failure'), query(), tool(), tool(), tool(), tool(), verdict(), decision()];
+      const row = renderGroup(rows, { loaded: 5, layout });
+      expect(row).toHaveTextContent('5 of 10 steps shown');
+      expect(row).toHaveTextContent('closed as false positive');
+      expect(within(row).getByRole('button', { name: 'Load more' })).toBeInTheDocument();
+      expect(within(row).getByText('Not known')).toBeInTheDocument();
+      // A screen reader hears when the outcome will be known.
+      expect(row).toHaveTextContent('Not known until every step is loaded');
+      expect(within(row).queryByText('Success')).toBeNull();
+      expect(within(row).queryByText('Not recorded')).toBeNull();
+      cleanup();
+      // Load more completes the group: the run reached its decision with a failed step.
+      const whole = renderGroup(rows, { layout });
+      expect(whole).toHaveTextContent('10 steps');
+      expect(within(whole).getByText('Partial')).toBeInTheDocument();
+      expect(within(whole).queryByText('Not known')).toBeNull();
+    },
+  );
+
+  it('shows the outcome a row shown already proves for a run shown in part', () => {
+    const rows = [router(), prompt(), query(), query(), tool(), tool(), tool(), tool('failure'), verdict(), decision()];
+    const row = renderGroup(rows, { loaded: 4 });
+    expect(row).toHaveTextContent('4 of 10 steps shown');
+    expect(within(row).getByText('Partial')).toBeInTheDocument();
+    expect(within(row).queryByText('Not known')).toBeNull();
+  });
+
+  it('shows Not recorded for a whole run whose rows do not record its outcome', () => {
+    const row = renderGroup([prompt(), tool('unknown'), decision()]);
+    expect(within(row).getByText('Not recorded')).toBeInTheDocument();
+    expect(within(row).queryByText('Not known')).toBeNull();
+  });
+
+  // The Outcome column keeps 112 px of content after its cell padding, so the longest
+  // label, "Not recorded" with its glyph (about 106 px at text-sm), is never cut: 8.5rem
+  // (136 px) less 16 px left and 8 px right padding on a wide list, 8rem (128 px) less
+  // 8 px on each side on a phone. A narrower column cuts the label again.
+  it.each([
+    ['wide', 'w-[8.5rem]'],
+    ['phone', 'w-[8rem]'],
+  ] as const)('gives the Outcome column room for "Not recorded" (%s layout)', (layout, width) => {
+    renderGroup([prompt(), tool('unknown'), decision()], { layout });
+    const cols = document.querySelectorAll('table[aria-label="Audit events"] col');
+    expect(cols[1]).toHaveClass(width);
   });
 });

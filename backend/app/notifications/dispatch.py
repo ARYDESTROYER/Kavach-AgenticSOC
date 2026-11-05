@@ -613,6 +613,15 @@ class NotificationService:
                 await self._audit_send(case_id, inapp_rec, trigger)
         except Exception as exc:  # noqa: BLE001 — fire-and-forget; never raise into the caller
             logger.warning("notification dispatch failed: %s", exc)
+            # A result of its own, so a caller that reads the results (the automation
+            # notify action) records a failed dispatch, never "no channel was due", and
+            # the audit log lists it under Failed. The exception's type only: its text
+            # can carry a channel's URL or address.
+            rec = {"channel_id": "dispatch", "type": "dispatch", "ok": False,
+                   "detail": f"dispatch error: {type(exc).__name__}", "trigger": trigger,
+                   "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+            sent.append(rec)
+            await self._audit_send(_val(case, "case_id", "") or "", rec, trigger)
         return sent
 
     async def notify(self, case: Any, *, save=None, fetch=None) -> list[dict[str, Any]]:

@@ -1041,9 +1041,9 @@ protection, required-check, and `github-pages` environment policy remain adminis
 controls and must be verified independently of source changes.
 
 **Round 14 baseline (TO BE FILLED BY WP-GEN):** backend pytest passed/skipped, webui Vitest
-passed/skipped/files, the entry chunk against `PRE_REVAMP_ENTRY_BYTES` (rebased to 377,070 B by
-package R; WP-GEN records whether it rebases again, Round 14 SPEC §11.1 "Entry bundle"), eslint and
-the design gates. Until WP-GEN fills this line, the latest recorded full backend run is 11,900
+passed/skipped/files, the entry chunk against `PRE_REVAMP_ENTRY_BYTES` (lowered by WP-GEN from
+377,070 B to 336,216 B, budget 337,240 B; the final measured entry goes here, Round 14 SPEC §11.1
+"Entry bundle"), eslint and the design gates. Until WP-GEN fills this line, the latest recorded full backend run is 11,900
 tests (11,888 passed, 6 skipped, 6 failed: five sandbox-only environment tests and the records
 test this documentation pass fixes; Journal, run r6b-fix), and the snapshot below is Round 13's.
 
@@ -1283,7 +1283,7 @@ a retelling — do not re-derive round detail from here.
   investigator reads only Published text; `/api/playbooks*` reads stay as aliases for one
   release and writes answer 410). `decide()` untouched (#3); every new model call goes through
   the gateway (#6); storage is KV only (#12). Records: `docs/research/2026-10-round14/SPEC.md`
-  (§11 "As built"), chat-revamp SPEC amendments A69 to A73, BLOCKS amendments 36 to 38, and the
+  (§11 "As built"), chat-revamp SPEC amendments A69 to A73, BLOCKS amendments 36 to 39, and the
   Round 14 `Journal.md` entries.
 
 **Auth is DEFAULT OFF** (`Secrets.auth_enabled`) so the no-auth profile and the

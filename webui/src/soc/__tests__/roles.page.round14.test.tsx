@@ -5,12 +5,15 @@
  * plain line, row actions neutral at rest (one in view, the rest in a menu, Delete last),
  * the roles table in a "Roles" group on the tinted panel (C9 option A, the access line
  * as its caption), and the permission check as a Settings group. The A8c permission
- * mirror is untouched.
+ * mirror is untouched. In this full-width section the check's selects and Check button
+ * take a form row's width, like the result row under them (FX6s), so both end on one edge
+ * while the roles table keeps the panel's width.
  *
  * Auth is off, so the roles:manage ProtectedRoute is transparent and `useCan` allows.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 
 const { apiGetMock } = vi.hoisted(() => ({ apiGetMock: vi.fn() }));
 
@@ -33,6 +36,7 @@ vi.mock('@/lib/api', () => {
 import { AuthProvider } from '../auth';
 import { RouterProvider } from '../router';
 import { TooltipProvider } from '@/ui/tooltip';
+import { SETTINGS_ROW_CONTENT_MAX_WIDTH } from '@/soc/components/SettingsGrid';
 import Roles from '../pages/Roles';
 
 const MATRIX = {
@@ -149,5 +153,64 @@ describe('Roles page (Round 14 grammar)', () => {
     // The Check button keeps its own width beside the three selects from 640px.
     const check = screen.getByRole('button', { name: 'Check' });
     expect(check.className).toContain('sm:w-auto');
+  });
+
+  it('ends the check form and its result on one edge in the full-width section (FX6s)', async () => {
+    apiGetMock.mockImplementation((path: string) =>
+      Promise.resolve(
+        path === 'roles'
+          ? MATRIX
+          : path === 'roles/simulate'
+            ? {
+                role: 'super_admin',
+                resource: 'cases',
+                action: 'read',
+                allowed: true,
+                actions: ['*'],
+                known_resource: true,
+                role_exists: true,
+              }
+            : permissions(true),
+      ),
+    );
+    // Spies that pass through: anything else still reaches stderr for the strict gate.
+    const warnSpy = vi.spyOn(console, 'warn');
+    const errorSpy = vi.spyOn(console, 'error');
+    try {
+      renderRoles();
+      await screen.findByText('tier1_plus');
+      const cap = SETTINGS_ROW_CONTENT_MAX_WIDTH.split(' ');
+      const contentBox = (el: HTMLElement) => el.closest<HTMLElement>('[data-setting-row-content]');
+
+      // The three selects and Check share one content box at a form row's width ...
+      const form = contentBox(screen.getByRole('combobox', { name: 'Role to simulate' }));
+      expect(form).not.toBeNull();
+      expect(form!.className.split(/\s+/)).toEqual(expect.arrayContaining(cap));
+      const check = screen.getByRole('button', { name: 'Check' });
+      expect(form).toContainElement(check);
+      // ... while the row itself, its inset and the panel's hairline, still spans the panel.
+      const row = form!.closest<HTMLElement>('[data-setting-row="block"]');
+      expect(row).not.toBeNull();
+      expect(row!.className).not.toMatch(/max-w-/);
+      // The roles table keeps the panel's full width.
+      for (const table of screen.getAllByRole('table')) expect(contentBox(table)).toBeNull();
+
+      // The result row under the form carries the same cap, so its badge ends where Check ends.
+      await userEvent.click(screen.getByRole('combobox', { name: 'Role to simulate' }));
+      await userEvent.click(await screen.findByRole('option', { name: 'Super admin' }));
+      await userEvent.click(check);
+      const badge = await screen.findByText('Allowed');
+      const result = contentBox(badge);
+      expect(result).not.toBeNull();
+      expect(result).not.toBe(form);
+      expect(result!.className.split(/\s+/)).toEqual(expect.arrayContaining(cap));
+
+      // Choosing a role keeps the role Select controlled (an empty value is its placeholder).
+      const emitted = [...warnSpy.mock.calls, ...errorSpy.mock.calls].flat().map(String).join('\n');
+      expect(emitted).not.toContain('uncontrolled to controlled');
+    } finally {
+      warnSpy.mockRestore();
+      errorSpy.mockRestore();
+    }
   });
 });

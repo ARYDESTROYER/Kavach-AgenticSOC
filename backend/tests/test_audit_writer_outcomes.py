@@ -249,9 +249,10 @@ async def test_an_inbox_copy_that_reached_the_assignee_counts_as_sent(app_state:
 
 async def test_the_inbox_details_the_notify_wiring_treats_as_not_due_are_the_channels_own() -> None:
     """``AppState._automation_notify`` leaves out an inbox copy that was due for nobody
-    by its detail; these are the details ``InAppChannel.send`` really returns."""
+    by its detail. It reads the channel's own ``INAPP_NOT_DUE_DETAILS``, and these are
+    the details ``InAppChannel.send`` really returns."""
     from app.notifications.channel import NotificationEvent
-    from app.notifications.inapp import InAppChannel
+    from app.notifications.inapp import INAPP_NOT_DUE_DETAILS, InAppChannel
 
     event = NotificationEvent(case=_case("case-inapp-pin"), trigger="escalated", subject="s", html="", text="t",
                               meta={})
@@ -262,8 +263,9 @@ async def test_the_inbox_details_the_notify_wiring_treats_as_not_due_are_the_cha
     assert (await InAppChannel().send(event)).detail == "no inbox wired"
     unaddressed = await InAppChannel(inbox=object(), resolve_recipients=_nobody).send(event)
     assert (unaddressed.ok, unaddressed.detail) == (True, "no recipients")
+    assert INAPP_NOT_DUE_DETAILS == frozenset({"no inbox wired", "no recipients"})
     source = inspect.getsource(AppState._automation_notify)  # noqa: SLF001
-    assert '"no recipients"' in source and '"no inbox wired"' in source
+    assert "INAPP_NOT_DUE_DETAILS" in source
 
 
 # --------------------------------------------------------------------------- #

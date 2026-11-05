@@ -491,6 +491,13 @@ async def _no_channel(_case: Case, _trigger: str) -> list[dict[str, Any]]:
     return []  # notifications off, no channel for the trigger, or a repeat in the dedup window
 
 
+#: The note of a notify action no channel was due for.
+_NOTHING_DUE = (
+    ". Not sent: no channel was due (notifications are off, no channel takes this "
+    "trigger, no one is addressed, or it repeated inside the dedup window)."
+)
+
+
 async def _all_sent(_case: Case, _trigger: str) -> list[dict[str, Any]]:
     return [{"channel_id": "c1", "ok": True}, {"channel_id": "c2", "ok": True}]
 
@@ -529,7 +536,8 @@ async def _raises(_case: Case, _trigger: str) -> None:
         # A notifier that reports no per-channel results claims neither way.
         (_sent_quietly, "unknown", ""),
         (_sent_sync, "unknown", ""),
-        (_no_channel, "success", ""),
+        # Nothing failed, but nothing went out: the row says so.
+        (_no_channel, "success", _NOTHING_DUE),
         (_all_sent, "success", ""),
         (_one_failed, "partial", ". Partly sent: 1 of 2 channels failed."),
         (_every_failed, "failure", ". Not sent: 1 of 1 channel failed."),
@@ -621,6 +629,84 @@ async def test_the_application_wiring_records_the_notification_services_results(
     assert rows[0]["outcome"] == outcome
     assert rows[0]["result_summary"] == f"rule=page action=notify notify=escalated{note}"
     assert matches(build_predicate(AuditFilters(outcome="failure")), rows[0]) is (outcome == "failure")
+
+
+def _real_service(app_state: AppState, prefs: Preferences) -> Any:
+    from app.notifications.dispatch import NotificationService
+
+    return NotificationService(get_prefs=lambda: prefs, secrets=app_state.secrets, cache=None,
+                               audit=app_state.audit)
+
+
+async def test_a_notify_with_notifications_switched_off_says_nothing_went_out(
+    app_state: AppState,
+) -> None:
+    """The default install: notifications are off, so the real service returns no
+    result. The row reads ``success`` (nothing failed) and says nothing went out, so
+    the case activity never reads it as a send."""
+    service = _real_service(app_state, Preferences())
+    assert Preferences().notifications.enabled is False
+    rows, case = await _notify_rows(app_state, "case-notify-off", service.dispatch)
+    assert [(r["outcome"], r["result_summary"]) for r in rows] == [
+        ("success", f"rule=page action=notify notify=escalated{_NOTHING_DUE}"),
+    ]
+    assert case.automation_actions[-1]["detail"] == f"notify=escalated{_NOTHING_DUE}"
+
+
+def _webhook_prefs() -> Preferences:
+    from app.config import NotificationChannelConfig, NotificationConfig
+
+    return Preferences(notifications=NotificationConfig(
+        enabled=True, rate_limit_per_hour=10, dedup_window_seconds=0,
+        channels=[NotificationChannelConfig(id="w-ok", type="webhook", config={"url": "https://x/ok"})],
+    ))
+
+
+async def test_a_dispatch_that_fails_as_a_whole_reads_failure(app_state: AppState, monkeypatch) -> None:
+    """The service swallows a failure of the whole dispatch (rendering raised before
+    any channel was tried). It now returns that failure as a result: the automation
+    row reads ``failure`` with the exception's type, never its text, and the service
+    writes a failed NOTIFICATION row of its own."""
+    import app.notifications.dispatch as dispatch_module
+
+    def _render(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        raise RuntimeError("template refused https://hooks.slack.com/services/T0/B0/SECRET")
+
+    monkeypatch.setattr(dispatch_module.templates, "render", _render)
+    service = _real_service(app_state, _webhook_prefs())
+    rows, case = await _notify_rows(app_state, "case-notify-crash", service.dispatch)
+    note = ". Not sent: the notification service failed (RuntimeError)."
+    assert [(r["outcome"], r["result_summary"]) for r in rows] == [
+        ("failure", f"rule=page action=notify notify=escalated{note}"),
+    ]
+    assert case.automation_actions[-1]["detail"] == f"notify=escalated{note}"
+    sends = [r for r in await app_state.audit.records(limit=2000)
+             if r.get("case_id") == "case-notify-crash" and r.get("actor") == "notification"]
+    assert [(r["outcome"], r["actor_type"]) for r in sends] == [("failure", "system")]
+    assert sends[0]["result_summary"] == (
+        "channel=dispatch type=dispatch trigger=escalated ok=False detail=dispatch error: RuntimeError"
+    )
+    assert "hooks.slack.com" not in repr(rows + sends)
+
+
+async def test_a_dispatch_that_fails_after_a_send_reads_partial(app_state: AppState, monkeypatch) -> None:
+    """A failure after a channel took the notification keeps that send: ``partial``."""
+    import app.notifications.webhook as wh
+
+    async def _poster(_url: str, **_kwargs: Any) -> tuple[int, str]:
+        return 200, "ok"
+
+    async def _inbox_breaks(*_args: Any, **_kwargs: Any) -> Any:
+        raise KeyError("inbox")
+
+    monkeypatch.setattr(wh, "_httpx_post", _poster)
+    service = _real_service(app_state, _webhook_prefs())
+    monkeypatch.setattr(service, "_fan_in_app", _inbox_breaks)
+    rows, _ = await _notify_rows(app_state, "case-notify-late-crash", service.dispatch)
+    assert [(r["outcome"], r["result_summary"]) for r in rows] == [(
+        "partial",
+        "rule=page action=notify notify=escalated. Partly sent: the notification service failed (KeyError).",
+    )]
 
 
 async def test_the_application_notifier_returns_the_dispatch_results(

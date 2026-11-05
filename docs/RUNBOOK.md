@@ -282,7 +282,10 @@ document id, text and metadata are written to the append-only audit trail *befor
 removal, and **that record is the only reconstruction path**; if it cannot be written,
 the removal does not happen. Find it with
 `GET /api/audit?surface=rag_precedent_repair` (rows carrying
-`tool_name=precedent_evicted_chunk`).
+`tool_name=precedent_evicted_chunk`). That row is written before the delete, so when the
+re-read afterwards still finds the chunk, a second row follows it under the same case:
+`tool_name=precedent_eviction_incomplete`, outcome Failed, document id only. The chunk is
+then still in the corpus and the document id is listed in `incomplete_evictions`.
 
 Ground truth is never touched: no feedback row, no disposition, no `decision_by`, no
 status, no history rewrite. To remove a precedent *deliberately*, use the exclusion API

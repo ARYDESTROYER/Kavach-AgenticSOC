@@ -114,7 +114,8 @@
         "shift",
         "handoff",
         "daily summary",
-        "attention queue"
+        "attention queue",
+        "shift brief"
       ],
       "owned_keys": []
     },
@@ -1589,12 +1590,9 @@
       "requires": "data_export:export",
       "blurb": "Download a secret-free bundle of the state you choose.",
       "keywords": [
-        "export",
-        "download",
         "backup",
         "portable",
         "analysis bundle",
-        "cases",
         "usage",
         "configuration"
       ],

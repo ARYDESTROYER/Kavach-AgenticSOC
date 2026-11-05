@@ -563,14 +563,14 @@ function trendWindowLabel(t: MetricsTrends): string {
 }
 
 /**
- * A short, deterministic UTC axis label for one trend bucket. Day-sized buckets read
- * as `MM-DD`, anything finer as `HH:mm` — but ONLY while the window itself fits inside
- * one day. A multi-day window with sub-day buckets (the 7-day preset is 6h buckets, the
- * 72h preset 3h) would otherwise repeat the same four `HH:mm` ticks once per day and
- * leave a hovered spike unlocatable, so those read `MM-DD HH:mm`. An unparseable
- * instant falls back to the raw value so the axis never silently renames a bucket. UTC
- * on purpose — the buckets are UTC-aligned server-side, so a local-time label would
- * misplace them.
+ * The plain-text `x` label of one Human vs AI trend bucket. It is not what the axis
+ * shows: the chart dates its own ticks from each bucket's `start` by the chart kit's one
+ * time-axis rule (CloseAttributionChart `xTickTexts`), and the hover header reads the
+ * bucket's range. The label is only the fallback for a bucket whose start does not
+ * parse, and such a bucket reaches this function with the same unparseable `t`, so it
+ * reads the raw value and the axis never silently renames a bucket. A parseable instant
+ * still yields a short UTC label (`MM-DD` for day-sized buckets, `HH:mm` within one day,
+ * `MM-DD HH:mm` on a longer window) for any other reader of `x`.
  */
 function bucketAxisLabel(
   t: unknown,

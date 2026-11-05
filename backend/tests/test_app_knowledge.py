@@ -1069,15 +1069,22 @@ _R14_DESTINATIONS: list[tuple[str, str, tuple[str, ...]]] = [
     ("How do I change the audit log scope?", "auditor", ("page:audit",)),
     ("How do I start a runbook on a case?", "analyst_tier1", ("page:case_manager",)),
     ("How do I mark a runbook step done?", "analyst_tier1", ("page:case_manager",)),
-    # The Case Manager overlay must not drown the Runbooks settings card (finding: a
-    # 'runbook' repeated in the overlay lowered the word's weight below the link floor).
+    # Review and publishing names the library (where a version is published) and the
+    # Publishing and review card (where separate approval is switched on). The Case
+    # Manager overlay must not drown the card (finding: a 'runbook' repeated in the
+    # overlay lowered the word's weight below the link floor).
     ("How do I require a distinct approver for runbooks?", "soc_manager",
-     ("settings:runbooks.runbooks-publishing",)),
+     ("page:runbooks", "settings:runbooks.runbooks-publishing")),
+    ("How do I publish a runbook?", "soc_manager", ("page:runbooks", "settings:runbooks.runbooks-publishing")),
+    # Steps are written in the library's editor, never in Case Manager, which works them.
+    ("How do I add a runbook step?", "soc_manager", ("page:runbooks",)),
     # The Cyber Defence Center is the Default built-in board; the library holds the rest.
     ("How do I find a built-in dashboard?", "analyst_tier1", ("page:overview", "page:dashboards")),
     ("How do I duplicate a dashboard?", "analyst_tier1", ("page:dashboards",)),
     # Cases has its own exact Rule filter: never the Logs page.
     ("How do I filter cases by rule?", "analyst_tier1", ("page:cases",)),
+    # Logs has its own exact filters: never the Cases page or Jobs.
+    ("How do I filter logs by rule?", "analyst_tier1", ("page:logs",)),
     # The Runbooks on cases card holds the fallback (generic incident) switch: the Case
     # Manager words must not lower 'runbook' under the link floor for it (review finding).
     ("What happens when a case has no runbook?", "soc_manager", ("settings:runbooks.runbooks-cases",)),
@@ -1103,7 +1110,6 @@ def test_round14_tasks_link_the_destination_they_reach(question: str, role: str,
 #: link nothing, but never a page that does another task (the keyword search must not
 #: guess). (question, role, the only destinations it may link).
 _R14_NO_WRONG_DESTINATION: list[tuple[str, str, frozenset[str]]] = [
-    ("How do I filter logs by rule?", "analyst_tier1", frozenset({"page:logs"})),
     ("How do I filter by rule in cases?", "analyst_tier1", frozenset({"page:cases"})),
 ]
 
@@ -1146,14 +1152,13 @@ def test_other_tasks_never_link_the_audit_log(question: str):
     assert "page:audit" not in ids, (question, ids)
     # A tier-1 analyst holds no audit grant: no access notice may claim one is needed.
     assert "Platform › Audit log (audit:view)" not in answer.answer, answer.answer
+    # Nor any other page the analyst cannot open: each of these tasks is done on a page a
+    # tier-1 analyst holds (Chat, Logs, Sources), never on a locked one that does another
+    # job (Settings › Organization › Data export once took the audit log's place).
+    assert all(link.allowed for link in answer.console_links), (question, ids)
 
 
-#: "How do I ingest CSV logs?" still cites the export rules first: no Sources page says
-#: CSV logs are not read, so the rules' page (the audit log) is the best section's page.
-_TOOL_PATH_NOT_THE_AUDIT_LOG = [q for q in _NOT_THE_AUDIT_LOG if q != "How do I ingest CSV logs?"]
-
-
-@pytest.mark.parametrize("question", _TOOL_PATH_NOT_THE_AUDIT_LOG)
+@pytest.mark.parametrize("question", _NOT_THE_AUDIT_LOG)
 async def test_app_help_tool_never_sends_log_tasks_to_the_audit_log(question: str):
     """The model's (and the Demo planner's) lookup agrees: its destinations come from the
     best section's page, and the audit log's record list and export rules name none, so no
@@ -1162,6 +1167,8 @@ async def test_app_help_tool_never_sends_log_tasks_to_the_audit_log(question: st
     assert outcome.ok and outcome.citations
     assert "page:audit" not in outcome.console_links, (question, outcome.console_links)
     assert all(t["id"] != "page:audit" for t in outcome.observation["console_targets"])
+    assert all(t["allowed"] for t in outcome.observation["console_targets"]), (
+        question, outcome.observation["console_targets"])
 
 
 def test_search_logs_links_the_logs_page_only():
@@ -1285,7 +1292,11 @@ def test_start_runbook_answer_names_case_manager_take_action():
     ("How do I filter the audit log by outcome?", "auditor", ["page:audit"]),
     ("How do I start a runbook on a case?", "analyst_tier1", ["page:case_manager"]),
     ("How do I mark a runbook step done?", "analyst_tier1", ["page:case_manager"]),
-    ("How do I require a distinct approver for runbooks?", "soc_manager", ["settings:runbooks.runbooks-publishing"]),
+    ("How do I require a distinct approver for runbooks?", "soc_manager",
+     ["page:runbooks", "settings:runbooks.runbooks-publishing"]),
+    ("How do I publish a runbook?", "soc_manager", ["page:runbooks", "settings:runbooks.runbooks-publishing"]),
+    ("How do I add a runbook step?", "soc_manager", ["page:runbooks"]),
+    ("How do I filter logs by rule?", "analyst_tier1", ["page:logs"]),
     ("What happens when a case has no runbook?", "soc_manager", ["settings:runbooks.runbooks-cases"]),
 ])
 async def test_app_help_tool_links_the_round14_destination(question: str, role: str, expected: list[str]):
@@ -1449,9 +1460,22 @@ def test_an_answer_never_has_an_empty_body_when_its_section_has_text():
     ("How do I search logs?", "analyst_tier1", ["page:logs"]),
     ("What keyboard shortcuts does Case Manager have?", "analyst_tier1", ["page:case_manager"]),
     ("How do I filter cases by rule?", "analyst_tier1", ["page:cases"]),
-    # The best section's page names none and the labels match nothing: the other cited
-    # sections' breadcrumbs still answer "Where are runbooks?".
-    ("Where are runbooks?", "analyst_tier1", ["page:runbooks"]),
+    # The library page leads; Case Manager, where a case works its runbook, follows
+    # because a cited section and the console keywords both name it.
+    ("Where are runbooks?", "analyst_tier1", ["page:runbooks", "page:case_manager"]),
+    # A chart, table or report export is done in Workspace Chat, never in the locked
+    # Settings › Organization › Data export that exports application state.
+    ("How do I export a chart as CSV?", "analyst_tier1", ["page:chat"]),
+    ("How do I export a severity breakdown to CSV?", "analyst_tier1", ["page:chat"]),
+    ("How do I export a report to Word?", "analyst_tier1", ["page:chat"]),
+    # Data export keeps the questions about exporting application state.
+    ("How do I export application state?", "super_admin", ["settings:data_export", "page:batchjobs"]),
+    # The case number format is set in Settings › General › Cases, even though the chat
+    # export rules also talk about case IDs and formats.
+    ("Change the case ID format", "super_admin", ["settings:cases"]),
+    # The demo is reset in its own settings, never in the Danger zone's factory reset.
+    ("How do I reset the demo?", "super_admin", ["settings:demo"]),
+    ("How do I reset the demo?", "analyst_tier1", ["settings:demo"]),
 ])
 async def test_app_help_tool_destinations_come_from_the_best_sections_page(question: str, role: str, expected: list[str]):
     outcome = await AppHelpTool().run(_ctx(_role_grants(role)), query=question)
@@ -1467,3 +1491,11 @@ async def test_app_help_tool_keeps_a_destination_the_console_labels_confirm():
     assert outcome.ok
     assert "page:batchjobs" in outcome.console_links, outcome.console_links
     assert "settings:data_export" not in outcome.console_links, outcome.console_links
+
+
+async def test_app_help_tool_keeps_the_standup_for_a_shift_brief():
+    """The shift handoff section names Overview › Standup and the console keywords name
+    it too ("shift brief"), so a shift brief question keeps the Standup page."""
+    outcome = await AppHelpTool().run(_ctx(_role_grants("analyst_tier1")), query="How do I write a shift brief?")
+    assert outcome.ok and outcome.citations
+    assert "page:standup" in outcome.console_links, outcome.console_links

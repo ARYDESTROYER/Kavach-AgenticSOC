@@ -443,6 +443,32 @@ engineering sequence is ordered by data safety and measurable outcomes, not scre
   IPs (the taint guard refuses it); conversation titles refuse rule ids with spaces; a
   zero-result knowledge answer reads "could not read any data"; `GET /api/runbooks` reads the
   migration marker twice.
+- ☐ **Closing pass follow-ups (FX5, FX6)**: chat timing lookups (`chat_tools/metrics.py`
+  `_lifecycle`) report MTTD, MTTA and MTTR but no dwell, which Analytics > Metrics shows; decide
+  whether chat should answer dwell (FX5m). The NoiseFunnel hover state re-renders the whole
+  funnel; memoise the heavy subtrees or move the highlight into a data attribute (FX5n). The
+  rail's panel restyle is dominated by global selectors (`space-y-*`, `[&>*]` variants) in the
+  shared stylesheet (FX5n); both are within the §4.8.3 budget today. Remove the unused
+  `ActiveRiskIndex.tsx` (rendered nowhere since #99) and its test, or wire it back in. Send the
+  rail preference flush with `keepalive` (`api.prefs.putUser`) once the entry has room (FX5n).
+- ☐ **Audit log outcome follow-ups (FX6a, FX6e)**: per-run outcome counts beside `run_totals` in
+  the page response (`routes_audit.py`, `models.py`, `types-audit.ts`), so a group shown in part
+  reads its whole run before Load more; `outcome` and `actor_type` in the keyed rows' retry
+  metadata (`audit/audit_log.py`, `stores/sql/repositories.py`), so proposal decisions, job
+  transitions, storage applies, the replay spend row and update results carry an outcome; a
+  decision on redacting a Basic or Digest credential shorter than 8 characters
+  (`audit/changes.py`).
+- ☐ **Product help and Demo routing follow-ups (FX5k, FX6c)**: a Logs export section or a
+  retrieval rule so "How do I export logs to CSV?" stops citing the audit log export; a generic
+  keyboard-shortcuts section; a section for ingesting CSV logs; Standup in the $0 answer to "How
+  do I write a shift brief?"; Demo routes "What's a campaign?" to the campaign list while "What is
+  a campaign?" gets the definition (`_DEFINITIONAL_RE` in `engine/demo_chat.py` takes no
+  "what's a" form; a routing change with golden-set impact).
+- ☐ **Small Console follow-ups (FX6f, FX6s, FX6t)**: drop the Overview's `bucketAxisLabel` (the
+  Human vs AI chart dates its own ticks; only an unparseable bucket reads the label); check the
+  other Radix Selects that pass `value={x || undefined}` (`Models.tsx`, `CaseManager.tsx`) for the
+  uncontrolled-to-controlled warning FX6s fixed in Roles; name the auto-refresh select from the
+  words it shows ("5 sec"), as the time range trigger now is.
 - **Never** (product decisions, not backlog): executable response actions of any kind (the suite
   never acts on another system), and runbooks that close or escalate a case.
 

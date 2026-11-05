@@ -197,9 +197,15 @@ def test_where_the_runbooks_went_is_a_product_question(question: str, query: str
     ("Which runbooks cover brute force?", {"query": "Which runbooks cover brute force"}),
     ("Which playbooks do we have?", {"kind": "list_runbooks"}),
     # The retired name inside a question about one runbook is no question about the
-    # library: the words after the noun keep it a knowledge search (FX5m review).
+    # library: the words after the noun keep it a knowledge search (FX5m review). A
+    # contraction reads as its spelled-out form, with either apostrophe (FX6c): all three
+    # search for the same words.
     ("What's the playbook to go with a phishing case?",
-     {"query": "What's the playbook to go with a phishing case"}),
+     {"query": "the playbook to go with a phishing case"}),
+    ("What\u2019s the playbook to go with a phishing case?",
+     {"query": "the playbook to go with a phishing case"}),
+    ("What is the playbook to go with a phishing case?",
+     {"query": "the playbook to go with a phishing case"}),
     ("Is the playbook missing a containment step?", {"query": "Is the playbook missing a containment step"}),
     ("Which playbook went with the phishing case?", {"query": "Which playbook went with the phishing case"}),
     ("I can't find the runbook for phishing", {"query": "I can't find the runbook for phishing"}),

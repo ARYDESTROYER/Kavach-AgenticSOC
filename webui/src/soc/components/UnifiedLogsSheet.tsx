@@ -251,12 +251,21 @@ export function sourceErrorText(error: string | undefined): string {
   return text.length > 160 ? `${text.slice(0, 159)}…` : text;
 }
 
-const SourceStatusStrip: React.FC<{ sources: UnifiedLogSourceStatus[] }> = ({ sources }) => {
+const SourceStatusStrip: React.FC<{
+  sources: UnifiedLogSourceStatus[];
+  /**
+   * The server applied an exact rule or severity filter (the envelope echoed `filters`).
+   * It then also keeps each live-tail ring to the read's explicit window
+   * (`engine/log_rows.py` `push_filtered_reader`), so only the search box does not apply.
+   */
+  windowKept?: boolean;
+}> = ({ sources, windowKept = false }) => {
   if (sources.length === 0) return null;
-  // The live-tail caveat is operationally load-bearing (the time range and search never
-  // ran against these sources), so it is rendered as VISIBLE text, reachable without a
-  // pointer and announced by a screen reader, instead of a hover-only `title`. Mirrors
-  // the single-source sheet's disclosure so both read paths explain themselves the same way.
+  // The live-tail caveat is operationally load-bearing (the search, and without an exact
+  // filter the time range too, never ran against these sources), so it is rendered as
+  // VISIBLE text, reachable without a pointer and announced by a screen reader, instead
+  // of a hover-only `title`. Mirrors the single-source sheet's disclosure so both read
+  // paths explain themselves the same way.
   const bufferSources = sources.filter((s) => s.mode === 'buffer');
   return (
     <div className="space-y-1.5" data-testid="unified-source-status">
@@ -300,9 +309,9 @@ const SourceStatusStrip: React.FC<{ sources: UnifiedLogSourceStatus[] }> = ({ so
           {/* source_name is operator-set text: plain text, never markup. */}
           Live-tail {bufferSources.length === 1 ? 'source' : 'sources'} (
           {bufferSources.map((s) => s.source_name || s.source_id).join(', ')}) return an
-          in-memory buffer: the time range and search box do not apply to{' '}
-          {bufferSources.length === 1 ? 'it' : 'them'}, and that buffer does not survive a
-          backend restart.
+          in-memory buffer: {windowKept ? 'the search box does not' : 'the time range and search box do not'}{' '}
+          apply to {bufferSources.length === 1 ? 'it' : 'them'}, and that buffer does not
+          survive a backend restart.
         </p>
       ) : null}
     </div>
@@ -486,6 +495,9 @@ const LogsBody: React.FC<UnifiedLogsBodyProps & { tailPaused: boolean }> = ({
   // The server bound: this view is "the most recent N", never a complete result (the
   // endpoint caps every read and offers no pagination), so a cut is said as text.
   const [truncated, setTruncated] = React.useState(false);
+  // The server echoed an applied rule or severity filter, so it kept each live-tail ring
+  // to the read's window too (the caveat then says only the search box does not apply).
+  const [ringWindowed, setRingWindowed] = React.useState(false);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<unknown>(null);
   const [expanded, setExpanded] = React.useState<Set<string>>(new Set());
@@ -532,6 +544,8 @@ const LogsBody: React.FC<UnifiedLogsBodyProps & { tailPaused: boolean }> = ({
         setPartial(Boolean(res.partial));
         setCount(typeof res.count === 'number' ? res.count : logs.length);
         setTruncated(Boolean(res.truncated));
+        const echoed = res.filters;
+        setRingWindowed(Boolean(echoed && (echoed.rule || echoed.severity || echoed.severity_gte)));
         // Prune expanded rows that scrolled out of the window (keys are source, id
         // and event time, so a refresh keeps the analyst's open row open).
         setExpanded((prev) => pruneExpandedKeys(prev, logs));
@@ -694,7 +708,7 @@ const LogsBody: React.FC<UnifiedLogsBodyProps & { tailPaused: boolean }> = ({
               {LIVE_TAIL_FIXED_WINDOW_REASON}
             </p>
           ) : null}
-          {loading || error ? null : <SourceStatusStrip sources={sources} />}
+          {loading || error ? null : <SourceStatusStrip sources={sources} windowKept={ringWindowed} />}
           {truncated && !loading && !error ? (
             // The bound is part of the result (browse has no paging): said as visible
             // text, not a hover-only tooltip.

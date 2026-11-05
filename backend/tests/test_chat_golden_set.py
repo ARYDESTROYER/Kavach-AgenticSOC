@@ -549,7 +549,8 @@ APP_HELP = [
     G("How do I filter cases by rule?", kind="product_help", tools=("app_help",), max_lookups=1,
       contains=("Start in **Triage › Cases**",), absent=("Triage › Logs",)),
     G("How do I require a distinct approver for runbooks?", kind="product_help", tools=("app_help",),
-      max_lookups=1, contains=("Start in **Settings › Integrations › Runbooks › Publishing and review**;",)),
+      max_lookups=1, contains=("Start in **Intelligence › Runbooks** or **Settings › Integrations › Runbooks › "
+                               "Publishing and review**;",)),
     *(G(q, kind="product_help", tools=("app_help",), max_lookups=1, contains=("Start in **Overview › Dashboards**",))
       for q in ("How do I duplicate a dashboard?", "How do I find a built-in dashboard?")),
     # The plainest wording of the audit export task also leads with the Audit log.
@@ -560,11 +561,21 @@ APP_HELP = [
     # audit log's page (re-review finding).
     *(G(q, kind="product_help", tools=("app_help",), max_lookups=1, absent=("Platform › Audit log",))
       for q in ("How do I filter logs by host?", "How do I ingest JSON Lines files from S3?",
-                "How do I download logs as CSV?")),
-    # Other pages' CSV tasks never borrow the audit log's Exporting section's page.
-    *(G(q, kind="product_help", tools=("app_help",), max_lookups=1, absent=("Platform › Audit log",))
+                "How do I download logs as CSV?", "How do I ingest CSV logs?")),
+    # Logs carries its own exact filters; runbook steps are written in the library.
+    G("How do I filter logs by rule?", kind="product_help", tools=("app_help",), max_lookups=1,
+      contains=("Start in **Triage › Logs**;",), absent=("Start in **Triage › Cases**",)),
+    G("How do I add a runbook step?", kind="product_help", tools=("app_help",), max_lookups=1,
+      contains=("Start in **Intelligence › Runbooks**;",), absent=("Start in **Triage › Case Manager**",)),
+    # Other pages' CSV tasks never borrow the audit log's Exporting section's page, nor the
+    # application-state Data export: a chart, table or report is exported in Workspace Chat.
+    *(G(q, kind="product_help", tools=("app_help",), max_lookups=1,
+        contains=("Start in **Triage › Workspace › Chat**",), absent=("Platform › Audit log", "Data export"))
       for q in ("How do I export a chart as CSV?", "How do I export cases to CSV?",
                 "How do I export chat answers to CSV?", "How do I export a severity breakdown to CSV?")),
+    # The demo is reset in its own settings, never in the Danger zone's factory reset.
+    G("How do I reset the demo?", kind="product_help", tools=("app_help",), max_lookups=1,
+      contains=("Start in **Settings › Organization › Experimental & Demo**",), absent=("Danger zone",)),
     G("How do I search logs?", kind="product_help", tools=("app_help",), max_lookups=1,
       contains=("Start in **Triage › Logs**;",), absent=("Platform › Audit log",)),
     # Publishing happens in the Runbooks library, not in the Runbooks settings (the

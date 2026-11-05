@@ -1853,6 +1853,10 @@ async def test_demo_help_csv_answers_never_link_the_audit_log_for_a_tier1_analys
     assert header["answer_kind"] == "product_help"
     assert "page:audit" not in header["console_links"], header["console_links"]
     assert "Platform › Audit log" not in body, body
+    # Nor another locked page: these exports are done in Workspace Chat.
+    assert all(t["allowed"] for t in outcome.observation["console_targets"]), outcome.observation["console_targets"]
+    assert header["console_links"] == ["page:chat"], header["console_links"]
+    assert "Locked for your role" not in body, body
 
 
 @pytest.mark.parametrize("question", [

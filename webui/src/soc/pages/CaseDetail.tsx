@@ -169,6 +169,7 @@ import { CaseHeaderMeta } from './casedetail/CaseHeaderMeta';
 import { FactsRail } from './casedetail/FactsRail';
 import { shortcutBlocked } from './casedetail/keyboard';
 import { keepAdvisoryBands } from './casedetail/queue';
+import { notifyResultToast } from './casedetail/notifyResult';
 import { CaseChatActivityGlyph, useCaseChatRequest } from '@/soc/chat-activity/case-glyph';
 import { useCaseRunbooks } from '@/soc/runbooks/run/useCaseRunbooks';
 import {
@@ -1061,17 +1062,9 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
     setNotifying(true);
     try {
       const res = await api.cases.notify(id, notifyChannelId || undefined);
-      const okCount = res.sent.filter((s) => s.ok).length;
-      const failCount = res.sent.length - okCount;
-      if (res.sent.length === 0) {
-        toast.message('No channels matched, so nothing was sent.');
-      } else if (failCount === 0) {
-        toast.success(`Notification sent to ${okCount} channel(s).`);
-      } else if (okCount === 0) {
-        toast.error(`Notification failed (${res.sent[0]?.detail || 'see audit log'}).`);
-      } else {
-        toast.warning(`Sent to ${okCount}, ${failCount} failed.`);
-      }
+      // The service's own "dispatch" result is not a channel (notifyResult.ts).
+      const outcome = notifyResultToast(res.sent);
+      toast[outcome.kind](outcome.text);
       setNotifyOpen(false);
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Could not send notification.');

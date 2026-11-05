@@ -3,21 +3,43 @@
  * glyph, never colour alone), the actor (a glyph for person, AI agent or system plus the
  * name) and a time element. Every value is a plain text node (#9).
  */
-import { Ban, Bot, CheckCircle2, CircleDashed, Cog, Minus, User, Workflow, XCircle } from 'lucide-react';
+import type { ReactNode } from 'react';
+import { Ban, Bot, CheckCircle2, CircleDashed, CircleEllipsis, Cog, Minus, User, Workflow, XCircle } from 'lucide-react';
 
 import { cn } from '@/lib/cn';
 import type { AuditRecord } from '@/lib/types-audit';
 
 import { actorLabel } from './events';
-import { ACTOR_KIND_LABEL, OUTCOME_LABEL, actorKindKey, outcomeKey, type ActorKindKey, type OutcomeKey } from './audit-model';
+import {
+  ACTOR_KIND_LABEL,
+  GROUP_OUTCOME_LABEL,
+  actorKindKey,
+  outcomeKey,
+  type ActorKindKey,
+  type GroupOutcomeKey,
+} from './audit-model';
 
-const OUTCOME_STYLE: Readonly<Record<OutcomeKey, { Icon: typeof CheckCircle2; tone: string }>> = {
+const OUTCOME_STYLE: Readonly<Record<GroupOutcomeKey, { Icon: typeof CheckCircle2; tone: string }>> = {
   success: { Icon: CheckCircle2, tone: 'text-success-text' },
   failure: { Icon: XCircle, tone: 'text-critical-text' },
   denied: { Icon: Ban, tone: 'text-high-text' },
   partial: { Icon: CircleDashed, tone: 'text-warning-text' },
   not_recorded: { Icon: Minus, tone: 'text-muted-foreground' },
+  // An investigation group shown in part: neutral, as nothing is claimed yet.
+  not_known: { Icon: CircleEllipsis, tone: 'text-muted-foreground' },
 };
+
+/** The glyph and words of one outcome key; `children` follow the words. */
+function OutcomeWords({ outcome, className, children }: { outcome: GroupOutcomeKey; className?: string; children?: ReactNode }) {
+  const { Icon, tone } = OUTCOME_STYLE[outcome];
+  return (
+    <span className={cn('inline-flex min-w-0 items-center gap-1.5 whitespace-nowrap', tone, className)}>
+      <Icon className="size-3.5 shrink-0" aria-hidden />
+      <span className="truncate">{GROUP_OUTCOME_LABEL[outcome]}</span>
+      {children}
+    </span>
+  );
+}
 
 export interface OutcomeMarkProps {
   record: Pick<AuditRecord, 'outcome' | 'outcome_derived'>;
@@ -28,16 +50,31 @@ export interface OutcomeMarkProps {
 
 /** "Success", "Failed", "Denied", "Partial" or "Not recorded", with its glyph. */
 export function OutcomeMark({ record, className, showDerived = false }: OutcomeMarkProps) {
-  const key = outcomeKey(record);
-  const { Icon, tone } = OUTCOME_STYLE[key];
   return (
-    <span className={cn('inline-flex min-w-0 items-center gap-1.5 whitespace-nowrap', tone, className)}>
-      <Icon className="size-3.5 shrink-0" aria-hidden />
-      <span className="truncate">{OUTCOME_LABEL[key]}</span>
+    <OutcomeWords outcome={outcomeKey(record)} className={className}>
       {showDerived && record.outcome_derived ? (
         <span className="text-xs font-normal text-muted-foreground">(derived)</span>
       ) : null}
-    </span>
+    </OutcomeWords>
+  );
+}
+
+export interface GroupOutcomeMarkProps {
+  /** The group row's outcome (`groupOutcomeKey`). */
+  outcome: GroupOutcomeKey;
+  className?: string;
+}
+
+/**
+ * An investigation group's outcome: a record outcome, or "Not known" while part of the
+ * run is loaded and the steps shown prove none. That one also says, to a screen reader,
+ * when it will be known; on screen the row says "5 of 10 steps shown" beside Load more.
+ */
+export function GroupOutcomeMark({ outcome, className }: GroupOutcomeMarkProps) {
+  return (
+    <OutcomeWords outcome={outcome} className={className}>
+      {outcome === 'not_known' ? <span className="sr-only"> until every step is loaded</span> : null}
+    </OutcomeWords>
   );
 }
 

@@ -7,7 +7,9 @@
  *   - a configured secret is shown as a BOOLEAN badge only, never the value (#10),
  *   - toggling a provider writes prefs.enrichment.use_* via setEnrichmentConfig,
  *   - saving a secret posts to setSecrets and flips the boolean,
- *   - the "Configured" state never exposes the secret value anywhere in the DOM.
+ *   - the "Configured" state never exposes the secret value anywhere in the DOM,
+ *   - in the full-width Enrichment section the off notice takes the switches' form row
+ *     width (one right edge) while the provider list keeps the panel's width (FX6s).
  *
  * Auth is OFF in the mock → useCan returns true (no-auth = transparent), so the
  * manage controls render.
@@ -51,6 +53,8 @@ vi.mock('@/lib/api', () => {
 
 import { AuthProvider } from '../../auth';
 import { TooltipProvider } from '@/ui/tooltip';
+import { SettingsSection } from '@/soc/pages/settings/primitives';
+import { SETTINGS_ROW_CONTENT_MAX_WIDTH } from '../SettingsGrid';
 import { EnrichmentProvidersEditor } from '../EnrichmentProvidersEditor';
 
 const PROVIDERS = [
@@ -110,6 +114,24 @@ function renderEditor() {
       </AuthProvider>
     </TooltipProvider>,
   );
+}
+
+/** The editor as the Enrichment section embeds it, in a section of the given measure. */
+function renderInSection(width: 'form' | 'full') {
+  return render(
+    <TooltipProvider>
+      <AuthProvider>
+        <SettingsSection title="Enrichment" width={width}>
+          <EnrichmentProvidersEditor embedded />
+        </SettingsSection>
+      </AuthProvider>
+    </TooltipProvider>,
+  );
+}
+
+/** The capped content box a row's content sits in, if any. */
+function contentBox(el: HTMLElement): HTMLElement | null {
+  return el.closest<HTMLElement>('[data-setting-row-content]');
 }
 
 describe('EnrichmentProvidersEditor (Feature 7)', () => {
@@ -290,6 +312,44 @@ describe('EnrichmentProvidersEditor on the Round 14 grammar (SE6, F13)', () => {
       expect(node.className).not.toMatch(/opacity-/);
     }
     expect(within(list).getAllByRole('switch')[0]).not.toBeDisabled();
+  });
+
+  it('caps the off notice with the switches around it in the full-width section (FX6s)', async () => {
+    providersMock.mockResolvedValue({
+      enrichment_enabled: false,
+      fusion_enabled: false,
+      providers: PROVIDERS,
+    });
+    renderInSection('full');
+    const list = await screen.findByRole('list', { name: 'Enrichment providers' });
+    const cap = SETTINGS_ROW_CONTENT_MAX_WIDTH.split(' ');
+    const notice = contentBox(screen.getByTestId('enrichment-off-callout'));
+    expect(notice).not.toBeNull();
+    expect(notice!.className.split(/\s+/)).toEqual(expect.arrayContaining(cap));
+    // Its row still spans the panel: the hairline between the switches stays whole.
+    expect(notice!.closest<HTMLElement>('[data-setting-row="block"]')!.className).not.toMatch(/max-w-/);
+    // The two switches around it end at the same cap, so the group has one right edge.
+    for (const name of ['Enrichment enabled', 'Fuse provider scores']) {
+      const box = contentBox(screen.getByRole('switch', { name }));
+      expect(box).not.toBeNull();
+      expect(box!.className.split(/\s+/)).toEqual(expect.arrayContaining(cap));
+    }
+    // The provider list is a list on the panel's full width: each switch stays on its row's end.
+    expect(contentBox(list)).toBeNull();
+    for (const sw of within(list).getAllByRole('switch')) expect(contentBox(sw)).toBeNull();
+  });
+
+  it('renders the off notice as a plain block in a form section (FX6s)', async () => {
+    providersMock.mockResolvedValue({
+      enrichment_enabled: false,
+      fusion_enabled: false,
+      providers: PROVIDERS,
+    });
+    renderInSection('form');
+    await screen.findByRole('list', { name: 'Enrichment providers' });
+    // A 44rem form section is already a form row's width: nothing is wrapped or capped.
+    expect(contentBox(screen.getByTestId('enrichment-off-callout'))).toBeNull();
+    expect(contentBox(screen.getByRole('switch', { name: 'Enrichment enabled' }))).toBeNull();
   });
 
   it('shows no off notice while enrichment is on', async () => {

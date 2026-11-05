@@ -33,7 +33,7 @@ import { useRouteLinkClick } from '@/soc/route-link';
 
 import {
   formatRowTime,
-  groupOutcome,
+  groupOutcomeKey,
   groupTitle,
   summaryText,
   targetText,
@@ -41,7 +41,7 @@ import {
   type GroupItem,
   type ListItem,
 } from './audit-model';
-import { ActorMark, OutcomeMark } from './parts';
+import { ActorMark, GroupOutcomeMark, OutcomeMark } from './parts';
 
 /** How a record was opened: a click or Enter moves focus to the inspector; J and K do not. */
 export type OpenVia = 'click' | 'enter' | 'key';
@@ -353,7 +353,9 @@ export function AuditTable({
       >
         <colgroup>
           <col className={phone ? 'w-[8rem]' : 'w-[9.5rem]'} />
-          <col className={phone ? 'w-[7.5rem]' : 'w-[8rem]'} />
+          {/* Outcome: 112px of content after the cell padding, so the longest label,
+              "Not recorded" with its glyph (about 106px at text-sm), is never cut. */}
+          <col className={phone ? 'w-[8rem]' : 'w-[8.5rem]'} />
           <col className={phone ? undefined : 'w-[14rem] min-[1440px]:w-[15rem] 2xl:w-[18rem]'} />
           {showActor ? <col className="w-[9rem] 2xl:w-[10rem]" /> : null}
           {showTarget ? <col className="w-[11rem] 2xl:w-[13rem]" /> : null}
@@ -395,6 +397,9 @@ export function AuditTable({
               const { title, detail } = groupTitle(item);
               const open = openRuns.has(item.runId);
               const partial = item.records.length < item.total;
+              // One outcome for the run, read against its step count: a group shown in
+              // part never reads Success, and reads "Not known" until a row proves one.
+              const outcome = groupOutcomeKey(item.records, item.total);
               const inner = id === tabStop ? 0 : -1;
               const chevron = (
                 <ChevronRight
@@ -461,7 +466,7 @@ export function AuditTable({
                             {formatRowTime(first.ts, zone, nowMs)}
                           </time>
                           <span aria-hidden>·</span>
-                          <OutcomeMark record={{ outcome: groupOutcome(item.records), outcome_derived: false }} />
+                          <GroupOutcomeMark outcome={outcome} />
                           <span aria-hidden>·</span>
                           <span>{detail}</span>
                         </span>
@@ -476,7 +481,7 @@ export function AuditTable({
                         </time>
                       </TableCell>
                       <TableCell density="compact" className={outcomePad}>
-                        <OutcomeMark record={{ outcome: groupOutcome(item.records), outcome_derived: false }} className="max-w-full text-sm" />
+                        <GroupOutcomeMark outcome={outcome} className="max-w-full text-sm" />
                       </TableCell>
                       <TableCell density="compact" colSpan={columns - 2} className={cn('min-w-0', eventPad)}>
                         <span className="flex min-w-0 items-center gap-2">

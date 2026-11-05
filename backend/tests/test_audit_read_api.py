@@ -258,6 +258,8 @@ def test_fixture_labels_are_console_copy():
         ({"action_type": "audit_view", "surface": "audit"}, "access", "Audit log viewed"),
         ({"action_type": "prompt", "surface": "investigate"}, "agent", "Model prompt"),
         ({"action_type": "poll"}, "system", "Source poll"),
+        ({"action_type": "job", "surface": "settings"}, "config", "Replay fixtures cleared"),
+        ({"action_type": "job", "surface": "jobs"}, "system", "Background job"),
         ({"action_type": "mystery_kind"}, "system", "mystery_kind"),
         ({"action_type": "status", "action": "auth.login"}, "access", "Signed in"),
         ({"action_type": "runbook", "action": "runbook.selected"}, "agent", "Runbook selected"),
@@ -269,6 +271,24 @@ def test_fixture_labels_are_console_copy():
 def test_classify(doc, category, label):
     info = events.classify(doc)
     assert (info.category, info.label) == (category, label)
+
+
+def test_a_replay_fixture_purge_reads_in_people_and_settings_before_and_after_round_14():
+    """Clearing the replay fixtures is a person's action. A row written before Round 14
+    carries no ``actor_type``; the (job, settings) key keeps it in People and settings
+    beside a new row, under the same name, so the row's scope is stable across the
+    upgrade (SPEC §11.1). A durable job's own rows still read as a background job."""
+    legacy = {"action_type": "job", "surface": "settings", "actor": "admin",
+              "result_summary": "cleared 3 replay fixtures"}
+    new = dict(legacy, actor_type="human", outcome="success")
+    people = build_predicate(AuditFilters(scope="people"))
+    for row in (legacy, new):
+        assert events.classify(row) == events.EventInfo("config", "Replay fixtures cleared")
+        assert events.in_people_scope(row) and matches(people, row)
+    assert events.derive_actor_type(legacy) == ("human", True)
+    job = {"action_type": "job", "surface": "jobs", "actor": "jobs"}
+    assert events.classify(job) == events.EventInfo("system", "Background job")
+    assert not matches(people, job)
 
 
 def test_derived_outcome_and_actor_kind():
