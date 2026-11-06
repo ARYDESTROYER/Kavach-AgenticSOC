@@ -565,9 +565,8 @@ describe('OverviewPanel — embedded Case Manager composition', () => {
 describe('OverviewPanel — detection-rule chip wraps instead of overflowing (bug #2)', () => {
   // The same rule-id string is also echoed (read-only) in the mini attack-story
   // step and the entity-relationship "Detection" value, so `getByText` alone is
-  // ambiguous — disambiguate to the actual chip via its `max-w-full` class,
-  // which is unique to the Badge fixed here (see OverviewPanel.tsx, the
-  // rule-id Badge in the "Detection rule(s)" block).
+  // ambiguous: disambiguate to the actual chip via its `max-w-full` class, which is
+  // unique to the rule link in the "Detection rule(s)" block (a RuleLink since Round 14).
   function getRuleChip(text: string) {
     const matches = screen.getAllByText(text);
     const chip = matches.find((el) => el.className.includes('max-w-full'));
@@ -595,6 +594,16 @@ describe('OverviewPanel — detection-rule chip wraps instead of overflowing (bu
     const chip = getRuleChip('T1078.004');
     expect(chip).toBeInTheDocument();
     expect(chip).toHaveClass('whitespace-normal');
+  });
+
+  it('opens each detection rule in the rule sheet (Round 14 RuleLink, one shared host)', () => {
+    const { container } = renderOverview({ ...CASE, rule_ids: ['T1078.004', 'auth-failures'] } as unknown as Case);
+    const first = screen.getByRole('button', { name: 'Open rule T1078.004' });
+    const second = screen.getByRole('button', { name: 'Open rule auth-failures' });
+    expect(first).toHaveAttribute('aria-haspopup', 'dialog');
+    // Both links share one host, so a live case update never closes the sheet being read.
+    expect(first.getAttribute('data-rule-host')).toBe(second.getAttribute('data-rule-host'));
+    expect(container.querySelectorAll('[data-rule-link]').length).toBeGreaterThanOrEqual(2);
   });
 
   it('wraps a SPACE-LESS/hyphen-less long rule id (no soft-wrap points) via min-w-0 + overflow-wrap:anywhere, not just break-words', () => {

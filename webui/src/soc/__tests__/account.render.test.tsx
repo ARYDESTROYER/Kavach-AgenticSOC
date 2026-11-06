@@ -73,13 +73,13 @@ function renderAccount() {
   );
 }
 
-function renderEmbeddedAccount() {
+function renderEmbeddedAccount({ onNavigateToSecurity = vi.fn() }: { onNavigateToSecurity?: () => void } = {}) {
   return render(
     <AuthProvider>
       <TooltipProvider>
         <main>
           <h1>Settings</h1>
-          <AccountInner embedded onNavigateToSecurity={vi.fn()} />
+          <AccountInner embedded onNavigateToSecurity={onNavigateToSecurity} />
         </main>
       </TooltipProvider>
     </AuthProvider>,
@@ -184,7 +184,7 @@ describe('Account page', () => {
     expect(screen.queryByRole('button', { name: /Save changes/i })).toBeNull();
   });
 
-  it('keeps framed profile cards and page-level heading on the standalone route', async () => {
+  it('shows the page header and the same two groups on the standalone route', async () => {
     accountGet.mockResolvedValue({
       username: 'alice',
       role: 'analyst_tier2',
@@ -199,17 +199,19 @@ describe('Account page', () => {
     renderAccount();
 
     await screen.findByLabelText('Display name', undefined, { timeout: 5000 });
+    // Round 14 (C8): a plain page header, title and help only.
     expect(screen.getByRole('heading', { name: 'Profile', level: 1 })).toBeInTheDocument();
-    expect(screen.queryByRole('heading', { name: 'Identity & photo' })).not.toBeInTheDocument();
-    expect(screen.getByTestId('profile-identity-surface')).toHaveAttribute(
-      'data-surface',
-      'standalone',
-    );
-    expect(screen.getByTestId('profile-identity-surface')).toHaveClass('rounded-md', 'border');
-    expect(screen.getByTestId('profile-details-surface')).toHaveClass('rounded-md', 'border');
+    expect(screen.queryByText('Personal account')).not.toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Identity & photo', level: 3 })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Personal details', level: 3 })).toBeInTheDocument();
+    for (const id of ['profile-identity-surface', 'profile-details-surface']) {
+      const group = screen.getByTestId(id);
+      expect(group).toHaveAttribute('data-settings-group');
+      expect(group.querySelector('[data-settings-panel]')).not.toBeNull();
+    }
   });
 
-  it('uses flat labelled bands and one h1 → h2 hierarchy when embedded in Settings', async () => {
+  it('renders as one Settings section with two groups when embedded (D28)', async () => {
     accountGet.mockResolvedValue({
       username: 'alice',
       role: 'analyst_tier2',
@@ -228,14 +230,35 @@ describe('Account page', () => {
     expect(screen.getByRole('heading', { name: 'Profile', level: 2 })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Identity & photo', level: 3 })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Personal details', level: 3 })).toBeInTheDocument();
+    // The section is named by its h2; no eyebrow, no description line, no icon chip.
+    expect(screen.getByRole('region', { name: 'Profile' })).toHaveAttribute('data-settings-section', 'form');
+    expect(screen.queryByText('Personal account')).not.toBeInTheDocument();
 
     const identity = screen.getByTestId('profile-identity-surface');
     const details = screen.getByTestId('profile-details-surface');
-    expect(identity.tagName).toBe('SECTION');
-    expect(identity).toHaveAttribute('data-surface', 'embedded');
-    expect(identity).toHaveClass('border-t', 'bg-transparent');
-    expect(identity).not.toHaveClass('rounded-md');
-    expect(details.tagName).toBe('SECTION');
-    expect(details).toHaveClass('border-t', 'bg-transparent');
+    // Groups are labelled groups inside the one section region, never regions themselves.
+    expect(identity).toHaveAttribute('role', 'group');
+    expect(details).toHaveAttribute('role', 'group');
+    expect(screen.getAllByRole('region')).toHaveLength(1);
+    // Rows on one panel, no card inside the section.
+    expect(identity.querySelector('[data-settings-panel]')).not.toBeNull();
+    expect(details.querySelectorAll('[data-setting-row="field"]').length).toBeGreaterThanOrEqual(6);
+  });
+
+  it('shows two-factor as a status row with one action that opens Security', async () => {
+    accountGet.mockResolvedValue({
+      username: 'alice',
+      role: 'analyst_tier2',
+      display_name: 'Alice',
+      avatar: '',
+      env_managed: false,
+      mfa_enabled: false,
+    });
+    const onNavigateToSecurity = vi.fn();
+    renderEmbeddedAccount({ onNavigateToSecurity });
+    const status = await screen.findByTestId('profile-mfa-status', undefined, { timeout: 5000 });
+    expect(status).toHaveTextContent('Off');
+    fireEvent.click(screen.getByRole('button', { name: 'Turn on' }));
+    expect(onNavigateToSecurity).toHaveBeenCalledTimes(1);
   });
 });

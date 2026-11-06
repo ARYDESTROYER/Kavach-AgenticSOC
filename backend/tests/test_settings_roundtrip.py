@@ -12,12 +12,14 @@ from __future__ import annotations
 from app.config import Preferences
 
 
-# All the top-level NESTED-MODEL blocks that must round-trip through GET/PUT.
+# All the top-level NESTED-MODEL blocks that must round-trip through GET/PUT. Round 14
+# (SPEC §4.10.19): ``runbooks`` is the one Runbooks section; the retired ``playbooks``
+# section is accepted on load but is no setting (see the retired-section tests below).
 _NESTED_BLOCKS = [
     "rbac", "mfa", "sso", "notifications", "case_id_format",
     "cross_source_correlation", "threat_context", "threshold_automation",
     "auto_close", "enrichment", "rag", "standup", "trace", "personas",
-    "runbooks", "playbooks", "branding", "caps", "risk_weights",
+    "runbooks", "branding", "caps", "risk_weights",
     "default_correlation", "release_updates",
 ]
 
@@ -65,7 +67,10 @@ def test_partial_put_preserves_sibling_subtrees(client):
     assert after["rag"]["top_k"] == before["rag"]["top_k"] + 3
     # ...sibling fields inside the SAME block survived (deep, not shallow, merge).
     assert after["rag"]["min_score"] == before["rag"]["min_score"]
-    assert after["rag"]["use_runbooks"] == before["rag"]["use_runbooks"]
+    assert after["rag"]["use_mitre"] == before["rag"]["use_mitre"]
+    # Round 14: the retired ``rag.use_runbooks`` is a read-only mirror of
+    # ``runbooks.rag_corpus`` and survives a sibling write unchanged.
+    assert after["rag"]["use_runbooks"] == after["runbooks"]["rag_corpus"] == before["rag"]["use_runbooks"]
     # ...and sibling BLOCKS are completely untouched.
     for block in _NESTED_BLOCKS:
         if block == "rag":
@@ -135,17 +140,20 @@ def _settings_audit_rows(client) -> list[dict]:
 
 
 def test_put_settings_writes_an_append_only_audit_row(client):
-    """P12 (#2 audit / #10 secrets): a settings PUT — which now carries the
-    decision-critical ``auto_close`` policy ``decide()`` reads — must leave an
-    append-only who/when trail recording the CHANGED top-level keys (never their
-    VALUES → never a secret)."""
+    """P12 (#2 audit / #10 secrets), Round 14 audit-first (SPEC §3.6, §4.5.3): a
+    settings PUT, which carries the decision-critical ``auto_close`` policy
+    ``decide()`` reads, appends exactly one ``settings.updated`` row BEFORE the save is
+    visible. The one-line summary names the CHANGED top-level keys only; the
+    structured ``changes`` record each changed field from its stored value to the
+    validated new one."""
     before = _settings_audit_rows(client)
 
     # Flip the flagship auto-close policy (the exact field bug-#1 repointed here — the
     # ``prefs.auto_close.false_positive.enabled`` that ``decide()`` reads) so a change to
     # WHICH cases auto-close is provably audited.
     prefs = _get_prefs(client)
-    patch_val = not bool(prefs["auto_close"]["false_positive"]["enabled"])
+    old_val = bool(prefs["auto_close"]["false_positive"]["enabled"])
+    patch_val = not old_val
     _put(client, {"auto_close": {"false_positive": {"enabled": patch_val}}})
 
     after = _settings_audit_rows(client)
@@ -153,26 +161,66 @@ def test_put_settings_writes_an_append_only_audit_row(client):
     row = after[0]  # NEWEST first
     assert row["surface"] == "settings"
     assert row["action_type"] == "status"
+    assert row["action"] == "settings.updated"
+    assert row["outcome"] == "success"
+    assert row["actor_type"] == "human"
+    assert row["request_id"]
+    assert row["target"]["type"] == "setting" and row["target"]["id"] == "auto_close"
     summary = row.get("result_summary") or ""
-    # Records the CHANGED top-level key by NAME…
+    # The summary records the CHANGED top-level key by NAME, never its value…
     assert "updated settings" in summary
     assert "auto_close" in summary
-    # …and never the VALUE / any secret marker (#10).
     assert str(patch_val).lower() not in summary.lower()
+    # …and the structured change carries the before and after of the one field.
+    assert row["changes"] == [{
+        "field": "auto_close.false_positive.enabled",
+        "before": str(old_val).lower(), "after": str(patch_val).lower(), "secret": False,
+    }]
     for forbidden in ("es_api_key", "anthropic_api_key", "auth_jwt_secret", "bearer "):
         assert forbidden not in summary.lower()
 
 
-def test_put_settings_audit_never_leaks_a_value(client):
-    """The audit summary lists only key NAMES, even for a block whose values change —
-    it must never serialise the block's contents (defence for #10)."""
+def test_put_settings_audit_summary_names_keys_and_changes_withhold_secrets(client):
+    """The summary lists only key NAMES (it never serialises a block's contents);
+    ordinary values live in the structured ``changes``, where secrets and webhook URL
+    paths are never written (SPEC §4.5.3, defence for #10)."""
     before = _settings_audit_rows(client)
-    _put(client, {"branding": {"org_name": "Umbrella-Corp-SECRET-MARKER"}})
+    _put(client, {
+        "branding": {"org_name": "Umbrella-Corp-SECRET-MARKER"},
+        "notifications": {"channels": [{
+            "id": "slack-sec", "type": "slack",
+            "config": {"url": "https://hooks.slack.com/services/T9/B9/WEBHOOKTOKEN"},
+        }]},
+    })
     after = _settings_audit_rows(client)
     assert len(after) == len(before) + 1
-    summary = (after[0].get("result_summary") or "")
+    row = after[0]
+    summary = row.get("result_summary") or ""
     assert "branding" in summary            # the key NAME is recorded…
     assert "Umbrella-Corp-SECRET-MARKER" not in summary  # …never the VALUE
+    changes = {c["field"]: c for c in row["changes"]}
+    assert changes["branding.org_name"]["after"] == "Umbrella-Corp-SECRET-MARKER"
+    url = changes["notifications.channels[slack-sec].config.url"]
+    assert url["after"] == "https://hooks.slack.com" and url["secret"] is True
+    assert "WEBHOOKTOKEN" not in repr(row)
+
+
+def test_put_settings_is_refused_and_unsaved_when_the_audit_cannot_be_written(client, monkeypatch):
+    """Round 14 audit-first (SPEC §3.6, E16): the old best-effort audit ("never fail
+    the settings save") is gone. When the audit row cannot be appended the save
+    answers ``503 audit_unavailable`` and the stored settings are unchanged."""
+    before = _get_prefs(client)["rag"]["top_k"]
+    state = client.app.state.tlsoc
+
+    async def _down(**_kwargs):
+        raise RuntimeError("audit store unreachable")
+
+    monkeypatch.setattr(state.control_audit, "record_strict", _down)
+    r = client.put("/api/settings", json={"rag": {"top_k": before + 3}})
+    assert r.status_code == 503
+    assert r.json()["detail"]["code"] == "audit_unavailable"
+    monkeypatch.undo()
+    assert _get_prefs(client)["rag"]["top_k"] == before
 
 
 def test_secrets_never_appear_in_settings_dump(client):
@@ -226,6 +274,71 @@ def test_settings_schema_endpoint(client):
     general_fields = {f["name"]: f for f in by_key["general"]["fields"]}
     assert general_fields["entity_strategy"]["type"] == "enum"
     assert general_fields["entity_strategy"]["choices"]
+
+
+def test_settings_schema_hides_the_retired_runbook_keys(client):
+    """Round 14 (SPEC §4.10.19, §3.1): the retired procedure section and the retired
+    ``rag.use_runbooks`` switch are accepted on load but are no settings, so no
+    Settings surface renders them; the Runbooks section lists every new key."""
+    body = client.get("/api/settings/schema").json()
+    by_key = {s["key"]: s for s in body["sections"]}
+    assert "playbooks" not in by_key
+    # No section title or field name uses the retired word; the only occurrence left
+    # is the kept wire literal ``run_playbook`` (an automation action choice, SPEC
+    # §4.10.16), which the Console shows as "Attach a runbook".
+    blob = repr(body).lower().replace("run_playbook", "")
+    assert "playbook" not in blob
+    assert "use_runbooks" not in {f["name"] for f in by_key["rag"]["fields"]}
+    runbooks = by_key["runbooks"]
+    assert runbooks["title"] == "Runbooks"
+    assert runbooks["model"] == "RunbookConfig"
+    fields = {f["name"]: f for f in runbooks["fields"]}
+    assert list(fields) == [
+        "enabled", "auto_attach", "fallback", "investigator_guidance", "rag_corpus",
+        "ai_suggest", "ai_step_drafts", "require_distinct_approver", "step_approvals",
+        "review_every_days_default", "runbooks_config_version",
+    ]
+    assert fields["review_every_days_default"]["default"] == 180
+    assert fields["review_every_days_default"]["minimum"] == 30
+    assert fields["review_every_days_default"]["maximum"] == 730
+    assert fields["require_distinct_approver"]["default"] is False
+    assert fields["auto_attach"]["default"] is True
+
+
+def test_the_retired_runbook_keys_mirror_their_successors_through_a_put(client):
+    """A settings PUT of the new Runbooks keys is what the retired keys report back:
+    ``playbooks.enabled`` follows ``investigator_guidance`` and ``rag.use_runbooks``
+    follows ``rag_corpus`` (one truth). A body that only echoes the stored retired
+    values (a client resending whole sections) changes nothing."""
+    out = _put(client, {"runbooks": {"investigator_guidance": False, "rag_corpus": False}})
+    assert out["runbooks"]["investigator_guidance"] is False
+    assert out["playbooks"]["enabled"] is False
+    assert out["rag"]["use_runbooks"] is False
+    assert out["runbooks"]["enabled"] is True
+    out = _put(client, {"playbooks": {"enabled": False}, "rag": {"use_runbooks": False},
+                        "runbooks": {"investigator_guidance": True}})
+    assert out["runbooks"]["investigator_guidance"] is True  # the successor wins
+    assert out["playbooks"]["enabled"] is True
+    assert out["rag"]["use_runbooks"] is False and out["runbooks"]["rag_corpus"] is False
+    # The section stays readable on its own (compatibility, one release).
+    r = client.get("/api/settings/playbooks")
+    assert r.status_code == 200 and r.json()["value"]["enabled"] is True
+
+
+def test_a_put_that_changes_a_retired_runbook_key_carries_it_onto_its_successor(client):
+    """SPEC §4.10.19: ``rag.use_runbooks`` and ``playbooks.enabled`` are mirrors of
+    ``runbooks.rag_corpus`` and ``runbooks.investigator_guidance``. A write that
+    CHANGES a retired key (the Knowledge "Use runbooks" switch, an older API client)
+    is carried onto its successor, never answered 200 while changing nothing. The
+    settings route maps the body (``config.map_retired_runbook_writes``) before its
+    deep merge."""
+    _put(client, {"runbooks": {"investigator_guidance": True, "rag_corpus": True}})
+    out = _put(client, {"rag": {"use_runbooks": False}})
+    assert out["runbooks"]["rag_corpus"] is False and out["rag"]["use_runbooks"] is False
+    out = _put(client, {"playbooks": {"enabled": False}})
+    assert out["runbooks"]["investigator_guidance"] is False and out["playbooks"]["enabled"] is False
+    out = _put(client, {"rag": {"use_runbooks": True}, "playbooks": {"enabled": True}})
+    assert out["runbooks"]["rag_corpus"] is True and out["runbooks"]["investigator_guidance"] is True
 
 
 def test_settings_schema_carries_no_secrets(client):

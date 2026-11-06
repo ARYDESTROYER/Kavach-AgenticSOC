@@ -68,13 +68,13 @@ class RDAPProvider(EnrichmentProvider):
             docs_url="https://about.rdap.org/",
             default_enabled=True,
             setup_steps=[
-                "Nothing to set up — RDAP registry data and Cloudflare DoH are "
+                "Nothing to set up: RDAP registry data and Cloudflare DoH are "
                 "keyless; this provider ships enabled.",
                 "Requires outbound HTTPS to rdap.org and cloudflare-dns.com.",
             ],
             example=(
-                "Flags domains registered in the last 30 days — the classic phishing "
-                "tell: a login page on a 5-day-old lookalike domain jumps out even "
+                "Flags domains registered in the last 30 days (the classic phishing "
+                "tell): a login page on a 5-day-old lookalike domain jumps out even "
                 "before any feed has listed it."
             ),
         )

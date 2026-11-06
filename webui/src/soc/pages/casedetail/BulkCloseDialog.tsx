@@ -11,10 +11,15 @@
  * `resolve` analyst verbs (single action or the durable `case_lifecycle` job); nothing
  * here reaches `decide()`.
  *
+ * Round 14 (SPEC §4.10.15, D34): when the caller passes the selected case ids, the
+ * dialog reads their runbook progress and, when some still have required steps open,
+ * says how many and offers ONE shared, optional reason (`open_steps_reason`). A bulk close
+ * never fails a case for open steps; each such close is audited with the reason.
+ *
  * SECURITY (#9): option labels are fixed enums; the note is collected as plain text.
  */
 import * as React from 'react';
-import { Check, CheckCircle2, RefreshCw } from 'lucide-react';
+import { Check, CheckCircle2, ListChecks, LoaderCircle } from 'lucide-react';
 
 import { Button } from '@/ui/button';
 import { Label } from '@/ui/label';
@@ -29,6 +34,13 @@ import {
 } from '@/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/ui/select';
 
+import { getRunbookProgress } from '@/lib/api-runbooks';
+import {
+  AUTOMATIC_CLOSES_NOTE,
+  OPEN_STEPS_REASON_LABEL,
+  OPEN_STEPS_REASON_MAX_CHARS,
+} from '@/soc/runbooks/run/OpenStepsNotice';
+
 import { DispositionPicker, focusDispositionPicker } from './DispositionPicker';
 import { DURABLE_CONTEXT_NOTE, RESOLUTION_OPTIONS } from './shared';
 
@@ -42,6 +54,12 @@ export interface BulkCloseInput {
   resolution?: string;
   note?: string;
   reason?: string;
+  /**
+   * Round 14: the one shared reason for closing cases whose runbook still has required
+   * steps open. Optional; never `require_open_steps_reason` (a bulk close never fails
+   * an item for open steps).
+   */
+  open_steps_reason?: string;
 }
 
 export interface BulkCloseDialogProps {
@@ -58,6 +76,31 @@ export interface BulkCloseDialogProps {
   onSubmit: (input: BulkCloseInput) => void;
   /** Where focus returns on close (the control that opened the dialog). */
   returnFocusTo?: React.RefObject<HTMLElement | null>;
+  /**
+   * The cases the submission covers. When given, their runbook progress is read so the
+   * dialog can say how many have required steps open and offer a shared reason.
+   */
+  caseIds?: readonly string[];
+}
+
+/** How many of `caseIds` have required runbook steps open (null while unknown). */
+function useOpenStepsCount(caseIds: readonly string[] | undefined, open: boolean): number | null {
+  const [count, setCount] = React.useState<number | null>(null);
+  const key = open && caseIds?.length ? caseIds.join('\n') : '';
+  React.useEffect(() => {
+    setCount(null);
+    if (!key) return undefined;
+    const controller = new AbortController();
+    void getRunbookProgress(key.split('\n'), controller.signal)
+      .then((map) => {
+        if (controller.signal.aborted) return;
+        setCount(Object.values(map).filter((p) => p && p.required_open > 0).length);
+      })
+      // The close never depends on this read: without it the dialog says nothing.
+      .catch(() => undefined);
+    return () => controller.abort();
+  }, [key]);
+  return count;
 }
 
 export const BulkCloseDialog: React.FC<BulkCloseDialogProps> = ({
@@ -69,8 +112,11 @@ export const BulkCloseDialog: React.FC<BulkCloseDialogProps> = ({
   onCancel,
   onSubmit,
   returnFocusTo,
+  caseIds,
 }) => {
   const [disposition, setDisposition] = React.useState('');
+  const [stepsReason, setStepsReason] = React.useState('');
+  const openStepsCount = useOpenStepsCount(caseIds, action !== null);
   const [resolution, setResolution] = React.useState('');
   const [note, setNote] = React.useState('');
   const contentRef = React.useRef<HTMLDivElement | null>(null);
@@ -80,6 +126,7 @@ export const BulkCloseDialog: React.FC<BulkCloseDialogProps> = ({
     setDisposition('');
     setResolution('');
     setNote('');
+    setStepsReason('');
   }, [action]);
 
   const plural = count === 1 ? '' : 's';
@@ -90,12 +137,14 @@ export const BulkCloseDialog: React.FC<BulkCloseDialogProps> = ({
   const submit = () => {
     if (!action || !disposition || busy) return;
     const trimmed = note.trim();
+    const why = openStepsCount ? stepsReason.trim() : '';
     onSubmit({
       action,
       disposition,
       disposition_declared: true,
       ...(isClose && resolution ? { resolution } : {}),
       ...(trimmed ? (isClose ? { note: trimmed } : { reason: trimmed, note: trimmed }) : {}),
+      ...(why ? { open_steps_reason: why } : {}),
     });
   };
 
@@ -183,6 +232,33 @@ export const BulkCloseDialog: React.FC<BulkCloseDialogProps> = ({
                 </p>
               ) : null}
             </div>
+            {openStepsCount ? (
+              <div className="space-y-1.5" data-bulk-open-steps="">
+                <p className="flex items-start gap-2 text-sm text-foreground">
+                  <ListChecks className="mt-0.5 size-4 shrink-0 text-warning-text" aria-hidden />
+                  {count === 1
+                    ? 'This case has required runbook steps open.'
+                    : `${openStepsCount.toLocaleString()} of the ${count.toLocaleString()} selected cases have required runbook steps open.`}
+                </p>
+                <Label htmlFor="bulk-close-open-steps-reason" className="text-xs">
+                  {OPEN_STEPS_REASON_LABEL}
+                  <span className="font-normal text-muted-foreground"> (optional{count > 1 ? ', one reason for all of them' : ''})</span>
+                </Label>
+                <Textarea
+                  id="bulk-close-open-steps-reason"
+                  rows={2}
+                  value={stepsReason}
+                  maxLength={OPEN_STEPS_REASON_MAX_CHARS}
+                  disabled={busy}
+                  aria-describedby="bulk-close-open-steps-help"
+                  onChange={(event) => setStepsReason(event.target.value)}
+                />
+                <p id="bulk-close-open-steps-help" className="text-xs leading-relaxed text-muted-foreground">
+                  A bulk close never stops for open steps. The reason is saved with your name on each of those
+                  cases. {AUTOMATIC_CLOSES_NOTE}
+                </p>
+              </div>
+            ) : null}
             {count > 1 ? (
               <p className="text-xs leading-relaxed text-muted-foreground">
                 The selected case IDs are snapshotted when you submit; later selection changes
@@ -195,7 +271,11 @@ export const BulkCloseDialog: React.FC<BulkCloseDialogProps> = ({
               Cancel
             </Button>
             <Button onClick={submit} disabled={!disposition || busy}>
-              {busy ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
+              {busy ? (
+                <LoaderCircle className="h-4 w-4 motion-safe:animate-spin" aria-hidden />
+              ) : (
+                <Check className="h-4 w-4" aria-hidden />
+              )}
               {submitLabel}
             </Button>
           </DialogFooter>

@@ -57,12 +57,12 @@ class APIVoidProvider(EnrichmentProvider):
                 "Set TLSOC_APIVOID_API_KEY in .env (compose maps it to "
                 "APIVOID_API_KEY), or paste it in this card (in-memory until "
                 "restart).",
-                "Flip this provider's toggle ON — one key covers IP, domain and URL "
+                "Flip this provider's toggle ON. One key covers IP, domain and URL "
                 "reputation.",
             ],
             example=(
                 "A callback domain flagged by 12 of 80 blacklist engines (with the "
-                "engine names as tags) corroborates a weak EDR signal — one engine "
+                "engine names as tags) corroborates a weak EDR signal: one engine "
                 "may be a false positive, twelve rarely are."
             ),
         )

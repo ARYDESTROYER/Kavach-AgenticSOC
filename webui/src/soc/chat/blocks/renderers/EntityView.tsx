@@ -10,6 +10,20 @@
  * tags), when it stays mono. Sans text values (facts, provider names such as
  * "demo-synthetic", notes) set proportional numerals, whose hyphen is not set wide
  * (PW4-8); dates and scores keep tabular ones.
+ *
+ * A case's entity card (Round 14, F7, SPEC §4.6.3) names the case by its number; an
+ * answer saved before that, whose Case fact holds the internal id, shows it the Case
+ * Manager queue's way (middle-ellipsised, mono, muted, the whole id in its tooltip and for
+ * assistive tech) as a link to the case, never the bare 32-character id. Its Status fact
+ * is in the Console's words (the StatusBadge's, `display.ts` `caseStatusWord`).
+ *
+ * A fact that lists its values one by one (`items`, Round 14: a case card's Rules fact)
+ * shows them in order, comma separated: a value with a rule ref (built by the server from
+ * the exact stored value, re-validated by `parseBlocks`) is a `RuleLink` that opens the
+ * rule sheet over the case's own window, "From CASE-000214" when the card names its case;
+ * a value without one is plain text. The fact's `value` is display text the server joined
+ * and clamped ("a, b, c…"), so it is never split into links: an answer saved before
+ * Round 14 (no `items`) shows it as written, and so do print and the exports.
  */
 import * as React from 'react';
 import { Check, Copy, Search } from 'lucide-react';
@@ -24,10 +38,14 @@ import { SeverityBadge, VerdictBadge } from '@/soc/components/badges';
 import { SEMANTIC_ICON } from '@/soc/components/palette';
 import { isPageId } from '@/soc/nav';
 
-import { CaseHoverArm, CaseLink, CaseRefText, RefLink } from '../context';
+import { isSafeCaseId } from '@/soc/case-result-route';
+
+import { CaseHoverArm, CaseLink, CaseRefText, RefLink, shortCaseId } from '../context';
 import { formatUtc } from '../format';
+import { caseStatusWord } from '../../display';
 import { ENTITY_KIND_LABEL, REPUTATION_LABEL, entityFacts } from '../labels';
-import type { EntityBlock, ReputationVerdict } from '../schema';
+import { AnswerRuleLink } from '../rule-drill';
+import type { EntityBlock, EntityFact, ReputationVerdict } from '../schema';
 import { KpiGroupView } from './KpiGroupView';
 
 /**
@@ -79,12 +97,88 @@ export interface EntityViewProps {
   staticMode?: boolean;
 }
 
+/** An internal case id (`case-95928c…`), as a stored answer's Case fact may hold it. */
+const INTERNAL_CASE_ID_RE = /^case-[0-9a-f]{8,}$/i;
+
+/**
+ * The case a case card names by its number (its trusted Case fact), read after "From " in
+ * a rule sheet it opens; undefined for any other card, a case named by its title (source
+ * text) or a stored internal id.
+ */
+function caseOrigin(facts: readonly EntityFact[]): string | undefined {
+  const named = facts.find((f) => f.label.trim().toLowerCase() === 'case');
+  const value = named && !named.untrusted ? named.value.trim() : '';
+  return value && !INTERNAL_CASE_ID_RE.test(value) ? value : undefined;
+}
+
+/**
+ * A fact's values one by one, comma separated: a value with a rule ref opens its rule
+ * sheet (the display-safe value as its text, the exact value in the ref), any other is
+ * plain text. Print and static exports show plain text only.
+ */
+function FactItems({
+  fact,
+  items,
+  origin,
+  staticMode,
+}: {
+  fact: EntityFact;
+  items: NonNullable<EntityFact['items']>;
+  origin: string | undefined;
+  staticMode: boolean;
+}) {
+  return (
+    <span className={cn(fact.untrusted ? 'font-mono text-xs' : 'text-foreground proportional-nums')} data-fact-items="">
+      {items.map((item, i) => (
+        <React.Fragment key={i}>
+          {i > 0 ? ', ' : null}
+          {item.drill && !staticMode ? (
+            <AnswerRuleLink target={item.drill} origin={origin} className="text-xs">
+              {item.value}
+            </AnswerRuleLink>
+          ) : (
+            <span>{item.value}</span>
+          )}
+        </React.Fragment>
+      ))}
+    </span>
+  );
+}
+
+/**
+ * One fact's value. Product values are prose; a fact the server marked attacker-derived is
+ * mono (G7). Two facts of a case card read better than their stored text (F7): a legacy
+ * internal id in Case and a raw status key in Status. A fact with `items` lists them (see
+ * {@link FactItems}); everything else, an older Rules fact included, is shown exactly as
+ * written.
+ */
+function FactValue({ fact, origin, staticMode }: { fact: EntityFact; origin: string | undefined; staticMode: boolean }) {
+  const label = fact.label.trim().toLowerCase();
+  const value = fact.value;
+  if (fact.items?.length) return <FactItems fact={fact} items={fact.items} origin={origin} staticMode={staticMode} />;
+  if (label === 'case' && INTERNAL_CASE_ID_RE.test(value.trim()) && isSafeCaseId(value.trim())) {
+    const id = value.trim();
+    const short = shortCaseId(id);
+    const text = (
+      <span className="whitespace-nowrap font-mono text-xs text-muted-foreground" title={id} data-case-ref="id">
+        <span aria-hidden>{short}</span>
+        <span className="sr-only">{id}</span>
+      </span>
+    );
+    return staticMode ? text : <CaseLink facts={{ case_id: id }}>{text}</CaseLink>;
+  }
+  const status = label === 'status' && !fact.untrusted ? caseStatusWord(value) : null;
+  if (status) return <span className="text-foreground proportional-nums">{status}</span>;
+  return <span className={cn(fact.untrusted ? 'font-mono text-xs' : 'text-foreground proportional-nums')}>{value}</span>;
+}
+
 export function EntityView({ block, idPrefix, framed = false, countsFramed = false, staticMode = false }: EntityViewProps) {
   const rawId = React.useId();
   const valueId = `ent-${rawId.replace(/[^a-zA-Z0-9_-]/g, '')}`;
   const canInvestigate = isPageId('investigate');
   // The kind is the badge: a "Kind" fact restating it is not listed again (T14).
   const facts = entityFacts(block);
+  const origin = caseOrigin(facts);
   return (
     // The block card already frames it; only a report leaf (no card of its own) draws
     // the entity's border, so the transcript never shows a card inside a card.
@@ -129,7 +223,9 @@ export function EntityView({ block, idPrefix, framed = false, countsFramed = fal
                   {/* Mono only for a fact the server marked attacker-derived (G7); product
                       values ("1 of 1 answered") are prose (browser-QA D7). The indicator
                       itself is already InlineCode above. */}
-                  <dd className={cn('min-w-0 break-words', f.untrusted ? 'font-mono text-xs' : 'text-foreground proportional-nums')}>{f.value}</dd>
+                  <dd className="min-w-0 break-words">
+                    <FactValue fact={f} origin={origin} staticMode={staticMode} />
+                  </dd>
                 </React.Fragment>
               ))}
             </dl>

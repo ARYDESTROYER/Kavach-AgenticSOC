@@ -1,10 +1,10 @@
 /**
- * PrefsContext — pervasive customization (Round-2 Wave 7).
+ * PrefsContext: pervasive customization (Round-2 Wave 7).
  *
- * Hydrated ONCE from GET /api/prefs/effective on mount (the merged ORG ← USER
- * cascade). Exposes the user's saved views, terminology overrides, theme mode, and
- * per-table column state, plus the mutators that persist them. The no-auth profile
- * is fully supported — the backend keys everything to the 'default' bucket when no
+ * Hydrated once per signed-in session from GET /api/prefs/effective (the merged
+ * ORG ← USER cascade). Exposes the user's saved views, terminology overrides, theme
+ * mode, and per-table column state, plus the mutators that persist them. The no-auth profile
+ * is fully supported: the backend keys everything to the 'default' bucket when no
  * principal is present, so customization works without auth turned on.
  *
  * Theme: this context OWNS the persisted-to-the-backend theme mode and drives the
@@ -15,6 +15,12 @@
  * SECURITY (#9): every terminology label, saved-view name and filter value is
  * user/operator-influenceable DATA. It is rendered as plain text by the UI and is
  * NEVER interpolated unfenced into an LLM prompt. `t(key)` returns a plain string.
+ *
+ * SIGNED OUT: the cascade belongs to a session, so it is read only while
+ * `useSessionKey()` names one (the sign-in page sends no request), and read again for
+ * each person who signs in. When the session ends the context returns to its empty,
+ * not-ready value (the colour mode in effect stays) and a reply still in flight from
+ * that session is dropped.
  */
 import * as React from 'react';
 import { api, ApiError } from '@/lib/api';
@@ -26,6 +32,7 @@ import type {
   ThemeMode,
 } from '@/lib/types';
 import { useTheme } from './theme';
+import { useSessionKey } from './session-key';
 import { applyTransparencyPreference, TRANSPARENCY_PREF_KEY } from '@/design-system/transparency';
 
 /**
@@ -70,7 +77,7 @@ export interface PrefsContextValue {
   terminology: Terminology;
   /** The effective theme mode (light/dark/system) the user has chosen. */
   themeMode: ThemeMode;
-  /** Whether the initial hydrate has settled (ok or failed). */
+  /** Whether this session's first hydrate has settled (ok or failed); false while signed out. */
   ready: boolean;
 
   /** Set + persist the user's theme mode (applied via ThemeProvider; respects system). */
@@ -88,7 +95,7 @@ export interface PrefsContextValue {
   /** Delete a personal saved view. */
   deleteView: (id: string) => Promise<boolean>;
   /**
-   * "Apply" a saved view — a thin lookup helper the surfaces call to read a view's
+   * "Apply" a saved view: a thin lookup helper the surfaces call to read a view's
    * stored config; the page maps it onto its own filter state. Returns null if gone.
    */
   applyView: (id: string) => SavedView | null;
@@ -104,7 +111,7 @@ export interface PrefsContextValue {
    */
   t: (key: string, fallback?: string) => string;
 
-  /** Re-fetch the effective cascade (e.g. after an org-terminology admin edit). */
+  /** Re-fetch the effective cascade (e.g. after an org-terminology admin edit); a no-op signed out. */
   refresh: () => Promise<void>;
 
   /**
@@ -122,10 +129,13 @@ const PrefsContext = React.createContext<PrefsContextValue | null>(null);
 
 export const PrefsProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { setTheme } = useTheme();
+  const sessionKey = useSessionKey();
   const [prefs, setPrefs] = React.useState<EffectivePrefs>(EMPTY_EFFECTIVE);
   const [ready, setReady] = React.useState(false);
   /** `misc` keys this session wrote (patchMisc): newer than any fetched copy. */
   const sessionMiscRef = React.useRef<Record<string, unknown>>({});
+  /** The read session a reply belongs to: null without a session and after unmount. */
+  const sessionRef = React.useRef<object | null>(null);
 
   const applyEffective = React.useCallback(
     (eff: EffectivePrefs) => {
@@ -147,28 +157,41 @@ export const PrefsProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   );
 
   const refresh = React.useCallback(async () => {
+    const session = sessionRef.current;
+    if (!session) return;
+    let eff: EffectivePrefs | undefined;
     try {
-      const eff = await api.prefs.effective();
-      applyEffective(eff);
+      eff = await api.prefs.effective();
     } catch {
-      // Legacy / unreachable backend → fall back to defaults but PRESERVE the resolved
-      // `theme_mode` so the Appearance / account-menu picker keeps matching the colour
-      // mode ThemeProvider is actually applying (owned by localStorage). Resetting it to
-      // EMPTY_EFFECTIVE's 'system' desynced the control from the visible theme.
+      // No answer: the fallback below.
+    }
+    if (sessionRef.current !== session) return;
+    if (eff) {
+      applyEffective(eff);
+    } else {
+      // Legacy / unreachable backend (or no body) → fall back to defaults but PRESERVE
+      // the resolved `theme_mode` so the Appearance / account-menu picker keeps matching
+      // the colour mode ThemeProvider is actually applying (owned by localStorage).
+      // Resetting it to EMPTY_EFFECTIVE's 'system' desynced the control from the theme.
       setPrefs((p) => ({ ...EMPTY_EFFECTIVE, theme_mode: p.theme_mode, misc: { ...sessionMiscRef.current } }));
     }
+    // This session's cascade has settled (read or fallen back).
+    setReady(true);
   }, [applyEffective]);
 
   React.useEffect(() => {
-    let alive = true;
-    void (async () => {
-      await refresh();
-      if (alive) setReady(true);
-    })();
+    if (sessionKey === null) return undefined;
+    sessionRef.current = {};
+    void refresh();
     return () => {
-      alive = false;
+      sessionRef.current = null;
+      // The session ended: the next person starts from the empty cascade, not-ready, so
+      // nothing waiting for `ready` reads this person's copy. The colour mode stays.
+      sessionMiscRef.current = {};
+      setPrefs((p) => ({ ...EMPTY_EFFECTIVE, theme_mode: p.theme_mode }));
+      setReady(false);
     };
-  }, [refresh]);
+  }, [sessionKey, refresh]);
 
   const setThemeMode = React.useCallback(
     (mode: ThemeMode) => {
@@ -176,7 +199,7 @@ export const PrefsProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       setTheme(mode);
       setPrefs((p) => ({ ...p, theme_mode: mode }));
       void api.prefs.putUser({ theme_mode: mode }).catch(() => {
-        /* best-effort — the local apply already happened */
+        /* best-effort: the local apply already happened */
       });
     },
     [setTheme],
@@ -188,7 +211,7 @@ export const PrefsProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     setPrefs((p) => ({ ...p, misc: { ...(p.misc ?? {}), ...patch } }));
     try {
       Promise.resolve(api.prefs.putUser({ misc: patch })).catch(() => {
-        /* best-effort — the local apply already happened */
+        /* best-effort: the local apply already happened */
       });
     } catch {
       /* no preferences API (an embedding without it): the local value still applies */
@@ -231,7 +254,7 @@ export const PrefsProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       }));
       return true;
     } catch (e) {
-      // A 404 (already gone) still reconciles local state — treat it as a successful
+      // A 404 (already gone) still reconciles local state: treat it as a successful
       // removal so the caller confirms it (rather than showing a spurious error / nothing).
       if (e instanceof ApiError && e.status === 404) {
         setPrefs((p) => ({
@@ -262,7 +285,7 @@ export const PrefsProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       try {
         await api.prefs.tables.put(tableId, state);
       } catch {
-        /* best-effort — the local apply already happened */
+        /* best-effort: the local apply already happened */
       }
     },
     [],

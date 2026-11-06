@@ -10,15 +10,21 @@ external updater supervisor.
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import re
-from typing import NoReturn
+from typing import Any, NoReturn
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from ..audit.context import AuditContext, audit_context
 from ..constants import ActionType
-from ..engine.update_audit import audit_terminal_job
+from ..engine.update_audit import (
+    audit_terminal_job,
+    release_target,
+    update_job_target,
+)
 from ..engine.update_service import UpdateCapabilityError, UpdateService
 from ..engine.update_supervisor import (
     SupervisorRejected,
@@ -28,6 +34,7 @@ from ..engine.update_supervisor import (
     UpdateReceipt,
     UpdateStatus,
 )
+from ..models import AuditTarget
 from ..state import AppState
 from .deps import (
     get_state,
@@ -70,12 +77,53 @@ def _operator_name(operator) -> str:
     return str(getattr(operator, "username", "") or "super_admin")[:128]
 
 
+#: The id namespace of the operator's update rows since Round 14. The ledger compares a
+#: keyed retry's whole payload with the first append (only the timestamp and the build
+#: stamp may differ), and these rows now carry the structured record fields (SPEC
+#: §4.5.3) that earlier builds never write. Under their own namespace, a same-key retry
+#: that crosses a build change (the start that installs this build, the rollback that
+#: leaves it) appends that build's own row instead of colliding with this one, so the
+#: retry the 503 message asks for always works. Earlier builds keep writing the bare
+#: ``system-update:`` ids.
+_AUDIT_ID_NAMESPACE = "system-update:r14"
+
+#: The most characters of a release or job id an audit event id carries, so the two
+#: digests that follow it are never cut off (the event id is at most 512 characters).
+_ID_TARGET_CHARS = 128
+
+
+def _context_digest(context: AuditContext) -> str:
+    """A digest of the request's own record fields (client, session reference, role,
+    request id). Part of the row's event id, so each request is recorded with its own
+    context (see :func:`_audit_event_id`)."""
+    fields = context.record_fields()
+    client = fields.get("client")
+    if hasattr(client, "model_dump"):
+        fields["client"] = client.model_dump(mode="json")
+    text = json.dumps(fields, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+
+
 def _audit_event_id(
-    *, phase: str, operation: str, target: str, idempotency_key: str
+    *, phase: str, operation: str, target: str, idempotency_key: str,
+    context: AuditContext,
 ) -> str:
-    """Opaque deterministic audit identity for an idempotent browser operation."""
-    digest = hashlib.sha256(idempotency_key.encode("utf-8")).hexdigest()[:32]
-    return f"system-update:{phase}:{operation}:{target}:{digest}"[:512]
+    """Opaque deterministic audit identity for one request of an idempotent browser
+    operation: the operation, its target, the idempotency key and the request's own
+    context.
+
+    The rows record who asked from where (SPEC §4.5.3: client, session reference, role,
+    request id), and the ledger compares a keyed retry's whole payload with its first
+    append. So the request's context is part of the identity: a request sent again
+    exactly (the same request id from the same session and address) confirms its first
+    rows, and a retry as a new request (what the 503 message asks for, a double click)
+    appends its own rows, recorded with its own context, instead of being refused as an
+    id collision. The supervisor stays idempotent on the key either way."""
+    key_digest = hashlib.sha256(idempotency_key.encode("utf-8")).hexdigest()[:32]
+    return (
+        f"{_AUDIT_ID_NAMESPACE}:{phase}:{operation}:{target[:_ID_TARGET_CHARS]}:"
+        f"{key_digest}:{_context_digest(context)}"
+    )[:512]
 
 
 def _rejected_outcome(exc: Exception) -> str:
@@ -86,6 +134,29 @@ def _rejected_outcome(exc: Exception) -> str:
     return f"rejected:{type(exc).__name__}{suffix}"
 
 
+def _row_target(operation: str, target: str) -> AuditTarget:
+    """A preflight or start names a release; a cancel or rollback names the job."""
+    if operation in {"preflight", "start"}:
+        return release_target(target)
+    return update_job_target(target)
+
+
+def _record_fields(*, action: str, outcome: str, operation: str, target: str,
+                   context: AuditContext) -> dict[str, Any]:
+    """The Round 14 record fields (SPEC §4.5.3) of an operator's update row: the action,
+    its outcome, the human actor kind, the release or job as target, and the request's
+    own context (client address, session reference, role, request id). The event id
+    names that context (:func:`_audit_event_id`), so a retry as a new request never
+    collides with these rows."""
+    return {
+        "action": action,
+        "outcome": outcome,
+        "actor_type": "human",
+        "target": _row_target(operation, target),
+        **context.record_fields(),
+    }
+
+
 async def _audit_intent(
     state: AppState,
     *,
@@ -93,6 +164,7 @@ async def _audit_intent(
     operation: str,
     target: str,
     idempotency_key: str,
+    context: AuditContext,
 ) -> None:
     """Strict intent barrier: no supervisor mutation happens if this append fails."""
     try:
@@ -103,10 +175,15 @@ async def _audit_intent(
                 operation=operation,
                 target=target,
                 idempotency_key=idempotency_key,
+                context=context,
             ),
             surface="system_updates",
             actor=actor,
             result_summary=f"intent operation={operation} target={target}"[:500],
+            **_record_fields(
+                action=f"update.{operation}_requested", outcome="success",
+                operation=operation, target=target, context=context,
+            ),
         )
     except Exception as exc:  # Privileged operation fails closed.
         raise HTTPException(
@@ -126,8 +203,10 @@ async def _audit_result(
     target: str,
     outcome: str,
     idempotency_key: str,
+    context: AuditContext,
 ) -> None:
     """Strict terminal/acceptance evidence; a retry remains supervisor-idempotent."""
+    accepted = outcome.startswith("accepted")
     try:
         await state.control_audit.record_strict(
             action_type=ActionType.SYSTEM_UPDATE,
@@ -136,12 +215,18 @@ async def _audit_result(
                 operation=operation,
                 target=target,
                 idempotency_key=idempotency_key,
+                context=context,
             ),
             surface="system_updates",
             actor=actor,
             result_summary=(
                 f"result operation={operation} target={target} outcome={outcome}"
             )[:500],
+            **_record_fields(
+                action=f"update.{operation}_{'accepted' if accepted else 'rejected'}",
+                outcome="success" if accepted else "failure",
+                operation=operation, target=target, context=context,
+            ),
         )
     except Exception as exc:
         raise HTTPException(
@@ -215,17 +300,20 @@ async def update_status(
 @router.post("/preflight", response_model=UpdatePreflight)
 async def update_preflight(
     body: UpdatePreflightRequest,
+    request: Request,
     state: AppState = Depends(get_state),
     _permission=Depends(require_permission("system_updates", "apply")),
     operator=Depends(require_system_update_operator()),
 ) -> UpdatePreflight:
     actor = _operator_name(operator)
+    context = audit_context(request)
     await _audit_intent(
         state,
         actor=actor,
         operation="preflight",
         target=body.release_id,
         idempotency_key=body.idempotency_key,
+        context=context,
     )
     try:
         result = await _service(state).preflight(
@@ -239,6 +327,7 @@ async def update_preflight(
             target=body.release_id,
             outcome=_rejected_outcome(exc),
             idempotency_key=body.idempotency_key,
+            context=context,
         )
         _raise_api_error(exc)
     await _audit_result(
@@ -248,6 +337,7 @@ async def update_preflight(
         target=body.release_id,
         outcome="accepted",
         idempotency_key=body.idempotency_key,
+        context=context,
     )
     return result
 
@@ -255,17 +345,20 @@ async def update_preflight(
 @router.post("/jobs", response_model=UpdateJob, status_code=202)
 async def start_update(
     body: UpdateStartRequest,
+    request: Request,
     state: AppState = Depends(get_state),
     _permission=Depends(require_permission("system_updates", "apply")),
     operator=Depends(require_system_update_operator()),
 ) -> UpdateJob:
     actor = _operator_name(operator)
+    context = audit_context(request)
     await _audit_intent(
         state,
         actor=actor,
         operation="start",
         target=body.release_id,
         idempotency_key=body.idempotency_key,
+        context=context,
     )
     try:
         result = await _service(state).start(
@@ -281,6 +374,7 @@ async def start_update(
             target=body.release_id,
             outcome=_rejected_outcome(exc),
             idempotency_key=body.idempotency_key,
+            context=context,
         )
         _raise_api_error(exc)
     await _audit_result(
@@ -290,6 +384,7 @@ async def start_update(
         target=body.release_id,
         outcome=f"accepted:{result.job_id}:{result.status}",
         idempotency_key=body.idempotency_key,
+        context=context,
     )
     return result
 
@@ -330,6 +425,7 @@ async def _job_operation(
     idempotency_key: str,
     actor: str,
     state: AppState,
+    context: AuditContext,
 ) -> UpdateJob:
     await _audit_intent(
         state,
@@ -337,6 +433,7 @@ async def _job_operation(
         operation=operation,
         target=job_id,
         idempotency_key=idempotency_key,
+        context=context,
     )
     try:
         service = _service(state)
@@ -353,6 +450,7 @@ async def _job_operation(
             target=job_id,
             outcome=_rejected_outcome(exc),
             idempotency_key=idempotency_key,
+            context=context,
         )
         _raise_api_error(exc)
     await _audit_result(
@@ -362,6 +460,7 @@ async def _job_operation(
         target=job_id,
         outcome=f"accepted:{result.status}",
         idempotency_key=idempotency_key,
+        context=context,
     )
     await _audit_terminal_job(state, result)
     return result
@@ -371,6 +470,7 @@ async def _job_operation(
 async def cancel_update_job(
     job_id: str,
     body: UpdateOperationRequest,
+    request: Request,
     state: AppState = Depends(get_state),
     _permission=Depends(require_permission("system_updates", "apply")),
     operator=Depends(require_system_update_operator()),
@@ -381,6 +481,7 @@ async def cancel_update_job(
         idempotency_key=body.idempotency_key,
         actor=_operator_name(operator),
         state=state,
+        context=audit_context(request),
     )
 
 
@@ -388,6 +489,7 @@ async def cancel_update_job(
 async def rollback_update_job(
     job_id: str,
     body: UpdateOperationRequest,
+    request: Request,
     state: AppState = Depends(get_state),
     _permission=Depends(require_permission("system_updates", "rollback")),
     operator=Depends(require_system_update_operator()),
@@ -398,4 +500,5 @@ async def rollback_update_job(
         idempotency_key=body.idempotency_key,
         actor=_operator_name(operator),
         state=state,
+        context=audit_context(request),
     )

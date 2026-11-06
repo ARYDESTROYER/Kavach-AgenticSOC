@@ -10,11 +10,16 @@ techniques. It is an analyst aid for recognizing a wider incident; it does not m
 case records, change their signatures, or close them.
 
 Open **Triage → Campaigns**. Reading campaigns requires `cases:read` when RBAC is
-enabled.
+enabled. The list is one **Active campaigns** panel. Each campaign is named by what its
+cases share and how many there are, for example "198.51.100.23 · 3 cases" (or its first
+ATT&CK technique when no entity is shared), with what the name is built from ("shared
+IP", "shared MITRE technique") beside it. The campaign's generated name and ID stay in
+its detail sheet.
 
 ## What a campaign contains
 
-- a stable campaign ID and generated name;
+- a stable campaign ID and generated name (shown in the detail sheet; the list uses the
+  readable label above);
 - member cases, each named by its case number as elsewhere in the console (the internal
   case ID is in its tooltip; a case without a number shows its ID), listed in case-number
   order with any case without a number last;

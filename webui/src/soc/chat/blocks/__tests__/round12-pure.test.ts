@@ -93,11 +93,15 @@ describe('format: calendar labels and the comparison change', () => {
   it('reads the server label, shortens it for ticks and names the zone in table headers', () => {
     const c = chart('daily-cases');
     expect(xPositionLabel(c.x, 0)).toBe('1 Aug 2026');
-    expect(xTickLabel(c.x, 0)).toBe('1 Aug');
+    // Ticks read the chart kit's one day format (Round 14, SPEC §4.4.4): "Aug 1", and a
+    // week reads the day it starts, never its ISO week code.
+    expect(xTickLabel(c.x, 0)).toBe('Aug 1');
     expect(xAxisHeader(c.x)).toBe('Period (Asia/Kolkata)');
     expect(shortCalendarLabel('Jul 2026 (from 12 Jul)', '1M')).toBe('Jul 2026');
     expect(shortCalendarLabel('10 Oct 14:00', '1h')).toBe('14:00');
-    expect(shortCalendarLabel('W14 2026', '1w')).toBe('W14 2026');
+    expect(shortCalendarLabel('10 Oct 2026 (in progress)', '1d')).toBe('Oct 10');
+    expect(shortCalendarLabel('W14 2026', '1w')).toBe('Mar 30');
+    expect(shortCalendarLabel('W01 2026', '1w')).toBe('Dec 29');
     // A plain time axis keeps its UTC reading.
     const plain = rawChart({});
     expect(xAxisHeader(plain.x)).toBe('Time (UTC)');

@@ -17,8 +17,8 @@
  * at the end so the loading→ready transition is exercised there too.
  */
 import type * as React from 'react';
-import { beforeEach, describe, it, expect, vi } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 // Mock the typed api client BEFORE importing anything that pulls it in.
@@ -79,12 +79,17 @@ vi.mock('@/lib/api', () => {
       // Round-5 Sett-C — the schema-driven "All settings" section fetches this.
       getSettingsSchema: ok({ sections: [] }),
       // Used by sub-sections that may lazily mount; harmless to provide.
-      getPlaybooks: ok({ enabled: false, playbooks: [] }),
       getBranding: ok({}),
       caseIdPreview: ok({ samples: [], valid: true }),
       // Round-2 Wave 4 — the embedded Account/Admin sub-section bodies fetch these
       // when their Settings section is active.
-      account: { get: ok({ username: '', role: '', env_managed: false }), put: ok({}), avatar: ok({}) },
+      account: {
+        get: ok({ username: '', role: '', env_managed: false }),
+        put: ok({}),
+        avatar: ok({}),
+        // The effective grants the AuthProvider reads (GET /api/account/permissions).
+        permissions: ok({ authenticated: false, role: 'super_admin', custom_roles: [], rbac_enabled: false, permissions: {} }),
+      },
       account_activity: ok({ events: [] }),
       sessions: { list: ok({ sessions: [] }), revoke: ok({ ok: true }), revokeOthers: ok({ revoked: 0 }) },
       users: { list: ok({ users: [] }), create: ok({}), update: ok({}), remove: ok({}) },
@@ -96,19 +101,31 @@ vi.mock('@/lib/api', () => {
   };
 });
 
-import { AuthProvider } from '../auth';
+import { AuthProvider, useAuth } from '../auth';
 import { RouterProvider, useNavigate } from '../router';
 import { api } from '@/lib/api';
 import { TooltipProvider } from '@/ui/tooltip';
 import Settings from '../pages/Settings';
 import Overview, { PAGE_TITLE } from '../pages/Overview';
+import { SECTION_META_BY_ID } from '../pages/settings/settings-sections-meta';
+
+/**
+ * Pages mount once the session and its grants are known, as the Console shell does (it
+ * shows "Starting console" until then). Without this a page would first render with the
+ * signed-out allow-all and could mount a section the viewer may not open.
+ */
+function AuthReady({ children }: { children: React.ReactNode }) {
+  return useAuth().loading ? null : <>{children}</>;
+}
 
 function renderWithProviders(node: React.ReactNode) {
   return render(
     <AuthProvider>
-      <RouterProvider>
-        <TooltipProvider>{node}</TooltipProvider>
-      </RouterProvider>
+      <AuthReady>
+        <RouterProvider>
+          <TooltipProvider>{node}</TooltipProvider>
+        </RouterProvider>
+      </AuthReady>
     </AuthProvider>,
   );
 }
@@ -181,20 +198,57 @@ describe('Settings IA consolidation (Round-5 Sett-B: 5 groups, Security promoted
     }
   });
 
-  it('uses one renderer-owned section heading with explicit workspace context', async () => {
+  it('shows the page title with a help tip and one section heading, nothing else at rest', async () => {
     renderWithProviders(<Settings />);
     await waitFor(
       () => expect(screen.getByTestId('settings-section-general')).toBeInTheDocument(),
       { timeout: 5000 },
     );
 
-    expect(screen.getByText('Preferences saved')).toBeInTheDocument();
-    expect(screen.getByTestId('settings-active-context')).toHaveTextContent('General');
-    expect(screen.getByTestId('settings-active-context')).toHaveTextContent('Data scope');
+    // SPEC §4.9.6: the header is the title and a help tip; no description, no
+    // "Preferences saved" pill, no section count, no breadcrumb context line.
+    expect(screen.getByRole('heading', { name: 'Settings', level: 1 })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'About Settings' })).toBeInTheDocument();
+    expect(screen.queryByText('Preferences saved')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('settings-active-context')).not.toBeInTheDocument();
+    expect(screen.queryByText(/sections$/i)).not.toBeInTheDocument();
+    // The rail group labels are text, not headings: one h2, the active section's title.
     expect(screen.getAllByRole('heading', { level: 2 })).toHaveLength(1);
+    expect(screen.getByRole('heading', { name: 'Data scope', level: 2 })).toBeInTheDocument();
+    const labels = [...document.querySelectorAll('[data-settings-group-label]')].map((el) => el.textContent);
+    expect(labels).toContain('General');
+    for (const label of labels) expect(label).not.toMatch(/\d/);
+    // Without a wizard handler there is no Re-run action at all.
+    expect(screen.queryByTestId('settings-rerun-wizard')).not.toBeInTheDocument();
   });
 
-  it('keeps the embedded SSO editor under one section heading and flat subsections', async () => {
+  it('puts Re-run setup wizard at the foot of the Settings rail', async () => {
+    const onRerunWizard = vi.fn();
+    renderWithProviders(<Settings onRerunWizard={onRerunWizard} />);
+    const rerun = await screen.findByTestId('settings-rerun-wizard', undefined, { timeout: 5000 });
+    // In the rail's navigation, after the last group, never in the page header.
+    const nav = rerun.closest('nav') as HTMLElement;
+    expect(nav).not.toBeNull();
+    const groups = nav.querySelectorAll('[data-settings-group-label]');
+    expect(
+      groups[groups.length - 1].compareDocumentPosition(rerun) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    await userEvent.click(rerun);
+    expect(onRerunWizard).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows the save footer only on sections that own preferences or secrets', async () => {
+    window.location.hash = '#/settings?s=general';
+    renderWithProviders(<Settings />);
+    await screen.findByLabelText('Log index pattern');
+    expect(screen.getByTestId('settings-save-note')).toBeInTheDocument();
+    await userEvent.click(screen.getByTestId('settings-section-admin_users'));
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Users', level: 2 })).toBeInTheDocument());
+    expect(screen.queryByTestId('settings-save-note')).not.toBeInTheDocument();
+    window.location.hash = '';
+  });
+
+  it('keeps the embedded SSO editor under one section heading with grouped panels', async () => {
     const user = userEvent.setup();
     renderWithProviders(<Settings />);
     await waitFor(
@@ -205,14 +259,16 @@ describe('Settings IA consolidation (Round-5 Sett-B: 5 groups, Security promoted
     await user.click(screen.getByTestId('settings-section-security'));
 
     expect(
-      await screen.findByRole('heading', { name: 'Security & single sign-on', level: 2 }),
+      await screen.findByRole('heading', { name: 'Single sign-on & policy', level: 2 }),
     ).toBeInTheDocument();
     expect(screen.getAllByRole('heading', { level: 2 })).toHaveLength(1);
-    expect(screen.getByRole('heading', { name: 'Token & session policy', level: 3 })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Session lifetime', level: 3 })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Single sign-on (OIDC)', level: 3 })).toBeInTheDocument();
 
-    const ssoToggle = screen.getByLabelText('Enable single sign-on');
-    expect(ssoToggle.closest('.bg-transparent')).toHaveClass('border-t');
+    // The switch is a row on its group's panel.
+    const ssoToggle = screen.getByRole('switch', { name: 'Enable single sign-on' });
+    expect(ssoToggle.closest('[data-setting-row="switch"]')).not.toBeNull();
+    expect(ssoToggle.closest('[data-settings-panel]')).not.toBeNull();
   });
 
   it('contains nested section-rail momentum instead of chaining it into the page', async () => {
@@ -274,8 +330,11 @@ describe('Settings IA consolidation (Round-5 Sett-B: 5 groups, Security promoted
     await userEvent.clear(indexPattern);
     await userEvent.type(indexPattern, 'security-events-*');
 
-    expect(screen.getByText('1 pending change')).toBeInTheDocument();
-    expect(screen.getByTestId('settings-active-context')).toHaveTextContent('Modified in this section');
+    // The rail dot marks the section; the save bar carries the count (nothing else).
+    expect(
+      screen.getByTestId('settings-section-general').querySelector('[data-settings-dirty-dot]'),
+    ).not.toBeNull();
+    expect(screen.queryByText('1 pending change')).not.toBeInTheDocument();
     expect(screen.getByRole('region', { name: 'Unsaved changes' })).toBeInTheDocument();
 
     const unload = new Event('beforeunload', { cancelable: true });
@@ -286,6 +345,34 @@ describe('Settings IA consolidation (Round-5 Sett-B: 5 groups, Security promoted
     window.location.hash = '';
   });
 
+  it('counts the values changed, not the sections (two Chat assistant fields are two changes)', async () => {
+    const { CHAT_AGENT_DEFAULTS } = await import('../pages/settings/chat-agent');
+    const loaded = await vi.mocked(api.getSettings)();
+    vi.mocked(api.getSettings).mockResolvedValueOnce({
+      ...loaded,
+      prefs: { ...loaded.prefs, chat_agent: { ...CHAT_AGENT_DEFAULTS } },
+    } as never);
+    window.location.hash = '#/settings?s=chat_agent';
+    renderWithProviders(<Settings />);
+    const lookupTimeout = await screen.findByRole('spinbutton', { name: /Lookup timeout/ }, { timeout: 5000 });
+    await userEvent.clear(lookupTimeout);
+    await userEvent.type(lookupTimeout, '60');
+    await userEvent.tab();
+    const bar = screen.getByRole('region', { name: 'Unsaved changes' });
+    expect(bar).toHaveTextContent('1 unsaved change.');
+
+    const modelTimeout = screen.getByRole('spinbutton', { name: /Model call timeout/ });
+    await userEvent.clear(modelTimeout);
+    await userEvent.type(modelTimeout, '1200');
+    await userEvent.tab();
+    // One section and one top-level key, two values: the bar says two, as the audit row will.
+    expect(bar).toHaveTextContent('2 unsaved changes.');
+    expect(
+      screen.getByTestId('settings-section-chat_agent').querySelector('[data-settings-dirty-dot]'),
+    ).not.toBeNull();
+    window.location.hash = '';
+  }, 15_000);
+
   it('uses the sole sticky action bar to save a write-only secret draft', async () => {
     window.location.hash = '#/settings?s=keys';
     renderWithProviders(<Settings />);
@@ -293,8 +380,9 @@ describe('Settings IA consolidation (Round-5 Sett-B: 5 groups, Security promoted
 
     await userEvent.type(openAiKey, 'replacement-key');
 
-    expect(screen.getByText('1 pending change')).toBeInTheDocument();
-    expect(screen.getByTestId('settings-active-context')).toHaveTextContent('Modified in this section');
+    expect(
+      screen.getByTestId('settings-section-keys').querySelector('[data-settings-dirty-dot]'),
+    ).not.toBeNull();
     expect(screen.queryByRole('button', { name: 'Update keys' })).not.toBeInTheDocument();
     expect(screen.getByRole('region', { name: 'Unsaved changes' })).toHaveTextContent(
       '1 unsaved secret value',
@@ -375,7 +463,9 @@ describe('Settings IA consolidation (Round-5 Sett-B: 5 groups, Security promoted
     expect(screen.getByRole('region', { name: 'Unsaved changes' })).toHaveTextContent(
       '1 unsaved secret value',
     );
-    expect(screen.getByText('1 pending change')).toBeInTheDocument();
+    expect(
+      screen.getByTestId('settings-section-keys').querySelector('[data-settings-dirty-dot]'),
+    ).not.toBeNull();
   });
 
   it('discards preference and write-only secret drafts together', async () => {
@@ -437,6 +527,114 @@ describe('Settings IA consolidation (Round-5 Sett-B: 5 groups, Security promoted
     window.location.hash = '';
   });
 
+  describe('the rail keeps the current section in view (composites-01)', () => {
+    const RAIL = 'settings-desktop-section-scroll';
+    const COMPACT = 'settings-compact-section-scroll';
+    let scrollTops: WeakMap<Element, number>;
+    let restore: () => void;
+    beforeEach(() => {
+      // jsdom has no layout: give the rail scroller and its current item the geometry the
+      // live page has at 1440 by 900 (the sticky rail runs below the fold at rest), and a
+      // scrollTop the item's position follows.
+      scrollTops = new WeakMap();
+      const store = scrollTops;
+      Object.defineProperty(HTMLElement.prototype, 'scrollTop', {
+        configurable: true,
+        get(this: HTMLElement) {
+          return store.get(this) ?? 0;
+        },
+        set(this: HTMLElement, value: number) {
+          store.set(this, value);
+        },
+      });
+      const box = (top: number, bottom: number) =>
+        ({ top, bottom, left: 0, right: 240, width: 240, height: bottom - top, x: 0, y: top, toJSON: () => ({}) }) as DOMRect;
+      const spy = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+        if (this.dataset.testid === RAIL) return box(213, 973);
+        // The phone section sheet's list scrolls inside the sheet, from 140 to 760.
+        if (this.dataset.testid === COMPACT) return box(140, 760);
+        const rail = this.closest(`[data-testid="${RAIL}"], [data-testid="${COMPACT}"]`);
+        if (rail && this.getAttribute('aria-current') === 'page') {
+          const offset = store.get(rail) ?? 0;
+          // Users sits low in the rail; Data scope near its top.
+          const low = /^settings-(mobile-)?section-admin_users$/.test(this.dataset.testid ?? '');
+          const top = low ? 1039 : 300;
+          return box(top - offset, top + 36 - offset);
+        }
+        return box(0, 0);
+      });
+      const innerHeight = Object.getOwnPropertyDescriptor(window, 'innerHeight');
+      Object.defineProperty(window, 'innerHeight', { configurable: true, value: 900 });
+      restore = () => {
+        spy.mockRestore();
+        delete (HTMLElement.prototype as unknown as { scrollTop?: number }).scrollTop;
+        if (innerHeight) Object.defineProperty(window, 'innerHeight', innerHeight);
+      };
+    });
+    afterEach(() => {
+      restore();
+      window.location.hash = '';
+    });
+
+    it('scrolls only the rail so a deep-linked section low in it is visible', async () => {
+      window.location.hash = '#/settings?s=admin_users';
+      renderWithProviders(<Settings />);
+      const rail = await screen.findByTestId(RAIL, undefined, { timeout: 5000 });
+      await waitFor(() => expect(screen.getByTestId('settings-section-admin_users')).toHaveAttribute('aria-current', 'page'));
+      // The item ends at 1075 and the visible part of the rail at the window's 900, so the
+      // rail moves by the overlap plus an 8 px margin.
+      await waitFor(() => expect(rail.scrollTop).toBe(1075 - 900 + 8));
+    });
+
+    it('leaves the rail where it is when the current section is already in view', async () => {
+      window.location.hash = '#/settings?s=general';
+      renderWithProviders(<Settings />);
+      const rail = await screen.findByTestId(RAIL, undefined, { timeout: 5000 });
+      await screen.findByLabelText('Log index pattern', undefined, { timeout: 5000 });
+      await new Promise((resolve) => window.requestAnimationFrame(() => resolve(null)));
+      expect(rail.scrollTop).toBe(0);
+    });
+
+    it('scrolls the rail when a hash change opens a section low in it', async () => {
+      window.location.hash = '#/settings?s=general';
+      renderWithProviders(<Settings />);
+      const rail = await screen.findByTestId(RAIL, undefined, { timeout: 5000 });
+      await screen.findByLabelText('Log index pattern', undefined, { timeout: 5000 });
+      expect(rail.scrollTop).toBe(0);
+      act(() => {
+        window.location.hash = '#/settings?s=admin_users';
+        window.dispatchEvent(new HashChangeEvent('hashchange'));
+      });
+      await waitFor(() => expect(screen.getByTestId('settings-section-admin_users')).toHaveAttribute('aria-current', 'page'));
+      await waitFor(() => expect(rail.scrollTop).toBe(1075 - 900 + 8));
+    });
+
+    it('scrolls the rail to a section chosen from a search once the search is cleared', async () => {
+      window.location.hash = '#/settings?s=general';
+      renderWithProviders(<Settings />);
+      const rail = await screen.findByTestId(RAIL, undefined, { timeout: 5000 });
+      await screen.findByLabelText('Log index pattern', undefined, { timeout: 5000 });
+      const search = screen.getAllByRole('textbox', { name: 'Search settings sections' })[0];
+      await userEvent.type(search, 'users');
+      await userEvent.click(await within(rail).findByTestId('settings-section-admin_users'));
+      await userEvent.clear(search);
+      await waitFor(() => expect(screen.getByTestId('settings-section-admin_users')).toHaveAttribute('aria-current', 'page'));
+      // The full list is back, and the chosen item, low in it, is scrolled into view.
+      await waitFor(() => expect(rail.scrollTop).toBe(1075 - 900 + 8));
+    });
+
+    it('scrolls the phone section sheet so the current section is in view when it opens', async () => {
+      window.location.hash = '#/settings?s=admin_users';
+      renderWithProviders(<Settings />);
+      await screen.findByTestId(RAIL, undefined, { timeout: 5000 });
+      await userEvent.click(screen.getByTestId('settings-mobile-nav-trigger'));
+      const sheet = await screen.findByTestId(COMPACT);
+      expect(within(sheet).getByTestId('settings-mobile-section-admin_users')).toHaveAttribute('aria-current', 'page');
+      // The item ends at 1075 and the sheet's list at 760: it moves by the overlap and 8 px.
+      await waitFor(() => expect(sheet.scrollTop).toBe(1075 - 760 + 8));
+    });
+  });
+
   it('deep-links to the NEW Roles section via #/settings?s=roles', async () => {
     window.location.hash = '#/settings?s=roles';
     renderWithProviders(<Settings />);
@@ -482,6 +680,233 @@ describe('Settings IA consolidation (Round-5 Sett-B: 5 groups, Security promoted
       { timeout: 5000 },
     );
     window.location.hash = '';
+  });
+});
+
+/**
+ * Sign in as a role with exactly these grants (RBAC on), instead of the auth-off default
+ * where every grant is held. Restored after each test.
+ */
+function signInWith(grants: Record<string, string[]>) {
+  vi.mocked(api.auth.me).mockResolvedValue({
+    auth_enabled: true,
+    authenticated: true,
+    user: { username: 'viewer', role: 'analyst_tier1' },
+  } as never);
+  vi.mocked(api.account.permissions).mockResolvedValue({
+    authenticated: true,
+    role: 'analyst_tier1',
+    custom_roles: [],
+    rbac_enabled: true,
+    permissions: grants,
+  } as never);
+}
+
+describe('Settings Round 14 review fixes', () => {
+  const defaultMe = { auth_enabled: false, authenticated: true, user: null };
+  const defaultAccess = { authenticated: false, role: 'super_admin', custom_roles: [], rbac_enabled: false, permissions: {} };
+  afterEach(() => {
+    vi.mocked(api.auth.me).mockResolvedValue(defaultMe as never);
+    vi.mocked(api.account.permissions).mockResolvedValue(defaultAccess as never);
+    window.location.hash = '';
+  });
+
+  it('opens a hyphenated section id from the hash (#/settings?s=discounted-inference)', async () => {
+    window.location.hash = '#/settings?s=discounted-inference';
+    renderWithProviders(<Settings />);
+    expect(
+      await screen.findByRole('heading', { name: 'Discounted inference', level: 2 }, { timeout: 5000 }),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId('settings-section-discounted-inference')).toHaveAttribute('aria-current', 'page');
+  });
+
+  it('hides Discounted inference without models:read and refuses its deep link in place', async () => {
+    signInWith({ settings: ['read'] });
+    window.location.hash = '#/settings?s=discounted-inference';
+    renderWithProviders(<Settings />);
+    // The deep link keeps its section and says why it cannot open (roles-06), instead of a
+    // silent switch to the first section the viewer can see.
+    const notice = await screen.findByTestId('settings-section-restricted', undefined, { timeout: 5000 });
+    // The Console's one permission state, under the section's own title.
+    expect(notice).toHaveTextContent('Access restricted');
+    expect(notice).toHaveTextContent('You do not have access to Discounted inference.');
+    expect(notice).toHaveAccessibleName('Discounted inference');
+    expect(
+      within(notice).getByRole('heading', { level: 2, name: 'Discounted inference' }),
+    ).toBeInTheDocument();
+    expect(window.location.hash).toBe('#/settings?s=discounted-inference');
+    expect(screen.queryByTestId('settings-section-discounted-inference')).not.toBeInTheDocument();
+    expect(screen.queryByRole('switch', { name: 'Batch routing' })).not.toBeInTheDocument();
+    // Neither the view-only warning nor the save note belongs to a section that is refused.
+    expect(screen.queryByTestId('settings-view-only')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('settings-save-note')).not.toBeInTheDocument();
+    // Runbooks needs settings management, which this viewer lacks.
+    expect(screen.queryByTestId('settings-section-runbooks')).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ['#/settings?s=admin_users', 'Users'],
+    ['#/settings?s=data_export', 'Data export'],
+    ['#/settings?s=notifications', 'Alerting & notifications'],
+  ])('refuses the deep link %s with the Restricted notice and sends none of its reads', async (hash, title) => {
+    vi.mocked(api.users.list).mockClear();
+    signInWith({ settings: ['read'], cases: ['read'] });
+    window.location.hash = hash;
+    renderWithProviders(<Settings />);
+    const notice = await screen.findByTestId('settings-section-restricted', undefined, { timeout: 5000 });
+    expect(notice).toHaveTextContent(`You do not have access to ${title}.`);
+    expect(within(notice).getByRole('heading', { level: 2, name: title })).toBeInTheDocument();
+    expect(window.location.hash).toBe(hash);
+    // No rail item is current: the refused section is not one the rail offers.
+    expect(screen.getByRole('navigation', { name: 'Settings categories' }).querySelector('[aria-current="page"]')).toBeNull();
+    // The Users body (GET /api/users needs users:manage) never mounts, so it never asks.
+    expect(api.users.list).not.toHaveBeenCalled();
+  }, 15_000);
+
+  it('says the grants could not be loaded, with a Retry, instead of refusing a deep link', async () => {
+    vi.mocked(api.auth.me).mockResolvedValue({
+      auth_enabled: true,
+      authenticated: true,
+      user: { username: 'viewer', role: 'analyst_tier1' },
+    } as never);
+    vi.mocked(api.account.permissions).mockRejectedValue(new Error('grants offline'));
+    window.location.hash = '#/settings?s=admin_users';
+    renderWithProviders(<Settings />);
+    const notice = await screen.findByTestId('settings-section-unavailable', undefined, { timeout: 5000 });
+    expect(within(notice).getByRole('heading', { level: 2, name: 'Users' })).toBeInTheDocument();
+    expect(notice).toHaveTextContent('Your permissions could not be loaded.');
+    expect(screen.queryByText(/You do not have access/)).not.toBeInTheDocument();
+    expect(screen.queryByTestId('settings-section-restricted')).not.toBeInTheDocument();
+    // Retry loads the grants again; with them the section opens.
+    signInWith({ settings: ['read'], users: ['manage'] });
+    await userEvent.click(within(notice).getByRole('button', { name: 'Retry' }));
+    await waitFor(() => expect(screen.queryByTestId('settings-section-unavailable')).not.toBeInTheDocument());
+    expect(screen.getByTestId('settings-section-admin_users')).toHaveAttribute('aria-current', 'page');
+  }, 15_000);
+
+  it('does not call a section view-only while the grants could not be loaded', async () => {
+    vi.mocked(api.auth.me).mockResolvedValue({
+      auth_enabled: true,
+      authenticated: true,
+      user: { username: 'viewer', role: 'analyst_tier1' },
+    } as never);
+    vi.mocked(api.account.permissions).mockRejectedValue(new Error('grants offline'));
+    window.location.hash = '#/settings?s=general';
+    renderWithProviders(<Settings />);
+    const indexPattern = await screen.findByLabelText('Log index pattern', undefined, { timeout: 5000 });
+    const active = screen.getByTestId('settings-active-section');
+    // The save check denies only because the grants read failed, which says nothing about
+    // the role: the load failure and its Retry stand where the view-only warning would.
+    expect(screen.queryByTestId('settings-view-only')).not.toBeInTheDocument();
+    expect(screen.queryByText(/needs the settings management permission/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/You can view these settings but not change them/)).not.toBeInTheDocument();
+    const notice = within(active).getByTestId('grants-unknown');
+    expect(notice).toHaveTextContent('Your permissions could not be loaded.');
+    expect(notice).toHaveTextContent('Try again to check whether you can change these settings.');
+    // An edit shows the bar with Save off and the same load failure, not a refusal.
+    await userEvent.clear(indexPattern);
+    await userEvent.type(indexPattern, 'x-*');
+    const bar = screen.getByRole('region', { name: 'Unsaved changes' });
+    expect(bar).toHaveTextContent('Your permissions could not be loaded.');
+    expect(bar).not.toHaveTextContent('You can view these settings but not change them.');
+    expect(within(bar).getByRole('button', { name: 'Save changes' })).toBeDisabled();
+    // Retry loads the grants again; with settings management the section can be saved.
+    signInWith({ settings: ['read', 'manage'] });
+    await userEvent.click(within(notice).getByRole('button', { name: 'Retry' }));
+    await waitFor(() => expect(screen.queryByTestId('grants-unknown')).not.toBeInTheDocument());
+    expect(screen.queryByTestId('settings-view-only')).not.toBeInTheDocument();
+    expect(
+      within(screen.getByRole('region', { name: 'Unsaved changes' })).getByRole('button', { name: 'Save changes' }),
+    ).toBeEnabled();
+    expect(api.putSettings).not.toHaveBeenCalled();
+  }, 15_000);
+
+  it('moves from a refused deep link to the first match once the viewer searches', async () => {
+    signInWith({ settings: ['read'] });
+    window.location.hash = '#/settings?s=admin_users';
+    renderWithProviders(<Settings />);
+    await screen.findByTestId('settings-section-restricted', undefined, { timeout: 5000 });
+    await userEvent.type(screen.getAllByRole('textbox', { name: 'Search settings sections' })[0], 'profile');
+    await waitFor(() => expect(screen.getByTestId('settings-section-profile')).toHaveAttribute('aria-current', 'page'));
+    expect(screen.queryByTestId('settings-section-restricted')).not.toBeInTheDocument();
+    expect(window.location.hash).toBe('#/settings?s=profile');
+  });
+
+  it('shows a read-only viewer the warning, keeps Save off, and disables Discounted inference', async () => {
+    signInWith({ settings: ['read'], models: ['read'] });
+    window.location.hash = '#/settings?s=discounted-inference';
+    renderWithProviders(<Settings />);
+    await screen.findByRole('heading', { name: 'Discounted inference', level: 2 }, { timeout: 5000 });
+    const warning = screen.getByTestId('settings-view-only');
+    expect(warning).toHaveTextContent('You can view these settings but not change them');
+    expect(warning).toHaveAttribute('data-callout', 'warning');
+    expect(screen.getByRole('switch', { name: 'Batch routing' })).toBeDisabled();
+
+    // A section that saves through the page: an edit shows the bar with Save off.
+    await userEvent.click(screen.getByTestId('settings-section-general'));
+    const indexPattern = await screen.findByLabelText('Log index pattern');
+    expect(screen.getByTestId('settings-view-only')).toBeInTheDocument();
+    await userEvent.clear(indexPattern);
+    await userEvent.type(indexPattern, 'x-*');
+    const bar = screen.getByRole('region', { name: 'Unsaved changes' });
+    expect(bar).toHaveTextContent('You can view these settings but not change them.');
+    expect(within(bar).getByRole('button', { name: 'Save changes' })).toBeDisabled();
+    expect(api.putSettings).not.toHaveBeenCalled();
+  });
+
+  it('does not show the read-only warning on a section that saves through its own controls', async () => {
+    signInWith({ settings: ['read'], models: ['read'] });
+    window.location.hash = '#/settings?s=profile';
+    renderWithProviders(<Settings />);
+    await screen.findByRole('heading', { name: 'Profile', level: 2 }, { timeout: 5000 });
+    expect(screen.queryByTestId('settings-view-only')).not.toBeInTheDocument();
+  });
+
+  // Each case mounts the whole Settings page and opens a section (the heaviest sweep in
+  // this file). Under a loaded test:strict run a mount can take seconds, so every wait has
+  // an explicit timeout and each case gets 15 s, three times the slowest wait it holds.
+  it.each(['detection', 'enrichment', 'admin_users', 'sessions', 'admin_sessions', 'discounted-inference'])(
+    'shows %s the registry help, never a second copy from the section body',
+    async (id) => {
+      window.location.hash = `#/settings?s=${id}`;
+      const meta = SECTION_META_BY_ID[id];
+      renderWithProviders(<Settings />);
+      const tip = await screen.findByRole('button', { name: `About ${meta.title}` }, { timeout: 5000 });
+      await userEvent.click(tip);
+      expect(await screen.findByText(meta.help as string, undefined, { timeout: 5000 })).toBeInTheDocument();
+    },
+    15_000,
+  );
+
+  it('names the unsaved state in the compact section button, and draws the dot in forced colours', async () => {
+    window.location.hash = '#/settings?s=general';
+    renderWithProviders(<Settings />);
+    const indexPattern = await screen.findByLabelText('Log index pattern');
+    const trigger = screen.getByTestId('settings-mobile-nav-trigger');
+    expect(trigger).toHaveAccessibleName('Settings section: Data scope. Choose a section');
+    await userEvent.type(indexPattern, 'x');
+    expect(trigger).toHaveAccessibleName('Settings section: Data scope, unsaved changes. Choose a section');
+    const dot = screen.getByTestId('settings-section-general').querySelector('[data-settings-dirty-dot]') as HTMLElement;
+    expect(dot.className).toContain('forced-colors:bg-[CanvasText]');
+    expect(dot.className).toContain('forced-colors:[forced-color-adjust:none]');
+  });
+
+  it('labels the rail groups as groups inside the one navigation landmark', async () => {
+    renderWithProviders(<Settings />);
+    await screen.findByTestId('settings-section-general', undefined, { timeout: 5000 });
+    expect(screen.getByRole('group', { name: 'General' })).toBeInTheDocument();
+    const nav = screen.getByRole('navigation', { name: 'Settings categories' });
+    expect(nav.querySelectorAll('section')).toHaveLength(0);
+  });
+
+  it('states the kill switch from the saved settings, never from the draft', async () => {
+    window.location.hash = '#/settings?s=advanced';
+    renderWithProviders(<Settings />);
+    const toggle = await screen.findByRole('switch', { name: 'Kill switch' }, { timeout: 5000 });
+    await userEvent.click(toggle);
+    expect(toggle).toBeChecked();
+    // Turned on in the draft only: nothing is stopped yet, so no warning.
+    expect(screen.queryByText('The kill switch is on')).not.toBeInTheDocument();
   });
 });
 

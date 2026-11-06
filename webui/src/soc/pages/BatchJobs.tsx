@@ -1,60 +1,52 @@
 /**
- * Jobs — durable personal work plus permission-scoped operational projections.
+ * Jobs: durable personal work plus permission-scoped operational projections.
  *
- * A READ-ONLY table of the durable async LLM batch-job registry: which low-urgency
- * investigations were routed through a provider's discounted async batch API (~50%
- * off) and how far each has progressed (submit -> poll -> retrieve -> retrieved).
+ * The person's own application jobs (exports, bulk case work, imports, resets), the
+ * read-only scheduler health, and the read-only table of the durable async LLM batch-job
+ * registry: which low-urgency investigations were routed through a provider's discounted
+ * async batch API (about 50% off) and how far each has progressed (submit, poll,
+ * retrieve, retrieved). Round 14 (D30): the discounted-inference settings moved to
+ * Settings, General, Discounted inference; this page keeps one line that links there for
+ * one release.
  *
- * Every authenticated actor can see their own application jobs. Related LLM Batch
- * rows/config require models:read; scheduler health is projected only when the server
- * authorizes automation:read. System projections never become personal Inbox items.
+ * Every authenticated actor can see their own application jobs. Related LLM Batch rows
+ * require models:read; scheduler health is projected only when the server authorizes
+ * automation:read. System projections never become personal Inbox items.
+ *
+ * When the viewer's grants could not be loaded, every check answers no, which says nothing
+ * about the role. The page then leaves every Download on and claims no lost permission
+ * (the server checks each download, and its refusal is worded per kind), and where the
+ * Related LLM Batch jobs would be it says the permissions could not be loaded, with a Retry.
  *
  * #9: every value (job id / provider / model / state) is attacker-influenceable and is
- * rendered as PLAIN text / in a fenced CodeBlock — never HTML, never re-fed into a
- * prompt. The unified projection excludes provider handles and raw provider errors;
- * no credential or provider-private diagnostic is shown. #6: this viewer never records
- * a ledger row — the batch service writes exactly one UsageDoc per result at the
- * discounted rate. #3: a batch job is advisory plumbing and never touches `decide()`.
+ * rendered as PLAIN text, never HTML, never re-fed into a prompt. The unified projection
+ * excludes provider handles and raw provider errors; no credential or provider-private
+ * diagnostic is shown. #6: this viewer never records a ledger row. #3: a batch job is
+ * advisory plumbing and never touches `decide()`.
  */
 import * as React from 'react';
-import { Activity, Download, Info, Layers, Percent, Square } from 'lucide-react';
+import { ArrowRight, Download, Layers, Percent, Square } from 'lucide-react';
 import { toast } from 'sonner';
-import { api } from '@/lib/api';
-import { LoadingState } from '@/design-system';
+import { api, ApiError } from '@/lib/api';
+import { ListRow, ListRows, LoadingState, Panel, StatusDot } from '@/design-system';
+import { cn } from '@/lib/cn';
 import { errorMessage } from '@/lib/errorMessage';
-import type {
-  BackgroundJob,
-  BackgroundJobStatus,
-  BatchConfig,
-  SystemWorkerHealth,
-} from '@/lib/types';
+import type { BackgroundJob, BackgroundJobStatus, SystemWorkerHealth } from '@/lib/types';
 import { useEventStream } from '@/lib/useEventStream';
 import { fmtNumber, humanizeAge, humanizeToken, DASH } from '@/lib/format';
 import { Badge } from '@/ui/badge';
 import { Button } from '@/ui/button';
 import { Progress } from '@/ui/progress';
-import { Switch } from '@/ui/switch';
-import { Label } from '@/ui/label';
-import { Alert, AlertDescription, AlertTitle } from '@/ui/alert';
-import { Separator } from '@/ui/separator';
 import { PageHeader } from '@/soc/components/PageHeader';
 import { PageContainer } from '@/soc/components/PageContainer';
 import { RefreshButton } from '@/soc/components/RefreshButton';
-import { KpiTile } from '@/soc/components/KpiTile';
+import { KpiStripContext, KpiTile, KpiTileGrid, type KpiStripContextValue } from '@/soc/components/KpiTile';
 import { EmptyState } from '@/soc/components/EmptyState';
 import { LoadError } from '@/soc/components/LoadError';
 import { InlineCode } from '@/soc/components/CodeBlock';
 import { DataTable, type DataTableColumn } from '@/soc/components/DataTable';
-import { Can, useCan } from '@/soc/components/Can';
-import { LabeledSlider } from '@/soc/components/LabeledSlider';
-import { TagInput } from '@/soc/components/TagInput';
-import { EffectiveConfigPreview } from '@/soc/components/rules/EffectiveConfigPreview';
-import { useConfigEditor } from '@/soc/components/rules';
-import {
-  SettingsGrid,
-  SettingsCard,
-  StickySaveBar,
-} from '@/soc/components/SettingsGrid';
+import { pageHash, settingsSectionHash } from '@/soc/router';
+import { GrantsUnknownNotice, usePageGrants } from './PageAccess';
 import {
   batchApi,
   BATCH_STATE_META,
@@ -62,39 +54,13 @@ import {
   type BatchJobRow,
 } from '@/soc/Batch.api';
 import {
+  destinationActionLabel,
   downloadJobArtifact,
   isActiveJobStatus,
   JOBS_CHANGED_EVENT,
   jobSummary,
 } from '@/soc/jobs/jobs';
-
-/** Backend defaults (mirror `config.BatchConfig`). */
-const DEFAULT_BATCH_CONFIG: Required<BatchConfig> = {
-  enabled: false,
-  severity_floor: 3,
-  providers: ['anthropic', 'openai'],
-  flex: false,
-  prefer_discounted_alerts: true,
-  fallback_to_standard: true,
-};
-
-/** OCSF severity_id 1–6 tick labels for the severity-floor slider. */
-const SEVERITY_TICKS = [
-  { value: 1, label: 'Info' },
-  { value: 2, label: 'Low' },
-  { value: 3, label: 'Med' },
-  { value: 4, label: 'High' },
-  { value: 5, label: 'Crit' },
-  { value: 6, label: 'Fatal' },
-];
-const SEVERITY_NAME: Record<number, string> = {
-  1: 'Informational',
-  2: 'Low',
-  3: 'Medium',
-  4: 'High',
-  5: 'Critical',
-  6: 'Fatal',
-};
+import { auditExportView } from '@/soc/jobs/audit-export-view';
 
 const JOB_POLL_MS = 15_000;
 const JOB_POLL_MS_LIVE = 60_000;
@@ -133,13 +99,82 @@ function DiscountPill({ discount }: { discount: number }) {
   );
 }
 
+/** The Batch panel's tiles: strip tiles at the compact density, on the panel's grid. */
+const COMPACT_TILES: KpiStripContextValue = { density: 'compact' };
+
+/**
+ * The grants a job's file needs when it is downloaded: the server checks the job's own
+ * grants again at download time (`routes_jobs.py` `_grants`, Round 14 roles-09), so a
+ * person whose role lost one of them can no longer fetch the file. A kind not listed
+ * here is left to the server, which refuses it the same way.
+ */
+const ARTIFACT_GRANTS: Readonly<Record<string, ReadonlyArray<readonly [string, string]>>> = {
+  audit_export: [
+    ['audit', 'view'],
+    ['audit', 'export'],
+  ],
+  data_export_archive: [['data_export', 'export']],
+  data_export_segment: [['data_export', 'export']],
+};
+
+/** Why a job's file can no longer be downloaded, in the server's own words per kind. */
+export function artifactPermissionText(kind: string): string {
+  if (kind === 'audit_export') return 'You no longer have permission to download audit exports.';
+  if (kind === 'data_export_archive' || kind === 'data_export_segment') {
+    return 'You no longer have permission to download data exports.';
+  }
+  return 'You no longer have permission to download this file.';
+}
+
+/**
+ * The reason a job's Download is off for this viewer, or null while every grant its file
+ * needs is held. `has` is the viewer's permission check.
+ */
+export function artifactDownloadBlockedReason(
+  kind: string,
+  has: (resource: string, action: string) => boolean,
+): string | null {
+  const grants = ARTIFACT_GRANTS[kind];
+  if (!grants || grants.every(([resource, action]) => has(resource, action))) return null;
+  return artifactPermissionText(kind);
+}
+
+/**
+ * The toast for a download that did not happen. A refusal (403, the grant removed after
+ * the page loaded) is worded per kind, never the server's code or raw text; any other
+ * failure (a 503 "Try again", a lost file) keeps the server's sentence.
+ */
+export function artifactDownloadErrorText(kind: string, error: unknown): string {
+  if (error instanceof ApiError && error.status === 403) return artifactPermissionText(kind);
+  return errorMessage(error, 'Could not download the job artifact.');
+}
+
+/** A worker's schedule in words (the scheduler and config tokens, SPEC §4.9.5). */
+const CADENCE_WORDS: Readonly<Record<string, string>> = {
+  on_ingest: 'On every ingest',
+  continuous: 'Continuous',
+  hourly: 'Hourly',
+  nightly: 'Nightly',
+  daily: 'Daily',
+  weekly: 'Weekly',
+  manual: 'Manual only',
+};
+
+/** "On every ingest" for `on_ingest`; an unknown token in words; a missing one says so. */
+export function cadenceWords(cadence: string | null | undefined): string {
+  const raw = String(cadence ?? '').trim();
+  if (!raw) return 'Cadence unavailable';
+  return CADENCE_WORDS[raw.toLowerCase()] ?? humanizeToken(raw);
+}
+
 export default function BatchJobs() {
   return <BatchJobsInner />;
 }
 
 export function BatchJobsInner() {
-  const canReadModels = useCan('models', 'read');
-  const canManage = useCan('models', 'manage');
+  // The viewer's grants, and whether they could be loaded at all (see the header).
+  const grants = usePageGrants();
+  const canReadModels = grants.can('models', 'read');
   const [applicationJobs, setApplicationJobs] = React.useState<BackgroundJob[]>([]);
   const [rows, setRows] = React.useState<BatchJobRow[]>([]);
   const [workers, setWorkers] = React.useState<{
@@ -148,20 +183,6 @@ export function BatchJobsInner() {
   } | null>(null);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<unknown>(null);
-
-  const cfg = useConfigEditor<BatchConfig>(api.batch, DEFAULT_BATCH_CONFIG, {
-    enabled: canReadModels,
-  });
-  const draft = { ...DEFAULT_BATCH_CONFIG, ...cfg.draft };
-
-  const saveConfig = React.useCallback(async () => {
-    try {
-      await cfg.save();
-      toast.success('Batch policy saved.');
-    } catch (e) {
-      toast.error(errorMessage(e, 'Could not save the batch policy.'));
-    }
-  }, [cfg]);
 
   const load = React.useCallback(async () => {
     setLoading(true);
@@ -244,7 +265,7 @@ export function BatchJobsInner() {
       const filename = await downloadJobArtifact(job);
       toast.success(`Downloaded ${filename}.`);
     } catch (e) {
-      toast.error(errorMessage(e, 'Could not download the job artifact.'));
+      toast.error(artifactDownloadErrorText(job.kind, e));
     }
   }, []);
 
@@ -312,36 +333,72 @@ export function BatchJobsInner() {
         id: 'actions',
         header: 'Actions',
         align: 'right',
-        cell: (job) => (
-          <span className="inline-flex justify-end gap-1.5">
-            {job.result?.artifact_id ? (
-              <Button
-                variant="outline"
-                size="sm"
-                className="h-7"
-                onClick={() => void downloadArtifact(job)}
-              >
-                <Download className="size-3.5" aria-hidden />
-                Download
-              </Button>
-            ) : null}
-            {isActiveJobStatus(job.status) ? (
-              <Button
-                variant="outline"
-                size="sm"
-                className="h-7"
-                disabled={job.cancel_requested}
-                onClick={() => void cancelJob(job)}
-              >
-                <Square className="size-3.5" aria-hidden />
-                {job.cancel_requested ? 'Stopping…' : 'Cancel'}
-              </Button>
-            ) : null}
-          </span>
-        ),
+        cell: (job) => {
+          // SPEC §4.5.8: a finished audit export links into the audit log, in the view it
+          // holds. The row's own name tells this job's controls from the next row's.
+          const view = auditExportView(job);
+          const name = `${humanizeToken(job.kind)} ${job.job_id}`;
+          // Download stays in place but is off, with its reason under it, once the
+          // viewer's role no longer holds a grant the file needs (the server refuses it).
+          // While the grants are unknown nothing is known to be missing, so it stays on
+          // and the server decides.
+          const blocked =
+            job.result?.artifact_id && !grants.unknown
+              ? artifactDownloadBlockedReason(job.kind, grants.can)
+              : null;
+          const reasonId = `job-download-reason-${job.job_id}`;
+          return (
+            <span className="inline-flex flex-col items-end gap-1">
+              <span className="inline-flex justify-end gap-1.5">
+                {view ? (
+                  <Button asChild variant="outline" size="sm" className="h-7">
+                    <a href={pageHash(view.page, view.opts)} aria-label={`${destinationActionLabel(view)} for ${name}`}>
+                      {destinationActionLabel(view)}
+                      <ArrowRight className="size-3.5" aria-hidden />
+                    </a>
+                  </Button>
+                ) : null}
+                {job.result?.artifact_id ? (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className={cn('h-7', blocked && 'cursor-not-allowed opacity-50')}
+                    aria-label={`Download ${name}`}
+                    // Soft-disabled: it stays focusable so its reason is read with it.
+                    aria-disabled={blocked ? true : undefined}
+                    aria-describedby={blocked ? reasonId : undefined}
+                    onClick={() => {
+                      if (!blocked) void downloadArtifact(job);
+                    }}
+                  >
+                    <Download className="size-3.5" aria-hidden />
+                    Download
+                  </Button>
+                ) : null}
+                {isActiveJobStatus(job.status) ? (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-7"
+                    disabled={job.cancel_requested}
+                    onClick={() => void cancelJob(job)}
+                  >
+                    <Square className="size-3.5" aria-hidden />
+                    {job.cancel_requested ? 'Stopping…' : 'Cancel'}
+                  </Button>
+                ) : null}
+              </span>
+              {blocked ? (
+                <span id={reasonId} className="max-w-64 text-right text-xs text-muted-foreground">
+                  {blocked}
+                </span>
+              ) : null}
+            </span>
+          );
+        },
       },
     ],
-    [cancelJob, downloadArtifact],
+    [cancelJob, downloadArtifact, grants.can, grants.unknown],
   );
 
   const columns = React.useMemo<DataTableColumn<BatchJobRow>[]>(
@@ -411,22 +468,14 @@ export function BatchJobsInner() {
     [],
   );
 
+  const workerEntries = workers ? Object.entries(workers.workers) : [];
+
   return (
-    <PageContainer variant="wide" className="flex flex-col gap-6">
+    <PageContainer variant="wide">
       <PageHeader
-        icon={Layers}
-        eyebrow="Operations"
         title="Jobs"
-        description="Durable application work continues across navigation and reload. Personal progress, cancellation, failures, and verified artifacts stay available here and in Inbox."
-        actions={
-          <RefreshButton
-            // Refresh only re-loads the read-only jobs table; it must NOT reload the
-            // config (that would silently clobber unsaved policy edits — the editor
-            // has its own load-on-mount + LoadError retry).
-            onClick={() => void load()}
-            refreshing={loading}
-          />
-        }
+        help="Durable application work continues across navigation and reload. Progress, cancellation, failures and verified artifacts stay here and in Inbox."
+        controls={<RefreshButton display="icon" label="Refresh jobs" onClick={() => void load()} refreshing={loading} />}
       />
 
       {initialLoading ? (
@@ -449,298 +498,138 @@ export function BatchJobsInner() {
           ) : null}
 
           {error && applicationJobs.length === 0 ? null : (
-            <DataTable
-              ariaLabel="Application jobs"
-              columns={applicationColumns}
-              rows={applicationJobs}
-              getRowId={(job) => job.job_id}
-              loading={loading}
-              loadingRows={6}
-              empty={
-                <EmptyState
-                  compact
-                  icon={Layers}
-                  title="No application jobs yet"
-                  description="Exports, bulk case work, imports, resets, and other long-running operations will appear here."
-                />
-              }
-            />
+            <Panel title="Your jobs" padding="none" data-testid="jobs-application">
+              <DataTable
+                ariaLabel="Application jobs"
+                surface="panel"
+                columns={applicationColumns}
+                rows={applicationJobs}
+                getRowId={(job) => job.job_id}
+                loading={loading}
+                loadingRows={6}
+                emptyState={
+                  <div className="px-4 pb-4 xl:px-5 3xl:px-6">
+                    <EmptyState
+                      compact
+                      icon={Layers}
+                      title="No application jobs yet"
+                      description="Exports, bulk case work, imports, resets, and other long-running operations will appear here."
+                    />
+                  </div>
+                }
+              />
+            </Panel>
           )}
 
           {workers ? (
-            <section className="space-y-3" aria-labelledby="system-workers-heading">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div>
-                  <h2 id="system-workers-heading" className="text-sm font-semibold text-foreground">
-                    System workers
-                  </h2>
-                  <p className="text-xs text-muted-foreground">
-                    Read-only scheduler health. Worker rows are operational state and never personal Inbox notifications.
-                  </p>
-                </div>
-                <Badge variant={workers.scheduler_runtime_running ? 'success' : 'secondary'}>
+            <Panel
+              title="System workers"
+              caption="Read-only scheduler health, never personal Inbox notifications."
+              aside={
+                <StatusDot tone={workers.scheduler_runtime_running ? 'neutral' : 'warning'}>
                   {workers.scheduler_runtime_running ? 'Scheduler running' : 'Scheduler unavailable'}
-                </Badge>
-              </div>
-              <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
-                {Object.entries(workers.workers).map(([name, worker]) => (
-                  <div key={name} className="border border-border p-3">
-                    <div className="flex items-start justify-between gap-2">
-                      <span className="inline-flex items-center gap-1.5 text-sm font-medium text-foreground">
-                        <Activity className="size-3.5 text-muted-foreground" aria-hidden />
-                        {humanizeToken(name)}
-                      </span>
-                      <Badge variant={worker.running ? 'info' : worker.last_error ? 'critical' : 'secondary'}>
-                        {worker.running ? 'Running' : worker.gated ? 'Gated' : worker.enabled ? 'Idle' : 'Disabled'}
-                      </Badge>
-                    </div>
-                    <p className="mt-2 text-xs text-muted-foreground">
-                      {worker.cadence || 'Cadence unavailable'} · {worker.processed.toLocaleString()} processed
-                    </p>
-                    <p className="mt-1 text-xs text-muted-foreground">
-                      Last success {worker.last_success_at ? humanizeAge(worker.last_success_at) : DASH}
-                    </p>
-                    {worker.last_error ? (
-                      <p className="mt-1 break-words text-xs text-critical-text">{worker.last_error}</p>
-                    ) : null}
-                  </div>
-                ))}
-              </div>
-            </section>
+                </StatusDot>
+              }
+              padding="none"
+              data-testid="jobs-workers"
+            >
+              {workerEntries.length ? (
+                <ListRows aria-label="System workers" className="border-t border-border/70">
+                  {workerEntries.map(([name, worker]) => (
+                    <ListRow
+                      key={name}
+                      className="px-4 xl:px-5 3xl:px-6"
+                      title={humanizeToken(name)}
+                      description={
+                        <>
+                          {cadenceWords(worker.cadence)} · {worker.processed.toLocaleString()} processed · last
+                          success {worker.last_success_at ? humanizeAge(worker.last_success_at) : 'never'}
+                          {worker.last_error ? <span className="text-critical-text"> · {worker.last_error}</span> : null}
+                        </>
+                      }
+                      status={
+                        <StatusDot
+                          tone={worker.last_error && !worker.running ? 'critical' : worker.running ? 'info' : 'neutral'}
+                        >
+                          {worker.running ? 'Running' : worker.gated ? 'Gated' : worker.enabled ? 'Idle' : 'Disabled'}
+                        </StatusDot>
+                      }
+                    />
+                  ))}
+                </ListRows>
+              ) : (
+                <p className="px-4 pb-4 text-sm text-muted-foreground xl:px-5 3xl:px-6">No scheduled workers.</p>
+              )}
+            </Panel>
           ) : null}
 
           {canReadModels ? (
-            <section className="space-y-4" aria-labelledby="llm-batch-heading">
-              <div>
-                <h2 id="llm-batch-heading" className="text-sm font-semibold text-foreground">
-                  Related LLM Batch jobs
-                </h2>
-                <p className="text-xs text-muted-foreground">
-                  Read-only provider batch progress. These shared model-service records are not personal application jobs.
-                </p>
-              </div>
-              <div className="grid border-y border-border/70 sm:grid-cols-2 lg:grid-cols-4">
-                <KpiTile
-                  label="Total jobs"
-                  value={fmtNumber(totals.total)}
-                  accent="primary"
-                  icon={Layers}
-                  variant="strip"
-                  className="border-b border-border/70 sm:border-r lg:border-b-0"
+            <>
+              <Panel
+                title="Related LLM Batch jobs"
+                caption="Read-only provider batch progress. These shared model-service records are not personal application jobs."
+                padding="none"
+                data-testid="jobs-llm-batch"
+              >
+                {/* The Batch figures belong to this panel, above its table: on their own
+                    they read as a summary of the whole page, beside "Your jobs". A strip
+                    draws its own panel, so the tiles sit on this one's grid. */}
+                <KpiStripContext.Provider value={COMPACT_TILES}>
+                  <div role="group" aria-label="Related LLM Batch summary" data-testid="jobs-llm-batch-summary">
+                    <KpiTileGrid count={4} surface="panel">
+                      <KpiTile label="Total jobs" value={fmtNumber(totals.total)} />
+                      <KpiTile label="In flight" value={fmtNumber(totals.active)} />
+                      <KpiTile label="Jobs done" value={fmtNumber(totals.done)} />
+                      <KpiTile
+                        label="Requests retrieved"
+                        value={fmtNumber(totals.retrieved)}
+                        context={`of ${fmtNumber(totals.requests)} total`}
+                      />
+                    </KpiTileGrid>
+                  </div>
+                </KpiStripContext.Provider>
+                <DataTable
+                  ariaLabel="Related LLM Batch jobs"
+                  surface="panel"
+                  columns={columns}
+                  rows={rows}
+                  getRowId={(row) => row.id}
+                  loading={loading}
+                  loadingRows={6}
+                  emptyState={
+                    <div className="px-4 pb-4 xl:px-5 3xl:px-6">
+                      <EmptyState
+                        compact
+                        icon={Layers}
+                        title="No LLM Batch jobs yet"
+                        description="Low-urgency investigations routed through a provider's async Batch API will appear here."
+                      />
+                    </div>
+                  }
                 />
-                <KpiTile
-                  label="In flight"
-                  value={fmtNumber(totals.active)}
-                  accent="info"
-                  variant="strip"
-                  className="border-b border-border/70 lg:border-b-0 lg:border-r"
-                />
-                <KpiTile
-                  label="Jobs done"
-                  value={fmtNumber(totals.done)}
-                  accent="success"
-                  variant="strip"
-                  className="border-b border-border/70 sm:border-b-0 sm:border-r"
-                />
-                <KpiTile
-                  label="Requests retrieved"
-                  value={fmtNumber(totals.retrieved)}
-                  sub={`of ${fmtNumber(totals.requests)} total`}
-                  accent="primary"
-                  variant="strip"
-                />
-              </div>
-              <DataTable
-                ariaLabel="Related LLM Batch jobs"
-                columns={columns}
-                rows={rows}
-                getRowId={(row) => row.id}
-                loading={loading}
-                loadingRows={6}
-                empty={
-                  <EmptyState
-                    compact
-                    icon={Layers}
-                    title="No LLM Batch jobs yet"
-                    description="Low-urgency investigations routed through a provider's async Batch API will appear here."
-                  />
-                }
-              />
-            </section>
+              </Panel>
+              {/* D30: the discounted-inference settings live in Settings now (one release). */}
+              <p className="text-sm text-muted-foreground" data-testid="jobs-discounted-inference-moved">
+                Discounted inference settings moved to{' '}
+                <a
+                  href={settingsSectionHash('discounted-inference')}
+                  className="rounded-sm font-medium text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  Settings, General, Discounted inference
+                </a>
+                .
+              </p>
+            </>
+          ) : grants.unknown ? (
+            // The Related LLM Batch jobs need models:read, which cannot be checked while
+            // the grants are unknown: say what failed, never that the role lacks it.
+            <GrantsUnknownNotice
+              onRetry={grants.reload}
+              fallback="Related LLM Batch jobs are not shown until your permissions load."
+            />
           ) : null}
         </>
       )}
-
-      {!initialLoading && canReadModels ? (
-        <>
-      <Separator />
-
-      {/* ── Config editor (R6) ───────────────────────────────────────────── */}
-      {cfg.error ? (
-        <LoadError
-          error={cfg.error}
-          title="Could not load batch policy"
-          fallback="Could not load the batch policy."
-          onRetry={() => void cfg.reload()}
-        />
-      ) : (
-        <SettingsGrid>
-          <SettingsCard
-            anchor="batch-policy"
-            icon={Layers}
-            title="Discounted inference"
-            description="Prefer live Flex for compatible alert investigations, with an optional async Batch queue for low-urgency work."
-            wide
-          >
-            {cfg.loading ? (
-              // Don't flash the default-valued form while the persisted policy loads.
-              <LoadingState
-                label="Loading batch policy"
-                description="Preparing the saved discounted-inference configuration."
-                layout="panel"
-                shape="panel"
-              />
-            ) : (
-            <fieldset disabled={!canManage} className="space-y-6">
-              <Alert>
-                <Info className="h-4 w-4" aria-hidden />
-                <AlertTitle>Two discounted paths, one decision contract</AlertTitle>
-                <AlertDescription>
-                  Compatible official OpenAI alert investigations use live Flex by
-                  default. Async Batch remains opt-in for low-urgency work. Unsupported
-                  providers and models stay on standard service, and the usage ledger
-                  records the tier actually returned. Neither path changes verdicts or
-                  deterministic case decisions. Fresh installs assign official OpenAI
-                  GPT-5.6 Luna, so eligible alert/case calls can use Flex immediately.
-                </AlertDescription>
-              </Alert>
-
-              <div className="grid gap-5 sm:grid-cols-2">
-                <div className="flex items-start justify-between gap-4">
-                  <div className="space-y-0.5">
-                    <Label htmlFor="prefer-discounted-alerts" className="text-sm font-medium">
-                      Prefer discounted alert inference
-                    </Label>
-                    <p className="text-xs text-muted-foreground">
-                      Route compatible OpenAI GPT-5, o3 and o4-mini alert work through
-                      the live Flex tier. Chat, standup, overview and model tests remain
-                      standard.
-                    </p>
-                  </div>
-                  <Switch
-                    id="prefer-discounted-alerts"
-                    checked={draft.prefer_discounted_alerts}
-                    onCheckedChange={(value) => cfg.update({ prefer_discounted_alerts: value })}
-                  />
-                </div>
-                <div className="flex items-start justify-between gap-4">
-                  <div className="space-y-0.5">
-                    <Label htmlFor="discounted-standard-fallback" className="text-sm font-medium">
-                      Standard fallback
-                    </Label>
-                    <p className="text-xs text-muted-foreground">
-                      Keep alert processing moving at the standard tier if Flex is
-                      unavailable. Fallback calls are recorded at standard pricing.
-                    </p>
-                  </div>
-                  <Switch
-                    id="discounted-standard-fallback"
-                    checked={draft.fallback_to_standard}
-                    onCheckedChange={(value) => cfg.update({ fallback_to_standard: value })}
-                  />
-                </div>
-              </div>
-
-              <Separator />
-
-              <div>
-                <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                  Asynchronous Batch queue
-                </p>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  Optional delayed processing for the low-urgency event-detection funnel.
-                </p>
-              </div>
-
-              <div className="flex items-center justify-between gap-4">
-                <div className="space-y-0.5">
-                  <Label htmlFor="batch-enabled" className="text-sm font-medium">
-                    Enable batch routing
-                  </Label>
-                    <p className="text-xs text-muted-foreground">
-                      When on, candidates at or below the severity floor go to the async
-                      Batch API (~50% off) instead of a live call.
-                    </p>
-                </div>
-                <Switch
-                  id="batch-enabled"
-                  checked={draft.enabled}
-                  onCheckedChange={(v) => cfg.update({ enabled: v })}
-                />
-              </div>
-
-              <div className="max-w-2xl">
-                <LabeledSlider
-                  label="Severity floor"
-                  description="A candidate at or below this OCSF severity is batch-eligible; above it stays synchronous."
-                  value={draft.severity_floor}
-                  min={1}
-                  max={6}
-                  step={1}
-                  ticks={SEVERITY_TICKS}
-                  editable={false}
-                  disabled={!canManage}
-                  formatValue={(v) => SEVERITY_NAME[v] ?? String(v)}
-                  onChange={(v) => cfg.update({ severity_floor: v })}
-                />
-              </div>
-
-              <TagInput
-                label="Batch providers"
-                description="Providers whose batch APIs may be used (e.g. anthropic, openai)."
-                value={draft.providers ?? []}
-                disabled={!canManage}
-                placeholder="add a provider…"
-                onChange={(next) => cfg.update({ providers: next })}
-              />
-
-              <EffectiveConfigPreview
-                summary={
-                  `${draft.prefer_discounted_alerts ? 'Compatible alert inference prefers live Flex' : 'Live discounted alert inference is off'}${draft.fallback_to_standard ? ' with standard fallback' : ' without standard fallback'}. ${draft.enabled ? `Async Batch also routes candidates at or below ${SEVERITY_NAME[draft.severity_floor] ?? draft.severity_floor} severity via ${(draft.providers ?? []).length ? (draft.providers ?? []).join(', ') : 'no providers'}.` : 'The separate async Batch queue is off.'}`
-                }
-                lines={[
-                  { label: 'Live alert tier', value: draft.prefer_discounted_alerts ? 'Flex preferred' : 'standard only' },
-                  { label: 'Standard fallback', value: draft.fallback_to_standard ? 'on' : 'off' },
-                  { label: 'Severity floor', value: SEVERITY_NAME[draft.severity_floor] ?? String(draft.severity_floor) },
-                  { label: 'Providers', value: (draft.providers ?? []).join(', ') || DASH },
-                ]}
-                belowFloorNote
-                noteText="One usage-ledger row is still written per resolved call (#6). Batch routing changes only where a call runs, never the decision."
-              />
-
-              {!canManage ? (
-                <p className="text-xs text-muted-foreground">
-                  You have read-only access. Ask a SOC administrator to change the batch
-                  policy.
-                </p>
-              ) : null}
-            </fieldset>
-            )}
-          </SettingsCard>
-        </SettingsGrid>
-      )}
-
-      <Can resource="models" action="manage">
-        <StickySaveBar
-          visible={cfg.dirty}
-          busy={cfg.saving}
-          message="Unsaved batch-policy changes."
-          onSave={() => void saveConfig()}
-          onDiscard={cfg.discard}
-        />
-      </Can>
-        </>
-      ) : null}
     </PageContainer>
   );
 }

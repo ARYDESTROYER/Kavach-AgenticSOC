@@ -20,7 +20,7 @@ import logging
 import math
 import re
 from datetime import datetime, timezone
-from typing import Any, ClassVar, Literal, Mapping, Sequence
+from typing import Any, Callable, ClassVar, Literal, Mapping, Sequence
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -38,6 +38,14 @@ from .evidence_fields import (
 # Aliased so the module-level resolver is unambiguous next to the identically
 # named ``Preferences.free_text_search_fields`` method that wraps it.
 from .evidence_fields import free_text_search_fields as _resolve_free_text_search_fields
+from .rbac.policy import (
+    RBAC_GRANTS_VERSION,
+    grants_version_is_legacy,
+    normalise_custom_role,
+    normalise_role_grant_map,
+    normalise_role_overrides,
+    rbac_layers_name_round14_actions,
+)
 from .utils import dotted_get, iso_now, new_id, slug
 
 logger = logging.getLogger("tlsoc.config")
@@ -242,6 +250,18 @@ class Secrets(BaseSettings):
     rate_limit_enabled: bool = False
     rate_limit_capacity: int = 120
     rate_limit_refill_per_second: float = 2.0
+    # --- Audit client address (Round 14 SPEC §4.5.3, E15). The proxies whose
+    # ``X-Forwarded-For`` header the audit log believes: a comma list of host names,
+    # IP addresses or CIDR ranges (env ``TRUSTED_PROXIES``). Only when the socket peer
+    # is one of them is the rightmost forwarded entry that is not itself a trusted
+    # proxy recorded as the client address (at most the last 32 entries are read);
+    # otherwise the peer itself is recorded, whatever the caller sent. Host names are
+    # resolved at startup and every 5 minutes: a name that has never resolved is
+    # ignored, and a name that stops resolving keeps its last addresses for 3 rounds.
+    # The default is the bundled Web UI service, so the Compose stack needs no setting; a
+    # deployment behind another proxy adds that proxy here. Metadata for the audit
+    # trail only, never an authorization input.
+    trusted_proxies: str = "tlsoc-webui"
 
     # When true the backend persists to Elasticsearch; when ES is unreachable it
     # automatically falls back to an in-memory store so the spine still runs.
@@ -727,18 +747,24 @@ class AutoClosePolicy(BaseModel):
     )
 
 
-class PlaybookConfig(BaseModel):
-    """Markdown playbook system. When ``enabled``, the deterministically-selected
-    playbook for a cluster is injected as TRUSTED operator procedure into the
-    investigator (it can only RECOMMEND; code/settings decide). With ``enabled``
-    False, or no playbook matching, the investigator uses the generic prompt
-    exactly as before. ``dir`` overrides the default ``backend/playbooks`` location;
-    ``llm_select`` is reserved for an optional LLM-assisted selector (off by default —
-    selection is rule-based)."""
+class LegacyProcedureConfig(BaseModel):
+    """The retired procedure section (``Preferences.playbooks``), accepted on load
+    for one release (Round 14 SPEC §4.10.19). It is no longer a setting and is never
+    shown in Settings (``api.settings_schema`` hides it).
+
+    * ``enabled`` is a read-only MIRROR of ``runbooks.investigator_guidance``:
+      :meth:`Preferences._mirror_retired_runbook_keys` rewrites it on every
+      validation, so code that still reads the old key sees the new truth. A stored
+      ``false`` written before Round 14 is mapped ONCE onto
+      ``investigator_guidance=false`` (:func:`_map_retired_runbook_keys`).
+    * ``dir`` names the retired directory of operator procedure files. It is kept
+      read-only for the one-shot runbook migration (``engine.runbook_migration``),
+      which imports its ``*.md`` files once; afterwards it is ignored, and startup
+      logs a warning while it is still set.
+    * The retired ``llm_select`` key is dropped on load (it never had an effect)."""
 
     enabled: bool = True
     dir: str | None = None
-    llm_select: bool = False
 
 
 class CaseIdFormatConfig(BaseModel):
@@ -1277,7 +1303,11 @@ class RagConfig(BaseModel):
     # Minimum cosine similarity a retrieved chunk must clear to be returned.
     # Drops weakly-related noise before it reaches a prompt.
     min_score: float = 0.2
-    use_runbooks: bool = True
+    # Round 14 (SPEC §4.10.18, §4.10.19): retired, replaced by ``runbooks.rag_corpus``.
+    # Accepted on load (a stored ``false`` maps once onto ``rag_corpus=false``) and
+    # kept as a read-only MIRROR of ``runbooks.rag_corpus`` for one release, so code
+    # that still reads it sees the new setting. Hidden from Settings.
+    use_runbooks: bool = Field(default=True, json_schema_extra={"deprecated_alias": True})
     use_mitre: bool = True
     use_resolved_cases: bool = True
     use_suppression_rules: bool = True
@@ -1344,17 +1374,222 @@ class PersonaConfig(BaseModel):
     overrides: dict[str, str] = Field(default_factory=dict)  # rule name -> persona id
 
 
-class RunbookConfig(BaseModel):
-    """Plain-text runbook KNOWLEDGE for the RAG corpus.
+#: Bumped when the meaning of a stored ``runbooks`` block changes. Version 1 is the
+#: Round 14 runbook feature (SPEC §4.10.19); a block without the stamp predates it.
+CURRENT_RUNBOOKS_CONFIG_VERSION = 1
+#: Inclusive bounds of ``RunbookConfig.review_every_days_default`` (E6), the same as a
+#: runbook's own ``review_every_days``.
+RUNBOOK_REVIEW_DAYS_MIN = 30
+RUNBOOK_REVIEW_DAYS_MAX = 730
+RUNBOOK_REVIEW_DAYS_DEFAULT = 180
+#: The boolean switches of :class:`RunbookConfig` and their defaults (D32, D33, D35).
+_RUNBOOK_SWITCH_DEFAULTS: dict[str, bool] = {
+    "enabled": True,
+    "auto_attach": True,
+    "fallback": True,
+    "investigator_guidance": True,
+    "rag_corpus": True,
+    "ai_suggest": True,
+    "ai_step_drafts": True,
+    "require_distinct_approver": False,
+    "step_approvals": False,
+}
 
-    Runbooks ship as Markdown files under ``backend/app/runbooks/`` and feed the RAG
-    ``runbook`` corpus (retrievable knowledge) when ``rag.use_runbooks`` is on and
-    ``enabled`` here. NOTE: per-cluster PROCEDURE injection is now owned by the
-    Markdown **playbook** system (``app/playbooks/`` + ``PlaybookConfig``); runbooks
-    are retrieval knowledge only. Disabling is exact: no runbook source is indexed
-    or retrieved until the operator enables it again."""
+
+class RunbookConfig(BaseModel):
+    """The one Runbooks feature (Round 14 SPEC §4.10.19), under ``Preferences.runbooks``.
+    It replaces the retired procedure section and the old reference-runbook switch.
+
+    * ``enabled``: the feature (library, runs, guidance). Never derived from an old key.
+    * ``auto_attach``: attach the matching runbook to cases that need a person (D32).
+    * ``fallback``: attach Generic incident when nothing else matches (D33).
+    * ``investigator_guidance``: feed the winning Published runbook to the
+      investigator as trusted, advisory guidance (#9).
+    * ``rag_corpus``: index Published runbooks for retrieval.
+    * ``ai_suggest`` / ``ai_step_drafts``: offer "Suggest a runbook" and "Draft note"
+      as clicks; each is one gateway call, ledgered and budget-gated (#6).
+    * ``require_distinct_approver``: the publisher must differ from the author (D35).
+    * ``step_approvals``: honour a step's ``approval_role`` (D35).
+    * ``review_every_days_default``: the review cadence of a new operator runbook
+      (E6), 30 to 730 days.
+    * ``runbooks_config_version``: the migration marker of the retired keys.
+
+    Retired keys are accepted on load and mapped ONCE by meaning, never by name
+    (:func:`_map_retired_runbook_keys`). A runbook, a run and these switches never
+    feed ``case_manager.decide()`` or ``AutoClosePolicy`` (#3).
+
+    :meth:`_repair` repairs, never rejects, a stored value (a malformed switch takes
+    its default, an out-of-range cadence is clamped): both preference loaders answer
+    any validation error with a full default ``Preferences()``, which would also reset
+    the close policy, the rule catalog and the sources (the ``_clamp_caps`` rule)."""
 
     enabled: bool = True
+    auto_attach: bool = True
+    fallback: bool = True
+    investigator_guidance: bool = True
+    rag_corpus: bool = True
+    ai_suggest: bool = True
+    ai_step_drafts: bool = True
+    require_distinct_approver: bool = False
+    step_approvals: bool = False
+    review_every_days_default: int = Field(
+        default=RUNBOOK_REVIEW_DAYS_DEFAULT,
+        ge=RUNBOOK_REVIEW_DAYS_MIN,
+        le=RUNBOOK_REVIEW_DAYS_MAX,
+    )
+    runbooks_config_version: int = Field(default=CURRENT_RUNBOOKS_CONFIG_VERSION, ge=0)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _repair(cls, data: Any) -> Any:
+        """Repair a stored block: a switch that is not a boolean (or a common
+        spelling of one) takes its default; the cadence is clamped into 30 to 730
+        days (its default when it is not a number); a malformed version reads as 0.
+        Never raises."""
+        if not isinstance(data, dict):
+            return data
+        out = dict(data)
+        for name, default in _RUNBOOK_SWITCH_DEFAULTS.items():
+            if name in out:
+                out[name] = _remember_repair_bool(out[name], default)
+        if "review_every_days_default" in out:
+            days = _remember_repair_int(out["review_every_days_default"])
+            out["review_every_days_default"] = (
+                RUNBOOK_REVIEW_DAYS_DEFAULT if days is None
+                else max(RUNBOOK_REVIEW_DAYS_MIN, min(RUNBOOK_REVIEW_DAYS_MAX, days))
+            )
+        if "runbooks_config_version" in out:
+            version = _remember_repair_int(out["runbooks_config_version"])
+            out["runbooks_config_version"] = max(0, version) if version is not None else 0
+        return out
+
+
+def _stored_bool(value: Any) -> bool | None:
+    """A stored retired switch as a bool, or ``None`` when it is absent/unreadable."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in ("true", "1", "yes", "on"):
+            return True
+        if text in ("false", "0", "no", "off"):
+            return False
+    if isinstance(value, int):
+        return bool(value)
+    return None
+
+
+def _section_value(section: Any, key: str) -> Any:
+    """``section[key]`` for a stored dict or ``section.key`` for a model (else None)."""
+    if isinstance(section, Mapping):
+        return section.get(key)
+    if isinstance(section, BaseModel):
+        return getattr(section, key, None)
+    return None
+
+
+#: The keys only the Round 14 :class:`RunbookConfig` has. A ``runbooks`` block that
+#: names any of them is written in the current vocabulary, stamped or not (the old
+#: block had only ``enabled``).
+_RUNBOOK_CURRENT_ONLY_KEYS: frozenset[str] = frozenset(
+    set(_RUNBOOK_SWITCH_DEFAULTS) - {"enabled"} | {"review_every_days_default"}
+)
+
+#: The retired settings keys and the successor each one now mirrors (SPEC §4.10.19):
+#: ``(section, key)`` of the retired key -> ``runbooks.<successor>``.
+RETIRED_RUNBOOK_WRITE_KEYS: dict[tuple[str, str], str] = {
+    ("rag", "use_runbooks"): "rag_corpus",
+    ("playbooks", "enabled"): "investigator_guidance",
+}
+
+
+def map_retired_runbook_writes(body: Any, current: "Preferences | None" = None) -> Any:
+    """A settings write body with each CHANGED retired runbook key carried onto its
+    successor (SPEC §4.10.19). Pure: returns a new body, never mutates ``body``.
+
+    ``rag.use_runbooks`` and ``playbooks.enabled`` are read-only mirrors of
+    ``runbooks.rag_corpus`` and ``runbooks.investigator_guidance`` (validation
+    rewrites them), so a write that changed only the retired key would answer 200 and
+    change nothing. A settings route calls this before its deep merge: a retired key
+    the body sets to a value other than ``current``'s (the stored mirror) is copied to
+    its successor, unless the body also names the successor (the successor wins). A
+    body that only echoes the stored value (a client resending a whole section) maps
+    nothing. Without ``current`` every retired key the body names is carried."""
+    if not isinstance(body, Mapping):
+        return body
+    out: dict[str, Any] = dict(body)
+    successors: dict[str, bool] = {}
+    for (section, key), successor in RETIRED_RUNBOOK_WRITE_KEYS.items():
+        block = body.get(section)
+        if not isinstance(block, Mapping) or key not in block:
+            continue
+        value = _stored_bool(block.get(key))
+        if value is None:
+            continue
+        if current is not None:
+            stored = _stored_bool(_section_value(getattr(current, section, None), key))
+            if stored is not None and stored == value:
+                continue
+        successors[successor] = value
+    if not successors:
+        return out
+    runbooks = body.get("runbooks")
+    block_out: dict[str, Any] = dict(runbooks) if isinstance(runbooks, Mapping) else {}
+    for successor, value in successors.items():
+        block_out.setdefault(successor, value)
+    out["runbooks"] = block_out
+    return out
+
+
+def _map_retired_runbook_keys(data: dict[str, Any]) -> dict[str, Any]:
+    """The one-time mapping of the retired runbook keys (SPEC §4.10.19), on a copy.
+
+    A ``runbooks`` block stamped with ``runbooks_config_version`` >= 1 is current and
+    left alone, so an operator's later choice is never re-decided. So is an unstamped
+    block that names a key only the current :class:`RunbookConfig` has (a block code,
+    an import or Demo built in the new vocabulary): it is stamped, never remapped, so
+    its ``enabled`` keeps its new meaning. Otherwise (no block, or a block from before
+    Round 14, which held only ``enabled``) the retired keys map BY MEANING:
+
+    * ``playbooks.enabled=false`` → ``investigator_guidance=false`` (it switched off
+      the procedure in the investigator prompt);
+    * ``runbooks.enabled=false`` (the OLD meaning: stop reference-runbook retrieval)
+      → ``rag_corpus=false``; the new ``enabled`` is never derived from an old key and
+      stays true;
+    * ``rag.use_runbooks=false`` → ``rag_corpus=false``.
+
+    An explicit stored ``false`` is preserved (the Round 10 opt-out rule); an old
+    ``true`` maps to nothing (the new defaults are on). Every other key of an old
+    block is kept, and the block is stamped so this never runs twice."""
+    raw_block = data.get("runbooks")
+    if isinstance(raw_block, RunbookConfig):
+        return data  # a constructed current block
+    if isinstance(raw_block, Mapping):
+        version = _remember_repair_int(raw_block.get("runbooks_config_version"))
+        if version is not None and version >= CURRENT_RUNBOOKS_CONFIG_VERSION:
+            return data
+        if _RUNBOOK_CURRENT_ONLY_KEYS.intersection(raw_block):
+            out = dict(data)
+            out["runbooks"] = {**raw_block, "runbooks_config_version": CURRENT_RUNBOOKS_CONFIG_VERSION}
+            return out
+        block: dict[str, Any] = dict(raw_block)
+        old_enabled = _stored_bool(block.pop("enabled", None))
+    elif raw_block is None:
+        block = {}
+        old_enabled = None
+    else:
+        return data  # malformed: normal validation reports it
+    guidance = _stored_bool(_section_value(data.get("playbooks"), "enabled"))
+    use_runbooks = _stored_bool(_section_value(data.get("rag"), "use_runbooks"))
+    if guidance is False:
+        block["investigator_guidance"] = False
+    if old_enabled is False or use_runbooks is False:
+        block["rag_corpus"] = False
+    block["enabled"] = True
+    block["runbooks_config_version"] = CURRENT_RUNBOOKS_CONFIG_VERSION
+    out = dict(data)
+    out["runbooks"] = block
+    return out
 
 
 class ThreatContextConfig(BaseModel):
@@ -1530,10 +1765,15 @@ class BudgetConfig(BaseModel):
 
 _DOMAIN_SUFFIX_RE = re.compile(r"^(?=.{1,253}$)[a-z0-9_](?:[a-z0-9_-]{0,62})(?:\.[a-z0-9_](?:[a-z0-9_-]{0,62}))*$")
 
-# --- Round 12 chat limits migration (SPEC D1/D6). ---------------------------------- #
+# --- Chat limits migration (Round 12 SPEC D1/D6; Round 14 SPEC §4.2.2). ------------- #
 # Bumped when stored chat configurations must adopt a new limits posture exactly once
-# (the ``autopilot_config_version`` pattern, held inside the chat block).
-CURRENT_CHAT_LIMITS_VERSION = 1
+# (the ``autopilot_config_version`` pattern, held inside the chat block). Each version
+# is one step; a stored block runs every step above its own version, in order, so a
+# block from any earlier release lands on the current defaults (see
+# :func:`_migrate_chat_limits`).
+#   1. Round 12: ``limits_mode`` decided; stall timeout and concurrency raised.
+#   2. Round 14: the "Timeouts and capacity" defaults tripled.
+CURRENT_CHAT_LIMITS_VERSION = 2
 # The per-question limit knobs and the values they shipped with before Round 12. A
 # stored configuration that still holds every one of them (or omits them) never chose
 # a limit, so it adopts ``unlimited``; one that changed any of them keeps ``bounded``
@@ -1555,8 +1795,19 @@ _CHAT_CHANGED_DEFAULTS: dict[str, tuple[int, int]] = {
     "max_concurrent_turns_per_user": (2, 4),
     "max_concurrent_turns_global": (8, 16),
 }
+# Version 2 (Round 14, ask 5): every "Timeouts and capacity" default tripled. A stored
+# value equal to the Round 12 default moves to the tripled one, in both limits modes
+# (Round 14 D18); any other value is an administrator's choice and stays. Pinned against
+# the field defaults by ``test_chat_limits_migration.py``.
+_CHAT_TRIPLED_DEFAULTS: dict[str, tuple[int, int]] = {
+    "max_parallel": (4, 12),
+    "tool_timeout_s": (15, 45),
+    "model_step_timeout_s": (300, 900),
+    "max_concurrent_turns_per_user": (4, 12),
+    "max_concurrent_turns_global": (16, 48),
+}
 # Keys every full ``ChatAgentConfig`` dump carries (a persisted block) but a small
-# programmatic construction does not: the changed-defaults move applies to persisted
+# programmatic construction does not: the changed-defaults moves apply to persisted
 # blocks only, so ``ChatAgentConfig(model_step_timeout_s=30)`` keeps its 30.
 _CHAT_PERSISTED_MARKERS = ("max_indicator_lookups_per_conversation", "internal_domains", "allow_email_lookup")
 
@@ -1572,29 +1823,99 @@ def _repair_chat_cap(raw: Any) -> float | None:
     return value if math.isfinite(value) and value > 0 else None
 
 
-def _migrate_chat_limits(out: dict[str, Any]) -> dict[str, Any]:
-    """The one-time Round 12 chat limits migration on an already-repaired block.
+def _is_persisted_chat_block(out: Mapping[str, Any]) -> bool:
+    """True for a full stored dump (see :data:`_CHAT_PERSISTED_MARKERS`)."""
+    return all(key in out for key in _CHAT_PERSISTED_MARKERS)
 
-    A block at :data:`CURRENT_CHAT_LIMITS_VERSION` is left alone (an operator's later
-    choice is never re-decided). Otherwise an explicit ``limits_mode`` is kept; without
-    one the block becomes ``bounded`` when any limit knob differs from its shipped
-    default and ``unlimited`` otherwise; old defaults of the changed knobs move to the
-    new ones (persisted blocks only); and the marker is stamped. Never raises."""
-    version = out.get("chat_limits_version")
-    if isinstance(version, int) and not isinstance(version, bool) and version >= CURRENT_CHAT_LIMITS_VERSION:
-        return out
+
+def _move_old_defaults(out: dict[str, Any], moves: Mapping[str, tuple[int, int]],
+                       *, skip: frozenset[str] = frozenset()) -> frozenset[str]:
+    """Move each knob still holding exactly its old shipped default to the new one, and
+    return the knobs that hold an operator's choice instead.
+
+    A stored value that is not exactly the old default (another number, a type the
+    repair already normalised) is a choice: it is never touched, and the caller keeps it
+    out of every later step, so a value chosen under one release's defaults is not
+    mistaken for a later release's default. A knob in ``skip`` is never moved; it is
+    reported as a choice only when it differs from the old default."""
+    chosen: set[str] = set()
+    for name, (old, new) in moves.items():
+        if name not in out:
+            continue
+        value = out[name]
+        if not (isinstance(value, int) and not isinstance(value, bool) and value == old):
+            chosen.add(name)
+        elif name not in skip:
+            out[name] = new
+    return frozenset(chosen)
+
+
+def _migrate_chat_limits_v1(out: dict[str, Any], chosen: frozenset[str]) -> frozenset[str]:
+    """Version 1 (Round 12 SPEC D1/D6): decide ``limits_mode`` and raise the stall
+    timeout and concurrency defaults.
+
+    An explicit ``limits_mode`` is kept; without one the block becomes ``bounded`` when
+    any limit knob differs from its shipped default and ``unlimited`` otherwise. Old
+    defaults of the changed knobs move to the new ones (persisted blocks only); a
+    ``bounded`` block keeps its stall timeout, as Round 12 shipped. Returns the knobs
+    that hold an operator's choice (see :func:`_move_old_defaults`)."""
     mode = out.get("limits_mode")
     if mode not in ("unlimited", "bounded"):
         changed = [name for name, default in _CHAT_LIMIT_KNOB_DEFAULTS.items()
                    if name in out and out[name] != default]
         mode = "bounded" if changed else "unlimited"
         out["limits_mode"] = mode
-    if all(key in out for key in _CHAT_PERSISTED_MARKERS):
-        for name, (old, new) in _CHAT_CHANGED_DEFAULTS.items():
-            if name == "model_step_timeout_s" and mode == "bounded":
-                continue
-            if out.get(name) == old:
-                out[name] = new
+    if not _is_persisted_chat_block(out):
+        return frozenset()
+    skip = chosen | {"model_step_timeout_s"} if mode == "bounded" else chosen
+    return _move_old_defaults(out, _CHAT_CHANGED_DEFAULTS, skip=skip)
+
+
+def _migrate_chat_limits_v2(out: dict[str, Any], chosen: frozenset[str]) -> frozenset[str]:
+    """Version 2 (Round 14 SPEC §4.2.2): the tripled "Timeouts and capacity" defaults.
+    Persisted blocks only, in both limits modes (D18: a ``bounded`` call is still cut
+    at the question's remaining time, so a longer stall timeout never lengthens it).
+    A knob an earlier step found chosen stays, even when its value happens to equal a
+    Round 12 default (a pre-Round-12 block that chose 4 questions per user keeps 4)."""
+    if not _is_persisted_chat_block(out):
+        return frozenset()
+    return _move_old_defaults(out, _CHAT_TRIPLED_DEFAULTS, skip=chosen)
+
+
+# One migration step: it moves old defaults in place, never moves a knob in ``chosen``,
+# and returns the knobs it found chosen.
+_ChatLimitsStep = Callable[[dict[str, Any], frozenset[str]], frozenset[str]]
+# The migration steps, in order: ``(version, step)``. A stored block runs every step
+# whose version is above its own marker, then is stamped with the last one.
+_CHAT_LIMITS_STEPS: tuple[tuple[int, _ChatLimitsStep], ...] = (
+    (1, _migrate_chat_limits_v1),
+    (2, _migrate_chat_limits_v2),
+)
+
+
+def _migrate_chat_limits(out: dict[str, Any]) -> dict[str, Any]:
+    """The staged chat limits migration on an already-repaired block.
+
+    A block at :data:`CURRENT_CHAT_LIMITS_VERSION` is left alone (an operator's later
+    choice is never re-decided). Otherwise every step above the stored marker runs in
+    order (an absent marker is a block from before Round 12, version 0), so a
+    pre-Round-12 block chains through both: 30 s / 2 / 8 becomes 300 / 4 / 16 in step 1
+    and 900 / 12 / 48 in step 2. A value the first step to judge a knob finds chosen
+    (it differs from that release's default) is kept by every later step, so a
+    pre-Round-12 choice of 4 questions per user is not mistaken for the Round 12
+    default. The marker is then stamped. Never raises.
+
+    Known limitation (documented): an administrator who deliberately chose exactly the
+    default of the release the block was stored by cannot be told apart from it and is
+    moved once."""
+    version = out.get("chat_limits_version")
+    stored = version if isinstance(version, int) and not isinstance(version, bool) else 0
+    if stored >= CURRENT_CHAT_LIMITS_VERSION:
+        return out
+    chosen: frozenset[str] = frozenset()
+    for step_version, step in _CHAT_LIMITS_STEPS:
+        if stored < step_version:
+            chosen |= step(out, chosen)
     out["chat_limits_version"] = CURRENT_CHAT_LIMITS_VERSION
     return out
 
@@ -1624,7 +1945,13 @@ class ChatAgentConfig(BaseModel):
     either way so a stored configuration keeps validating and switching back is
     lossless. A one-time ``chat_limits_version`` migration (:meth:`_repair`) moves a
     stored configuration to ``unlimited`` unless an operator changed a limit knob away
-    from its shipped default."""
+    from its shipped default.
+
+    Round 14 (SPEC §4.2, ask 5): the "Timeouts and capacity" defaults are tripled
+    (lookups at once 12, lookup timeout 45 s, model call timeout 900 s, questions at
+    once 12 per user and 48 in total) and two ceilings rise to fit them. Version 2 of
+    the same migration moves a stored value that still equals the Round 12 default, in
+    both limits modes; any other value stays."""
 
     # ``model_step_timeout_s`` / ``max_model_calls`` are about the LLM, not pydantic.
     model_config = {"protected_namespaces": ()}
@@ -1642,14 +1969,14 @@ class ChatAgentConfig(BaseModel):
         default=10, ge=1, le=40, description="Lookups (tool calls) per chat question.",
     )
     max_parallel: int = Field(
-        default=4, ge=1, le=8, description="Lookups the assistant may run at once in one step.",
+        default=12, ge=1, le=24, description="Lookups the assistant may run at once in one step.",
     )
     tool_timeout_s: int = Field(
-        default=15, ge=1, le=120,
+        default=45, ge=1, le=120,
         description="Seconds one lookup may take (log fan-out keeps per-source timeouts inside it).",
     )
     model_step_timeout_s: int = Field(
-        default=300, ge=5, le=900,
+        default=900, ge=5, le=1_800,
         description=("Seconds one model call may stay silent before it counts as stalled "
                      "(a stalled call is retried once). With per-question limits, a call also "
                      "ends when the question's time runs out."),
@@ -1675,10 +2002,10 @@ class ChatAgentConfig(BaseModel):
         description="Output tokens for the final answer (at least the chat model's own limit).",
     )
     max_concurrent_turns_per_user: int = Field(
-        default=4, ge=1, le=10, description="Chat questions one user may have running at the same time.",
+        default=12, ge=1, le=24, description="Chat questions one user may have running at the same time.",
     )
     max_concurrent_turns_global: int = Field(
-        default=16, ge=1, le=100, description="Chat questions this backend runs at the same time.",
+        default=48, ge=1, le=100, description="Chat questions this backend runs at the same time.",
     )
     max_indicator_lookups: int = Field(
         default=3, ge=0, le=10,
@@ -3061,6 +3388,13 @@ class SourceInstance(BaseModel):
         return True
 
 
+#: The keys of a stored ``RBACConfig`` dump written before Round 14 (every one is
+#: present in a persisted block; a constructed block usually names a subset).
+_RBAC_PERSISTED_MARKERS: tuple[str, ...] = (
+    "enabled", "default_role", "roles", "custom_roles", "resources", "denies",
+)
+
+
 class RBACConfig(BaseModel):
     """Role-based access control configuration (Wave 1 / F2).
 
@@ -3087,6 +3421,57 @@ class RBACConfig(BaseModel):
     custom_roles: list[dict[str, Any]] = Field(default_factory=list)
     resources: dict[str, dict[str, list[str]]] = Field(default_factory=dict)
     denies: dict[str, dict[str, list[str]]] = Field(default_factory=dict)
+    # Round 14 (SPEC §3.7, E8): the grant vocabulary these maps were written in. A
+    # stored block without it (or below 2) predates the runbook vocabulary: on load
+    # its ``runbooks:manage`` grants also gain ``runbooks:publish`` (and a deny of it
+    # also denies publish) ONCE, then the block is stamped, so a later removal of
+    # ``publish`` sticks. The ``playbooks`` -> ``runbooks`` alias applies always: on
+    # that first load it is unioned into ``runbooks``; after it a ``runbooks`` entry
+    # that is present is authoritative (the alias maps only where it is absent), so a
+    # narrowing of ``runbooks`` sticks beside the ``playbooks`` key the load kept.
+    rbac_grants_version: int = Field(default=RBAC_GRANTS_VERSION, ge=0)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalise_grant_layers(cls, data: Any) -> Any:
+        """Apply the Round 14 grant aliases to every stored layer (SPEC §3.7):
+        ``roles`` (REPLACE semantics per role, :func:`normalise_role_overrides`),
+        ``resources`` (additive), ``denies`` and each custom role's ``grants`` and
+        ``denies``. Runs on load and on every
+        write (the settings PUT validates the merged document), BEFORE the matrix
+        resolver could skip the retired resource. The once-only ``publish`` rule
+        applies to a block stored before Round 14 (it carries the full set of stored
+        keys but no current ``rbac_grants_version``); a constructed block (a subset of
+        keys, as code and tests build one) is read in the current vocabulary. So is a
+        block that names an action only Round 14 has (``runbooks:run``,
+        ``runbooks:publish``, ``audit:export``) in any layer: a build from before
+        Round 14 drops the unknown stamp on its next save but keeps the maps, so a
+        downgrade, a save and a re-upgrade never re-run the once-only rules over a
+        Round 14 choice (:func:`app.rbac.policy.rbac_layers_name_round14_actions`).
+        Pure on a copy; never raises (a malformed layer is passed through for normal
+        validation to report)."""
+        if not isinstance(data, dict):
+            return data
+        legacy = (
+            grants_version_is_legacy(data.get("rbac_grants_version"))
+            and all(key in data for key in _RBAC_PERSISTED_MARKERS)
+            and not rbac_layers_name_round14_actions(data)
+        )
+        out = dict(data)
+        if isinstance(out.get("roles"), dict):
+            # REPLACE semantics: an override naming one of the two procedure
+            # resources keeps the other's pre-Round 14 default (no silent loss).
+            out["roles"] = normalise_role_overrides(out["roles"], legacy=legacy)
+        if isinstance(out.get("resources"), dict):
+            out["resources"] = normalise_role_grant_map(out["resources"], legacy=legacy)
+        if isinstance(out.get("denies"), dict):
+            out["denies"] = normalise_role_grant_map(out["denies"], legacy=legacy, deny=True)
+        if isinstance(out.get("custom_roles"), list):
+            out["custom_roles"] = [
+                normalise_custom_role(spec, legacy=legacy) for spec in out["custom_roles"]
+            ]
+        out["rbac_grants_version"] = RBAC_GRANTS_VERSION
+        return out
 
 
 def _remember_repair_bool(raw: Any, default: bool) -> bool:
@@ -3652,6 +4037,32 @@ class Preferences(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
+    def _migrate_retired_runbook_keys(cls, data: Any) -> Any:
+        """Map the retired runbook keys once (SPEC §4.10.19,
+        :func:`_map_retired_runbook_keys`). A fresh install and any document whose
+        ``runbooks`` block is already stamped are left untouched."""
+        if not isinstance(data, dict) or not data:
+            return data
+        return _map_retired_runbook_keys(data)
+
+    @model_validator(mode="after")
+    def _mirror_retired_runbook_keys(self) -> "Preferences":
+        """Keep the two retired keys equal to their successors (SPEC §4.10.19):
+        ``playbooks.enabled`` mirrors ``runbooks.investigator_guidance`` and
+        ``rag.use_runbooks`` mirrors ``runbooks.rag_corpus``. The new keys are the
+        one truth; code that still reads an old key sees it, and a stored old key can
+        never disagree with the setting the Console shows. Copies are assigned, so a
+        section model the caller passed in is never changed in place."""
+        guidance = bool(self.runbooks.investigator_guidance)
+        if self.playbooks.enabled != guidance:
+            self.playbooks = self.playbooks.model_copy(update={"enabled": guidance})
+        corpus = bool(self.runbooks.rag_corpus)
+        if self.rag.use_runbooks != corpus:
+            self.rag = self.rag.model_copy(update={"use_runbooks": corpus})
+        return self
+
+    @model_validator(mode="before")
+    @classmethod
     def _migrate_fp_auto_close(cls, data: Any) -> Any:
         """Back-compat: a stored config predating ``auto_close`` carried only
         ``fp_auto_close``. Map it into ``auto_close.false_positive`` so old persisted
@@ -3882,8 +4293,11 @@ class Preferences(BaseModel):
     # Multi-agent roster + plain-text runbooks/playbooks (Vigil-inspired). All
     # default ON and degrade to prior behaviour when disabled.
     personas: PersonaConfig = Field(default_factory=PersonaConfig)
+    # Round 14 (SPEC §4.10.19): the one Runbooks feature. ``playbooks`` is the retired
+    # section, accepted on load for one release (its ``enabled`` mirrors
+    # ``runbooks.investigator_guidance``; its ``dir`` is read once by the migration).
     runbooks: RunbookConfig = Field(default_factory=RunbookConfig)
-    playbooks: PlaybookConfig = Field(default_factory=PlaybookConfig)
+    playbooks: LegacyProcedureConfig = Field(default_factory=LegacyProcedureConfig)
     # Threat-context case panel (Wave 6 / F11) — advisory, read-only, fail-open.
     threat_context: ThreatContextConfig = Field(default_factory=ThreatContextConfig)
     # Threshold automation (Wave 6 / F10) — default OFF; post-decision, #3-safe. It
@@ -4262,10 +4676,11 @@ class Preferences(BaseModel):
 # Rules).  ``maybe_seed_rule_catalog`` only writes them into an EMPTY catalog, so
 # this list affects FRESH INSTALLS ONLY and can never overwrite operator content.
 #
-# Nothing downstream may hardcode a value from this list: bundled playbooks match
-# on portable Layer-3 ids and the operator's own catalog maps their rule titles
-# onto those ids (see ``backend/playbooks/README.md`` and
-# ``backend/tests/test_portability_contract.py``).
+# Nothing downstream may depend on a value from this list. The built-in runbooks
+# (``backend/app/runbooks/library/``) name some of these rules among their
+# ``applies_when.rule_ids``, as any-of match candidates held to the portable
+# identifier shape (``backend/tests/test_portability_contract.py``); a deployment
+# whose rules differ publishes its own copy of a built-in, which replaces it.
 _SAMPLE_EVENT_MODULES: tuple[str, ...] = (
     "mail_apache_access",
     "mail_auth",

@@ -70,7 +70,7 @@ describe('MfaSetupCard — pendingToken (login-phase mandated enrollment)', () =
   it('auto-starts via enroll-setup (never the session endpoint) and shows recovery codes', async () => {
     render(<MfaSetupCard enabled={false} frameless pendingToken="pend-7" />);
 
-    // Auto-start: no "Enable two-factor" click needed; rerouted to the enroll route.
+    // Auto-start: no "Turn on two-factor" click needed; rerouted to the enroll route.
     await waitFor(() => expect(enrollSetupMock).toHaveBeenCalledWith('pend-7'));
     expect(setupMock).not.toHaveBeenCalled();
 
@@ -87,7 +87,7 @@ describe('MfaSetupCard — pendingToken (login-phase mandated enrollment)', () =
 
     // The confirm button reads as a login completion, and there is NO mid-flow
     // Cancel (there is no session to fall back into — the parent owns the exits).
-    expect(screen.getByRole('button', { name: 'Verify & sign in' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Verify and sign in' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Cancel' })).not.toBeInTheDocument();
   });
 
@@ -116,7 +116,7 @@ describe('MfaSetupCard — pendingToken (login-phase mandated enrollment)', () =
     });
     // The saved-recovery-codes ack is required before the login-completing confirm.
     fireEvent.click(screen.getByLabelText(/saved my recovery codes/i));
-    fireEvent.click(screen.getByRole('button', { name: 'Verify & sign in' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Verify and sign in' }));
 
     await waitFor(() => expect(enrollConfirmMock).toHaveBeenCalledWith('pend-7', '654321'));
     expect(confirmMock).not.toHaveBeenCalled();
@@ -125,7 +125,7 @@ describe('MfaSetupCard — pendingToken (login-phase mandated enrollment)', () =
     expect(onChanged).not.toHaveBeenCalled();
   });
 
-  it('gates "Verify & sign in" on the saved-recovery-codes acknowledgment', async () => {
+  it('gates "Verify and sign in" on the saved-recovery-codes acknowledgment', async () => {
     enrollConfirmMock.mockResolvedValue({ token: 't-1', user: { username: 'bob' } });
     render(<MfaSetupCard enabled={false} frameless pendingToken="pend-7" />);
     await screen.findByText('PENDSECRET23456789');
@@ -135,16 +135,16 @@ describe('MfaSetupCard — pendingToken (login-phase mandated enrollment)', () =
     fireEvent.change(screen.getByLabelText(/enter the 6-digit code/i), {
       target: { value: '654321' },
     });
-    const submit = screen.getByRole('button', { name: 'Verify & sign in' });
+    const submit = screen.getByRole('button', { name: 'Verify and sign in' });
     expect(submit).toBeDisabled();
 
     const ack = screen.getByLabelText(/saved my recovery codes/i);
     fireEvent.click(ack);
-    expect(screen.getByRole('button', { name: 'Verify & sign in' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Verify and sign in' })).toBeEnabled();
 
     // Un-ticking re-disables — the gate is the checkbox, not a one-shot flag.
     fireEvent.click(ack);
-    expect(screen.getByRole('button', { name: 'Verify & sign in' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Verify and sign in' })).toBeDisabled();
   });
 
   it('suppresses the confirm-input autoFocus in pendingToken mode (reading order starts at the setup steps)', async () => {
@@ -153,6 +153,10 @@ describe('MfaSetupCard — pendingToken (login-phase mandated enrollment)', () =
     // The parent (login) owns focus on its mode heading; the code input must not
     // yank focus past the QR/secret/recovery-codes steps when the payload lands.
     expect(screen.getByLabelText(/enter the 6-digit code/i)).not.toHaveFocus();
+    // Nor does the first step take it: the login's mode heading keeps it.
+    const step = screen.getByText('1. Scan with your authenticator app');
+    expect(step).not.toHaveFocus();
+    expect(step).not.toHaveAttribute('tabindex');
   });
 
   it('reports an expired pending token at setup via onPendingExpired', async () => {
@@ -186,13 +190,13 @@ describe('MfaSetupCard — pendingToken (login-phase mandated enrollment)', () =
       target: { value: '000000' },
     });
     fireEvent.click(screen.getByLabelText(/saved my recovery codes/i));
-    fireEvent.click(screen.getByRole('button', { name: 'Verify & sign in' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Verify and sign in' }));
 
     expect(await screen.findByText('invalid code')).toBeInTheDocument();
     expect(onPendingExpired).not.toHaveBeenCalled();
     expect(onComplete).not.toHaveBeenCalled();
     // The form is still there for another attempt while the pending token lives.
-    expect(screen.getByRole('button', { name: 'Verify & sign in' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Verify and sign in' })).toBeInTheDocument();
   });
 
   it('treats a dead pending token at confirm as expiry (message names the pending session)', async () => {
@@ -208,7 +212,7 @@ describe('MfaSetupCard — pendingToken (login-phase mandated enrollment)', () =
       target: { value: '654321' },
     });
     fireEvent.click(screen.getByLabelText(/saved my recovery codes/i));
-    fireEvent.click(screen.getByRole('button', { name: 'Verify & sign in' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Verify and sign in' }));
 
     await waitFor(() => expect(onPendingExpired).toHaveBeenCalled());
   });
@@ -217,18 +221,18 @@ describe('MfaSetupCard — pendingToken (login-phase mandated enrollment)', () =
     setupMock.mockResolvedValue({ ...SETUP_PAYLOAD });
     render(<MfaSetupCard enabled={false} frameless />);
     // No auto-start: the explicit action button renders and nothing was called.
-    expect(screen.getByRole('button', { name: /enable two-factor/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /turn on two-factor/i })).toBeInTheDocument();
     expect(setupMock).not.toHaveBeenCalled();
     expect(enrollSetupMock).not.toHaveBeenCalled();
 
     // Session-authed enrollment keeps its existing flow: no saved-codes ack gate
     // (Cancel + re-setup remain available), and the code alone enables the submit.
-    fireEvent.click(screen.getByRole('button', { name: /enable two-factor/i }));
+    fireEvent.click(screen.getByRole('button', { name: /turn on two-factor/i }));
     await screen.findByText('PENDSECRET23456789');
     expect(screen.queryByLabelText(/saved my recovery codes/i)).toBeNull();
     fireEvent.change(screen.getByLabelText(/enter the 6-digit code/i), {
       target: { value: '654321' },
     });
-    expect(screen.getByRole('button', { name: 'Verify & enable' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Verify and turn on' })).toBeEnabled();
   });
 });

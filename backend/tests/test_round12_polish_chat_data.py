@@ -78,16 +78,20 @@ async def test_severity_by_day_series_read_critical_first_in_severity_colours() 
     assert out.ok, out.error
     assert_artifacts_render(out)
     series = next(a for a in out.artifacts if a.kind == "series")
-    assert [s["label"] for s in series.data["series"]] == ["Critical", "High", "Medium", "Low"]
-    assert [s["semantic"] for s in series.data["series"]] == ["critical", "high", "medium", "low"]
+    # Round 14 (SPEC §4.7.2): a severity chart draws all five levels in the canonical
+    # order, a level with no case included (Info, a flat line at zero here).
+    levels = ["Critical", "High", "Medium", "Low", "Info"]
+    assert [s["label"] for s in series.data["series"]] == levels
+    assert [s["semantic"] for s in series.data["series"]] == ["critical", "high", "medium", "low", "info"]
+    assert not any(series.data["series"][-1]["values"])
     assert series.data["ordered"] is True
     for view in ("stacked_bar", "line", "table"):
         block = _block(series, view)
         if block["type"] == "chart":
-            assert [s["label"] for s in block["series"]] == ["Critical", "High", "Medium", "Low"]
-            assert [s.get("semantic") for s in block["series"]] == ["critical", "high", "medium", "low"]
+            assert [s["label"] for s in block["series"]] == levels
+            assert [s.get("semantic") for s in block["series"]] == ["critical", "high", "medium", "low", "info"]
         else:
-            assert [c["label"] for c in block["columns"][1:]] == ["Critical", "High", "Medium", "Low"]
+            assert [c["label"] for c in block["columns"][1:]] == levels
 
 
 async def test_severity_categories_and_breakdown_table_read_in_canonical_order() -> None:
@@ -95,12 +99,15 @@ async def test_severity_categories_and_breakdown_table_read_in_canonical_order()
     out = await CaseStatsTool().run(make_ctx(cases=store), group_by="severity", metrics="count,mean_risk")
     assert out.ok, out.error
     cats = next(a for a in out.artifacts if a.kind == "categories")
-    assert cats.data["labels"] == ["Critical", "High", "Medium", "Low"]
-    assert cats.data["values"] == [3, 5, 2, 9]
+    # Round 14 (SPEC §4.7.2): a severity breakdown always names all five levels in the
+    # canonical order, a level with no case included (Info 0 here).
+    assert cats.data["kind"] == "severity"
+    assert cats.data["labels"] == ["Critical", "High", "Medium", "Low", "Info"]
+    assert cats.data["values"] == [3, 5, 2, 9, 0]
     for view in ("donut", "hbar", "table"):
         block = _block(cats, view)
         labels = (block["x"]["values"] if block["type"] == "chart" else [r[0] for r in block["rows"]])
-        assert labels == ["Critical", "High", "Medium", "Low"], view
+        assert labels == ["Critical", "High", "Medium", "Low", "Info"], view
     table = next(a for a in out.artifacts if a.kind == "table")
     assert [r[0] for r in table.data["rows"]] == ["Critical", "High", "Medium", "Low"]
     # The observation lists the groups the same way, so the answer names them in order.
@@ -116,7 +123,8 @@ async def test_a_new_view_of_a_stored_block_keeps_its_order() -> None:
         revised = revise_view(stored, view, block_id="b2")
         assert revised is not None, view
         labels = revised["x"]["values"] if revised["type"] == "chart" else [r[0] for r in revised["rows"]]
-        assert labels == ["Critical", "High", "Medium", "Low"], view
+        # The five named levels (Round 14 SPEC §4.7.2), Info included at 0.
+        assert labels == ["Critical", "High", "Medium", "Low", "Info"], view
 
 
 def test_a_top_n_of_an_ordered_breakdown_keeps_the_busiest_then_their_order() -> None:

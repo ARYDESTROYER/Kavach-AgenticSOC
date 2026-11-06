@@ -51,15 +51,19 @@ def test_auditor_is_read_only() -> None:
 
 
 def test_tier_grants() -> None:
-    # tier2 may close + reinvestigate + run playbooks; tier1 may not.
+    # tier2 may close + reinvestigate; tier1 may not. Round 14 (SPEC E8): both run
+    # runbooks (working a case's checklist is the analyst's core task); neither
+    # publishes one.
     assert can(UserRole.ANALYST_TIER2.value, "cases", "close")
     assert can(UserRole.ANALYST_TIER2.value, "cases", "reinvestigate")
-    assert can(UserRole.ANALYST_TIER2.value, "playbooks", "run")
+    assert can(UserRole.ANALYST_TIER2.value, "runbooks", "run")
     assert not can(UserRole.ANALYST_TIER1.value, "cases", "close")
-    assert not can(UserRole.ANALYST_TIER1.value, "playbooks", "run")
+    assert can(UserRole.ANALYST_TIER1.value, "runbooks", "run")
+    assert not can(UserRole.ANALYST_TIER1.value, "runbooks", "publish")
+    assert not can(UserRole.ANALYST_TIER2.value, "runbooks", "publish")
     assert can(UserRole.ANALYST_TIER1.value, "cases", "write")
-    # responder = tier1 + playbooks:run + proposals:approve
-    assert can(UserRole.RESPONDER.value, "playbooks", "run")
+    # responder = tier1 + runbooks:run + proposals:approve
+    assert can(UserRole.RESPONDER.value, "runbooks", "run")
     assert can(UserRole.RESPONDER.value, "proposals", "approve")
     assert not can(UserRole.RESPONDER.value, "cases", "close")
     # no role except super_admin/soc_manager may manage users

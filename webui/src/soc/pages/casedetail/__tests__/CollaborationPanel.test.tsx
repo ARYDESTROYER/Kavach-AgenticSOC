@@ -18,7 +18,6 @@ import { assigneeSelectValue, CollaborationThreadTab } from '../CollaborationPan
 import type {
   CaseActivityItem,
   CaseMessage,
-  CaseTask,
   PickableUser,
 } from '@/soc/pages/CaseDetail.api';
 import type { Case } from '@/lib/types';
@@ -65,19 +64,6 @@ const THREAD: CaseMessage[] = [
   },
 ];
 
-const TASKS: CaseTask[] = [
-  {
-    id: 'task-1',
-    case_id: CASE.case_id,
-    title: 'Revoke the IAM sessions and block the source IP',
-    assignee: 'alice',
-    status: 'in_progress',
-    order: 0,
-    created_at: '2026-07-20T10:47:15Z',
-    logs: [],
-  },
-];
-
 const ACTIVITY: CaseActivityItem[] = [
   {
     id: 'activity-1',
@@ -96,10 +82,6 @@ const PANEL_PROPS = {
   threadLoading: false,
   threadError: null,
   threadBusyId: null,
-  tasks: TASKS,
-  tasksLoading: false,
-  tasksError: null,
-  tasksBusyId: null,
   activity: ACTIVITY,
   activityLoading: false,
   activityError: null,
@@ -108,16 +90,13 @@ const PANEL_PROPS = {
   canComment: false,
   canWrite: false,
   onRetryThread: vi.fn(),
-  onRetryTasks: vi.fn(),
   onRetryActivity: vi.fn(),
   onPost: vi.fn(),
   onReply: vi.fn(),
   onEdit: vi.fn(),
   onDelete: vi.fn(),
   onReact: vi.fn(),
-  onAddTask: vi.fn(),
-  onTaskStatus: vi.fn(),
-  onTaskLog: vi.fn(),
+  onOpenTasks: vi.fn(),
   onAssigned: vi.fn(),
   liveCaseId: CASE.case_id,
   onLiveThread: vi.fn(),
@@ -142,7 +121,7 @@ describe('assigneeSelectValue (#11)', () => {
 describe('CollaborationThreadTab — Case Manager presentation', () => {
   beforeEach(() => useEventStreamMock.mockClear());
 
-  it('uses the compact two-lane layout without dropping discussion, ownership, tasks, activity, or live wiring', () => {
+  it('uses the compact two-lane layout without dropping discussion, ownership, the tasks pointer, activity, or live wiring', () => {
     const { container } = render(
       <CollaborationThreadTab {...PANEL_PROPS} presentation="case-manager" />,
     );
@@ -179,9 +158,9 @@ describe('CollaborationThreadTab — Case Manager presentation', () => {
     expect(within(discussion as HTMLElement).getByText('AI')).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Ownership' })).toBeInTheDocument();
     expect(screen.getByRole('combobox', { name: 'Assignee' })).toHaveTextContent('alice');
-    expect(
-      screen.getByText('Revoke the IAM sessions and block the source IP'),
-    ).toBeInTheDocument();
+    // Round 14 (D36): the case's tasks live in the Runbook tab under "Other tasks".
+    expect(screen.getByRole('heading', { name: 'Tasks' })).toBeInTheDocument();
+    expect(screen.getByText('Case tasks are in the Runbook tab, under Other tasks.')).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Activity' })).toBeInTheDocument();
     expect(
       screen.getByText('Escalated for analyst review; containment initiated.'),
@@ -219,35 +198,46 @@ describe('CollaborationThreadTab — Case Manager presentation', () => {
     ).toContainElement(threadSurface as HTMLElement);
   });
 
-  it('renders truthful independent task/activity failures and preserves last good data', () => {
-    const onRetryTasks = vi.fn();
+  it('renders a truthful activity failure, preserves last good data, and opens the Runbook tab for tasks', () => {
     const onRetryActivity = vi.fn();
+    const onOpenTasks = vi.fn();
     render(
       <CollaborationThreadTab
         {...PANEL_PROPS}
-        tasksError={new Error('tasks endpoint unavailable')}
         activityError={new Error('activity endpoint unavailable')}
-        onRetryTasks={onRetryTasks}
         onRetryActivity={onRetryActivity}
+        onOpenTasks={onOpenTasks}
         presentation="case-manager"
       />,
     );
 
-    expect(screen.getByText('Could not refresh tasks')).toBeInTheDocument();
-    expect(screen.getByText('tasks endpoint unavailable')).toBeInTheDocument();
-    expect(
-      screen.getByText('Revoke the IAM sessions and block the source IP'),
-    ).toBeInTheDocument();
     expect(screen.getByText('Could not refresh activity')).toBeInTheDocument();
     expect(screen.getByText('activity endpoint unavailable')).toBeInTheDocument();
     expect(
       screen.getByText('Escalated for analyst review; containment initiated.'),
     ).toBeInTheDocument();
 
-    screen.getByRole('button', { name: 'Retry tasks' }).click();
     screen.getByRole('button', { name: 'Retry activity' }).click();
-    expect(onRetryTasks).toHaveBeenCalledTimes(1);
+    screen.getByRole('button', { name: 'Open the Runbook tab' }).click();
     expect(onRetryActivity).toHaveBeenCalledTimes(1);
+    expect(onOpenTasks).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows the tasks themselves to a viewer with no Runbook tab, and no tasks section otherwise', () => {
+    const { rerender, container } = render(
+      <CollaborationThreadTab
+        {...PANEL_PROPS}
+        onOpenTasks={undefined}
+        tasksSection={<p>Standalone task list</p>}
+        presentation="case-manager"
+      />,
+    );
+    expect(screen.getByText('Standalone task list')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Open the Runbook tab' })).toBeNull();
+
+    rerender(<CollaborationThreadTab {...PANEL_PROPS} onOpenTasks={undefined} presentation="case-manager" />);
+    expect(container.querySelector('[data-collaboration-rail-section="tasks"]')).toBeNull();
+    expect(container.querySelectorAll('[data-collaboration-rail-section]')).toHaveLength(2);
   });
 
   it('keeps the last good discussion visible beside a retryable refresh failure', () => {
@@ -288,19 +278,9 @@ describe('CollaborationThreadTab — Case Manager presentation', () => {
   });
 
   it('uses canonical named loading states without inventing successful empty states', () => {
-    render(
-      <CollaborationThreadTab
-        {...PANEL_PROPS}
-        tasks={null}
-        tasksLoading
-        activity={null}
-        activityLoading
-      />,
-    );
+    render(<CollaborationThreadTab {...PANEL_PROPS} activity={null} activityLoading />);
 
-    expect(screen.getByRole('status', { name: 'Loading case tasks' })).toBeInTheDocument();
     expect(screen.getByRole('status', { name: 'Loading case activity' })).toBeInTheDocument();
-    expect(screen.queryByText('No tasks yet')).not.toBeInTheDocument();
     expect(screen.queryByText('No activity yet')).not.toBeInTheDocument();
   });
 

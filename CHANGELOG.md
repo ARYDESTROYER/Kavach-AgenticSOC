@@ -12,6 +12,133 @@ History is reconstructed from `git log`.
 
 ## [Unreleased]
 
+### Round 14
+
+- CI: the Bootstrap portability (macOS Bash 3.2) lane runs on `macos-15`, because GitHub
+  retired the `macos-14` runner image on 2 November 2026 and jobs on it no longer start. macOS 15
+  still ships Bash 3.2 as `/bin/bash`, so the lane proves the same thing.
+- Dashboards: the Overview item in the navigation opens a Dashboards library with four
+  built-in boards (Cyber Defence Center, marked Default, SOC operations, Detection and data
+  health, Executive summary) and your own boards. The Cyber Defence Center stays the landing
+  page. Built-ins are read-only; duplicate one to customise it. New GET /api/metrics/breakdown.
+- Audit log: server-paged, three scopes, search and filters in the URL, a record inspector with
+  what changed, and CSV or JSON Lines export (new audit:export permission, fresh sign-in,
+  audited). New audit fields on new rows: outcome, actor type, action, client, session, target,
+  changes, request id, run id. Every job artifact download is now audited.
+- Rules: clicking a detection rule anywhere opens a rule sheet with its alerts over time, top
+  sources and targets, latest alerts and cases, with "Open all in Logs". Logs and Cases accept an
+  exact rule filter.
+- Severity breakdowns use named levels per source scale, show the top rules per level, say what
+  was sampled, and offer Split by.
+- Runbooks: playbooks and runbooks are merged into one Runbooks feature: phased procedures with
+  five step kinds, deterministic matching with a reason, a per-case checklist with a Next step
+  card, Draft, In review, Published and Retired versions, and a library of 12 built-in runbooks.
+  Stored operator playbooks and runbooks are converted once at startup. For one release, the
+  /api/playbooks reads stay as deprecated aliases, and its writes answer 410. Automation rules
+  that ran a playbook now attach a runbook.
+- Console: a docked navigation rail that never moves its icons, the Overview's panels and header
+  on every page, grouped Settings, and many smaller fixes.
+- Chat: Timeouts and capacity defaults tripled (stored values that equal the old defaults move
+  once). The report summary wait stays below the web proxy limit.
+- Sign-in: the automatic sign-out notice no longer states how long the session lasted.
+- Closing fixes: chart time axes date their first tick and each new day, weeks read their start
+  day, severity charts keep all five levels, and the ATT&CK heatmap fits at 1,280 px; on a phone,
+  board Edit mode is a list with Move up and Move down; the rail toggle restyles the panel and
+  moves the page in consecutive frames (the page still moves once) and KPI numerals share one
+  line; the Cases Outcome cell names an unclassified case's source; "Open case trace" opens the
+  Investigation tab with the trace open; the runbook card keeps Confirm in place while an AI
+  draft waits; signed-out pages make no 401 requests and every spreadsheet writer defuses the
+  same formula leads; the Logs live-tail note says only the search box is ignored while a rule or
+  severity filter is applied.
+- Audit outcomes: engine, agent and notification rows record whether they succeeded, failed, were
+  denied or partly applied (a notify row says which channels did not send, or that none was
+  due), error text is stored with credentials removed, and an investigation group's outcome
+  follows how it ended (a group shown in part reads Not known until its steps are loaded).
+- Product help in chat links the page the answer is about, and Demo help follows the same rule.
+- Settings: in full-width sections a labelled switch or field stays next to its label, as in the
+  other sections.
+- Time range: the time range control is named from the words it shows ("Last 24h, time range"),
+  so a speech-input user can say what they see; the whole range stays its description and
+  tooltip.
+- Second acceptance fixes, permissions: the Console shows exactly what a person's roles allow,
+  because it reads the server's own access check (`GET /api/account/permissions`), so assigned
+  custom roles and denies count. Pages, panels and actions a role cannot use are not offered and
+  send no request; a typed link shows a plain refusal, and a permissions read that failed says so
+  with Retry. Metrics reads need `metrics:view`, and AI spend needs `cost:view` wherever it shows
+  (the budget status, a case's agent timeline, a case's own investigation cost and the recorded
+  cost in Agent effectiveness leave it out, and the Console says it is withheld or shows no cost
+  line). A job's file downloads only while its owner still
+  holds the permissions the job needed. Refused requests are recorded as Access denied, a refused
+  read at most once every five minutes per person, permission and route.
+- Second acceptance fixes, runbooks: a retired runbook opens read only and can be restored,
+  Reload after a save conflict loads the other person's version, the Applies when picker stays
+  open and Done adds a typed value, a send-back reason reaches the author, and each write is
+  announced once with focus kept in place. Runbook audit rows say what changed: a draft save
+  records every field it changed with its before and after (lookup filters as field = value
+  lines; long values cut to show where they changed; removed steps with their text). Every case
+  run row names the step by its title, evidence rows included, and seeded Demo rows read the
+  same. Approvals name the role by its label ("a SOC manager"). The Audit inspector names a
+  field inside a list by its item ("Step lookup: instructions", "Source wazuh: poll interval")
+  and shows an empty value as "Empty"; Preview as analyst announces once what it filled.
+- Second acceptance fixes, settings: in Demo Mode the Enrichment switches and cache lifetime save
+  to the Demo copy only, and provider key changes are audited; the save bar counts changed
+  values; a Discounted inference save is recorded under that name; the fresh sign-in dialog says
+  what it is for ("Sign in again to export audit events.") and a wrong password says so.
+
+Details:
+
+- **The /api/playbooks routes, precisely.** Reads (`GET /api/playbooks`, `/api/playbooks/{id}`,
+  `/coverage`, `/selection`, and `GET /api/runbooks?shape=v1`) stay as aliases with Deprecation
+  headers for one release; every old write, dry run and reload, `POST
+  /api/cases/{id}/run-playbook` and an old-shape body on `POST /api/runbooks` answer `410
+  runbooks_moved`.
+- **New and changed API.** `GET /api/audit` (scopes, `q`, `event`, `actor_contains`,
+  `actor_kind`, `outcome`, `target`, `ip`, signed `cursor`, `order`; `action` and `actor` keep
+  their meaning, and `limit` is now clamped to 1 to 200 with more rows through `next_cursor`, see
+  the upgrade notes), `GET /api/audit/count` and `GET /api/audit/records/{record_id}`;
+  the `audit_export` job; `GET /api/metrics/breakdown`; `GET /api/rules/summary`; `rule`,
+  `severity` and `severity_gte` on `GET /api/logs` (with `matched`) and `rule` and `closed_by`
+  on `GET /api/cases`; the governed runbook library under `/api/runbooks*`; runbook runs on a
+  case, `POST /api/runbooks/progress` and `POST /api/runbooks/lookup-test`; the
+  `open_steps_reason` and `require_open_steps_reason` close fields (`409 runbook_steps_open`)
+  and `open_steps_reason` on `case_lifecycle` jobs; `object_scoped` on `/api/auth/me`;
+  `X-Request-ID` on every response; `NotificationProvidersResponse.channel_types` is now a list
+  of type ids (the providers route answered 500 before); `RunbookLibrary.migrated_procedures`;
+  the `case.runbook` SSE frames on the new `runbooks` topic. Permissions: `audit:export`,
+  `runbooks:run` and `runbooks:publish` are new, and `playbooks:*` grants and denies map onto
+  `runbooks:*`.
+- **Audit before visible.** Settings, users, roles, account, sources, dashboards, runbook and
+  run writes append their audit row first: when the audit log cannot be written they answer
+  `503 audit_unavailable` and change nothing. Sign-in, sign-out and session events never block
+  (a dropped row is logged and counted). Settings saves can answer `409 settings_conflict` after
+  three racing saves.
+- **Runbooks in the agent path.** The investigator receives the matched Published runbook in a
+  budgeted, fenced block (never a draft), and the matching runbook attaches to cases that need a
+  person after the decision is saved; `decide()` is unchanged and automatic closes never read a
+  run. Retrieval indexes Published runbook text only.
+- **Second acceptance API changes.** New `PUT /api/enrichment/config` (a strict partial of the
+  enrichment settings, `cache_ttl_seconds` from 0 to 2,592,000; answers
+  `EnrichmentConfigSaveResult`, `403` under the settings lock, `409 demo_mode_changed`), and
+  `cache_ttl_seconds`, `demo_active` and `demo_run_id` on `GET /api/enrichment/providers`; the
+  `enrichment.secrets_updated` audit action on provider key saves. `RunbookDetail.retired`,
+  `RunbookVersionListItem.review_notes`, and `role_labels` on `CaseRunbooks` and
+  `RunbookRunUpdate`. `GET /api/account/permissions` lists the caller's effective actions as
+  concrete actions. `GET /api/metrics` needs `metrics:view` (its `cost` part is `{}` without
+  `cost:view`) and `GET /api/usage/summary` needs `cost:view`, both ungated before; `GET
+  /api/feedback/stats` needs `metrics:view`; without `cost:view`, `GET /api/budget/status`
+  answers `null` spend fields, `GET /api/cases/{id}/timeline` `null` cost and tokens, every case
+  the API returns (`GET /api/cases`, `GET /api/cases/{id}`, `GET /api/scans`, the case JSON
+  export and each single-case response) a `null` `token_cost` (the `Case` schema now documents
+  it as nullable), and `GET /api/metrics/agent-improvement` an unavailable `recorded_case_cost`. A job file
+  answers `403 job_artifact_permission_lost` for a real loss and `503
+  job_permission_unverifiable` when the check cannot be confirmed.
+- **Removed.** The playbook engine (`backend/app/playbooks/`), the bundled playbook Markdown
+  (`backend/playbooks/`), the old runbook service and stores, the hidden Automated scans page
+  (`#/scans` redirects to Case Manager filtered to cases the AI agent closed) and the
+  open-versus-closed burndown chart, which no page drew.
+
+### Earlier rounds in this cycle
+
 **Round 13 (chat): dynamic suggestions and a neater chat.** A new chat opens on a short
 start screen directly above the message box: a greeting, a "Since 09:12: …" line saying
 what changed since your last visit, three or four suggested questions about your own data
@@ -1835,6 +1962,53 @@ and, just as importantly, makes each of these conditions a state an operator can
   finalization=pending`, so a row never claims a confirmed effect before it has run.
 
 ### Upgrade notes
+
+- **Round 14: Elasticsearch audit index.** Before Round 14 writers run on an Elasticsearch
+  state backend, apply `deploy/mappings/tlsoc-agent-audit.template.json` as the index template
+  `tlsoc-agent-audit-template`, then roll the audit write index (`POST
+  tlsoc-agent-audit/_rollover`). Until then a date-like value in a new audit row can map a field
+  as a date, and later audit-first writes answer `503 audit_unavailable`. Bootstrap cannot
+  tell whether the step was done, so it logs a warning naming the step on every start after
+  the first, even once the step is done (a deployment whose audit index was first created by
+  Round 14 needs nothing). The shipped template has no lifecycle settings, so where Storage &
+  retention is active the step also takes the audit index out of its lifecycle policy until
+  you put it back ([Applying the Round 14 audit
+  template](docs/operations/upgrades.md#applying-the-round-14-audit-template)).
+- **Round 14: audit before visible.** Settings and account changes now fail with `503
+  audit_unavailable` (nothing changed) when the audit log cannot be written. During an audit
+  outage on Elasticsearch state, `POST /api/setup/secrets` still applies `es_mgmt_api_key`,
+  `es_url` and `es_ca_cert` first, so a broken audit store key can be repaired.
+- **Round 14: `TRUSTED_PROXIES`.** The audit client address is read from `X-Forwarded-For`
+  only when the request came from a listed proxy (default the bundled Web UI service,
+  `tlsoc-webui`); a load balancer in front of the Web UI must be added to the list.
+- **Round 14: chat limits version 2.** A stored chat limit that equals the earlier default moves
+  once to the tripled value (lookups at once 12, tool timeout 45 s, model step timeout 900 s,
+  12 questions per person and 48 per backend); any other value an administrator chose is kept,
+  though a deliberate choice of exactly the old default moves too. The report AI summary wait
+  is capped at 280 s, below the Web UI proxy's limit.
+- **Round 14: runbook migration.** On the first start, stored playbooks and runbooks are
+  converted once into the runbook library, audited (one row per document plus a summary row):
+  valid content stays Published with an "Imported" badge and an immediate review date, content
+  that cannot be kept as it was becomes a Draft with a note, and retrieval is reprojected from
+  Published text only. The legacy namespaces are left as they were and read only through a
+  read-only decoder, so a rollback finds them unchanged. Automation rules that ran a playbook
+  now attach the matching runbook at fire time and write `run.attach_skipped` when they cannot.
+  RBAC: every stored `playbooks` grant and deny is mapped onto `runbooks` on load, and a layer
+  that granted `manage` also grants `runbooks:publish` once.
+- **Round 14: audit exports in Demo Mode** are refused (`409 audit_export_demo_mode`); the data
+  export manifest is schema 2.
+- **Round 14: audit API paging.** `GET /api/audit` keeps every earlier parameter's meaning, but
+  `limit` is now clamped to 1 to 200 (it was capped at 500; without `scope` the default stays
+  100), more rows come through `next_cursor`, and `total` now counts every matching row (exact
+  when `total_relation` is `eq`, a lower bound when it is `gte`) where before Round 14 it was the
+  number of rows returned.
+- **Round 14: Discounted inference permission.** The Flex and Batch policy moved from the Jobs
+  page to Settings → General → Discounted inference and saves with Settings, so changing it needs
+  `settings:manage` instead of `models:manage`; every built-in role holds both grants or neither.
+- **Round 14: retired settings keys.** `playbooks.enabled: false` becomes
+  `runbooks.investigator_guidance: false`; the earlier `runbooks.enabled: false` (stop reference
+  runbook retrieval) and `rag.use_runbooks: false` become `runbooks.rag_corpus: false`; the new
+  `runbooks.enabled` is always on after the upgrade, and `playbooks.llm_select` is dropped.
 
 - **Chat limits migration.** Review **Settings → General → Chat assistant** after
   upgrading: a stored configuration becomes Unlimited unless an operator had changed a

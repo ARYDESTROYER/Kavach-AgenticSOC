@@ -2,21 +2,19 @@
  * Chat assistant settings section (chat revamp SPEC §4.2): the curated editor for
  * `Preferences.chat_agent`.
  *
- * Compact groups on the shared single-card surface, the limits mode first (Round 12
- * SPEC D1): Question limits (Unlimited — the default: a question runs until it answers
- * or the analyst presses Stop, guarded only by the engine's loop guards — or Bounded,
- * which shows the per-question knobs, the rarely-touched ones behind "More limits"),
- * Spending (the optional chat daily limit, SPEC D5), Answers (one "Typed-out answers"
- * control: Off, Allowed (off by default) or Allowed (on by default), mapped onto
- * `allow_text_streaming` and `default_stream_mode`; the animated logo), Suggestions
- * (Round 13 SPEC-chat T31: `dynamic_starters`, questions computed from live data at no
- * AI cost), Timeouts and capacity
- * (the knobs that apply in both modes) and which indicators chat may send to enrichment
- * providers. The section is the ONE editor for this block: `advanced-schema.tsx` lists
- * `chat_agent` in `CURATED_SECTIONS`, so every knob of the block must be reachable here
- * (that is why the disclosures exist rather than leaving the long tail to All settings).
- * The bounded-only knobs are reachable by switching to Bounded; their stored values are
- * kept either way, so switching back and forth is lossless.
+ * Grouped panels (Round 14, SPEC §4.9.6, C9 option A), the limits mode first (Round 12
+ * SPEC D1): Question limits (Unlimited, the default: a question runs until it answers
+ * or the analyst presses Stop, guarded only by the engine's loop guards; or Bounded,
+ * which shows the per-question knobs as rows), Spending (the optional chat daily limit,
+ * SPEC D5), Answers (one "Typed-out answers" control: Off, Allowed (off by default) or
+ * Allowed (on by default), mapped onto `allow_text_streaming` and `default_stream_mode`;
+ * the animated logo), Suggestions (Round 13 SPEC-chat T31: `dynamic_starters`, questions
+ * computed from live data at no AI cost), Timeouts and capacity (the knobs that apply in
+ * both modes) and which indicators chat may send to enrichment providers. The section is
+ * the ONE editor for this block: `advanced-schema.tsx` lists `chat_agent` in
+ * `CURATED_SECTIONS`, so every knob of the block is reachable here. The bounded-only
+ * knobs are reachable by switching to Bounded; their stored values are kept either way,
+ * so switching back and forth is lossless.
  *
  * Validation mirrors the backend instead of inventing rules: the numeric ranges are
  * `ChatAgentConfig`'s `ge`/`le` (pinned by a test that reads `config.py`), the domain
@@ -31,18 +29,19 @@
  * model call is metered in the cost ledger whatever the mode (#6).
  */
 import * as React from 'react';
-import { ChevronDown } from 'lucide-react';
 
 import type { ChatAgentConfig, ChatLimitsMode } from '@/lib/types';
-import { cn } from '@/lib/cn';
 
-import { Button } from '@/ui/button';
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/ui/collapsible';
-import { NumberField } from '@/soc/components/NumberField';
+import {
+  NumberField,
+  defaultNumberFieldSize,
+  defaultShowSteppers,
+  type NumberFieldSize,
+} from '@/soc/components/NumberField';
 import { SegmentedControl } from '@/soc/components/SegmentedControl';
 import { TagInput } from '@/soc/components/TagInput';
 
-import { SectionTitle, SubHeader, SwitchPref, type SecProps } from './primitives';
+import { SettingRow, SettingsGroup, SettingsSection, type SecProps } from './primitives';
 
 /* -------------------------------------------------------------- contract --- */
 
@@ -50,16 +49,16 @@ import { SectionTitle, SubHeader, SwitchPref, type SecProps } from './primitives
 export const CHAT_AGENT_DEFAULTS: Readonly<ChatAgentConfig> = Object.freeze({
   max_model_calls: 5,
   max_tool_calls: 10,
-  max_parallel: 4,
-  tool_timeout_s: 15,
-  model_step_timeout_s: 300,
+  max_parallel: 12,
+  tool_timeout_s: 45,
+  model_step_timeout_s: 900,
   turn_timeout_s: 90,
   turn_token_ceiling: 60_000,
   final_reserve_tokens: 12_000,
   observation_chars: 6_000,
   final_max_tokens: 4_000,
-  max_concurrent_turns_per_user: 4,
-  max_concurrent_turns_global: 16,
+  max_concurrent_turns_per_user: 12,
+  max_concurrent_turns_global: 48,
   max_indicator_lookups: 3,
   max_indicator_lookups_per_conversation: 10,
   default_stream_mode: 'steps',
@@ -74,8 +73,8 @@ export const CHAT_AGENT_DEFAULTS: Readonly<ChatAgentConfig> = Object.freeze({
 
 /**
  * The knobs that are caps only in `bounded` mode (backend `ChatAgentConfig` docstring,
- * SPEC D1). The rest — lookups at once, the lookup and model-call timeouts, how many
- * questions run at once, indicator lookups — apply in both modes.
+ * SPEC D1). The rest (lookups at once, the lookup and model-call timeouts, how many
+ * questions run at once, indicator lookups) apply in both modes.
  */
 export const BOUNDED_ONLY_KNOBS: readonly ChatAgentNumericKey[] = [
   'max_model_calls',
@@ -126,15 +125,15 @@ export type ChatAgentNumericKey = {
 export const CHAT_AGENT_BOUNDS: Readonly<Record<ChatAgentNumericKey, readonly [number, number]>> = {
   max_model_calls: [1, 12],
   max_tool_calls: [1, 40],
-  max_parallel: [1, 8],
+  max_parallel: [1, 24],
   tool_timeout_s: [1, 120],
-  model_step_timeout_s: [5, 900],
+  model_step_timeout_s: [5, 1_800],
   turn_timeout_s: [10, 600],
   turn_token_ceiling: [4_000, 1_000_000],
   final_reserve_tokens: [1_000, 200_000],
   observation_chars: [1_500, 60_000],
   final_max_tokens: [256, 32_000],
-  max_concurrent_turns_per_user: [1, 10],
+  max_concurrent_turns_per_user: [1, 24],
   max_concurrent_turns_global: [1, 100],
   max_indicator_lookups: [0, 10],
   max_indicator_lookups_per_conversation: [0, 50],
@@ -162,7 +161,7 @@ export function normaliseInternalDomain(raw: string): string | null {
 
 /**
  * The block as the editor shows it: stored values over the defaults, then the same
- * cross-field repair `ChatAgentConfig._coherent` applies on save — the final-answer
+ * cross-field repair `ChatAgentConfig._coherent` applies on save: the final-answer
  * reserve must leave room for lookups inside the ceiling. Lookups at once is never
  * rewritten here: in Bounded mode one batch is limited by the per-question lookup budget
  * at run time ({@link effectiveParallel}, the backend's `effective_parallel`), so a
@@ -207,10 +206,29 @@ export const DYNAMIC_STARTERS_HELP =
 /**
  * Lookups that really run side by side in one step (backend
  * `ChatAgentConfig.effective_parallel`): the stored value, and in Bounded mode never more
- * than Lookups per question. Display only — never written back.
+ * than Lookups per question. Display only, never written back as such: a value the
+ * operator types or steps to is stored as entered.
  */
 export function effectiveParallel(cfg: Pick<ChatAgentConfig, 'limits_mode' | 'max_parallel' | 'max_tool_calls'>): number {
   return cfg.limits_mode === 'bounded' ? Math.max(1, Math.min(cfg.max_parallel, cfg.max_tool_calls)) : cfg.max_parallel;
+}
+
+/**
+ * The `defaultValue` of the Lookups at once field: the value its Reset stores, and the
+ * value the field compares with to decide whether to offer Reset.
+ *
+ * Reset always stores the shipped default, never the value Bounded mode shows for it, so
+ * a switch back to Unlimited shows the default again (SPEC D1, switching modes is
+ * lossless). In Bounded mode the field shows the value that applies
+ * ({@link effectiveParallel}, at most Lookups per question). When that is already what
+ * the default would apply (12 lookups at once against the default budget of 10 both run
+ * 10), Reset is not offered, so the value shown is returned. Typed and stepped values
+ * never pass through here: they are stored as entered, and Unlimited then shows them.
+ */
+export function parallelFieldDefault(cfg: Pick<ChatAgentConfig, 'limits_mode' | 'max_parallel' | 'max_tool_calls'>): number {
+  const shipped = CHAT_AGENT_DEFAULTS.max_parallel;
+  const applied = effectiveParallel(cfg);
+  return applied === effectiveParallel({ ...cfg, max_parallel: shipped }) ? applied : shipped;
 }
 
 /* -------------------------------------------------------------- rendering --- */
@@ -277,7 +295,7 @@ const MAIN_LIMITS: readonly LimitSpec[] = [
   },
 ];
 
-/** The bounded-mode long tail, behind "More limits". */
+/** The bounded-mode long tail, shown after the main limits. */
 const MORE_LIMITS: readonly LimitSpec[] = [
   {
     key: 'final_reserve_tokens',
@@ -296,7 +314,7 @@ const MORE_LIMITS: readonly LimitSpec[] = [
   },
 ];
 
-/** Knobs that apply in both modes, behind "Timeouts and capacity". */
+/** Knobs that apply in both modes, in "Timeouts and capacity". */
 const CAPACITY_LIMITS: readonly LimitSpec[] = [
   { key: 'max_parallel', label: 'Lookups at once', description: 'Run side by side in one step.' },
   { key: 'tool_timeout_s', label: 'Lookup timeout', description: 'Per lookup.', unit: 's' },
@@ -314,24 +332,6 @@ const LOOKUP_LIMITS: readonly LimitSpec[] = [
   { key: 'max_indicator_lookups', label: 'Per question', description: '0 turns indicator lookups off for chat.' },
   { key: 'max_indicator_lookups_per_conversation', label: 'Per conversation', description: 'Counts every lookup sent.' },
 ];
-
-function Disclosure({ label, children }: { label: string; children: React.ReactNode }) {
-  const [open, setOpen] = React.useState(false);
-  return (
-    <Collapsible open={open} onOpenChange={setOpen}>
-      <CollapsibleTrigger asChild>
-        <Button type="button" variant="ghost" size="sm" className="-ml-2 gap-1.5 text-muted-foreground">
-          <ChevronDown
-            className={cn('h-4 w-4 transition-transform motion-reduce:transition-none', open && 'rotate-180')}
-            aria-hidden
-          />
-          {label}
-        </Button>
-      </CollapsibleTrigger>
-      <CollapsibleContent>{children}</CollapsibleContent>
-    </Collapsible>
-  );
-}
 
 export function ChatAgentSection({ prefs, update }: SecProps) {
   const cfg = React.useMemo(() => coherentChatAgent(prefs.chat_agent), [prefs.chat_agent]);
@@ -355,7 +355,9 @@ export function ChatAgentSection({ prefs, update }: SecProps) {
   // the stepper never offers a value the server would repair. Lookups at once is
   // bounded by Lookups per question only where that is a cap (Bounded mode), and there
   // the field shows the value that really applies; the stored value is kept as is, so
-  // switching back to Unlimited shows it again (display only, never saved).
+  // switching back to Unlimited shows it again (display only, never saved). A value the
+  // operator types or steps to is stored as entered; its Reset stores the shipped default
+  // (`parallelFieldDefault`).
   const maxFor = (key: ChatAgentNumericKey): number => {
     const [, hi] = CHAT_AGENT_BOUNDS[key];
     if (key === 'max_parallel' && bounded) return Math.min(hi, cfg.max_tool_calls);
@@ -364,7 +366,7 @@ export function ChatAgentSection({ prefs, update }: SecProps) {
   };
   const shown = (key: ChatAgentNumericKey): number => (key === 'max_parallel' ? effectiveParallel(cfg) : cfg[key]);
   const defaultFor = (key: ChatAgentNumericKey): number =>
-    key === 'max_parallel' ? effectiveParallel({ ...cfg, max_parallel: CHAT_AGENT_DEFAULTS.max_parallel }) : CHAT_AGENT_DEFAULTS[key];
+    key === 'max_parallel' ? parallelFieldDefault(cfg) : CHAT_AGENT_DEFAULTS[key];
 
   const describe = (spec: LimitSpec): string =>
     spec.key === 'max_parallel' && bounded
@@ -386,163 +388,188 @@ export function ChatAgentSection({ prefs, update }: SecProps) {
     />
   );
 
+  // A row's control column is never narrower than its number field (SPEC §4.9.6): each
+  // field sizes itself to its digits, unit and steppers (a 7-digit token count with its
+  // unit needs 12rem), so a group takes the column its widest field needs, and its
+  // fields keep one right edge and one label measure.
+  const fieldSize = (spec: LimitSpec): NumberFieldSize => {
+    const min = CHAT_AGENT_BOUNDS[spec.key][0];
+    const max = maxFor(spec.key);
+    return defaultNumberFieldSize({
+      min,
+      max,
+      step: spec.step,
+      unit: spec.unit,
+      steppers: defaultShowSteppers({ min, max, step: spec.step }),
+    });
+  };
+  const columnFor = (specs: readonly LimitSpec[]): string | undefined => {
+    const sizes = specs.map(fieldSize);
+    if (sizes.includes('full')) return undefined; // the default 16rem column
+    return sizes.includes('md') ? '12rem' : sizes.includes('sm') ? '8rem' : '6rem';
+  };
+
+  const rowsFor = (specs: readonly LimitSpec[]) => {
+    const column = columnFor(specs);
+    return specs.map((spec) => (
+      <SettingRow key={spec.key} variant="field" controlWidth={column}>
+        {numberField(spec)}
+      </SettingRow>
+    ));
+  };
+
   return (
-    <div className="space-y-6">
-      <SectionTitle
-        title="Chat assistant"
-        sub="How the read-only assistant answers in Workspace and Case Manager chat: whether a question has limits, what chat may spend, typed-out answers, suggested questions, and which indicators it may send to enrichment providers."
-      />
-
-      <section className="space-y-4">
-        <SubHeader title="Question limits" />
-        <div className="space-y-1.5">
-          {/* SegmentedControl names itself with aria-label only, so the visible label is
-              plain text beside it (a <label> would point at no control). */}
-          <p className="text-sm font-medium leading-none text-foreground">Limits per question</p>
-          <SegmentedControl
-            aria-label="Limits per question"
-            aria-describedby={limitsHelpId}
-            size="sm"
-            options={LIMITS_OPTIONS}
-            value={mode}
-            onValueChange={(value) => set({ limits_mode: value })}
-          />
-          {/* Linked to the switch and polite: a mode change reads what the mode means. */}
-          <p
-            id={limitsHelpId}
-            aria-live="polite"
-            className="max-w-3xl text-xs leading-relaxed text-muted-foreground"
-            data-testid="chat-limits-help"
-          >
-            {LIMITS_MODE_HELP[mode]}
-          </p>
-        </div>
+    <SettingsSection title="Chat assistant">
+      <SettingsGroup
+        title="Question limits"
+        caption="Whether a question runs until it is answered, or within fixed limits."
+      >
+        {/* The segmented control names itself with aria-label; its help line is linked
+            and polite, so a mode change reads what the mode means. */}
+        <SettingRow
+          variant="control"
+          label="Limits per question"
+          help={LIMITS_MODE_HELP[mode]}
+          helpId={limitsHelpId}
+          liveHelp
+          helpTestId="chat-limits-help"
+          control={
+            <SegmentedControl
+              aria-label="Limits per question"
+              aria-describedby={limitsHelpId}
+              size="sm"
+              options={LIMITS_OPTIONS}
+              value={mode}
+              onValueChange={(value) => set({ limits_mode: value })}
+            />
+          }
+        />
         {bounded ? (
-          <>
-            <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3" data-testid="chat-bounded-limits">
-              {MAIN_LIMITS.map(numberField)}
-            </div>
-            <Disclosure label="More limits">
-              <div className="grid gap-4 pt-3 sm:grid-cols-2 xl:grid-cols-3">{MORE_LIMITS.map(numberField)}</div>
-            </Disclosure>
-          </>
+          <div className="divide-y divide-border/70" data-testid="chat-bounded-limits">
+            {rowsFor([...MAIN_LIMITS, ...MORE_LIMITS])}
+          </div>
         ) : null}
-      </section>
+      </SettingsGroup>
 
-      <section className="space-y-4 border-t border-border/70 pt-4">
-        <SubHeader title="Spending" />
+      <SettingsGroup
+        title="Spending"
+        caption="Chat is outside the daily AI budget. Every chat call is still in the cost ledger."
+      >
         <div ref={capSwitchRef}>
-          <SwitchPref
+          <SettingRow
+            variant="switch"
             label="Daily chat spending limit"
             help={CHAT_CAP_HELP}
             checked={capOn}
-            onChange={(on) => set({ chat_daily_cap_usd: on ? (cfg.chat_daily_cap_usd ?? CHAT_CAP_STARTING_USD) : null })}
+            onCheckedChange={(on) => set({ chat_daily_cap_usd: on ? (cfg.chat_daily_cap_usd ?? CHAT_CAP_STARTING_USD) : null })}
           />
         </div>
         {capOn ? (
-          <NumberField
-            label="Limit per day"
-            description="US dollars of chat spending per day (UTC). 0 turns the limit off."
-            value={cfg.chat_daily_cap_usd ?? CHAT_CAP_STARTING_USD}
-            min={0}
-            step={CHAT_CAP_STEP_USD}
-            stepperStep={CHAT_CAP_STEPPER_USD}
-            // A cleared field goes back to the starting amount, never to one cent.
-            defaultValue={CHAT_CAP_STARTING_USD}
-            unit="USD"
-            onChange={(value) => {
-              const cap = chatCapFromField(value);
-              set({ chat_daily_cap_usd: cap });
-              // 0 switched the limit off and this field goes away: if focus went with it,
-              // put it on the switch (never away from a control the operator moved to).
-              if (cap === null) window.setTimeout(focusCapSwitch, 0);
-            }}
-            className="max-w-xs"
-          />
+          // Unbounded, so the field plans for 12rem (a dollar amount, its cents and the steppers).
+          <SettingRow variant="field" controlWidth="12rem">
+            <NumberField
+              label="Limit per day"
+              description="US dollars of chat spending per day (UTC). 0 turns the limit off."
+              value={cfg.chat_daily_cap_usd ?? CHAT_CAP_STARTING_USD}
+              min={0}
+              step={CHAT_CAP_STEP_USD}
+              stepperStep={CHAT_CAP_STEPPER_USD}
+              // A cleared field goes back to the starting amount, never to one cent.
+              defaultValue={CHAT_CAP_STARTING_USD}
+              unit="USD"
+              onChange={(value) => {
+                const cap = chatCapFromField(value);
+                set({ chat_daily_cap_usd: cap });
+                // 0 switched the limit off and this field goes away: if focus went with it,
+                // put it on the switch (never away from a control the operator moved to).
+                if (cap === null) window.setTimeout(focusCapSwitch, 0);
+              }}
+            />
+          </SettingRow>
         ) : null}
-      </section>
+      </SettingsGroup>
 
-      <section className="space-y-4 border-t border-border/70 pt-4">
-        <SubHeader title="Answers" />
-        <div className="space-y-1.5">
-          <p className="text-sm font-medium leading-none text-foreground">Typed-out answers</p>
-          <SegmentedControl
-            aria-label="Typed-out answers"
-            aria-describedby={typedHelpId}
-            size="sm"
-            orientation="both"
-            className="h-auto flex-wrap"
-            options={TYPED_OPTIONS}
-            value={typed}
-            onValueChange={(value) => set(typedAnswersPatch(value))}
-          />
-          <p id={typedHelpId} aria-live="polite" className="text-xs text-muted-foreground" data-testid="typed-answers-help">
-            {TYPED_ANSWERS_HELP[typed]}
-          </p>
-        </div>
-        <SwitchPref
+      <SettingsGroup title="Answers" caption="How answers arrive, and what the logo does while chat works.">
+        <SettingRow
+          variant="control"
+          wide
+          label="Typed-out answers"
+          help={TYPED_ANSWERS_HELP[typed]}
+          helpId={typedHelpId}
+          liveHelp
+          helpTestId="typed-answers-help"
+          control={
+            <SegmentedControl
+              aria-label="Typed-out answers"
+              aria-describedby={typedHelpId}
+              size="sm"
+              orientation="both"
+              className="h-auto flex-wrap"
+              options={TYPED_OPTIONS}
+              value={typed}
+              onValueChange={(value) => set(typedAnswersPatch(value))}
+            />
+          }
+        />
+        <SettingRow
+          variant="switch"
           label="Animate the logo while chat works"
           help="A thin ring turns around the logo while an answer is being written. A custom logo itself never moves; the Chat item keeps its own indicator either way."
           checked={cfg.animated_brand !== false}
-          onChange={(value) => set({ animated_brand: value })}
+          onCheckedChange={(value) => set({ animated_brand: value })}
         />
-      </section>
+      </SettingsGroup>
 
-      <section className="space-y-4 border-t border-border/70 pt-4">
-        <SubHeader title="Suggestions" />
-        <SwitchPref
+      <SettingsGroup title="Suggestions" caption="Starter questions worked out from your own data, at no model cost.">
+        <SettingRow
+          variant="switch"
           label={DYNAMIC_STARTERS_LABEL}
           help={DYNAMIC_STARTERS_HELP}
           checked={cfg.dynamic_starters !== false}
-          onChange={(value) => set({ dynamic_starters: value })}
+          onCheckedChange={(value) => set({ dynamic_starters: value })}
         />
-      </section>
+      </SettingsGroup>
 
-      <section className="space-y-3 border-t border-border/70 pt-4">
-        <SubHeader title="Timeouts and capacity" />
-        <p className="max-w-3xl text-xs leading-relaxed text-muted-foreground">
-          These apply in both modes: how many lookups run side by side, how long a lookup or a silent model call
-          may take, and how many questions can run at the same time.
-        </p>
-        <Disclosure label="Show timeouts and capacity">
-          <div className="grid gap-4 pt-3 sm:grid-cols-2 xl:grid-cols-3">{CAPACITY_LIMITS.map(numberField)}</div>
-        </Disclosure>
-      </section>
+      <SettingsGroup
+        title="Timeouts and capacity"
+        caption="These apply in both modes: lookups side by side, how long a lookup or a silent model call may take, and how many questions run at once."
+      >
+        {rowsFor(CAPACITY_LIMITS)}
+      </SettingsGroup>
 
-      <section className="space-y-4 border-t border-border/70 pt-4">
-        <SubHeader title="Indicator lookups" />
-        <p className="max-w-3xl text-xs leading-relaxed text-muted-foreground">
-          Chat sends an indicator to your enrichment providers only when it appears in the analyst&apos;s own
-          words or in this question&apos;s results. Private, reserved and loopback addresses and single-label
-          hosts are never sent.
-        </p>
-        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">{LOOKUP_LIMITS.map(numberField)}</div>
-        <TagInput
-          label="Internal domains"
-          description="Domain suffixes that are never sent, with their subdomains. Press Enter or comma to add."
-          placeholder="corp.example"
-          value={cfg.internal_domains}
-          max={MAX_INTERNAL_DOMAINS}
-          validate={(tag) =>
-            normaliseInternalDomain(tag) ? null : 'Enter a domain suffix such as corp.example.'
-          }
-          onChange={(next) => {
-            const out: string[] = [];
-            for (const tag of next) {
-              const value = normaliseInternalDomain(tag);
-              if (value && !out.includes(value)) out.push(value);
+      <SettingsGroup
+        title="Indicator lookups"
+        caption="An indicator goes to your enrichment providers only when it is in the analyst's own words or this question's results. Private, reserved and loopback addresses and single-label hosts are never sent."
+      >
+        {rowsFor(LOOKUP_LIMITS)}
+        <SettingRow variant="field" wide mono>
+          <TagInput
+            label="Internal domains"
+            description="Domain suffixes that are never sent, with their subdomains. Press Enter or comma to add."
+            placeholder="corp.example"
+            value={cfg.internal_domains}
+            max={MAX_INTERNAL_DOMAINS}
+            validate={(tag) =>
+              normaliseInternalDomain(tag) ? null : 'Enter a domain suffix such as corp.example.'
             }
-            set({ internal_domains: out.slice(0, MAX_INTERNAL_DOMAINS) });
-          }}
-          className="max-w-2xl"
-        />
-        <SwitchPref
+            onChange={(next) => {
+              const out: string[] = [];
+              for (const tag of next) {
+                const value = normaliseInternalDomain(tag);
+                if (value && !out.includes(value)) out.push(value);
+              }
+              set({ internal_domains: out.slice(0, MAX_INTERNAL_DOMAINS) });
+            }}
+          />
+        </SettingRow>
+        <SettingRow
+          variant="switch"
           label="Allow e-mail lookups"
           help="Off by default: e-mail addresses are personal data."
           checked={cfg.allow_email_lookup}
-          onChange={(value) => set({ allow_email_lookup: value })}
+          onCheckedChange={(value) => set({ allow_email_lookup: value })}
         />
-      </section>
-    </div>
+      </SettingsGroup>
+    </SettingsSection>
   );
 }

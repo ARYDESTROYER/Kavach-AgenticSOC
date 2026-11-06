@@ -302,6 +302,40 @@ MAX_REPORT_SUMMARY_CHARS = 1_200
 MAX_REPORT_NEXT_STEPS = 5
 
 # --------------------------------------------------------------------------- #
+# Round 14 RUNBOOKS (SPEC §4.10.6). The one runbook feature replaces the two legacy
+# procedure stores (``PLAYBOOKS_NS`` and ``RUNBOOKS_NS`` above, which stay readable
+# for one release). Both namespaces use the shared KV store, so there is no new ES
+# index, SQL table or migration (#12). On Elasticsearch every document holds one
+# opaque canonical-JSON string under a fixed ``runbook_``-prefixed field (the
+# reports-store rule), so runbook text never grows the shared mapping.
+#
+# * ``runbook_library``: ``index`` (the bounded list of runbook summaries),
+#   ``rb:<id>`` (every version of one operator runbook) and ``migration`` (the
+#   one-shot marker of §4.10.17). Built-in runbooks are package data, never stored.
+# * ``runbook_runs``: ``case:<case_id>`` (every run on one case, with live step
+#   progress) and ``ledger:<yyyy-mm>`` (one compact row per run, written only on
+#   run-level transitions, keyed on the UTC month the run started).
+#
+# Runbooks and runs are human workflow: neither ever feeds ``case_manager.decide()``
+# or ``AutoClosePolicy`` (#3), and automatic closes never read run state.
+# --------------------------------------------------------------------------- #
+RUNBOOK_LIBRARY_NS = "runbook_library"
+RUNBOOK_LIBRARY_INDEX_KEY = "index"
+RUNBOOK_LIBRARY_MIGRATION_KEY = "migration"
+RUNBOOK_LIBRARY_DOC_KEY_PREFIX = "rb:"
+RUNBOOK_RUNS_NS = "runbook_runs"
+RUNBOOK_RUNS_CASE_KEY_PREFIX = "case:"
+RUNBOOK_RUNS_LEDGER_KEY_PREFIX = "ledger:"
+
+# Audit actors written by the Round 14 runbook feature (SPEC §4.10.9, §4.10.17). The
+# selector writes the investigator's ``DECISION`` row naming the winning runbook (the
+# successor of the legacy ``playbook_selector`` actor, which stays readable forever);
+# the migration writes one ``runbook.migrated`` row per converted legacy document as
+# a system actor.
+RUNBOOK_SELECTOR_ACTOR = "runbook_selector"
+RUNBOOK_MIGRATION_ACTOR = "runbook_migration"
+
+# --------------------------------------------------------------------------- #
 # Invisible / reordering code points (chat revamp SPEC §7.6 + BLOCKS.md amendment 4).
 #
 # ONE code-point table shared by the prompt-side marker normaliser
@@ -534,6 +568,10 @@ class ActionType(str, Enum):
     SYSTEM_UPDATE = "system_update"  # operator-authorized supervised app update / rollback
     # --- Chat revamp (additive; ADVISORY audit row — never feeds decide(), #3). ---
     REPORT = "report"              # a chat report created / edited / summarised / deleted
+    # --- Round 14 (additive; never feeds decide(), #3). ---
+    # A person searched or opened the audit log (SPEC D8): one row per user per
+    # distinct filter set per 5 minutes, always written to the control audit.
+    AUDIT_VIEW = "audit_view"
 
 
 class UserRole(str, Enum):
@@ -685,6 +723,9 @@ class JobKind(str, Enum):
     TIERED_RESET = "tiered_reset"
     STORAGE_LIFECYCLE_APPLY = "storage_lifecycle_apply"
     REPLAY_EXPERIMENT = "replay_experiment"
+    # Round 14 (SPEC §4.5.6): one CSV or JSON Lines file of the audit rows that match
+    # the Audit page's filters, oldest first, at most 100,000 rows.
+    AUDIT_EXPORT = "audit_export"
 
 
 class JobStatus(str, Enum):

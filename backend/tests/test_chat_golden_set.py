@@ -346,6 +346,20 @@ LOGS = [
     G("Search logs for user pnair", tools=("search_logs",), params=(P("search_logs", user="pnair", contains=None),)),
     G("Events by severity this week", tools=("log_stats",),
       params=(P("log_stats", group_by="severity", window="this_week"),)),
+    # Round 14 (asks 6 and 7): the operator's two questions, verbatim. Rule rows open the
+    # rule sheet, severities are named levels with the rules behind each, never raw numbers.
+    G("What are the top detection rules this week?", tools=("log_stats",),
+      params=(P("log_stats", group_by="rule", window="this_week"),)),
+    G("Show alerts by severity for the last 3 days", tools=("log_stats",),
+      params=(P("log_stats", group_by="severity", time_from="now-3d"),),
+      contains=("by severity, **",), absent=("`30.0`", "`10.0`")),
+    # The operator's open question, verbatim: the detection rules that fired (a table
+    # whose rows open each rule) and the events over time, never a case list.
+    G("Any suspicious activity in last 3 days ?", tools=("log_stats",), max_lookups=1,
+      params=(P("log_stats", group_by="rule", time_from="now-3d"),),
+      forbid=(P("search_cases"), P("app_help")), contains=("by rule, ", "not confirmed threats")),
+    G("Anything suspicious today?", tools=("log_stats",), max_lookups=1,
+      params=(P("log_stats", group_by="rule", window="today"),)),
     G("Show me the logs for today", tools=("search_logs",), params=(P("search_logs", window="today", contains=None),)),
 ]
 
@@ -483,9 +497,11 @@ INVESTIGATION_ROUTES = [
       params=(P("search_logs", user="jdoe@corp.example"),),
       forbid=(*_NO_CASE_PICK, P("lookup_indicator", indicator="corp.example"),
               P("search_logs", contains="corp.example"))),
-    G("Investigate rule demo_impossible_travel this week", tools=("case_stats",),
-      params=(P("case_stats", rule="demo_impossible_travel", group_by="verdict", window="this_week"),),
-      forbid=_NO_CASE_PICK, contains=("from rule `demo_impossible_travel` this week",)),
+    # The HITL pair's Splunk case carries Splunk's impossible-travel rule (Round 14
+    # FX3b2: a seeded case carries the rule its Demo source raises), opened this week.
+    G("Investigate rule LP-ES-RISK-1004 this week", tools=("case_stats",),
+      params=(P("case_stats", rule="LP-ES-RISK-1004", group_by="verdict", window="this_week"),),
+      forbid=_NO_CASE_PICK, contains=("from rule `LP-ES-RISK-1004` this week",)),
     G("Investigate source Wazuh", tools=("source_health", "search_logs"),
       params=(P("search_logs", source_id="demo-wazuh"),), forbid=_NO_CASE_PICK,
       contains=("Recent events from `Wazuh Manager (endpoint telemetry)`",)),
@@ -510,6 +526,62 @@ APP_HELP = [
     G("What version is this?", kind="product_help", tools=("app_help", "app_status")),
     G("How do reports work?", kind="product_help", tools=("app_help",), max_lookups=1),
     G("How do I export a report as PDF?", kind="product_help", tools=("app_help",), max_lookups=1),
+    # Round 14 tasks lead with the page that does them (closing acceptance integ-01): audit
+    # events are exported from the Audit log's Export menu, never from Data export, and a
+    # runbook starts from Case Manager's Take action menu, never from Runbooks settings.
+    *(G(q, kind="product_help", tools=("app_help",), max_lookups=1,
+        contains=("Start in **Platform › Audit log**;",), absent=("Data export", "Analytics › Jobs**;"))
+      for q in ("How do I export audit events to CSV?", "How do I export audit events as JSON Lines?")),
+    G("How do I start a runbook on a case?", kind="product_help", tools=("app_help",), max_lookups=1,
+      contains=("Start in **Triage › Case Manager**;", "**Start runbook** in **Take action**"),
+      absent=("Settings › Integrations › Runbooks",)),
+    G("How do I read an audit record?", kind="product_help", tools=("app_help",), max_lookups=1,
+      contains=("Start in **Platform › Audit log**",)),
+    # Searching and filtering the audit log stay on the Audit log: "filter" and "log" also
+    # name the Logs page, which must not take these questions.
+    G("How do I search the audit log?", kind="product_help", tools=("app_help",), max_lookups=1,
+      contains=("Start in **Platform › Audit log**",), absent=("Data export",)),
+    *(G(q, kind="product_help", tools=("app_help",), max_lookups=1,
+        contains=("Start in **Platform › Audit log**;",), absent=("Triage › Logs",))
+      for q in ("How do I filter the audit log by actor?", "How do I filter the audit log by outcome?")),
+    # The Cases list has its own Rule filter; the Runbooks publishing card keeps its match
+    # beside Case Manager's Start runbook words.
+    G("How do I filter cases by rule?", kind="product_help", tools=("app_help",), max_lookups=1,
+      contains=("Start in **Triage › Cases**",), absent=("Triage › Logs",)),
+    G("How do I require a distinct approver for runbooks?", kind="product_help", tools=("app_help",),
+      max_lookups=1, contains=("Start in **Intelligence › Runbooks** or **Settings › Integrations › Runbooks › "
+                               "Publishing and review**;",)),
+    *(G(q, kind="product_help", tools=("app_help",), max_lookups=1, contains=("Start in **Overview › Dashboards**",))
+      for q in ("How do I duplicate a dashboard?", "How do I find a built-in dashboard?")),
+    # The plainest wording of the audit export task also leads with the Audit log.
+    G("How do I export the audit log?", kind="product_help", tools=("app_help",), max_lookups=1,
+      contains=("Start in **Platform › Audit log**;",), absent=("Data export",)),
+    # The audit record's list and the export rules share words with other tasks ("host",
+    # "logs", "CSV", "JSON Lines"); they name no destination, so these never borrow the
+    # audit log's page (re-review finding).
+    *(G(q, kind="product_help", tools=("app_help",), max_lookups=1, absent=("Platform › Audit log",))
+      for q in ("How do I filter logs by host?", "How do I ingest JSON Lines files from S3?",
+                "How do I download logs as CSV?", "How do I ingest CSV logs?")),
+    # Logs carries its own exact filters; runbook steps are written in the library.
+    G("How do I filter logs by rule?", kind="product_help", tools=("app_help",), max_lookups=1,
+      contains=("Start in **Triage › Logs**;",), absent=("Start in **Triage › Cases**",)),
+    G("How do I add a runbook step?", kind="product_help", tools=("app_help",), max_lookups=1,
+      contains=("Start in **Intelligence › Runbooks**;",), absent=("Start in **Triage › Case Manager**",)),
+    # Other pages' CSV tasks never borrow the audit log's Exporting section's page, nor the
+    # application-state Data export: a chart, table or report is exported in Workspace Chat.
+    *(G(q, kind="product_help", tools=("app_help",), max_lookups=1,
+        contains=("Start in **Triage › Workspace › Chat**",), absent=("Platform › Audit log", "Data export"))
+      for q in ("How do I export a chart as CSV?", "How do I export cases to CSV?",
+                "How do I export chat answers to CSV?", "How do I export a severity breakdown to CSV?")),
+    # The demo is reset in its own settings, never in the Danger zone's factory reset.
+    G("How do I reset the demo?", kind="product_help", tools=("app_help",), max_lookups=1,
+      contains=("Start in **Settings › Organization › Experimental & Demo**",), absent=("Danger zone",)),
+    G("How do I search logs?", kind="product_help", tools=("app_help",), max_lookups=1,
+      contains=("Start in **Triage › Logs**;",), absent=("Platform › Audit log",)),
+    # Publishing happens in the Runbooks library, not in the Runbooks settings (the
+    # Case Manager keywords once lowered 'runbook' so far that a link was lost).
+    G("How do I publish a runbook?", kind="product_help", tools=("app_help",), max_lookups=1,
+      contains=("Start in **Intelligence › Runbooks**",)),
 ]
 
 PLATFORM = [
@@ -1032,7 +1104,10 @@ OUT_OF_SCOPE = [
     G("Tell me the story of this case", tools=("get_case",), fields={"case_id": "demo-00000539-0004"},
       # A8: the case's display number leads (every seeded Demo case has one), then what
       # it is about.
-      contains=("re:^\\*\\*`CASE-\\d{6}`\\*\\* \\(`identity_signin` on user `dsingh`\\)",),
+      # The seeded case carries the rule its Demo source raises, and Entra ID names the
+      # person by the user principal name its sign-in records carry (Round 14 FX3b2).
+      contains=("re:^\\*\\*`CASE-\\d{6}`\\*\\* \\(`Entra ID Protection: atypical travel sign-in` on user "
+                "`dsingh@lumenpay\\.example`\\)",),
       absent=("I can't write",)),
     G("Tell me the story of what happened today", any_of=("search_cases",), absent=("I can't write",)),
     # A response answer names only what reads as a host or user name, never "of" or "out".
@@ -1081,7 +1156,7 @@ CLOSING = [
                      ("Contain the issue on host srv-db-01", "host `srv-db-01`"))),
     G("Contain the damage now", kind="product_help", max_lookups=0, contains=(_CANT_ACT,), absent=_UNRELATED),
     G("Change the theme to dark", kind="product_help", tools=("app_help",), max_lookups=1,
-      contains=(_CANT_CHANGE, "Do it in the console: **Settings › Account › Appearance & customization**")),
+      contains=(_CANT_CHANGE, "Do it in the console: **Settings › Account › Appearance**")),
     G("Change the case ID format", kind="product_help", tools=("app_help",), max_lookups=1,
       contains=(_CANT_CHANGE, "**Settings › General › Cases**")),
     *(G(q, kind="conversation", max_lookups=0, contains=("I can't write jokes, poems or stories.", _SCOPE),
@@ -1090,9 +1165,31 @@ CLOSING = [
                 "Tell me stories about cyber attacks")),
 ]
 
+# Round 14 closing acceptance (integ-07): playbooks are runbooks now (SPEC §3.1). Asking
+# where they went, or where the runbooks are, is a question about the console: Product
+# help that names the Runbooks page, never a search of runbook text.
+RUNBOOKS_MOVED = [
+    *(G(q, kind="product_help", tools=("app_help",), max_lookups=1,
+        contains=("Start in **Intelligence › Runbooks**", "**Runbooks › Coming from an earlier version**"),
+        absent=("could not read", "seed:mitre"), forbid=(P("search_knowledge"),))
+      for q in ("Where are playbooks now?", "Where did playbooks go?", "What happened to playbooks?")),
+    G("Where are runbooks?", kind="product_help", tools=("app_help",), max_lookups=1,
+      contains=("Start in **Intelligence › Runbooks**",), absent=("could not read", "seed:mitre"),
+      forbid=(P("search_knowledge"),)),
+    # A help question about one part of the library keeps its own words: the runbook
+    # settings are under Settings, not the library page (FX5m review).
+    G("Where are the runbook settings?", kind="product_help", tools=("app_help",), max_lookups=1,
+      contains=("Settings › Integrations › Runbooks",), absent=("Coming from an earlier version",),
+      forbid=(P("search_knowledge"),)),
+    # The retired name inside a question about one runbook stays a knowledge search.
+    G("What's the playbook to go with a phishing case?", kind="data", tools=("search_knowledge",),
+      max_lookups=1, contains=("Phishing or reported suspicious email",),
+      absent=("Coming from an earlier version",), forbid=(P("app_help"),)),
+]
+
 GOLDEN: list[G] = [*SCREENSHOT, *REPORTS, *CASE_COUNTS, *TRENDS, *COMPARISONS, *METRICS, *COST, *LOGS, *INTEL,
                    *CASES, *DEEP, *ENTITY_INVESTIGATIONS, *INVESTIGATION_ROUTES, *APP_HELP, *PLATFORM, *CLARIFY, *READ_ONLY, *REGRESSIONS, *REGRESSIONS_R2,
-                   *EXPLAIN_RECORDS, *OUT_OF_SCOPE, *CLOSING]
+                   *EXPLAIN_RECORDS, *OUT_OF_SCOPE, *CLOSING, *RUNBOOKS_MOVED]
 
 
 def test_the_golden_set_is_big_enough_and_has_every_screenshot_question() -> None:
@@ -1100,6 +1197,9 @@ def test_the_golden_set_is_big_enough_and_has_every_screenshot_question() -> Non
     assert len(questions) >= 120 and len(set(questions)) == len(questions)
     for verbatim in ("Create a report of lifetime performance pls thanks",
                      "Last 90 days or whatever reports you can",
+                     "What are the top detection rules this week?",
+                     "Show alerts by severity for the last 3 days",
+                     "Any suspicious activity in last 3 days ?",
                      ("The amount of total cases right now that are open, when were they all opened ? Segregate "
                       "month wise pls thanks")):
         assert verbatim in questions
@@ -1256,6 +1356,17 @@ def test_the_takeaway_check_reads_label_and_value_as_one_clause() -> None:
     assert _t15_violations(named_three, group)
     assert not _t15_violations("- Cases: **7** in W41.\n- False-positive rate: **42.9%** in W41.", group)
     assert not _t15_violations("Cases per hour: 17 Oct 19:00: 0 and 17 Oct 22:00: 7. FP rate **42.9%**.", group)
+    # A word two labels share ("positive") never names the other figure: the
+    # false-positive rate's baseline that happens to equal the true-positive rate is the
+    # false-positive rate's figure, and the true-positive rate stays unnamed.
+    rates = [{"type": "kpi_group", "title": "Change", "items": [
+        {"label": "Cases", "value": 7, "unit": "count"},
+        {"label": "False-positive rate", "value": 28.57, "unit": "percent"},
+        {"label": "True-positive rate", "value": 42.86, "unit": "percent"}]}]
+    assert not _t15_violations("- Cases: **7** in W43 vs 7 in W42.\n"
+                               "- False-positive rate: **29%** in W43 vs 43% in W42.", rates)
+    assert _t15_violations("- Cases: **7** in W43.\n- False-positive rate: **29%** in W43.\n"
+                           "- True-positive rate: **43%** in W43.", rates)
 
 
 def _t15_violations(answer: str, blocks: Any) -> list[tuple[Any, list[Any]]]:
@@ -1272,8 +1383,14 @@ def _t15_violations(answer: str, blocks: Any) -> list[tuple[Any, list[Any]]]:
         if len(items) < 3:
             continue
         named: dict[frozenset[str], list[Any]] = {}
-        for item in items:
-            forms, keys = _t15_forms(item), _t15_keywords(item)
+        all_keys = [_t15_keywords(item) for item in items]
+        for at, item in enumerate(items):
+            forms, keys = _t15_forms(item), all_keys[at]
+            # The words that tell this figure from the group's others: "positive" names
+            # both rates, so only "false" or "true" says which one a clause states (the
+            # false-positive rate's baseline of 43% is not the true-positive rate's 43%).
+            others = set().union(*(k for i, k in enumerate(all_keys) if i != at))
+            keys = (keys - others) or keys
             if any(_t15_named(c, f) and any(k in c for k in keys) for c in clauses for f in forms):
                 named.setdefault(frozenset(forms), []).append(item.get("label"))
         if len(named) > 2:
@@ -1474,8 +1591,34 @@ def _check(g: G, response: dict[str, Any], client: TestClient | None = None) -> 
         assert client is not None
         for fig in g.figures:
             n = _store_count(client, _figure_window(fig, g, steps), fig.filters)
-            expected = fig.text.format(n=f"{n:,}")
+            expected = _figure_text(fig.text, n)
             assert expected in answer or (n == 0 and fig.zero in answer), (expected, n, context)
+
+
+_FIGURE_NOUN = re.compile(r"^((?: [a-z]+)*) cases\b")
+
+
+def test_a_figure_of_one_case_reads_in_the_singular() -> None:
+    assert _figure_text("**{n} cases**", 1) == "**1 case**"
+    assert _figure_text("**{n} cases**", 0) == "**0 cases**"
+    assert _figure_text("**{n} cases**", 1_204) == "**1,204 cases**"
+    assert _figure_text("**{n} cases are open right now**", 1) == "**1 case is open right now**"
+    assert _figure_text("**{n} open cases** were opened more than 7 days ago", 1) == (
+        "**1 open case** was opened more than 7 days ago")
+    assert _figure_text("of {n} closed cases", 1) == "of 1 closed case"
+    assert _figure_text("were false positives: {n} of", 1) == "were false positives: 1 of"
+
+
+def _figure_text(text: str, n: int) -> str:
+    """``text`` with ``{n}`` filled in, as the answer states it: a count of one takes
+    the singular noun and verb after it ("**1 case**", "**1 case is open right now**",
+    "**1 open case** was opened ..."), as the planner's ``_plural`` does, so a figure
+    check never depends on the day's store holding more than one matching case. Only
+    the words after the count change ("were false positives: 1 of 5" keeps its verb)."""
+    head, sep, tail = text.partition("{n}")
+    if sep and n == 1:
+        tail = _FIGURE_NOUN.sub(r"\1 case", tail).replace(" are ", " is ").replace(" were ", " was ")
+    return (head + sep + tail).format(n=f"{n:,}")
 
 
 def _figure_window(fig: Fig, g: G, steps: list[dict[str, Any]]) -> Any:
@@ -1579,6 +1722,53 @@ def test_golden_answers_are_deterministic(client: TestClient) -> None:
         strip = re.compile(r'"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+\+00:00"')
         assert strip.sub("", json.dumps(first["blocks"], sort_keys=True)) == strip.sub(
             "", json.dumps(second["blocks"], sort_keys=True))
+
+
+def test_the_operator_rule_and_severity_answers_open_their_detail(client: TestClient) -> None:
+    """Round 14 (SPEC §4.6.3, §4.7, acceptance A6b): the operator's two questions
+    reproduce with clickable rows. Every rule bar (and its table row) opens the rule
+    sheet of exactly that rule over the answer's window; the severity answer is a table of
+    the five named levels in fixed order, each level opening the Logs page filtered to it
+    and each rule in it the rule sheet; nothing is labelled with a raw source number."""
+    rules = _stream(client, "What are the top detection rules this week?")
+    chart = next(b for b in rules["blocks"] if b.get("artifact_kind") == "categories")
+    labels = chart["x"]["values"] if chart["type"] == "chart" else [r[0] for r in chart["rows"]]
+    drill = chart["drill"]
+    assert len(drill) == len(labels) and labels
+    for label, ref in zip(labels, drill):
+        assert ref["page"] == "rule" and ref["opts"]["rule"] == label
+        assert {"from", "to"} <= set(ref["opts"])
+    assert "table" in chart["allowed_views"]
+
+    severity = _stream(client, "Show alerts by severity for the last 3 days")
+    table = next(b for b in severity["blocks"] if b.get("artifact_kind") == "categories")
+    assert table["type"] == "table" and table["columns"][0]["label"] == "Severity"
+    names = [row[0].split(" (")[0] for row in table["rows"]]
+    assert names == ["Critical", "High", "Medium", "Low", "Info"]
+    payload = table["severity"]
+    assert [lv["level"] for lv in payload["levels"]] == ["critical", "high", "medium", "low", "info"]
+    shares = [lv["share"] for lv in payload["levels"] if lv["count"]]
+    assert abs(sum(shares) - 100.0) <= 0.1 * len(shares)
+    for level, ref in zip(payload["levels"], table["drill"]):
+        assert ref["page"] == "logs" and ref["opts"]["severity"] == level["level"]
+        for rule in level["rules"]:
+            assert rule["drill"]["page"] == "rule" and rule["drill"]["opts"]["rule"] == rule["key"]
+    assert "30.0" not in json.dumps(table["rows"])
+    # The Demo sources count exactly (every event fits the newest 200): no sample stated.
+    assert payload["sample"]["exact"] is True and "sampled" not in (table.get("caption") or "")
+
+    # "Any suspicious activity in last 3 days ?": the rules as a table whose every row
+    # opens that rule's sheet over the answer's window, then the events over time.
+    suspicious = _stream(client, "Any suspicious activity in last 3 days ?")
+    kinds = [(b.get("artifact_kind"), b["type"]) for b in suspicious["blocks"]]
+    assert kinds == [("categories", "table"), ("series", "chart")], kinds
+    rules_table, series = suspicious["blocks"]
+    assert rules_table["title"] == "Top detection rules (last 3 days)" and series["title"] == "Events over time"
+    rows = [row[0] for row in rules_table["rows"]]
+    assert rows and len(rules_table["drill"]) == len(rows)
+    for label, ref in zip(rows, rules_table["drill"]):
+        assert ref["page"] == "rule" and ref["opts"]["rule"] == label
+        assert {"from", "to"} <= set(ref["opts"])
 
 
 # --------------------------------------------------------------------------- #
@@ -2968,9 +3158,13 @@ def test_starter_answers_offer_chips_about_what_they_show(starter_client: TestCl
     ("What did the AI spend this week?", r"AI spend, this week"),
     ("Cases by severity in the last 7 days", r"Cases by severity, last 7 days"),
     # H1: the case's rule, never one generic title for every investigation, and
-    # (Round 13 polish) the case's display number first, the rule id as written.
-    ("Investigate case demo-00000539-0004", r"CASE-\d{6} identity_signin case"),
-    ("Give me an investigation brief for demo-00000539-0004", r"CASE-\d{6} brief, identity_signin"),
+    # (Round 13 polish) the case's display number first, the rule id as written. The
+    # seeded case carries the rule its Demo source raises (Round 14 FX3b2): a Splunk
+    # risk rule id rides; an Entra rule name with spaces is never title text, so that
+    # case falls back to its number alone.
+    ("Investigate case demo-00000539-0005", r"CASE-\d{6} LP-ES-RISK-1006 case"),
+    ("Give me an investigation brief for demo-00000539-0005", r"CASE-\d{6} brief, LP-ES-RISK-1006"),
+    ("Investigate case demo-00000539-0004", r"CASE-\d{6} investigation"),
     # Product help names the console page it points to.
     ("How do I connect a new log source?", r"(?!Console help$)[A-Z][\w &-]* help"),
     ("Create a report on case volume and false positives for the last 7 days",

@@ -320,7 +320,10 @@ async def test_manual_incident_is_five_source_zero_network_and_cooldown_aware(
         gen.NATIVE_STORY_RULE_IDS[key]["phishing_chain"]
         for key in ("splunk", "qradar", "wazuh", "syslog", "entra")
     }
-    incident_cases = [case for case in cases if incident_rules.intersection(case.rule_ids)]
+    # A seeded case of the same storyline carries its source's rule too (Round 14
+    # FX3b2); the incident's own cases are the ones the pipeline opened.
+    incident_cases = [case for case in cases if incident_rules.intersection(case.rule_ids)
+                      and not case.cluster_signature.startswith("demo-sig-")]
     assert len(incident_cases) >= 5
     for case in incident_cases:
         assert case.verdict.value == "TRUE_POSITIVE"

@@ -81,7 +81,7 @@ describe('Campaigns Recorrelate gate (bug #9)', () => {
   it('HIDES the policy workspace from a read-only user (no admin grant)', async () => {
     renderCampaigns(false);
     await waitFor(() => expect(listMock).toHaveBeenCalled());
-    expect(screen.queryByRole('tab', { name: /policy & schedule/i })).toBeNull();
+    expect(screen.queryByRole('tab', { name: /policy and schedule/i })).toBeNull();
     expect(screen.queryByRole('button', { name: /run correlation now/i })).toBeNull();
     expect(screen.queryByRole('switch', { name: /enable scheduled correlation/i })).toBeNull();
   });
@@ -89,7 +89,7 @@ describe('Campaigns Recorrelate gate (bug #9)', () => {
   it('EXPOSES the policy workspace and manual run action to an admin', async () => {
     renderCampaigns(true);
     await waitFor(() => expect(listMock).toHaveBeenCalled());
-    fireEvent.keyDown(screen.getByRole('tab', { name: /policy & schedule/i }), {
+    fireEvent.keyDown(screen.getByRole('tab', { name: /policy and schedule/i }), {
       key: 'Enter',
     });
     expect(await screen.findByRole('button', { name: /run correlation now/i })).toBeEnabled();

@@ -1,15 +1,15 @@
 /**
- * `WidgetGrid` tests (Round 5 / G7, CD3) — the two-mode grid.
+ * `WidgetGrid` tests (Round 5 / G7, CD3): the two-mode grid.
  *
  * The load-bearing assertions:
- *   1. VIEW mode renders every widget and imports ZERO react-grid-layout — the RGL
+ *   1. VIEW mode renders every widget and imports ZERO react-grid-layout: the RGL
  *      module factory (mocked with a spy) is NEVER evaluated in view mode. This is the
  *      "view mode + first paint ship zero grid JS" invariant, asserted at the module
  *      level (EditableGrid is the sole RGL importer and it is only reached via a
  *      dynamic import() from edit mode).
- *   2. EDIT mode lazily loads the RGL surface — the mocked RGL is evaluated + rendered.
- *   3. Keyboard MOVE — arrow keys on a widget's drag grip call `onMove` (WCAG 2.5.7).
- *   4. ALLOWLIST — an unknown widget type degrades to an "Unavailable widget" empty
+ *   2. EDIT mode lazily loads the RGL surface: the mocked RGL is evaluated + rendered.
+ *   3. Keyboard MOVE: arrow keys on a widget's drag grip call `onMove` (WCAG 2.5.7).
+ *   4. ALLOWLIST: an unknown widget type degrades to an "Unavailable widget" empty
  *      state, never throwing / never a rogue body.
  *
  * The widget bodies read shared data from `DashboardDataProvider`; the data calls are
@@ -21,7 +21,7 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 // ---- Spy on react-grid-layout to prove it is NOT imported in view mode ---- //
 const rglEvaluated = vi.hoisted(() => ({ count: 0 }));
 vi.mock('react-grid-layout', () => {
-  // This factory runs ONLY when `react-grid-layout` is first imported — i.e. when the
+  // This factory runs ONLY when `react-grid-layout` is first imported: i.e. when the
   // lazy EditableGrid chunk is loaded in edit mode. If it never runs, view mode pulled
   // no grid JS.
   rglEvaluated.count += 1;
@@ -38,7 +38,7 @@ vi.mock('react-grid-layout', () => {
     }),
   };
 });
-// The RGL CSS the lazy chunk imports — stub so the import resolves under vitest.
+// The RGL CSS the lazy chunk imports: stub so the import resolves under vitest.
 vi.mock('react-grid-layout/css/styles.css', () => ({}));
 vi.mock('react-resizable/css/styles.css', () => ({}));
 
@@ -58,12 +58,22 @@ const apiMocks = vi.hoisted(() => ({
   listCases: vi.fn(),
   standup: vi.fn(),
   get: vi.fn(),
+  usageSummary: vi.fn(),
 }));
-vi.mock('@/lib/api', () => ({ api: apiMocks }));
+// The real module keeps `ApiError` and `request` (a load error renders through them).
+vi.mock('@/lib/api', async (orig) => ({ ...(await orig<typeof import('@/lib/api')>()), api: apiMocks }));
+// "Awaiting a decision" counts open cases by AI verdict through the breakdown endpoint (F4).
+const { breakdownMock } = vi.hoisted(() => ({ breakdownMock: vi.fn() }));
+vi.mock('@/lib/api-dashboards', async (orig) => ({
+  ...(await orig<typeof import('@/lib/api-dashboards')>()),
+  getMetricsBreakdown: breakdownMock,
+}));
 
 import { WidgetGrid, type WidgetEditActions } from '@/soc/dashboard/WidgetGrid';
 import { DashboardDataProvider } from '@/soc/dashboard/DashboardDataProvider';
 import type { DashboardWidget } from '@/lib/types';
+
+import { OPEN_BY_VERDICT, USAGE } from '../dashboard/__tests__/dashboard-fixtures';
 
 function w(partial: Record<string, unknown>): DashboardWidget {
   return partial as unknown as DashboardWidget;
@@ -98,11 +108,13 @@ beforeEach(() => {
   apiMocks.listCases.mockResolvedValue({ cases: [], total: 0 });
   apiMocks.standup.mockResolvedValue({ enabled: false });
   apiMocks.get.mockResolvedValue({ sources: [] });
+  apiMocks.usageSummary.mockResolvedValue(USAGE);
+  breakdownMock.mockResolvedValue(OPEN_BY_VERDICT);
   fetchPostureMock.mockResolvedValue({ window_hours: 168, lifecycle: {}, quality: {}, aging: {}, sla: {} });
   fetchMitreMock.mockResolvedValue({ by_tactic: {}, top_techniques: [], covered_techniques: 0, total_techniques: 0 });
 });
 
-describe('WidgetGrid — VIEW mode (zero grid JS)', () => {
+describe('WidgetGrid: VIEW mode (zero grid JS)', () => {
   it('renders every widget WITHOUT importing react-grid-layout', async () => {
     renderGrid(<WidgetGrid widgets={WIDGETS} editing={false} />);
 
@@ -110,11 +122,11 @@ describe('WidgetGrid — VIEW mode (zero grid JS)', () => {
     expect(screen.getByTestId('widget-grid-view')).toBeInTheDocument();
     expect(screen.queryByTestId('rgl-mock')).not.toBeInTheDocument();
 
-    // Both widget bodies resolve their titles.
+    // Both widget bodies resolve their titles (Round 14 names).
     await waitFor(() => {
-      expect(screen.getByText('Needs-human queue')).toBeInTheDocument();
+      expect(screen.getByText('Awaiting a decision')).toBeInTheDocument();
     });
-    expect(screen.getByText('LLM cost (window)')).toBeInTheDocument();
+    expect(screen.getByText('AI spend')).toBeInTheDocument();
 
     // THE lock: react-grid-layout was never evaluated in view mode.
     expect(rglEvaluated.count).toBe(0);
@@ -139,7 +151,7 @@ describe('WidgetGrid — VIEW mode (zero grid JS)', () => {
   });
 });
 
-describe('WidgetGrid — EDIT mode (lazy RGL)', () => {
+describe('WidgetGrid: EDIT mode (lazy RGL)', () => {
   it('lazily loads the react-grid-layout surface in edit mode', async () => {
     renderGrid(
       <WidgetGrid

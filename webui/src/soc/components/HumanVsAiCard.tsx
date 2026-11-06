@@ -80,7 +80,11 @@ export interface HumanVsAiTotals {
  * payload's own meaning ("no verdicted case", "not recorded").
  */
 export interface HumanVsAiPoint {
-  /** Short plain-text UTC bucket label for the X axis. */
+  /**
+   * Short plain-text UTC bucket label. The chart dates its x ticks from `start` (the one
+   * time-axis rule), so this label is what a tick reads only when `start` is missing or
+   * does not parse.
+   */
   x: string;
   ai: number | null;
   human: number | null;
@@ -276,26 +280,44 @@ export function HumanVsAiCard({
         />
       </div>
 
-      <ul className="mt-3 grid grid-cols-3 gap-3" data-testid="human-vs-ai-totals">
+      {/* Two shared rows, labels then numerals: each total is a subgrid of them, so when a
+          label wraps in a narrow board cell ("AI agent" on two lines) the label row grows
+          for all three and every numeral still starts on one line, sharing one baseline
+          (the KPI strip's rule). The 4px row gap is the space between label and numeral. */}
+      <ul className="mt-3 grid grid-cols-3 gap-x-3 gap-y-1" data-testid="human-vs-ai-totals">
         {BANDS.map((band, i) => {
           const count = shown ? fmtNumber(shown[band.key]) : DASH;
           const pct = shares ? `${shares[i]}%` : DASH;
           return (
-            <li key={band.key} className="min-w-0" data-testid={`human-vs-ai-${band.key}`}>
-              <div className="flex items-center gap-1.5">
+            <li
+              key={band.key}
+              className="row-span-2 grid min-w-0 grid-cols-1 grid-rows-subgrid"
+              data-testid={`human-vs-ai-${band.key}`}
+            >
+              <div className="flex items-start gap-1.5">
                 {/* A SQUARE swatch: these totals are the chart's legend, and the legend
-                    mark matches the bar mark it keys. */}
+                    mark matches the bar mark it keys. It sits on the label's first line
+                    (5px centres 8px on the 18px line), so a wrapped label keeps it there. */}
                 <span
-                  className="h-2 w-2 shrink-0 rounded-[1px]"
+                  className="mt-[5px] h-2 w-2 shrink-0 rounded-[1px]"
                   style={{ backgroundColor: band.color }}
                   aria-hidden
                 />
-                <span className="min-w-0 truncate text-sm text-muted-foreground" title={band.title}>
+                {/* The label wraps rather than truncates: in a narrow board cell "AI agent"
+                    must never read "AI ag…" (the numerals below wrap the same way). */}
+                <span
+                  className="min-w-0 break-words text-sm text-muted-foreground"
+                  title={band.title}
+                  data-testid={`human-vs-ai-${band.key}-label`}
+                >
                   {band.label}
                 </span>
               </div>
               {/* 24px instrument numerals with 13px labels (Round 12 type ladder). */}
-              <div className="mt-1 flex min-w-0 flex-wrap items-baseline gap-x-1.5">
+              <div
+                className="flex min-w-0 flex-wrap items-baseline gap-x-1.5"
+                data-testid={`human-vs-ai-${band.key}-figure`}
+              >
                 <span className="text-3xl font-semibold leading-none tabular-nums text-foreground">
                   {count}
                 </span>

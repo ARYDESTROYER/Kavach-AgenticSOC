@@ -149,7 +149,7 @@ def test_custom_role_multi_inherit_unions() -> None:
             "inherits": [AUD, RESP],  # auditor (read-only) ∪ responder (run/approve)
         }],
     )
-    assert can("blend", "playbooks", "run", cfg) is True       # from responder
+    assert can("blend", "runbooks", "run", cfg) is True        # from responder
     assert can("blend", "proposals", "approve", cfg) is True   # from responder
     assert can("blend", "audit", "view", cfg) is True          # from auditor
 
@@ -159,12 +159,28 @@ def test_custom_role_chained_inheritance() -> None:
         enabled=True,
         custom_roles=[
             {"name": "mid", "inherits": [T1], "grants": {"cases": ["close"]}},
-            {"name": "top", "inherits": ["mid"], "grants": {"playbooks": ["run"]}},
+            {"name": "top", "inherits": ["mid"], "grants": {"cases": ["reinvestigate"]}},
         ],
     )
     assert can("top", "cases", "read", cfg) is True   # tier1 via mid
     assert can("top", "cases", "close", cfg) is True  # mid's grant
-    assert can("top", "playbooks", "run", cfg) is True
+    assert can("top", "cases", "reinvestigate", cfg) is True
+
+
+def test_custom_role_retired_procedure_grant_resolves_as_its_runbook_alias() -> None:
+    """Round 14 (SPEC §3.7): a custom role stored with the retired ``playbooks``
+    vocabulary keeps its meaning through inheritance: ``playbooks:run`` resolves as
+    ``runbooks:run`` (never silently dropped), and grants nothing it did not mean."""
+    cfg = RBACConfig(
+        enabled=True,
+        custom_roles=[
+            {"name": "mid", "inherits": [AUD]},
+            {"name": "top", "inherits": ["mid"], "grants": {"playbooks": ["run"]}},
+        ],
+    )
+    assert can("top", "runbooks", "run", cfg) is True
+    assert can("top", "runbooks", "manage", cfg) is False
+    assert can("top", "runbooks", "publish", cfg) is False
 
 
 def test_custom_role_cycle_is_safe() -> None:

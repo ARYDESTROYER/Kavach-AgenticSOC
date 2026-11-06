@@ -13,7 +13,7 @@
  */
 import * as React from 'react';
 import { act, cleanup, render, screen } from '@testing-library/react';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { NavOpts } from '@/lib/types';
 import { optsFromHash, pageHash, RouterProvider, samePageOpts, useRoute } from '../router';
@@ -113,6 +113,61 @@ async function settle() {
     await new Promise((resolve) => setTimeout(resolve, 20));
   });
 }
+
+describe('Metrics tab switches (Round 14, finding 19)', () => {
+  it('replace the history entry, so tab clicks never stack Back steps', async () => {
+    mount('#/cases');
+    act(() => route.navigate('metrics'));
+    await settle();
+    expect(window.location.hash).toBe('#/metrics');
+    const depth = window.history.length;
+    const replaceState = vi.spyOn(window.history, 'replaceState');
+    try {
+      act(() => route.navigate('metrics', { tab: 'performance' }));
+      expect(window.location.hash).toBe('#/metrics?tab=performance');
+      expect(probe()).toBe('metrics|{"tab":"performance"}');
+      act(() => route.navigate('metrics', { tab: 'posture' }));
+      expect(window.location.hash).toBe('#/metrics?tab=posture');
+      // Operational, the default, is the bare page.
+      act(() => route.navigate('metrics', { tab: 'operational' }));
+      expect(window.location.hash).toBe('#/metrics');
+      expect(probe()).toBe('metrics|{"tab":"operational"}');
+      expect(replaceState.mock.calls.map((call) => call[2])).toEqual([
+        '#/metrics?tab=performance',
+        '#/metrics?tab=posture',
+        '#/metrics',
+      ]);
+      expect(window.history.length).toBe(depth);
+    } finally {
+      replaceState.mockRestore();
+    }
+  });
+
+  it('still push a new entry when the navigation leaves the page', async () => {
+    mount('#/metrics?tab=posture');
+    const replaceState = vi.spyOn(window.history, 'replaceState');
+    try {
+      act(() => route.navigate('cases'));
+      await settle();
+      expect(window.location.hash).toBe('#/cases');
+      expect(replaceState).not.toHaveBeenCalled();
+    } finally {
+      replaceState.mockRestore();
+    }
+  });
+
+  it('open a retired tab as its own page: Agent effectiveness and Cost', async () => {
+    mount('#/metrics');
+    act(() => route.navigate('metrics', { tab: 'cost' }));
+    await settle();
+    expect(probe()).toBe('cost|null');
+    expect(window.location.hash).toBe('#/cost');
+    act(() => route.navigate('metrics', { tab: 'effectiveness' }));
+    await settle();
+    expect(probe()).toBe('effectiveness|null');
+    expect(window.location.hash).toBe('#/effectiveness');
+  });
+});
 
 describe("the real hash echo of an in-app navigate", () => {
   it.each(['__terminal__', '__active__'])('keeps the Overview %s status facet and its window', async (status) => {
@@ -224,11 +279,12 @@ describe('samePageOpts', () => {
     expect(samePageOpts('logs', { logQuery: 'x', from: 'now-1h' }, '#/logs?logQuery=y')).toEqual({ logQuery: 'y' });
     expect(samePageOpts('chat', { conversationId: 'c1', messageId: 'm1' }, '#/chat?conversationId=c1')).toEqual({ conversationId: 'c1' });
     expect(samePageOpts('cases', { severity: 'high', status: 'open' }, '#/cases')).toEqual({ severity: 'high' });
-    // Metrics serialises only the effectiveness tab: another tab is in-memory state.
-    const cost = { tab: 'cost' };
-    expect(samePageOpts('metrics', cost, '#/metrics')).toBe(cost);
-    expect(samePageOpts('metrics', { tab: 'effectiveness' }, '#/metrics')).toBeUndefined();
-    expect(samePageOpts('metrics', cost, '#/metrics?tab=effectiveness')).toEqual({ tab: 'effectiveness' });
+    // Metrics serialises its Performance and Posture tabs; Operational is the bare page.
+    const operational = { tab: 'operational' };
+    expect(samePageOpts('metrics', operational, '#/metrics')).toBe(operational);
+    expect(samePageOpts('metrics', { tab: 'posture' }, '#/metrics')).toBeUndefined();
+    expect(samePageOpts('metrics', operational, '#/metrics?tab=performance')).toEqual({ tab: 'performance' });
+    expect(samePageOpts('metrics', { tab: 'performance' }, '#/metrics?tab=posture')).toEqual({ tab: 'posture' });
   });
 
   it('returns the current object for its own hash, and undefined for nothing', () => {

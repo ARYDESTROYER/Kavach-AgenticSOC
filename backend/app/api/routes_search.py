@@ -1,21 +1,20 @@
-"""Global-search + audit-viewer routes — Round 5 (Coupling-E extraction).
+"""Global-search routes: Round 5 (Coupling-E extraction).
 
 A cohesive slice carved OUT of the ``routes.py`` monolith with **byte-identical
 paths, methods, auth dependencies, request/response bodies**. Handlers moved verbatim
 (imports re-homed); the router is mounted in ``main.py`` under the SAME ``require_auth``
 gate the monolith uses, so ``test_route_auth_coverage`` stays green.
 
-It owns two read-only operator surfaces:
+It owns one read-only operator surface:
 
 * ``GET /api/search`` — the command-palette / top-bar fuzzy jump (cases + sources +
   static nav targets). Gated on ``cases:read``.
-* ``GET /api/audit`` — bounded, read-only listing of the append-only audit (#2).
-  Gated on ``audit:view``.
 
-NON-NEGOTIABLES held: #9 — all matched case/source text and audit rows carry fenced
-UNTRUSTED log excerpts and are returned VERBATIM for the UI to render as PLAIN text.
-#2 — the audit index is append-only; this endpoint only reads ``records(...)`` and
-never mutates.
+The audit log read API (``GET /api/audit`` and its record and count routes) moved to
+``routes_audit.py`` in Round 14 with every old parameter keeping its meaning.
+
+NON-NEGOTIABLES held: #9, all matched case/source text carries operator/log data and
+is returned VERBATIM for the UI to render as PLAIN text.
 """
 
 from __future__ import annotations
@@ -44,14 +43,6 @@ class SearchResponse(BaseModel):
     nav: list[dict[str, Any]] = Field(default_factory=list)
 
 
-class AuditListResponse(BaseModel):
-    """The audit-viewer envelope. ``records`` are append-only audit rows returned
-    verbatim (fenced UNTRUSTED excerpts rendered PLAIN by the UI, #9)."""
-
-    records: list[dict[str, Any]] = Field(default_factory=list)
-    total: int = 0
-
-
 # --------------------------------------------------------------------------- #
 # Global search (W7c) — the command-palette / top-bar fuzzy jump.
 # --------------------------------------------------------------------------- #
@@ -67,14 +58,18 @@ _NAV_TARGETS: list[dict[str, str]] = [
     {"type": "page", "id": "investigate", "label": "Investigate", "keywords": "entity hunt"},
     {"type": "page", "id": "scans", "label": "Automated scans", "keywords": "auto scan queue"},
     {"type": "page", "id": "approvals", "label": "Approvals", "keywords": "proposals hitl pending"},
-    {"type": "page", "id": "intelligence", "label": "Intelligence", "keywords": "knowledge memory rag playbooks agents"},
-    {"type": "page", "id": "knowledge", "label": "Knowledge", "keywords": "rag corpus documents runbooks"},
+    {"type": "page", "id": "intelligence", "label": "Intelligence", "keywords": "knowledge memory rag agents personas"},
+    {"type": "page", "id": "knowledge", "label": "Knowledge", "keywords": "rag corpus documents imports"},
+    # Round 14 (SPEC §4.10.1): one Runbooks page replaces the playbook and runbook
+    # destinations, so both old words find it.
+    {"type": "page", "id": "runbooks", "label": "Runbooks", "keywords": "runbooks playbooks procedures checklists steps"},
     {"type": "page", "id": "memory", "label": "Memory", "keywords": "agent memory facts"},
     {"type": "page", "id": "metrics", "label": "Analytics", "keywords": "metrics dashboard charts"},
     {"type": "page", "id": "cost", "label": "Cost & usage", "keywords": "cost ledger tokens spend budget"},
     {"type": "page", "id": "standup", "label": "Standup", "keywords": "daily summary digest"},
-    {"type": "page", "id": "sources", "label": "Sources", "keywords": "connectors siem edr ingest data"},
-    {"type": "page", "id": "catalog", "label": "Integrations", "keywords": "catalog connectors marketplace"},
+    # ``#/catalog`` now redirects to Runbooks (Round 14, D44), so the integrations
+    # words find Sources instead of a page id that no longer opens integrations.
+    {"type": "page", "id": "sources", "label": "Sources", "keywords": "connectors siem edr ingest data integrations marketplace"},
     {"type": "page", "id": "settings", "label": "Settings", "keywords": "preferences configuration"},
     {"type": "settings", "id": "account", "label": "Account", "keywords": "settings profile me"},
     {"type": "settings", "id": "security", "label": "Security", "keywords": "settings auth mfa password"},
@@ -163,41 +158,3 @@ async def global_search(
         "sources": source_hits,
         "nav": nav_hits,
     }
-
-
-# --------------------------------------------------------------------------- #
-# Audit viewer (W7c) — bounded, read-only listing of the append-only audit (#2).
-# --------------------------------------------------------------------------- #
-@router.get("/audit", response_model=AuditListResponse)
-async def list_audit(
-    actor: str | None = None,
-    action: str | None = None,
-    surface: str | None = None,
-    case_id: str | None = None,
-    source_id: str | None = None,
-    from_: str | None = Query(None, alias="from"),
-    to: str | None = None,
-    limit: int = 100,
-    state: AppState = Depends(get_state),
-    _=Depends(require_permission("audit", "view")),
-) -> dict[str, Any]:
-    """Bounded, READ-ONLY list of the append-only audit records for the admin audit
-    viewer (W7c). Gated on ``audit:view`` (the auditor/admin grant). Reads the audit
-    repository's ``records(...)`` (#2 — never mutates; the index has no update/delete
-    path). NEWEST first, hard-capped. All text is returned verbatim for the UI to
-    render as PLAIN (#9 — audit rows carry fenced UNTRUSTED log excerpts)."""
-    cap = max(1, min(int(limit or 100), 500))
-    audit = getattr(state, "audit", None)
-    if audit is None:  # pragma: no cover — audit is always wired in real app/startup
-        return {"records": [], "total": 0}
-    rows = await audit.records(
-        actor=actor or None,
-        action_type=action or None,
-        surface=surface or None,
-        case_id=case_id or None,
-        source_id=source_id or None,
-        ts_from=from_ or None,
-        ts_to=to or None,
-        limit=cap,
-    )
-    return {"records": rows, "total": len(rows)}

@@ -103,13 +103,23 @@ describe('KpiTile delta (bug #2 — color=judgement, arrow=direction)', () => {
     expect(arrowDir(chip)).toBe('up');
   });
 
-  it("variant='bar' renders a left accent bar and stable test anchor", () => {
-    const { container } = render(<KpiTile variant="bar" label="MTTR" value="1h 4m" accent="high" />);
+  it("variant='bar' renders a left accent bar and stable test anchor (framed chrome)", () => {
+    const { container } = render(
+      <KpiTile variant="bar" chrome="framed" label="MTTR" value="1h 4m" accent="high" />,
+    );
     const tile = container.querySelector('[data-testid="kpi-mttr"]');
     expect(tile).not.toBeNull();
     // The bar edge is an aria-hidden span with the accent bg + left placement.
     const edge = tile!.querySelector('span[aria-hidden].bg-high');
     expect(edge).not.toBeNull();
     expect(edge!.className).toContain('left-0');
+  });
+
+  it("variant='bar' on the strip chrome (the Round 14 page default) draws no accent edge", () => {
+    const { container } = render(<KpiTile variant="bar" label="MTTR" value="1h 4m" accent="high" />);
+    const tile = container.querySelector('[data-testid="kpi-mttr"]');
+    expect(tile).not.toBeNull();
+    expect(tile!.querySelector('span[aria-hidden].bg-high')).toBeNull();
+    expect(tile!.className).not.toMatch(/\bborder\b/);
   });
 });

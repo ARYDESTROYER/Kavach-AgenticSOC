@@ -264,6 +264,12 @@ describe('ReportPanel', () => {
     // … and hides it while the summary is written.
     await waitFor(() => expect(screen.queryByTestId('report-summary-estimate')).toBeNull());
     expect(regenerate).not.toHaveAccessibleDescription();
+    // The one refresh control (SPEC §4.9.2): busy and disabled while it works, its label
+    // kept so the row never shifts.
+    expect(regenerate).toHaveAttribute('data-refresh-display', 'label');
+    expect(regenerate).toHaveAttribute('aria-busy', 'true');
+    expect(regenerate).toBeDisabled();
+    expect(regenerate).toHaveTextContent('Regenerate');
     await act(async () => {
       finish({
         report: withVersion(sampleReport(), 6, { summary: { ...sampleReport().summary!, based_on_version: 6 } }),

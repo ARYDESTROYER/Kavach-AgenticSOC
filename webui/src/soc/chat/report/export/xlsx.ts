@@ -12,7 +12,7 @@
  *     unit; text is an inline string.
  *
  * Defang (SYNTHESIS-chat P1-7: on by default, the export-menu toggle): the "Report"
- * sheet is a human document — title, AI summary, next steps, notes, prose — so its
+ * sheet is a human document (title, AI summary, next steps, notes, prose), so its
  * indicators are defanged like the Word, PDF, Markdown and HTML exports (a workbook
  * forwarded or opened in a tool that turns URL text into links carries no clickable
  * indicator). The per-table sheets are DATA and stay exact, like CSV: their cells, titles,
@@ -20,25 +20,30 @@
  * walker's table nodes do not depend on the toggle, so the two walks list the same
  * tables in the same order). Safety (#9):
  *   - every string goes through `xmlText` (XML 1.0-invalid characters dropped, markup
- *     characters escaped) — an inline string is never parsed as markup or a formula;
+ *     characters escaped): an inline string is never parsed as markup or a formula;
  *   - Excel and LibreOffice DECODE `_xHHHH_` inside cell text (ST_Xstring), so a literal
  *     `_x003D_HYPERLINK(…)` would become `=HYPERLINK(…)` and `_x0000_` a NUL after both
  *     checks above ran on the raw text. Every literal `_xHHHH_` is therefore written as
  *     `_x005F_xHHHH_` (the escaped underscore), so it reads back exactly as it was;
  *     sheet names drop the pattern;
- *   - a STRING cell that starts with `= + - @`, TAB or CR (also after spaces) takes the
- *     quote-prefix cell style (`quotePrefix="1"`): Excel shows it as typed and keeps it
- *     TEXT when it is edited, re-entered or pasted. When the text could still act as a
- *     formula outside Excel's own cell (re-saved as CSV and reopened) — any lead but a
- *     plain sign, or a sign followed by formula syntax (a call, DDE `|`, a reference
- *     `!`, quotes, operators) — it is ALSO prefixed with a literal `'` (`lib/csv`
- *     `defuseFormula`, the CSV rule), so a source-controlled `=HYPERLINK(…)` is never a
- *     live formula. A plain sign and words ("+10 vs previous window", "-3%") show no
- *     apostrophe;
+ *   - a STRING cell that opens like a formula takes the quote-prefix cell style
+ *     (`quotePrefix="1"`): Excel shows it as typed and keeps it TEXT when it is edited,
+ *     re-entered or pasted. "Opens like a formula" is the one shared rule set of every
+ *     spreadsheet the product writes (`lib/csv` `isFormulaLed`, the fixture
+ *     `lib/csv-formula.contract.json`, Round 14 SPEC §4.5.6): a first character, after
+ *     any run of spaces, of `= + - @`, TAB, CR, LF or the full-width `＝ ＋ － ＠`. When
+ *     the text could still act as a formula outside Excel's own cell (re-saved as CSV
+ *     and reopened), it is ALSO prefixed with a literal `'` (`defuseFormula`, the CSV
+ *     rule), so a source-controlled `=HYPERLINK(…)` is never a live formula. That is
+ *     every lead but a plain ASCII sign, and a plain sign followed by a name or a cell
+ *     reference (`+A1`, `-$B$2`, `+ total`, a row range `+1:1`) or by formula syntax (a
+ *     call, DDE `|`, a sheet reference `!`, quotes, operators, a line break). Only a
+ *     plain sign before a number and words ("+10 vs previous window", "-3%",
+ *     "+$1.20 today") shows no apostrophe;
  *   - sheet names are sanitised (no `[ ] : * ? / \`, no leading/trailing `'`, ≤ 31
  *     characters, unique ignoring case, never the reserved "History").
  */
-import { defuseFormula } from '@/lib/csv';
+import { defuseFormula, isFormulaLed } from '@/lib/csv';
 import { maybeDefang } from '@/lib/defang';
 
 import type { MdBlock, MdInline } from '../../ChatMarkdown';
@@ -140,7 +145,7 @@ export const STYLES_XML =
   '<xf numFmtId="171" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>' +
   '<xf numFmtId="172" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>' +
   '<xf numFmtId="3" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>' +
-  // 17–23: the text styles 0–6 with quotePrefix (a formula-led string stays text).
+  // 17 to 23: the text styles 0 to 6 with quotePrefix (a formula-led string stays text).
   '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" quotePrefix="1"/>' +
   '<xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" quotePrefix="1"/>' +
   '<xf numFmtId="0" fontId="2" fillId="0" borderId="0" xfId="0" applyFont="1" quotePrefix="1"/>' +
@@ -156,15 +161,21 @@ type XCell = { kind: 'text'; text: string; style?: number } | { kind: 'number'; 
 
 const text = (value: string, style?: number): XCell => ({ kind: 'text', text: value, style });
 
-/** A formula lead (`lib/csv`'s rule): `= + - @`, TAB or CR, also after spaces. */
-const FORMULA_LEAD = /^(?:[=+\-@\t\r]| +[=+\-@])/;
-/** A plain sign lead (`+` / `-`, maybe after spaces). */
+/** A plain ASCII sign lead (`+` / `-`, maybe after spaces); a full-width sign is not one. */
 const SIGN_LEAD = /^ *[+-]/;
 /**
  * After a plain sign, what could make the text compute or reach out if it were ever
- * evaluated: a call `(`, DDE `|`, a reference `!` / `[`, quotes, operators.
+ * evaluated: a call `(`, DDE `|`, a reference `!` / `[` or a range `:`, quotes, operators
+ * (also their full-width forms), a tab or a line break.
  */
-const FORMULA_SYNTAX = /[=+\-@()|!"'&^*/<>;[\]{}\\~`\t\r]/;
+const FORMULA_SYNTAX = /[=+\-@()|!"'&^*/<>:;[\]{}\\~`\t\r\n\uFF1D\uFF0B\uFF0D\uFF20]/;
+/**
+ * Right after a plain sign (and any spaces), the start of a name or a cell reference: a
+ * letter of any script or `_`, maybe behind the `$` of an absolute reference (`+A1`,
+ * `-$B$2`, `+TRUE`, `+ total`). Re-saved as CSV and reopened, `+A1` is the live formula
+ * `=+A1`, so such text keeps its apostrophe; a number (`+10`, `+$1.20`) does not.
+ */
+const NAME_AFTER_SIGN = /^ *\$?[\p{L}_]/u;
 
 /** A literal `_xHHHH_` (either case of `x`), which Excel and LibreOffice may decode in cell text. */
 const XSTRING_ESCAPE = /_(?=[xX][0-9A-Fa-f]{4}_)/g;
@@ -181,17 +192,20 @@ export interface SheetString {
 }
 
 /**
- * A STRING cell's text and style (cut to Excel's cell limit). A formula-led string takes
- * the quote-prefix style; it also keeps a literal `'` unless it is a plain sign followed
- * by plain words, which no spreadsheet could turn into a call, a link or a reference.
+ * A STRING cell's text and style (cut to Excel's cell limit). A formula-led string (the
+ * shared `isFormulaLed`) takes the quote-prefix style; it also keeps a literal `'` unless
+ * it is a plain ASCII sign before a number and plain words ("+10 vs previous window"),
+ * which no spreadsheet could turn into a call, a link or a reference. A sign before a
+ * name or a cell reference (`+A1`) keeps the apostrophe.
  */
 export function sheetString(value: string): SheetString {
   let text = value;
   let isQuoted = false;
-  if (FORMULA_LEAD.test(value)) {
+  if (isFormulaLed(value)) {
     isQuoted = true;
     const sign = SIGN_LEAD.exec(value);
-    const inert = sign !== null && !FORMULA_SYNTAX.test(value.slice(sign[0].length));
+    const rest = sign === null ? '' : value.slice(sign[0].length);
+    const inert = sign !== null && !FORMULA_SYNTAX.test(rest) && !NAME_AFTER_SIGN.test(rest);
     if (!inert) text = defuseFormula(value);
   }
   if (text.length > MAX_CELL_CHARS) text = `${text.slice(0, MAX_CELL_CHARS - 1)}…`;

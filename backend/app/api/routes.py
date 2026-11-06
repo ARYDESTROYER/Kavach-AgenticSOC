@@ -17,6 +17,11 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
 
 from .. import __version__
+from ..audit.changes import diff_changes
+from ..audit.context import audit_context
+from ..audit.identity import record_identity_event
+from ..audit.prefs_write import audited_prefs_write
+from ..audit.write import AuditUnavailableError, audited_write
 from ..auth.session_limits import (
     REMEMBER_MAX_SECONDS,
     effective_roles,
@@ -30,6 +35,7 @@ from ..config import (
     Preferences,
     SourceInstance,
     SuppressionRule,
+    map_retired_runbook_writes,
 )
 from ..connectors.registry import get_registry
 from ..constants import (
@@ -64,9 +70,10 @@ from ..engine.case_rationale import build_rationale as _build_rationale
 from ..engine.case_tags import CASE_TAG_MAX_CHARS, CASE_TAG_MAX_COUNT  # noqa: F401
 from ..engine.case_tags import CaseTagError, merge_case_tags
 from ..engine.correlation import cluster_from_events
-from ..engine.log_rows import browse_query, clamp_browse_limit, clamp_per_source_timeout
+from ..engine.log_rows import LogFilter, browse_query, clamp_browse_limit, clamp_per_source_timeout
 from ..engine.log_rows import browse_truncated as _browse_truncated
 from ..engine.log_rows import demo_browse_targets, fan_out, tenant_browse_targets
+from ..engine.log_rows import valid_rule_value as _valid_rule_value
 from ..engine.log_rows import log_message as _log_message  # noqa: F401
 from ..engine.log_rows import log_row as _log_row
 from ..engine.log_rows import source_can_browse as _source_can_browse
@@ -85,6 +92,8 @@ from ..llm.pricing import (
     models_by_provider,
 )
 from ..models import (
+    AUDIT_MAX_CHANGES,
+    AuditTarget,
     Case,
     CaseComment,
     ChatConversation,
@@ -93,7 +102,6 @@ from ..models import (
     ChatRequest,
     ChatResponse,
     Cluster,
-    Entity,
     FeedbackEntry,
     InvestigateRequest,
     Proposal,
@@ -101,13 +109,6 @@ from ..models import (
     StatusHistoryEntry,
     TraceStep,
     validate_avatar,
-)
-from ..playbooks.registry import (
-    MAX_PLAYBOOK_BYTES,
-    PlaybookConflictError,
-    PlaybookManagementError,
-    PlaybookNotFoundError,
-    PlaybookProtectedError,
 )
 from ..state import AppState
 from ..stores.base import CASE_STATUS_GROUPS
@@ -131,8 +132,8 @@ from ..utils import (
     to_millis,
 )
 from .deps import (
-    _audit_session,
     _bearer,
+    _sid_tag,
     current_user,
     current_username,
     evaluate_session,
@@ -427,7 +428,30 @@ async def health_build_info(state: AppState = Depends(get_state)) -> BuildInfoRe
 # Topics the UI may subscribe to. A single case-detail view may also request
 # 'cases:{case_id}' (exact-match topic) — allowed via the prefix below. ``chat``
 # (Round 12) carries only owner-targeted ``chat.turn`` frames (``realtime.publish_chat_turn``).
-_REALTIME_TOPICS = frozenset({"notifications", "inbox", "jobs", "cases", "agent", "chat"})
+_REALTIME_TOPICS = frozenset({"notifications", "inbox", "jobs", "cases", "agent", "chat", "runbooks"})
+
+# The grants a principal must hold for a topic to be served (Round 12 WP-CM: case
+# topics carry case ids and lifecycle status; Round 14 SPEC §4.10.15: the ``runbooks``
+# topic carries ``case.runbook`` progress frames, served only with BOTH grants). A topic
+# not listed here needs no grant beyond the stream itself.
+_REALTIME_TOPIC_GRANTS: dict[str, tuple[tuple[str, str], ...]] = {
+    "cases": (("cases", "read"),),
+    "runbooks": (("runbooks", "read"), ("cases", "read")),
+}
+
+
+def _topic_grants(topic: str) -> tuple[tuple[str, str], ...]:
+    """The grants ``topic`` needs (an exact case room ``cases:{id}`` needs ``cases:read``)."""
+    if topic.startswith("cases:"):
+        return _REALTIME_TOPIC_GRANTS["cases"]
+    return _REALTIME_TOPIC_GRANTS.get(topic, ())
+
+
+def gate_realtime_topics(topics: list[str], allows: Any) -> list[str]:
+    """``topics`` without those the caller may not receive (``allows(resource, action)``
+    is the caller's RBAC view). Pure; dropping an optional topic is not an access attempt,
+    so nothing is audited."""
+    return [t for t in topics if all(allows(resource, action) for resource, action in _topic_grants(t))]
 
 
 @router.get("/events")
@@ -468,17 +492,18 @@ async def realtime_events(
         allowed = list(_REALTIME_TOPICS)
     # Round 12 (WP-CM): case topics carry case ids and lifecycle status (the live
     # ``case.changed`` queue nudges and per-case rooms), so they are served only to a
-    # principal that may read cases. A no-op when auth or RBAC is off (``allows`` is
-    # then always true). Resolved WITHOUT the denial audit row ``_enforce`` writes:
-    # dropping an optional topic from a stream is not an access attempt.
-    if any(t == "cases" or t.startswith("cases:") for t in allowed):
+    # principal that may read cases; Round 14: the ``runbooks`` topic (``case.runbook``
+    # progress frames) only to one holding ``runbooks:read`` AND ``cases:read``. A no-op
+    # when auth or RBAC is off (``allows`` is then always true). Resolved WITHOUT the
+    # denial audit row ``_enforce`` writes: dropping an optional topic from a stream is
+    # not an access attempt.
+    if any(_topic_grants(t) for t in allowed):
         from .deps import resolve_access
 
         view = await resolve_access(request)
-        if not view.allows("cases", "read"):
-            allowed = [t for t in allowed if t != "cases" and not t.startswith("cases:")]
-            if not allowed:
-                return Response(status_code=204)
+        allowed = gate_realtime_topics(allowed, view.allows)
+        if not allowed:
+            return Response(status_code=204)
 
     user = current_user(request)
     username = getattr(user, "username", None) if user is not None else None
@@ -580,9 +605,76 @@ async def setup_status(
 # also dropped from ``deps.PUBLIC_API_PATHS``.)
 
 
+#: Runtime keys that reach the Elasticsearch the suite keeps its OWN state (and so its
+#: audit log) in when ``STATE_BACKEND=elasticsearch``: the management connection
+#: (``es/client.py`` builds ``_mgmt`` from ``es_mgmt_api_key`` with ``es_url`` and
+#: ``es_ca_cert``). ``es_api_key`` is NOT one of them: it is the read-only log key
+#: (``_ro``, non-negotiable #1), never reaches the audit store, and so can never
+#: repair it; during an outage it is refused like any other key.
+_STATE_STORE_KEY_FIELDS = frozenset({"es_mgmt_api_key", "es_url", "es_ca_cert"})
+
+
+def _secret_names_summary(prefix: str, updates: dict[str, Any]) -> str:
+    """``"<prefix>: anthropic_api_key set, es_url cleared"``: names only, never a value."""
+    parts = [
+        f"{name} {'cleared' if updates[name] in (None, '') else 'set'}"
+        for name in sorted(updates)
+    ]
+    return (f"{prefix}: " + ", ".join(parts))[:1000] if parts else prefix
+
+
+def _secret_name_changes(prefix: str, names: Any) -> list[dict[str, Any]]:
+    """One ``{field, secret: True}`` change per secret NAME (never a value, #10)."""
+    return [
+        {"field": f"{prefix}.{name}", "before": None, "after": None, "secret": True}
+        for name in sorted(str(n) for n in names)
+    ][:AUDIT_MAX_CHANGES]
+
+
+async def _repair_audit_store_keys(
+    state: AppState,
+    request: Request,
+    store_updates: dict[str, Any],
+    row_for: Callable[[dict[str, Any]], dict[str, Any]],
+) -> None:
+    """Apply the audit store's own keys while the audit log cannot be written.
+
+    On ``STATE_BACKEND=elasticsearch`` the audit log lives in the Elasticsearch these
+    keys reach, so a broken key there must stay fixable: refusing it for want of an
+    audit row would make the outage permanent. This is the one change applied before
+    its audit row, so it is limited to those keys (``_STATE_STORE_KEY_FIELDS``; the
+    caller audits the rest of the request normally), logged at error level every
+    time it is used whatever happens to the row, and recorded afterwards through the
+    new connection with ``applied_before_audit``. A row that still cannot be appended
+    is counted like a dropped identity row. A repointed ``es_url`` means the old
+    store never receives the row; the error log is the record there."""
+    names = ", ".join(sorted(store_updates))
+    await state.apply_secrets(store_updates)
+    logger.error(
+        "The audit log could not be written, so the audit store key(s) %s were applied "
+        "before their audit row (applied_before_audit=true); any other key in the "
+        "request is still audited first", names,
+    )
+    row = row_for(store_updates)
+    try:
+        await state.control_audit.record_strict(
+            **{k: v for k, v in row.items() if k not in ("sink", "expected_revision", "context")},
+            outcome="success", actor_type="human",
+            tool_input={"applied_before_audit": True, "reason": "audit store keys repaired"},
+            **audit_context(request).record_fields(),
+        )
+    except Exception as exc:  # noqa: BLE001 (the keys are applied; the drop is counted)
+        from ..audit.identity import DROPS
+
+        total = DROPS.note("settings.updated")
+        logger.error("Audit row for the audit store key repair (%s) could not be appended "
+                     "(%d dropped since start): %s", names, total, exc)
+
+
 @router.post("/setup/secrets")
 async def setup_secrets(
     body: SecretsUpdate,
+    request: Request,
     state: AppState = Depends(get_state),
     _=Depends(require_permission("settings", "manage")),
 ) -> dict[str, Any]:
@@ -595,17 +687,62 @@ async def setup_secrets(
     updates = body.model_dump(exclude_unset=True)
     if not updates:
         raise HTTPException(status_code=400, detail="No secret values provided")
-    await state.apply_secrets(updates)
+    # Round 14 (SPEC §3.6): audited before it applies, recording the key NAMES only.
+    def _row(names: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "sink": "control", "action": "settings.updated",
+            "target": {"type": "setting", "id": "runtime_keys", "label": "Runtime keys"},
+            "expected_revision": None,
+            "changes": _secret_name_changes("secrets", names),
+            "action_type": ActionType.STATUS, "actor": current_username(request) or "",
+            "surface": "setup", "context": audit_context(request),
+            "result_summary": _secret_names_summary("runtime keys", names),
+        }
+
+    try:
+        await audited_write(state, write=lambda: state.apply_secrets(updates), **_row(updates))
+    except AuditUnavailableError:
+        store_keys = sorted(_STATE_STORE_KEY_FIELDS.intersection(updates))
+        backend = str(getattr(state.secrets, "state_backend", "elasticsearch") or "elasticsearch")
+        if backend != "elasticsearch" or not store_keys:
+            raise
+        await _repair_audit_store_keys(
+            state, request, {name: updates[name] for name in store_keys}, _row,
+        )
+        # Every other key in the request is an ordinary audited change against the
+        # repaired store: refused with 503 (and not applied) when it is still down.
+        # The refusal names what WAS applied, never "nothing was changed".
+        others = {name: value for name, value in updates.items() if name not in store_keys}
+        if others:
+            try:
+                await audited_write(
+                    state, write=lambda: state.apply_secrets(others), **_row(others),
+                )
+            except AuditUnavailableError as exc:
+                raise AuditUnavailableError(
+                    "The audit log could not be written. The audit store "
+                    f"{'keys' if len(store_keys) > 1 else 'key'} {', '.join(store_keys)} "
+                    f"{'were' if len(store_keys) > 1 else 'was'} applied to repair it; "
+                    f"the other {'keys were' if len(others) > 1 else 'key was'} not changed: "
+                    f"{', '.join(sorted(others))}."
+                ) from exc
     return {"ok": True, "configured": state.secrets.configured_status()}
 
 
 @router.post("/setup/complete")
 async def setup_complete(
+    request: Request,
     state: AppState = Depends(get_state),
     _=Depends(require_permission("settings", "manage")),
 ) -> dict[str, Any]:
-    prefs = await state.mutate_prefs(
-        lambda current: current.model_copy(update={"setup_complete": True})
+    # Round 14 (SPEC §3.6): a settings write, audited before it becomes visible.
+    _before, prefs = await audited_prefs_write(
+        state,
+        transform=lambda current: current.model_copy(update={"setup_complete": True}),
+        actor=current_username(request) or "",
+        context=audit_context(request),
+        summary="first-run setup completed",
+        surface="setup",
     )
     if prefs.polling_enabled:
         state.poller.start()
@@ -788,9 +925,37 @@ async def list_sources(
     return {"sources": rows}
 
 
+def _source_secret_paths(sources: Any) -> list[str]:
+    """``sources[<id>].config.<field>`` for every connector field the source's manifest
+    marks secret (a RabbitMQ ``url`` carries its password), so a settings or source
+    row withholds the value whole instead of only reducing it (SPEC §4.5.3). Accepts
+    stored sources or request dicts; anything unreadable contributes nothing."""
+    reg = get_registry()
+    paths: list[str] = []
+    for src in sources or []:
+        if isinstance(src, dict):
+            sid, kind = src.get("id"), src.get("source_type")
+        else:
+            sid, kind = getattr(src, "id", None), getattr(src, "source_type", None)
+        if not isinstance(sid, str) or not sid:
+            continue
+        try:
+            manifest = reg.manifest(SourceType(str(getattr(kind, "value", kind))))
+        except ValueError:
+            continue
+        if manifest is None:
+            continue
+        paths.extend(
+            f"sources[{sid}].config.{field.key}"
+            for field in (*manifest.auth_fields, *manifest.config_fields) if field.secret
+        )
+    return paths
+
+
 @router.post("/sources")
 async def upsert_source(
     body: SourceUpsert,
+    request: Request,
     state: AppState = Depends(get_state),
     _=Depends(require_permission("sources", "manage")),
 ) -> dict[str, Any]:
@@ -825,6 +990,14 @@ async def upsert_source(
         # "N secrets" subline, the delete-confirm warning, and the Creation Date column
         # would all lie. Carry them forward from the existing source.
         existing = next((s for s in p.sources if s.id == body.id), None)
+        # The row says "updated" or "added" from what was stored when the request
+        # arrived. A source deleted, or added by another request, while that row was
+        # appended is refused here (the failure row says why), never re-created under
+        # an "updated" row or replaced under an "added" one.
+        if existing is None and existed:
+            raise HTTPException(status_code=404, detail="Source not found")
+        if existing is not None and not existed:
+            raise HTTPException(status_code=409, detail=f"Source '{body.id}' already exists")
         instance = SourceInstance(
             id=body.id,
             source_type=st,
@@ -857,14 +1030,33 @@ async def upsert_source(
         live_dv = instance.live_data_view()
         if live_dv:
             instance.config["data_view_pattern"] = live_dv
-        # Upsert by id; a new primary unsets any previous primary.
+        # Upsert by id; a new primary unsets any previous primary. The others are
+        # copied, never changed in place: the transform is pure (the audited write
+        # records the stored document as it was before the edit).
         others = [s for s in p.sources if s.id != body.id]
         if instance.is_primary:
-            for s in others:
-                s.is_primary = False
+            others = [
+                s.model_copy(update={"is_primary": False}) if s.is_primary else s
+                for s in others
+            ]
         return p.model_copy(update={"sources": others + [instance]})
 
-    prefs = await state.mutate_prefs(_apply)
+    # Round 14 (SPEC §3.6, §4.5.3): a source change is audited before it is visible,
+    # with the changed fields (a source URL cut to scheme and host, credentials and any
+    # field the connector marks secret withheld).
+    existed = any(s.id == body.id for s in state.prefs.sources)
+    _before, prefs = await audited_prefs_write(
+        state,
+        transform=_apply,
+        actor=current_username(request) or "",
+        context=audit_context(request),
+        summary=f"{'updated' if existed else 'added'} source '{body.id}' ({st.value})",
+        action="source.updated" if existed else "source.created",
+        surface="sources",
+        target=AuditTarget(type="source", id=body.id,
+                           label=body.display_name or manifest.display_name or body.id),
+        secret_fields=_source_secret_paths([{"id": body.id, "source_type": st.value}]),
+    )
     state.rebuild_log_source()
     await state.reconcile_receivers()
     return {"ok": True, "sources": [s.model_dump(mode="json") for s in prefs.sources]}
@@ -873,6 +1065,7 @@ async def upsert_source(
 @router.delete("/sources/{source_id}")
 async def delete_source(
     source_id: str,
+    request: Request,
     state: AppState = Depends(get_state),
     _=Depends(require_permission("sources", "manage")),
 ) -> dict[str, Any]:
@@ -886,7 +1079,20 @@ async def delete_source(
             raise HTTPException(status_code=404, detail="Source not found")
         return p.model_copy(update={"sources": remaining})
 
-    prefs = await state.mutate_prefs(_apply)
+    # Round 14 (SPEC §3.6): audited before the source disappears.
+    gone = next((s for s in state.prefs.sources if s.id == source_id), None)
+    _before, prefs = await audited_prefs_write(
+        state,
+        transform=_apply,
+        actor=current_username(request) or "",
+        context=audit_context(request),
+        summary=f"deleted source '{source_id}'",
+        action="source.deleted",
+        surface="sources",
+        target=AuditTarget(type="source", id=source_id,
+                           label=(getattr(gone, "display_name", "") or source_id)),
+        secret_fields=_source_secret_paths([gone] if gone is not None else []),
+    )
     remaining = prefs.sources
     state.rebuild_log_source()
     # Revoke now-orphaned in-memory credentials and stop a deleted background
@@ -910,31 +1116,57 @@ async def delete_source(
 async def set_source_secrets(
     source_id: str,
     body: dict[str, str | None],
+    request: Request,
     state: AppState = Depends(get_state),
     _=Depends(require_permission("sources", "manage")),
 ) -> dict[str, Any]:
     """Set/clear a source's secret fields (e.g. a webhook token, a Splunk key).
 
     Values go to the secret tier (in memory), NEVER to the persisted config; only
-    the configured field NAMES are recorded on the SourceInstance (#10)."""
+    the configured field NAMES are recorded on the SourceInstance (#10). Round 14
+    (SPEC §3.6): audited before the credentials change, naming the fields only."""
     src = next((s for s in state.prefs.sources if s.id == source_id), None)
     if src is None:
         raise HTTPException(status_code=404, detail="Source not found")
-    for field, value in body.items():
-        state.secrets.set_source_secret(source_id, field, value)
-    configured = sorted(state.secrets.source_secrets(source_id).keys())
+    configured: list[str] = []
+    # ``set_source_secret`` clears a field for None or "" and sets it otherwise.
+    cleared = {field for field, value in body.items() if value in (None, "")}
+    set_now = set(body) - cleared
 
     # Persist only the configured secret NAMES onto the source, atomically against the
     # freshest prefs (mutate_prefs) so a concurrent full-doc writer can't drop the update.
+    # The names are what the secret tier WILL hold once this request applies.
     def _apply(p: Preferences) -> Preferences:
         cur = next((s for s in p.sources if s.id == source_id), None)
-        if cur is None:  # removed concurrently — nothing to stamp the names onto
-            return p
-        updated = cur.model_copy(update={"configured_secrets": configured})
+        if cur is None:
+            # Deleted while the row was appended: refused before anything is saved or
+            # any credential is set, so the failure row ("Not applied") is true and no
+            # credential is left behind for a source that no longer exists.
+            raise HTTPException(status_code=404, detail="Source not found")
+        names = (set(state.secrets.source_secrets(source_id)) | set_now) - cleared
+        updated = cur.model_copy(update={"configured_secrets": sorted(names)})
         others = [s for s in p.sources if s.id != source_id]
         return p.model_copy(update={"sources": others + [updated]})
 
-    await state.mutate_prefs(_apply)
+    async def _write() -> None:
+        # The names are saved first and the credentials change in memory only after
+        # that save succeeds: a failed save leaves the credentials as they were, so its
+        # failure row ("Not applied") is true.
+        await state.mutate_prefs(_apply)
+        for field, value in body.items():
+            state.secrets.set_source_secret(source_id, field, value)
+        configured[:] = sorted(state.secrets.source_secrets(source_id).keys())
+
+    await audited_write(
+        state, sink="control", action="source.secrets_updated",
+        target={"type": "source", "id": source_id,
+                "label": getattr(src, "display_name", "") or source_id},
+        expected_revision=None,
+        changes=_secret_name_changes(f"sources[{source_id}].secrets", body),
+        write=_write, action_type=ActionType.STATUS, actor=current_username(request) or "",
+        surface="sources", context=audit_context(request),
+        result_summary=_secret_names_summary(f"credentials of source '{source_id}'", body),
+    )
     # Pull clients snapshot per-source connection credentials when they are built.
     # Rebuild the primary + fan-out immediately so a first key or key rotation takes
     # effect on the next query/poll rather than after another source edit or restart.
@@ -1220,6 +1452,10 @@ async def unified_logs(
     to: str | None = None,
     source_id: str | None = None,
     per_source_timeout: float = 8.0,
+    # Round 14 (SPEC §4.6.1): exact filters, each optional and additive.
+    rule: str | None = None,
+    severity: str | None = None,
+    severity_gte: str | None = None,
     state: AppState = Depends(get_state),
     _=Depends(require_permission("sources", "read")),
 ) -> dict[str, Any]:
@@ -1261,7 +1497,31 @@ async def unified_logs(
     sibling route uses, and the envelope ``truncated`` is the OR of the merge being cut
     with any single source being cut — so scoping to one source, or running a
     single-source deployment, reports exactly what ``GET /sources/{id}/logs`` reports
-    for that same read."""
+    for that same read.
+
+    Round 14 (SPEC §4.6.1) adds three EXACT filters, each bound as a structured filter
+    value and never as query text: ``rule`` (an equality match against any rule identity
+    of an event: its rule field, rule name field or classified suite rule; 1 to 256
+    characters on one line), ``severity`` (exactly one named level: ``info``, ``low``,
+    ``medium``, ``high`` or ``critical``) and ``severity_gte`` (that level or above).
+    A level is projected through EACH source's own severity ceiling before it is
+    compared, so a 0 to 15 and a 0 to 100 source agree on what "High" means. Pull
+    sources compile the filters into their own query (exact); a push source's
+    live-tail ring is filtered here over the whole ring and, while a filter is active,
+    also kept to an explicit ``from``/``to`` (``now``, ``now-3d``, an ISO-8601 instant),
+    as a pull search and the rule summary are, so its rows and its "at least" total
+    describe the window the page names (``query`` still does not apply to a ring, and
+    ``mode`` stays ``"buffer"``). While any of them is active the envelope echoes
+    ``filters: {rule, severity, severity_gte}`` (``null`` = that one not filtered), so a
+    client can tell the filter was applied (an older backend ignores the parameters and
+    echoes nothing), and each per-source status carries ``exact``: ``false`` when that
+    source could only be filtered after a bounded read, so its rows are "at least"
+    these. A request with none of them is answered exactly as before, key for key. An
+    invalid value is a 400."""
+    try:
+        log_filter = LogFilter.parse(rule=rule, severity=severity, severity_gte=severity_gte)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     limit = clamp_browse_limit(limit)  # hard cap (per source AND on the merge)
     timeout = clamp_per_source_timeout(per_source_timeout)
     reg = get_registry()
@@ -1309,11 +1569,15 @@ async def unified_logs(
             ingest_service=state.ingest_service,
             source_id=source_id,
         )
-    return await fan_out(
+    envelope = await fan_out(
         targets,
         browse_query(limit=limit, query=query, time_from=from_, time_to=to),
         per_source_timeout=timeout,
+        log_filter=log_filter,
     )
+    if log_filter.active:
+        envelope["filters"] = log_filter.echo()
+    return envelope
 
 
 async def _cursor_millis(state: AppState, src) -> int:
@@ -1556,6 +1820,7 @@ async def _record_settings_rule_versions(
         try:
             await state.control_audit.record(
                 action_type=ActionType.STATUS, surface="rules", actor=actor,
+                actor_type="human", outcome="success",
                 result_summary=("rule versions recorded: " + ", ".join(changes))[:500],
             )
         except Exception:  # noqa: BLE001 — audit is best-effort
@@ -1698,13 +1963,15 @@ async def put_settings(
                     "custom model."
                 ),
             )
-    # Build the partial deep-merge from the freshest Preferences document while the
-    # application-wide prefs lock is held. This prevents a settings write racing a
-    # source/rule/tuner/branding writer from silently restoring a stale sibling block.
-    old_prefs: Preferences | None = None
-
+    # Build the partial deep-merge from the freshest Preferences document. Round 14
+    # (SPEC §3.6, E16): the save is AUDITED BEFORE IT IS VISIBLE. The action row, with
+    # every changed field from the stored document before and the validated document
+    # after (secrets withheld, webhook URLs cut to scheme and host), is appended first;
+    # a failed append answers 503 audit_unavailable and nothing is saved. The edit is
+    # re-applied under the prefs lock to the freshest document, so a settings write
+    # racing a source/rule/tuner/branding writer never restores a stale sibling block
+    # (see ``audit.prefs_write``).
     def _apply(current: Preferences) -> Preferences:
-        nonlocal old_prefs
         if (
             current.read_only_settings_mode
             and body.get("read_only_settings_mode") is not False
@@ -1715,8 +1982,12 @@ async def put_settings(
         # document before any `ge=` constraint can fire. See `_reject_out_of_range_caps`.
         _reject_out_of_range_caps(body)
         _reject_out_of_range_remember_me(body)
-        old_prefs = current
-        merged = _deep_update(current.model_dump(mode="json"), body)
+        # Round 14 (SPEC §4.10.19): a retired runbook key the body CHANGES
+        # (``rag.use_runbooks``, ``playbooks.enabled``) is carried onto its successor
+        # under ``runbooks`` before the merge; validation rewrites the retired key as a
+        # read-only mirror, so without this the write would answer 200 and change nothing.
+        mapped = map_retired_runbook_writes(body, current)
+        merged = _deep_update(current.model_dump(mode="json"), mapped)
         # Demo Mode is managed ONLY by the /api/demo/* endpoints — never via this path.
         merged["demo"] = current.demo.model_dump(mode="json")
         try:
@@ -1724,24 +1995,22 @@ async def put_settings(
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(status_code=422, detail=f"Invalid settings: {exc}") from exc
 
-    prefs = await state.mutate_prefs(_apply)
-    assert old_prefs is not None
-    # P12 (#2 audit / #10 secrets): settings now carry the decision-critical auto-close
-    # policy (bug-#1 repointed the flagship toggle to ``prefs.auto_close.<verdict>``, the
-    # field ``decide()`` reads), so an operator changing which cases auto-close must leave
-    # an append-only who/when trail — like rule edits + reset already do. Record only the
-    # CHANGED top-level keys (never their values → never a secret, #10). Best-effort: an
-    # audit glitch must never fail the settings save (mirrors terminology_put).
+    # The legacy one-line summary keeps naming the top-level keys the body sent (never
+    # their values, #10); the structured ``changes`` carry what actually changed.
     changed = sorted(str(k) for k in body.keys()) if isinstance(body, dict) else []
-    try:
-        await state.control_audit.record(
-            action_type=ActionType.STATUS, surface="settings",
-            actor=current_username(request) or "",
-            result_summary=("updated settings: " + ", ".join(changed))[:500]
-            if changed else "updated settings",
-        )
-    except Exception:  # noqa: BLE001 — audit is best-effort; never break the save
-        pass
+    body_sources = body.get("sources") if isinstance(body, dict) else None
+    old_prefs, prefs = await audited_prefs_write(
+        state,
+        transform=_apply,
+        actor=current_username(request) or "",
+        context=audit_context(request),
+        summary=("updated settings: " + ", ".join(changed))[:500] if changed else "updated settings",
+        # A connector field its manifest marks secret is withheld whole, for the stored
+        # sources and any the body brings.
+        secret_fields=_source_secret_paths(
+            [*state.prefs.sources, *(body_sources if isinstance(body_sources, list) else [])]
+        ),
+    )
     # #10 / G6 R5: record an immutable version snapshot for every rule this save CHANGED
     # (detection / correlation / case-automation) so DetectionRulesHome edits populate the
     # ledger + rollback UI. Best-effort; a versioning glitch never fails the save.
@@ -1944,6 +2213,7 @@ async def update_chat_conversation(
         action_type=ActionType.CONTEXT,
         surface="chat_history",
         actor=user or "default",
+        actor_type="human", outcome="success",
         result_summary=f"conversation {' and '.join(changes)}: {conversation.id}"[:500],
     )
     return conversation.model_dump(mode="json")
@@ -1968,6 +2238,7 @@ async def delete_chat_conversation(
         action_type=ActionType.CONTEXT,
         surface="chat_history",
         actor=user,
+        actor_type="human", outcome="success",
         result_summary=f"conversation deleted: {str(conversation_id)[:100]}",
     )
     return {"ok": True, "id": conversation_id}
@@ -1993,6 +2264,7 @@ async def chat(
 async def investigate(
     body: InvestigateRequest, state: AppState = Depends(get_state),
     _=Depends(require_permission("cases", "reinvestigate")),
+    request: Request = None,  # type: ignore[assignment]
 ) -> dict[str, Any]:
     query_source = state.active_source_for_id(body.source_id)
     if body.source_id and query_source is None:
@@ -2008,7 +2280,7 @@ async def investigate(
     case = await state.pipeline.investigate_cluster(
         cluster, body.source_surface, state.execution_prefs, query_source=query_source
     )
-    return _case_view(case, state)
+    return _case_view(case, state, spend=await _case_spend_visible(request))
 
 
 # --------------------------------------------------------------------------- #
@@ -2155,6 +2427,7 @@ async def list_proposals(
                 action_type=ActionType.PROPOSAL,
                 surface="proposal",
                 actor="system",
+                actor_type="system", outcome="success",
                 result_summary=(
                     f"expired {len(swept)} pending proposals past expires_at: "
                     + ",".join(p.id for p in swept[:20])
@@ -2364,6 +2637,7 @@ async def approve_proposal(
                         action_type=ActionType.TUNING,
                         surface="proposal",
                         actor=audit_actor,
+                        actor_type="human", outcome="success",
                         result_summary=(
                             f"approved tuning proposal {proposal.id}: {record.target} "
                             f"{record.before}->{record.after} for {record.rule_id}"
@@ -2642,6 +2916,9 @@ async def bulk_reject_proposals(
             action_type=ActionType.PROPOSAL,
             surface="proposal",
             actor=by or "analyst",
+            actor_type="human",
+            # Every proposal rejected (or already rejected), some, or none.
+            outcome=("success" if not failed else "partial" if len(failed) < len(results) else "failure"),
             result_summary=(
                 f"bulk reject requested={len(ids)} rejected={len(rejected)} "
                 f"already_rejected={len(already)} failed={len(failed)} reason={reason}"
@@ -2661,203 +2938,190 @@ async def bulk_reject_proposals(
     }
 
 
-def _playbook_payload(state: AppState, playbook, *, content: str | None = None) -> dict[str, Any]:
-    """Stable public playbook shape; never exposes the server filesystem path."""
-    payload: dict[str, Any] = {
-        "id": playbook.id,
-        "name": playbook.name,
-        "version": playbook.version,
-        "description": playbook.manifest.description,
-        "priority": playbook.manifest.priority,
+# --------------------------------------------------------------------------- #
+# Retired procedure routes (Round 14 SPEC §4.10.16, D44, E14). For one release the
+# reads stay as ALIASES over the runbook library in the old response shape, with
+# ``Deprecation`` and ``Link`` headers, behind ``runbooks:read``; every write answers
+# ``410 runbooks_moved``, because an old-shape write cannot be honoured without making
+# unreviewed text live (#9). Nothing here reads the retired registry.
+# --------------------------------------------------------------------------- #
+def _legacy_markdown_body(content: str) -> str:
+    """The exported Markdown without its front matter (the old ``body`` field)."""
+    if content.startswith("---\n"):
+        end = content.find("\n---\n", 4)
+        if end != -1:
+            return content[end + 5:].lstrip("\n")
+    return content
+
+
+def _legacy_alias_item(
+    runbook_id: str, version: Any, builtin: Any, *, include_content: bool,
+) -> dict[str, Any]:
+    """One Published runbook in the old procedure item shape (read-only)."""
+    from ..engine.runbook_catalog import export_markdown
+
+    defn = version.definition
+    applies = defn.applies_when
+    escalate = next((s.escalate_if for s in defn.steps if s.escalate_if), None)
+    item: dict[str, Any] = {
+        "id": runbook_id,
+        "name": defn.title,
+        "version": version.version,
+        "description": defn.summary,
+        "priority": defn.priority,
         "match": {
-            "rule_ids": list(playbook.manifest.match.rule_ids),
-            "entity_types": list(playbook.manifest.match.entity_types),
-            "mitre": list(playbook.manifest.match.mitre),
-            "min_event_count": playbook.manifest.match.min_event_count,
-            "any_tags": list(playbook.manifest.match.any_tags),
+            "rule_ids": list(applies.rule_ids),
+            "entity_types": [str(getattr(e, "value", e)) for e in applies.entity_types],
+            "mitre": list(dict.fromkeys([*applies.mitre, *defn.mitre])),
+            "min_event_count": applies.min_event_count or 0,
+            "any_tags": list(applies.any_tags),
         },
-        "suggested_tools": list(playbook.manifest.suggested_tools),
-        "rag_queries": list(playbook.manifest.rag_queries),
-        "escalate_if": playbook.manifest.escalate_if,
-        "suggested_verdict_bias": playbook.manifest.suggested_verdict_bias,
-        **state.playbooks.metadata(playbook),
+        "suggested_tools": [],
+        "rag_queries": list(defn.retrieval_queries),
+        "escalate_if": escalate,
+        "suggested_verdict_bias": None,
+        "source_type": "bundled" if builtin is not None else "operator",
+        "protected": builtin is not None,
+        "editable": False,
+        "file_name": builtin.file_name if builtin is not None else None,
     }
-    if content is not None:
-        payload["content"] = content
-        payload["body"] = playbook.body
-    return payload
+    if include_content:
+        content = export_markdown(version)
+        item["content"] = content
+        item["body"] = _legacy_markdown_body(content)
+    return item
 
 
-class PlaybookCreateRequest(BaseModel):
-    """Create one operator-owned Markdown playbook."""
+async def _legacy_published(state: AppState) -> list[tuple[str, Any, Any, Any]]:
+    from ..engine.runbook_catalog import published_versions
+    from ..stores.runbook_library import RunbookStoreUnavailable
 
-    id: str = Field(min_length=1, max_length=64)
-    content: str = Field(min_length=1, max_length=MAX_PLAYBOOK_BYTES)
-
-
-class PlaybookUpdateRequest(BaseModel):
-    """Replace one operator-owned Markdown playbook; the id remains immutable."""
-
-    content: str = Field(min_length=1, max_length=MAX_PLAYBOOK_BYTES)
-    expected_revision: int | None = Field(default=None, ge=1)
-
-
-class PlaybookDryRunRequest(BaseModel):
-    """Synthetic cluster attributes for deterministic procedure diagnostics."""
-
-    rule_ids: list[str] = Field(default_factory=list, max_length=100)
-    entity_type: EntityType = EntityType.RULE
-    event_count: int = Field(default=1, ge=0, le=1_000_000)
-
-
-def _raise_playbook_management_http(exc: Exception) -> None:
-    if isinstance(exc, PlaybookNotFoundError):
-        raise HTTPException(status_code=404, detail="playbook not found") from exc
-    if isinstance(exc, PlaybookConflictError):
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    if isinstance(exc, PlaybookProtectedError):
-        raise HTTPException(status_code=403, detail=str(exc)) from exc
-    if isinstance(exc, PlaybookManagementError):
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    raise exc
-
-
-@router.get("/playbooks")
-async def playbooks(
-    state: AppState = Depends(get_state),
-    _=Depends(require_permission("playbooks", "read")),
-) -> dict[str, Any]:
-    await state.refresh_playbooks()
-    pbs = state.playbooks.all()
-    return {
-        "enabled": state.prefs.playbooks.enabled,
-        "count": len(pbs),
-        "playbooks": [_playbook_payload(state, p) for p in pbs],
-    }
-
-
-@router.post("/playbooks")
-async def playbooks_create(
-    body: PlaybookCreateRequest,
-    request: Request,
-    state: AppState = Depends(get_state),
-    _=Depends(require_permission("playbooks", "manage")),
-) -> dict[str, Any]:
-    """Create an operator Markdown file, atomically reload it, and audit the change.
-
-    The front-matter id must equal ``body.id``.  IDs are slug/path constrained and
-    a create never overwrites any existing file or bundled playbook.  Playbook text
-    remains recommendation-only context; this endpoint never touches ``decide()``.
-    """
     try:
-        playbook, summary = await state.create_playbook(
-            body.id,
-            body.content,
-            actor=current_username(request) or "operator",
-        )
-    except Exception as exc:  # mapped to bounded, non-path-leaking HTTP errors
-        _raise_playbook_management_http(exc)
-        raise AssertionError("unreachable")  # pragma: no cover
-    await state.control_audit.record(
-        action_type=ActionType.PLAYBOOK,
-        surface="playbooks",
-        actor=current_username(request) or "operator",
-        result_summary=f"created operator playbook {playbook.id} v{playbook.version}",
-    )
-    return {"ok": True, "playbook": _playbook_payload(state, playbook), "reload": summary}
+        return await published_versions(state.runbook_library)
+    except RunbookStoreUnavailable as exc:
+        raise HTTPException(status_code=503, detail={
+            "code": "runbook_store_unavailable",
+            "message": "Runbooks could not be read. Try again.",
+        }) from exc
 
 
-@router.post("/playbooks/reload")
-async def playbooks_reload(
-    request: Request,
+def _deprecated(response: Response) -> None:
+    from ..engine.runbook_catalog import DEPRECATION_HEADERS
+
+    for name, value in DEPRECATION_HEADERS.items():
+        response.headers[name] = value
+
+
+@router.get("/playbooks", deprecated=True)
+async def playbooks(
+    response: Response,
     state: AppState = Depends(get_state),
-    _=Depends(require_permission("playbooks", "manage")),
+    _=Depends(require_permission("runbooks", "read")),
 ) -> dict[str, Any]:
-    """Hot-reload playbooks from disk (atomic; a broken file never replaces a good
-    live set). Returns the load summary."""
-    summary = await state.refresh_playbooks()
-    await state.control_audit.record(
-        action_type=ActionType.PLAYBOOK,
-        surface="playbooks",
-        actor=current_username(request) or "operator",
-        result_summary=(
-            f"reloaded playbooks loaded={summary.get('loaded', 0)} "
-            f"skipped={len(summary.get('skipped', []))}"
-        ),
-    )
-    return summary
+    """Deprecated alias: every Published runbook in the old procedure list shape. Use
+    ``GET /api/runbooks``."""
+    _deprecated(response)
+    items = [
+        _legacy_alias_item(rid, version, builtin, include_content=False)
+        for rid, version, builtin, _doc in await _legacy_published(state)
+    ]
+    cfg = getattr(state.execution_prefs, "runbooks", None)
+    return {"enabled": bool(getattr(cfg, "enabled", True)), "count": len(items), "playbooks": items}
 
 
-@router.post("/playbooks/dry-run")
-async def playbooks_dry_run(
-    body: PlaybookDryRunRequest,
-    state: AppState = Depends(get_state),
-    _=Depends(require_permission("playbooks", "read")),
-) -> dict[str, Any]:
-    """Explain exact match and no-match reasons without running an investigation."""
-    await state.refresh_playbooks()
-    rules = [str(value).strip() for value in body.rule_ids if str(value).strip()]
-    cluster = Cluster(
-        signature="playbook-dry-run",
-        entity=Entity(type=body.entity_type, value="dry-run"),
-        group_by=body.entity_type,
-        rule_values=rules,
-        count=body.event_count,
-    )
-    return state.playbooks.diagnose(cluster)
-
-
-@router.get("/playbooks/coverage")
+@router.get("/playbooks/coverage", deprecated=True)
 async def playbooks_coverage(
+    request: Request,
+    response: Response,
     state: AppState = Depends(get_state),
-    _=Depends(require_permission("playbooks", "read")),
+    _=Depends(require_permission("cases", "read")),
+    __=Depends(require_permission("runbooks", "read")),
 ) -> dict[str, Any]:
-    """Coverage over the stored case population, paged without a 200-row cap."""
-    await state.refresh_playbooks()
-    offset = 0
-    page_size = 500
-    max_cases = 20_000
-    scanned = covered = 0
+    """Deprecated alias: which runbook each stored case would match (the fallback does
+    not count as coverage), over the newest 20,000 cases at most. Needs ``cases:read``
+    as well as ``runbooks:read``, answers ``409 runbook_scope_unsupported`` while
+    row-level data scope applies to the caller and ``503 case_store_unavailable`` when
+    cases cannot be read. ``truncated`` is true when more cases exist beyond the ones
+    read, or a later page could not be read: every figure is then a lower bound. Use
+    ``GET /api/runbooks/metrics`` for runbook coverage."""
+    # The figures are derived from cases, so the alias follows its successor (SPEC
+    # §4.10.15, D16): the same grants, the same row-scope refusal as
+    # ``GET /api/metrics/breakdown`` (failing closed), and the same bound
+    # (``runbook_catalog.METRICS_MAX_CASES``) read through the bounded case scan
+    # (``case_aggregate.scan_cases``, newest first, never offset paging; the cursor is
+    # released when it stops). Like ``runbook_catalog.cases_in_window``, it reports
+    # truncation only when a case beyond the bound exists, so a store holding exactly
+    # the bound reads as complete.
+    from ..engine import runbook_runs
+    from ..engine.case_aggregate import scan_cases
+    from ..engine.chat_starters import object_scoped
+    from ..engine.runbook_catalog import DEPRECATION_HEADERS, METRICS_MAX_CASES
+    from ..engine.runbook_match import match
+    from ..stores.runbook_library import RunbookStoreUnavailable
+
+    _deprecated(response)
+    principal = current_user(request)
+    role = getattr(principal, "role", "") if principal is not None else ""
+    if object_scoped(state, str(getattr(role, "value", role) or "")):
+        raise HTTPException(status_code=409, detail={
+            "code": "runbook_scope_unsupported",
+            "message": "Runbook figures are hidden while row-level data scope is on.",
+        }, headers=dict(DEPRECATION_HEADERS))
+    try:
+        catalog = await runbook_runs.load_catalog(state)
+    except RunbookStoreUnavailable as exc:
+        raise HTTPException(status_code=503, detail={
+            "code": "runbook_store_unavailable",
+            "message": "Runbooks could not be read. Try again.",
+        }, headers=dict(DEPRECATION_HEADERS)) from exc
+    prefs = state.execution_prefs
+    counts = {"scanned": 0, "covered": 0}
+    beyond_bound = False
     selected_counts: dict[str, int] = {}
     unmatched_rules: dict[str, int] = {}
-    while scanned < max_cases:
-        page, total = await state.cases.list(limit=page_size, offset=offset)
-        if not page:
-            break
+
+    def consume(page: list[Any]) -> None:
+        nonlocal beyond_bound
         for case in page:
-            count = max(
-                len(case.member_event_keys or []),
-                len(case.member_event_ids or []),
-                1,
-            )
-            cluster = Cluster(
-                signature=case.cluster_signature,
-                entity=case.entity,
-                group_by=case.entity.type,
-                rule_values=list(case.rule_ids or []),
-                count=count,
-            )
-            chosen, _reason = state.playbooks.select(cluster)
-            scanned += 1
-            if chosen is not None:
-                covered += 1
-                selected_counts[chosen.id] = selected_counts.get(chosen.id, 0) + 1
+            if not isinstance(case, Case):
+                try:
+                    case = Case.model_validate(case)
+                except Exception:  # noqa: BLE001 (an undecodable row is not a case)
+                    continue
+            if counts["scanned"] >= METRICS_MAX_CASES:
+                # A case past the bound exists: the figures are lower bounds.
+                beyond_bound = True
+                return
+            result = match(runbook_runs.case_facts(case, prefs), catalog.matchable, fallback=False)
+            counts["scanned"] += 1
+            if result.winner is not None:
+                counts["covered"] += 1
+                selected_counts[result.winner.id] = selected_counts.get(result.winner.id, 0) + 1
             else:
-                families = sorted({str(value).strip() for value in case.rule_ids if str(value).strip()}) or ["<no-rule-id>"]
+                families = sorted({str(v).strip() for v in case.rule_ids if str(v).strip()}) or ["<no-rule-id>"]
                 for family in families:
                     unmatched_rules[family] = unmatched_rules.get(family, 0) + 1
-            if scanned >= max_cases:
-                break
-        offset += len(page)
-        if offset >= total or len(page) < page_size:
-            break
+
+    try:
+        outcome = await scan_cases(
+            state.cases, consume, newest_first=True,
+            stop=lambda: beyond_bound,
+        )
+    except Exception as exc:  # noqa: BLE001 (the first page failed: nothing to report)
+        logger.warning("playbook coverage alias: the case store could not be read: %s", exc)
+        raise HTTPException(status_code=503, detail={
+            "code": "case_store_unavailable",
+            "message": "Cases could not be read. Try again.",
+        }, headers=dict(DEPRECATION_HEADERS)) from exc
+    scanned, covered = counts["scanned"], counts["covered"]
     return {
         "scanned_cases": scanned,
         "covered_cases": covered,
         "uncovered_cases": scanned - covered,
         "coverage_percent": round((covered / scanned) * 100, 1) if scanned else None,
-        "scan_limit": max_cases,
-        "truncated": scanned >= max_cases,
+        "scan_limit": METRICS_MAX_CASES,
+        # More cases than the bound, or a later page failed: every figure is a lower bound.
+        "truncated": beyond_bound or not outcome.complete,
         "selected_playbooks": [
             {"playbook_id": key, "case_count": value}
             for key, value in sorted(selected_counts.items(), key=lambda item: (-item[1], item[0]))
@@ -2869,91 +3133,137 @@ async def playbooks_coverage(
     }
 
 
-@router.get("/playbooks/selection/{case_id}")
+@router.get("/playbooks/selection/{case_id}", deprecated=True)
 async def playbook_selection(
     case_id: str,
+    response: Response,
     state: AppState = Depends(get_state),
     _=Depends(require_permission("cases", "read")),
+    __=Depends(require_permission("runbooks", "read")),
 ) -> dict[str, Any]:
-    """Why a given case selected the playbook it did (from the audit trail)."""
+    """Deprecated alias: the runbook on a case and why it was attached (the first run
+    that is not abandoned). Use ``GET /api/cases/{case_id}/runbooks``."""
+    from ..engine.runbook_match import describe_explanation
+    from ..models import MatchExplanation
+
+    _deprecated(response)
     case = await state.cases.get(case_id)
+    runbook_id = ""
     reason = ""
-    try:
-        records = await state.audit.records_for_case(case_id)
-        for r in records:
-            actor = r.get("actor") if isinstance(r, dict) else getattr(r, "actor", "")
-            if actor == "playbook_selector":
-                reason = r.get("result_summary") if isinstance(r, dict) else getattr(r, "result_summary", "")
-                break
-    except Exception:  # noqa: BLE001 — explainability is best-effort
-        reason = ""
-    return {
-        "case_id": case_id,
-        "playbook_id": (case.playbook_id if case else ""),
-        "reason": reason,
-    }
+    if case is not None:
+        try:
+            runs = (await state.runbook_runs.get(case_id)).runs
+        except Exception:  # noqa: BLE001 (explainability is best-effort)
+            runs = []
+        run = next((r for r in runs if r.status != "abandoned"), None)
+        if run is not None:
+            runbook_id = run.runbook_id
+            info = run.attached_reason or {}
+            if run.attached_by in ("rule", "fallback") and "tier" in info and "matched" in info:
+                try:
+                    reason = describe_explanation(MatchExplanation.model_validate(info))
+                except Exception:  # noqa: BLE001
+                    reason = ""
+            elif run.attached_actor:
+                reason = f"Added by {run.attached_actor}"
+        else:
+            runbook_id = str(getattr(case, "playbook_id", "") or "")
+    return {"case_id": case_id, "playbook_id": runbook_id, "reason": reason}
 
 
-@router.get("/playbooks/{playbook_id}")
+@router.get("/playbooks/{playbook_id}", deprecated=True)
 async def playbook_detail(
     playbook_id: str,
+    response: Response,
     state: AppState = Depends(get_state),
-    _=Depends(require_permission("playbooks", "read")),
+    _=Depends(require_permission("runbooks", "read")),
 ) -> dict[str, Any]:
-    """Open one playbook as plain UTF-8 Markdown plus parsed catalog metadata."""
-    await state.refresh_playbooks()
-    try:
-        playbook, content = state.playbooks.read_document(playbook_id)
-    except Exception as exc:
-        _raise_playbook_management_http(exc)
-        raise AssertionError("unreachable")  # pragma: no cover
-    return _playbook_payload(state, playbook, content=content)
+    """Deprecated alias: one Published runbook in the old procedure detail shape,
+    ``content`` and ``body`` exported as Markdown. A retired bundled procedure id
+    answers with the runbook that replaced it; an unknown id answers the old ``404``
+    (``{"detail": "playbook not found"}``). Use ``GET /api/runbooks/{id}``."""
+    from ..engine.runbook_model import LEGACY_BUNDLED_RUNBOOK_MAP
+
+    _deprecated(response)
+    wanted = {playbook_id, LEGACY_BUNDLED_RUNBOOK_MAP.get(playbook_id, playbook_id)}
+    for rid, version, builtin, _doc in await _legacy_published(state):
+        if rid in wanted:
+            return _legacy_alias_item(rid, version, builtin, include_content=True)
+    from ..engine.runbook_catalog import DEPRECATION_HEADERS
+
+    raise HTTPException(status_code=404, detail="playbook not found", headers=dict(DEPRECATION_HEADERS))
 
 
-@router.put("/playbooks/{playbook_id}")
-async def playbook_update(
-    playbook_id: str,
-    body: PlaybookUpdateRequest,
-    request: Request,
-    state: AppState = Depends(get_state),
-    _=Depends(require_permission("playbooks", "manage")),
-) -> dict[str, Any]:
-    """Atomically update an operator playbook. Bundled playbooks are read-only."""
-    try:
-        playbook, summary = await state.update_playbook(
-            playbook_id,
-            body.content,
-            actor=current_username(request) or "operator",
-            expected_revision=body.expected_revision,
-        )
-    except Exception as exc:
-        _raise_playbook_management_http(exc)
-        raise AssertionError("unreachable")  # pragma: no cover
-    await state.control_audit.record(
-        action_type=ActionType.PLAYBOOK,
-        surface="playbooks",
-        actor=current_username(request) or "operator",
-        result_summary=f"updated operator playbook {playbook.id} v{playbook.version}",
-    )
-    return {"ok": True, "playbook": _playbook_payload(state, playbook), "reload": summary}
+def _runbooks_moved() -> Any:
+    from ..engine.runbook_catalog import runbooks_moved_response
+
+    return runbooks_moved_response()
+
+
+@router.post("/playbooks", deprecated=True, status_code=410)
+async def playbooks_create(_=Depends(require_permission("runbooks", "manage"))) -> Any:
+    """Retired write: ``410 runbooks_moved``. Create a runbook with ``POST /api/runbooks``."""
+    return _runbooks_moved()
+
+
+@router.post("/playbooks/reload", deprecated=True, status_code=410)
+async def playbooks_reload(_=Depends(require_permission("runbooks", "manage"))) -> Any:
+    """Retired write: ``410 runbooks_moved``. The runbook library needs no reload."""
+    return _runbooks_moved()
+
+
+@router.post("/playbooks/dry-run", deprecated=True, status_code=410)
+async def playbooks_dry_run(_=Depends(require_permission("runbooks", "read"))) -> Any:
+    """Retired: ``410 runbooks_moved``. Preview matching with ``POST
+    /api/runbooks/match-preview``."""
+    return _runbooks_moved()
+
+
+@router.put("/playbooks/{playbook_id}", deprecated=True, status_code=410)
+async def playbook_update(playbook_id: str, _=Depends(require_permission("runbooks", "manage"))) -> Any:
+    """Retired write: ``410 runbooks_moved``. Edit a draft with ``PUT
+    /api/runbooks/{id}/draft``."""
+    del playbook_id
+    return _runbooks_moved()
 
 
 # --------------------------------------------------------------------------- #
 # Metrics / analytics (deterministic aggregation over cases + the cost ledger)
 # --------------------------------------------------------------------------- #
 @router.get("/metrics")
-async def metrics(window_hours: int = 24, state: AppState = Depends(get_state)) -> dict[str, Any]:
+async def metrics(
+    request: Request,
+    window_hours: int = 24,
+    state: AppState = Depends(get_state),
+    _=Depends(require_permission("metrics", "view")),
+) -> dict[str, Any]:
+    """The Metrics page's operational rollup. Needs ``metrics:view``, like every other
+    metrics read. Its ``cost`` part is the AI spend of the window, which ``cost:view``
+    governs: for a caller without that grant it is ``{}``."""
+    # Round 14 roles-04 and roles-11: the figures are store-wide, so the gate matches
+    # posture, trends and the breakdown; spend follows the one cost:view rule (the Cost
+    # page, GET /api/usage/summary, the usage breakdown, chat), and ``{}`` is the shape
+    # the payload already uses when spend cannot be read.
     # Round 12: exact store-wide headline counts (status / verdict / disposition
     # aggregates) beside figures over the SAME shared all-time case population the
     # posture rollups read, with a truncation marker for the latter. See
     # ``routes_metrics.legacy_metrics_payload``. An unreadable store is a 503.
     from . import routes_metrics
+    from .deps import has_permission
 
-    return await routes_metrics.legacy_metrics_payload(state, window_hours)
+    payload = await routes_metrics.legacy_metrics_payload(state, window_hours)
+    if not await has_permission(request, "cost", "view"):
+        payload["cost"] = {}
+    return payload
 
 
 @router.get("/feedback/stats")
-async def feedback_stats_route(state: AppState = Depends(get_state)) -> dict[str, Any]:
+async def feedback_stats_route(
+    state: AppState = Depends(get_state),
+    _=Depends(require_permission("metrics", "view")),
+) -> dict[str, Any]:
+    """Analyst feedback agreement over the newest cases, a metrics read behind
+    ``metrics:view`` like ``GET /api/metrics`` (whose ``feedback`` part it repeats)."""
     cases, _total = await state.cases.list(limit=2000)
     return feedback_stats(cases)
 
@@ -3020,6 +3330,7 @@ async def demo_enable(
         action_type=ActionType.DECISION,
         surface="demo",
         actor=current_username(request) or "operator",
+        actor_type="human", outcome="success",
         result_summary=f"demo enabled mode={mode} run_id={status.get('run_id')}",
     )
     return status
@@ -3046,6 +3357,9 @@ async def demo_incident(
         action_type=ActionType.DECISION,
         surface="demo",
         actor=current_username(request) or "operator",
+        actor_type="human",
+        # Refused (cooling down, an unknown scenario): nothing was triggered.
+        outcome="success" if result.get("triggered") else "failure",
         result_summary=(
             f"demo incident trigger triggered={bool(result.get('triggered'))} "
             f"scenario_id={result.get('scenario_id') or scenario_id or ''} "
@@ -3066,6 +3380,7 @@ async def demo_reset(
         action_type=ActionType.DECISION,
         surface="demo",
         actor=current_username(request) or "operator",
+        actor_type="human", outcome="success",
         result_summary=f"demo reset run_id={status.get('run_id')}",
     )
     return status
@@ -3083,6 +3398,7 @@ async def demo_disable(
         action_type=ActionType.DECISION,
         surface="demo",
         actor=current_username(request) or "operator",
+        actor_type="human", outcome="success",
         result_summary=f"demo disabled run_id={before.get('run_id')}",
     )
     return status
@@ -3351,6 +3667,84 @@ def _remember_fields(
     }
 
 
+# --------------------------------------------------------------------------- #
+# Identity audit rows (Round 14 SPEC §4.5.3, §4.5.4). Sign-in, sign-out, MFA and
+# session events are recorded BEST-EFFORT WITH A SIGNAL with the structured fields
+# (action, outcome, actor type, client, session reference, role at the time, request
+# id): an audit outage must never stop a person signing in, signing out or ending a
+# session, and a dropped row is logged at error level and counted
+# (``app.audit.identity``). Every change to an account, a role or the settings is
+# instead AUDIT-FIRST (``audited_write``): no change without its row.
+# --------------------------------------------------------------------------- #
+def _session_summary(event: str, sid: str, detail: str) -> str:
+    """The session row's one-line summary, in the form older rows used
+    (``session_create sid=1a2b3c4d… detail``), so existing readers keep working."""
+    return f"{event} sid={_sid_tag(sid)} {detail}".strip()
+
+
+def _user_target(username: str, label: str | None = None) -> dict[str, str] | None:
+    name = str(username or "").strip()
+    if not name:
+        return None
+    return {"type": "user", "id": name, "label": str(label or name)}
+
+
+async def _patch_user_or_404(state: AppState, username: str, **fields: Any) -> Any:
+    """The store write of an audited account change: patch ONLY the named fields
+    under the user store's own compare-and-swap (never save a copy read before the
+    action row was appended, which would revert whatever an administrator saved to
+    the account meanwhile). An account deleted in that window answers ``404 user not
+    found``, so ``audited_write`` records the paired failure row instead of a success
+    that never happened."""
+    updated = await state.users.update(username, **fields)
+    if updated is None:
+        raise HTTPException(status_code=404, detail="user not found")
+    return updated
+
+
+async def _record_identity_event(
+    state: AppState,
+    request: Request,
+    *,
+    action: str,
+    actor: str,
+    summary: str,
+    outcome: str = "success",
+    surface: str = "auth",
+    actor_type: str = "human",
+    user: Any = None,
+    token: str | None = None,
+    sid: str | None = None,
+    target: Any = None,
+    tool_input: Any = None,
+    from_request: bool = True,
+) -> None:
+    """Append one identity row to the real audit log (never the Demo one), best effort
+    with a signal (:func:`app.audit.identity.record_identity_event`): a failure is
+    logged, counted and never reaches the caller. ``user``/``token``/``sid`` name the
+    principal and session the row is about when they are not the request's own (a
+    sign-in that has just minted its session). ``from_request=False`` on every row
+    written before its actor has signed in: the cookie or bearer token the request
+    happens to carry (another account's, in the same browser) is never read."""
+    await record_identity_event(
+        state, request, action=action, actor=actor, summary=summary, outcome=outcome,
+        surface=surface, actor_type=actor_type, user=user, token=token, sid=sid,
+        target=target, tool_input=tool_input, from_request=from_request,
+    )
+
+
+def _session_tool_input(state: AppState, sid: str | None, **extra: Any) -> dict[str, Any] | None:
+    """``{"session": <reference of the session acted on>, ...}`` for a session row
+    whose subject is not the request's own session (a revocation)."""
+    auth = getattr(state, "auth", None)
+    ref_of = getattr(auth, "session_ref", None)
+    ref = ref_of(sid) if callable(ref_of) and sid else None
+    out: dict[str, Any] = {k: v for k, v in extra.items() if v is not None}
+    if ref:
+        out["session"] = ref
+    return out or None
+
+
 async def _register_session(
     state: AppState, request: Request, token: str, *, mfa_method: str = "",
     refresh_hash: str = "", remember_seconds: int = 0,
@@ -3393,13 +3787,20 @@ async def _register_session(
             token_expires_at=_token_expires_iso(state, token),
             **meta,
         )
-        await _audit_session(
-            state, "session_create", username, sid,
-            (
-                f"new session ({meta.get('client_type', '') or 'unknown'} "
-                f"{meta.get('ua_browser', '')}/{meta.get('ua_os', '')})"
-                + (f" remembered {_duration_label(remember_seconds)}" if remembered else "")
-            ).strip(),
+        await _record_identity_event(
+            state, request, action="session.created", actor=username, surface="session",
+            token=token, user=auth.principal(username),
+            summary=_session_summary(
+                "session_create", sid,
+                (
+                    f"new session ({meta.get('client_type', '') or 'unknown'} "
+                    f"{meta.get('ua_browser', '')}/{meta.get('ua_os', '')})"
+                    + (f" remembered {_duration_label(remember_seconds)}" if remembered else "")
+                ).strip(),
+            ),
+            target=_user_target(username),
+            tool_input={"remembered": remembered, "mfa_method": mfa_method or "password"},
+            from_request=False,
         )
         # Best-effort new-device notification (a first session for this UA/device).
         try:
@@ -3456,9 +3857,9 @@ async def auth_login(
         body.username, body.password
     ) else None
     if user is None:
-        await state.control_audit.record(
-            action_type=ActionType.AUTH_EVENT, surface="auth", actor=body.username or "",
-            result_summary="login failed",
+        await _record_identity_event(
+            state, request, action="auth.login_failed", outcome="failure",
+            actor=body.username or "", summary="login failed", from_request=False,
         )
         raise HTTPException(status_code=401, detail="invalid credentials")
     # --- MFA phase 1 (Wave 2 / F3): the password is correct, but the user has MFA
@@ -3476,18 +3877,21 @@ async def auth_login(
         # completes enrollment at /auth/mfa/enroll-setup + /auth/mfa/enroll-confirm
         # (which then mints the full session). No cookie/session here either. ---
         if not auth.mfa_enabled(user.username):
-            await state.control_audit.record(
-                action_type=ActionType.AUTH_EVENT, surface="auth", actor=user.username,
-                result_summary="password ok; mfa enrollment required",
+            await _record_identity_event(
+                state, request, action="auth.mfa_challenged", actor=user.username,
+                user=user, summary="password ok; mfa enrollment required",
+                target=_user_target(user.username),
+                tool_input={"enrollment_required": True}, from_request=False,
             )
             return {
                 "requires_mfa": True,
                 "mfa_enrollment_required": True,
                 "pending_token": auth.begin_mfa(user.username, remember=body.remember),
             }
-        await state.control_audit.record(
-            action_type=ActionType.AUTH_EVENT, surface="auth", actor=user.username,
-            result_summary="password ok; mfa challenge issued",
+        await _record_identity_event(
+            state, request, action="auth.mfa_challenged", actor=user.username,
+            user=user, summary="password ok; mfa challenge issued",
+            target=_user_target(user.username), from_request=False,
         )
         return {
             "requires_mfa": True,
@@ -3505,12 +3909,15 @@ async def auth_login(
         await state.users.update(user.username, last_login_at=iso_now())
     except Exception:  # noqa: BLE001
         pass
-    await state.control_audit.record(
-        action_type=ActionType.AUTH_EVENT, surface="auth", actor=user.username,
-        result_summary=(
+    await _record_identity_event(
+        state, request, action="auth.login", actor=user.username, user=user, token=token,
+        summary=(
             f"login ok (remembered {_duration_label(remember_seconds)})"
             if remember_seconds > 0 else "login ok"
         ),
+        target=_user_target(user.username),
+        tool_input={"method": "password", "remembered": remember_seconds > 0},
+        from_request=False,
     )
     # Wave 3: register the session (sid/tv from the token) with request metadata.
     await _register_session(
@@ -3529,6 +3936,19 @@ async def auth_login(
     }
 
 
+def _object_scoped_for(state: AppState, user: Any) -> bool:
+    """Does row-level (object) data scope apply to ``user``'s case reads? The one rule
+    the chat starters and the metrics routes use; an unreadable configuration counts
+    as scoped (fail closed)."""
+    from ..engine.chat_starters import object_scoped
+
+    role = getattr(user, "role", "") if user is not None else ""
+    try:
+        return bool(object_scoped(state, str(getattr(role, "value", role) or "")))
+    except Exception:  # noqa: BLE001 -- fail closed
+        return True
+
+
 @router.get("/auth/me")
 async def auth_me(
     request: Request, response: Response, state: AppState = Depends(get_state)
@@ -3543,7 +3963,14 @@ async def auth_me(
     clears the cookie, so the console lands on the sign-in page instead of a shell
     where every call 401s. A session-store outage keeps trusting the JWT (as every
     protected route does). A live session carries an additive ``session`` summary
-    ``{remember, expires_at, idle_expires_at}``."""
+    ``{remember, expires_at, idle_expires_at}``.
+
+    Round 14 (SPEC §4.4.5, D16): a signed-in answer also carries ``object_scoped``,
+    true when row-level (object) data scope applies to the viewer's case reads (the
+    rule the chat starters use, ``chat_starters.object_scoped``, failing closed), so
+    the Console hides case-derived dashboard panels instead of showing aggregates the
+    viewer could not read row by row. With sign-in off the answer is unchanged (no
+    viewer role, so no row scope: an absent ``object_scoped`` reads as false)."""
     auth = state.auth
     if not auth.is_enabled:
         return {"authenticated": True, "auth_enabled": False, "user": None}
@@ -3570,8 +3997,8 @@ async def auth_me(
         expired = auth.expired_session_claims(token)
         if expired is not None:
             # A token this server signed whose own lifetime ran out: the session
-            # ended at its absolute limit (for a remembered sign-in, the policy
-            # duration — "signed out after 24 hours").
+            # ended at its absolute limit. The reason is reported (with the lifetime
+            # for API readers); the Console never states how long the session lasted.
             try:
                 lifetime = int(expired.get("exp", 0)) - int(expired.get("iat", 0))
             except (TypeError, ValueError):
@@ -3629,6 +4056,7 @@ async def auth_me(
             "mfa_enabled": bool(getattr(user, "mfa_enabled", False)),
         },
         "session": session,
+        "object_scoped": _object_scoped_for(state, user),
     }
 
 
@@ -3645,11 +4073,18 @@ async def auth_logout(
         sid = str((claims or {}).get("sid") or "")
         username = str((claims or {}).get("sub") or "")
         if sid:
+            revoked = False
             try:
-                if await state.sessions.revoke(sid, by=username, reason="logout"):
-                    await _audit_session(state, "session_revoke", username, sid, "logout")
+                revoked = bool(await state.sessions.revoke(sid, by=username, reason="logout"))
             except Exception:  # noqa: BLE001
                 pass
+            if revoked:
+                await _record_identity_event(
+                    state, request, action="auth.logout", actor=username, surface="session",
+                    user=auth.principal(username) if username else None, sid=sid,
+                    summary=_session_summary("session_revoke", sid, "logout"),
+                    target=_user_target(username),
+                )
             # A chat answer this session started stops with it (never raises).
             await _stop_chat_turns(state, username, sid=sid)
     # Mirror the set_cookie attributes so the cookie is reliably cleared.
@@ -3681,6 +4116,11 @@ async def auth_change_password(
         raise HTTPException(status_code=400, detail="new password must be at least 8 characters")
     # Re-authenticate with the current password (constant-time, no oracle).
     if auth.authenticate(principal.username, body.current_password) is None:
+        await _record_identity_event(
+            state, request, action="auth.password_change_failed", outcome="failure",
+            actor=principal.username, summary="password change refused: current password incorrect",
+            target=_user_target(principal.username),
+        )
         raise HTTPException(status_code=400, detail="current password is incorrect")
     user = await state.users.get(principal.username)
     if user is None:
@@ -3690,16 +4130,27 @@ async def auth_change_password(
         )
     from ..auth.passwords import hash_password
 
-    await state.users.update(
-        principal.username,
-        password_hash=hash_password(new_pw),
-        must_change_password=False,
+    async def _write() -> None:
+        # An account deleted while the row was appended answers 404, so its failure
+        # row is written instead of a password change that never happened.
+        await _patch_user_or_404(
+            state,
+            principal.username,
+            password_hash=hash_password(new_pw),
+            must_change_password=False,
+        )
+
+    # Round 14 (SPEC §3.6): a credential change is never made without its audit row.
+    # Only the store write is the audited unit; the synced view is refreshed after
+    # it, so a refresh error can never pair a saved change with a "not applied" row.
+    await audited_write(
+        state, sink="control", action="auth.password_changed",
+        target=_user_target(principal.username), expected_revision=None,
+        changes=[{"field": "password", "before": None, "after": None, "secret": True}],
+        write=_write, action_type=ActionType.AUTH_EVENT, actor=principal.username,
+        surface="auth", context=audit_context(request), result_summary="password changed",
     )
     await state.refresh_users()
-    await state.control_audit.record(
-        action_type=ActionType.AUTH_EVENT, surface="auth", actor=principal.username,
-        result_summary="password changed",
-    )
     return {"ok": True}
 
 
@@ -3765,7 +4216,12 @@ async def revoke_my_session(
         sid, by=principal.username, reason="self_signout" if self_signout else "user_revoke"
     )
     if ok:
-        await _audit_session(state, "session_revoke", principal.username, sid, "self revoke")
+        await _record_identity_event(
+            state, request, action="session.revoked", actor=principal.username,
+            surface="session", target=_user_target(principal.username),
+            summary=_session_summary("session_revoke", sid, "self revoke"),
+            tool_input=_session_tool_input(state, sid, current=self_signout),
+        )
     await _stop_chat_turns(state, principal.username, sid=sid)
     return {"ok": True, "revoked": bool(ok)}
 
@@ -3784,9 +4240,11 @@ async def revoke_other_sessions(
     )
     if keep:
         await _stop_chat_turns(state, principal.username, except_sid=keep)
-    await _audit_session(
-        state, "session_revoke_others", principal.username, keep,
-        f"revoked {count} other session(s)",
+    await _record_identity_event(
+        state, request, action="session.revoked", actor=principal.username,
+        surface="session", target=_user_target(principal.username),
+        summary=_session_summary("session_revoke_others", keep, f"revoked {count} other session(s)"),
+        tool_input={"scope": "others", "count": int(count or 0)},
     )
     if body.notify:
         try:
@@ -3819,9 +4277,22 @@ async def auth_refresh(
         await state.sessions.revoke_all(username, by="system", reason="refresh_reuse_detected")
         await state.refresh_sessions()
         await _stop_chat_turns(state, username)
-        await _audit_session(
-            state, "refresh_reuse", username, str((row or {}).get("sid") or ""),
-            "refresh-token reuse detected — all sessions revoked",
+        reused_sid = str((row or {}).get("sid") or "")
+        # The system revoked them (the store records ``by="system"``), not the
+        # account holder: the account is the target, the reused session is named in
+        # ``tool_input`` like every other revocation of a session that is not the
+        # actor's own, and the request's credential is never read.
+        await _record_identity_event(
+            state, request, action="session.revoked", actor="system", surface="session",
+            actor_type="system", outcome="success",
+            target=_user_target(username),
+            summary=_session_summary(
+                "refresh_reuse", reused_sid, "refresh-token reuse detected; all sessions revoked",
+            ),
+            tool_input=_session_tool_input(
+                state, reused_sid, scope="all", reason="refresh_reuse_detected",
+            ),
+            from_request=False,
         )
         try:
             await _notify_session_event(state, username, "terminate", {})
@@ -3869,7 +4340,12 @@ async def auth_refresh(
     )
     if rotated is not None:
         _rebind_chat_turns(state, username, sid, new_sid, token)
-    await _audit_session(state, "refresh_rotate", username, new_sid, f"rotated from {_short(sid)}")
+    await _record_identity_event(
+        state, request, action="session.refreshed", actor=username, surface="session",
+        user=state.auth.principal(username), sid=new_sid,
+        summary=_session_summary("refresh_rotate", new_sid, f"rotated from {_short(sid)}"),
+        target=_user_target(username), from_request=False,
+    )
     _set_session_cookie(response, state, token, remember_seconds=remember_seconds)
     return {"token": token, "refresh_token": new_refresh, "sid": new_sid}
 
@@ -3883,15 +4359,20 @@ async def auth_reauth(
     unlocked for the policy window. Audited (#2)."""
     principal = _require_session(state, request)
     if state.auth.authenticate(principal.username, body.password or "") is None:
-        await state.control_audit.record(
-            action_type=ActionType.AUTH_EVENT, surface="session", actor=principal.username,
-            result_summary="reauth failed",
+        await _record_identity_event(
+            state, request, action="auth.reauth_failed", outcome="failure",
+            actor=principal.username, surface="session", summary="reauth failed",
+            target=_user_target(principal.username),
         )
         raise HTTPException(status_code=401, detail={"code": "reauth_required", "reason": "bad_password"})
     sid = getattr(principal, "sid", "") or ""
     if sid:
         await state.sessions.stamp_authn(sid)
-    await _audit_session(state, "session_reauth", principal.username, sid, "step-up re-auth ok")
+    await _record_identity_event(
+        state, request, action="auth.reauthenticated", actor=principal.username,
+        surface="session", summary=_session_summary("session_reauth", sid, "step-up re-auth ok"),
+        target=_user_target(principal.username),
+    )
     return {"ok": True}
 
 
@@ -3943,8 +4424,14 @@ async def admin_revoke_session(
     by = current_username(request)
     ok = await state.sessions.revoke(sid, by=by, reason="admin_revoke")
     if ok:
-        await _audit_session(state, "session_admin_revoke", by, sid,
-                             f"admin revoked session of {row.get('username', '')}")
+        await _record_identity_event(
+            state, request, action="session.revoked", actor=by, surface="session",
+            target=_user_target(str(row.get("username") or "")),
+            summary=_session_summary(
+                "session_admin_revoke", sid, f"admin revoked session of {row.get('username', '')}",
+            ),
+            tool_input=_session_tool_input(state, sid),
+        )
     await _stop_chat_turns(state, str(row.get("username") or ""), sid=sid)
     return {"ok": True, "revoked": bool(ok)}
 
@@ -3961,8 +4448,14 @@ async def admin_revoke_all(
     count = await state.sessions.revoke_all(username, by=by, reason="admin_revoke_all")
     await state.refresh_sessions()
     await _stop_chat_turns(state, username)
-    await _audit_session(state, "session_admin_revoke_all", by, "",
-                         f"admin revoked all {count} session(s) for {username}")
+    await _record_identity_event(
+        state, request, action="session.revoked", actor=by, surface="session",
+        target=_user_target(username),
+        summary=_session_summary(
+            "session_admin_revoke_all", "", f"admin revoked all {count} session(s) for {username}",
+        ),
+        tool_input={"scope": "all", "count": int(count or 0)},
+    )
     return {"ok": True, "revoked": count}
 
 
@@ -4118,6 +4611,40 @@ def _validate_profile_text(value: str, field: str) -> str:
     return value
 
 
+def _image_marker(value: Any) -> str | None:
+    """An avatar as the audit log records it: whether one is set, never the image."""
+    return "image" if value else None
+
+
+def _account_changes(user: Any, patch: dict[str, Any]) -> list[Any]:
+    """The audit ``changes`` of an account edit (SPEC §4.5.3): each patched profile
+    field from its stored value to the new one; the avatar as set or cleared (never
+    the image); the personal preference bag field by field (secrets withheld); a
+    password or MFA secret only as "changed"."""
+    out: list[Any] = []
+    for field in sorted(patch):
+        new = patch[field]
+        old = getattr(user, field, None)
+        if field == "avatar":
+            before, after = _image_marker(old), _image_marker(new)
+            if before != after or (old != new):
+                out.append({"field": "avatar", "before": before, "after": after})
+        elif field == "prefs":
+            out.extend(diff_changes(old if isinstance(old, dict) else {},
+                                    new if isinstance(new, dict) else {}, prefix="prefs"))
+        elif field in ("password_hash", "mfa_secret", "mfa_recovery_hashes", "mfa_last_step"):
+            if field == "password_hash":
+                out.append({"field": "password", "before": None, "after": None, "secret": True})
+            elif field == "mfa_secret":
+                out.append({"field": "mfa_secret", "before": None, "after": None, "secret": True})
+        else:
+            old_v = getattr(old, "value", old)
+            new_v = getattr(new, "value", new)
+            if old_v != new_v:
+                out.extend(diff_changes({field: old_v}, {field: new_v}))
+    return out
+
+
 @router.put("/account/me")
 async def update_account_me(
     body: AccountProfileBody, request: Request, state: AppState = Depends(get_state)
@@ -4174,12 +4701,35 @@ async def update_account_me(
         patch["prefs"] = sanitized_prefs
     if not patch:
         raise HTTPException(status_code=400, detail="no changes provided")
-    updated = await state.users.update(principal.username, **patch)
-    await state.refresh_users()
-    await state.control_audit.record(
-        action_type=ActionType.AUTH_EVENT, surface="account", actor=principal.username,
+
+    async def _write() -> Any:
+        if "prefs" in patch:
+            # The admin-assigned custom roles are carried forward from a read made
+            # now, never from the read before the row was appended: an assignment
+            # saved meanwhile is kept, not reverted by this profile save.
+            fresh = await state.users.get(principal.username)
+            if fresh is None:
+                raise HTTPException(status_code=404, detail="user not found")
+            fresh_prefs = fresh.prefs or {}
+            prefs_patch = dict(patch["prefs"])
+            if "custom_roles" in fresh_prefs:
+                prefs_patch["custom_roles"] = fresh_prefs["custom_roles"]
+            else:
+                prefs_patch.pop("custom_roles", None)
+            return await _patch_user_or_404(
+                state, principal.username, **{**patch, "prefs": prefs_patch}
+            )
+        return await _patch_user_or_404(state, principal.username, **patch)
+
+    updated = await audited_write(
+        state, sink="control", action="user.updated",
+        target=_user_target(principal.username, getattr(user, "display_name", "") or None),
+        expected_revision=None, changes=_account_changes(user, patch), write=_write,
+        action_type=ActionType.AUTH_EVENT, actor=principal.username, surface="account",
+        context=audit_context(request),
         result_summary=f"updated profile ({', '.join(sorted(patch))})",
     )
+    await state.refresh_users()
     return {"ok": True, "user": (updated or user).public()}
 
 
@@ -4199,12 +4749,18 @@ async def update_my_avatar(
         avatar = validate_avatar(body.avatar or "")
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    updated = await state.users.update(principal.username, avatar=avatar)
-    await state.refresh_users()
-    await state.control_audit.record(
-        action_type=ActionType.AUTH_EVENT, surface="account", actor=principal.username,
+    async def _write() -> Any:
+        return await _patch_user_or_404(state, principal.username, avatar=avatar)
+
+    updated = await audited_write(
+        state, sink="control", action="user.updated",
+        target=_user_target(principal.username, getattr(user, "display_name", "") or None),
+        expected_revision=None, changes=_account_changes(user, {"avatar": avatar}),
+        write=_write, action_type=ActionType.AUTH_EVENT, actor=principal.username,
+        surface="account", context=audit_context(request),
         result_summary=("cleared avatar" if not avatar else "updated avatar"),
     )
+    await state.refresh_users()
     return {"ok": True, "user": (updated or user).public()}
 
 
@@ -4246,6 +4802,17 @@ def _require_session(state: AppState, request: Request):
 _MFA_PENDING_ENROLL: dict[str, dict[str, Any]] = {}
 
 
+def _mfa_changes(*, enabled: bool) -> list[dict[str, Any]]:
+    """The audit ``changes`` of turning a second factor on or off: the flag, and the
+    secret and recovery codes only as "changed" (never their values)."""
+    return [
+        {"field": "mfa_enabled", "before": "false" if enabled else "true",
+         "after": "true" if enabled else "false"},
+        {"field": "mfa_secret", "before": None, "after": None, "secret": True},
+        {"field": "mfa_recovery_codes", "before": None, "after": None, "secret": True},
+    ]
+
+
 @router.post("/auth/mfa/setup")
 async def mfa_setup(request: Request, state: AppState = Depends(get_state)) -> dict[str, Any]:
     """Begin MFA enrollment (self, authenticated). Generates a PENDING TOTP secret +
@@ -4265,9 +4832,9 @@ async def mfa_setup(request: Request, state: AppState = Depends(get_state)) -> d
         "secret": secret,
         "recovery_hashes": [mfa_mod.hash_recovery_code(c) for c in recovery],
     }
-    await state.control_audit.record(
-        action_type=ActionType.AUTH_EVENT, surface="auth", actor=principal.username,
-        result_summary="mfa enrollment started",
+    await _record_identity_event(
+        state, request, action="auth.mfa_setup_started", actor=principal.username,
+        summary="mfa enrollment started", target=_user_target(principal.username),
     )
     return {"secret": secret, "otpauth_uri": uri, "recovery_codes": recovery}
 
@@ -4302,19 +4869,25 @@ async def mfa_confirm(
             detail="this account is managed via environment configuration and cannot enroll MFA",
         )
     obf = mfa_mod.obfuscate_secret(pending["secret"], state.secrets.mfa_server_key())
-    updated = user.model_copy(update={
-        "mfa_enabled": True,
-        "mfa_secret": obf,
-        "mfa_recovery_hashes": list(pending["recovery_hashes"]),
-        "mfa_last_step": int(step),
-    })
-    await state.users.save(updated)
+
+    async def _write() -> None:
+        # Patch only the second-factor fields: a change an administrator saves to
+        # this account while the row is appended (role, active, password) is kept.
+        await _patch_user_or_404(
+            state, principal.username, mfa_enabled=True, mfa_secret=obf,
+            mfa_recovery_hashes=list(pending["recovery_hashes"]), mfa_last_step=int(step),
+        )
+
+    # Round 14 (SPEC §3.6): turning a second factor on is never done without its row.
+    await audited_write(
+        state, sink="control", action="auth.mfa_enrolled",
+        target=_user_target(principal.username), expected_revision=None,
+        changes=_mfa_changes(enabled=True), write=_write,
+        action_type=ActionType.AUTH_EVENT, actor=principal.username, surface="auth",
+        context=audit_context(request), result_summary="mfa enabled",
+    )
     await state.refresh_users()
     _MFA_PENDING_ENROLL.pop(principal.username.strip().lower(), None)
-    await state.control_audit.record(
-        action_type=ActionType.AUTH_EVENT, surface="auth", actor=principal.username,
-        result_summary="mfa enabled",
-    )
     return {"ok": True}
 
 
@@ -4354,7 +4927,7 @@ async def mfa_verify(
         )
         if ok:
             method = "totp"
-            await state.users.save(user.model_copy(update={"mfa_last_step": int(step)}))
+            await state.users.update(username, mfa_last_step=int(step))
     # 2) Recovery code (single-use): consume the matching hash on success.
     if not method:
         remaining = list(user.mfa_recovery_hashes)
@@ -4365,11 +4938,12 @@ async def mfa_verify(
         if match_idx >= 0:
             method = "recovery"
             del remaining[match_idx]
-            await state.users.save(user.model_copy(update={"mfa_recovery_hashes": remaining}))
+            await state.users.update(username, mfa_recovery_hashes=remaining)
     if not method:
-        await state.control_audit.record(
-            action_type=ActionType.AUTH_EVENT, surface="auth", actor=username,
-            result_summary="mfa verify failed",
+        await _record_identity_event(
+            state, request, action="auth.mfa_failed", outcome="failure", actor=username,
+            user=auth.principal(username), summary="mfa verify failed",
+            target=_user_target(username), from_request=False,
         )
         raise HTTPException(status_code=401, detail="invalid code")
     await state.refresh_users()
@@ -4387,12 +4961,15 @@ async def mfa_verify(
         await state.users.update(username, last_login_at=iso_now())
     except Exception:  # noqa: BLE001
         pass
-    await state.control_audit.record(
-        action_type=ActionType.AUTH_EVENT, surface="auth", actor=username,
-        result_summary=(
+    await _record_identity_event(
+        state, request, action="auth.login", actor=username, user=principal, token=token,
+        summary=(
             f"mfa login ok ({method}; remembered {_duration_label(remember_seconds)})"
             if remember_seconds > 0 else f"mfa login ok ({method})"
         ),
+        target=_user_target(username),
+        tool_input={"method": method, "remembered": remember_seconds > 0},
+        from_request=False,
     )
     # Wave 3: register the session from the freshly-minted token (carries sid/tv).
     await _register_session(
@@ -4464,7 +5041,7 @@ async def _enroll_pending_user(state: AppState, pending_token: str):
 
 @router.post("/auth/mfa/enroll-setup")
 async def mfa_enroll_setup(
-    body: MfaEnrollSetupBody, state: AppState = Depends(get_state)
+    body: MfaEnrollSetupBody, request: Request, state: AppState = Depends(get_state)
 ) -> dict[str, Any]:
     """Begin MANDATED MFA enrollment during login (PUBLIC — gated by the pending
     token). Same response shape as the session-authed /auth/mfa/setup: a PENDING
@@ -4483,9 +5060,10 @@ async def mfa_enroll_setup(
         "secret": secret,
         "recovery_hashes": [mfa_mod.hash_recovery_code(c) for c in recovery],
     }
-    await state.control_audit.record(
-        action_type=ActionType.AUTH_EVENT, surface="auth", actor=username,
-        result_summary="mfa enrollment started (login-mandated)",
+    await _record_identity_event(
+        state, request, action="auth.mfa_setup_started", actor=username,
+        user=state.auth.principal(username), summary="mfa enrollment started (login-mandated)",
+        target=_user_target(username), tool_input={"mandated": True}, from_request=False,
     )
     return {"secret": secret, "otpauth_uri": uri, "recovery_codes": recovery}
 
@@ -4513,26 +5091,32 @@ async def mfa_enroll_confirm(
         pending["secret"], body.code, window=1, period=period, digits=digits
     )
     if not ok:
-        await state.control_audit.record(
-            action_type=ActionType.AUTH_EVENT, surface="auth", actor=username,
-            result_summary="mfa enrollment confirm failed",
+        await _record_identity_event(
+            state, request, action="auth.mfa_failed", outcome="failure", actor=username,
+            user=auth.principal(username), summary="mfa enrollment confirm failed",
+            target=_user_target(username), from_request=False,
         )
         raise HTTPException(status_code=401, detail="invalid code")
-    # Persist the enrollment (the same block as /auth/mfa/confirm).
+    # Persist the enrollment (the same block as /auth/mfa/confirm), audit-first.
     obf = mfa_mod.obfuscate_secret(pending["secret"], state.secrets.mfa_server_key())
-    updated = user.model_copy(update={
-        "mfa_enabled": True,
-        "mfa_secret": obf,
-        "mfa_recovery_hashes": list(pending["recovery_hashes"]),
-        "mfa_last_step": int(step),
-    })
-    await state.users.save(updated)
+
+    async def _write() -> None:
+        await _patch_user_or_404(
+            state, username, mfa_enabled=True, mfa_secret=obf,
+            mfa_recovery_hashes=list(pending["recovery_hashes"]), mfa_last_step=int(step),
+        )
+
+    await audited_write(
+        state, sink="control", action="auth.mfa_enrolled",
+        target=_user_target(username), expected_revision=None,
+        changes=_mfa_changes(enabled=True), write=_write,
+        action_type=ActionType.AUTH_EVENT, actor=username, surface="auth",
+        context=audit_context(request, user=auth.principal(username), from_request=False),
+        result_summary="mfa enabled (login-mandated enrollment)",
+        tool_input={"mandated": True},
+    )
     await state.refresh_users()
     _MFA_PENDING_ENROLL.pop(username.strip().lower(), None)
-    await state.control_audit.record(
-        action_type=ActionType.AUTH_EVENT, surface="auth", actor=username,
-        result_summary="mfa enabled (login-mandated enrollment)",
-    )
     # Mint the FULL session — the /auth/mfa/verify success tail (incl. the signed
     # Remember-me request carried by the pending token, Round 12).
     remember_seconds, remember_reason = _remember_decision(
@@ -4547,13 +5131,16 @@ async def mfa_enroll_confirm(
         await state.users.update(username, last_login_at=iso_now())
     except Exception:  # noqa: BLE001
         pass
-    await state.control_audit.record(
-        action_type=ActionType.AUTH_EVENT, surface="auth", actor=username,
-        result_summary=(
+    await _record_identity_event(
+        state, request, action="auth.login", actor=username, user=principal, token=token,
+        summary=(
             "mfa login ok (totp; enrolled at login; remembered "
             f"{_duration_label(remember_seconds)})"
             if remember_seconds > 0 else "mfa login ok (totp; enrolled at login)"
         ),
+        target=_user_target(username),
+        tool_input={"method": "totp", "remembered": remember_seconds > 0, "enrolled_at_login": True},
+        from_request=False,
     )
     await _register_session(
         state, request, token, mfa_method="totp", remember_seconds=remember_seconds
@@ -4596,15 +5183,29 @@ async def mfa_disable(
     if not ok:
         ok = any(mfa_mod.verify_recovery_code(body.code, h) for h in user.mfa_recovery_hashes)
     if not ok:
+        await _record_identity_event(
+            state, request, action="auth.mfa_failed", outcome="failure",
+            actor=principal.username, summary="mfa disable refused: invalid code",
+            target=_user_target(principal.username),
+        )
         raise HTTPException(status_code=400, detail="invalid code")
-    await state.users.save(user.model_copy(update={
-        "mfa_enabled": False, "mfa_secret": "", "mfa_recovery_hashes": [], "mfa_last_step": 0,
-    }))
-    await state.refresh_users()
-    await state.control_audit.record(
-        action_type=ActionType.AUTH_EVENT, surface="auth", actor=principal.username,
-        result_summary="mfa disabled",
+
+    async def _write() -> None:
+        # ``update`` drops only ``None``, so the empty secret, list and step are written.
+        await _patch_user_or_404(
+            state, principal.username,
+            mfa_enabled=False, mfa_secret="", mfa_recovery_hashes=[], mfa_last_step=0,
+        )
+
+    # Round 14 (SPEC §3.6): turning a second factor off is never done without its row.
+    await audited_write(
+        state, sink="control", action="auth.mfa_disabled",
+        target=_user_target(principal.username), expected_revision=None,
+        changes=_mfa_changes(enabled=False), write=_write,
+        action_type=ActionType.AUTH_EVENT, actor=principal.username, surface="auth",
+        context=audit_context(request), result_summary="mfa disabled",
     )
+    await state.refresh_users()
     return {"ok": True}
 
 
@@ -4750,17 +5351,27 @@ async def sso_callback(
         return _fail("incomplete_identity")
     denied = prov.check_allowed(identity)
     if denied:
-        await state.control_audit.record(
-            action_type=ActionType.AUTH_EVENT, surface="auth", actor=identity.get("email") or "",
-            result_summary=f"sso denied: {denied}",
+        await _record_identity_event(
+            state, request, action="auth.login_failed", outcome="denied",
+            actor=identity.get("email") or "", summary=f"sso denied: {denied}",
+            tool_input={"method": f"sso:{provider_id}"}, from_request=False,
         )
         return _fail("not_allowed")
     role = prov.role_for(identity)
-    username = await _provision_sso_user(state, provider_id, identity, role)
+    try:
+        username, refusal = await _provision_sso_user(state, request, provider_id, identity, role)
+    except AuditUnavailableError:
+        # Creating or changing the account is audit-first: nothing was changed.
+        return _fail("audit_unavailable")
     if username is None:
-        await state.control_audit.record(
-            action_type=ActionType.AUTH_EVENT, surface="auth", actor=identity.get("email") or "",
-            result_summary="sso login rejected: user not provisioned",
+        # One attempt, one row: a refused link is ``denied`` (the account-takeover
+        # guard), anything else is a ``failure`` to provision.
+        await _record_identity_event(
+            state, request, action="auth.login_failed",
+            outcome="denied" if refusal else "failure",
+            actor=identity.get("email") or "",
+            summary=refusal or "sso login rejected: user not provisioned",
+            tool_input={"method": f"sso:{provider_id}"}, from_request=False,
         )
         return _fail("user_not_provisioned")
     await state.refresh_users()
@@ -4775,12 +5386,15 @@ async def sso_callback(
         await state.users.update(username, last_login_at=iso_now())
     except Exception:  # noqa: BLE001
         pass
-    await state.control_audit.record(
-        action_type=ActionType.AUTH_EVENT, surface="auth", actor=username,
-        result_summary=(
+    await _record_identity_event(
+        state, request, action="auth.login", actor=username, user=_principal, token=token,
+        summary=(
             f"sso login ok ({provider_id}; remembered {_duration_label(remember_seconds)})"
             if remember_seconds > 0 else f"sso login ok ({provider_id})"
         ),
+        target=_user_target(username),
+        tool_input={"method": f"sso:{provider_id}", "remembered": remember_seconds > 0},
+        from_request=False,
     )
     # Wave 3: register the SSO session from the freshly-minted token (carries sid/tv).
     await _register_session(
@@ -4799,17 +5413,24 @@ async def sso_callback(
 
 
 async def _provision_sso_user(
-    state: AppState, provider_id: str, identity: dict[str, Any], role: str
-) -> str | None:
+    state: AppState, request: Request, provider_id: str, identity: dict[str, Any], role: str
+) -> tuple[str | None, str | None]:
     """Map an SSO identity to a local account; provision it (atomically) when
-    ``auto_create_users`` is on. Returns the local username, or ``None`` when no
-    matching user exists and auto-provisioning is off.
+    ``auto_create_users`` is on. Returns ``(username, None)``, or ``(None, refusal)``
+    when no account may be used: ``refusal`` is the reason when the link was refused
+    (the caller writes the one ``auth.login_failed`` row for the attempt) and ``None``
+    when no matching user exists and auto-provisioning is off.
 
     Matching precedence: an EXISTING user already linked to this (provider, sub) →
     (only when the IdP asserts a VERIFIED email) an existing SSO-managed user by that
     email → else (if allowed) create one. The account key is the verified email when
     available, else the non-spoofable ``provider:sub``. Idempotent: a returning user is
     NOT duplicated; its role is refreshed from the group map.
+
+    Round 14 (SPEC §3.6, §4.5.4): creating the account, and changing its role or its
+    link on a later sign-in, is audit-first (``user.created``, ``user.role_changed``,
+    ``user.updated``; the actor is the system acting for the identity provider). A
+    failed append raises :class:`AuditUnavailableError` and nothing is changed.
 
     SECURITY (#3, SSO account takeover): we NEVER link an SSO login to a pre-existing
     LOCAL-credential account by email, and we NEVER trust an UNVERIFIED email as an
@@ -4824,11 +5445,13 @@ async def _provision_sso_user(
     email_verified = bool(identity.get("email_verified"))
     sub = str(identity.get("sub") or "").strip()
     if not sub:
-        return None  # no stable subject → cannot key an account safely
+        return None, None  # no stable subject → cannot key an account safely
     # Only trust the email as an account key when the IdP asserts it is verified;
     # otherwise key on the immutable provider+sub (an attacker cannot forge that).
     trusted_email = email if (email and email_verified) else ""
     username = trusted_email or f"{provider_id}:{sub}"
+    method = f"sso:{provider_id}"
+    context = audit_context(request, from_request=False)
 
     # 1) An account already LINKED to this (provider, sub) — always safe to reuse.
     existing = None
@@ -4846,47 +5469,110 @@ async def _provision_sso_user(
             already_linked_here = candidate.oauth_provider == provider_id
             is_local_account = bool(candidate.password_hash) and not candidate.oauth_provider
             if is_local_account and not already_linked_here:
-                await state.control_audit.record(
-                    action_type=ActionType.AUTH_EVENT, surface="auth",
-                    actor=email or username,
-                    result_summary=(
-                        f"sso link refused: {provider_id} email matches a local account"
-                    ),
-                )
-                return None
+                return None, f"sso link refused: {provider_id} email matches a local account"
             existing = candidate
 
     if existing is not None:
         # Idempotent re-login: refresh role + provider linkage, never duplicate.
         if not existing.active:
-            return None
-        await state.users.save(existing.model_copy(update={
-            "role": role if (cfg and cfg.group_role_map) else existing.role,
+            return None, None
+        old_role = str(getattr(existing.role, "value", existing.role) or "")
+        new_role = role if (cfg and cfg.group_role_map) else old_role
+        update = {
+            "role": new_role,
             "oauth_provider": provider_id,
             "oauth_sub": sub or existing.oauth_sub,
-        }))
-        return existing.username
+        }
+        patch = {
+            key: value for key, value in update.items()
+            if str(getattr(getattr(existing, key, None), "value", getattr(existing, key, None)) or "")
+            != str(value or "")
+        }
+        if not patch:
+            return existing.username, None  # nothing to change, nothing to record
+        role_changed = "role" in patch
+
+        async def _save_existing() -> None:
+            # Only the fields this sign-in changes: an administrator's change to the
+            # account saved while the row is appended (active, password) is kept.
+            if await state.users.update(existing.username, **patch) is None:
+                raise _SsoAccountGone(f"user '{existing.username}' no longer exists")
+
+        try:
+            await audited_write(
+                state, sink="control",
+                action="user.role_changed" if role_changed else "user.updated",
+                target=_user_target(
+                    existing.username, getattr(existing, "display_name", "") or None
+                ),
+                expected_revision=None, changes=_account_changes(existing, patch),
+                write=_save_existing, action_type=ActionType.USER_MGMT, actor=method,
+                actor_type="system", surface="auth", context=context,
+                tool_input={"method": method},
+                result_summary=(
+                    f"single sign-on changed the role of '{existing.username}' from {old_role} "
+                    f"to {new_role} ({provider_id} group map)"
+                    if role_changed
+                    else f"single sign-on linked '{existing.username}' to {provider_id}"
+                ),
+            )
+        except _SsoAccountGone:
+            # Deleted while the row was appended: its failure row is written and the
+            # sign-in fails as "not provisioned".
+            return None, None
+        return existing.username, None
 
     if not auto_create:
-        return None
-    # Atomic create-if-absent at our single-process scale (create() raises on a
-    # concurrent duplicate, which we treat as "already provisioned").
+        return None, None
+
+    async def _create() -> str:
+        # Atomic create-if-absent at our single-process scale: create() raises on a
+        # concurrent duplicate, which becomes the failure row of this attempt (the
+        # racing callback's own row records the creation) and is then reused.
+        try:
+            created = await state.users.create(
+                username=username,
+                password_hash=hash_password(secrets_token()),
+                role=role,
+                active=True,
+                must_change_password=False,
+            )
+        except ValueError as exc:
+            raise _SsoAccountExists(str(exc)) from exc
+        if await state.users.update(
+            created.username, oauth_provider=provider_id, oauth_sub=sub,
+        ) is None:
+            raise _SsoAccountGone(f"user '{created.username}' no longer exists")
+        return created.username
+
+    if await state.users.get(username) is not None:
+        # Provisioned by a racing callback since the lookups above: reuse it.
+        return username, None
     try:
-        created = await state.users.create(
-            username=username,
-            password_hash=hash_password(secrets_token()),
-            role=role,
-            active=True,
-            must_change_password=False,
+        created_name = await audited_write(
+            state, sink="control", action="user.created",
+            target=_user_target(username), expected_revision=None,
+            changes=diff_changes({}, {
+                "role": role, "active": True, "oauth_provider": provider_id, "oauth_sub": sub,
+            }),
+            write=_create, action_type=ActionType.USER_MGMT, actor=method, actor_type="system",
+            surface="auth", context=context, tool_input={"method": method},
+            result_summary=f"single sign-on created user '{username}' ({role}) for {provider_id}",
         )
-    except ValueError:
-        # Raced with another callback that just created it — fetch + return.
+    except _SsoAccountExists:
         again = await state.users.get(username)
-        return again.username if again else None
-    await state.users.save(created.model_copy(update={
-        "oauth_provider": provider_id, "oauth_sub": sub,
-    }))
-    return created.username
+        return (again.username if again else None), None
+    except _SsoAccountGone:
+        return None, None
+    return created_name, None
+
+
+class _SsoAccountGone(Exception):
+    """The account a single sign-on write targets was deleted before the write ran."""
+
+
+class _SsoAccountExists(Exception):
+    """``users.create`` found the account already provisioned by a racing callback."""
 
 
 def secrets_token() -> str:
@@ -4912,10 +5598,21 @@ async def set_sso_provider_secret(
     """Set/clear one OIDC provider's client secret (super_admin only). The value goes
     to the SECRET tier (in memory), NEVER to Preferences/the config doc; only a
     configured-boolean is returned."""
-    state.secrets.set_sso_client_secret(provider_id, body.client_secret)
-    await state.control_audit.record(
-        action_type=ActionType.AUTH_EVENT, surface="auth", actor=current_username(request),
-        result_summary=f"sso client secret {'set' if body.client_secret else 'cleared'} for '{provider_id}'",
+    async def _write() -> None:
+        state.secrets.set_sso_client_secret(provider_id, body.client_secret)
+
+    # Round 14 (SPEC §3.6): audited before it applies; the value is never recorded.
+    await audited_write(
+        state, sink="control", action="settings.updated",
+        target={"type": "setting", "id": "sso", "label": "Single sign-on"},
+        expected_revision=None,
+        changes=[{"field": f"sso.{provider_id}.client_secret", "before": None, "after": None,
+                  "secret": True}],
+        write=_write, action_type=ActionType.AUTH_EVENT, actor=current_username(request),
+        surface="auth", context=audit_context(request),
+        result_summary=(
+            f"sso client secret {'set' if body.client_secret else 'cleared'} for '{provider_id}'"
+        ),
     )
     return {"ok": True, "configured": bool(state.secrets.sso_client_secret(provider_id))}
 
@@ -5088,34 +5785,60 @@ async def create_user(
         custom_roles = await _validate_custom_role_names(state, body.custom_roles)
     from ..auth.passwords import hash_password
 
-    try:
-        user = await state.users.create(
-            username=body.username,
-            password_hash=hash_password(pw),
-            role=body.role,
-            active=True,
-            must_change_password=True,
-            display_name=display_name,
-            email=email,
-            phone=phone,
-            mfa_required=bool(body.mfa_required),
-            prefs=({"custom_roles": custom_roles} if custom_roles else None),
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    await state.refresh_users()
+    # Pre-checks (no row): a missing or taken name is refused before anything is
+    # attempted, with the answers the store gave before Round 14.
+    if not (body.username or "").strip():
+        raise HTTPException(status_code=409, detail="username is required")
+    if await state.users.get(body.username) is not None:
+        raise HTTPException(status_code=409, detail=f"user '{body.username}' already exists")
     extras = []
     if bool(body.mfa_required):
         extras.append("mfa_required")
     if custom_roles:
         extras.append(f"custom={custom_roles}")
-    await state.control_audit.record(
-        action_type=ActionType.USER_MGMT, surface="users", actor=current_username(request),
+    # What the new account holds, as the row records it (empty fields left out).
+    created_fields = {
+        key: value for key, value in {
+            "role": body.role, "active": True, "must_change_password": True,
+            "display_name": display_name, "email": email, "phone": phone,
+            "mfa_required": bool(body.mfa_required), "custom_roles": custom_roles,
+        }.items() if value not in ("", [], None)
+    }
+
+    async def _write() -> Any:
+        try:
+            created = await state.users.create(
+                username=body.username,
+                password_hash=hash_password(pw),
+                role=body.role,
+                active=True,
+                must_change_password=True,
+                display_name=display_name,
+                email=email,
+                phone=phone,
+                mfa_required=bool(body.mfa_required),
+                prefs=({"custom_roles": custom_roles} if custom_roles else None),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return created
+
+    # Round 14 (SPEC §3.6): the account exists only once its audit row does.
+    user = await audited_write(
+        state, sink="control", action="user.created",
+        target=_user_target(body.username, display_name or None), expected_revision=None,
+        changes=[
+            *diff_changes({}, created_fields),
+            {"field": "password", "before": None, "after": None, "secret": True},
+        ],
+        write=_write, action_type=ActionType.USER_MGMT, actor=current_username(request),
+        surface="users", context=audit_context(request),
         result_summary=(
-            f"created user '{user.username}' ({user.role})"
+            f"created user '{body.username}' ({body.role})"
             + (f" [{' '.join(extras)}]" if extras else "")
         ),
     )
+    await state.refresh_users()
     return {"ok": True, "user": user.public()}
 
 
@@ -5185,16 +5908,30 @@ async def update_user(
         raise HTTPException(
             status_code=409, detail="cannot demote or disable the last active super_admin"
         )
-    updated = await state.users.update(username, **patch)
+
+    async def _write() -> Any:
+        return await _patch_user_or_404(state, username, **patch)
+
+    old_role = getattr(target.role, "value", target.role)
+    role_changed = "role" in patch and str(patch["role"]) != str(old_role)
+    # Round 14 (SPEC §3.6): audited before the change is visible.
+    updated = await audited_write(
+        state, sink="control",
+        action="user.role_changed" if role_changed else "user.updated",
+        target=_user_target(username, getattr(target, "display_name", "") or None),
+        expected_revision=None, changes=_account_changes(target, patch), write=_write,
+        action_type=ActionType.USER_MGMT, actor=current_username(request), surface="users",
+        context=audit_context(request),
+        result_summary=(
+            f"updated user '{username}': role changed from {old_role} to {patch['role']}"
+            if role_changed else f"updated user '{username}'"
+        ),
+    )
     await state.refresh_users()
     if "role" in patch or "active" in patch:
         # A disabled account's running chat answers stop now; a role change stops
         # only those that relied on a grant the account no longer holds.
         await _recheck_chat_turns(state, username)
-    await state.control_audit.record(
-        action_type=ActionType.USER_MGMT, surface="users", actor=current_username(request),
-        result_summary=f"updated user '{username}'",
-    )
     return {"ok": True, "user": (updated or target).public()}
 
 
@@ -5212,13 +5949,38 @@ async def delete_user(
         raise HTTPException(status_code=409, detail="cannot delete the last active super_admin")
     from ..engine.jobs import account_generation
 
-    generation = account_generation(target.username, target.created_at)
-    artifacts, _removed_jobs = await state.jobs.retire_actor(username, generation)
-    await state.job_runner.delete_artifacts(artifacts)
-    await state.users.delete(username)
-    # The account is gone from the synced view first (its token now fails every
-    # request, so no new chat turn can start), then its running chat answers stop and
-    # unwind before its chat material is purged, so none of them writes it back.
+    async def _write() -> None:
+        # The deletion itself: the account's jobs and artifacts are retired and the
+        # account removed. Only these persisting steps are the audited unit. An
+        # account deleted (or deleted and made again) while the row was appended
+        # answers 404, so its failure row is written instead of a deletion this
+        # request never made.
+        current = await state.users.get(username)
+        if current is None or current.created_at != target.created_at:
+            raise HTTPException(status_code=404, detail="user not found")
+        generation = account_generation(target.username, target.created_at)
+        artifacts, _removed_jobs = await state.jobs.retire_actor(username, generation)
+        await state.job_runner.delete_artifacts(artifacts)
+        if not await state.users.delete(username):
+            raise HTTPException(status_code=404, detail="user not found")
+
+    old_role = getattr(target.role, "value", target.role)
+    # Round 14 (SPEC §3.6): the account and its data are removed only once the
+    # deletion is on the audit log.
+    await audited_write(
+        state, sink="control", action="user.deleted",
+        target=_user_target(username, getattr(target, "display_name", "") or None),
+        expected_revision=None,
+        changes=[{"field": "role", "before": str(old_role or ""), "after": None}],
+        write=_write, action_type=ActionType.USER_MGMT, actor=current_username(request),
+        surface="users", context=audit_context(request),
+        result_summary=f"deleted user '{username}'",
+    )
+    # After the deletion is saved and recorded: the account is gone from the synced
+    # view first (its token now fails every request, so no new chat turn can start),
+    # then its running chat answers stop and unwind before its chat material is
+    # purged, so none of them writes it back. An error here keeps its pre-Round-14
+    # behaviour and never pairs the saved deletion with a "not applied" row.
     await state.refresh_users()
     await _stop_chat_turns(state, username)
     from ..stores.chat_feedback import feedback_store_for
@@ -5238,10 +6000,6 @@ async def delete_user(
         # Round 13 (SPEC-chat §3.2.3): the user's chat starter state goes with the
         # ratings, over the same REAL chat KV.
         chat_starters=starters_store_for(real_chat_kv),
-    )
-    await state.control_audit.record(
-        action_type=ActionType.USER_MGMT, surface="users", actor=current_username(request),
-        result_summary=f"deleted user '{username}'",
     )
     return {"ok": True}
 
@@ -5356,13 +6114,42 @@ def _with_advisory_bands(case: Case, prefs: Preferences | None) -> Case:
         return case
 
 
-def _case_view(case: Case, state: AppState) -> dict[str, Any]:
+async def _case_spend_visible(request: Request | None) -> bool:
+    """Whether this caller may read a case's own AI spend, ``Case.token_cost``.
+
+    Round 14 (roles-11, second acceptance integration): AI spend follows one rule,
+    ``cost:view``, wherever it is shown, and a case's cumulative investigation cost is
+    spend like the cost and tokens on its timeline (``GET /cases/{id}/timeline``) and
+    chat's case figures (``agents/chat_tools/cases.py``). Every case read and every
+    single-case response consults this. ``None`` is a direct in-process call (tests,
+    jobs), which has no caller to withhold from. Never raises for a missing grant and
+    writes no audit row: the case is still answered, only the figure is left out."""
+    if request is None:
+        return True
+    from .deps import has_permission
+
+    return await has_permission(request, "cost", "view")
+
+
+def _withhold_case_spend(view: dict[str, Any]) -> dict[str, Any]:
+    """Leave a case's own AI spend out of one serialised case: the ``token_cost`` key
+    stays and its value is ``null``, the shape the timeline totals and the budget
+    windows use for a caller without ``cost:view``. Display only (#3)."""
+    if "token_cost" in view:
+        view["token_cost"] = None
+    return view
+
+
+def _case_view(case: Case, state: AppState, *, spend: bool = True) -> dict[str, Any]:
     """The JSON every single-case MUTATION returns (Round 12 final review): the same
     shape as ``GET /cases/{id}``, the stored case plus its read-time advisory bands
     under ``execution_prefs``. A client that renders the response (the Case Manager
     header after Acknowledge or Close) otherwise saw ``severity_band: null`` and fell
     back to a risk-score band, so a source-asserted Critical case read as Info until a
     reload. Display only: nothing here is stored or read by ``decide()`` (#3).
+
+    ``spend=False`` (a caller without ``cost:view``, see :func:`_case_spend_visible`)
+    answers ``token_cost: null``, as ``GET /cases/{id}`` does for that caller.
 
     Fail-open like the read path: the mutation is already saved when this runs, so a
     preference lookup that fails degrades to the prefs-free severity axis
@@ -5371,7 +6158,8 @@ def _case_view(case: Case, state: AppState) -> dict[str, Any]:
         prefs: Preferences | None = state.execution_prefs
     except Exception:  # noqa: BLE001 — advisory only; never fail a saved mutation
         prefs = None
-    return _with_advisory_bands(case, prefs).model_dump(mode="json")
+    view = _with_advisory_bands(case, prefs).model_dump(mode="json")
+    return view if spend else _withhold_case_spend(view)
 
 
 # --------------------------------------------------------------------------- #
@@ -5412,7 +6200,17 @@ CASE_QUEUE_SCAN_FIELDS: tuple[str, ...] = (
     "entity_type", "source_name", "assignee", "source_surface", "cluster_signature",
     "created_at", "updated_at", "risk_score", "severity_band", "trigger_reason",
     "source_id",
+    # Round 14 (SPEC §4.6.1): the rule filter and search read ``rule_ids``; the
+    # ``closed_by`` filter reads the decider and the analyst-policy payload.
+    "rule_ids", "decision_by", "analyst_policy",
 )
+# Round 14 (SPEC §4.6.1, D27): who closed a terminal case, the engine's own values
+# (``case_aggregate`` ``closed_by``): ``agent`` (an automatic close), ``analyst`` (a
+# person), ``analyst_policy`` (an operator's declared-benign policy) and ``system``
+# (deterministic routing and older rows with no recorded decider).
+# These four are the only accepted values (SPEC §11.1 contract resolution 8): any other
+# value, ``human`` included, is refused with a 400 rather than guessed at.
+CASE_QUEUE_CLOSED_BY: tuple[str, ...] = ("agent", "analyst", "analyst_policy", "system")
 # A scan page with at least this many rows has its predicate work (decoding, the
 # validation a window or severity filter needs) run in a worker thread, so a broad
 # search never stalls the event loop that also serves chat streams, SSE and ingest
@@ -5445,7 +6243,8 @@ def _queue_search_terms(q: str | None) -> list[str]:
 
 
 def _queue_search_haystack(row: Any) -> str:
-    """The ten fields the queue search has always matched, case-folded."""
+    """The ten fields the queue search has always matched, plus (Round 14, SPEC §4.6.1)
+    the case's rule values, case-folded."""
     etype, evalue = _queue_entity(row)
     parts = [
         _queue_value(row, "case_id"), _queue_value(row, "case_number"),
@@ -5453,7 +6252,31 @@ def _queue_search_haystack(row: Any) -> str:
         _queue_value(row, "status"), _queue_value(row, "verdict"),
         etype, evalue, _queue_value(row, "source_name"), _queue_value(row, "assignee"),
     ]
+    rules = _queue_value(row, "rule_ids")
+    if isinstance(rules, (list, tuple)):
+        parts.extend(rules)
     return " ".join(str(p) for p in parts if p not in (None, "")).casefold()
+
+
+def _queue_rule_closed_by_check(
+    rule: str | None, closed_by: str | None, prefs: Preferences,
+) -> Callable[[Any], bool] | None:
+    """The Round 14 ``rule`` and ``closed_by`` queue filters as one predicate over a raw
+    row or a :class:`Case`, compiled by the exact-aggregation engine
+    (``case_aggregate``: ``rule_exact`` is a value of ``Case.rule_ids`` exactly as
+    stored, ``closed_by`` its terminal-close owner), so the Cases list, the rule summary
+    and every case breakdown count the same cases. ``None`` when neither is asked for."""
+    filters: dict[str, Any] = {}
+    if rule is not None:
+        filters["rule_exact"] = [rule]
+    if closed_by is not None:
+        filters["closed_by"] = [closed_by]
+    if not filters:
+        return None
+    from ..engine.case_aggregate import _CaseView, _compile_case_filters
+
+    predicate = _compile_case_filters(filters, prefs)
+    return lambda row: bool(predicate(_CaseView(row, prefs)))
 
 
 def _queue_title(row: Any) -> str:
@@ -5548,6 +6371,8 @@ def _queue_page_matches(
     hi: int | None,
     sort_field: str,
     prefs: Preferences,
+    rule: str | None = None,
+    closed_by: str | None = None,
 ) -> list[tuple[Any, str]]:
     """The ``(sort key, case id)`` of every row of one scan page that matches the
     queue filters. Pure and synchronous, so a large page runs in a worker thread.
@@ -5555,9 +6380,12 @@ def _queue_page_matches(
     its projected fields."""
     from ..stores.base import case_in_created_window
 
+    extra = _queue_rule_closed_by_check(rule, closed_by, prefs)
     out: list[tuple[Any, str]] = []
     for row in rows:
         if statuses and str(_queue_value(row, "status") or "") not in statuses:
+            continue
+        if extra is not None and not extra(row):
             continue
         if surface and str(_queue_value(row, "source_surface") or "") != surface:
             continue
@@ -5624,6 +6452,8 @@ async def _scan_case_queue(
     limit: int,
     offset: int,
     verdict: str | None = None,
+    rule: str | None = None,
+    closed_by: str | None = None,
 ) -> tuple[list[Case], int]:
     """One exact pass over the case store for the queue filters → (page, total).
 
@@ -5650,7 +6480,7 @@ async def _scan_case_queue(
     match = functools.partial(
         _queue_page_matches, statuses=statuses, surface=surface, entity=entity,
         terms=terms, assignee_key=assignee_key, verdict=verdict, severity=severity,
-        lo=lo, hi=hi, sort_field=sort_field, prefs=prefs,
+        lo=lo, hi=hi, sort_field=sort_field, prefs=prefs, rule=rule, closed_by=closed_by,
     )
     try:
         while not started or cursor is not None:
@@ -5684,16 +6514,20 @@ async def _scan_case_queue(
     except HTTPException:
         raise
     except Exception as exc:  # noqa: BLE001 — a partial scan must never pass as exact
-        if cursor is not None:
-            try:
-                await store.close_scan_cursor(cursor)
-            except Exception:  # noqa: BLE001
-                pass
         logger.warning("case queue scan failed: %s", exc)
         raise HTTPException(
             status_code=503,
             detail="Could not search every case right now; try again.",
         ) from exc
+    finally:
+        # Round 14: an unfinished scan releases its read snapshot on EVERY exit, a
+        # cancellation included (a caller's time budget, ``asyncio.wait_for``), which
+        # ``except Exception`` never sees. A cluster caps its open snapshots, so a
+        # stranded one (kept alive for minutes) can break every other case scan.
+        if cursor is not None:
+            from ..engine.case_aggregate import _close_cursor
+
+            await _close_cursor(store, cursor)
     # A case removed between the scan and the page read is simply absent from the page.
     return [found[case_id] for case_id in page_ids if case_id in found], total
 
@@ -5721,8 +6555,13 @@ async def list_cases(
     # Round 12 (WP-CM) — an exact AI-verdict filter (``CASE_QUEUE_VERDICTS``), so a
     # "needs an analyst" count is a structured match rather than a text search.
     verdict: str | None = None,
+    # Round 14 (SPEC §4.6.1): an exact rule value of ``Case.rule_ids`` and the
+    # terminal-close owner (``CASE_QUEUE_CLOSED_BY``; the ``#/scans`` redirect, D27).
+    rule: str | None = None,
+    closed_by: str | None = None,
     state: AppState = Depends(get_state),
     _=Depends(require_permission("cases", "read")),
+    request: Request = None,  # type: ignore[assignment]
 ) -> CaseListResponse | JSONResponse:
     """List cases, optionally windowed, sorted, paged and narrowed to a lifecycle group.
 
@@ -5738,6 +6577,18 @@ async def list_cases(
     they would be emitted as nulls to every legacy caller, and declaring the extended
     envelope as a second response model splits the shared ``Case`` component into
     validation and serialisation variants, which changes every generated case type.
+
+    Round 14 (SPEC §4.6.1): ``rule`` keeps the cases whose ``rule_ids`` hold that exact
+    value (as stored: never trimmed or case-folded; 1 to 256 characters on one line), the
+    population the rule sheet's "Show the N cases" opens and its case count measures.
+    ``closed_by`` keeps terminal cases closed by ``agent``, ``analyst``,
+    ``analyst_policy`` or ``system`` (the exact-aggregation engine's values, and only
+    those; ``system`` also covers older rows with no recorded decider). Both are answered
+    by the exact queue scan and echoed as ``rule_applied`` / ``closed_by_applied``; any
+    other value is a 400. The free-text ``q`` now also matches a case's rule values.
+
+    Round 14 (roles-11): for a caller without ``cost:view`` every row's ``token_cost``
+    (the case's own AI spend) is ``null``; the rows, counts and echoes are unchanged.
     """
     # ADDITIVE (Round-6 #37): an OPTIONAL created_at time window so Overview widgets can
     # honor the TimeRangePicker. Default (both None) == byte-identical prior behaviour:
@@ -5776,8 +6627,28 @@ async def list_cases(
                 f"expected one of {list(CASE_QUEUE_VERDICTS)}"
             ),
         )
+    # Round 14: the rule value is exact text (never trimmed or case-folded: a stored
+    # rule id is matched as it is); an empty parameter means no filter.
+    rule_filter = rule if rule not in (None, "") else None
+    if rule_filter is not None and not _valid_rule_value(rule_filter):
+        raise HTTPException(
+            status_code=400,
+            detail="rule must be 1 to 256 characters on one line, without control characters",
+        )
+    # Validated against the engine's four closer values (case-folded like the sibling
+    # ``severity`` filter); anything else, ``human`` included, is refused.
+    closed_by_filter = str(closed_by or "").strip().lower() or None
+    if closed_by_filter and closed_by_filter not in CASE_QUEUE_CLOSED_BY:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"unknown closed_by '{closed_by_filter}'; "
+                f"expected one of {list(CASE_QUEUE_CLOSED_BY)}"
+            ),
+        )
     queue_scan = bool(
         search_terms or assignee_filter or severity_filter or verdict_filter
+        or rule_filter is not None or closed_by_filter
         or sort_field in CASE_QUEUE_SCAN_SORTS
     )
     extended = (
@@ -5845,6 +6716,11 @@ async def list_cases(
             window_total_exact = window_bounds_proven(from_, to, lo, hi)
         group_statuses = status_group_statuses(status_group)
         scan_statuses = (str(status),) if status else group_statuses
+        if closed_by_filter and scan_statuses is None:
+            # Only a terminal case has a closer: push that pre-filter down.
+            from ..constants import TERMINAL_CASE_STATUSES
+
+            scan_statuses = tuple(TERMINAL_CASE_STATUSES)
         cases, total = await _scan_case_queue(
             state,
             statuses=scan_statuses,
@@ -5854,6 +6730,8 @@ async def list_cases(
             assignee=assignee_filter,
             severity=severity_filter,
             verdict=verdict_filter,
+            rule=rule_filter,
+            closed_by=closed_by_filter,
             lo=lo,
             hi=hi,
             sort_field=applied_sort_field,
@@ -5885,15 +6763,22 @@ async def list_cases(
     prefs = state.execution_prefs
     cases = [_with_advisory_bands(c, prefs) for c in cases]
     payload = CaseListResponse(cases=cases, total=total, window_total_exact=window_total_exact)
+    spend = await _case_spend_visible(request)
     # A request that engaged NONE of the new parameters is answered by the declared
     # response model, exactly as before — same keys, same bytes, same object for the
     # in-process callers that await this coroutine directly.
-    if not extended:
+    if not extended and spend:
         return payload
     # A request that DID engage them gets the same envelope plus the echoes. Encoding
     # through ``jsonable_encoder`` is the same step FastAPI's own response-model path
-    # takes, so the shared keys are byte for byte what they always were.
+    # takes, so the shared keys are byte for byte what they always were. A caller
+    # without ``cost:view`` gets the same envelope with each row's spend left out.
     body = jsonable_encoder(payload)
+    if not spend:
+        for row in body.get("cases") or []:
+            _withhold_case_spend(row)
+    if not extended:
+        return JSONResponse(body)
     body.update(
         jsonable_encoder(
             CaseListEcho(
@@ -5916,6 +6801,10 @@ async def list_cases(
         body["severity_applied"] = severity_filter
     if verdict_filter:
         body["verdict_applied"] = verdict_filter
+    if rule_filter is not None:
+        body["rule_applied"] = rule_filter
+    if closed_by_filter:
+        body["closed_by_applied"] = closed_by_filter
     return JSONResponse(body)
 
 
@@ -5924,7 +6813,10 @@ async def get_case(
     case_id: str,
     state: AppState = Depends(get_state),
     _=Depends(require_permission("cases", "read")),
-) -> Case:
+    request: Request = None,  # type: ignore[assignment]
+) -> Case | JSONResponse:
+    """One case. For a caller without ``cost:view`` its ``token_cost`` (the case's own
+    AI spend) is ``null`` (Round 14 roles-11); every other field is unchanged."""
     case = await state.cases.get(case_id)
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
@@ -5932,7 +6824,12 @@ async def get_case(
     # ``execution_prefs`` (NOT ``prefs``) — the SAME authority the list surface above
     # uses. The two diverged, so under an active demo sandbox one case could band
     # differently in the list and in its own detail view.
-    return _with_advisory_bands(case, state.execution_prefs)
+    banded = _with_advisory_bands(case, state.execution_prefs)
+    if await _case_spend_visible(request):
+        return banded
+    # The declared model's own encoding with the one figure left out: a ``null`` would
+    # not validate as the stored ``float``, so the body is sent as encoded.
+    return JSONResponse(_withhold_case_spend(jsonable_encoder(banded)))
 
 
 class CaseAction(BaseModel):
@@ -5985,6 +6882,30 @@ class CaseAction(BaseModel):
         ),
         json_schema_extra={"deprecated": True},
     )
+    # Round 14 (SPEC §4.10.15, D34): closing by hand never blocks. When an active
+    # runbook run still has required steps open, a terminal move records why
+    # (``case.closed_with_open_steps``). Only ``require_open_steps_reason`` (the Console
+    # sends it so it can show its dialog) turns a missing reason into ``409
+    # runbook_steps_open``; every other caller closes exactly as before.
+    open_steps_reason: str | None = Field(
+        default=None,
+        max_length=500,
+        title="Why the case closes with required runbook steps open",
+        description="1 to 500 characters; audited on case.closed_with_open_steps.",
+    )
+    require_open_steps_reason: bool = Field(
+        default=False,
+        title="Refuse the close when required runbook steps are open and no reason is given",
+        description="The Console sets it to show its close dialog; the default never blocks a close.",
+    )
+
+    @field_validator("open_steps_reason")
+    @classmethod
+    def _clean_open_steps_reason(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        text = " ".join(str(value).split())
+        return text or None
 
 
 # Lifecycle status reached by each action. ``None`` = the action does not move the
@@ -6169,11 +7090,23 @@ async def case_action(
 
         user = await _enforce(request, "cases", _grant_for_body(body))
     actor = getattr(user, "username", "") or body.analyst or "analyst"
-    return await _perform_case_action(case_id, body, actor, state)
+    view = await _perform_case_action(case_id, body, actor, state, context=_request_audit_context(request))
+    return view if await _case_spend_visible(request) else _withhold_case_spend(view)
+
+
+def _request_audit_context(request: Request | None) -> Any:
+    """The request's audit context (client, session, role, request id) for the rows a
+    case action writes, or ``None`` for an in-process call without a request."""
+    if request is None:
+        return None
+    from ..audit.context import audit_context
+
+    return audit_context(request)
 
 
 async def _perform_case_action(
-    case_id: str, body: CaseAction, actor: str, state: AppState, batch_id: str = ""
+    case_id: str, body: CaseAction, actor: str, state: AppState, batch_id: str = "",
+    via: str | None = None, context: Any = None,
 ) -> dict[str, Any]:
     """Apply ONE human lifecycle action to ONE case — the SINGLE source of truth for
     the analyst-action path (used by the single-case endpoint AND the bulk endpoint).
@@ -6187,7 +7120,16 @@ async def _perform_case_action(
     transaction. A bulk action is a single human decision applied to hundreds of cases,
     and the bounded precedent window has to be able to tell that apart from hundreds of
     independent decisions — otherwise one bulk action buys the whole window. Stamped
-    only when supplied, so a single-case action's history entry is unchanged."""
+    only when supplied, so a single-case action's history entry is unchanged.
+
+    ``via`` (Round 14, D34) names how a close with required runbook steps open was
+    made (``bulk`` for the bulk endpoint and the ``case_lifecycle`` job, ``proposal``
+    for an approved proposal); a single action derives ``console`` or ``api`` from
+    ``require_open_steps_reason``. A bulk close never fails an item for open steps.
+    ``context`` is the request's audit context, carried onto the
+    ``case.closed_with_open_steps`` row (a job has none). The runbook state is read
+    only on this human path: automatic closes never read it and ``decide()`` /
+    ``AutoClosePolicy`` are untouched (#3)."""
     case = await state.cases.get(case_id)
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
@@ -6197,6 +7139,7 @@ async def _perform_case_action(
     merged_tags = (
         _merge_case_tags(case.tags, body.tags, replace=False) if body.tags is not None else None
     )
+    previous_tags = list(case.tags or [])
 
     prev_status = case.status
 
@@ -6224,6 +7167,43 @@ async def _perform_case_action(
 
     _guard_transition(body.action, prev_status, target)
 
+    # The request is validated in full before the runbook check below, so a request
+    # that can never succeed is answered with its own 400, never with the close
+    # dialog's 409 (a reason would not make it valid). Nothing is applied here.
+    if body.action == "set_disposition" and not body.disposition:
+        raise HTTPException(status_code=400, detail="set_disposition requires a disposition")
+    requested_disposition: Disposition | None = None
+    if body.action in _DISPOSITION_ACTIONS and body.disposition:
+        try:
+            requested_disposition = Disposition(body.disposition)
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"unknown disposition: {body.disposition}")
+    # "Mark duplicate" (SPEC §4.10.15): a terminal move that carries the duplicate
+    # disposition. Decided once from the request, so the 409 exemption and the audit
+    # row's ``via`` and note always agree, whatever the case carried before.
+    marks_duplicate = requested_disposition == Disposition.DUPLICATE
+
+    # Round 14 (D34): the first terminal move of a case with required runbook steps
+    # still open. Read before anything changes so a 409 leaves the case untouched; an
+    # unreadable run store never blocks a close (``None``).
+    open_steps = None
+    if target is not None and target in _TERMINAL and prev_status not in _TERMINAL:
+        from ..engine import runbook_runs
+
+        open_steps = await runbook_runs.open_required_steps(state, case_id)
+        if (open_steps and body.require_open_steps_reason and not body.open_steps_reason
+                and via != "bulk" and not marks_duplicate):
+            raise HTTPException(status_code=409, detail={
+                "code": "runbook_steps_open",
+                "message": (
+                    f"{len(open_steps)} required runbook "
+                    f"{'step is' if len(open_steps) == 1 else 'steps are'} still open. "
+                    "Say why you are closing the case."
+                ),
+                "required_open": len(open_steps),
+                "steps": [step.model_dump(mode="json") for step in open_steps],
+            })
+
     # A disposition supplied with the action. ``set_disposition`` requires one; ``close``
     # accepts one (the Console's unified Close-with-disposition flow sends it).
     #
@@ -6244,18 +7224,12 @@ async def _perform_case_action(
     # the analyst's label into the model's while the classification entry still vouches
     # for it. The lifecycle move itself still happens; only the echo is not applied.
     classified_disposition = ""
-    if body.action == "set_disposition" and not body.disposition:
-        raise HTTPException(status_code=400, detail="set_disposition requires a disposition")
-    if body.action in _DISPOSITION_ACTIONS and body.disposition:
-        try:
-            requested = Disposition(body.disposition)
-        except ValueError:
-            raise HTTPException(status_code=400, detail=f"unknown disposition: {body.disposition}")
+    if requested_disposition is not None:
         if body.action in _SELF_DECLARING_ACTIONS or body.disposition_declared:
-            case.disposition = requested
-            classified_disposition = requested.value
+            case.disposition = requested_disposition
+            classified_disposition = requested_disposition.value
         elif standing_analyst_disposition(case) is None:
-            case.disposition = requested
+            case.disposition = requested_disposition
 
     # confirm_fp is its own classification: the verb IS the analyst's declaration (it is
     # in ``analyst_outcomes.CLASSIFICATION_ACTIONS``), and the newest decision wins. It
@@ -6334,6 +7308,7 @@ async def _perform_case_action(
     try:
         await state.audit.record(
             action_type=ActionType.STATUS, surface="case", actor=actor, case_id=case_id,
+            actor_type="human", outcome="success",
             result_summary=(
                 f"action={body.action} status {prev_status.value if prev_status else '?'}"
                 f"→{case.status.value} disposition={case.disposition.value if case.disposition else 'none'}"
@@ -6347,6 +7322,26 @@ async def _perform_case_action(
         )
     except Exception as exc:  # noqa: BLE001 — audit is best-effort, never blocks the action
         logger.warning("Status audit failed for %s: %s", case_id, exc)
+    # Round 14 (D34, SPEC §4.10.15): a person closed with required runbook steps open,
+    # so record why (#2), whoever closed and however; the close itself already stands.
+    if open_steps and case.status in _TERMINAL:
+        from ..engine import runbook_runs
+
+        # A reason the person gave is always recorded, a duplicate included.
+        how = via or ("console" if (body.require_open_steps_reason or marks_duplicate) else "api")
+        await runbook_runs.record_closed_with_open_steps(
+            state, case, actor=actor, via=how, reason=body.open_steps_reason,
+            steps=open_steps, note="Duplicate" if marks_duplicate else None, context=context,
+        )
+    # Round 14 (SPEC §4.10.4): a human move that leaves the case needing a person
+    # (reopen, escalate, a status change) or changes its tags is a re-evaluation
+    # trigger: the matching runbook attaches when the case has none yet, or a more
+    # specific one does. Never raises and never changes the action's outcome.
+    tags_changed = merged_tags is not None and list(merged_tags) != list(previous_tags)
+    if case.status not in _TERMINAL and (case.status != prev_status or tags_changed):
+        from ..engine import runbook_runs
+
+        await runbook_runs.reevaluate_case(state, case, trigger=f"action:{body.action}")
     # On close / confirm-FP, index the resolved case as RAG baseline memory (C3-5)
     # so future investigations of similar entities learn from this decision + note.
     # Fail-safe: a RAG/embedding failure must NEVER break the analyst's action.
@@ -6374,6 +7369,7 @@ async def _perform_case_action(
                 await state.proposals.add(proposal)
                 await state.audit.record(
                     action_type=ActionType.PROPOSAL, surface="case", actor="agent",
+                    actor_type="agent", outcome="success",
                     case_id=case_id,
                     result_summary=(
                         f"drafted suppression proposal {proposal.id} "
@@ -6458,6 +7454,7 @@ async def cases_bulk_action(
     # single operator decision it is instead of N independent ones; see
     # ``PrecedentWindowConfig.max_transaction_fraction``.
     batch_id = new_id("bulk-")
+    bulk_context = _request_audit_context(request)
 
     results: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -6466,7 +7463,8 @@ async def cases_bulk_action(
             continue  # de-dupe so a repeated id isn't applied (and audited) twice
         seen.add(cid)
         try:
-            await _perform_case_action(cid, single, actor, state, batch_id=batch_id)
+            await _perform_case_action(cid, single, actor, state, batch_id=batch_id, via="bulk",
+                                       context=bulk_context)
             results.append({"id": cid, "ok": True})
         except HTTPException as exc:
             results.append({"id": cid, "ok": False, "error": str(exc.detail)})
@@ -6549,6 +7547,7 @@ async def case_feedback(
     await state.cases.save(case)
     await state.audit.record(
         action_type=ActionType.FEEDBACK, surface="case", actor=actor,
+        actor_type="human", outcome="success",
         case_id=case_id,
         result_summary=f"assessment={entry.assessment} outcome={entry.actual_outcome} "
                        f"accuracy={entry.accuracy}",
@@ -6562,7 +7561,7 @@ async def case_feedback(
             await state.rag_service.index_resolved_case(case, note=body.comment)
         except Exception as exc:  # noqa: BLE001 — feedback must survive RAG outages
             logger.warning("Feedback RAG refresh failed for %s: %s", case_id, exc)
-    return _case_view(case, state)
+    return _case_view(case, state, spend=await _case_spend_visible(request))
 
 
 @router.post("/cases/{case_id}/comment")
@@ -6588,9 +7587,10 @@ async def case_comment(
     await state.cases.save(case)
     await state.audit.record(
         action_type=ActionType.COLLAB, surface="case", actor=body.author or "analyst",
+        actor_type="human", outcome="success",
         case_id=case_id, result_summary="comment added",
     )
-    return _case_view(case, state)
+    return _case_view(case, state, spend=await _case_spend_visible(request))
 
 
 @router.post("/cases/{case_id}/tags")
@@ -6611,14 +7611,22 @@ async def case_tags(
         raise HTTPException(status_code=404, detail="Case not found")
     # De-dupe, trim and bound the count; a new tag over the length limit is refused,
     # never cut (``_merge_case_tags``).
+    previous_tags = list(case.tags or [])
     case.tags = _merge_case_tags(case.tags, body.tags, replace=True)
     case.updated_at = iso_now()
     await state.cases.save(case)
     await state.audit.record(
         action_type=ActionType.COLLAB, surface="case", actor=body.analyst or "analyst",
+        actor_type="human", outcome="success",
         case_id=case_id, result_summary=f"tags set ({len(case.tags)})",
     )
-    return _case_view(case, state)
+    # Round 14 (SPEC §4.10.4): a tag change is a re-evaluation trigger (a runbook may
+    # apply by tag). Never raises and never changes the tag write.
+    if list(case.tags or []) != previous_tags:
+        from ..engine import runbook_runs
+
+        await runbook_runs.reevaluate_case(state, case, trigger="tags")
+    return _case_view(case, state, spend=await _case_spend_visible(request))
 
 
 @router.post("/cases/{case_id}/assign")
@@ -6653,17 +7661,21 @@ async def case_assign(
     await state.cases.save(case)
     await state.audit.record(
         action_type=ActionType.COLLAB, surface="case", actor=body.analyst or "analyst",
+        actor_type="human", outcome="success",
         case_id=case_id, result_summary=f"assigned to {case.assignee or '(unassigned)'}",
     )
-    return _case_view(case, state)
+    return _case_view(case, state, spend=await _case_spend_visible(request))
 
 
 @router.get("/cases/{case_id}/export")
 async def case_export(
-    case_id: str, format: str = "json", state: AppState = Depends(get_state)
+    case_id: str, format: str = "json", state: AppState = Depends(get_state),
+    request: Request = None,  # type: ignore[assignment]
 ) -> dict[str, Any]:
     """Export a case for handoff/ticketing as JSON or a Markdown report. Returns
-    ``{filename, content_type, content}`` so the UI can trigger a download."""
+    ``{filename, content_type, content}`` so the UI can trigger a download. The JSON
+    leaves ``token_cost`` out (``null``) for a caller without ``cost:view``; the
+    Markdown report carries no spend."""
     case = await state.cases.get(case_id)
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
@@ -6677,12 +7689,38 @@ async def case_export(
     if fmt == "json":
         import json as _json
 
+        dumped = case.model_dump(mode="json")
         return {
             "filename": f"{case_id}.json",
             "content_type": "application/json",
-            "content": _json.dumps(case.model_dump(mode="json"), indent=2, default=str),
+            "content": _json.dumps(
+                dumped if await _case_spend_visible(request) else _withhold_case_spend(dumped),
+                indent=2, default=str,
+            ),
         }
     raise HTTPException(status_code=400, detail=f"unsupported format: {format}")
+
+
+def _case_runbook_label(case) -> str:
+    """The runbook line of the case Markdown report (Round 14 SPEC §4.10.18): the
+    Published runbook whose guidance the investigator received and its version
+    (``Case.runbook_id``), else the procedure id an earlier investigation recorded
+    (``Case.playbook_id``, kept readable and never rewritten), shown with the built-in
+    runbook that replaced it when it was a retired bundled procedure
+    (``LEGACY_BUNDLED_RUNBOOK_MAP``, §4.10.16), else "none"."""
+    from ..engine.runbook_model import resolve_legacy_runbook_id
+
+    runbook_id = str(getattr(case, "runbook_id", None) or "").strip()
+    if runbook_id:
+        version = getattr(case, "runbook_version", None)
+        return f"{runbook_id} v{version}" if isinstance(version, int) and version > 0 else runbook_id
+    legacy = str(getattr(case, "playbook_id", "") or "").strip()
+    if not legacy:
+        return "none"
+    successor = resolve_legacy_runbook_id(legacy)
+    if successor:
+        return f"{successor} (recorded as {legacy}, an earlier procedure)"
+    return f"{legacy} (an earlier procedure)"
 
 
 def _case_markdown(case) -> str:
@@ -6696,7 +7734,7 @@ def _case_markdown(case) -> str:
         f"(confidence {round(case.confidence, 2)})",
         f"- **Status:** {case.status.value} · decided by {case.decision_by.value if case.decision_by else '—'}",
         f"- **Risk score:** {round(case.risk_score, 1)}",
-        f"- **Persona:** {case.agent_persona or 'generalist'} · **Playbook:** {case.playbook_id or '—'}",
+        f"- **Persona:** {case.agent_persona or 'generalist'} · **Runbook:** {_case_runbook_label(case)}",
         f"- **Rules:** {', '.join(case.rule_ids) or '—'}",
         f"- **MITRE:** {', '.join(case.mitre) or '—'}",
         f"- **Assignee:** {case.assignee or '—'} · **Tags:** {', '.join(case.tags) or '—'}",
@@ -6733,6 +7771,7 @@ async def case_investigate(
     case_id: str,
     state: AppState = Depends(get_state),
     _=Depends(require_permission("cases", "reinvestigate")),
+    request: Request = None,  # type: ignore[assignment]
 ) -> dict[str, Any]:
     """Human-triggered (re-)investigation of a stored case (C3-4).
 
@@ -6765,7 +7804,7 @@ async def case_investigate(
         cluster, case.source_surface, state.execution_prefs,
         force=True, query_source=query_source,
     )
-    return _case_view(updated, state)
+    return _case_view(updated, state, spend=await _case_spend_visible(request))
 
 
 class ReinvestigateRequest(BaseModel):
@@ -6783,6 +7822,7 @@ async def case_reinvestigate(
     body: ReinvestigateRequest | None = None,
     state: AppState = Depends(get_state),
     _=Depends(require_permission("cases", "reinvestigate")),
+    request: Request = None,  # type: ignore[assignment]
 ) -> dict[str, Any]:
     """Manually re-run the SHARED investigation pipeline on a stored case (force).
 
@@ -6822,6 +7862,9 @@ async def case_reinvestigate(
     await state.audit.record(
         action_type=ActionType.DECISION, surface=case.source_surface.value,
         actor="reinvestigate", case_id=case_id,
+        # The agent pipeline's own token (``audit/event_categories.json``): the row
+        # stays in Agent activity, as before; the person is named in the summary.
+        actor_type="agent", outcome="success",
         result_summary=(
             f"manual reinvestigation requested by {body.analyst or 'analyst'}"
             + (f"; model override={body.model}" if body.model else "")
@@ -6832,61 +7875,19 @@ async def case_reinvestigate(
     updated = await state.pipeline.investigate_cluster(
         cluster, case.source_surface, prefs_eff, force=True, query_source=query_source
     )
-    return _case_view(updated, state)
+    return _case_view(updated, state, spend=await _case_spend_visible(request))
 
 
-class RunPlaybookRequest(BaseModel):
-    """Manually RUN a specific playbook on a case (F10). ``playbook_id`` selects the
-    playbook to FORCE-inject as TRUSTED operator procedure for a re-investigation."""
-
-    playbook_id: str
-    analyst: str = "analyst"
-
-
-@router.post("/cases/{case_id}/run-playbook")
+@router.post("/cases/{case_id}/run-playbook", deprecated=True, status_code=410)
 async def case_run_playbook(
     case_id: str,
-    body: RunPlaybookRequest,
-    state: AppState = Depends(get_state),
-    _=Depends(require_permission("playbooks", "run")),
-) -> dict[str, Any]:
-    """Manually run a chosen playbook on a case (F10) — CONTEXT-ONLY, #3-safe.
-
-    Re-investigates the case through the SHARED pipeline with ``playbook_id`` FORCED
-    as the injected TRUSTED operator procedure. The playbook can only RECOMMEND; the
-    deterministic close/escalate decision in the Case Manager is untouched (#3). 404
-    if the case or playbook is unknown; 400 (NEUTRAL) when no events remain to rebuild
-    the cluster. Returns the updated Case. Gated by ``playbooks:run``."""
-    case = await state.cases.get(case_id)
-    if not case:
-        raise HTTPException(status_code=404, detail="Case not found")
-    if state.playbooks.get(body.playbook_id) is None:
-        raise HTTPException(status_code=404, detail=f"Unknown playbook: {body.playbook_id}")
-    # Rebuild the cluster from live logs; if the events aged out, fall back to a
-    # minimal reconstruction from the case's STORED evidence so the playbook can still
-    # be run over what we retained rather than dead-ending (#3 untouched).
-    query_source = state.active_source_for_id(case.source_id)
-    cluster = await _cluster_for_case(
-        state, case, allow_stored_reconstruction=True, query_source=query_source
-    )
-    if cluster is None:
-        raise HTTPException(
-            status_code=400,
-            detail="This case has no stored evidence to reinvestigate.",
-        )
-    await state.audit.record(
-        action_type=ActionType.DECISION, surface=case.source_surface.value,
-        actor="run_playbook", case_id=case_id,
-        result_summary=(
-            f"manual playbook run requested by {body.analyst or 'analyst'}: "
-            f"playbook={body.playbook_id}"
-        ),
-    )
-    updated = await state.playbooks.run(
-        state.pipeline, cluster, case.source_surface, state.execution_prefs, body.playbook_id,
-        query_source=query_source,
-    )
-    return _case_view(updated, state)
+    _=Depends(require_permission("runbooks", "run")),
+) -> Any:
+    """Retired (Round 14 SPEC §4.10.16): ``410 runbooks_moved``. Start a runbook on a
+    case with ``POST /api/cases/{case_id}/runbooks``; re-investigate with ``POST
+    /api/cases/{case_id}/reinvestigate``."""
+    del case_id
+    return _runbooks_moved()
 
 
 @router.get("/cases/{case_id}/threat-context")
@@ -6939,6 +7940,7 @@ async def threat_context_import(
     result = await state.rag_service.import_threat_context(title, content, tags=body.tags)
     await state.audit.record(
         action_type=ActionType.CONTEXT, surface="rag", actor="analyst",
+        actor_type="human", outcome="success",
         result_summary=(
             f"imported threat_context document {result.get('document_id')} "
             f"({result.get('chunk_count')} chunk(s))"
@@ -7029,9 +8031,15 @@ async def case_forwarding(
 # Automated scans (Surface 3)
 # --------------------------------------------------------------------------- #
 @router.get("/scans")
-async def scans(limit: int = 50, state: AppState = Depends(get_state)) -> dict[str, Any]:
+async def scans(
+    limit: int = 50, state: AppState = Depends(get_state),
+    request: Request = None,  # type: ignore[assignment]
+) -> dict[str, Any]:
     cases, total = await state.cases.list_scans(limit=min(limit, 200))
-    return {"cases": [c.model_dump(mode="json") for c in cases], "total": total}
+    rows = [c.model_dump(mode="json") for c in cases]
+    if not await _case_spend_visible(request):
+        rows = [_withhold_case_spend(row) for row in rows]
+    return {"cases": rows, "total": total}
 
 
 @router.get("/scans/notifications")
@@ -7087,8 +8095,15 @@ async def standup(
 # --------------------------------------------------------------------------- #
 @router.get("/usage/summary")
 async def usage_summary(
-    window_hours: int = 24, case_id: str | None = None, state: AppState = Depends(get_state)
+    window_hours: int = 24,
+    case_id: str | None = None,
+    state: AppState = Depends(get_state),
+    _=Depends(require_permission("cost", "view")),
 ) -> dict[str, Any]:
+    """AI spend and token use over the window, or for one case with ``case_id``.
+    Needs ``cost:view``, the grant every view of AI spend needs."""
+    # Round 14 roles-11 (SPEC §3.7 and the permission matrix): the same grant the
+    # usage breakdown, the Executive board and chat's usage answers need.
     return await state.usage_store.summary(window_hours=window_hours, case_id=case_id)
 
 

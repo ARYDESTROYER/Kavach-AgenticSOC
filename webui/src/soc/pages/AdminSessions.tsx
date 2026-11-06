@@ -1,27 +1,27 @@
 /**
- * Admin Sessions console — ALL users' sessions (Round-2 Wave 3).
+ * Active sessions: every user's sessions (Round-2 Wave 3; Round 14 renders it as the
+ * "Active sessions" Settings section).
  *
- * Gated by `users:manage` (the whole page is wrapped in a ProtectedRoute; the
- * backend enforces the same grant + step-up freshness). An admin can: filter by
- * username, force-terminate a single session (with a "notify the user" checkbox in
- * the confirm), and revoke EVERY session for a user (bumps their token_version so
- * already-issued tokens stop working) — also with the notify checkbox.
+ * Gated by `users:manage` (the whole page is wrapped in a ProtectedRoute; the backend
+ * enforces the same grant and step-up freshness). An administrator can filter by
+ * username, sign out a single session (with a "notify the user" checkbox in the
+ * confirm), and sign out every session for a user (bumps their token_version so
+ * already-issued tokens stop working), also with the notify checkbox.
  *
- * Every session value is request-derived (UA / IP / geo) → rendered PLAIN (#9). No
- * token/secret is ever returned (#10). A force-terminate of a sensitive scope can
- * trigger the step-up re-auth modal (handled globally by <ReauthDialog>).
+ * Every session value is request-derived (UA, IP, geo) and renders as plain text (#9).
+ * No token or secret is ever returned (#10). Signing out a sensitive scope can trigger
+ * the step-up re-auth dialog (handled globally by <ReauthDialog>).
  */
 import * as React from 'react';
-import { Network, RefreshCw, Loader2, UserX } from 'lucide-react';
 import { toast } from 'sonner';
 
 import { api, ApiError } from '@/lib/api';
 import type { Session } from '@/lib/types';
 import { Button } from '@/ui/button';
-import { Input } from '@/ui/input';
-import { Label } from '@/ui/label';
 import { Checkbox } from '@/ui/checkbox';
-import { PageHeader } from '@/soc/components/PageHeader';
+import { LoadingGlyph, Panel } from '@/design-system';
+import { FilterBar } from '@/soc/components/FilterBar';
+import { RefreshButton } from '@/soc/components/RefreshButton';
 import { ProtectedRoute } from '@/soc/components/Can';
 import { LoadError } from '@/soc/components/LoadError';
 import { SessionsTable, sessionDevice, sessionLocation } from '@/soc/pages/Sessions';
@@ -35,6 +35,11 @@ import {
   AlertDialogAction,
   AlertDialogCancel,
 } from '@/ui/alert-dialog';
+import { SettingsPageSection } from '@/soc/pages/settings/primitives';
+import { SECTION_META_BY_ID } from '@/soc/pages/settings/settings-sections-meta';
+
+/** The section's help tip: the registry's `admin_sessions` help, the one source. */
+const ADMIN_SESSIONS_HELP = SECTION_META_BY_ID.admin_sessions?.help;
 
 function errMsg(e: unknown, fallback: string): string {
   return e instanceof ApiError && e.message ? e.message : fallback;
@@ -54,10 +59,8 @@ export default function AdminSessions(_props: AdminSessionsPageProps) {
 }
 
 /**
- * The all-users session console body, without the page wrapper. Exported so
- * Settings can embed it under the Administration group (already gated by
- * `users:manage` there) while the standalone /admin_sessions route keeps using the
- * default export below during cutover.
+ * The all-users session body. Exported so Settings can embed it as a section (already
+ * gated by `users:manage` there); the standalone route uses the default export above.
  */
 export interface AdminSessionsInnerProps {
   /** True when this body is hosted beneath the Settings page header. */
@@ -71,11 +74,11 @@ export function AdminSessionsInner({ embedded = false }: AdminSessionsInnerProps
   const [filter, setFilter] = React.useState('');
   const [busySid, setBusySid] = React.useState<string | null>(null);
 
-  // Force-terminate (single) confirm state.
+  // Single sign-out confirm state.
   const [termTarget, setTermTarget] = React.useState<Session | null>(null);
   const [termNotify, setTermNotify] = React.useState(false);
 
-  // Revoke-all (per user) confirm state.
+  // Sign out all (per user) confirm state.
   const [revokeAllUser, setRevokeAllUser] = React.useState<string | null>(null);
   const [revokeAllNotify, setRevokeAllNotify] = React.useState(false);
   const [busyAll, setBusyAll] = React.useState(false);
@@ -109,10 +112,10 @@ export function AdminSessionsInner({ embedded = false }: AdminSessionsInnerProps
     setBusySid(s.sid);
     try {
       await api.admin.sessions.revoke(s.sid, notify);
-      toast.success('Session terminated.');
+      toast.success('Session signed out.');
       await load();
     } catch (e) {
-      toast.error(errMsg(e, 'Could not terminate the session.'));
+      toast.error(errMsg(e, 'Could not sign out the session.'));
     } finally {
       setBusySid(null);
     }
@@ -124,33 +127,27 @@ export function AdminSessionsInner({ embedded = false }: AdminSessionsInnerProps
       const res = await api.admin.users.revokeAll(username, notify);
       toast.success(
         typeof res.revoked === 'number'
-          ? `Revoked ${res.revoked} session${res.revoked === 1 ? '' : 's'} for ${username}.`
-          : `Revoked all sessions for ${username}.`,
+          ? `Signed out ${res.revoked} session${res.revoked === 1 ? '' : 's'} for ${username}.`
+          : `Signed out all sessions for ${username}.`,
       );
       await load();
     } catch (e) {
-      toast.error(errMsg(e, 'Could not revoke the user’s sessions.'));
+      toast.error(errMsg(e, 'Could not sign out the user’s sessions.'));
     } finally {
       setBusyAll(false);
     }
   };
 
-  return (
-    <div className="space-y-6">
-      <PageHeader
-        embedded={embedded}
-        icon={Network}
-        eyebrow="Administration"
-        title="Active sessions"
-        description="Review and force-terminate sessions across all accounts."
-        actions={
-          <Button variant="outline" size="sm" onClick={() => void load()} disabled={loading}>
-            <RefreshCw className={loading ? 'h-4 w-4 animate-spin' : 'h-4 w-4'} aria-hidden />
-            Refresh
-          </Button>
-        }
-      />
+  const candidate = filter ? revokeAllCandidate(filtered) : null;
 
+  return (
+    <SettingsPageSection
+      embedded={embedded}
+      title="Active sessions"
+      help={ADMIN_SESSIONS_HELP}
+      width="full"
+      actions={<RefreshButton refreshing={loading} onClick={() => void load()} />}
+    >
       {loadError && !loading ? (
         <LoadError
           error={loadError}
@@ -159,34 +156,32 @@ export function AdminSessionsInner({ embedded = false }: AdminSessionsInnerProps
           onRetry={() => void load()}
         />
       ) : (
-        <>
-          <div className="flex flex-wrap items-end gap-3">
-            <div className="space-y-1.5">
-              <Label htmlFor="admin-session-filter" className="text-xs">
-                Filter by user
-              </Label>
-              <Input
-                id="admin-session-filter"
-                value={filter}
-                onChange={(e) => setFilter(e.target.value)}
-                placeholder="username…"
-                className="h-9 w-56"
-              />
-            </div>
-            {filter && revokeAllCandidate(filtered) ? (
-              <Button
-                variant="outline"
-                size="sm"
-                className="text-critical hover:text-critical"
-                onClick={() => {
-                  setRevokeAllUser(revokeAllCandidate(filtered));
-                  setRevokeAllNotify(false);
-                }}
-              >
-                <UserX className="h-4 w-4" aria-hidden />
-                Revoke all for {revokeAllCandidate(filtered)}
-              </Button>
-            ) : null}
+        // One panel: the user filter on the row inset, the table bleeding to the edge.
+        <Panel as="div" padding="none" data-admin-sessions-panel="">
+          <div className="px-4 pb-3 pt-4 xl:px-5 3xl:px-6">
+            <FilterBar
+              aria-label="Session filters"
+              search={{
+                value: filter,
+                onChange: setFilter,
+                label: 'Filter by user',
+                placeholder: 'Filter by username',
+              }}
+              end={
+                candidate ? (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      setRevokeAllUser(candidate);
+                      setRevokeAllNotify(false);
+                    }}
+                  >
+                    Sign out all for {candidate}
+                  </Button>
+                ) : null
+              }
+            />
           </div>
 
           <SessionsTable
@@ -194,17 +189,17 @@ export function AdminSessionsInner({ embedded = false }: AdminSessionsInnerProps
             loading={loading}
             busySid={busySid}
             showUser
-            revokeLabel="Terminate"
+            revokeLabel="Sign out"
             ariaLabel="All active sessions"
             onRevoke={(s) => {
               setTermTarget(s);
               setTermNotify(false);
             }}
           />
-        </>
+        </Panel>
       )}
 
-      {/* Force-terminate (single) confirm with notify checkbox */}
+      {/* Single sign-out confirm with notify checkbox */}
       <AlertDialog
         open={!!termTarget}
         onOpenChange={(open) => {
@@ -213,15 +208,15 @@ export function AdminSessionsInner({ embedded = false }: AdminSessionsInnerProps
       >
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Terminate this session?</AlertDialogTitle>
+            <AlertDialogTitle>Sign out this session?</AlertDialogTitle>
             <AlertDialogDescription>
               {termTarget?.username ? (
                 <>
                   This signs out <span className="font-medium text-foreground">{termTarget.username}</span> on the
-                  selected device immediately.
+                  selected device now.
                 </>
               ) : (
-                'This signs out the selected device immediately.'
+                'This signs out the selected device now.'
               )}
               {termTarget ? (
                 <span className="mt-2 block text-xs text-muted-foreground">
@@ -251,13 +246,13 @@ export function AdminSessionsInner({ embedded = false }: AdminSessionsInnerProps
                 if (t) void doTerminate(t, notify);
               }}
             >
-              Terminate
+              Sign out
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
 
-      {/* Revoke-all (per user) confirm with notify checkbox */}
+      {/* Sign out all (per user) confirm with notify checkbox */}
       <AlertDialog
         open={!!revokeAllUser}
         onOpenChange={(open) => {
@@ -266,7 +261,7 @@ export function AdminSessionsInner({ embedded = false }: AdminSessionsInnerProps
       >
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Revoke all sessions for {revokeAllUser}?</AlertDialogTitle>
+            <AlertDialogTitle>Sign out all sessions for {revokeAllUser}?</AlertDialogTitle>
             <AlertDialogDescription>
               Every active session for{' '}
               <span className="font-medium text-foreground">{revokeAllUser}</span> is signed out and
@@ -294,17 +289,17 @@ export function AdminSessionsInner({ embedded = false }: AdminSessionsInnerProps
                 if (u) void doRevokeAll(u, notify);
               }}
             >
-              {busyAll ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : null}
-              Revoke all
+              {busyAll ? <LoadingGlyph size="sm" className="size-4" aria-hidden /> : null}
+              Sign out all
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-    </div>
+    </SettingsPageSection>
   );
 }
 
-/** When the filtered set is exactly one user, expose a "revoke all for X" affordance. */
+/** When the filtered set is exactly one user, offer "Sign out all for X". */
 function revokeAllCandidate(sessions: Session[]): string | null {
   const users = new Set(sessions.map((s) => s.username ?? '').filter(Boolean));
   if (users.size === 1) {

@@ -408,6 +408,9 @@ function renderSummary(props?: {
   );
 }
 
+/** These tests render the whole evidence section; give them room on a loaded runner. */
+const SLOW_TEST_MS = 15_000;
+
 describe('AgentEffectivenessSummary', () => {
   beforeEach(() => {
     getAgentImprovementMock.mockReset();
@@ -416,7 +419,7 @@ describe('AgentEffectivenessSummary', () => {
 
   it('shows verified comparisons, exact evidence boundaries, and distinct guardrail states', async () => {
     const onOpenFull = vi.fn();
-    const view = renderSummary({
+    renderSummary({
       onOpenFull,
       changes: [
         {
@@ -441,14 +444,17 @@ describe('AgentEffectivenessSummary', () => {
     expect(summary).toHaveClass('border-y');
     expect(summary.className).not.toMatch(/rounded|shadow|bg-card/);
     expect(screen.getByRole('heading', { name: 'Observed outcomes', level: 2 })).toBeInTheDocument();
-    expect(screen.getByText('Analyst-reported verdict agreement')).toBeInTheDocument();
+    // The title is static and shows while the read is in flight: wait for the figures
+    // themselves (under a loaded runner the read can land after the first frame).
+    expect(await screen.findByText('Analyst-reported verdict agreement')).toBeInTheDocument();
     expect(
       within(screen.getByTestId('comparison-tuning-agent-agreement')).getByText('84.0%'),
     ).toBeInTheDocument();
     expect(screen.getAllByText('28-day baseline')).toHaveLength(3);
-    expect(screen.getByText(/Current Jul 21–27, 2026/)).toHaveTextContent(
-      /baseline Jun 23–Jul 20, 2026/,
-    );
+    // Day ranges read "to" (Round 14 copy: no dash punctuation in prose).
+    const windows = screen.getByText(/Current Jul 21 to 27, 2026/);
+    expect(windows).toHaveTextContent(/baseline Jun 23 to Jul 20, 2026/);
+    expect(windows.textContent).not.toMatch(/[\u2013\u2014]/);
     expect(screen.getByText('Daily trajectory')).toBeInTheDocument();
     expect(screen.getByText('Analyst-reported agreement')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('radio', { name: 'Correction' }));
@@ -489,8 +495,28 @@ describe('AgentEffectivenessSummary', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'View full evidence' }));
     expect(onOpenFull).toHaveBeenCalledTimes(1);
+  }, SLOW_TEST_MS);
+
+  // The accessibility scan is its own test: together with the interactions above it ran
+  // close to the default 5 s limit on a loaded runner.
+  it('has no accessibility violations with a metric picked and the changes open', async () => {
+    const view = renderSummary({
+      changes: [
+        {
+          id: 'change-current',
+          at: '2026-07-24T03:00:00Z',
+          label: 'rare-login-rule',
+          detail: 'Correlation threshold 2 → 3',
+          state: 'active',
+        },
+      ],
+    });
+    expect(await screen.findByText('Analyst-reported verdict agreement')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('radio', { name: 'Correction' }));
+    fireEvent.click(screen.getByText('Applied changes in reporting window'));
+    expect(screen.getByText('rare-login-rule')).toBeInTheDocument();
     expect(await axe(view.container)).toHaveNoViolations();
-  });
+  }, SLOW_TEST_MS);
 
   it('uses the shared centered loading grammar without replacing its section geometry', () => {
     getAgentImprovementMock.mockReturnValue(new Promise(() => {}));

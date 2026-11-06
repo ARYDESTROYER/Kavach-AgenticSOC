@@ -172,15 +172,17 @@ def test_preview_resolves_draft_without_persisting() -> None:
         r = c.post("/api/roles/preview", json={
             "name": "draft_role",
             "inherits": [T1],
-            "grants": {"cases": ["close"], "playbooks": ["run"]},
+            "grants": {"cases": ["close"], "runbooks": ["manage"]},
         })
         assert r.status_code == 200, r.text
         body = r.json()
         assert body["is_new"] is True
-        # Resolved row carries tier1 + the additive grants.
+        # Resolved row carries tier1 + the additive grants. Round 14: a body is read in
+        # the current vocabulary, so ``runbooks:manage`` does NOT imply ``publish``.
         eff = body["effective"]
         assert "close" in eff["cases"]
-        assert "run" in eff["playbooks"]
+        assert "manage" in eff["runbooks"] and "run" in eff["runbooks"]
+        assert "publish" not in eff["runbooks"]
         # Diff vs current (the role doesn't exist yet → all additions).
         assert "cases" in body["diff"]
         assert "close" in body["diff"]["cases"]["added"]

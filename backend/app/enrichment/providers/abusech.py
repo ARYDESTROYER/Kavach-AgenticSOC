@@ -72,10 +72,10 @@ class URLhausProvider(EnrichmentProvider):
             docs_url="https://urlhaus-api.abuse.ch/",
             default_enabled=True,
             setup_steps=[
-                "Nothing required — URLhaus is keyless and ships enabled.",
+                "Nothing required: URLhaus is keyless and ships enabled.",
                 "Optional: create a free abuse.ch account, generate an Auth-Key and "
                 "set TLSOC_ABUSECH_AUTH_KEY in .env (compose maps it to "
-                "ABUSECH_AUTH_KEY) — one key lifts the rate caps for URLhaus, "
+                "ABUSECH_AUTH_KEY). One key lifts the rate caps for URLhaus, "
                 "ThreatFox and MalwareBazaar together.",
             ],
             example=(
@@ -141,7 +141,7 @@ class ThreatFoxProvider(EnrichmentProvider):
             docs_url="https://threatfox-api.abuse.ch/",
             default_enabled=True,
             setup_steps=[
-                "Nothing required — ThreatFox is keyless and ships enabled.",
+                "Nothing required: ThreatFox is keyless and ships enabled.",
                 "Optional: set TLSOC_ABUSECH_AUTH_KEY in .env (shared abuse.ch "
                 "Auth-Key; compose maps it to ABUSECH_AUTH_KEY) to lift the keyless "
                 "rate caps.",
@@ -210,7 +210,7 @@ class MalwareBazaarProvider(EnrichmentProvider):
             docs_url="https://bazaar.abuse.ch/api/",
             default_enabled=True,
             setup_steps=[
-                "Nothing required — MalwareBazaar is keyless and ships enabled.",
+                "Nothing required: MalwareBazaar is keyless and ships enabled.",
                 "Optional: set TLSOC_ABUSECH_AUTH_KEY in .env (shared abuse.ch "
                 "Auth-Key; compose maps it to ABUSECH_AUTH_KEY) to lift the keyless "
                 "rate caps.",

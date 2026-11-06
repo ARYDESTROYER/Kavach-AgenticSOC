@@ -19,16 +19,20 @@ import inspect
 import logging
 import math
 from collections import Counter
+from datetime import datetime, timedelta
 from typing import Any, ClassVar, Literal, NamedTuple
 
 from pydantic import Field, PrivateAttr, field_validator
 
 from ...constants import OPEN_CASE_STATUSES, TERMINAL_CASE_STATUSES, CaseStatus, Verdict
-from ...models import Citation, humanise_relative_window
+from ...models import PHASE_LABELS, Citation, humanise_relative_window
+from ...utils import parse_es_timestamp
 from .base import Artifact, ChatTool, ChatToolContext, ToolOutcome
 from .common import (
+    CASE_STATUS_WORDS,
     PREVIOUS_WINDOW_LABEL,
     ToolInput,
+    Window,
     case_list_item,
     citation_id,
     case_row,
@@ -44,6 +48,9 @@ from .common import (
     opt_text,
     parse_input,
     resolve_window,
+    rule_drill,
+    status_change_detail,
+    status_change_label,
     text,
     verdict_semantic,
     whole_periods,
@@ -704,13 +711,17 @@ class SearchCasesTool(ChatTool):
 # --------------------------------------------------------------------------- #
 # get_case
 # --------------------------------------------------------------------------- #
-GET_CASE_SECTIONS = ("summary", "evidence", "timeline", "decision", "mitre", "rationale", "campaign")
+GET_CASE_SECTIONS = ("summary", "evidence", "timeline", "decision", "mitre", "runbook", "rationale", "campaign")
+#: What ``get_case`` reads when the call names no section. ``runbook`` (Round 14 SPEC
+#: §4.10.10) is one per-case document read, so "what is next on this case" is answered
+#: from any case read.
+GET_CASE_DEFAULT_SECTIONS = ("summary", "evidence", "timeline", "decision", "mitre", "runbook")
 
 
 class GetCaseInput(ToolInput):
     case_id: str | None = Field(default=None, max_length=128)
     include: list[Literal[GET_CASE_SECTIONS]] = Field(  # type: ignore[valid-type]
-        default_factory=lambda: ["summary", "evidence", "timeline", "decision", "mitre"], max_length=7,
+        default_factory=lambda: list(GET_CASE_DEFAULT_SECTIONS), max_length=len(GET_CASE_SECTIONS),
     )
 
     @field_validator("case_id", mode="before")
@@ -722,14 +733,15 @@ class GetCaseInput(ToolInput):
     @classmethod
     def _include(cls, value: Any) -> Any:
         if value in (None, "", []):
-            return ["summary", "evidence", "timeline", "decision", "mitre"]
+            return list(GET_CASE_DEFAULT_SECTIONS)
         if isinstance(value, str):
             value = [value]
         if isinstance(value, list):
             out = []
             for item in value:
                 key = str(item).strip().lower()
-                key = {"why": "rationale", "history": "timeline", "attack": "mitre"}.get(key, key)
+                key = {"why": "rationale", "history": "timeline", "attack": "mitre", "runbooks": "runbook",
+                       "run": "runbook", "progress": "runbook", "next_step": "runbook"}.get(key, key)
                 if key in GET_CASE_SECTIONS and key not in out:
                     out.append(key)
             return out or ["summary"]
@@ -753,6 +765,64 @@ async def find_case(ctx: ChatToolContext, case_id: str) -> Any:
     )
 
 
+def progress_text(progress: Any) -> str:
+    """A run's progress as the Console's chip reads it (Round 14 SPEC §4.10.7): "4/11"
+    (done over total), with "· 1 blocked" and "· 1 waiting" when steps are blocked or
+    wait for an approval."""
+    def _n(name: str) -> int:
+        value = progress.get(name) if isinstance(progress, dict) else getattr(progress, name, 0)
+        return int(value or 0)
+
+    out = f"{_n('done'):,}/{_n('total'):,}"
+    if _n("blocked"):
+        out += f" · {_n('blocked'):,} blocked"
+    if _n("waiting"):
+        out += f" · {_n('waiting'):,} waiting"
+    return out
+
+
+#: Where a run stands, as Case chat reads it (Round 14 SPEC §4.10.10). The first two are
+#: the Console's own Next step card sentences (``NextStepCard``), so chat and the card
+#: say the same thing about a run with no step to act on.
+RUN_STANDING_ALL_DONE = "All required steps are done."
+RUN_STANDING_WAITING = "The remaining required steps wait for approval."
+RUN_STANDING_BLOCKED = "The next required step is blocked."
+RUN_STANDING_IN_PROGRESS = "The next required step is in progress."
+#: "To do" is the Console's status word. A note, a decision or a recorded action starts
+#: a step (``started_at``) while its status stays To do, so "not started" would be
+#: false for such a step.
+RUN_STANDING_TO_DO = "The next required step is still to do."
+RUN_STANDING_ABANDONED = "This runbook was abandoned."
+
+
+def _approval_pending(state: Any) -> bool:
+    """True when a step's state carries a recorded action whose approval is pending
+    (the Console's ``isWaiting``)."""
+    approval = getattr(state, "approval", None)
+    return isinstance(approval, dict) and approval.get("status") == "pending"
+
+
+def run_standing(run: Any, nxt: Any, required_open: Any) -> str:
+    """One fixed sentence for where ``run`` stands, from the shared Next step rule
+    (``runbook_runs.next_step``, passed in as ``nxt``) and the run's ``required_open``
+    count. With no next step the run is either finished (no required step open) or
+    held up: every required step left waits for approval. With one, the sentence says
+    whether that step is blocked, in progress or still to do. Code-authored words
+    only: no step title or note, so nothing from the run is spoken as a fact here."""
+    if getattr(run, "status", None) == "abandoned":
+        return RUN_STANDING_ABANDONED
+    if nxt is None:
+        open_count = required_open if isinstance(required_open, int) and not isinstance(required_open, bool) else 0
+        return RUN_STANDING_ALL_DONE if open_count <= 0 else RUN_STANDING_WAITING
+    steps = getattr(run, "steps", None) or {}
+    status = getattr(steps.get(nxt.id), "status", "todo")
+    if status == "blocked":
+        return RUN_STANDING_BLOCKED
+    if status == "in_progress":
+        return RUN_STANDING_IN_PROGRESS
+    return RUN_STANDING_TO_DO
+
+
 def _last_decision_reason(case: Any) -> str | None:
     for entry in reversed(list(case.status_history or [])):
         if str(getattr(entry, "by", "")) in ("agent", "system", "analyst_policy"):
@@ -766,10 +836,10 @@ class GetCaseTool(ChatTool):
     running_label: ClassVar[str] = "Reading a case"
     scope: ClassVar[str] = "cases"
     requires: ClassVar[tuple[tuple[str, str], ...]] = (("cases", "read"),)
-    optional_grants: ClassVar[tuple[tuple[str, str], ...]] = (("cost", "view"),)
-    data_source: ClassVar[str] = "Case store and audit trail"
+    optional_grants: ClassVar[tuple[tuple[str, str], ...]] = (("cost", "view"), ("runbooks", "read"))
+    data_source: ClassVar[str] = "Case store, runbook runs and audit trail"
     signature: ClassVar[str] = (
-        "get_case(case_id?, include?=[summary,evidence,timeline,decision,mitre] (+rationale, campaign)) "
+        "get_case(case_id?, include?=[summary,evidence,timeline,decision,mitre,runbook] (+rationale, campaign)) "
         "-- one case: verdict, risk, evidence summaries, status timeline and the recorded decision"
     )
     display_keys: ClassVar[tuple[str, ...]] = ("case_id", "include")
@@ -777,7 +847,7 @@ class GetCaseTool(ChatTool):
     def display_params(self, inp: dict[str, Any]) -> dict[str, Any]:
         params = dict(inp) if isinstance(inp, dict) else {}
         if isinstance(params.get("include"), list):
-            params["include"] = ",".join(str(i) for i in params["include"][:7])
+            params["include"] = ",".join(str(i) for i in params["include"][:len(GET_CASE_SECTIONS)])
         return super().display_params(params)
 
     async def run(self, ctx: ChatToolContext, **inp: Any) -> ToolOutcome:
@@ -839,6 +909,10 @@ class GetCaseTool(ChatTool):
                     "tactic": str(tactics[0]) if tactics else None,
                 })
             observation["mitre"] = technique_rows
+        runbook_runs: list[dict[str, Any]] = []
+        if "runbook" in include:
+            observation["runbook"] = await self._runbook(ctx, case)
+            runbook_runs = list(observation["runbook"].get("runs") or [])
         if "rationale" in include and ctx.audit is not None:
             observation["rationale"] = await self._rationale(ctx, case)
         if "campaign" in include and case.campaign_id and ctx.campaigns is not None:
@@ -852,7 +926,7 @@ class GetCaseTool(ChatTool):
                     "status": enum_value(campaign.status), "case_count": len(campaign.case_ids),
                 }
         related = await self._related(ctx, case)
-        artifacts = self._artifacts(ctx, case, technique_rows, history, related)
+        artifacts = self._artifacts(ctx, case, technique_rows, history, related, runbook_runs)
         verdict = enum_value(case.verdict) or "no verdict"
         status = enum_value(case.status) or "unknown"
         summary = (
@@ -882,9 +956,12 @@ class GetCaseTool(ChatTool):
         text, §5.2) and ``knowledge[].snippet`` comes from the CONTEXT row's
         ``tool_input`` (imported intel and precedent text). Only tool names and call
         counts, the native queries bounded like ``audit_search`` does, knowledge
-        source labels, the persona/playbook ids, the deterministic case-manager
-        rationale and a bounded reasoning excerpt are projected; the engine fences
-        the whole observation."""
+        source labels, the persona id, the runbook that guided the run (its id and
+        version; Round 14) and the legacy playbook id of an earlier run, the
+        deterministic case-manager rationale and a bounded reasoning excerpt are
+        projected; the engine fences the whole observation. The runbook's selection
+        reason and match explanation are never projected: they quote rule names and
+        other values that come from logs (#9)."""
         from ...engine.case_rationale import build_rationale
 
         try:
@@ -908,6 +985,8 @@ class GetCaseTool(ChatTool):
         )
         persona = data.get("persona") if isinstance(data.get("persona"), str) else ""
         playbook = data.get("playbook") if isinstance(data.get("playbook"), dict) else {}
+        runbook = data.get("runbook") if isinstance(data.get("runbook"), dict) else {}
+        runbook_version = runbook.get("version")
         return {
             "available": True,
             "tool_calls": [{"tool": name, "calls": n} for name, n in sorted(calls.items())][:10],
@@ -917,47 +996,131 @@ class GetCaseTool(ChatTool):
             # Engine-authored by case_manager (verdict enum, numbers, policy values).
             "decision_rationale": opt_text(data.get("decision_rationale"), 400),
             "persona": opt_text(persona, 60),
+            # Round 14: set only when the runbook's guidance reached the investigator.
+            "runbook": opt_text(runbook.get("id"), 64),
+            "runbook_version": (
+                runbook_version
+                if isinstance(runbook_version, int) and not isinstance(runbook_version, bool)
+                else None
+            ),
+            # Runs before Round 14 recorded their procedure here.
             "playbook": opt_text(playbook.get("id"), 60),
         }
 
+    async def _runbook(self, ctx: ChatToolContext, case: Any) -> dict[str, Any]:
+        """The case's runbook runs as Case chat may read them (Round 14 SPEC
+        §4.10.10): per run that is not abandoned, its title, version, status, progress,
+        the next step's title and the required steps still open (``run_summary``),
+        plus the titles of those open steps and of the steps waiting for approval (at
+        most five each) and ``standing``, one fixed sentence saying where the run
+        stands (:func:`run_standing`). The next step follows the Console's rule
+        (``runbook_runs.next_step``): a run whose required steps are all done, or whose
+        remaining required steps wait for approval, has none, and ``standing`` says
+        which, so a finished or held-up run is never worded as having a step to work
+        on. No lookup result is included, so no raw log row can reach a prompt (#7);
+        the engine fences the whole observation (#9). It needs ``runbooks:read`` beside
+        ``cases:read``, like the case runbook route, and reads as not available without
+        it, without a run store, or when the store cannot be read (never as "no
+        runbook")."""
+        if not ctx.has("runbooks", "read"):
+            return {"available": False, "reason": "no access to runbooks"}
+        store = getattr(ctx, "runbook_runs", None)
+        if store is None:
+            return {"available": False, "reason": "runbook runs are not available here"}
+        from ...engine.runbook_runs import next_step, ordered_steps, run_summary
+
+        try:
+            case_runs = await store.get(str(case.case_id))
+        except Exception as exc:  # noqa: BLE001 -- explainability degrades, never fails
+            logger.info("runbook runs unavailable for chat: %s", exc)
+            return {"available": False, "reason": "the runbook runs could not be read"}
+        live = [run for run in case_runs.runs if run.status != "abandoned"]
+        summaries = run_summary(live)
+        runs: list[dict[str, Any]] = []
+        for run, summary in zip(live, summaries):
+            progress = summary.get("progress") or {}
+            nxt = next_step(run)
+            reading = ordered_steps(run.snapshot)
+            open_titles = [
+                text(step.title, 160)
+                for step in reading
+                if step.required and getattr(run.steps.get(step.id), "status", "todo") not in ("done", "not_applicable")
+            ][:5]
+            waiting_titles = [
+                text(step.title, 160) for step in reading if _approval_pending(run.steps.get(step.id))
+            ][:5]
+            runs.append({
+                "title": text(summary.get("title"), 120),
+                "version": summary.get("version"),
+                "status": summary.get("status"),
+                "attached_by": run.attached_by,
+                "progress": progress_text(progress),
+                "done": progress.get("done"),
+                "total": progress.get("total"),
+                "not_applicable": progress.get("not_applicable"),
+                "blocked": progress.get("blocked"),
+                "waiting_for_approval": progress.get("waiting"),
+                "required_open": summary.get("required_open"),
+                "next_step": opt_text(summary.get("next_step"), 160),
+                "next_step_phase": PHASE_LABELS.get(nxt.phase, nxt.phase) if nxt is not None else None,
+                "standing": run_standing(run, nxt, summary.get("required_open")),
+                "open_required_steps": open_titles,
+                "waiting_for_approval_steps": waiting_titles,
+            })
+        return {"available": True, "runs": runs}
+
     async def _related(self, ctx: ChatToolContext, case: Any) -> list[dict[str, Any]]:
         """The entity card's related cases (at most 5): each named by its display number
-        and title when the store has it, else by its id (one bounded read per case)."""
+        and title when the store has it (one bounded read per case). The internal id is
+        only the link target, never the visible name (Round 14 F7): a case without a
+        title, or one that could not be read, gets a fixed Console name instead."""
         out: list[dict[str, Any]] = []
         for cid in list(case.related_case_ids or [])[:5]:
             other = None
+            failed = False
             try:
                 other = await ctx.cases.get(str(cid))
-            except Exception as exc:  # noqa: BLE001 -- the id alone still names it
+            except Exception as exc:  # noqa: BLE001 -- the link still opens it
+                failed = True
                 logger.info("related case read failed: %s", exc)
             out.append({
                 "case_id": str(cid),
                 "case_number": opt_text(getattr(other, "case_number", ""), 64) if other is not None else None,
-                "title": display(getattr(other, "title", "") or cid) if other is not None else str(cid),
+                "title": related_case_title(other, failed=failed),
             })
         return out
 
     def _artifacts(self, ctx: ChatToolContext, case: Any, techniques: list[dict[str, Any]], history: list[Any],
-                   related: list[dict[str, Any]] | None = None) -> list[Artifact]:
+                   related: list[dict[str, Any]] | None = None,
+                   runbook_runs: list[dict[str, Any]] | None = None) -> list[Artifact]:
         artifacts: list[Artifact] = []
         entity_type = enum_value(getattr(case.entity, "type", None)) or ""
         kind = _ENTITY_KIND.get(entity_type)
         # Facts are prose captions (BLOCKS.md rule 22): enum values as the console
         # labels them, never internal constants. The verdict is the card's own badge,
         # so it is a fact row only when there is no verdict to badge.
+        # Round 14 (F7): a case is named by its number, never its internal id; a case
+        # stored before numbering is named by its title (source-derived, untrusted).
+        named = (
+            {"label": "Case", "value": str(case.case_number)} if case.case_number
+            else {"label": "Case", "value": display(case.title or "Untitled case"), "untrusted": True}
+        )
         facts = [
-            {"label": "Case", "value": str(case.case_number or case.case_id)},
+            named,
             {"label": "Status", "value": _label(_STATUS_LABELS, case.status, "Unknown")},
         ]
         if verdict_semantic(case.verdict) is None:
             facts.append({"label": "Verdict", "value": _label(_VERDICT_LABELS, case.verdict, "No verdict yet")})
         facts.append({"label": "Decided by", "value": _label(_DECIDED_BY_LABELS, case.decision_by, "Not decided")})
         if case.rule_ids:
-            facts.append({"label": "Rules", "value": ", ".join(str(r) for r in case.rule_ids[:5]), "untrusted": True})
+            facts.append(rules_fact(case))
         if case.source_name or case.source_id:
             facts.append({"label": "Source", "value": str(case.source_name or case.source_id), "untrusted": True})
         if case.assignee:
             facts.append({"label": "Assignee", "value": str(case.assignee), "untrusted": True})
+        for run in (runbook_runs or [])[:2]:
+            # Round 14: the runbook on the case and how far it is ("4/11").
+            facts.append({"label": "Runbook", "value": f"{run['title']} v{run['version']} · {run['progress']}"})
         if kind:
             artifacts.append(Artifact(
                 id="a1", kind="entity", title="Case entity", title_trusted=True,
@@ -967,7 +1130,8 @@ class GetCaseTool(ChatTool):
                     "verdict": verdict_semantic(case.verdict),
                     "facts": facts,
                     "related_cases": related if related is not None else [
-                        {"case_id": str(cid), "title": str(cid)} for cid in list(case.related_case_ids or [])[:5]
+                        {"case_id": str(cid), "title": RELATED_CASE_UNREAD}
+                        for cid in list(case.related_case_ids or [])[:5]
                     ],
                     "first_seen": iso_or_none(case.created_at),
                     "last_seen": iso_or_none(case.updated_at),
@@ -977,9 +1141,12 @@ class GetCaseTool(ChatTool):
         if history:
             artifacts.append(Artifact(
                 id=f"a{len(artifacts) + 1}", kind="timeline", title="Status history", title_trusted=True,
+                # Round 14 (F7): the move and its reason in plain words ("Open to
+                # Escalated", "Automatic close of a confirmed threat is off (by the
+                # system)"); an analyst's own reason stays as written.
                 data={"events": [
-                    {"at": iso_or_none(h.at), "label": f"{h.from_status or 'created'} -> {h.to_status}",
-                     "detail": opt_text(f"by {h.by}: {h.reason}" if h.reason else f"by {h.by}", 500),
+                    {"at": iso_or_none(h.at), "label": status_change_label(h.from_status, h.to_status),
+                     "detail": opt_text(status_change_detail(h.by, h.reason), 500),
                      "kind": "action", "semantic": h.to_status if h.to_status in (
                          "new", "investigating", "escalated", "on_hold", "resolved", "closed") else None}
                     for h in history[-50:] if iso_or_none(h.at)
@@ -1006,6 +1173,91 @@ class GetCaseTool(ChatTool):
         return artifacts
 
 
+#: The rules a case card's "Rules" fact names (``blocks.MAX_ENTITY_FACT_ITEMS``).
+CASE_CARD_RULES = 5
+#: The shortest window a case card's rule links open: a case whose known moments
+#: coincide still opens its rule sheet on a span, never on one instant.
+CASE_RULE_WINDOW_MIN = timedelta(minutes=1)
+
+
+def _moment(value: Any) -> datetime | None:
+    """An instant from epoch millis (``0`` means unknown) or an ISO string, else None."""
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)) and value <= 0:
+        return None
+    try:
+        return parse_es_timestamp(value)
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
+def _last_attach(case: Any) -> datetime | None:
+    """When the latest batch of events was merged into the case: the newest ``attach``
+    entry of ``case.history`` (``engine.ingest.attach_cluster`` appends one per merged
+    batch), else None."""
+    moments = [
+        _moment(entry.get("ts")) for entry in (getattr(case, "history", None) or [])
+        if isinstance(entry, dict) and entry.get("event") == "attach"
+    ]
+    known = [m for m in moments if m is not None]
+    return max(known) if known else None
+
+
+def case_rule_window(case: Any) -> Window | None:
+    """The window a case card's rule links open (Round 14 SPEC §4.6.5): the case's own
+    span of events, never the rule sheet's default of three days. It starts at the
+    earliest moment the case knows (its first member event, ``first_seen_millis``; the
+    start of its triggering window; its creation) and ends at the latest moment events
+    reached it (the end of its triggering window; the newest merged batch, the
+    ``attach`` entries of ``case.history``; its creation). ``updated_at`` is not read:
+    every analyst action (a comment, a tag, an assignment, a close) moves it, so a case
+    handled weeks later would open its rules over weeks of hits unrelated to it.
+    ``None`` when the case has no readable moment; a span shorter than
+    :data:`CASE_RULE_WINDOW_MIN` is widened to it from the start."""
+    trigger = getattr(case, "trigger_reason", None)
+    created = _moment(getattr(case, "created_at", None))
+    starts = [m for m in (
+        _moment(getattr(case, "first_seen_millis", None)),
+        _moment(getattr(trigger, "window_start", None)) if trigger is not None else None,
+        created,
+    ) if m is not None]
+    if not starts:
+        return None
+    ends = [m for m in (
+        _moment(getattr(trigger, "window_end", None)) if trigger is not None else None,
+        _last_attach(case),
+        created,
+    ) if m is not None]
+    start = min(starts)
+    end = max([*ends, start])
+    if end - start < CASE_RULE_WINDOW_MIN:
+        end = start + CASE_RULE_WINDOW_MIN
+    hours = max(1, math.ceil((end - start).total_seconds() / 3600))
+    return Window(time_from=start.isoformat(), time_to=end.isoformat(), start=start, end=end, hours=hours,
+                  label="the case's window", source="tool")
+
+
+def rules_fact(case: Any) -> dict[str, Any]:
+    """The case card's "Rules" fact: the first :data:`CASE_CARD_RULES` rule values as
+    one line (``value``, what exporters and earlier clients read) and one by one
+    (``items``), each with the rule sheet it opens over :func:`case_rule_window`. The
+    ref is built by code from the raw stored value (``common.rule_drill``): a value it
+    cannot carry exactly (too long, a control character) is plain text with no link.
+    Rule values come from the source and stay untrusted data (#9); they never enter a
+    prompt from here (an artifact is shown, never sent to a model)."""
+    rules = list(case.rule_ids or [])[:CASE_CARD_RULES]
+    window = case_rule_window(case)
+    items: list[dict[str, Any]] = []
+    for rule in rules:
+        item: dict[str, Any] = {"value": str(rule)}
+        drill = rule_drill(rule, window) if window is not None else None
+        if drill is not None:
+            item["drill"] = drill
+        items.append(item)
+    return {"label": "Rules", "value": ", ".join(str(r) for r in rules), "untrusted": True, "items": items}
+
+
 # --------------------------------------------------------------------------- #
 # shift_report
 # --------------------------------------------------------------------------- #
@@ -1025,14 +1277,30 @@ class ShiftReportInput(ToolInput):
 # "Needs human" tile shows the same verdict figure; the legacy ``needs_human`` STATUS
 # count is its "Awaiting analyst" tile, which chat does not show, and the workload rows
 # carry it as ``awaiting_analyst`` so no figure here reads as a second "needs human".
-# Console display labels for the case enums an entity card states as facts (the
-# status wording matches the console's status badge: ``needs_human`` is the legacy
-# alias of "Open · awaiting analyst").
-_STATUS_LABELS = {
-    "new": "New", "open": "Open", "needs_human": "Open · awaiting analyst",
-    "investigating": "Investigating", "escalated": "Escalated", "on_hold": "On hold",
-    "resolved": "Resolved", "closed": "Closed",
-}
+#: A related case's visible name when the card has nothing better (Round 14 F7: the
+#: internal ``case-...`` id is the link target, never the name shown).
+RELATED_CASE_UNTITLED = "Untitled case"
+RELATED_CASE_UNREAD = "Related case"
+RELATED_CASE_UNREADABLE = "Related case, not readable"
+RELATED_CASE_GONE = "Related case, not found"
+
+
+def related_case_title(other: Any, *, failed: bool = False) -> str:
+    """A related case's visible name: its title (source-derived, shown with invisible
+    characters made visible), else a fixed Console name saying why there is none."""
+    if failed:
+        return RELATED_CASE_UNREADABLE
+    if other is None:
+        return RELATED_CASE_GONE
+    title = display(getattr(other, "title", "") or "")
+    return title or RELATED_CASE_UNTITLED
+
+
+# Console display labels for the case enums an entity card states as facts. Status
+# names come from the ONE shared table (Round 14, D25), which the Status history moves
+# read too: ``needs_human`` is the legacy alias of "Open · awaiting analyst", as the
+# console's status badge says.
+_STATUS_LABELS = CASE_STATUS_WORDS
 _VERDICT_LABELS = {"TRUE_POSITIVE": "True positive", "FALSE_POSITIVE": "False positive", "NEEDS_HUMAN": "Needs human"}
 _DECIDED_BY_LABELS = {
     "agent": "Agent", "analyst": "Analyst", "system": "System", "analyst_policy": "Analyst policy",

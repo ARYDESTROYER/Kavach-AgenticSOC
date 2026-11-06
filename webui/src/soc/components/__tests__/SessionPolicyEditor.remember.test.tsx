@@ -76,7 +76,7 @@ function renderControlled(policy: SessionPolicy = {}, rbacEnabled?: boolean | nu
 }
 
 function group() {
-  return screen.getByRole('region', { name: 'Remember me' });
+  return screen.getByRole('group', { name: 'Remember me' });
 }
 
 beforeEach(() => {
@@ -121,8 +121,9 @@ describe('SessionPolicyEditor — defaults mirror the backend', () => {
 
   it('shows the backend defaults for a blank policy', () => {
     renderControlled({});
-    expect(screen.getByLabelText('Idle timeout')).toHaveValue(720); // 12 h in minutes
-    expect(screen.getByLabelText('Absolute lifetime')).toHaveValue(720); // 30 days in hours
+    // Round 14: the shared NumberField (text input, unit inside), so the value is a string.
+    expect(screen.getByLabelText('Idle timeout')).toHaveValue('720'); // 12 h in minutes
+    expect(screen.getByLabelText('Absolute lifetime')).toHaveValue('720'); // 30 days in hours
     expect(within(group()).getByRole('radio', { name: '24 hours' })).toBeChecked();
     expect(screen.getByLabelText('Offer “Remember me” on the sign-in page')).toBeChecked();
   });
@@ -237,15 +238,35 @@ describe('SessionPolicyEditor — what the server enforces', () => {
     );
   });
 
-  it('keeps the unenforced access-token TTL under Advanced and says so', () => {
+  it('keeps the unenforced access-token lifetime in its own Access tokens group and says so', () => {
     renderControlled({});
+    // A group like the others, not a native disclosure between the panels (Round 14).
     const advanced = document.querySelector('[data-session-policy-advanced]') as HTMLElement;
-    expect(advanced.tagName).toBe('DETAILS');
-    expect(advanced).not.toHaveAttribute('open');
-    const ttl = within(advanced).getByLabelText('Access token TTL');
-    expect(ttl).toHaveValue(60);
+    expect(advanced).toBe(screen.getByRole('group', { name: 'Access tokens' }));
+    expect(document.querySelector('details')).toBeNull();
+    const ttl = within(advanced).getByLabelText('Access token lifetime');
+    expect(ttl).toHaveValue('60');
     expect(within(advanced).getByText(/Not enforced in this version/)).toBeInTheDocument();
     expect(screen.queryByLabelText('API token rotation')).toBeNull();
+  });
+
+  it('reads a long duration in a larger unit in its help line', () => {
+    renderControlled({ idle_timeout: 43_200, absolute_lifetime: 2_592_000, sudo_reauth_window: 600 });
+    // 720 min reads 12 hours, 720 h reads 30 days; 10 min needs no reading.
+    expect(screen.getByLabelText('Idle timeout')).toHaveAccessibleDescription(/\(12 hours\)\.$/);
+    expect(screen.getByLabelText('Absolute lifetime')).toHaveAccessibleDescription(/\(30 days\)\.$/);
+    expect(screen.getByLabelText('Re-authentication window')).not.toHaveAccessibleDescription(/\(/);
+  });
+
+  it('keeps a custom duration when its field is emptied (never the 1 hour minimum)', () => {
+    const onChange = renderControlled({ remember_me: { duration_seconds: 8 * 3600 } }).onChange;
+    const field = screen.getByLabelText('Custom duration') as HTMLInputElement;
+    expect(field.value).toBe('8');
+    fireEvent.focus(field);
+    fireEvent.change(field, { target: { value: '' } });
+    fireEvent.blur(field);
+    expect(onChange).not.toHaveBeenCalled();
+    expect(field.value).toBe('8');
   });
 
   it('hides the plain-HTTP switch while cookies are marked secure', async () => {
@@ -265,7 +286,7 @@ describe('SessionPolicyEditor — what the server enforces', () => {
       return el as HTMLElement;
     });
     expect(status).toHaveTextContent(
-      "People who open the console the way you did can't use Remember me yet: the server does not mark its sign-in cookies as secure. Serve the console over HTTPS and set AUTH_COOKIE_SECURE=true.",
+      "People who open the Console the way you did can't use Remember me yet: the server does not mark its sign-in cookies as secure. Serve the Console over HTTPS and set AUTH_COOKIE_SECURE=true.",
     );
     expect(screen.getByLabelText('Allow on plain HTTP (not recommended)')).toBeInTheDocument();
     // An older server does not say whether the flag was configured: the sentence is
@@ -277,8 +298,8 @@ describe('SessionPolicyEditor — what the server enforces', () => {
   it.each([
     // Tour 3: run-demo and the Compose file set AUTH_COOKIE_SECURE=false explicitly, and
     // the editor still said "is not set".
-    [true, 'Secure cookies are off (AUTH_COOKIE_SECURE=false), so Remember me is offered only when the console is opened directly on the server.'],
-    [false, 'Secure cookies are off (AUTH_COOKIE_SECURE is not set, and it defaults to false), so Remember me is offered only when the console is opened directly on the server.'],
+    [true, 'Secure cookies are off (AUTH_COOKIE_SECURE=false), so Remember me is offered only when the Console is opened directly on the server.'],
+    [false, 'Secure cookies are off (AUTH_COOKIE_SECURE is not set, and it defaults to false), so Remember me is offered only when the Console is opened directly on the server.'],
   ])('states the server\'s actual AUTH_COOKIE_SECURE setting (configured: %s)', async (configured, sentence) => {
     runtime({ secure_cookies: false, secure_cookies_configured: configured, insecure_blocked: true });
     renderControlled({});
@@ -352,7 +373,7 @@ describe('SessionPolicyEditor — excluded roles while role-based access is off'
         <SessionPolicyEditor />
       </TooltipProvider>,
     );
-    await screen.findByRole('region', { name: 'Remember me' });
+    await screen.findByRole('group', { name: 'Remember me' });
     expect(document.querySelector('[data-remember-rbac-note]')).toBeNull();
   });
 

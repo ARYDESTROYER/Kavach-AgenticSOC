@@ -1,5 +1,5 @@
 /**
- * Rules-FE shared types (Round-5 G6 · R2/R3) — the UI-only form model for the
+ * Rules-FE shared types (Round-5 G6 · R2/R3): the UI-only form model for the
  * "Detection & rules" editor, plus the RBAC grant every mutation gates on.
  *
  * ┌─ WHY A SEPARATE FORM MODEL ─────────────────────────────────────────────────┐
@@ -12,7 +12,7 @@
  * │ ever calls `decide()` or sets a case status.                                 │
  * └──────────────────────────────────────────────────────────────────────────────┘
  *
- * Everything a rule carries — name, description, predicate field/value, tags — is
+ * Everything a rule carries (name, description, predicate field and value, tags) is
  * OPERATOR-authored and LOG-adjacent, so it renders PLAIN TEXT everywhere (#9).
  * Secrets never live on a rule; model overrides carry a selection, never a key (#10).
  *
@@ -54,8 +54,8 @@ export type {
  * vocabulary (`rbac/policy.py RESOURCES`) exposes a unified `rules` resource with
  * `read` / `manage`, and the whole rules-customization router (`routes_rules.py`)
  * enforces `rules:read` on every read and `rules:manage` on every mutation. The FE
- * MUST gate on the SAME resource end-to-end — the nav/section gate, every in-editor
- * `<Can>`, the version-ledger Restore, and the Save — so a custom role granted the
+ * MUST gate on the SAME resource end-to-end (the nav/section gate, every in-editor
+ * `<Can>`, the version-ledger Restore, and the Save), so a custom role granted the
  * advertised unified `rules:*` can actually use the editor (and a role WITHOUT it is
  * honestly blocked rather than seeing enabled buttons that then 403). Built-in roles
  * derive `rules` from `settings` (`_settings_like`), so this is behaviour-preserving
@@ -71,13 +71,14 @@ export const RULES_READ_PERM = { resource: 'rules', action: 'read' } as const;
  * The three rule tiers the editor exposes (RESEARCH_RULES_UX §2). Each is backed by
  * existing code; we deliberately do NOT copy Elastic's 7 rule types.
  *
- * - `detection_match`   — a classify-an-event rule (`RuleDefinition` + one
+ * - `detection_match`: a classify-an-event rule (`RuleDefinition` + one
  *                          `RuleMatch`) with an optional threshold (`CorrelationRule`:
  *                          `n === 1` ⇒ a simple match rule; `n > 1` ⇒ a threshold rule).
- * - `detection_anomaly` — fire on deviation from a learned baseline (`BaselineConfig`);
+ * - `detection_anomaly`: fire on deviation from a learned baseline (`BaselineConfig`);
  *                          advisory input to a candidate, NEVER `decide()`.
- * - `case_automation`   — a POST-decision, HITL-safe reaction (`CaseAutomationRule`);
- *                          tag/recommend/notify/run_playbook/request_approval; NEVER
+ * - `case_automation`: a POST-decision, HITL-safe reaction (`CaseAutomationRule`);
+ *                          tag/recommend/notify/attach a runbook (the stored
+ *                          `run_playbook` literal, Round 14)/request_approval; NEVER
  *                          sets status or auto-closes (#3, code-enforced backend-side).
  */
 export type RuleTier = 'detection_match' | 'detection_anomaly' | 'case_automation';
@@ -169,7 +170,9 @@ export interface AnomalyForm {
 /**
  * The case-automation form (mirrors `CaseAutomationRule` / `AutomationRule`). A
  * matched rule reacts AFTER the deterministic decision and can only tag / recommend /
- * notify / run a playbook / request approval — it NEVER sets status (#3). This mirrors
+ * notify / attach a runbook / request approval; it NEVER sets status (#3). Attach a
+ * runbook keeps the stored `run_playbook` action and writes `payload.runbook_id` and
+ * `payload.playbook_id` with the same id (SPEC §4.10.16). This mirrors
  * the existing `Settings › Automation` editor so the two stay wire-compatible.
  */
 export interface CaseAutomationForm {
@@ -257,13 +260,13 @@ export interface ScheduleForm {
  * keyed by a stable local `key` (name for detection, id for automation).
  */
 export interface RuleCatalogItem {
-  /** Stable local key for React lists — the source-array INDEX, so rules with a
+  /** Stable local key for React lists: the source-array INDEX, so rules with a
    * DUPLICATE display name never collide (detection rules are keyed by free-text name
    * on the wire; two same-named rules must still edit/delete independently, #24). */
   key: string;
   tier: RuleTier;
   /** The index of this rule in its source wire array (`rule_catalog` for detection,
-   * `threshold_automation.rules` for automation) — the authoritative identity used to
+   * `threshold_automation.rules` for automation): the authoritative identity used to
    * edit/delete/toggle exactly this row, never a name/id match (#24). */
   sourceIndex: number;
   /** Display name (plain text). */

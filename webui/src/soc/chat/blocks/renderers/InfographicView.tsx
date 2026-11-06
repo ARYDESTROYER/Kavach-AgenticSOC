@@ -200,6 +200,7 @@ function HeroRow({ group, idPrefix, staticMode, inFrame }: { group: KpiGroupBloc
                 }
                 variant="strip"
                 density="comfortable"
+                chrome="framed"
                 size="fluid"
                 roll={false}
                 secondary={

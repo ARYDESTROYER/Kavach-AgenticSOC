@@ -288,7 +288,7 @@ identity on the host.
 
 The official supervisor deliberately has no container-registry credentials. Before
 publishing an installable release, the repository owner must make the three GHCR
-packages—`backend`, `webui`, and `updater`—public and prove each digest is anonymously
+packages (`backend`, `webui`, and `updater`) public and prove each digest is anonymously
 pullable. The release workflow checks that property before publication. The updater
 pulls and inspects all three images after a job starts but before it changes the
 running application; an unavailable or private package therefore fails the job
@@ -467,9 +467,211 @@ that correctly reports **Manual upgrade required**:
 
 ## Changes that need attention when upgrading to this build
 
-This build (the current `0.1.13` source candidate, after the chat, sign-in, dashboard,
-and Case Manager changes) needs no database migration and no new index or table. It
-changes these behaviours, which operators should know about before upgrading:
+This build (the current `0.1.13` source candidate, after the Round 12, Round 13 and
+Round 14 changes) needs no database migration and no new index or table. It changes
+these behaviours, which operators should know about before upgrading.
+
+### Round 14 changes
+
+Round 14 keeps version `0.1.13` and adds no database migration, index or table. Its
+new state lives in the existing key-value store. Read these before upgrading:
+
+- **Elasticsearch audit mapping (required step).** New audit rows carry structured
+  fields (outcome, actor type, action, client, session, target, changes, request id,
+  run id), and the shipped audit template turns date detection off. On an Elasticsearch
+  state backend upgraded from an earlier build, do this **before** you start the
+  Round 14 backend: apply `deploy/mappings/tlsoc-agent-audit.template.json` as the index
+  template `tlsoc-agent-audit-template`, then roll the audit write index so new rows go
+  to an index made from it (the commands are in
+  [Applying the Round 14 audit template](#applying-the-round-14-audit-template) below).
+  The shipped Elasticsearch client cannot read or extend index mappings, so the backend
+  does not do this for you: bootstrap never replaces or remaps an existing template or
+  index, changes nothing here, and logs a warning naming this step on every start.
+  The warning keeps appearing after the step is done, and on deployments first created
+  by Round 14 from their second start on, because the backend cannot read the mapping
+  to check; the subsection below says how to confirm the step instead.
+  Until the step is done, a date-like value in a new audit row (a runbook review date, a
+  runbook id such as `2026-10-28`) can map a field as a date, and later audit-first
+  writes then answer `503 audit_unavailable`. If Storage & retention is active on this
+  Elasticsearch backend, the shipped template has no lifecycle settings, so the step
+  also takes the audit template and the new write index out of the lifecycle policy
+  until you put it back (also in the subsection below). A deployment whose audit index
+  was first created by Round 14 or later needs nothing; PostgreSQL and SQLite need
+  nothing.
+- **Settings and other changes are recorded first.** A settings save, a user or role
+  change, a source change, a runbook or dashboard change and every job file download now
+  write their audit row before the change takes effect. When the audit log cannot be
+  written, the change is not made and the request answers `503 audit_unavailable`
+  (before Round 14 a settings save went through and its audit row was best-effort).
+  Sign-ins, sign-outs and session events are never blocked. Settings saves that race
+  each other can answer `409 settings_conflict`. See the list in the
+  [API reference](../reference/api.md#writes-that-are-recorded-first).
+- **Client addresses in the audit log.** New rows record the client address, taken
+  from `X-Forwarded-For` only when the request came through a proxy named in the backend
+  setting `TRUSTED_PROXIES` (default `tlsoc-webui`, the bundled Web UI). A deployment
+  with another proxy or load balancer in front adds it there; see
+  [Configuration](../reference/configuration.md#trusted-proxies-for-the-audit-log).
+  The address and the user agent are personal data, kept as long as the audit log.
+- **Chat limits version 2.** The Chat assistant's "Timeouts and capacity" defaults are
+  tripled: 12 lookups at once, 45 seconds per lookup, 900 seconds before a silent model
+  call counts as stalled, 12 questions at once per user and 48 per backend. A stored
+  value that still equals the Round 12 default (4, 15, 300, 4, 16) moves once, in both
+  limits modes; a value an administrator chose stays. One limitation: a value an
+  administrator chose that happens to equal the old default cannot be told apart from it
+  and moves once. The report summary wait stays capped at 280 seconds. See
+  [Configuration](../reference/configuration.md#chat-assistant-bounds).
+- **One Runbooks feature.** The earlier response procedures and reference runbooks are
+  one feature, **Intelligence → Runbooks**. On the first start, every stored procedure
+  and reference runbook is converted once into a runbook, by the system actor
+  `runbook_migration`, before the library is used:
+  - a converted document that passes the checks is **Published**, marked Imported and
+    due for review at once; one that does not is a **Draft** with its problems listed;
+  - a document that was never used before the upgrade lands as a Draft and never
+    matches until someone publishes it: one whose id a bundled document of its own kind
+    owned (renamed `<id>-imported`), and, when a procedure folder was configured, every
+    procedure stored in the database (only the folder was read before);
+  - match conditions are carried over by meaning: beside a rule or another hard
+    condition, techniques become the runbook's coverage, and tags or keywords are left
+    out (they would otherwise stop it ever matching); a condition that cannot be kept
+    and whose loss would widen the match makes the runbook a Draft, so trusted guidance
+    never reaches more cases than before;
+  - nothing is dropped: every move is written in the runbook's import notes, and every
+    conversion is recorded in the audit log ("Runbook converted", "Runbook not
+    converted", "Runbook conversion finished");
+  - the knowledge index is then rebuilt from Published runbooks only. Until that
+    finishes, no text from before the upgrade is served to the investigator or chat as
+    trusted.
+  The library shows a one-time note with the counts and a **Show imported** filter.
+  Review each imported runbook: the investigator now reads each step's title and focus
+  line.
+- **Runbooks attach to cases.** By default, the matching Published runbook attaches to
+  every case that needs a person, and the built-in Generic incident runbook attaches
+  when nothing else matches (Settings → Integrations → Runbooks). A runbook never closes
+  a case. Closing a case by hand with required steps still open asks for a short reason,
+  which is recorded; it never blocks the close.
+- **Settings keys from earlier versions.** `playbooks.enabled: false` becomes
+  `runbooks.investigator_guidance: false`; the earlier `runbooks.enabled: false` (stop
+  reference runbook retrieval) and `rag.use_runbooks: false` become
+  `runbooks.rag_corpus: false`. The new `runbooks.enabled` is always on after the
+  upgrade. See [Configuration](../reference/configuration.md#runbooks).
+- **Permissions.** Stored grants and denies that name `playbooks` keep working in every
+  layer (role overrides, the resource layer, denies and custom roles) and are read as
+  `runbooks`: `playbooks:manage` also gives the new `runbooks:publish`, and a stored
+  `runbooks:manage` grant gains `runbooks:publish` once (a stored deny of manage denies
+  publish too), so no role loses or gains the ability to make runbook text trusted.
+  After the first load, a `runbooks` entry wins over a `playbooks` key kept beside it.
+  `runbooks:run` is new and granted to every built-in role except auditor, and
+  `audit:export` is new for super admin, SOC manager and auditor. See
+  [Permissions](../reference/permissions.md#grants-stored-before-round-14).
+- **Discounted inference moved.** The Flex and Batch policy is now in **Settings →
+  General → Discounted inference** and saves with Settings, so it needs
+  `settings:manage` (on the Jobs page it needed `models:manage`). Every built-in role
+  holds both grants or neither.
+- **HTTP changes.** `GET /api/playbooks`, `GET /api/playbooks/{id}`,
+  `/api/playbooks/coverage` and `/api/playbooks/selection/{case_id}`, and `?shape=v1` on
+  `GET /api/runbooks` and `GET /api/runbooks/{id}`, answer from the runbook library in
+  the earlier shape for one release, with `Deprecation` headers. Every write of the
+  earlier shapes, including `POST /api/cases/{case_id}/run-playbook`, answers `410
+  runbooks_moved`: an old-shape write cannot be honoured without making unreviewed text
+  trusted. Update scripts to the `/api/runbooks` routes. See
+  [Retired procedure routes](../reference/api.md#retired-procedure-routes).
+- **Automation rules that ran a procedure now attach a runbook.** A case-automation rule
+  with the action stored as `run_playbook` keeps its stored form, but it now attaches
+  the runbook its target became (at no model cost) instead of starting a new
+  investigation. A target that is unknown, a Draft or retired is skipped and recorded as
+  "Runbook not attached" (`run.attach_skipped`), and the rule list shows "Needs a
+  runbook" beside it.
+- **Audit log page.** The audit log is server-paged with three scopes; `GET /api/audit`
+  keeps every earlier parameter's meaning, but a call without `scope` now returns 100
+  rows by default and at most 200 per call (a larger `limit` is clamped, never refused),
+  with a `next_cursor`, instead of up to 500 at once. Audit exports are a new job kind
+  that needs `audit:export` and a fresh sign-in.
+- **Dashboards and navigation.** The landing page is unchanged. The navigation's
+  Overview entry now opens the Dashboards library, and the Automated scans page is gone
+  (`#/scans` opens Case Manager filtered to cases the agent closed).
+- **Sign-in notice.** The automatic sign-out notice no longer states how long the
+  session lasted; `/api/auth/me` still sends `lifetime_seconds` for API clients.
+
+#### Applying the Round 14 audit template
+
+On an Elasticsearch state backend upgraded from an earlier build, run these before the
+Round 14 backend starts, with the management API key (its `manage_index_templates`
+cluster grant and `manage` on `tlsoc-agent-*` cover both calls). `ES_URL`, `ES_CA_CERT`
+and `TLSOC_ES_MGMT_API_KEY` stand for your cluster's URL, its CA file and the encoded
+management key:
+
+```bash
+curl --cacert "$ES_CA_CERT" -H "Authorization: ApiKey $TLSOC_ES_MGMT_API_KEY" \
+  -X PUT "$ES_URL/_index_template/tlsoc-agent-audit-template" \
+  -H 'Content-Type: application/json' \
+  --data-binary @deploy/mappings/tlsoc-agent-audit.template.json
+curl --cacert "$ES_CA_CERT" -H "Authorization: ApiKey $TLSOC_ES_MGMT_API_KEY" \
+  -X POST "$ES_URL/tlsoc-agent-audit/_rollover"
+```
+
+The first call replaces the stored audit template with the shipped one; the second makes
+a new audit write index from it, so every row from then on is mapped with date detection
+off. Earlier indices keep their mapping.
+
+**If Storage & retention is active.** Applying Storage & retention on Elasticsearch adds
+its lifecycle policy to this same template (the `index.lifecycle.name` and
+`index.lifecycle.rollover_alias` settings). The shipped file has no lifecycle settings,
+so the first call above drops them, and the index the rollover creates is not managed by
+the policy. Look at the stored template before the first call:
+
+```bash
+curl --cacert "$ES_CA_CERT" -H "Authorization: ApiKey $TLSOC_ES_MGMT_API_KEY" \
+  "$ES_URL/_index_template/tlsoc-agent-audit-template"
+```
+
+If its `template.settings` show a `lifecycle` entry, do one of these:
+
+- Keep the policy through the step: in a copy of the shipped file, add the two lifecycle
+  settings the stored template shows to `template.settings`, and send that copy in the
+  first call instead. With the policy Agentic SOC applies, the settings read:
+
+  ```json
+  "settings": {
+    "number_of_shards": 1,
+    "number_of_replicas": 0,
+    "index.lifecycle.name": "tlsoc-agent-ledgers-hot-warm",
+    "index.lifecycle.rollover_alias": "tlsoc-agent-audit"
+  }
+  ```
+
+- Or put the policy back afterwards: once the Round 14 backend has started, open
+  **Settings → Organization → Storage & retention** and use **Apply supported
+  lifecycle** again. That puts the policy back on the audit template and on every audit
+  index, including the one the rollover created. Until then, Storage & retention shows
+  the lifecycle as drifted rather than active.
+
+**Confirming the step.** The backend keeps logging the reminder on every start after the
+step is done, and on deployments first created by Round 14 from their second start on,
+because the shipped client cannot read the mapping to check. To confirm the step, check
+that `GET _index_template/tlsoc-agent-audit-template` shows `"date_detection": false`
+under `template.mappings`, and that the audit write index shows it too:
+`GET _alias/tlsoc-agent-audit` names the index with `"is_write_index": true`, and
+`GET <that index>/_mapping` shows `"date_detection": false`. When both do, the reminder
+can be ignored.
+
+### Rolling back from Round 14
+
+An image-only rollback to a build before Round 14 keeps working, with these effects:
+
+- The stored procedure and reference runbook documents were never changed, so the
+  earlier build finds them as they were. Runbooks written or published in Round 14, and
+  runs on cases, stay in the store unused.
+- Stored `playbooks` grants and the `run_playbook` automation rules are read as before.
+  A `runbooks:publish` or `runbooks:run` grant means nothing to the earlier build.
+- New audit rows keep their extra fields; the earlier build ignores them.
+- Chat limits that Round 14 saved keep the lookup timeout (45 s), the stall timeout
+  (900 s) and the backend-wide limit (48 questions). Lookups at once and questions per
+  user read as 8 and 10, the earlier build's maximums, instead of 12. Set them by hand if
+  other values are wanted.
+
+### Round 12 and Round 13 changes
+
+These earlier changes in the same `0.1.13` candidate still apply:
 
 - **Chat limits migrate once.** The stored chat configuration moves to **Unlimited**
   per-question limits on first read unless an administrator had changed a per-question
@@ -504,7 +706,7 @@ changes these behaviours, which operators should know about before upgrading:
   on the backend's own host must send `X-Forwarded-For` (or another forwarding header),
   or it looks like a local browser; the bundled Web container already does. See
   [Security hardening](security.md#session-lifetimes).
-- **Dashboard counts.** The Open Cases stock and the case totals on **Analytics →
+- **Dashboard counts.** The Open cases stock and the case totals on **Analytics →
   Metrics** are exact store-wide counts at any size. Every Overview figure for the
   selected window and the heavier rollups analyse up to 20,000 cases per window instead
   of a fixed newest page; a larger window shows lower bounds (`≥`) and withholds rates.
@@ -518,7 +720,7 @@ changes these behaviours, which operators should know about before upgrading:
   conversations. These use the existing KV store and never add Elasticsearch mapping
   fields.
 
-### Rolling back from this build
+### Rolling back past Round 12
 
 An image-only rollback to an earlier build keeps working, with these losses:
 
@@ -596,9 +798,9 @@ mutation.
     operator-owned external deployment with retained artifacts or blue-green serving;
     that topology is outside the supported one-click profile.
 
-Release observation and supervised installation remain independent of the strict plain-text
-authoring contract for Intelligence → Reference runbooks; see
-[Runbooks](../intelligence/runbooks.md).
+Release observation and supervised installation are independent of the runbook library
+under **Intelligence → Runbooks**: an update never edits, publishes or retires a runbook;
+see [Runbooks](../intelligence/runbooks.md).
 
 ## Rollback
 

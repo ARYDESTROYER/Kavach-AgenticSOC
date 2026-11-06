@@ -106,7 +106,7 @@ describe('StorageLifecycleSection', () => {
 
     await screen.findByTestId('storage-lifecycle-status');
     expect(screen.getAllByText('First 180 days')).toHaveLength(2);
-    expect(screen.getAllByText('Next 90 days · until day 270')).toHaveLength(2);
+    expect(screen.getAllByText('Next 90 days, until day 270')).toHaveLength(2);
     expect(screen.getAllByText('From day 270')).toHaveLength(2);
     expect(screen.getByText('Desired · not configured.')).toBeInTheDocument();
     expect(screen.getByText('Connected source logs')).toBeInTheDocument();
@@ -116,11 +116,24 @@ describe('StorageLifecycleSection', () => {
     expect(screen.getByText(/Automatic deletion is off/i)).toBeInTheDocument();
   });
 
+  it('gives Hot and Warm retention the column their 12rem fields need', async () => {
+    renderSection();
+    await screen.findByTestId('storage-lifecycle-status');
+    // Up to 3650 days, the steppers and the unit "days" need 140px, more than 8rem.
+    for (const label of ['Hot retention', 'Warm retention']) {
+      const input = screen.getByLabelText(label);
+      expect(input.closest('[data-number-field]'), label).toHaveAttribute('data-number-field', 'md');
+      const row = input.closest('[data-setting-row="field"]') as HTMLElement;
+      expect(row.style.getPropertyValue('--setting-control-w'), label).toBe('12rem');
+    }
+  });
+
   it('edits desired policy through the page-wide preferences draft', async () => {
     const { update } = renderSection();
     await screen.findByTestId('storage-lifecycle-status');
 
-    const hotDays = screen.getByLabelText('Hot retention (days)');
+    // Round 14: the unit sits inside the field ("days"), not in the label.
+    const hotDays = screen.getByLabelText('Hot retention');
     fireEvent.focus(hotDays);
     fireEvent.change(hotDays, { target: { value: '200' } });
     fireEvent.blur(hotDays);

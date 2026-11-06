@@ -17,7 +17,6 @@ import hashlib
 import logging
 import secrets as stdlib_secrets
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any, Callable
 
 from .agents.chat import ChatEngine
@@ -26,7 +25,7 @@ from .agents.pipeline import InvestigationPipeline
 from .agents.standup import StandupService
 from .audit.audit_log import AuditLogger
 from .cache import Cache
-from .config import Preferences, Secrets
+from .config import EnrichmentConfig, Preferences, Secrets
 from .engine.ingest import IngestService
 from .engine.mutation_gate import MutationAdmissionGate
 from .engine.release_discovery import ReleaseDiscoveryService
@@ -48,6 +47,11 @@ _ES_SECRET_FIELDS = {"es_api_key", "es_mgmt_api_key", "es_url", "es_ca_cert", "e
 # How long closing mutation admission waits for cancelled chat turns to unwind
 # (abort their reservation, close their source client) before the reset drains.
 _CHAT_TURN_CANCEL_TIMEOUT_S = 10.0
+
+# How many real cases investigated while Demo Mode is on keep their post-investigation
+# runbook attachment until Demo Mode ends (Round 14 SPEC §4.10.4). Past it the oldest
+# is dropped (logged); that case is attached by its next status, tag or verdict change.
+_RUNBOOK_ATTACH_DEFERRED_MAX = 5_000
 
 
 class _ChatTurnAwareMutationGate(MutationAdmissionGate):
@@ -106,6 +110,13 @@ class AppState:
         # stack so REAL cases are hidden + isolated; disable GC's it + the real
         # state returns intact.
         self._demo = None
+        # Real cases the real pipeline investigated while Demo Mode was on (Round 14
+        # SPEC §4.10.4): their post-investigation runbook attachment waits until Demo
+        # Mode ends, because the run engine binds the ACTIVE stack. Insertion-ordered
+        # ids (oldest first), bounded by ``_RUNBOOK_ATTACH_DEFERRED_MAX``, drained once
+        # Demo Mode is off (``_drain_deferred_runbook_attachments``). Process-local.
+        self._runbook_attach_deferred: dict[str, None] = {}
+        self._runbook_attach_drain: asyncio.Task[Any] | None = None
         # Bumped on every Demo switch (enable, disable; a reset is both): a cache filled
         # by a build compares it before and after, so even a switch there and back
         # within one build (the run id the same both times) is seen (``demo_generation``).
@@ -494,6 +505,139 @@ class AppState:
             self._oidc_state_store = store
         return store
 
+    # ------------------------------------------------------------------ #
+    # Round 14 runbooks (SPEC §4.10.6, §3.5). Built lazily over the shared KV and
+    # rebound when ``_wire()`` swaps the KV, like ``oidc_state``.
+    # ------------------------------------------------------------------ #
+    @property
+    def runbook_library(self):
+        """The operator runbook LIBRARY (``stores.runbook_library``): always the REAL
+        store. The Demo pipeline and matcher read it (D45), and while Demo Mode is on
+        every write is refused (``409 runbook_demo_readonly``)."""
+        store = getattr(self, "_runbook_library_store", None)
+        kv = getattr(self, "_kv", None)
+        if store is None or store.kv is not kv:
+            from .stores.runbook_library import RunbookLibraryStore
+
+            store = RunbookLibraryStore(kv, read_only=lambda: self._demo is not None)
+            self._runbook_library_store = store
+        return store
+
+    @property
+    def real_runbook_runs(self):
+        """The REAL per-case run store (``stores.runbook_runs``), whatever Demo Mode
+        shows (the cases reset clears it)."""
+        store = getattr(self, "_real_runbook_runs_store", None)
+        kv = getattr(self, "_kv", None)
+        if store is None or store.kv is not kv:
+            from .stores.runbook_runs import RunbookRunStore
+
+            store = RunbookRunStore(kv)
+            self._real_runbook_runs_store = store
+        return store
+
+    @property
+    def runbook_runs(self):
+        """Per-case runs for the active real/Demo boundary (SPEC §3.5): Demo cases have
+        Demo runs, stored on the Demo stack's own KV and gone when Demo Mode ends. A
+        Demo stack that does not build its own run store gets one over its KV."""
+        demo = self._demo
+        if demo is None:
+            return self.real_runbook_runs
+        store = getattr(demo, "runbook_runs", None)
+        if store is not None:
+            return store
+        cached = getattr(self, "_demo_runbook_runs", None)
+        if cached is not None and cached[0] is demo:
+            return cached[1]
+        from .stores.runbook_runs import RunbookRunStore
+
+        store = RunbookRunStore(demo.kv)
+        self._demo_runbook_runs = (demo, store)
+        return store
+
+    @property
+    def legacy_procedures(self):
+        """Read-only access to the retired procedure namespaces (one release): the
+        runbook migration and the legacy export groups read them only through this
+        (``stores.legacy_procedures``, which has no write method)."""
+        from .stores.legacy_procedures import LegacyProcedureReader
+
+        return LegacyProcedureReader(self._kv)
+
+    async def _project_runbook_corpus(self, generation: str) -> bool:
+        """Step 7 of the runbook migration (SPEC §4.10.17): the full Published-only RAG
+        projection, every chunk tagged ``generation``. The RAG service supplies it
+        (``RagService.project_runbook_corpus(generation=..., library=...)``); until a
+        build has it, the projection stays pending and the next start resumes it."""
+        project = getattr(getattr(self, "rag", None), "project_runbook_corpus", None)
+        if not callable(project):
+            return False
+        result = await project(generation=generation, library=self.runbook_library)
+        return result is not False
+
+    async def run_runbook_migration(self, *, project_in_background: bool = False):
+        """Convert the stored operator procedures into runbooks once (SPEC §4.10.17,
+        E9), or resume an interrupted conversion or projection. Audited in the REAL
+        control audit as the system actor ``runbook_migration``.
+
+        :meth:`startup` passes ``project_in_background=True``: the conversion (steps 1
+        to 6, at most 200 documents, no model call) runs inline, and the RAG
+        reprojection (step 7, which embeds the whole Published corpus) runs as a
+        tracked background task (:meth:`_start_runbook_projection`), so a slow or
+        unreachable embedding provider never delays the API. Until it completes the
+        retriever excludes untagged legacy runbook chunks (#9). A failure is logged by
+        the caller and the next start resumes."""
+        from .engine.runbook_migration import run_runbook_migration
+
+        outcome = await run_runbook_migration(
+            library=self.runbook_library,
+            legacy=self.legacy_procedures,
+            audit=self.control_audit,
+            prefs=self.prefs,
+            projector=self._project_runbook_corpus,
+            project=not project_in_background,
+        )
+        if project_in_background and not outcome.projection_completed:
+            self._start_runbook_projection()
+        legacy_dir = getattr(getattr(self.prefs, "playbooks", None), "dir", None)
+        if legacy_dir:
+            logger.warning(
+                "Preferences.playbooks.dir is set: its procedure files were converted into "
+                "runbooks once, the setting is ignored from now on and can be removed."
+            )
+        return outcome
+
+    def _start_runbook_projection(self) -> asyncio.Task[Any] | None:
+        """Run the migration's pending RAG projection (step 7) as a tracked tenant
+        writer: a factory reset or shutdown cancels it (``cancel_mutation_tasks``) and
+        the next start resumes it from the marker. Returns the task, or ``None`` when
+        writes are fenced (a reset is running) or one is already running."""
+        running = getattr(self, "_runbook_projection_task", None)
+        if running is not None and not running.done():
+            return running
+        from .engine.runbook_migration import resume_runbook_projection
+
+        async def _project() -> bool:
+            try:
+                done = await resume_runbook_projection(
+                    library=self.runbook_library, projector=self._project_runbook_corpus,
+                )
+            except Exception as exc:  # noqa: BLE001 - resumed at the next start
+                logger.warning("Runbook RAG projection did not finish (%s); it resumes at the next start", exc)
+                return False
+            if done:
+                logger.info("Runbook RAG projection completed")
+            return done
+
+        try:
+            task = self.spawn_mutation_task(_project(), name="runbook-rag-projection")
+        except RuntimeError as exc:
+            logger.warning("Runbook RAG projection not started (%s); it resumes at the next start", exc)
+            return None
+        self._runbook_projection_task = task
+        return task
+
     @property
     def cases(self):
         return self._demo.cases if self._demo is not None else self._real_cases
@@ -511,6 +655,14 @@ class AppState:
     def control_audit(self):
         """Durable audit trail for auth, RBAC, secrets, users and real settings."""
         return self._real_audit
+
+    @property
+    def demo_audit(self):
+        """The Demo stack's audit store while Demo Mode is on, else None. The audit
+        read API (Round 14 SPEC §4.5.5) reads it beside :attr:`control_audit`, so
+        real sign-ins and settings changes show next to demo agent rows (D11)."""
+        demo = self._demo
+        return demo.audit if demo is not None else None
 
     @property
     def usage_store(self):
@@ -601,6 +753,33 @@ class AppState:
         if self._demo is not None:
             return await self._demo.mutate_execution_prefs(mutate)
         return await self.mutate_prefs(mutate)
+
+    @property
+    def enrichment_settings(self) -> EnrichmentConfig:
+        """The enrichment settings the Settings page shows and edits, for the active
+        stack (Round 14 SPEC §3.5, wro-01): the stored real settings, or while Demo
+        Mode is on the Demo sandbox's own copy. Never :attr:`execution_prefs`' block,
+        whose ``enabled`` is forced off in Demo Mode (an isolation control, not a
+        setting), so a switch always shows the value its save changes."""
+        if self._demo is not None:
+            return self._demo.enrichment_settings()
+        return self.prefs.enrichment
+
+    async def mutate_enrichment_settings(
+        self, mutate: Callable[[EnrichmentConfig], EnrichmentConfig]
+    ) -> EnrichmentConfig:
+        """Read-modify-write :attr:`enrichment_settings` for the active stack.
+
+        Off Demo Mode the real settings are saved under the prefs lock (the same
+        strict persistence as :meth:`mutate_prefs`); while Demo Mode is on the edit
+        stays in the Demo sandbox and never reaches the real settings. ``mutate`` is
+        a pure edit of the enrichment block (it returns a new model)."""
+        if self._demo is not None:
+            return await self._demo.mutate_enrichment_settings(mutate)
+        saved = await self.mutate_prefs(
+            lambda current: current.model_copy(update={"enrichment": mutate(current.enrichment)})
+        )
+        return saved.enrichment
 
     @property
     def ingest_service(self):
@@ -842,8 +1021,11 @@ class AppState:
                 query_source_for=self.active_source_for_id,
             ),
             "secrets_status": self.secrets.configured_status,
-            "runbooks": getattr(self, "runbooks", None),
-            "playbooks": getattr(self, "playbooks", None),
+            # Round 14: ``runbooks`` is the runbook LIBRARY (``list_runbooks`` reads its
+            # ``published_catalog``); ``runbook_runs`` the ACTIVE run store (Demo runs in
+            # Demo Mode) that ``get_case``'s runbook section reads.
+            "runbooks": self.runbook_library,
+            "runbook_runs": self.runbook_runs,
             "rule_versions": getattr(self, "rule_versions", None),
             # Round 12 (P1-4): the caller's chat answer ratings, over the ACTIVE chat
             # KV (the demo stack's in Demo Mode), read as aggregates only.
@@ -979,13 +1161,6 @@ class AppState:
         # check runs in the deps layer (require_auth) against this store; the per-user
         # token_version snapshot is folded into AuthService (set_session_versions).
         self.sessions = self._build_sessions()
-        # Markdown playbook registry (loaded from disk; deterministic per-cluster
-        # selection). Reloaded in startup() once prefs (and any dir override) load.
-        self.playbooks = self._build_playbooks()
-        # Runbooks are RAG reference knowledge: immutable bundled Markdown plus a
-        # durable operator-authored layer over the shared KV store. No filesystem
-        # write, new table, or index is required for Console authoring.
-        self.runbooks = self._build_runbooks()
         # Operator MEMORY store (durable trusted facts). Backed by the SAME KV the
         # config/cursor stores use for the active backend (SQL: SqlKVStore; ES: a
         # thin EsKVStore over the config index) — no new index/table/migration.
@@ -1025,7 +1200,7 @@ class AppState:
         self.log_source = self._build_log_source()
         self._real_pipeline = InvestigationPipeline(
             es, self.secrets, self.cache, self.gateway, self.rag, self._real_cases, self._real_audit,
-            source=self.log_source, playbooks=self.playbooks, memory=self._real_memory,
+            source=self.log_source, memory=self._real_memory,
             tuning_store=self._real_tuning_store,
             seq_store=self.case_seq,
             # Round 5 (Coupling-F): the realtime EventBus is a module-global singleton
@@ -1040,6 +1215,11 @@ class AppState:
             # Forward fixture capture for the replay harness. Wired ONLY on the real
             # pipeline: demo traffic is synthetic and must never enter a replay corpus.
             fixture_sink=self.replay_fixtures.sink,
+            # Round 14 (SPEC §4.10.4, §4.10.9): the matchable runbook catalog the
+            # investigator's guidance is chosen from, and the post-investigation
+            # attachment of the matching runbook to a case that needs a person.
+            runbook_catalog=self._runbook_catalog,
+            runbook_attacher=self._attach_runbook_to_real_case,
         )
         self._real_chat_engine = ChatEngine(
             es, self.gateway, self._real_audit, self._real_cases, self.rag,
@@ -1079,12 +1259,15 @@ class AppState:
         # Threshold automation (F10 / Wave 6): post-decision, #3-safe. It runs AFTER
         # apply()+save and may ONLY tag/recommend/notify/queue a re-investigation
         # (which re-runs decide())/open a HITL Proposal — never set status/close.
-        from .engine.threshold_automation import ThresholdAutomation
+        from .engine.threshold_automation import ThresholdAutomation, bind_runbook_automation
 
+        # Round 14 (SPEC §4.10.16): a ``run_playbook`` rule attaches a runbook.
+        attach_runbook, migrated_procedures = bind_runbook_automation(self)
         self.automation = ThresholdAutomation(
             self._real_proposals, self._real_audit,
             notify=self._automation_notify,
-            queue_playbook_run=self._automation_queue_playbook,
+            attach_runbook=attach_runbook,
+            migrated_procedures=migrated_procedures,
         )
         self._real_pipeline.automation = self.automation
         # (The realtime EventBus is now injected at pipeline CONSTRUCTION above — Round 5
@@ -1132,38 +1315,165 @@ class AppState:
         except Exception as exc:  # noqa: BLE001 — counter wiring must never break a rewire
             logger.warning("noise-counter sink wiring failed (%s); counters disabled", exc)
 
-    async def _automation_notify(self, case, trigger: str) -> None:
+    async def _automation_notify(self, case, trigger: str) -> list[dict[str, Any]] | None:
         """Automation NOTIFY action → dispatch through the existing notification
-        service. Fire-and-forget; never raises into the case path."""
+        service. Returns the per-channel results (``[{"ok": bool, "detail": str,
+        ...}]``) the action's audit outcome is read from
+        (``ThresholdAutomation._maybe_notify``), or ``None`` when no notification
+        service is wired. Never raises into the case path: the service's ``dispatch``
+        catches every channel and dispatch failure itself.
+
+        The in-app inbox copy is always one of the service's results, and it reports
+        ``ok`` even when it was due for nobody (``"no recipients"``: no assignee, no
+        mention, no subscribed role member). Such a copy went out to no one, so it is
+        left out here, as a channel skipped inside its dedup window is: it never counts
+        as a channel the notification was sent on, and a notify action whose only
+        configured channel failed reads ``failure``, not ``partial``. The copy's own
+        NOTIFICATION row is unchanged."""
         notifier = getattr(self, "notifications", None)
         if notifier is None:
+            return None
+        from .notifications.inapp import INAPP_NOT_DUE_DETAILS
+
+        results = await notifier.dispatch(case, trigger)
+        if not isinstance(results, list):
+            return results
+        # ``InAppChannel.send``'s own not-due details.
+        return [
+            r for r in results
+            if not (isinstance(r, dict) and r.get("type") == "in_app"
+                    and r.get("ok") is True and r.get("detail") in INAPP_NOT_DUE_DETAILS)
+        ]
+
+    # ------------------------------------------------------------------ #
+    # Runbooks in the agent path (Round 14 SPEC §4.10.4, §4.10.9, §4.10.18)
+    # ------------------------------------------------------------------ #
+    async def _runbook_catalog(self):
+        """The matchable runbook catalog both pipelines choose the investigator's
+        guidance from: every built-in and the live version of every Published operator
+        runbook, a built-in a Published copy replaces left out (``runbook_runs.
+        load_catalog`` over the REAL library, which the Demo pipeline reads too, D45).
+        The library view carries no Demo overlay hook, so the real pipeline never
+        matches on Demo rule names; the Demo stack adds its overlay itself. A library
+        read failure raises (the investigation then runs with no runbook)."""
+        from types import SimpleNamespace
+
+        from .engine.runbook_runs import load_catalog
+
+        return await load_catalog(SimpleNamespace(runbook_library=self.runbook_library))
+
+    def runbook_catalog_overlay(self, entries):
+        """The matchable built-ins as the ACTIVE stack sees them: unchanged on the real
+        stack, and with the Demo rule names mapped onto the built-ins that cover them
+        while Demo Mode is on (``demo_runtime.overlay_demo_runbooks``), so a Demo case
+        is matched to the runbook its storyline calls for. Read by the attachment
+        path's catalog (``runbook_runs.load_catalog``) when it is given this state."""
+        demo = self._demo
+        if demo is None:
+            return tuple(entries)
+        from .engine.demo_runtime import overlay_demo_runbooks
+
+        return overlay_demo_runbooks(entries)
+
+    async def _attach_runbook_to_real_case(self, case) -> None:
+        """The REAL pipeline's post-investigation attachment (SPEC §4.10.4). The run
+        engine binds the ACTIVE stack's run store, audit and settings, so while Demo
+        Mode is on a real case is not attached here (its run and audit row would land
+        in the Demo stack and vanish with it). Its id is kept instead and the
+        attachment runs when Demo Mode ends (``_drain_deferred_runbook_attachments``),
+        against the case as it is stored then. Never raises."""
+        if self._demo is not None:
+            self._defer_runbook_attachment(str(getattr(case, "case_id", "") or ""))
             return
-        await notifier.dispatch(case, trigger)
+        from .engine.runbook_runs import reevaluate_case
 
-    async def _automation_queue_playbook(self, case, playbook_id: str) -> None:
-        """Automation RUN_PLAYBOOK action → QUEUE a re-investigation of the case with
-        the playbook forced as TRUSTED context. Detached so it never blocks the
-        case path; the re-investigation itself re-runs the deterministic decide()."""
-        async def _do() -> None:
-            try:
-                cluster = await self._automation_cluster_for_case(case)
-                if cluster is None:
-                    return
-                query_source = self.poller.source_for_id(case.source_id)
-                await self._real_pipeline.investigate_cluster(
-                    cluster, case.source_surface, self.prefs,
-                    force=True, force_playbook_id=playbook_id,
-                    query_source=query_source,
-                )
-            except Exception:  # noqa: BLE001 — a queued re-investigation never breaks anything
-                logger.debug("automation playbook re-investigation failed for %s", case.case_id)
+        await reevaluate_case(self, case, trigger="investigation")
 
-        self.spawn_mutation_task(
-            _do(), name=f"automation-playbook:{case.case_id}"
+    def _defer_runbook_attachment(self, case_id: str) -> None:
+        """Keep a real case's post-investigation attachment until Demo Mode ends.
+        Bounded: past ``_RUNBOOK_ATTACH_DEFERRED_MAX`` ids the oldest is dropped (and
+        logged); that case is attached by its next status, tag or verdict change."""
+        if not case_id:
+            return
+        deferred = self._runbook_attach_deferred
+        deferred.pop(case_id, None)
+        deferred[case_id] = None
+        while len(deferred) > _RUNBOOK_ATTACH_DEFERRED_MAX:
+            dropped = next(iter(deferred))
+            deferred.pop(dropped, None)
+            logger.warning(
+                "Runbook attachment for real case %s not kept: more than %d real cases "
+                "were investigated while Demo Mode was on",
+                dropped[:80], _RUNBOOK_ATTACH_DEFERRED_MAX,
+            )
+        logger.info(
+            "Runbook attachment for real case %s deferred until Demo Mode ends",
+            case_id[:80],
         )
 
+    def _start_deferred_runbook_attachments(self) -> asyncio.Task[Any] | None:
+        """Start attaching the real cases kept while Demo Mode was on (one tracked
+        background task; a running drain picks up whatever is kept meanwhile). Not
+        started while the factory-reset fence is closed: the ids stay kept, and the
+        drain re-reads each case, so a case a reset removed is skipped."""
+        if self._demo is not None or not self._runbook_attach_deferred:
+            return None
+        running = self._runbook_attach_drain
+        if running is not None and not running.done():
+            return running
+        try:
+            task = self.spawn_mutation_task(
+                self._drain_deferred_runbook_attachments(), name="runbook-attach-after-demo",
+            )
+        except RuntimeError as exc:
+            logger.info("Deferred runbook attachments not started: %s", exc)
+            return None
+        self._runbook_attach_drain = task
+        return task
+
+    async def _drain_deferred_runbook_attachments(self) -> None:
+        """Attach the matching runbook to each real case kept while Demo Mode was on,
+        oldest first, through the same engine call as the live trigger. Each case is
+        read again from the real store, so the run engine re-checks it (a case
+        closed or removed since gets nothing). Stops, keeping the rest, as soon as
+        Demo Mode is on again. Never raises."""
+        from .engine.runbook_runs import reevaluate_case
+
+        deferred = self._runbook_attach_deferred
+        while self._demo is None and deferred:
+            case_id = next(iter(deferred))
+            try:
+                case = await self._real_cases.get(case_id)
+            except Exception as exc:  # noqa: BLE001 (one unreadable case never stops the rest)
+                logger.warning(
+                    "Deferred runbook attachment for real case %s skipped: %s", case_id[:80], exc,
+                )
+                case = None
+            if self._demo is not None:
+                break  # Demo Mode is on again: this id stays kept for the next drain
+            deferred.pop(case_id, None)
+            if case is not None:
+                await reevaluate_case(self, case, trigger="investigation")
+
+    def _demo_runbook_attacher(self, demo_stack):
+        """The Demo pipeline's post-investigation attachment, bound to ``demo_stack``:
+        it attaches only while that stack is the active one, so a Demo investigation
+        that finishes after Demo Mode ended (or was reset) writes nothing anywhere."""
+        async def attach(case) -> None:
+            if self._demo is not demo_stack:
+                logger.info(
+                    "Runbook attachment for Demo case %s dropped: that Demo stack is no longer active",
+                    str(getattr(case, "case_id", ""))[:80],
+                )
+                return
+            from .engine.runbook_runs import reevaluate_case
+
+            await reevaluate_case(self, case, trigger="investigation")
+
+        return attach
+
     async def _automation_cluster_for_case(self, case):
-        """Rebuild a cluster for a queued automation re-investigation (read-only).
+        """Rebuild a cluster for a case from its stored member events (read-only).
 
         Mirrors the routes' ``_cluster_for_case`` but kept dependency-light here to
         avoid a routes import cycle. Returns None when no events remain."""
@@ -1300,47 +1610,6 @@ class AppState:
         self.cursor_store = CursorStore(es)
         self.config_store = ConfigStore(es)
 
-    def _playbooks_dir(self) -> Path:
-        """Where playbook *.md files live: the override from prefs, else the default
-        ``backend/playbooks`` (sibling of the ``app`` package)."""
-        override = getattr(self.prefs, "playbooks", None)
-        if override is not None and override.dir:
-            return Path(override.dir)
-        return Path(__file__).resolve().parent.parent / "playbooks"
-
-    def _new_playbook_registry(self):
-        """Build a registry with ownership metadata for the active directory.
-
-        The Markdown procedures shipped in ``backend/playbooks`` are bundled
-        reference content and therefore protected from runtime edits.  A configured
-        override directory is operator-owned, so every valid playbook there may be
-        edited by a principal holding ``playbooks:manage``.
-        """
-        from .playbooks.registry import (
-            DEFAULT_BUNDLED_PLAYBOOK_FILES,
-            PlaybookRegistry,
-        )
-
-        directory = self._playbooks_dir()
-        bundled_directory = Path(__file__).resolve().parent.parent / "playbooks"
-        uses_packaged_default = (
-            directory.expanduser().resolve(strict=False)
-            == bundled_directory.resolve(strict=False)
-        )
-        if uses_packaged_default:
-            from .playbooks.durable import DurablePlaybookRegistry
-            from .stores.playbooks import PlaybookStore
-
-            return DurablePlaybookRegistry(
-                bundled_directory,
-                PlaybookStore(self._kv),
-                protected_filenames=DEFAULT_BUNDLED_PLAYBOOK_FILES,
-            )
-        # A deliberate directory override retains the legacy file-backed workflow.
-        # This is useful for Git-managed site-local catalogs; the default Console
-        # authoring path above is state-backend durable and container-safe.
-        return PlaybookRegistry(directory, protected_filenames=frozenset())
-
     def _build_memory(self):
         """Construct the operator MEMORY store over the active backend's KV. The KV
         is set in _build_state_backend, so this always has a valid handle."""
@@ -1353,12 +1622,6 @@ class AppState:
         from .engine.replay.fixtures import ReplayFixtureStore
 
         return ReplayFixtureStore(self._kv, self.get_prefs)
-
-    def _build_runbooks(self):
-        from .engine.runbook_service import RunbookService
-        from .stores.runbooks import RunbookStore
-
-        return RunbookService(RunbookStore(self._kv))
 
     def _build_proposals(self):
         """Construct the agent-PROPOSAL store over the active backend's KV (the same
@@ -2544,74 +2807,6 @@ class AppState:
         except Exception as exc:  # noqa: BLE001
             logger.warning("AuthService.set_session_versions failed (%s)", exc)
 
-    def _build_playbooks(self):
-        """Construct + load the PlaybookRegistry (never raises; a bad file is
-        skipped, an empty/missing dir yields zero playbooks → generic behaviour)."""
-        reg = self._new_playbook_registry()
-        try:
-            summary = reg.reload()
-            logger.info(
-                "Loaded %d playbook(s); skipped %d",
-                summary.get("loaded", 0), len(summary.get("skipped", [])),
-            )
-        except Exception as exc:  # noqa: BLE001 — registry should never raise; be safe
-            logger.warning("Playbook load failed (%s); continuing with none", exc)
-        return reg
-
-    def reload_playbooks(self) -> dict:
-        """Hot-reload playbooks from disk via the registry's ATOMIC validate-then-swap
-        (a wholesale-broken dir keeps the prior good live set). Re-points at the
-        configured dir first if it changed. Returns {loaded, skipped, ids}."""
-        if str(self.playbooks._directory) != str(self._playbooks_dir()):
-            self.playbooks = self._new_playbook_registry()
-        summary = self.playbooks.reload()
-        self._real_pipeline._playbooks = self.playbooks
-        return summary
-
-    async def refresh_playbooks(self) -> dict:
-        """Refresh the active catalog from its authoritative storage layer."""
-        if str(self.playbooks._directory) != str(self._playbooks_dir()):
-            self.playbooks = self._new_playbook_registry()
-        refresher = getattr(self.playbooks, "refresh", None)
-        summary = await refresher() if callable(refresher) else self.playbooks.reload()
-        self._real_pipeline._playbooks = self.playbooks
-        return summary
-
-    async def create_playbook(self, playbook_id: str, content: str, *, actor: str):
-        """Create against durable state by default, or an explicit file override."""
-        await self.refresh_playbooks()
-        creator = getattr(self.playbooks, "create_durable", None)
-        if callable(creator):
-            return await creator(playbook_id, content, actor=actor)
-        return self.playbooks.create_operator(playbook_id, content)
-
-    async def update_playbook(
-        self,
-        playbook_id: str,
-        content: str,
-        *,
-        actor: str,
-        expected_revision: int | None = None,
-    ):
-        """Update with optimistic concurrency on the durable catalog."""
-        await self.refresh_playbooks()
-        updater = getattr(self.playbooks, "update_durable", None)
-        if callable(updater):
-            if expected_revision is None:
-                current = self.playbooks.get(playbook_id)
-                if current is None:
-                    from .playbooks.registry import PlaybookNotFoundError
-
-                    raise PlaybookNotFoundError(playbook_id)
-                expected_revision = int(self.playbooks.metadata(current).get("revision", 1))
-            return await updater(
-                playbook_id,
-                content,
-                actor=actor,
-                expected_revision=expected_revision,
-            )
-        return self.playbooks.update_operator(playbook_id, content)
-
     def es_client_for_source(self, src) -> tuple[BaseESClient, bool]:
         """Return (es_client, owned) honoring the source's per-source ES connection +
         TLS settings. `owned=True` means a fresh client the CALLER must close; `False`
@@ -2703,7 +2898,9 @@ class AppState:
                 self.prefs,
                 store=store,
                 cases=self._real_cases,
-                runbooks=self.runbooks,
+                # Round 14 (SPEC §4.10.18): the Published-only runbook corpus reads the
+                # library (a provider, so a KV rebind is followed).
+                library=lambda: self.runbook_library,
                 health=getattr(self, "_rag_health", None),
                 exclusions=getattr(self, "_precedent_exclusions", None),
             )
@@ -2721,7 +2918,7 @@ class AppState:
             self.prefs,
             store=store,
             cases=self._real_cases,
-            runbooks=self.runbooks,
+            library=lambda: self.runbook_library,
             health=getattr(self, "_rag_health", None),
             exclusions=getattr(self, "_precedent_exclusions", None),
         )
@@ -2798,7 +2995,7 @@ class AppState:
         self.prefs = await self.config_store.load()
         if factory_recovery:
             # Recovery boots are deliberately minimal. Do not seed users/rules,
-            # reconcile RAG/playbooks/tuning, restore demo state, or start any Job,
+            # reconcile RAG/runbooks/tuning, restore demo state, or start any Job,
             # poller, receiver, or scheduler writer. Read-only identity hydration is
             # enough for env-admin login or the guarded empty-store setup bootstrap;
             # a freshly submitted factory retry starts the JobRunner explicitly.
@@ -2818,13 +3015,14 @@ class AppState:
         self.rag = self._build_rag()
         self._real_pipeline._rag = self.rag
         self._real_chat_engine._rag = self.rag
-        # Reload playbooks now that prefs (incl. any dir override) are available.
-        self.playbooks = self._build_playbooks()
-        self._real_pipeline._playbooks = self.playbooks
+        # Round 14 (SPEC §4.10.17, E9): convert the stored operator procedures into
+        # runbooks once (or resume an interrupted run); the RAG reprojection then runs
+        # in the background, so startup never waits for the embedding provider.
+        # Before the Demo restore below, so the library is written as real state.
         try:
-            await self.refresh_playbooks()
-        except Exception as exc:  # noqa: BLE001 — packaged procedures still remain live
-            logger.warning("Durable playbook refresh failed (%s); using packaged set", exc)
+            await self.run_runbook_migration(project_in_background=True)
+        except Exception as exc:  # noqa: BLE001 - resumed at the next start
+            logger.error("Runbook migration did not finish (%s); it resumes at the next start", exc)
         # Round 4: now that the PERSISTED prefs (incl. configured sources) are loaded,
         # re-point the primary log surface + (re)build the PollerManager fan-out so a
         # deployment that boots WITH multiple persisted PULL sources polls ALL of them,
@@ -3255,8 +3453,24 @@ class AppState:
                 else pending_prefs
             )
 
+        def demo_attacher(case):
+            return self._demo_runbook_attacher(demo_stack)(case)
+
+        from .engine.threshold_automation import bind_demo_runbook_automation
+
         demo_stack = DemoStack(
             self.secrets, pending_or_live_prefs, run_id=new_demo.run_id,
+            # D45: the Demo pipeline matches the real library (read only in Demo
+            # Mode) with the Demo overlay, and attaches runs to Demo cases.
+            runbook_catalog=self._runbook_catalog,
+            runbook_attacher=demo_attacher,
+            # Round 14 (SPEC §4.10.16, §4.10.18, D45): the Demo knowledge indexes project
+            # the real library's Published runbooks, and a ``run_playbook`` rule on a
+            # Demo case attaches into this stack while it is the active one.
+            runbook_library=lambda: self.runbook_library,
+            runbook_automation=bind_demo_runbook_automation(
+                self, lambda: demo_stack is not None and self._demo is demo_stack,
+            ),
         )
 
         # Eagerly seed the SHARED demo RAG corpus so the Knowledge page shows a populated
@@ -3301,6 +3515,22 @@ class AppState:
         # Every seeded case gets its display number before it is saved, oldest first,
         # from the same nomenclature and sequence the demo pipeline continues.
         await demo_stack.number_seeded_cases([*cases, *recent_cases, *hitl_cases, *tuner_cases])
+        # Round 14 (SPEC §4.10.9, §4.10.18, D45): the seeded cases never pass through the
+        # pipeline, so each investigated one is stamped, before it is saved, with the
+        # runbook the investigator would have read (the same match as the seeded runs
+        # below), and the Metrics "Runbook usage" panel agrees with the Runbooks
+        # library. The catalog is read once and reused for the runs. Never blocks enable.
+        demo_runbook_catalog = None
+        try:
+            from .engine.demo_generator import seed_demo_runbook_guidance
+
+            demo_runbook_catalog = await demo_stack.runbook_catalog()
+            seed_demo_runbook_guidance(
+                [*cases, *recent_cases, *hitl_cases, *tuner_cases], demo_runbook_catalog,
+                prefs=demo_stack._demo_prefs(),  # noqa: SLF001 - same module owner
+            )
+        except Exception as exc:  # noqa: BLE001 - seeded guidance never blocks enable
+            logger.warning("demo runbook guidance seeding failed: %s", exc)
 
         seeded_counter_cases = list(cases)
         for case in cases:
@@ -3342,6 +3572,22 @@ class AppState:
                 await demo_stack.seed_hitl_proposals(hitl_cases)
             except Exception as exc:  # noqa: BLE001 — capability seeding never blocks enable
                 logger.warning("demo capability seeding failed: %s", exc)
+
+        # Round 14 (SPEC §4.10.18, D45): runbook runs on the seeded cases a person works,
+        # in the Demo run store, so the Runbook tab and the library metrics show Demo
+        # data from the first paint. Never blocks enable.
+        try:
+            from .engine.demo_generator import seed_demo_runbook_runs
+
+            await seed_demo_runbook_runs(
+                demo_stack.runbook_runs, list(seeded_counter_cases),
+                demo_runbook_catalog if demo_runbook_catalog is not None
+                else await demo_stack.runbook_catalog(),
+                prefs=demo_stack._demo_prefs(),  # noqa: SLF001
+                seed=new_demo.seed, now_millis=now_ms, audit=demo_stack.audit,
+            )
+        except Exception as exc:  # noqa: BLE001 - a seeded run never blocks enable
+            logger.warning("demo runbook seeding failed: %s", exc)
 
         # Seed one coherent, deterministic 24h funnel delta. The transient benign batch
         # contributes inbound volume only. Every seeded case in the current dashboard
@@ -3391,12 +3637,24 @@ class AppState:
         except Exception as exc:  # noqa: BLE001 — never break enable on a capability pass
             logger.debug("demo initial capability pass failed: %s", exc)
 
-        # Commit the fully-built stack. update_prefs() does not yield after assigning
-        # self.prefs; the following synchronous assignment therefore presents one
-        # atomic off→ready transition to other asyncio tasks.
-        await self.update_prefs(pending_prefs)
+        # Commit the fully-built stack. Only the Demo switch is written, onto the LIVE
+        # settings read inside the write lock: a real settings save that landed while
+        # the stack was seeding (and has already written its ``settings.updated`` row)
+        # is kept, never undone by the copy taken before seeding. mutate_prefs() does
+        # not yield after assigning self.prefs; the following synchronous assignment
+        # therefore presents one atomic off→ready transition to other asyncio tasks.
+        await self.mutate_prefs(lambda live: live.model_copy(update={"demo": new_demo}))
         self._demo = demo_stack
         self._demo_generation += 1
+        # Round 14: the seeded runs' Done lookup steps collect their read-only results
+        # in the background through the live engine, once the Demo stack is the active
+        # one (reset comes through here too). Never blocks enable.
+        try:
+            from .engine.demo_generator import schedule_demo_runbook_lookups
+
+            schedule_demo_runbook_lookups(self, list(seeded_counter_cases), seed=new_demo.seed)
+        except Exception as exc:  # noqa: BLE001 - seeded lookups never block enable
+            logger.warning("demo runbook lookups not started: %s", exc)
         # Start the live simulator only after the complete stack is publicly visible.
         if new_demo.mode == "live":
             self._demo_sim = DemoSimulator(demo_stack, self.get_prefs, seed=new_demo.seed)
@@ -3461,9 +3719,11 @@ class AppState:
                 pass
             self._demo = None
             self._demo_generation += 1
-        prefs = self.prefs.model_copy(deep=True)
-        prefs.demo = DemoConfig()  # mode='off', run_id=''
-        await self.update_prefs(prefs)
+        # Only the Demo switch is written, onto the live settings read inside the write
+        # lock, so a real settings save made while the stack was torn down is kept.
+        await self.mutate_prefs(lambda live: live.model_copy(update={"demo": DemoConfig()}))
+        # Real cases investigated while Demo Mode was on get their runbook now (§4.10.4).
+        self._start_deferred_runbook_attachments()
         logger.info("Demo mode DISABLED; real state restored")
         return await self.demo_status()
 

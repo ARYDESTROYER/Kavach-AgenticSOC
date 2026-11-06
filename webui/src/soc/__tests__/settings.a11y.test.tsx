@@ -57,7 +57,6 @@ vi.mock('@/lib/api', () => {
       getSettings: ok({ prefs, configured: {}, read_only: false }),
       getModels: ok({ providers: { anthropic: ['claude-sonnet'] } }),
       getSettingsSchema: ok({ sections: [] }),
-      getPlaybooks: ok({ enabled: false, playbooks: [] }),
       getBranding: ok({}),
       caseIdPreview: ok({ samples: [], valid: true }),
       account: { get: ok({ username: '', role: '', env_managed: false }), put: ok({}), avatar: ok({}) },

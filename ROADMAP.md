@@ -372,6 +372,111 @@ engineering sequence is ordered by data safety and measurable outcomes, not scre
   starters that fill the composer with case or log values, a scrolling suggestion feed,
   and training on clicks.
 
+**I. Round-14 deferred items (see `docs/research/2026-10-round14/SPEC.md` §10 and §11.3):**
+
+- ☐ **CACAO v2.0 runbook export and import** (D42): Markdown export ships; CACAO JSON waits.
+- ☐ **Streaming the audit log to a SIEM** (D7): CEF or LEEF over syslog and scheduled audit
+  exports; today an audit export is a CSV or JSON Lines job of at most 100,000 rows.
+- ☐ **"Draft a runbook from this closed case"** (D40).
+- ☐ **Built-in runbooks for denial of service, vulnerability disclosure and cryptomining**
+  (D37): the library holds 12 this round.
+- ☐ **"Set as my landing page"** (D14) and **organisation-published shared dashboards**
+  (`CustomizationConfig.default_dashboards` stays dormant).
+- ☐ **Row-level scope inside aggregates** (D16): with `can_object()` scope on, case-derived
+  board panels, the breakdown, runbook metrics and match preview are hidden rather than scoped.
+- ☐ **Next release: remove the one-release compatibility surface** (D44): the read-only legacy
+  KV namespaces `playbooks` and `runbooks`, the `GET /api/playbooks*` and `?shape=v1` read
+  aliases, the `410 runbooks_moved` write routes and `POST /api/cases/{id}/run-playbook`; the
+  permission alias mapping, the retired config keys and the other accepted identifiers in the
+  AGENTS.md naming contract stay until a separately versioned migration.
+- ☐ **A real shadow mode for detection and case automation rules**: a wire flag on the rule
+  definition and the automation rules, and pipeline support that evaluates without creating
+  cases or acting; the Console offers Enabled and Disabled only.
+- ☐ **Rule display names for Auto-tuning**: the tuning API carries only `rule_id`, so the page
+  shows the id.
+- ☐ **Case activity writers record plain summaries**: threshold automation, pipeline decision
+  rows, router, investigator, formatter and feedback still record raw summaries that the
+  Console words.
+- ☐ **`scale_max` per source in the `GET /api/logs` envelope**, so the Logs sheet stops reading
+  it from `GET /api/sources`.
+- ☐ **Audit log follow-ups**: a `qv.<id>` (or multi-value) event filter for the full quick
+  views; a `session_ref` filter for "The sign-in that started this session"; `case_label` on
+  audit records so the list shows case numbers; a facet endpoint for exact actor counts; a
+  `build` filter; source, surface, actor kind and order as deep-link keys; a server-minted
+  write id that pairs an action row with its failure row; a server-side anchor for the export
+  count; `audit_view_dropped` and `audit_identity_dropped` in `/api/diagnostics/health`; the
+  lazy first-seen session row as `session.created`; strict KV writes for the dashboard, price
+  overlay and custom model stores so their failure rows can be written; reducing every `*_url`
+  value in `changes`; the three mapping calls on `RealESClient`, so an upgraded
+  Elasticsearch audit index gains the Round 14 mapping without the operator step; and
+  `AccessDenialRecorder.unrecorded` and `dropped` in `/api/diagnostics/health` (FX7f).
+- ☐ **Rule sheet and Logs follow-ups**: widen the Round 12 `rule` entity grammar so Ask AI is
+  offered for rule names with spaces or other scripts (still fenced); data-stream-aware IGNORE
+  feed attribution; band push events on the canonical scale in the ingest noise counters; a
+  severity payload on chart blocks; a `from`/`to` window on the Cases page so severity levels
+  link to Cases for day-aligned chat windows; Overview top signatures grouped by rule.
+- ☐ **Dashboard follow-ups**: a `zoom` switch on the chat chart kit so board charts drop the
+  "Drag across the chart to zoom" hint; hourly buckets on a 24-hour board chart; a busy state
+  on the board refresh control; a `tz` field on the breakdown so captions name the zone; a
+  `badge` slot on `PageHeader` so a board's badge sits right after its name; a history guard so
+  unsaved board edits survive browser Back and Forward (reload and close already ask first).
+- ☐ **Runbook follow-ups**: show a version's editors before Publish (separation of duties);
+  a reader-facing last public change that includes retire and restore; keep deferred real-case
+  attachments across a restart while Demo Mode is on, and defer a real case's `run_playbook`
+  attachment too; a `created_by` on Case tasks; matching rows for the Demo-only capability
+  cases (`demo_noisy_scanner`, `demo_impossible_travel`) and a seeded run for the data
+  exfiltration storyline.
+- ☐ **Automation target display for viewers without `runbooks:manage`**:
+  `RunbookLibrary.migrated_procedures` is filtered to what the viewer can see, so a retired
+  bundled id whose migrated runbook is a hidden Draft falls through to the built-in map and the
+  Console says the rule attaches while the server skips it; expose the map's target state without
+  the Draft text.
+- ☐ **Grant blocks keep their version stamp on a downgrade save**, so the once-only
+  `runbooks:publish` grant rule never runs twice on a block an older build saved without it.
+- ☐ **Re-investigation keeps person-made case state**: today it rebuilds the Case and keeps
+  only its tags (assignee, comments, status history, disposition, campaign and related cases
+  need a deliberate contract).
+- ☐ **Console follow-ups**: the Low severity hue separated from the link blue (with
+  `chat/report/export/report-tokens.ts`, which mirrors it); a dot for the notification bell's
+  health mark and a neutral Demo mode pill (§4.8.1); Inbox result actions as links; a browser
+  test lane in CI for geometry.
+- ☐ **Demo planner leftovers**: a deep investigation proposes an indicator lookup on log-derived
+  IPs (the taint guard refuses it); conversation titles refuse rule ids with spaces; a
+  zero-result knowledge answer reads "could not read any data"; `GET /api/runbooks` reads the
+  migration marker twice.
+- ☐ **Closing pass follow-ups (FX5, FX6)**: chat timing lookups (`chat_tools/metrics.py`
+  `_lifecycle`) report MTTD, MTTA and MTTR but no dwell, which Analytics > Metrics shows; decide
+  whether chat should answer dwell (FX5m). The NoiseFunnel hover state re-renders the whole
+  funnel; memoise the heavy subtrees or move the highlight into a data attribute (FX5n). The
+  rail's panel restyle is dominated by global selectors (`space-y-*`, `[&>*]` variants) in the
+  shared stylesheet (FX5n); both are within the §4.8.3 budget today. Remove the unused
+  `ActiveRiskIndex.tsx` (rendered nowhere since #99) and its test, or wire it back in. Send the
+  rail preference flush with `keepalive` (`api.prefs.putUser`) once the entry has room (FX5n).
+- ☐ **Audit log outcome follow-ups (FX6a, FX6e)**: per-run outcome counts beside `run_totals` in
+  the page response (`routes_audit.py`, `models.py`, `types-audit.ts`), so a group shown in part
+  reads its whole run before Load more; `outcome` and `actor_type` in the keyed rows' retry
+  metadata (`audit/audit_log.py`, `stores/sql/repositories.py`), so proposal decisions, job
+  transitions, storage applies, the replay spend row and update results carry an outcome; a
+  decision on redacting a Basic or Digest credential shorter than 8 characters
+  (`audit/changes.py`).
+- ☐ **Product help and Demo routing follow-ups (FX5k, FX6c)**: a Logs export section or a
+  retrieval rule so "How do I export logs to CSV?" stops citing the audit log export; a generic
+  keyboard-shortcuts section; a section for ingesting CSV logs; Standup in the $0 answer to "How
+  do I write a shift brief?"; Demo routes "What's a campaign?" to the campaign list while "What is
+  a campaign?" gets the definition (`_DEFINITIONAL_RE` in `engine/demo_chat.py` takes no
+  "what's a" form; a routing change with golden-set impact).
+- ☐ **Small Console follow-ups (FX6f, FX6s, FX6t)**: drop the Overview's `bucketAxisLabel` (the
+  Human vs AI chart dates its own ticks; only an unparseable bucket reads the label); check the
+  other Radix Selects that pass `value={x || undefined}` (`Models.tsx`, `CaseManager.tsx`) for the
+  uncontrolled-to-controlled warning FX6s fixed in Roles; name the auto-refresh select from the
+  words it shows ("5 sec"), as the time range trigger now is.
+- ☐ **Second acceptance follow-ups (FX7)**: a second chip click while an Applies when picker is
+  open (Radix DismissableLayer, FX7a); role wording for lower-case initialisms and unassigned
+  code points (FX7b, FX7c); a live focus trace of Case detail's Take action "Start runbook"
+  (FX7c); a live re-measure of Case Manager's `GET /api/users` gate (FX7g).
+- **Never** (product decisions, not backlog): executable response actions of any kind (the suite
+  never acts on another system), and runbooks that close or escalate a case.
+
 Each item ends with: `pytest -q` green (keep the count current), full docs+app
 `npm run build` + `npm run test:strict` clean, **#3 `decide()` byte-identical**, additive + zero new runtime deps
 where possible, and docs + Journal updated. Commit or publish only after intentional,
@@ -383,8 +488,21 @@ explicit authorization.
 - ☑ AGENTS.md (with CLAUDE.md forwarder), Journal.md, docs/ENVIRONMENT.md, this ROADMAP.
 
 ## Progress (this cycle, newest first)
-- ◐ **Round 13, chat: dynamic suggestions and a neater chat** (branch `claude/round12`, PR
-  to `Testing`). Dynamic $0 starters computed by code under each viewer's grants
+- ◐ **Round 14: one console grammar, a Dashboards library, an audit log you can use, rule
+  drill-down and one Runbooks feature** (branch `claude/round14`, PR to `Testing`). The sign-out
+  notice without a duration; the Audit log page (scopes, search, inspector, audited CSV and JSON
+  Lines export, `audit:export`) with new record fields and audit-before-visible writes; the
+  Dashboards library behind the Overview entry (the Cyber Defence Center as Default and landing
+  page, three built-in boards, personal boards; `GET /api/metrics/breakdown`); the Overview
+  without band headers; tripled chat Timeouts and capacity defaults; the rule sheet from every
+  rule name with exact rule filters on Logs and Cases; named severity levels with top rules and
+  Split by; the docked navigation rail, the Overview grammar on every page and grouped
+  Settings; and one Runbooks feature replacing playbooks (governed versions, a per-case run
+  with a Next step card, 12 built-ins, a one-shot audited migration, `runbooks:run` and
+  `runbooks:publish`). Deferred items are in section I above; records in
+  `docs/research/2026-10-round14/SPEC.md` §11.
+- ☑ **Round 13, chat: dynamic suggestions and a neater chat** (branch `claude/round12`, merged
+  into `Testing` through PR #132). Dynamic $0 starters computed by code under each viewer's grants
   (`GET /api/chat/starters`, `POST /api/chat/starters/events`, the `chat_starters` KV
   namespace), a bottom-anchored start stack with a catch-up line, a thread catch-up line,
   Case Manager case chips, anchored follow-ups, conversation titles from the first answer,
@@ -392,8 +510,8 @@ explicit authorization.
   scope line, the cost on the meta row with tokens in the usage card, and Demo answers for
   every starter. Deferred items are in section H above; records in
   `docs/research/2026-10-round13/SPEC-chat.md` §10.
-- ◐ **Round 12 — chat without limits, working indicator, Remember me, reports, Overview,
-  Case Manager** (branch `claude/round12`, PR to `Testing`). Chat questions run without
+- ☑ **Round 12: chat without limits, working indicator, Remember me, reports, Overview,
+  Case Manager** (branch `claude/round12`, merged into `Testing` as `db8d935`, PR #131). Chat questions run without
   per-question caps (loop guards, continuation, conversation summary), outside the daily
   and monthly AI budget with an optional daily chat cap; exact aggregates over any window
   (`case_stats`, comparisons) for chat, exact store-wide dashboard totals, and dashboard

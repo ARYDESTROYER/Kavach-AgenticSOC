@@ -68,6 +68,13 @@ four source-native alerts from Splunk, QRadar, Wazuh, and Entra plus four syslog
 events that produce at least one Agentic SOC correlation detection. The response
 attributes records, native alerts, and system detections per source.
 
+## Reset the demo
+
+**Reset (re-seed)** in **Settings → Organization → Experimental & Demo** deletes this
+run's synthetic data and seeds it again from the same seed, so the demo starts over
+with the same story. The Demo Mode indicator in the top bar offers the same **Reset**.
+Resetting the demo needs `demo:manage`; it never touches real tenant data.
+
 ## Exit safely
 
 Use **Exit & clear** in the Demo settings. This stops the simulator and removes the

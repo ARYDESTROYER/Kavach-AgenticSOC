@@ -40,7 +40,7 @@ describe('HumanVsAiCard', () => {
     expect(within(within(card).getByTestId('human-vs-ai-human')).getByText('Human')).toBeInTheDocument();
     const residual = within(card).getByTestId('human-vs-ai-system');
     expect(within(residual).getByText('System')).toBeInTheDocument();
-    // The short label is truncated by design, so the full meaning rides along.
+    // The short label names the band; its full meaning rides along in the title.
     expect(within(residual).getByText('System')).toHaveAttribute(
       'title',
       'System routing or no recorded decider (unattributed)',
@@ -55,6 +55,72 @@ describe('HumanVsAiCard', () => {
     );
     expect(pcts).toEqual([63, 25, 12]);
     expect(pcts.reduce((a, b) => a + b, 0)).toBe(100);
+  });
+
+  it('wraps a legend label in a narrow board cell instead of truncating it (FX6f)', () => {
+    // A 200 to 235px edit-grid cell used to cut "AI agent" to "AI ag…": the label now wraps
+    // like the numerals under it, and keeps its title.
+    render(
+      <div style={{ width: 200 }}>
+        <HumanVsAiCard
+          totals={{ ai: 5, human: 2, system: 1, closed: 8 }}
+          series={SERIES}
+          windowLabel="last 24 hours · 1h buckets"
+        />
+      </div>,
+    );
+    const expected = {
+      ai: ['AI agent', 'Closed by the agent'],
+      human: ['Human', 'Closed by an analyst'],
+      system: ['System', 'System routing or no recorded decider (unattributed)'],
+    } as const;
+    for (const [key, [label, title]] of Object.entries(expected)) {
+      const el = screen.getByTestId(`human-vs-ai-${key}-label`);
+      expect(el).toHaveTextContent(new RegExp(`^${label}$`));
+      expect(el).toHaveAttribute('title', title);
+      expect(el).toHaveClass('break-words');
+      for (const cut of ['truncate', 'text-ellipsis', 'whitespace-nowrap', 'overflow-hidden', 'line-clamp-1']) {
+        expect(el).not.toHaveClass(cut);
+      }
+      // Nothing between the label and its cell clips a second line either.
+      let node: HTMLElement | null = el.parentElement;
+      const cell = screen.getByTestId(`human-vs-ai-${key}`);
+      while (node && node !== cell.parentElement) {
+        for (const cut of ['truncate', 'whitespace-nowrap', 'overflow-hidden', 'line-clamp-1']) {
+          expect(node).not.toHaveClass(cut);
+        }
+        node = node.parentElement;
+      }
+    }
+  });
+
+  it('keeps the three numerals on one baseline when a label wraps (shared label and numeral rows)', () => {
+    // A wrapped "AI agent" used to push its numeral a whole line below the other two: each
+    // total stacked its own label and numeral. Each total is now a subgrid of the list's
+    // two rows, so the label row takes the tallest label and every numeral starts on the
+    // same line (the KPI strip's rule). jsdom lays nothing out, so the grid is asserted.
+    render(
+      <div style={{ width: 200 }}>
+        <HumanVsAiCard
+          totals={{ ai: 31, human: 2, system: 0, closed: 33 }}
+          series={SERIES}
+          windowLabel="last 24 hours · 1h buckets"
+        />
+      </div>,
+    );
+    const list = screen.getByTestId('human-vs-ai-totals');
+    expect(list).toHaveClass('grid', 'grid-cols-3', 'gap-x-3', 'gap-y-1');
+    for (const key of ['ai', 'human', 'system']) {
+      const cell = screen.getByTestId(`human-vs-ai-${key}`);
+      expect(cell).toHaveClass('row-span-2', 'grid', 'grid-cols-1', 'grid-rows-subgrid', 'min-w-0');
+      expect(cell.children).toHaveLength(2);
+      // The label row first, the numeral row second, with no margin of its own to offset it.
+      expect(cell.children[0]).toContainElement(screen.getByTestId(`human-vs-ai-${key}-label`));
+      const figure = screen.getByTestId(`human-vs-ai-${key}-figure`);
+      expect(cell.children[1]).toBe(figure);
+      expect(figure.className).not.toMatch(/(^|\s)mt-/);
+    }
+    expect(within(screen.getByTestId('human-vs-ai-ai-figure')).getByText('31')).toBeInTheDocument();
   });
 
   it('gives the trend a fill box with a floor, and never stretches the no-series line', () => {
@@ -480,9 +546,11 @@ describe('CloseAttributionChart — stacked columns', () => {
     renderRich();
     const card = screen.getByTestId('human-vs-ai');
     expect(within(card).getAllByText(/times in UTC/)).toHaveLength(1);
-    // The x labels themselves stay the short UTC form the caller supplied.
+    // The x ticks read in UTC by the one time-axis rule, from each bucket's start rather
+    // than the caller's bare-clock label: the first names its day, later ones on that day
+    // read the time alone.
     expect(screen.getAllByTestId('human-vs-ai-x-tick').map((t) => t.textContent)).toEqual([
-      '05:00',
+      'Jul 1 05:00',
       '06:00',
       '07:00',
       '08:00',

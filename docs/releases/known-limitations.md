@@ -411,11 +411,11 @@ cursor pagination rather than a larger hard client limit.
 
 ### Dashboard figures are exact up to 20,000 cases per window
 
-The store-wide case totals are exact at any store size: the Open Cases stock and the
+The store-wide case totals are exact at any store size: the Open cases stock and the
 case counts on **Analytics → Metrics** (Total cases (all time), and the counts by
 status, verdict, and disposition). Every other dashboard figure, including every
-Overview figure for the selected window (Total Cases, Total Critical, Resolved / Closed,
-Auto Closed, and the AI-verdict FP rate) and the heavier rollups (timing, verdict mix,
+Overview figure for the selected window (Total cases, Total critical, Resolved or closed,
+Auto-closed, and the AI-verdict FP rate) and the heavier rollups (timing, verdict mix,
 ATT&CK coverage, auto-close health, agent improvement, and similar), analyses every case
 in its window up to 20,000 cases. A larger window, typically all time on a large store,
 is analysed over its newest 20,000 cases and reported as truncated with the exact window
@@ -583,9 +583,10 @@ an incident-history ledger.
   three v1 mappings for outbound DNS, endpoint process, and identity authentication.
   The scan stops at 20,000 cases and reports truncation. Missing connectors alone are
   never evidence.
-- Playbook coverage scans at most 20,000 cases, returns at most 100 unmatched rule
-  families, and uses exact deterministic matching. There is no operator-playbook
-  delete route in v0.1.
+- The runbook match preview reads the last 500 cases of the last 30 days. When a month
+  of runs is too large to count in full, the runbook figures read "at least". Matching
+  is exact and deterministic. A runbook that was published is never deleted, only
+  retired.
 - Scheduler health is process-local. Tuner/campaign success anchors recover from
   durable state; the event-driven baseline producer reports on-ingest attempt,
   confirmed-success, error, and processed evidence independently of the cadence-loop

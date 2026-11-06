@@ -266,15 +266,26 @@ describe('the shared sticky bars show the scroll-edge fade', () => {
     expect(tokens(container.querySelector('thead')!.className)).toContain('[&_th]:text-secondary-foreground');
   });
 
-  it('a non-sticky bar keeps its hairlines and never observes scroll', () => {
+  it('a non-sticky bar keeps its own rules (none on a panel, hairlines as a band) and never observes scroll', () => {
+    // Round 14: the FilterBar is a labelled group (its controls are ordinary tab stops; a
+    // toolbar would promise a roving-focus model it does not have). On a panel (the
+    // default) it draws no rules of its own; the canvas band keeps its hairlines.
     const { container } = render(
-      <FilterBar aria-label="Filters">
-        <button type="button">Severity</button>
-      </FilterBar>,
+      <>
+        <FilterBar aria-label="Panel filters">
+          <button type="button">Severity</button>
+        </FilterBar>
+        <FilterBar aria-label="Band filters" variant="band">
+          <button type="button">Severity</button>
+        </FilterBar>
+      </>,
     );
-    const bar = container.querySelector<HTMLElement>('[role="toolbar"]')!;
-    expect(tokens(bar.className)).toEqual(expect.arrayContaining(['border-y', 'border-border/80']));
-    expect(bar).not.toHaveAttribute('data-scrolled');
+    const [plain, band] = Array.from(container.querySelectorAll<HTMLElement>('[role="group"][data-filter-bar]'));
+    expect(container.querySelector('[role="toolbar"]')).toBeNull();
+    expect(tokens(plain.className)).not.toContain('border-y');
+    expect(tokens(band.className)).toEqual(expect.arrayContaining(['border-y', 'border-border/80']));
+    expect(plain).not.toHaveAttribute('data-scrolled');
+    expect(band).not.toHaveAttribute('data-scrolled');
   });
 });
 

@@ -33,6 +33,7 @@ from app.llm.gateway import BUDGET_EXEMPT_SURFACES, budget_exempt
 REPO_ROOT = Path(app.__file__).resolve().parents[2]
 REVAMP_SPEC = REPO_ROOT / "docs" / "research" / "2026-10-chat-revamp" / "SPEC.md"
 ROUND12_SPEC = REPO_ROOT / "docs" / "research" / "2026-10-round12" / "SPEC.md"
+ROUND14_SPEC = REPO_ROOT / "docs" / "research" / "2026-10-round14" / "SPEC.md"
 KNOWN_LIMITATIONS = REPO_ROOT / "docs" / "releases" / "known-limitations.md"
 BUNDLE_TEST = REPO_ROOT / "webui" / "src" / "soc" / "__tests__" / "bundle-first-paint.test.ts"
 SCOPE_CONTROLS = REPO_ROOT / "webui" / "src" / "soc" / "chat" / "composer" / "ScopeControls.tsx"
@@ -236,18 +237,28 @@ def _entry_baseline() -> tuple[str, int]:
 
 
 def test_round12_entry_bundle_item_records_the_rebased_baseline():
+    """Round 12's §7.3 "Entry bundle" item keeps its own history and, since the Round 14
+    rebase (Round 14 SPEC §3.4, E11), points at the Round 14 SPEC §11.1 "Entry bundle"
+    item, which holds the value in bundle-first-paint.test.ts."""
     raw, value = _entry_baseline()
     item = _bullet(_section(_read(ROUND12_SPEC), "### 7.3 Known limitations"), "Entry bundle.")
-    assert f"PRE_REVAMP_ENTRY_BYTES = {raw}" in item, (
-        "SPEC §7.3 'Entry bundle' is the one record of the rebased entry baseline (A59); "
-        "update it with the value in bundle-first-paint.test.ts"
-    )
-    assert f"{value:,} B" in item
-    # The measured sources, not files that did not change this round.
+    # The measured sources, not files that did not change in Round 12.
     for name in ("prefs.tsx", "NavSidebar.tsx", "patchMisc", "Remember me", "CommandPalette"):
         assert name in item, name
     for name in ("ReauthDialog", "ThemeModePill"):
         assert name not in item, name
+    assert '"Entry bundle" item of the Round 14 SPEC §11.1' in item, (
+        "the Round 12 record must point at the Round 14 record of the rebased baseline"
+    )
+    current = _bullet(_section(_read(ROUND14_SPEC), "### 11.1 Contract resolutions"), "Entry bundle.")
+    assert f"PRE_REVAMP_ENTRY_BYTES = {raw}" in current, (
+        "Round 14 SPEC §11.1 'Entry bundle' is the one record of the rebased entry baseline "
+        "(E11); update it with the value in bundle-first-paint.test.ts"
+    )
+    assert f"{value:,} B" in current
+    # The per-file deltas of the rebase, including what package R moved out of the entry.
+    for name in ("nav-store.ts", "router.tsx", "nav-rail-loader.ts", "nav-rail-interactions.tsx", "Field.tsx", "field-layouts.tsx"):
+        assert name in current, name
 
 
 def test_a59_names_the_measured_sources_and_points_to_the_record():

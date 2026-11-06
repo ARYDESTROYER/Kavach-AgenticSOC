@@ -3,23 +3,45 @@
 Submission validates one explicit registered kind, stores an actor-scoped raw-key
 hash plus request fingerprint, and returns immediately. Execution is wholly owned by
 the server runner; list/detail/cancel/artifact remain self-scoped.
+
+Round 14 (SPEC §3.6, §4.5.4, §4.5.6): the submit of an audit export, a reset or a
+data export is audited before the job exists (``audit.export_requested``,
+``reset.requested``, ``export.requested``, with who asked and from where), and every
+artifact download is audited before a byte is streamed.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
+import logging
+from types import SimpleNamespace
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
-from ..constants import CaseStatus, JobKind, ResetScope
-from ..engine.jobs import account_generation
+from ..audit.context import audit_context
+from ..audit.write import AuditUnavailableError, audited_write
+from ..constants import ActionType, CaseStatus, JobKind, ResetScope
+from ..engine import audit_export
+from ..engine.jobs import account_generation, data_export_audit_target, reset_audit_target
 from ..engine.replay.params import ReplayExperimentParams
 from ..models import (
+    AUDIT_SEARCH_MAX_CHARS,
+    OPEN_STEPS_REASON_MAX_CHARS,
+    AuditTarget,
     Job,
+    JobArtifact,
     JobListResponse,
     JobPermission,
     JobProgress,
@@ -30,17 +52,29 @@ from ..models import (
     SchedulerHealthPublic,
 )
 from ..state import AppState
-from ..stores.jobs import JobCapacityError, JobConflict, idempotency_hash, public_job
-from ..utils import iso_now
+from ..stores.jobs import (
+    FACTORY_RECOVERY_REFUSAL,
+    JobBusy,
+    JobCapacityError,
+    JobConflict,
+    idempotency_hash,
+    public_job,
+)
+from ..utils import iso_now, parse_es_timestamp
 from .deps import (
+    AccessView,
     _enforce,
+    access_view_for,
     current_username,
     get_state,
     has_permission,
+    record_access_denied,
     require_permission,
+    resolve_access,
 )
 
 router = APIRouter(prefix="/api", tags=["jobs"])
+logger = logging.getLogger("tlsoc.api.jobs")
 
 _SENSITIVE_KEYS = {
     "password", "password_hash", "secret", "token", "authorization", "cookie",
@@ -51,7 +85,20 @@ _FRESH_KINDS = {
     JobKind.DATA_EXPORT_SEGMENT,
     JobKind.TIERED_RESET,
     JobKind.STORAGE_LIFECYCLE_APPLY,
+    # Round 14 D6: an audit export asks for a fresh sign-in.
+    JobKind.AUDIT_EXPORT,
 }
+#: Job kinds whose submit request is audited before the job exists (Round 14 SPEC
+#: §3.6, E16; §4.5.4 exports and resets). The requested row is the only row of such a
+#: job that records who asked and from where (client, session reference, role at the
+#: time, request id): the worker's own rows are keyed, appended again on a resumed
+#: attempt, and so carry none of those (``JobRunner._job_record_fields``).
+_REQUEST_AUDITED_KINDS = frozenset({
+    JobKind.AUDIT_EXPORT,
+    JobKind.TIERED_RESET,
+    JobKind.DATA_EXPORT_ARCHIVE,
+    JobKind.DATA_EXPORT_SEGMENT,
+})
 
 
 class _Strict(BaseModel):
@@ -91,6 +138,22 @@ class CaseLifecycleParams(_CaseIds):
     # is forwarded verbatim to ``_perform_case_action``, which applies-vs-classifies.
     disposition_declared: bool = False
     status: CaseStatus | None = None
+    # Round 14 (SPEC §4.10.15, D34): the bulk dialog's ONE shared reason for closing
+    # cases whose active runbook still has required steps open. Forwarded through
+    # ``CaseAction`` to every item, it is the ``reason`` of each
+    # ``case.closed_with_open_steps`` row (``via: "bulk"``). Optional: a bulk close
+    # never fails an item for open steps, so there is no ``require_open_steps_reason``
+    # here. Cleaned like ``CaseAction`` (runs of whitespace collapse, blank is absent)
+    # so a retry that differs only in spacing binds the same request fingerprint (a
+    # different reason is a different request, 409).
+    open_steps_reason: str | None = Field(default=None, max_length=OPEN_STEPS_REASON_MAX_CHARS)
+
+    @field_validator("open_steps_reason")
+    @classmethod
+    def _clean_open_steps_reason(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return " ".join(value.split()) or None
 
     @model_validator(mode="after")
     def _targets(self) -> "CaseLifecycleParams":
@@ -202,6 +265,122 @@ class StorageParams(_Strict):
     policy: StoragePolicy
 
 
+def _blank_to_none(value: Any) -> Any:
+    """A filter sent as an empty or blank string is the same as one not sent, so a
+    retry with a blank field binds the same request fingerprint."""
+    if isinstance(value, str):
+        value = value.strip()
+        return value or None
+    return value
+
+
+def _strip_text(value: Any) -> Any:
+    """A closed-vocabulary value is read as the read API reads it: surrounding spaces
+    do not count (``"people "`` is ``people``)."""
+    return value.strip() if isinstance(value, str) else value
+
+
+class AuditExportFilters(_Strict):
+    """The audit log page's structured filters, with the read API's names and
+    meanings (``GET /api/audit``): ``action`` is the legacy ``action_type``, ``actor``
+    is exact, ``actor_contains`` is a case-insensitive contains, ``event`` is the
+    structured action, a category id or an event family, ``target`` a target id and
+    ``ip`` one client address. The vocabularies (``actor_kind``, ``outcome``) are
+    plain text here, as in the read API, so the read API's own validation refuses a
+    bad value with its coded ``422 audit_invalid_filter``."""
+
+    action: str | None = Field(default=None, max_length=64)
+    event: str | None = Field(default=None, max_length=65)
+    actor: str | None = Field(default=None, max_length=160)
+    actor_contains: str | None = Field(default=None, max_length=128)
+    actor_kind: str | None = Field(default=None, max_length=32)
+    outcome: str | None = Field(default=None, max_length=32)
+    surface: str | None = Field(default=None, max_length=80)
+    case_id: str | None = Field(default=None, max_length=200)
+    source_id: str | None = Field(default=None, max_length=200)
+    target: str | None = Field(default=None, max_length=256)
+    ip: str | None = Field(default=None, max_length=64)
+
+    _blank = field_validator("*", mode="before")(_blank_to_none)
+
+
+class AuditExportParams(_Strict):
+    """``audit_export`` (Round 14 SPEC §4.5.6): one plain CSV or JSON Lines file of the
+    audit rows the page shows for ``scope``, the search text ``q`` and ``filters``,
+    between ``from`` and ``to``: the absolute ISO 8601 instants (with a zone) the
+    export dialog showed and counted. Exports are always oldest first, so ``order``
+    accepts only ``asc``."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    format: Literal["csv", "jsonl"]
+    scope: Literal["people", "agent", "all"]
+    from_: str = Field(alias="from", min_length=1, max_length=40)
+    to: str = Field(min_length=1, max_length=40)
+    order: Literal["asc"] = "asc"
+    q: str | None = Field(default=None, max_length=AUDIT_SEARCH_MAX_CHARS)
+    filters: AuditExportFilters = Field(default_factory=AuditExportFilters)
+
+    _blank_q = field_validator("q", mode="before")(_blank_to_none)
+    _trimmed = field_validator("format", "scope", "order", mode="before")(_strip_text)
+
+
+#: The plain refusal for each audit export parameter the model rejects (the read
+#: API's wording where it has one). Every refusal is the read API's coded ``422``.
+_AUDIT_EXPORT_PARAM_MESSAGES: dict[str, str] = {
+    "format": "'format' must be csv or jsonl.",
+    "scope": "'scope' must be people, agent or all.",
+    "order": "Exports are always oldest first, so 'order' must be asc.",
+    "q": f"'q' must be 1 to {AUDIT_SEARCH_MAX_CHARS} printable characters.",
+    "filters": "'filters' must be an object of filter values.",
+}
+
+
+def _audit_export_invalid(exc: ValidationError) -> HTTPException:
+    """The coded ``422`` for audit export params the model refused, in the read API's
+    codes (``audit_invalid_time`` for ``from`` and ``to``, ``audit_invalid_filter``
+    for the rest) and plain words: never the validator's own text."""
+    from .routes_audit import _invalid, _invalid_time
+
+    errors = exc.errors()
+    first = errors[0] if errors else {}
+    loc = [str(part) for part in first.get("loc", ())]
+    name = loc[0] if loc else ""
+    if name in {"from", "from_", "to"}:
+        side = "to" if name == "to" else "from"
+        return _invalid_time(
+            f"'{side}' must be an absolute ISO 8601 time with a zone, such as "
+            "2026-10-18T15:10:00Z."
+        )
+    if first.get("type") == "extra_forbidden":
+        if name == "filters" and len(loc) > 1:
+            return _invalid(f"'{loc[-1]}' is not an audit log filter.")
+        return _invalid(f"'{name}' is not an audit export setting.")
+    if name == "filters" and len(loc) > 1:
+        return _invalid(f"'{loc[1]}' is not a valid filter value.")
+    return _invalid(
+        _AUDIT_EXPORT_PARAM_MESSAGES.get(name, "The export settings are not valid.")
+    )
+
+
+class _AlreadyAccepted(Exception):
+    """A racing duplicate of an accepted request of a kind whose submit is audited
+    (:data:`_REQUEST_AUDITED_KINDS`; the same idempotency key and request, both past
+    the retry check): the create returned the existing job instead of a new one.
+    ``audited_write`` closes the duplicate's requested row with its
+    ``<resource>.request_failed`` row (``audit.export_request_failed``,
+    ``reset.request_failed``, ``export.request_failed``) naming the job it folded
+    into, and the caller answers with that job."""
+
+    def __init__(self, job: Job) -> None:
+        super().__init__(f"the same request was already accepted as job {job.job_id}")
+        self.job = job
+        self.detail = {
+            "code": "job_already_accepted",
+            "message": f"The same request was already accepted as job {job.job_id}.",
+        }
+
+
 _PARAM_MODELS: dict[JobKind, type[BaseModel]] = {
     JobKind.CASE_REINVESTIGATE: CaseReinvestigateParams,
     JobKind.CASE_LIFECYCLE: CaseLifecycleParams,
@@ -216,6 +395,7 @@ _PARAM_MODELS: dict[JobKind, type[BaseModel]] = {
     JobKind.TIERED_RESET: ResetParams,
     JobKind.STORAGE_LIFECYCLE_APPLY: StorageParams,
     JobKind.REPLAY_EXPERIMENT: ReplayExperimentParams,
+    JobKind.AUDIT_EXPORT: AuditExportParams,
 }
 
 
@@ -270,6 +450,10 @@ def _items(kind: JobKind, params: dict[str, Any]) -> tuple[dict[str, str], str]:
             {fixture_id: "pending" for fixture_id in params["fixture_ids"]},
             "replay fixtures",
         )
+    if kind == JobKind.AUDIT_EXPORT:
+        # No item journal: the handler reports progress in events written and
+        # rewrites its whole file on a resumed attempt.
+        return {}, "events"
     key = "reindex" if kind == JobKind.RUNBOOK_REINDEX else (
         "reset" if kind == JobKind.TIERED_RESET else "apply"
     )
@@ -305,6 +489,11 @@ def _grants(kind: JobKind, params: dict[str, Any]) -> list[tuple[str, str]]:
         # the models grant; the fixtures are case-derived alert evidence and the report
         # enumerates per-case outcomes, hence cases:read alongside it.
         return [("models", "manage"), ("cases", "read")]
+    if kind == JobKind.AUDIT_EXPORT:
+        # Round 14 D5: ``audit:export`` (super admin, SOC manager and auditor by
+        # default), and ``audit:view`` too: a person exports only what they may read.
+        # Both are re-checked at every page boundary and at download.
+        return [("audit", "export"), ("audit", "view")]
     return [("settings", "manage")]
 
 
@@ -352,6 +541,154 @@ async def _fresh_fields(
     return expires_at, sid, tv
 
 
+def _job_busy() -> HTTPException:
+    return HTTPException(
+        429,
+        detail={
+            "code": "job_busy",
+            "message": (
+                "An audit export is already running. Wait for it to finish, then "
+                "export again."
+            ),
+        },
+    )
+
+
+async def _accepted_retry(state: AppState, key_hash: str, fingerprint: str) -> Job | None:
+    """The job a client retry names, before anything is written (SPEC §3.6 step 1).
+
+    For a kind whose submit is audited, a retry with the same idempotency key and
+    the same request is answered with the job already accepted: it writes no second
+    requested row and never reaches the create (so it never makes a job that no row
+    names, even if the accepted job was pruned meanwhile). The same key bound to a
+    different request is ``409`` with no row. ``None`` means a new request."""
+    bound = await state.jobs.find_by_idempotency(key_hash)
+    if bound is None:
+        return None
+    if bound.request_fingerprint != fingerprint:
+        raise HTTPException(
+            409, detail="idempotency key is already bound to a different job request"
+        )
+    return bound
+
+
+def _request_audit(
+    kind: JobKind, job: Job, params: dict[str, Any], *, export_count: int | None
+) -> dict[str, Any]:
+    """The requested row of a job whose submit is audited (:data:`_REQUEST_AUDITED_KINDS`):
+    its action, target, summary and inputs, in the vocabulary of the job's own worker
+    rows so the request and what the worker did read as one job.
+
+    * ``audit.export_requested`` (SPEC §4.5.6): the export target and file name, the
+      question (format, scope, range, order, filters, search text) and the count.
+    * ``reset.requested``: the reset job named by what it resets, the target of the
+      worker's ``reset.started``, ``reset.completed`` and ``reset.failed`` rows.
+    * ``export.requested`` (a data export archive or segment job): the export job,
+      labelled with the exported scopes, the target of the worker's
+      ``export.created`` row and of each download of the job's file
+      (``job.artifact_downloaded``).
+
+    Every row of one job names the job, so ``GET /api/audit?target=<job id>`` lists
+    the request, what the worker did and each download together."""
+    if kind == JobKind.AUDIT_EXPORT:
+        ts_from, ts_to = audit_export.export_range(params)
+        return {
+            "action": "audit.export_requested",
+            "target": audit_export.export_target(
+                job.job_id, audit_export.export_file_name(params["format"], ts_from, ts_to)
+            ),
+            "action_type": ActionType.DATA_EXPORT,
+            "surface": "audit",
+            "result_summary": audit_export.describe_request(params, export_count or 0),
+            "tool_input": {
+                "job_id": job.job_id,
+                "format": params["format"],
+                "scope": params["scope"],
+                "from": params["from"],
+                "to": params["to"],
+                "order": params.get("order", "asc"),
+                "filters": dict(params.get("filters") or {}),
+                "q": params.get("q"),
+                "events": export_count,
+            },
+        }
+    if kind == JobKind.TIERED_RESET:
+        scope = ResetScope(params["scope"])
+        return {
+            "action": "reset.requested",
+            "target": reset_audit_target(job.job_id, scope),
+            "action_type": ActionType.RESET,
+            "surface": "admin",
+            "result_summary": f"reset requested scope={scope.value} job={job.job_id}",
+            "tool_input": {"job_id": job.job_id, "scope": scope.value},
+        }
+    scopes = [str(scope) for scope in params.get("scopes") or []]
+    return {
+        "action": "export.requested",
+        "target": data_export_audit_target(job.job_id, scopes),
+        "action_type": ActionType.DATA_EXPORT,
+        "surface": "settings",
+        "result_summary": (
+            f"export requested kind={kind.value} scopes={','.join(scopes)} job={job.job_id}"
+        ),
+        "tool_input": {"job_id": job.job_id, "kind": kind.value, "scopes": scopes},
+    }
+
+
+def _refuse_during_factory_recovery(
+    state: AppState, kind: JobKind, params: dict[str, Any]
+) -> None:
+    """While a failed factory reset holds the recovery fence (the mutation gate is
+    degraded), only a fresh factory reset retry may be submitted; the admission
+    middleware lets ``POST /api/jobs`` through for that retry alone. Any other new
+    request is refused here, before its requested row is written (SPEC §3.6 step 1: a
+    pre-check that changes nothing writes no row), with the job store's own refusal.
+    The store's create stays the authority for a submit that races the fence."""
+    gate = getattr(state, "mutation_gate", None)
+    if gate is None or not gate.degraded:
+        return
+    if kind == JobKind.TIERED_RESET and params.get("scope") == "factory":
+        return
+    raise HTTPException(503, detail=FACTORY_RECOVERY_REFUSAL)
+
+
+async def _audit_export_precheck(
+    state: AppState,
+    params: dict[str, Any],
+    *,
+    actor: str,
+    generation: str,
+    created: str,
+) -> int:
+    """The checks a new audit export passes before anything is written (SPEC §3.6
+    step 1: a refusal here writes no row). Returns the count of matching events. A
+    client retry of an accepted request never gets here (:func:`_accepted_retry`).
+
+    Refusals: ``429 job_busy`` while this person already has an export queued or
+    running, the read API's coded ``422`` for a bad filter or time
+    (``audit_invalid_filter``, ``audit_invalid_time``; ``from`` and ``to`` must be
+    absolute instants), ``422 audit_export_too_large`` over 100,000 events, ``422
+    audit_export_unverifiable`` when the store cannot count exactly and ``503
+    audit_unavailable`` when it cannot be counted at all."""
+    # The request itself first (a bad filter is a 422 whatever else is running).
+    filters = audit_export.export_filters(params, read_until=parse_es_timestamp(created))
+    if await state.jobs.active_for_actor(actor, generation, JobKind.AUDIT_EXPORT) is not None:
+        raise _job_busy()
+    try:
+        count, relation = await audit_export.count_events(state, filters)
+    except audit_export.AuditExportUnreadable as exc:
+        logger.warning("Audit export count failed: %s", exc.__cause__ or exc)
+        raise HTTPException(
+            503,
+            detail={"code": "audit_unavailable", "message": "The audit log could not be counted."},
+        ) from exc
+    try:
+        audit_export.refuse_unless_exportable(count, relation)
+    except audit_export.AuditExportError as exc:
+        raise HTTPException(422, detail={"code": exc.code, "message": exc.message}) from exc
+    return count
+
+
 @router.post("/jobs", status_code=202, response_model=JobPublic)
 async def submit_job(
     body: JobSubmit,
@@ -360,14 +697,32 @@ async def submit_job(
     _=Depends(require_permission("inapp", "read")),
 ) -> JobPublic:
     if state.demo_active:
+        if body.kind == JobKind.AUDIT_EXPORT:
+            # Durable jobs never run in Demo Mode (the runner fails closed), and a
+            # JSON Lines file could not label Demo rows without changing them.
+            raise HTTPException(
+                409,
+                detail={
+                    "code": "audit_export_demo_mode",
+                    "message": (
+                        "Audit exports are not available in Demo Mode. Turn Demo Mode "
+                        "off to export the audit log."
+                    ),
+                },
+            )
         raise HTTPException(409, detail="durable jobs are unavailable in Demo Mode")
     if _contains_sensitive(body.params):
         raise HTTPException(422, detail="job parameters contain a secret-like key")
     try:
         model = _PARAM_MODELS[body.kind].model_validate(body.params)
+    except ValidationError as exc:
+        if body.kind == JobKind.AUDIT_EXPORT:
+            raise _audit_export_invalid(exc) from exc
+        raise HTTPException(422, detail=f"invalid {body.kind.value} parameters: {exc}") from exc
     except Exception as exc:
         raise HTTPException(422, detail=f"invalid {body.kind.value} parameters: {exc}") from exc
-    params = model.model_dump(mode="json", exclude_none=True)
+    # ``by_alias`` keeps wire names such as the audit export's ``from``.
+    params = model.model_dump(mode="json", exclude_none=True, by_alias=True)
     canonical_size = len(
         json.dumps(
             params,
@@ -401,16 +756,34 @@ async def submit_job(
     fresh_until, fresh_sid, fresh_tv = await _fresh_fields(request, state, body.kind)
     items, unit = _items(body.kind, params)
     created = iso_now()
+    key_hash = idempotency_hash(actor, body.idempotency_key, generation)
+    fingerprint = _fingerprint(body.kind, params)
+    audited = body.kind in _REQUEST_AUDITED_KINDS
+    export_count: int | None = None
+    accepted: Job | None = None
+    if audited:
+        # The pre-checks of a submit that is audited, before its requested row (SPEC
+        # §3.6 step 1: a refusal here writes no row). A client retry of an accepted
+        # request is answered with that job first, as the store's create would.
+        accepted = await _accepted_retry(state, key_hash, fingerprint)
+        if accepted is None:
+            _refuse_during_factory_recovery(state, body.kind, params)
+            if body.kind == JobKind.AUDIT_EXPORT:
+                export_count = await _audit_export_precheck(
+                    state, params, actor=actor, generation=generation, created=created
+                )
     job = Job(
         kind=body.kind,
         actor=actor,
         actor_generation=generation,
         created_at=created,
-        progress=JobProgress(done=0, total=len(items), unit=unit),
-        request_fingerprint=_fingerprint(body.kind, params),
-        idempotency_key_hash=idempotency_hash(
-            actor, body.idempotency_key, generation
+        progress=JobProgress(
+            done=0,
+            total=export_count if export_count is not None else len(items),
+            unit=unit,
         ),
+        request_fingerprint=fingerprint,
+        idempotency_key_hash=key_hash,
         params=params,
         required_permissions=[
             JobPermission(resource=resource, action=action) for resource, action in grants
@@ -422,12 +795,48 @@ async def submit_job(
         transitions=[JobTransition(seq=1, name="submitted", summary="validated and queued")],
         transition_seq=1,
     )
-    try:
-        stored, _is_new, pruned = await state.jobs.create(job)
-    except JobConflict as exc:
-        raise HTTPException(409, detail=str(exc)) from exc
-    except JobCapacityError as exc:
-        raise HTTPException(503, detail=str(exc)) from exc
+
+    async def create() -> tuple[Job, bool, list[Any]]:
+        try:
+            created = await state.jobs.create(job)
+        except JobConflict as exc:
+            raise HTTPException(409, detail=str(exc)) from exc
+        except JobCapacityError as exc:
+            raise HTTPException(503, detail=str(exc)) from exc
+        except JobBusy as exc:
+            raise _job_busy() from exc
+        if audited and not created[1]:
+            # The requested row just appended names a job that was never made.
+            raise _AlreadyAccepted(created[0])
+        return created
+
+    if accepted is not None:
+        # A client retry of an accepted request: the same job, no second row.
+        stored, pruned = accepted, []
+    elif audited:
+        # A new audit export, reset or data export is audited before it exists (SPEC
+        # §3.6, E16): its requested row, with who asked and from where, comes first,
+        # and a create that then fails, or that a racing duplicate of the same request
+        # already won, gets its ``<resource>.request_failed`` row. All of them change
+        # or read real state, so the rows go to the control audit (§3.5).
+        try:
+            stored, _is_new, pruned = await audited_write(
+                state,
+                sink="control",
+                expected_revision=None,
+                changes=None,
+                write=create,
+                actor=actor,
+                actor_type="human",
+                context=audit_context(request),
+                **_request_audit(body.kind, job, params, export_count=export_count),
+            )
+        except _AlreadyAccepted as exc:
+            # A duplicate that lost the race: its rows are closed, the job is the one
+            # the first request created.
+            stored, pruned = exc.job, []
+    else:
+        stored, _is_new, pruned = await create()
     await state.job_runner.delete_artifacts(pruned)
     if not await state.job_runner.reconcile_audits():
         raise HTTPException(
@@ -614,13 +1023,203 @@ async def cancel_job(
     return public_job(job)
 
 
+def _download_target(job: Job, artifact: JobArtifact) -> AuditTarget:
+    """The target of a job file's download row: the target the job's other rows name,
+    so the download reads as part of that job (``?target=<job id>``). An audit
+    export's ``export`` target (its file name), a data export job's ``export`` target
+    (its scopes), and the ``job`` itself for any other kind."""
+    if job.kind == JobKind.AUDIT_EXPORT:
+        return audit_export.export_target(job.job_id, artifact.filename)
+    if job.kind in {JobKind.DATA_EXPORT_ARCHIVE, JobKind.DATA_EXPORT_SEGMENT}:
+        return data_export_audit_target(job.job_id, list(job.params.get("scopes") or []))
+    return AuditTarget(type="job", id=job.job_id, label=artifact.filename)
+
+
+async def _audit_download(state: AppState, request: Request, job: Job) -> None:
+    """Record a job artifact download before a byte is streamed (Round 14 SPEC
+    §4.5.6): one row per download, always in the control audit (§3.5), naming the
+    job, its kind, the artifact and the verified size and SHA-256. An audit export's
+    download is ``audit.export_downloaded``; every other kind's is
+    ``job.artifact_downloaded``. The row names the job's own target
+    (:func:`_download_target`), so it pairs with the job's requested and worker rows.
+    A failed append refuses the download with ``503 audit_unavailable``: an unaudited
+    copy never leaves the server."""
+    artifact = job.artifact
+    if artifact is None:
+        raise HTTPException(404, detail="job artifact not found")
+    is_audit_export = job.kind == JobKind.AUDIT_EXPORT
+    target = _download_target(job, artifact)
+    context = audit_context(request)
+    try:
+        await state.control_audit.record_strict(
+            action_type=ActionType.DATA_EXPORT,
+            surface="jobs",
+            actor=current_username(request) or job.actor,
+            actor_type="human",
+            action="audit.export_downloaded" if is_audit_export else "job.artifact_downloaded",
+            outcome="success",
+            target=target,
+            result_summary=(
+                f"downloaded {artifact.filename} ({artifact.size:,} bytes, "
+                f"SHA-256 {artifact.sha256})"
+            ),
+            tool_input={
+                "job_id": job.job_id,
+                "kind": job.kind.value,
+                "artifact_id": artifact.artifact_id,
+                "bytes": artifact.size,
+                "sha256": artifact.sha256,
+            },
+            **context.record_fields(),
+        )
+    except Exception as exc:  # noqa: BLE001 (every append failure means "not audited")
+        logger.error("Job %s artifact download refused: the audit append failed: %s", job.job_id, exc)
+        raise AuditUnavailableError(
+            "The audit log could not be written, so the file was not downloaded."
+        ) from exc
+
+
+#: The 403 code of a job file whose grant its owner no longer holds (Round 14
+#: roles-09). The Console words it from the code; ``message`` is the plain fallback.
+ARTIFACT_PERMISSION_LOST = "job_artifact_permission_lost"
+#: The 503 code of a job file whose grants could not be confirmed just now: the strict
+#: live check refused while the caller's access holds every grant the job needs (its
+#: read of the account or custom-role records failed, or found them unreadable).
+ARTIFACT_PERMISSION_UNVERIFIABLE = "job_permission_unverifiable"
+_ARTIFACT_PERMISSION_MESSAGES: dict[JobKind, str] = {
+    JobKind.AUDIT_EXPORT: "You no longer have permission to download audit exports.",
+    JobKind.DATA_EXPORT_ARCHIVE: "You no longer have permission to download data exports.",
+    JobKind.DATA_EXPORT_SEGMENT: "You no longer have permission to download data exports.",
+}
+_ARTIFACT_PERMISSION_MESSAGE = "You no longer have permission to download this file."
+_ARTIFACT_UNVERIFIABLE_MESSAGE = "The download could not be checked just now. Try again."
+
+
+def _grants_lacking(view: AccessView, job: Job) -> list[str]:
+    """The ``resource:action`` grants ``job`` needs that ``view`` does not hold."""
+    return [
+        f"{grant.resource}:{grant.action}"
+        for grant in job.required_permissions
+        if not view.allows(grant.resource, grant.action)
+    ]
+
+
+async def _stored_role_view(request: Request, view: AccessView) -> AccessView | None:
+    """The caller's access under their STORED account's base role, when it differs from
+    the role the session resolved (the strict live check reads the stored role; the
+    session's copy can trail a role change made by another process), else ``None``.
+    The view keeps the session's principal, so a row it backs names the right person."""
+    users = getattr(get_state(request), "users", None)
+    username = str(getattr(view.user, "username", "") or "")
+    if users is None or not username:
+        return None
+    stored = await users.get(username)
+    raw = getattr(stored, "role", None) if stored is not None else None
+    stored_role = str(getattr(raw, "value", raw) or "")
+    session_role = str(getattr(view.role, "value", view.role) or "")
+    if not stored_role or stored_role == session_role:
+        return None
+    probe = dataclasses.replace(view.user, role=stored_role) if dataclasses.is_dataclass(view.user) else (
+        SimpleNamespace(username=username, role=stored_role))
+    live = await access_view_for(get_state(request), probe)
+    return dataclasses.replace(live, user=view.user)
+
+
+async def _artifact_permission_refusal(request: Request, job: Job) -> HTTPException:
+    """The refusal of a download whose job's grants the strict live check did not confirm.
+
+    A job file is the result of work its grants allowed (an audit export needs
+    ``audit:export`` and ``audit:view``), so the same grants are required again at
+    download time (:meth:`JobRunner.permission_alive`, the strict live check against
+    the stored account). That check fails closed, so its "no" has two meanings, told
+    apart by the caller's access (:func:`resolve_access`, and the stored account's base
+    role when the session's copy of it differs):
+
+    * The caller lacks one of the job's grants now: ``403`` with a code the Console
+      words (``job_artifact_permission_lost``), a plain ``message``, the grants the job
+      needs (``required``) and the ones the caller lacks (``missing``, never empty).
+      The refusal is one Access denied row naming exactly the ``missing`` grants, the
+      role that lacks them and the job's target, coalesced like every refused read
+      (``deps.record_access_denied``).
+    * The caller holds every grant, or their access could not be resolved: the check
+      could not confirm them (its strict read of the account or custom-role records
+      failed or found them malformed). That is no permission refusal, so it writes no
+      Access denied row (a row saying "denied audit:export" to someone who holds it
+      would be false, #2) and answers ``503`` ``job_permission_unverifiable``, "Try
+      again", like the job routes' other unreadable-registry answers. Nothing is
+      downloaded either way."""
+    required = [f"{grant.resource}:{grant.action}" for grant in job.required_permissions]
+    view: AccessView | None = None
+    missing: list[str] = []
+    try:
+        view = await resolve_access(request)
+        missing = _grants_lacking(view, job)
+        if not missing and not view.unrestricted:
+            stored_view = await _stored_role_view(request, view)
+            if stored_view is not None and (lacking := _grants_lacking(stored_view, job)):
+                view, missing = stored_view, lacking
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001 (unresolved access confirms nothing)
+        logger.warning("Job %s artifact refused: the caller's access could not be resolved: %s",
+                       job.job_id, exc)
+        view, missing = None, []
+    if not missing:
+        if view is not None:
+            logger.warning(
+                "Job %s artifact refused: the live grant check failed while the caller's "
+                "access holds every grant the job needs", job.job_id,
+            )
+        return HTTPException(
+            503,
+            detail={
+                "code": ARTIFACT_PERMISSION_UNVERIFIABLE,
+                "message": _ARTIFACT_UNVERIFIABLE_MESSAGE,
+            },
+        )
+    target = _download_target(job, job.artifact) if job.artifact is not None else None
+    await record_access_denied(request, missing, view=view, target=target)
+    return HTTPException(
+        403,
+        detail={
+            "code": ARTIFACT_PERMISSION_LOST,
+            "message": _ARTIFACT_PERMISSION_MESSAGES.get(job.kind, _ARTIFACT_PERMISSION_MESSAGE),
+            "required": required,
+            "missing": missing,
+        },
+    )
+
+
+_ARTIFACT_BINARY = {"schema": {"type": "string", "format": "binary"}}
+
+
 @router.get(
     "/jobs/{job_id}/artifact",
     responses={
         200: {
-            "description": "Verified ZIP artifact",
-            "content": {"application/zip": {"schema": {"type": "string", "format": "binary"}}},
-        }
+            "description": (
+                "The verified artifact: a ZIP for a data export, a CSV or JSON Lines "
+                "file for an audit export. Every download is audited first."
+            ),
+            "content": {
+                "application/zip": _ARTIFACT_BINARY,
+                "text/csv": _ARTIFACT_BINARY,
+                "application/x-ndjson": _ARTIFACT_BINARY,
+            },
+        },
+        403: {
+            "description": (
+                "job_artifact_permission_lost: the job needs a grant its owner no "
+                "longer holds (an audit export needs audit:export and audit:view)"
+            ),
+        },
+        503: {
+            "description": (
+                "audit_unavailable: the download could not be audited; or "
+                "job_permission_unverifiable: the job's grants could not be "
+                "confirmed just now (try again)"
+            ),
+        },
     },
 )
 async def job_artifact(
@@ -633,12 +1232,14 @@ async def job_artifact(
     if job.artifact is None:
         raise HTTPException(404, detail="job artifact not found")
     if not await state.job_runner.permission_alive(job):
-        raise HTTPException(403, detail="job artifact permission is no longer active")
+        raise await _artifact_permission_refusal(request, job)
     try:
         path = await state.job_runner.verify_artifact(job.artifact)
     except (FileNotFoundError, ValueError):
         await state.jobs.expire_artifact(job.job_id, job.artifact.artifact_id)
         raise HTTPException(410, detail="job artifact expired or failed integrity verification") from None
+    # Audited before streaming; the row describes the verified file.
+    await _audit_download(state, request, job)
     return FileResponse(
         path,
         media_type=job.artifact.content_type,

@@ -52,7 +52,7 @@ class CymruMHRProvider(EnrichmentProvider):
             secret_fields=[],
             keyless=True,
             free_tier=(
-                "Keyless DNS zone, free for non-commercial use. MD5/SHA-1 only — "
+                "Keyless DNS zone, free for non-commercial use. MD5/SHA-1 only; "
                 "SHA-256 is not in the zone. Works best with the host's own "
                 "recursive resolver."
             ),
@@ -63,12 +63,12 @@ class CymruMHRProvider(EnrichmentProvider):
                 "recursive resolver rather than a heavily shared public one).",
                 "No key or signup needed for reasonable non-commercial volume.",
                 "Flip this provider's toggle ON.",
-                "Note: only MD5 and SHA-1 hashes can be answered — SHA-256 "
+                "Note: only MD5 and SHA-1 hashes can be answered; SHA-256 "
                 "indicators return a neutral 'unsupported' result.",
             ],
             example=(
                 "A single DNS query confirms an emailed attachment's MD5 as known "
-                "malware even when the sandbox queue is backed up — a hit means "
+                "malware even when the sandbox queue is backed up. A hit means "
                 "Team Cymru's AV aggregation has already convicted the file."
             ),
         )

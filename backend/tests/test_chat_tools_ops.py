@@ -187,15 +187,17 @@ async def test_cost_usage_needs_a_ledger_and_hides_budget_without_models_read() 
 
 
 async def test_context_fields_unlock_rule_versions_and_operator_catalogues() -> None:
-    """With the optional ``runbooks`` / ``playbooks`` / ``rule_versions`` context
-    fields set (the route builder's job), rule history works and the listings include
-    operator-authored entries, not only the bundled catalogue."""
+    """With the optional ``runbooks`` (the runbook library) and ``rule_versions``
+    context fields set (the route builder's job), rule history works and the runbook
+    listing includes the Published operator runbooks, not only the built-ins (Round 14
+    SPEC §4.10.18). ``list_playbooks`` is its alias."""
     from dataclasses import dataclass
     from types import SimpleNamespace
 
     from app.agents.chat_tools.base import ChatToolContext
     from app.agents.chat_tools.intel import SearchKnowledgeTool
     from app.agents.chat_tools.registry import catalogue_grant_pairs
+    from app.engine.runbook_model import load_builtin_runbooks
     from app.es.fake import InMemoryESClient
     from app.stores.memory import EsKVStore
     from app.stores.rule_versions import RuleVersionStore
@@ -203,7 +205,6 @@ async def test_context_fields_unlock_rule_versions_and_operator_catalogues() -> 
     @dataclass(frozen=True)
     class FullContext(ChatToolContext):
         runbooks: Any = None
-        playbooks: Any = None
         rule_versions: Any = None
 
     versions = RuleVersionStore(EsKVStore(InMemoryESClient()))
@@ -212,21 +213,28 @@ async def test_context_fields_unlock_rule_versions_and_operator_catalogues() -> 
     await versions.record(kind="detection", rule_id="ssh-bruteforce", config={"n": 8}, action="update",
                           actor="dana", summary="raised threshold")
 
-    class Runbooks:
-        async def list(self):
-            rb = SimpleNamespace(id="rb-operator", title="Operator runbook", persona="generalist",
-                                 applies_to_rules=["r1"], applies_to_techniques=["T1110"])
-            return [SimpleNamespace(runbook=rb, source_type="operator")]
+    builtins = load_builtin_runbooks()
+    base = builtins[0]
 
-    class Playbooks:
-        def all(self):
-            manifest = SimpleNamespace(id="pb-operator", name="Operator playbook", version=2,
-                                       description="local", priority=5)
-            return [SimpleNamespace(manifest=manifest)]
+    def _published(runbook_id: str, title: str, version: int, *, replaces=None, origin="operator"):
+        return SimpleNamespace(
+            runbook=SimpleNamespace(id=runbook_id, origin=origin, replaces=replaces),
+            live=SimpleNamespace(definition=base.definition.model_copy(update={"title": title}),
+                                 version=version),
+        )
+
+    class Library:
+        """The library's ``published_catalog()`` (Drafts never appear in it)."""
+
+        async def published_catalog(self):
+            return [
+                _published("rb-operator", "Operator runbook", 3),
+                _published("our-copy", "Our copy", 1, replaces=base.id),
+                _published("acme-imported", "Acme imported", 1, origin="imported"),
+            ]
 
     ctx = FullContext(prefs=Preferences(), grants=catalogue_grant_pairs(), audit=RecordingAudit(),
-                      control_audit=RecordingAudit(), rule_versions=versions, runbooks=Runbooks(),
-                      playbooks=Playbooks())
+                      control_audit=RecordingAudit(), rule_versions=versions, runbooks=Library())
     history = await AutomationStatusTool().run(ctx, kind="rules", rule_id="ssh-bruteforce")
     assert history.ok and history.observation["total"] == 2
     assert [v["action"] for v in history.observation["versions"]] == ["update", "create"]
@@ -235,10 +243,37 @@ async def test_context_fields_unlock_rule_versions_and_operator_catalogues() -> 
     assert "rule_versions" in line
 
     runbooks = await SearchKnowledgeTool().run(ctx, kind="list_runbooks")
-    assert runbooks.observation["catalogue"] == "bundled and operator"
-    assert runbooks.observation["runbooks"][0]["id"] == "rb-operator" and "bundled" not in runbooks.summary
+    observation = runbooks.observation
+    assert observation["catalogue"] == "built-in and published"
+    rows = {row["id"]: row for row in observation["runbooks"]}
+    # A Published copy that replaces a built-in hides that built-in.
+    assert base.id not in rows and observation["replaced_built_ins"] == 1
+    assert observation["total"] == len(builtins) - 1 + 3
+    assert rows["rb-operator"]["origin"] == "Yours" and rows["rb-operator"]["version"] == 3
+    assert rows["acme-imported"]["origin"] == "Imported"
+    assert {row["state"] for row in rows.values()} == {"Published"}
+    assert rows["rb-operator"]["applies_to"] and rows["rb-operator"]["phases"]
+    assert runbooks.summary == f"{observation['total']} published runbooks"
+    assert "alias" not in observation
+    assert_artifacts_render(runbooks)
+
     playbooks = await SearchKnowledgeTool().run(ctx, kind="list_playbooks")
-    assert playbooks.observation["playbooks"][0]["id"] == "pb-operator"
+    assert playbooks.observation["runbooks"] == observation["runbooks"]
+    assert playbooks.observation["alias"] == "Playbooks are runbooks now; this is the runbook library."
+
+    class BrokenLibrary:
+        async def published_catalog(self):
+            raise RuntimeError("kv down")
+
+    failed = await SearchKnowledgeTool().run(
+        FullContext(prefs=Preferences(), grants=catalogue_grant_pairs(), runbooks=BrokenLibrary()),
+        kind="list_runbooks")
+    assert not failed.ok and failed.error == "The runbook library could not be read"
+
+    bundled = await SearchKnowledgeTool().run(make_ctx(), kind="runbooks")
+    assert bundled.observation["catalogue"] == "built-in only"
+    assert bundled.observation["total"] == len(builtins)
+    assert bundled.summary.endswith("(built-in library only)")
 
     class Broken:
         async def list_strict(self, **kwargs):

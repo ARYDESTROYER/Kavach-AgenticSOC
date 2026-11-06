@@ -78,7 +78,17 @@ ARTIFACT_DATA_SHAPES: dict[str, dict[str, tuple[str, ...]]] = {
     # ``unit`` is a blocks ValueUnit; ``other`` is the folded remainder, if any.
     # ``overlapping`` (Round 12): the groups are not a partition (a case under two rules
     # counts under both), so ``blocks.artifact_views`` offers no donut and no stack.
-    "categories": {"required": ("labels", "values", "unit"), "optional": ("dimension", "other", "drill", "overlapping")},
+    # ``drill`` (Round 14 SPEC §4.6.3): per-row drill references (a rule row opens the
+    # rule sheet, a level row the filtered Logs view); ``trend``: per-row counts over
+    # the window for the rule rows. The severity breakdown (§4.7.2) sets ``kind:
+    # "severity"`` with ``subject`` (events or cases), ``levels`` (named levels with
+    # their counts, shares and top rules), ``splits`` (the same levels per source or
+    # entity when the server returned more than one), ``sample`` and ``basis_caption``
+    # (what was sampled, only when something was) and ``multi_level_rules`` (rules
+    # seen at more than one level).
+    "categories": {"required": ("labels", "values", "unit"),
+                   "optional": ("dimension", "other", "drill", "overlapping", "trend", "kind", "subject",
+                                "levels", "splits", "sample", "basis_caption", "multi_level_rules")},
     # x = ISO-8601 UTC bucket starts; series = [{key, label, values[], semantic?}].
     # ``x_labels`` are the calendar labels ("Mar 2026") aligned with x and ``tz`` the
     # IANA zone the calendar buckets were cut in (Round 12, P0-5).
@@ -269,9 +279,18 @@ class ChatToolContext:
     # Boolean-only "is this secret configured" map (state.secrets.configured_status);
     # app_status reports provider/credential readiness from it, never a value.
     secrets_status: Callable[[], dict[str, bool]] | None = None
-    # Operator catalogues (demo-switchable). None = bundled-only runbooks/playbooks and
-    # no rule-version history; the tools say so rather than reading as empty.
+    # Operator catalogues (demo-switchable). ``runbooks`` is the runbook LIBRARY
+    # (``stores.runbook_library.RunbookLibraryStore``, Round 14): ``search_knowledge``
+    # lists its Published runbooks, and without it the built-ins alone (the tool says
+    # so rather than reading as empty). Any other object there (the retired
+    # reference-runbook service) is ignored. ``runbook_runs`` is the per-case run store
+    # of the ACTIVE stack (``stores.runbook_runs.RunbookRunStore``; the Demo store in
+    # Demo Mode): ``get_case`` reads the run summary from it (§4.10.10). ``playbooks``
+    # is the retired procedure registry, no longer read by any tool (kept so a context
+    # built by an older caller still constructs). ``rule_versions`` None = no
+    # rule-version history.
     runbooks: Any = None
+    runbook_runs: Any = None
     playbooks: Any = None
     rule_versions: Any = None
     # Round 12 (SYNTHESIS-chat P1-4): the caller's chat answer ratings

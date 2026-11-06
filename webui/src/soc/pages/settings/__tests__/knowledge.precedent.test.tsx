@@ -49,7 +49,7 @@ describe('Knowledge settings — unconfirmed precedent tier', () => {
     // two and stop testing the tier it is named for.
     const tierCard = screen
       .getByText('Unconfirmed precedent (lower trust)')
-      .closest('section, article, div[class*="rounded"]') as HTMLElement;
+      .closest('[data-settings-group]') as HTMLElement;
     expect(within(tierCard).getByText('Off by default')).toBeInTheDocument();
     expect(screen.getByText('its own prior model judgements')).toBeInTheDocument();
     expect(screen.getByText('analyst-confirmed outcomes only')).toBeInTheDocument();
@@ -115,11 +115,13 @@ describe('Knowledge settings — unconfirmed precedent tier', () => {
       use_unconfirmed_resolved_cases: true,
     });
 
-    expect(screen.getByLabelText('Minimum model confidence')).toHaveValue(0.8);
-    expect(screen.getByLabelText('Minimum recurrence')).toHaveValue(3);
-    expect(screen.getByLabelText('Age-out (days)')).toHaveValue(30);
-    expect(screen.getByLabelText('Maximum context share')).toHaveValue(0.34);
-    expect(screen.getByLabelText('Rank penalty')).toHaveValue(0.5);
-    expect(screen.getByLabelText('Maximum items')).toHaveValue(50);
+    // Round 14: numeric preferences are the shared NumberField (a text field with a
+    // decimal keypad, never a raw number input), so the shown value is its text.
+    expect(screen.getByLabelText('Minimum model confidence')).toHaveValue('0.8');
+    expect(screen.getByLabelText('Minimum recurrence')).toHaveValue('3');
+    expect(screen.getByLabelText('Age-out (days)')).toHaveValue('30');
+    expect(screen.getByLabelText('Maximum context share')).toHaveValue('0.34');
+    expect(screen.getByLabelText('Rank penalty')).toHaveValue('0.5');
+    expect(screen.getByLabelText('Maximum items')).toHaveValue('50');
   });
 });

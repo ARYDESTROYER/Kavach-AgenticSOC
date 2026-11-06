@@ -1,5 +1,5 @@
 /**
- * Remember me — the sign-in page controls (Round 12, SPEC D14). LAZY chunk.
+ * Remember me: the sign-in page controls (Round 12, SPEC D14). LAZY chunk.
  *
  * The sign-in page is part of the first-paint entry chunk, so everything Remember
  * me draws lives here and is loaded in parallel with the page's own startup probes
@@ -160,7 +160,7 @@ export function RememberMeControl({
           </span>
         }
         description={
-          // The whole warning — the paragraph AND the list — is the dialog's
+          // The whole warning (the paragraph AND the list) is the dialog's
           // accessible description, so a screen reader hears the shared-device advice.
           <>
             <p>
@@ -211,8 +211,6 @@ export function RememberMeControl({
 export interface SessionEndNoticeProps {
   /** The server's reason the previous session ended (registry-aware /auth/me). */
   reason?: SessionEndReason | null;
-  /** The limit that ended it, in seconds, when known. */
-  lifetimeSeconds?: number | null;
   /**
    * Told whether the notice is showing, so the page can point the focused field's
    * `aria-describedby` at {@link SESSION_END_NOTICE_ID}.
@@ -227,25 +225,24 @@ export const SESSION_END_NOTICE_ID = 'login-session-notice';
  * Why the last session ended: the server's reason first; otherwise a remembered
  * session on this device that ran out while the browser was closed (the browser
  * dropped the expired cookie, so only this device knows). The local marker is
- * consumed either way, so the notice shows once.
+ * consumed either way, so the notice shows once. The notice never states how long
+ * the session lasted (Round 14 SPEC §4.1), whatever the server or the marker knows.
  *
  * The polite live region is in the page from the first paint and EMPTY; the text is
  * set after mount, which is what makes a screen reader announce it (a region that
  * arrives already filled is usually not read). The page also links the focused
  * field to it through `aria-describedby`.
  */
-export function SessionEndNotice({ reason, lifetimeSeconds, onShownChange }: SessionEndNoticeProps) {
+export function SessionEndNotice({ reason, onShownChange }: SessionEndNoticeProps) {
   const [text, setText] = React.useState<string | null>(null);
   React.useEffect(() => {
     const local = takeExpiredRememberedSession();
-    const next = reason
-      ? signedOutNotice(reason, lifetimeSeconds)
-      : local && readRememberedUsername()
-        ? signedOutNotice('absolute_expired', local.lifetimeSeconds)
-        : null;
+    const next =
+      signedOutNotice(reason) ??
+      (local && readRememberedUsername() ? signedOutNotice('absolute_expired') : null);
     // Only ever SET it here (StrictMode re-runs the effect after the marker is gone).
     if (next) setText(next);
-  }, [reason, lifetimeSeconds]);
+  }, [reason]);
   React.useEffect(() => {
     onShownChange?.(Boolean(text));
   }, [text, onShownChange]);

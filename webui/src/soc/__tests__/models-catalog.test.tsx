@@ -52,6 +52,11 @@ const ROWS: ModelCatalogRow[] = [
   },
 ];
 
+/** Every price cell's text, in order. */
+function priceTexts(): string[] {
+  return Array.from(document.querySelectorAll('[data-price]')).map((el) => el.textContent ?? '');
+}
+
 function renderCatalog(props: Partial<React.ComponentProps<typeof ModelsCatalog>> = {}) {
   return render(
     <TooltipProvider>
@@ -112,22 +117,28 @@ describe('ModelsCatalog render', () => {
     expect(screen.getByText('Chat')).toBeInTheDocument();
   });
 
-  it('renders cache-write, cache-read and batch pricing rows for a cached model', () => {
+  it('renders cache-write, cache-read and batch prices for a cached model, one per cell', () => {
     renderCatalog();
-    // Cache-write + cache-read on one line for the Anthropic row.
-    expect(screen.getByText(/cache-write \$6\.25/)).toBeInTheDocument();
-    expect(screen.getByText(/cache-read \$0\.5000/)).toBeInTheDocument();
-    // Batch (0.5×) derived input/output on its own line: 2.5 / 12.5.
-    expect(screen.getByText(/batch 50% · in \$2\.50 · out \$12\.50/)).toBeInTheDocument();
+    const prices = priceTexts();
+    expect(prices).toContain('In $5.00');
+    expect(prices).toContain('Out $25.00');
+    expect(prices).toContain('Cache write $6.25');
+    expect(prices).toContain('Cache read $0.5000');
+    // Batch (0.5×) derived input/output: 2.5 / 12.5, with the share in a tooltip.
+    expect(prices).toContain('Batch in $2.50');
+    expect(prices).toContain('Batch out $12.50');
+    const batchCell = Array.from(document.querySelectorAll('[data-price]')).find(
+      (el) => el.textContent === 'Batch in $2.50',
+    );
+    expect(batchCell).toHaveAttribute('title', 'Batch is 50% of the list price');
   });
 
   it('omits cache + batch rows for a model with none', () => {
     renderCatalog({ providerFilter: 'openai' });
     // GPT-4o mini has null cache + null batch multiplier → no extra pricing lines.
-    expect(screen.queryByText(/cache-/)).not.toBeInTheDocument();
-    expect(screen.queryByText(/batch/)).not.toBeInTheDocument();
-    // The list rate still renders.
-    expect(screen.getByText(/in \$0\.1500 · out \$0\.6000/)).toBeInTheDocument();
+    expect(priceTexts()).toEqual(['In $0.1500', 'Out $0.6000']);
+    expect(screen.queryByText(/Cache/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Batch/)).not.toBeInTheDocument();
   });
 
   it('filters by provider', () => {
@@ -153,5 +164,42 @@ describe('ModelsCatalog render', () => {
     expect(btn).toBeDisabled();
     fireEvent.click(btn);
     expect(onTest).not.toHaveBeenCalled();
+  });
+});
+
+describe('ModelsCatalog on the Round 14 grammar (F9, F13)', () => {
+  const VISION_TWICE: ModelCatalogRow = {
+    ...ROWS[0],
+    id: 'vision-twice',
+    label: 'Vision twice',
+    capabilities: ['tools', 'cache', 'vision', 'reasoning'],
+  };
+
+  it('de-duplicates chips by label (a vision modality and a vision flag are one chip)', () => {
+    const labels = capabilityChips(VISION_TWICE).map((c) => c.label);
+    expect(labels.filter((l) => l === 'Vision')).toHaveLength(1);
+    expect(new Set(labels).size).toBe(labels.length);
+  });
+
+  it('shows two chips then "+N" with the full list in its name', () => {
+    renderCatalog({ rows: [VISION_TWICE] });
+    const all = capabilityChips(VISION_TWICE).map((c) => c.label);
+    expect(all.length).toBeGreaterThan(2);
+    expect(screen.getByText(all[0])).toBeInTheDocument();
+    expect(screen.getByText(all[1])).toBeInTheDocument();
+    expect(screen.queryByText(all[2])).toBeNull();
+    const more = screen.getByTestId('capability-more');
+    expect(more).toHaveTextContent(`+${all.length - 2}`);
+    // The name starts with the visible text, so "click plus N" reaches it (WCAG 2.5.3).
+    expect(more).toHaveAccessibleName(`+${all.length - 2} more capabilities: ${all.slice(2).join(', ')}`);
+    expect(screen.getByRole('button', { name: new RegExp(`^\\+${all.length - 2} more capabilities`) })).toBe(more);
+  });
+
+  it('keeps every price on one line and every label at 12px or more', () => {
+    const { container } = renderCatalog();
+    for (const cell of Array.from(container.querySelectorAll('[data-price]'))) {
+      expect(cell).toHaveClass('whitespace-nowrap');
+    }
+    expect(container.innerHTML).not.toMatch(/text-\[(?:[0-9]|10)px\]|text-\[0\.[0-6]\d*rem\]/);
   });
 });

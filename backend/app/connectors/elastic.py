@@ -21,8 +21,11 @@ from __future__ import annotations
 import copy
 import logging
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
+
+from pydantic import Field
 
 from ..config import IndexPattern, Preferences
 from ..constants import DEFAULT_SEVERITY_SCALE_MAX, IndexRole, IngestMode, SourceType
@@ -105,6 +108,37 @@ CALENDAR_INTERVALS: dict[str, str] = {"1w": "week", "1M": "month", "1q": "quarte
 _TZ_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_+/-]{0,63}$")
 
 
+class IncompleteSearchError(RuntimeError):
+    """An Elasticsearch-family search answered HTTP 200 from only part of its data (a
+    failed shard or a timed-out search), so no count it carries is exact."""
+
+
+def response_is_complete(resp: Any) -> bool:
+    """Did a native search answer from ALL of its data?
+
+    ``False`` when the response says it timed out or that a shard failed: with the
+    default ``allow_partial_search_results`` a cluster answers HTTP 200 with the failed
+    shards' hits (and their share of every total and aggregation) missing, so the
+    figures are lower bounds at best. A shard the cluster SKIPPED (no document could
+    match) is not a failure. A response without ``_shards`` (the in-memory backend, a
+    mocked client) carries no such evidence and is complete. The rule
+    ``stores.cases.check_complete_response`` applies to the suite's own state, restated
+    here because a connector never imports the stores."""
+    if not isinstance(resp, dict):
+        return True
+    if resp.get("timed_out") is True:
+        return False
+    shards = resp.get("_shards")
+    if isinstance(shards, dict):
+        try:
+            failed = int(shards.get("failed") or 0)
+        except (TypeError, ValueError):
+            return False
+        if failed > 0:
+            return False
+    return True
+
+
 def _fields_named_in(exc: Exception, fields: Any) -> set[str]:
     """The given field names an ES 400 names in brackets ("fielddata is disabled on
     [user.name]"), searched in the message and the structured error body."""
@@ -118,6 +152,255 @@ def _fields_named_in(exc: Exception, fields: Any) -> set[str]:
     for blob in texts:
         found.update(m for m in _BRACKETED_RE.findall(blob) if m in wanted)
     return found
+
+
+# --------------------------------------------------------------------------- #
+# Round 14 (SPEC §4.6.1): the exact Logs filters
+# --------------------------------------------------------------------------- #
+class LogFilterQuery(StructuredQuery):
+    """A :class:`StructuredQuery` with the exact Logs filters of Round 14.
+
+    The bundled Elastic-family connectors (Elasticsearch, OpenSearch, Wazuh) compile
+    these natively in :meth:`ElasticConnector.search`, :meth:`ElasticConnector.aggregate`
+    and :meth:`ElasticConnector.aggregate_composite`, so a filtered count and the events
+    a filtered search returns describe one population. Any other connector receives an
+    ordinary ``StructuredQuery`` and the caller filters its rows itself.
+
+    * ``rule_any``: an exact (equality) match against ANY rule identity of an event: the
+      source's rule field, its rule name field, or the suite rule the event is classified
+      as (``Preferences.rule_catalog``, first enabled match in priority order, the
+      classification :meth:`app.models.RawEvent.from_hit` applies). The Console shows a
+      row's rule as one of these, a case records the classified one, and the chat's exact
+      aggregation groups by the rule field, so a value taken from any of them filters to
+      the events that carry it. Never a substring or analysed match.
+    * ``severity_lt``: an exclusive upper bound on the raw severity field, beside the
+      inherited inclusive ``severity_gte`` (both already projected through the source's
+      own ceiling by :func:`app.engine.severity_levels.raw_range`).
+    * ``severity_missing``: an event with no severity value also matches (it reads as
+      ``0.0``, so Info). Only meaningful with ``severity_lt`` and no ``severity_gte``.
+
+    Every read of this query also leaves out, natively, the events a search would drop
+    after the fact: those whose most specific feed is an IGNORE carve-out of a broader
+    live feed (:meth:`ElasticConnector.carve_out_clauses`), so a filtered total counts
+    only events the rows can show.
+
+    The rule value is untrusted log-derived text (#9): it is bound as a ``term`` value,
+    never parsed as query syntax. Every rule clause is an exact-value match whatever the
+    field's mapping (:func:`exact_value_clause`), never an analysed one."""
+
+    rule_any: str | None = None
+    severity_lt: float | None = None
+    severity_missing: bool = False
+
+
+def _num(value: float) -> str:
+    """A bound as the KQL rendering prints it: integral floats without ``.0``, every
+    other value exactly (``repr``), so the rendering describes the query that ran."""
+    if float(value).is_integer():
+        return str(int(value))
+    return repr(float(value))
+
+
+def _kql_text(value: Any) -> str:
+    """A value inside a KQL double-quoted string (quotes and backslashes escaped)."""
+    return str(value).replace("\\", "\\\\").replace('"', '\\"')
+
+
+#: The exact-value sub-field Elasticsearch's default dynamic mapping adds beside every
+#: string field (``text`` plus ``<field>.keyword``, OpenSearch alike).
+KEYWORD_SUBFIELD = "keyword"
+
+
+def exact_value_clause(field_name: str, value: str, *, kind: str = "term") -> dict[str, Any]:
+    """An EXACT ``term`` (or ``prefix``) match of ``value`` on ``field_name``, whatever
+    the field's mapping.
+
+    A ``term`` query is not analysed while a ``text`` field is indexed as lower-cased
+    tokens, and the default dynamic mapping makes every string field ``text`` with a
+    ``.keyword`` sub-field (the reason :meth:`ElasticConnector.aggregate` retries on
+    ``.keyword``). A bare ``term`` on such a field never matches a multi-word value and
+    does match a single token inside other values (``ssh`` would match "SSH brute
+    force"). So the clause matches the exact-value sub-field whenever a document has
+    one, and the field itself only on a document without it (a ``keyword``-mapped index,
+    where the field already holds exact values):
+
+    ``(field.keyword = value) or (field = value and field.keyword does not exist)``
+
+    A field that already names its ``.keyword`` sub-field is matched as it is. The value
+    is bound as a query value, never parsed as query syntax (#9)."""
+    if kind not in ("term", "prefix"):
+        raise ValueError(f"unsupported exact clause kind {kind!r}")
+    if field_name.endswith(f".{KEYWORD_SUBFIELD}"):
+        return {kind: {field_name: value}}
+    sub = f"{field_name}.{KEYWORD_SUBFIELD}"
+    return {"bool": {
+        "should": [
+            {kind: {sub: value}},
+            {"bool": {"filter": [{kind: {field_name: value}}],
+                      "must_not": [{"exists": {"field": sub}}]}},
+        ],
+        "minimum_should_match": 1,
+    }}
+
+
+def _catalog_match_clause(match: Any) -> tuple[dict[str, Any], str] | None:
+    """One suite rule's ``RuleMatch`` as a native clause and its KQL, or ``None`` when
+    the operator is unknown. ``equals`` and ``tag`` are an exact ``term`` (an exact
+    value, or a member of a list field), ``prefix`` an exact-value ``prefix`` query,
+    ``exists`` a present, non-empty value (:func:`exact_value_clause`, so an analysed
+    ``text`` field is matched on its ``.keyword`` sub-field as ``RuleMatch.matches``
+    compares whole values)."""
+    field_name = str(getattr(match, "field", "") or "")
+    op = getattr(match, "op", None)
+    value = getattr(match, "value", None)
+    if not field_name:
+        return None
+    if op == "exists":
+        return (
+            {"bool": {"filter": [{"exists": {"field": field_name}}],
+                      "must_not": [exact_value_clause(field_name, "")]}},
+            f"{field_name} : *",
+        )
+    if value is None:
+        return None
+    if op in ("equals", "tag"):
+        return exact_value_clause(field_name, str(value)), f'{field_name} : "{_kql_text(value)}"'
+    if op == "prefix":
+        return (
+            exact_value_clause(field_name, str(value), kind="prefix"),
+            f"{field_name} : {_kql_text(value)}*",
+        )
+    return None
+
+
+def rule_identity_clause(prefs: Preferences, value: str) -> tuple[dict[str, Any], str]:
+    """The native clause and KQL of "this event's rule is ``value``" (see
+    :class:`LogFilterQuery`): an exact ``term`` on the rule field, an exact ``term`` on
+    the rule name field (each through :func:`exact_value_clause`, so an analysed field
+    is compared on its exact-value sub-field), and for each ENABLED suite rule named
+    ``value`` its match with every rule that classifies first (lower priority, then
+    catalog order) excluded, which is exactly the first-match classification
+    ``RawEvent.from_hit`` applies. The KQL renders the comparison the Console and
+    Discover show (``field : "value"``)."""
+    should: list[dict[str, Any]] = [exact_value_clause(prefs.rule_field, value)]
+    kql: list[str] = [f'{prefs.rule_field} : "{_kql_text(value)}"']
+    name_field = getattr(prefs, "rule_name_field", None)
+    if name_field and name_field != prefs.rule_field:
+        should.append(exact_value_clause(name_field, value))
+        kql.append(f'{name_field} : "{_kql_text(value)}"')
+    catalog = list(getattr(prefs, "rule_catalog", None) or [])
+    ordered = sorted((rd for rd in catalog if getattr(rd, "enabled", True)),
+                     key=lambda rd: getattr(rd, "priority", 100))
+    for position, rd in enumerate(ordered):
+        if getattr(rd, "name", None) != value:
+            continue
+        own = _catalog_match_clause(getattr(rd, "match", None))
+        if own is None:
+            continue
+        earlier = [c for c in (_catalog_match_clause(getattr(o, "match", None))
+                               for o in ordered[:position]) if c is not None]
+        if earlier:
+            should.append({"bool": {"filter": [own[0]], "must_not": [c[0] for c in earlier]}})
+            kql.append(f"({own[1]} and not ({' or '.join(c[1] for c in earlier)}))")
+        else:
+            should.append(own[0])
+            kql.append(own[1])
+    return {"bool": {"should": should, "minimum_should_match": 1}}, f"({' or '.join(kql)})"
+
+
+def severity_upper_clause(
+    field_name: str, lt: float, *, include_missing: bool,
+) -> tuple[dict[str, Any], str]:
+    """``field < lt`` (exclusive), optionally also an event with no value at all."""
+    bounded = {"range": {field_name: {"lt": lt}}}
+    kql = f"{field_name} < {_num(lt)}"
+    if not include_missing:
+        return bounded, kql
+    missing = {"bool": {"must_not": [{"exists": {"field": field_name}}]}}
+    return (
+        {"bool": {"should": [bounded, missing], "minimum_should_match": 1}},
+        f"({kql} or not {field_name} : *)",
+    )
+
+
+#: A feed pattern an ``_index`` wildcard reads exactly as ``fnmatch`` (the feed
+#: attribution of :meth:`ElasticConnector._feed_for_index`) does: index-name characters
+#: plus ``*`` and ``?``. A character class (``[``), an escape (``\``), a list (``,``),
+#: date math (``<``) or a leading exclusion (``-``, ``+``) is read differently by the two.
+_INDEX_WILDCARD_RE = re.compile(r"^[A-Za-z0-9_.:*?][A-Za-z0-9_.:*?+-]*$")
+
+
+def _index_wildcard(pattern: str) -> tuple[dict[str, Any], str]:
+    """An ``_index`` wildcard clause and its KQL (a ``:`` escaped, ``*`` left a wildcard)."""
+    escaped = pattern.replace(":", "\\:")
+    return {"wildcard": {"_index": {"value": pattern}}}, f"_index : {escaped}"
+
+
+def _log_filter_clauses(prefs: Preferences, query: StructuredQuery) -> tuple[list[dict[str, Any]], list[str]]:
+    """The native clauses (and KQL) of :class:`LogFilterQuery`'s extra filters; an
+    ordinary ``StructuredQuery`` yields none, so every existing body is unchanged."""
+    clauses: list[dict[str, Any]] = []
+    kql: list[str] = []
+    rule_any = getattr(query, "rule_any", None)
+    if isinstance(rule_any, str) and rule_any != "":
+        clause, text = rule_identity_clause(prefs, rule_any)
+        clauses.append(clause)
+        kql.append(text)
+    lt = getattr(query, "severity_lt", None)
+    if lt is not None:
+        clause, text = severity_upper_clause(
+            prefs.severity_field, float(lt),
+            include_missing=bool(getattr(query, "severity_missing", False))
+            and getattr(query, "severity_gte", None) in (None, ""),
+        )
+        clauses.append(clause)
+        kql.append(text)
+    return clauses, kql
+
+
+class RankedAggregateResult(AggregateResult):
+    """An :class:`AggregateResult` that also says how far a top list's counts can be off.
+
+    A ``terms`` aggregation over more than one shard (``all-logs-*`` daily indices, so
+    any window longer than a day) asks each shard for its own top values and adds up
+    what came back. A value outside one shard's top list misses that shard's share, so
+    a listed count can be low and an unlisted value can outrank the last listed row.
+    ``error_bound`` maps each group to the backend's ``doc_count_error_upper_bound``:
+    ``0`` means every listed count is exact and nothing left off can outrank the last
+    row; anything else (a positive bound, or ``-1`` for "not computed") means neither
+    is proven. A group the backend reported no bound for is absent (unknown), never 0.
+    A list with no remainder (``other == 0``) is exact whatever its bound."""
+
+    error_bound: dict[str, int] = Field(default_factory=dict)
+
+
+# Composite aggregation (the exact two-level breakdowns of SPEC §4.7.2): page size and
+# the most combinations one call collects before it stops and says so (``complete``).
+COMPOSITE_PAGE_SIZE = 1000
+COMPOSITE_MAX_BUCKETS = 10_000
+# A fixed bucket width for ``aggregate_composite`` beside the shared vocabulary: a
+# whole number of minutes, hours or days (``12h``, ``3h``, ``2d``).
+_FIXED_INTERVAL_RE = re.compile(r"^[1-9][0-9]{0,3}[mhd]$")
+
+
+@dataclass
+class CompositeAggregate:
+    """What :meth:`ElasticConnector.aggregate_composite` returns.
+
+    ``total`` is the EXACT number of matching events. ``rows`` holds one entry per
+    distinct combination: ``(keys, count)``, where ``keys`` follows the requested order
+    (the time bucket first, as an ISO-8601 UTC start, when an interval was asked for).
+    A ``None`` key is an event with no value for that field (``missing_bucket``), so the
+    counts of a single-valued field add up to ``total``. ``complete`` is ``False`` when
+    the bucket cap stopped the paging; the rows are then a lower bound and a caller must
+    not present them as exact."""
+
+    total: int = 0
+    fields: list[str] = field(default_factory=list)
+    interval: str | None = None
+    rows: list[tuple[tuple[Any, ...], int]] = field(default_factory=list)
+    complete: bool = True
+    rendering: QueryRendering | None = None
 
 
 class ElasticConnector(PullConnector):
@@ -372,6 +655,65 @@ class ElasticConnector(PullConnector):
                 ev.index_role = self._role_for_index(ev.index)
             out.append(ev)
         return out
+
+    def carve_out_clauses(self) -> tuple[list[dict[str, Any]], list[str], bool]:
+        """The native clauses (and KQL) that leave out every event the union search path
+        drops after the fact (:meth:`_tag_events`): an event whose most specific feed
+        (:meth:`_feed_for_index`: the longest matching pattern, the earlier feed on a tie,
+        enabled or not) is an IGNORE feed.
+
+        For each IGNORE feed ``F`` the clause is "not (``_index`` matches ``F`` and no
+        feed that would win over ``F`` matches)", where a winner is a longer pattern or
+        an equally long one listed earlier. A muted winner has its own clause, so the
+        union excludes exactly the events whose best feed is muted, and a filtered total
+        counts only events the rows can show.
+
+        The third value is ``False`` when a pattern involved is not one an ``_index``
+        wildcard reads as ``fnmatch`` does (:data:`_INDEX_WILDCARD_RE`); no clause is
+        built then, and a caller must not present a native total as exact. No IGNORE
+        feed: no clause, exact."""
+        feeds = [f for f in self._index_patterns() if f.pattern]
+        clauses: list[dict[str, Any]] = []
+        kql: list[str] = []
+        for position, feed in enumerate(feeds):
+            if feed.role != IndexRole.IGNORE:
+                continue
+            winners = [
+                other.pattern for index, other in enumerate(feeds)
+                if len(other.pattern) > len(feed.pattern)
+                or (len(other.pattern) == len(feed.pattern) and index < position)
+            ]
+            if not all(_INDEX_WILDCARD_RE.match(p) for p in (feed.pattern, *winners)):
+                return [], [], False
+            owned, owned_kql = _index_wildcard(feed.pattern)
+            if winners:
+                kept = [_index_wildcard(p) for p in dict.fromkeys(winners)]
+                clauses.append({"bool": {"must_not": [{"bool": {
+                    "filter": [owned], "must_not": [clause for clause, _text in kept],
+                }}]}})
+                kql.append(f"not ({owned_kql} and not ({' or '.join(text for _clause, text in kept)}))")
+            else:
+                clauses.append({"bool": {"must_not": [owned]}})
+                kql.append(f"not {owned_kql}")
+        return clauses, kql, True
+
+    def carve_outs_native(self) -> bool:
+        """Every IGNORE carve-out of this source is left out natively by a filtered read
+        (:meth:`carve_out_clauses`), so its native totals count only events it shows."""
+        return self.carve_out_clauses()[2]
+
+    def _log_filter_extra(
+        self, prefs: Preferences, query: StructuredQuery,
+    ) -> tuple[list[dict[str, Any]], list[str]]:
+        """A :class:`LogFilterQuery`'s native clauses: its rule and level filters and the
+        carve-out mute. An ordinary ``StructuredQuery`` yields none, so every existing
+        body is unchanged."""
+        clauses, kql = _log_filter_clauses(prefs, query)
+        if isinstance(query, LogFilterQuery):
+            mute, mute_kql, _native = self.carve_out_clauses()
+            clauses.extend(mute)
+            kql.extend(mute_kql)
+        return clauses, kql
 
     # --------------------------------------------------------------------- #
     # Wizard-facing self-description
@@ -939,6 +1281,11 @@ class ElasticConnector(PullConnector):
         if sev not in (None, ""):
             filters.append({"range": {prefs.severity_field: {"gte": sev}}})
             kql_parts.append(f"{prefs.severity_field} >= {sev}")
+        # Round 14 (SPEC §4.6.1): the exact rule and severity-level filters of a
+        # ``LogFilterQuery`` and its carve-out mute (none for an ordinary query).
+        extra_filters, extra_kql = self._log_filter_extra(prefs, query)
+        filters.extend(extra_filters)
+        kql_parts.extend(extra_kql)
 
         contains = query.contains
         searched: list[str] = []
@@ -988,11 +1335,16 @@ class ElasticConnector(PullConnector):
         )
 
         order = "desc" if query.sort_desc else "asc"
-        body = {
+        body: dict[str, Any] = {
             "size": size,
             "sort": [{prefs.time_field: {"order": order}}],
             "query": {"bool": {"filter": filters}},
         }
+        if isinstance(query, LogFilterQuery):
+            # Round 14 (SPEC §4.6.6): a filtered Logs read states its match total, so
+            # the total must be exact past the default 10,000-hit tracking bound (the
+            # rule summary's composite count is), never a capped "gte" figure.
+            body["track_total_hits"] = True
         resp = await self._es.search_logs(prefs.data_view_pattern, body)
         kql = " and ".join(kql_parts) if kql_parts else "*"
         return self._to_result(resp, prefs, kql, time_from, time_to, fields_searched=searched)
@@ -1020,11 +1372,13 @@ class ElasticConnector(PullConnector):
         """The filter list + KQL rendering for an aggregation over ``query``.
 
         Deliberately the SAME clauses :meth:`search` builds (term filters on the
-        mapped fields, the ``severity_gte`` range, the lenient free-text
-        ``multi_match`` over ``prefs.free_text_search_fields()`` and the epoch-millis
-        time range), so an exact count and the events a search returns describe one
-        population. ``tests/test_chat_tools_aggregate.py`` pins the two against each
-        other; change them together."""
+        mapped fields, the ``severity_gte`` range, the Round 14 rule and level filters
+        and carve-out mute of a :class:`LogFilterQuery`, the lenient free-text
+        ``multi_match`` over
+        ``prefs.free_text_search_fields()`` and the epoch-millis time range), so an
+        exact count and the events a search returns describe one population.
+        ``tests/test_chat_tools_aggregate.py`` and ``tests/test_logs_rule_filter.py``
+        pin the two against each other; change them together."""
         filters: list[dict[str, Any]] = []
         kql_parts: list[str] = []
         for val, fld in (
@@ -1040,6 +1394,9 @@ class ElasticConnector(PullConnector):
         if sev not in (None, ""):
             filters.append({"range": {prefs.severity_field: {"gte": sev}}})
             kql_parts.append(f"{prefs.severity_field} >= {sev}")
+        extra_filters, extra_kql = self._log_filter_extra(prefs, query)
+        filters.extend(extra_filters)
+        kql_parts.extend(extra_kql)
         if query.contains:
             searched = prefs.free_text_search_fields()
             filters.append(
@@ -1146,9 +1503,10 @@ class ElasticConnector(PullConnector):
         ``keyword``/``ip`` typed has no ``.keyword`` sub-field and comes back as an
         EMPTY group, which would read as "exact, no values"; when a retried group is
         empty while events matched, the result is not trusted and ``None`` is
-        returned. Any other failure — or an id lookup, which is not a population —
-        returns ``None`` so the caller falls back to the newest-N sample path. Never
-        raises."""
+        returned. A search answered from part of its data (a failed shard, a timeout:
+        :func:`response_is_complete`), any other failure, or an id lookup (not a
+        population) returns ``None`` so the caller falls back to the newest-N sample
+        path. Never raises."""
         if query.ids:
             return None
         try:
@@ -1187,6 +1545,12 @@ class ElasticConnector(PullConnector):
                     time_zone=zone,
                 )
                 resp = await self._es.search_logs(prefs.data_view_pattern, body)
+            if not response_is_complete(resp):
+                # A failed shard or a timeout: every count and top list is missing that
+                # shard's share, so nothing here is exact; the caller samples instead.
+                logger.info("aggregate on %s: the search answered from part of its data; sampling instead",
+                            self.connector_id)
+                return None
             result = self._aggregate_result(
                 resp, list(fields), interval=iv,
                 rendering=QueryRendering(
@@ -1207,6 +1571,268 @@ class ElasticConnector(PullConnector):
             logger.warning("aggregate failed for %s: %s", self.connector_id, exc)
             return None
 
+    async def aggregate_composite(
+        self,
+        prefs: Preferences,
+        query: StructuredQuery,
+        fields: list[str] | tuple[str, ...],
+        *,
+        interval: str | None = None,
+        time_zone: str | None = None,
+        page_size: int = COMPOSITE_PAGE_SIZE,
+        max_buckets: int = COMPOSITE_MAX_BUCKETS,
+    ) -> CompositeAggregate | None:
+        """Exact counts per COMBINATION of ``fields`` (Round 14 SPEC §4.7.2: severity
+        then rule, severity then time), through a paged ``composite`` aggregation on
+        the read-only log key (#1).
+
+        A two-level ``terms`` aggregation would keep only the top N children of each
+        parent; a composite aggregation pages through every combination, so a level's
+        rule count and its number of rules are exact. Every source carries
+        ``missing_bucket`` so an event without the field is counted (a ``None`` key)
+        rather than dropped. ``interval`` adds a leading ``date_histogram`` source
+        (a shared ``AGGREGATE_INTERVALS`` or calendar width, or a whole number of
+        minutes, hours or days such as ``12h``), bucketed in ``time_zone`` for a
+        calendar width and in UTC otherwise.
+
+        The filters are :meth:`_aggregate_filters`, the same clauses :meth:`search`
+        builds, so the combinations describe the events a search returns. Paging stops
+        at ``max_buckets`` combinations and reports ``complete=False``; a page answered
+        from part of the data (a failed shard, a timeout: :func:`response_is_complete`)
+        returns ``None``, never a partial count. A ``terms``
+        source on an analysed ``text`` field is a 400 on a real cluster; it is retried
+        ONCE on ``<field>.keyword`` as :meth:`aggregate` does, and a retried field
+        whose every key comes back missing while events matched is a mapping miss:
+        ``None`` is returned. An unknown field name, an id lookup or any failure
+        returns ``None`` so the caller falls back to a stated sample. Never raises."""
+        if query.ids:
+            return None
+        try:
+            prefs = self._effective_prefs(prefs)
+            physical: dict[str, str] = {}
+            for logical in dict.fromkeys(str(f) for f in (fields or ())):
+                path = aggregate_field(prefs, logical)
+                if not path:
+                    return None
+                physical[logical] = path
+            iv: str | None = None
+            if interval:
+                if not (interval in AGGREGATE_INTERVALS or interval in CALENDAR_INTERVALS
+                        or _FIXED_INTERVAL_RE.match(str(interval))):
+                    return None
+                iv = str(interval)
+            if not physical and iv is None:
+                return None
+            zone = time_zone if isinstance(time_zone, str) and _TZ_NAME_RE.match(time_zone) else None
+            size = max(1, min(int(page_size or COMPOSITE_PAGE_SIZE), COMPOSITE_PAGE_SIZE))
+            cap = max(1, int(max_buckets or COMPOSITE_MAX_BUCKETS))
+            filters, kql, time_from, time_to = self._aggregate_filters(prefs, query)
+            try:
+                total, rows, complete = await self._composite_pages(
+                    prefs, filters, physical, iv, zone, size, cap,
+                )
+                retried: list[str] = []
+            except Exception as exc:  # noqa: BLE001 (classified below)
+                if _http_status(exc) != 400 or not physical:
+                    raise
+                candidates = {
+                    logical: path for logical, path in physical.items()
+                    if logical != "severity" and not path.endswith(".keyword")
+                }
+                named = _fields_named_in(exc, candidates.values())
+                retried = [logical for logical, path in candidates.items()
+                           if not named or path in named]
+                keyword_paths = {
+                    logical: (f"{path}.keyword" if logical in retried else path)
+                    for logical, path in physical.items()
+                }
+                total, rows, complete = await self._composite_pages(
+                    prefs, filters, keyword_paths, iv, zone, size, cap,
+                )
+            offset = 1 if iv is not None else 0
+            names = list(physical)
+            for logical in retried:
+                index = offset + names.index(logical)
+                if total > 0 and all(keys[index] is None for keys, _count in rows):
+                    # A ``.keyword`` guess hit a field with no such sub-field: every key
+                    # missing is a mapping miss, not "no values" (the ``aggregate`` rule).
+                    logger.info("composite on %s: a .keyword retry found no values; sampling instead",
+                                self.connector_id)
+                    return None
+            return CompositeAggregate(
+                total=total, fields=names, interval=iv, rows=rows, complete=complete,
+                rendering=QueryRendering(
+                    query=kql, language="kuery", data_view=prefs.data_view_pattern,
+                    time_from=time_from, time_to=time_to,
+                ),
+            )
+        except Exception as exc:  # noqa: BLE001 (degrade to the sample path)
+            logger.warning("composite aggregate failed for %s: %s", self.connector_id, exc)
+            return None
+
+    async def aggregate_level_series(
+        self,
+        prefs: Preferences,
+        query: StructuredQuery,
+        ranges: dict[str, tuple[float | None, float | None]],
+        *,
+        interval: str,
+        rest: str = "info",
+        time_zone: str | None = None,
+        page_size: int = COMPOSITE_PAGE_SIZE,
+        max_buckets: int = COMPOSITE_MAX_BUCKETS,
+    ) -> CompositeAggregate | None:
+        """Exact event counts per (time bucket, named level) whatever the severity
+        values are (Round 14 SPEC §4.6.2: the rule summary's series).
+
+        :meth:`aggregate_composite` over ``(time, severity)`` pages one combination per
+        distinct raw value, so a source whose severity is a continuous number can reach
+        the bucket cap. This read pages the time buckets alone and counts each level
+        inside them with one ``filters`` sub-aggregation of the levels' raw
+        ``[gte, lt)`` ranges on the severity field (``ranges``, already projected
+        through the source's own ceiling: :func:`app.engine.severity_levels.level_ranges`),
+        so it costs one bucket per time bucket. An event in none of the ranges (a
+        missing value, a value below the lowest bound) is counted under ``rest``. A
+        ``range`` compares numbers, so a caller uses this only for a numeric severity
+        field. ``rows`` are ``((bucket start, level), count)`` with zero counts left
+        out; the filters are :meth:`_aggregate_filters` (the population a search
+        returns). An id lookup, an unbounded or overlapping range (a bucket counted more
+        than once), a page answered from part of the data or any failure returns
+        ``None``. Never raises."""
+        if query.ids:
+            return None
+        try:
+            prefs = self._effective_prefs(prefs)
+            if not (interval in AGGREGATE_INTERVALS or interval in CALENDAR_INTERVALS
+                    or _FIXED_INTERVAL_RE.match(str(interval))):
+                return None
+            named: dict[str, dict[str, Any]] = {}
+            for level, (gte, lt) in ranges.items():
+                bound: dict[str, float] = {}
+                if gte is not None:
+                    bound["gte"] = float(gte)
+                if lt is not None:
+                    bound["lt"] = float(lt)
+                if not bound or str(level) == rest:
+                    return None
+                named[str(level)] = {"range": {prefs.severity_field: bound}}
+            if not named:
+                return None
+            zone = time_zone if isinstance(time_zone, str) and _TZ_NAME_RE.match(time_zone) else None
+            size = max(1, min(int(page_size or COMPOSITE_PAGE_SIZE), COMPOSITE_PAGE_SIZE))
+            cap = max(1, int(max_buckets or COMPOSITE_MAX_BUCKETS))
+            filters, kql, time_from, time_to = self._aggregate_filters(prefs, query)
+            rows: list[tuple[tuple[Any, ...], int]] = []
+            overlapping = False
+
+            def collect(keys: tuple[Any, ...], bucket: dict[str, Any]) -> None:
+                nonlocal overlapping
+                when = keys[0]
+                counts = ((bucket.get("levels") or {}).get("buckets") or {})
+                counted = 0
+                for level in named:
+                    n = int((counts.get(level) or {}).get("doc_count") or 0)
+                    counted += n
+                    if n:
+                        rows.append(((when, level), n))
+                remainder = int(bucket.get("doc_count") or 0) - counted
+                if remainder < 0:
+                    overlapping = True
+                elif remainder:
+                    rows.append(((when, rest), remainder))
+
+            total, _times, complete = await self._composite_pages(
+                prefs, filters, {}, str(interval), zone, size, cap,
+                sub_aggs={"levels": {"filters": {"filters": named}}}, visit=collect,
+            )
+            if overlapping:
+                logger.info("level series on %s: an event fell in two level ranges; not exact",
+                            self.connector_id)
+                return None
+            return CompositeAggregate(
+                total=total, fields=["level"], interval=str(interval), rows=rows, complete=complete,
+                rendering=QueryRendering(
+                    query=kql, language="kuery", data_view=prefs.data_view_pattern,
+                    time_from=time_from, time_to=time_to,
+                ),
+            )
+        except Exception as exc:  # noqa: BLE001 (the caller keeps what it has)
+            logger.warning("level series failed for %s: %s", self.connector_id, exc)
+            return None
+
+    async def _composite_pages(
+        self,
+        prefs: Preferences,
+        filters: list[dict[str, Any]],
+        paths: dict[str, str],
+        interval: str | None,
+        time_zone: str | None,
+        size: int,
+        cap: int,
+        *,
+        sub_aggs: dict[str, Any] | None = None,
+        visit: Callable[[tuple[Any, ...], dict[str, Any]], None] | None = None,
+    ) -> tuple[int, list[tuple[tuple[Any, ...], int]], bool]:
+        """Page one composite aggregation to its end or to ``cap`` combinations:
+        ``(exact total, rows, complete)``. ``sub_aggs`` run inside every bucket and
+        ``visit(keys, bucket)`` sees each raw bucket (its sub-aggregation results).
+        Raises what the search raises, and :class:`IncompleteSearchError` for a page
+        answered from part of the data."""
+        sources: list[dict[str, Any]] = []
+        if interval is not None:
+            sources.append({"t": {"date_histogram": self._histogram(prefs.time_field, interval, time_zone)}})
+        for logical, path in paths.items():
+            sources.append({f"f_{logical}": {"terms": {"field": path, "missing_bucket": True}}})
+        rows: list[tuple[tuple[Any, ...], int]] = []
+        total: int | None = None
+        after: dict[str, Any] | None = None
+        complete = True
+        while True:
+            composite: dict[str, Any] = {"size": size, "sources": copy.deepcopy(sources)}
+            if after is not None:
+                composite["after"] = after
+            pairs_agg: dict[str, Any] = {"composite": composite}
+            if sub_aggs:
+                pairs_agg["aggs"] = copy.deepcopy(sub_aggs)
+            body = {
+                "size": 0,
+                "track_total_hits": True,
+                "query": {"bool": {"filter": copy.deepcopy(filters)}},
+                "aggs": {"pairs": pairs_agg},
+            }
+            resp = await self._es.search_logs(prefs.data_view_pattern, body)
+            if not response_is_complete(resp):
+                # One partial page (a failed shard, a timeout) makes the whole set a
+                # lower bound: the caller's ``None`` path states a sample instead.
+                raise IncompleteSearchError("a composite page answered from part of its data")
+            if total is None:
+                hits_total = (resp.get("hits") or {}).get("total")
+                if isinstance(hits_total, dict):
+                    total = int(hits_total.get("value") or 0)
+                else:
+                    total = int(hits_total or 0)
+            pairs = (resp.get("aggregations") or {}).get("pairs") or {}
+            buckets = [b for b in pairs.get("buckets") or [] if isinstance(b, dict)]
+            for bucket in buckets:
+                key = bucket.get("key") or {}
+                keys: list[Any] = []
+                if interval is not None:
+                    t = key.get("t")
+                    keys.append(None if t is None else self._bucket_time(t))
+                for logical in paths:
+                    keys.append(key.get(f"f_{logical}"))
+                rows.append((tuple(keys), int(bucket.get("doc_count") or 0)))
+                if visit is not None:
+                    visit(tuple(keys), bucket)
+            after_key = pairs.get("after_key")
+            if not buckets or len(buckets) < size or not isinstance(after_key, dict):
+                break
+            if len(rows) >= cap:
+                complete = False
+                break
+            after = after_key
+        return int(total or 0), rows, complete
+
     def _aggregate_result(
         self,
         resp: dict[str, Any],
@@ -1214,9 +1840,11 @@ class ElasticConnector(PullConnector):
         *,
         interval: str | None,
         rendering: QueryRendering,
-    ) -> AggregateResult:
+    ) -> RankedAggregateResult:
         """Parse the aggregation response. A missing aggregation degrades to an empty
-        group rather than failing the whole result."""
+        group rather than failing the whole result. Each group's count error bound is
+        kept (:class:`RankedAggregateResult`), so a caller can tell an exact top list
+        from one a multi-shard read only approximated."""
         hits_total = (resp.get("hits") or {}).get("total")
         if isinstance(hits_total, dict):
             total = int(hits_total.get("value") or 0)
@@ -1225,6 +1853,7 @@ class ElasticConnector(PullConnector):
         aggs = resp.get("aggregations") or {}
         groups: dict[str, list[AggregateBucket]] = {}
         other: dict[str, int] = {}
+        error_bound: dict[str, int] = {}
         distinct: dict[str, int] = {}
         matrix: dict[str, list[AggregateBucket]] | None = None
         for index, logical in enumerate(logical_fields):
@@ -1240,6 +1869,13 @@ class ElasticConnector(PullConnector):
                 # Backends (and the offline fake) that omit it: the remainder of the
                 # exact total. A multi-valued field can make this a lower bound only.
                 other[logical] = max(0, total - sum(g.count for g in groups[logical]))
+            bound = terms.get("doc_count_error_upper_bound")
+            if isinstance(bound, (int, float)) and not isinstance(bound, bool):
+                error_bound[logical] = int(bound)
+            elif "buckets" in terms and "sum_other_doc_count" not in terms and bound is None:
+                # A backend that reports neither figure (the offline fake) answers from
+                # one shard with exact counts: the assumption the remainder above makes.
+                error_bound[logical] = 0
             card = (aggs.get(f"d_{logical}") or {}).get("value")
             if isinstance(card, (int, float)):
                 distinct[logical] = int(card)
@@ -1259,9 +1895,10 @@ class ElasticConnector(PullConnector):
             for b in ((aggs.get("over_time") or {}).get("buckets") or [])
             if isinstance(b, dict)
         ]
-        return AggregateResult(
+        return RankedAggregateResult(
             total=total, groups=groups, other=other, distinct=distinct,
             over_time=over_time, interval=interval, matrix=matrix, rendering=rendering,
+            error_bound=error_bound,
         )
 
     # --------------------------------------------------------------------- #

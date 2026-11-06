@@ -123,7 +123,6 @@ class AppHelpTool(ChatTool):
         held = frozenset(ctx.grants)
         results: list[dict[str, Any]] = []
         citations = []
-        console_ids: list[str] = []
         # One Help Center section can be split into several chunks that share its
         # link: they share ONE ``D*`` id and one citation, so the Sources list never
         # shows the same section twice.
@@ -153,11 +152,9 @@ class AppHelpTool(ChatTool):
                 "text": chunk.text,
                 "console": list(chunk.console),
             })
-            console_ids.extend(chunk.console)
+        console_ids = _destinations(hits, query, knowledge)
         if topic is not None and topic.console:
             console_ids.insert(0, topic.console)
-        if not console_ids:
-            console_ids.extend(t.id for t in search_targets(query, knowledge=knowledge))
         targets = [knowledge.targets[i] for i in dict.fromkeys(console_ids) if i in knowledge.targets]
         targets = targets[:MAX_CONSOLE_TARGETS]
         links = [console_link(t, held) for t in targets]
@@ -167,8 +164,8 @@ class AppHelpTool(ChatTool):
             "docs_version": knowledge.docs_version,
             "results": results,
             "console_targets": [
-                {"id": l.id, "label": l.label, "requires": l.requires, "allowed": l.allowed}
-                for l in links
+                {"id": link.id, "label": link.label, "requires": link.requires, "allowed": link.allowed}
+                for link in links
             ],
         }
         if not results:
@@ -201,6 +198,30 @@ class AppHelpTool(ChatTool):
             citations=citations,
             console_links=[t.id for t in targets],
         )
+
+
+def _destinations(hits: list[tuple[Any, float]], query: str, knowledge: Any) -> list[str]:
+    """The console destinations for ``hits``, the best section's page first.
+
+    1. The breadcrumbs of the sections on the BEST section's page.
+    2. Then the console pages the labels and keywords match (:func:`search_targets`):
+       all of them when step 1 named none, otherwise only those another cited section
+       also names. A section of another page that merely shares a word with the
+       question ("CSV", "export", "log") never lends its page on its own: "How do I
+       export a chart as CSV?" cites chat's Export section first and the audit log's
+       Exporting section third, and the audit log is not where a chart is exported;
+       "Kill the export job" keeps Analytics › Jobs, which both the Data export section
+       and the console keywords name.
+    3. When nothing matched yet, the other cited sections' breadcrumbs ("Where are
+       runbooks?" cites a section of the runbooks page only as its second hit)."""
+    labelled = [t.id for t in search_targets(query, knowledge=knowledge)]
+    if not hits:
+        return labelled
+    page = hits[0][0].page
+    ids = [i for chunk, _ in hits if chunk.page == page for i in chunk.console]
+    others = [i for chunk, _ in hits if chunk.page != page for i in chunk.console]
+    ids += [i for i in labelled if i in others] if ids else labelled
+    return ids or others
 
 
 def _guide_artifact(chunk: Any, links: list[Any], citations: list[Any]) -> Artifact | None:

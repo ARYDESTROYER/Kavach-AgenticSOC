@@ -18,6 +18,7 @@ import {
   downloadJobArtifact,
   isTerminalJobStatus,
   JOB_ACCEPTED_EVENT,
+  JOB_TOAST_RELEASED_EVENT,
   jobActionLabel,
   jobDestination,
   jobDestinationFromUrl,
@@ -105,17 +106,30 @@ export function JobMonitor({ actor, onNavigate }: { actor?: string | null; onNav
   const statusRef = React.useRef(new Map<string, string>());
   const locallyAcceptedRef = React.useRef(loadPending(actor));
   const seenRef = React.useRef(loadSeen(actor));
+  // Jobs whose submitting surface reports the outcome itself (announceJobAccepted with
+  // `quiet`), and the terminal jobs held for them until that surface releases them. In
+  // memory only: after a reload the surface is gone and the durable Inbox has the notice.
+  const quietRef = React.useRef(new Set<string>());
+  const heldRef = React.useRef(new Map<string, BackgroundJob>());
 
   React.useEffect(() => {
     seenRef.current = loadSeen(actor);
     initializedRef.current = false;
     statusRef.current = new Map();
     locallyAcceptedRef.current = loadPending(actor);
+    quietRef.current = new Set();
+    heldRef.current = new Map();
   }, [actor]);
 
   const showTerminalToast = React.useCallback(
     async (job: BackgroundJob) => {
       if (seenRef.current.has(job.job_id)) return;
+      if (quietRef.current.has(job.job_id)) {
+        // The surface that waits for it reports the outcome: hold the toast until it
+        // either says it did (never shown) or stops waiting first (shown then).
+        heldRef.current.set(job.job_id, job);
+        return;
+      }
       seenRef.current.add(job.job_id);
       persistSeen(actor, seenRef.current);
 
@@ -207,9 +221,10 @@ export function JobMonitor({ actor, onNavigate }: { actor?: string | null; onNav
 
   React.useEffect(() => {
     const onAccepted = (event: Event) => {
-      const detail = (event as CustomEvent<{ job_id?: unknown }>).detail;
+      const detail = (event as CustomEvent<{ job_id?: unknown; quiet?: unknown }>).detail;
       const jobId = typeof detail?.job_id === 'string' ? detail.job_id.trim() : '';
       if (!jobId) return;
+      if (detail?.quiet === true) quietRef.current.add(jobId);
       locallyAcceptedRef.current.add(jobId);
       persistPending(actor, locallyAcceptedRef.current);
       // Always seed queued: even an unusually fast 202 response/list transition to
@@ -217,9 +232,27 @@ export function JobMonitor({ actor, onNavigate }: { actor?: string | null; onNav
       statusRef.current.set(jobId, 'queued');
       void refresh();
     };
+    const onReleased = (event: Event) => {
+      const detail = (event as CustomEvent<{ job_id?: unknown; reported?: unknown }>).detail;
+      const jobId = typeof detail?.job_id === 'string' ? detail.job_id.trim() : '';
+      if (!jobId || !quietRef.current.delete(jobId)) return;
+      const held = heldRef.current.get(jobId);
+      heldRef.current.delete(jobId);
+      if (detail?.reported === true) {
+        // Told already: never toast it, even when this observer sees it end later.
+        seenRef.current.add(jobId);
+        persistSeen(actor, seenRef.current);
+        return;
+      }
+      if (held) void showTerminalToast(held);
+    };
     window.addEventListener(JOB_ACCEPTED_EVENT, onAccepted);
-    return () => window.removeEventListener(JOB_ACCEPTED_EVENT, onAccepted);
-  }, [actor, refresh]);
+    window.addEventListener(JOB_TOAST_RELEASED_EVENT, onReleased);
+    return () => {
+      window.removeEventListener(JOB_ACCEPTED_EVENT, onAccepted);
+      window.removeEventListener(JOB_TOAST_RELEASED_EVENT, onReleased);
+    };
+  }, [actor, refresh, showTerminalToast]);
 
   const onEvent = React.useCallback(
     (event: StreamEvent) => {

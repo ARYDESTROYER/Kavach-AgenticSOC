@@ -25,6 +25,8 @@ def _mk_case(
     members: int = 6,
     persona: str = "identity",
     playbook_id: str = "",
+    runbook_id: str | None = None,
+    runbook_version: int | None = None,
 ) -> Case:
     return Case(
         case_id=case_id,
@@ -41,6 +43,8 @@ def _mk_case(
         status=CaseStatus.OPEN,
         agent_persona=persona,
         playbook_id=playbook_id,
+        runbook_id=runbook_id,
+        runbook_version=runbook_version,
         severity_band="high",
         severity_source="source_asserted",
     )
@@ -198,8 +202,10 @@ async def test_stages_fence_untrusted_text(app_state):
 
 
 async def test_stages_fold_why_content_into_expansions(app_state):
-    """Task 5: the Why dossier (knowledge / memory / enrichment / reasoning / playbook)
-    is folded into the right stage's steps — triage gets the basis, investigate the work."""
+    """Task 5: the Why dossier (knowledge / memory / enrichment / reasoning / the
+    procedure) is folded into the right stage's steps: triage gets the basis,
+    investigate the work. This case was investigated before Round 14, so its stored
+    ``playbook_id`` and the ``playbook_selector`` row are shown as they were stored."""
     state = app_state
     await state.cases.save(_mk_case(case_id="case-s-why", playbook_id="brute_force_response"))
     await state.audit.write(AuditDoc(
@@ -227,10 +233,15 @@ async def test_stages_fold_why_content_into_expansions(app_state):
     res = await case_stages("case-s-why", state)
     by = {s["kind"]: s for s in res["stages"]}
 
-    # triage — the basis: playbook + operator memory
-    triage_kinds = {(st["kind"], st["label"]) for st in by["triage"]["steps"]}
-    assert ("note", "playbook") in triage_kinds
-    assert any(st["kind"] == "memory" and "known infra admin" in st["body"] for st in by["triage"]["steps"])
+    # triage: the basis, the procedure (stored before Round 14, shown verbatim and
+    # untrusted) + operator memory
+    triage = by["triage"]["steps"]
+    legacy = next(st for st in triage if st["label"] == "runbook (before Round 14)")
+    assert legacy["kind"] == "note" and legacy["body"] == "brute_force_response"
+    assert legacy["trusted"] is False
+    why = next(st for st in triage if st["label"] == "why this runbook")
+    assert why["body"] == "matched the brute_force cluster" and why["trusted"] is False
+    assert any(st["kind"] == "memory" and "known infra admin" in st["body"] for st in triage)
 
     # investigate — the work: reasoning + tool + knowledge (fenced) + enrichment
     inv = by["investigate"]["steps"]
@@ -240,6 +251,52 @@ async def test_stages_fold_why_content_into_expansions(app_state):
     know = [st for st in inv if st["kind"] == "knowledge"]
     assert know and know[0]["trusted"] is False and "lock the account" in know[0]["body"]
     assert any(st["kind"] == "note" and st["label"] == "enrichment" and "reputation 80" in st["body"] for st in inv)
+
+
+async def test_stages_triage_names_the_runbook_that_guided_the_run(app_state):
+    """Round 14 (SPEC §4.10.9): the triage stage names the Published runbook whose
+    guidance the investigator received, with its version, and why the matcher chose
+    it. The title is our own reviewed text; the reason quotes matched rule values,
+    which come from logs, so it is untrusted. No step says "playbook" and no step
+    carries an em dash."""
+    state = app_state
+    await state.cases.save(_mk_case(
+        case_id="case-s-rb", runbook_id="brute-force-password-spray", runbook_version=1,
+    ))
+    await state.audit.write(AuditDoc(
+        ts="2026-06-16T10:00:00+00:00", case_id="case-s-rb", actor="runbook_selector",
+        action="runbook.selected", action_type=ActionType.DECISION,
+        result_summary="runbook=brute-force-password-spray v1 persona=identity reason=matched",
+        tool_input={"runbook_selection": {
+            "id": "brute-force-password-spray", "version": 1,
+            "title": "Brute force and password spray", "reason": "Matched rule sshd.",
+        }},
+    ))
+    # A later attachment row by the same actor is not the selection.
+    await state.audit.write(AuditDoc(
+        ts="2026-06-16T10:00:05+00:00", case_id="case-s-rb", actor="runbook_selector",
+        action="run.attached", action_type=ActionType.RUNBOOK,
+        result_summary="Runbook Brute force and password spray v1 attached.",
+    ))
+
+    res = await case_stages("case-s-rb", state)
+    triage = next(s for s in res["stages"] if s["kind"] == "triage")
+    assert triage["status"] == "done"
+    steps = {(st["label"], st["body"], st["trusted"]) for st in triage["steps"]}
+    assert ("runbook", "Brute force and password spray (version 1)", True) in steps
+    assert ("why this runbook", "Matched rule sshd.", False) in steps
+    for st in triage["steps"]:
+        assert "playbook" not in st["label"].lower()
+        assert "\u2014" not in st["body"]
+
+    # A legacy case whose id a built-in merged also names that built-in.
+    await state.cases.save(_mk_case(case_id="case-s-legacy", playbook_id="brute_force_login"))
+    res = await case_stages("case-s-legacy", state)
+    triage = next(s for s in res["stages"] if s["kind"] == "triage")
+    legacy = next(st for st in triage["steps"] if st["label"] == "runbook (before Round 14)")
+    assert legacy["body"] == (
+        "brute_force_login. Now covered by the Brute force and password spray runbook."
+    )
 
 
 async def test_stages_reasoning_prefers_full_tool_input(app_state):

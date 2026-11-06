@@ -42,10 +42,23 @@ depends on the selected state store and a stable JWT secret.
 A sign-in without **Remember me** uses a browser-session cookie: it usually ends when
 the browser closes, and the server's idle and absolute limits apply in any case. Its
 token lasts `AUTH_TOKEN_HOURS` (default 12 hours; a value above 144 hours is reduced to
-144, for bearer-token API clients too). When a session ends on its own, the
-sign-in page says why: after a period of inactivity, after the time limit, because it
-was ended from another device or by an administrator, or because all of the account's
-sessions were signed out.
+144, for bearer-token API clients too).
+
+When a session ends on its own, the sign-in page says why, without stating how long the
+session lasted:
+
+- after a period of inactivity: "For your security, you were signed out after a period
+  of inactivity. Sign in to continue.";
+- when it was ended from another device or by an administrator: "This session was ended
+  from another device or by an administrator. Sign in to continue.";
+- when all of the account's sessions were signed out: "All of your sessions were signed
+  out. Sign in to continue.";
+- when the session reached its time limit, or for any other reason: "For your security,
+  you were signed out. Sign in to continue."
+
+A remembered session that ran out while the browser was closed shows the time-limit
+notice once on this device. The server still reports the limit (`lifetime_seconds` on
+`GET /api/auth/me`); the console does not show it.
 
 ## Remember me
 

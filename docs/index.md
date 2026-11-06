@@ -32,8 +32,8 @@ Most readers should begin here.
 | Ask a read-only question, resume a saved conversation, or build a report from answers | [Workspace Chat](analyst/chat.md) |
 | Find source evidence | [Logs and search](analyst/logs-search.md) |
 | Coordinate analyst work | [Collaboration](analyst/collaboration.md) |
-| Build or update a response procedure | [Playbooks and approvals](automation/playbooks-approvals.md) |
-| Add reusable investigation guidance | [Runbooks](intelligence/runbooks.md) |
+| Write, review or publish a response runbook | [Runbooks](intelligence/runbooks.md) |
+| Review what waits for a person's approval | [Approvals](automation/approvals.md) |
 | Read posture and performance | [Analytics](analyst/analytics.md) |
 | Monitor long-running work, cancellation, and downloads | [Background jobs](operations/background-jobs.md) |
 
@@ -105,8 +105,8 @@ Start with the [analyst workflow](analyst/overview.md), then continue to
 
 Read [automation](automation/index.md), [rules](automation/rules.md),
 [tuning and baselines](automation/tuning-baselines.md), and
-[playbooks and approvals](automation/playbooks-approvals.md). Maintain retrievable
-investigation guidance under [Runbooks](intelligence/runbooks.md). Source mapping and
+[approvals](automation/approvals.md). Write, review and publish response procedures under
+[Runbooks](intelligence/runbooks.md). Source mapping and
 custom connector guidance is grouped under [data sources](sources/index.md).
 
 ### Administrators

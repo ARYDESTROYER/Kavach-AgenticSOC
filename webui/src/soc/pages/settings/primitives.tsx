@@ -1,23 +1,39 @@
 /**
- * Settings shared form bits — the small building blocks every settings section
- * renderer composes (Round-5 Sett-A decomposition).
+ * Settings shared form bits: the building blocks every settings section renderer
+ * composes (Round-5 Sett-A decomposition, Round 14 grouped panels).
  *
- * These were previously private functions inside the 2673-line `Settings.tsx`
- * god-file. They now compose the shared `Field`, input, select, switch, and Settings
- * section primitives so every extracted `<section>.tsx` inherits one accessible,
- * divider-led command-surface grammar without a circular import back into the page.
+ * Round 14 (SPEC §4.9.6, operator choice C9 option A, "grouped panels"): a section is
+ * one `SettingsSection` (its `h2` title, a help tip, "Ask about this" and its actions in
+ * one row, nothing else above the settings) holding `SettingsGroup`s: each group's title
+ * (15px) and one-line caption sit above one tinted panel of `SettingRow`s divided by
+ * hairlines, 40px between groups, the whole section capped at 44rem for forms (tables
+ * take the full width). A row is a label (14px medium) and one muted line of help (13px,
+ * at most 42rem) with the control on the row's end: a switch, a select, a field (any
+ * Field-based control: `NumPref`, `TextPref`, `NumberField`, `SecretInput`), a status
+ * (`StatusDot`) or an action; wide fields sit under their label; a link row opens
+ * another page; a block row holds free content (a table, a preview) on the row inset.
+ * Below 640px every field stacks under its label, so a field never draws over its
+ * label on a phone. In a full-width section (Enrichment, Roles) a labelled control row
+ * still spans the panel, but its content is capped at a form row's content width, so the
+ * control sits as near its label as in a 44rem form section; a block row of form-like
+ * content (`width="form"`: fields and a button, a callout between switches) takes the
+ * same cap, so a group keeps one right edge.
+ *
+ * `SectionTitle` stays as the compatibility title row for section bodies that live
+ * outside this folder (branding, appearance, notifications, Demo, danger zone): inside
+ * the Settings page it renders the same title row as `SettingsSection`, with the
+ * section's registry title and help, so every section reads the same.
  *
  * Security: every value rendered here is operator-entered (trusted). No secrets are
  * displayed; secret rows render a `configured` boolean only.
  */
 import * as React from 'react';
-import type { LucideIcon } from 'lucide-react';
+import { ChevronRight } from 'lucide-react';
 
 import type { ModelConfig, ModelsResponse, Preferences } from '@/lib/types';
 import { humanizeToken } from '@/lib/format';
 import { cn } from '@/lib/cn';
-import { materialBar } from '@/lib/ui-recipes';
-import { useScrollEdgeRef } from '@/design-system/material';
+import { Panel } from '@/design-system/panel';
 
 import { Input } from '@/ui/input';
 import { Label } from '@/ui/label';
@@ -30,12 +46,23 @@ import {
   SelectValue,
 } from '@/ui/select';
 
+import { SETTINGS_FORM_MAX_WIDTH, SETTINGS_ROW_CONTENT_MAX_WIDTH } from '@/soc/components/SettingsGrid';
+import { Field, FieldLayoutContext } from '@/soc/components/Field';
+import { cappedInlineFieldLayout, inlineFieldLayout, wideFieldLayout } from './field-layouts';
 import {
-  SettingsTOC,
-  type SettingsTOCItem,
-} from '@/soc/components/SettingsGrid';
-import { Field } from '@/soc/components/Field';
+  NumberField,
+  defaultNumberFieldSize,
+  widestValueChars,
+  type NumberFieldSize,
+} from '@/soc/components/NumberField';
+import { safeRouteHref, useRouteLinkClick } from '@/soc/route-link';
 import { SecretField } from '@/soc/components/SecretField';
+import { HelpTip } from '@/soc/components/HelpTip';
+import { AskAboutThis } from '@/soc/components/AskAboutThis';
+import { PageHeader } from '@/soc/components/PageHeader';
+
+/** The Settings row layouts of `Field` (see `field-layouts.tsx`), for a lone Field laid out as a row. */
+export { inlineFieldLayout, wideFieldLayout };
 
 /** The `{ prefs, update }` contract every top-level settings section renderer takes. */
 export type SecProps = {
@@ -50,162 +77,656 @@ export function errMsg(e: unknown, fallback: string): string {
   return e instanceof Error ? e.message : fallback;
 }
 
-export interface SectionTitleProps extends Omit<React.HTMLAttributes<HTMLDivElement>, 'title'> {
-  title: string;
-  sub?: string;
-  /** Optional actions that belong to this active settings section. */
-  actions?: React.ReactNode;
+/* ------------------------------------------------------------------------------------ */
+/* Round 14: SettingsSection, SettingsGroup, SettingRow (C9 option A, grouped panels)    */
+/* ------------------------------------------------------------------------------------ */
+
+/**
+ * What the Settings shell knows about the active section and hands to its
+ * `SettingsSection` without every renderer threading it: the section's registry title
+ * and help, the "Ask about this" topic, whether the section holds unsaved changes and
+ * how wide it renders. Inside the Settings page the registry (`settings-sections-meta.ts`)
+ * is the one source of a section's title and help: they win over a `title` or `help`
+ * prop, which only applies where no shell provides them (a standalone page, a test).
+ */
+export interface SettingsSectionContextValue {
+  /** The section's title in `settings-sections-meta.ts` (the rail label, also its `h2`). */
+  title?: string;
+  /** The section's help tip text. */
+  help?: string;
+  /** The `console_map` topic of "Ask about this" (`settings:<id>`). */
+  askTopic?: string;
+  /** The section holds unsaved changes (it keeps room for the save bar under its last row). */
+  modified?: boolean;
+  /** `form` (44rem) or `full` (a table section). */
+  width?: 'form' | 'full';
 }
 
-export function SectionTitle({ title, sub, actions, className, ...rest }: SectionTitleProps) {
+export const SettingsSectionContext = React.createContext<SettingsSectionContextValue>({});
+
+/**
+ * The measure of the section a `SettingRow` sits in, provided by `SettingsSection` (and a
+ * standalone `SettingsPageSection`). A row outside one (a section body that lays out its
+ * own content) takes the shell's `SettingsSectionContext.width`; with neither, `form`.
+ */
+const SettingRowMeasureContext = React.createContext<'form' | 'full' | undefined>(undefined);
+
+/** Whether a row sits in a full-width section, so its content box takes the form row's width. */
+function useRowContentCapped(): boolean {
+  const section = React.useContext(SettingRowMeasureContext);
+  const shell = React.useContext(SettingsSectionContext).width;
+  return (section ?? shell ?? 'form') === 'full';
+}
+
+export interface SettingsSectionProps {
+  /**
+   * The section title, the same words as its entry in `settings-sections-meta.ts`; the
+   * section's `h2`. Inside the Settings page the registry title wins (one source); this
+   * applies only where no shell provides one.
+   */
+  title?: string;
+  /**
+   * One or two plain sentences on what the section controls, shown in a help tip beside
+   * the title. Inside the Settings page the registry help wins (one source); this applies
+   * only where no shell provides one.
+   */
+  help?: string;
+  /** Section actions on the title row (Refresh as a `RefreshButton`, Add user). */
+  actions?: React.ReactNode;
+  /** "Ask about this" topic; defaults to the shell's `SettingsSectionContext`. */
+  askTopic?: string;
+  /** Unsaved changes in this section; defaults to the shell's context. Only keeps room for the save bar. */
+  modified?: boolean;
+  /**
+   * `form` (the default): capped at 44rem so a control sits within reach of its label.
+   * `full`: a table section; its labelled control rows still span the panel but cap their
+   * content at a form row's width. Defaults to the shell's context, then `form`.
+   */
+  width?: 'form' | 'full';
+  className?: string;
+  children?: React.ReactNode;
+}
+
+/**
+ * The section title row: the `h2`, the help tip beside it, then "Ask about this" and the
+ * section's actions on the row's end. Shared by `SettingsSection` and the compatibility
+ * `SectionTitle`, so every section starts the same way.
+ */
+function SectionTitleRow({
+  id,
+  title,
+  help,
+  askTopic,
+  actions,
+  className,
+}: {
+  id?: string;
+  title: string;
+  help?: string;
+  askTopic?: string;
+  actions?: React.ReactNode;
+  className?: string;
+}) {
   return (
-    <div
+    <div className={cn('flex flex-wrap items-center gap-x-4 gap-y-2', className)} data-settings-section-title="">
+      <div className="flex min-w-0 items-center gap-1.5">
+        <h2 id={id} className="min-w-0 break-words text-2xl text-foreground">
+          {title}
+        </h2>
+        {help ? <HelpTip text={help} label={`About ${title}`} alwaysPopover /> : null}
+      </div>
+      {askTopic || actions ? (
+        <div className="ml-auto flex flex-wrap items-center gap-x-4 gap-y-2">
+          {askTopic ? <AskAboutThis topic={askTopic} subject={title} /> : null}
+          {actions}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * One Settings section: the title row and its groups. Nothing else sits above the
+ * settings (no description line, no "Modified" text; the Settings rail's dot carries the
+ * unsaved state and the save bar its count).
+ */
+export function SettingsSection({
+  title,
+  help,
+  actions,
+  askTopic,
+  modified,
+  width,
+  className,
+  children,
+}: SettingsSectionProps) {
+  const ctx = React.useContext(SettingsSectionContext);
+  // The registry is the one source of the title and help inside Settings (the rail label,
+  // the h2 and the help tip can never disagree); the props cover a standalone render.
+  const name = ctx.title ?? title ?? '';
+  const helpText = ctx.help ?? help;
+  const topic = askTopic ?? ctx.askTopic;
+  const dirty = modified ?? ctx.modified ?? false;
+  const measure = width ?? ctx.width ?? 'form';
+  const titleId = `${React.useId()}-title`;
+  return (
+    <section
+      aria-labelledby={titleId}
+      data-settings-section={measure}
       className={cn(
-        'flex flex-wrap items-start justify-between gap-x-6 gap-y-3 border-b border-border/80 pb-5',
+        'min-w-0',
+        measure === 'form' ? SETTINGS_FORM_MAX_WIDTH : 'max-w-none',
+        // The save bar pins over the bottom of the content: keep 72px of room under the
+        // last row so it never covers a control.
+        dirty && 'pb-[72px]',
         className,
       )}
-      {...rest}
     >
-      <div className="min-w-0 flex-1 space-y-1.5">
-        <h2 className="text-xl font-semibold tracking-tight text-foreground">{title}</h2>
-        {sub ? <p className="max-w-3xl text-sm leading-relaxed text-muted-foreground">{sub}</p> : null}
-      </div>
-      {actions ? <div className="flex max-w-full flex-wrap items-center justify-end gap-2">{actions}</div> : null}
-    </div>
+      <SectionTitleRow id={titleId} title={name} help={helpText} askTopic={topic} actions={actions} />
+      <SettingRowMeasureContext.Provider value={measure}>
+        <div className="mt-6 space-y-10 xl:mt-8">{children}</div>
+      </SettingRowMeasureContext.Provider>
+    </section>
   );
 }
 
-/** A subsection heading used to group related controls inside one Settings section. */
-export function SubHeader({ title, children }: { title: string; children?: React.ReactNode }) {
-  return (
-    <div className="flex flex-wrap items-center justify-between gap-2">
-      <h3 className="text-sm font-semibold tracking-tight text-foreground">{title}</h3>
-      {children}
-    </div>
-  );
-}
-
-/**
- * Track which anchored `SettingsCard` is currently in view, so the in-section TOC can
- * highlight it. Pure scroll-spy via IntersectionObserver; no-ops in non-DOM envs.
- */
-export function useActiveAnchor(anchors: string[]): string {
-  const [active, setActive] = React.useState<string>(anchors[0] ?? '');
-  React.useEffect(() => {
-    setActive((cur) => (anchors.includes(cur) ? cur : anchors[0] ?? ''));
-    if (typeof document === 'undefined' || typeof IntersectionObserver === 'undefined') return;
-    const visible = new Map<string, number>();
-    const obs = new IntersectionObserver(
-      (entries) => {
-        for (const e of entries) {
-          if (e.isIntersecting) visible.set(e.target.id, e.intersectionRatio);
-          else visible.delete(e.target.id);
-        }
-        let best = '';
-        let bestRatio = -1;
-        for (const [id, ratio] of visible) {
-          if (ratio > bestRatio) {
-            best = id;
-            bestRatio = ratio;
-          }
-        }
-        if (best) setActive(best);
-      },
-      { rootMargin: '-96px 0px -55% 0px', threshold: [0, 0.25, 0.5, 1] },
-    );
-    const els = anchors
-      .map((a) => document.getElementById(a))
-      .filter((el): el is HTMLElement => Boolean(el));
-    els.forEach((el) => obs.observe(el));
-    return () => obs.disconnect();
-    // anchors is a stable literal per section; join for a stable dep.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [anchors.join('|')]);
-  return active;
-}
-
-/**
- * The shared wrapper for a multi-card Settings section: a section title and, for
- * long sections (≥ 2 TOC items), a sticky in-section anchor TOC that scroll-spies the
- * cards. The TOC sits as a thin sticky bar above the cards and uses the full width.
- */
-export function SectionShell({
-  title,
-  sub,
-  toc,
-  children,
-  actions,
-  rail,
-}: {
+export interface SectionTitleProps {
   title: string;
+  /** The section's explanation: shown in the help tip (never as a line under the title). */
   sub?: string;
-  toc?: SettingsTOCItem[];
-  children: React.ReactNode;
-  /** Optional header actions rendered on the section title's right (e.g. Reset). */
+  /** Actions that belong to this section, on the title row's end. */
   actions?: React.ReactNode;
-  /**
-   * Render the in-section anchor TOC as a LEFT vertical rail beside the cards (matching
-   * the focused-section mockups) instead of the default horizontal sticky strip. Opt-in
-   * per section so other sections keep the horizontal bar. Falls back to no rail when the
-   * section has < 2 anchors.
-   */
-  rail?: boolean;
+  className?: string;
+}
+
+/**
+ * The title row for a section body that lives outside this folder and lays out its own
+ * content (branding, appearance, notifications, Demo, danger zone). Inside the Settings
+ * page it shows the section's registry title and help (so the `h2` always equals the
+ * rail label) and "Ask about this"; elsewhere it shows its own title and `sub`. New
+ * section bodies use `SettingsSection`.
+ */
+export function SectionTitle({ title, sub, actions, className }: SectionTitleProps) {
+  const ctx = React.useContext(SettingsSectionContext);
+  return (
+    <SectionTitleRow
+      title={ctx.title ?? title}
+      help={ctx.help ?? sub}
+      askTopic={ctx.askTopic}
+      actions={actions}
+      className={cn('mb-6 xl:mb-8', className)}
+    />
+  );
+}
+
+/**
+ * A body that is both a Settings section and (for an old bookmark) a standalone page:
+ * embedded, the `SettingsSection` title row; standalone, the page header (title, help
+ * tip and actions) above the same content.
+ */
+export function SettingsPageSection({
+  embedded,
+  title,
+  help,
+  actions,
+  width,
+  children,
+}: {
+  embedded: boolean;
+  title: string;
+  help?: string;
+  actions?: React.ReactNode;
+  width?: 'form' | 'full';
+  children?: React.ReactNode;
 }) {
-  const anchors = React.useMemo(() => (toc ?? []).map((t) => t.anchor), [toc]);
-  const active = useActiveAnchor(anchors);
-  const showToc = (toc?.length ?? 0) >= 2;
-  // The horizontal strip's scroll-edge fade (declared before the rail's early return).
-  const stripRef = useScrollEdgeRef<HTMLDivElement>(undefined, showToc && !rail);
-
-  const heading = <SectionTitle title={title} sub={sub} actions={actions} />;
-
-  // Vertical left-rail layout (opt-in): the anchor TOC sticks on the left, cards flow on
-  // the right. Card anchors + scroll-spy are unchanged, so deep-links/tests still work.
-  if (rail && showToc) {
+  if (embedded) {
     return (
-      <div className="space-y-8">
-        {heading}
-        <div className="grid gap-6 md:grid-cols-[12rem_minmax(0,1fr)] md:gap-8">
-          <div className="overflow-x-auto border-y border-border/80 py-1 md:sticky md:top-[calc(var(--header-h)+1rem)] md:self-start md:overflow-visible md:border-y-0 md:border-r md:py-0 md:pr-5">
-            <SettingsTOC
-              items={toc!}
-              active={active}
-              orientation="responsive"
-              className="min-w-max md:min-w-0"
-            />
-          </div>
-          <div className="min-w-0">{children}</div>
+      <SettingsSection title={title} help={help} actions={actions} width={width}>
+        {children}
+      </SettingsSection>
+    );
+  }
+  return (
+    <div className="space-y-8">
+      <PageHeader title={title} help={help} actions={actions} />
+      <SettingRowMeasureContext.Provider value={width === 'full' ? 'full' : 'form'}>
+        <div className={cn('space-y-10', width !== 'full' && SETTINGS_FORM_MAX_WIDTH)}>{children}</div>
+      </SettingRowMeasureContext.Provider>
+    </div>
+  );
+}
+
+export interface SettingsGroupProps extends Omit<React.HTMLAttributes<HTMLDivElement>, 'title' | 'children'> {
+  /** The group title (15px semibold, sentence case); an `h3` under the section `h2`. */
+  title: string;
+  /** One optional line under the title. */
+  caption?: React.ReactNode;
+  /** One trailing action on the title line (a "Test" or "Add" button). */
+  action?: React.ReactNode;
+  /** Anchor id for a deep link (`#/settings?s=<section>&a=<id>`). */
+  id?: string;
+  className?: string;
+  /** The rows (`SettingRow`s), or a table or list that bleeds to the panel edge. */
+  children?: React.ReactNode;
+}
+
+/**
+ * One group of related settings: its title and caption above one tinted panel, on the
+ * rows' inset (16px, 20px from 1280px), and the rows inside divided by hairlines.
+ *
+ * A group is a labelled `group`, not a region landmark: the section is the one labelled
+ * region (its `h2`, SPEC §3.3) and its groups are `h3` subdivisions, so a screen reader's
+ * landmark list holds one entry per section, never one per group.
+ *
+ * The title and caption take the row's free width and the action stays at the row's end
+ * from 640px (a long caption wraps beside it); below 640px the action sits under them.
+ */
+export function SettingsGroup({ title, caption, action, id, className, children, ...rest }: SettingsGroupProps) {
+  const generated = React.useId();
+  const titleId = `${id ?? generated}-title`;
+  return (
+    <div
+      {...rest}
+      id={id}
+      role="group"
+      aria-labelledby={titleId}
+      data-settings-group=""
+      className={cn('min-w-0 scroll-mt-24 space-y-2', className)}
+    >
+      <div className="flex flex-col gap-2 px-4 sm:flex-row sm:items-end sm:justify-between sm:gap-4 xl:px-5">
+        <div className="min-w-0 flex-1">
+          <h3 id={titleId} className="text-md font-semibold text-foreground">
+            {title}
+          </h3>
+          {caption ? <p className="mt-0.5 max-w-[42rem] text-sm text-muted-foreground">{caption}</p> : null}
         </div>
+        {action ? <div className="shrink-0">{action}</div> : null}
+      </div>
+      <Panel as="div" padding="none" className="divide-y divide-border/70" data-settings-panel="">
+        {children}
+      </Panel>
+    </div>
+  );
+}
+
+/**
+ * The row inset inside a group panel: 16px, 20px from 1280px. `SETTINGS_ROW_CONTENT_MAX_WIDTH`
+ * is a 44rem form section less this inset on each side; change them together.
+ */
+const ROW_PAD = 'px-4 py-3.5 xl:px-5';
+const ROW_LABEL = 'text-base font-medium leading-5 text-foreground';
+const ROW_HELP = 'mt-0.5 max-w-[42rem] text-sm text-muted-foreground';
+/** A switch row: the label and help, the switch on the row's end. */
+const SWITCH_ROW_LAYOUT = 'flex items-start justify-between gap-6';
+/** A control, status or action row: the text, then the control on the row's end (under the text below 640px). */
+const END_ROW_LAYOUT = 'flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-6';
+
+/**
+ * The element of a labelled control row (`switch`, an inline `control`, `status`,
+ * `action`); `layout` places the text and the control. In a full-width section the row
+ * keeps its inset across the whole panel (the hairline and any hover still span it) and
+ * one content box inside carries the layout, capped at a form row's content width, so the
+ * control sits as near its label as in a 44rem form section. In a form section the cap
+ * would change nothing, so the row stays one element.
+ */
+function ControlRowFrame({
+  variant,
+  layout,
+  capped,
+  className,
+  children,
+}: {
+  variant: 'switch' | 'control' | 'status' | 'action';
+  layout: string;
+  /** The row sits in a full-width section (`useRowContentCapped`). */
+  capped: boolean;
+  className?: string;
+  children: React.ReactNode;
+}) {
+  if (!capped) {
+    return (
+      <div data-setting-row={variant} className={cn(layout, ROW_PAD, className)}>
+        {children}
+      </div>
+    );
+  }
+  return (
+    <div data-setting-row={variant} className={cn(ROW_PAD, className)}>
+      <div data-setting-row-content="" className={cn(layout, SETTINGS_ROW_CONTENT_MAX_WIDTH)}>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+interface SettingRowText {
+  /** The setting's name (14px medium). Plain text. */
+  label: string;
+  /** One muted line of help (13px, at most 42rem). */
+  help?: React.ReactNode;
+  className?: string;
+}
+
+/**
+ * A switch on the row's end: the label names it. A disabled switch dims itself (the
+ * Switch primitive); the row's label and help stay at full contrast, as a disabled
+ * field row's do, so a turned-off group never drops its text below AA.
+ */
+export interface SettingSwitchRowProps extends SettingRowText {
+  variant: 'switch';
+  checked: boolean;
+  onCheckedChange: (checked: boolean) => void;
+  disabled?: boolean;
+}
+
+/** A select on the row's end (below 640px, under the label). */
+export interface SettingSelectRowProps extends SettingRowText {
+  variant: 'select';
+  value: string;
+  onValueChange: (value: string) => void;
+  options: ReadonlyArray<{ value: string; label: string }>;
+  placeholder?: string;
+  disabled?: boolean;
+  /** The control column's width (default 16rem). */
+  controlWidth?: string;
+}
+
+/**
+ * A Field-based control (`NumPref`, `NumberField`, `TextPref`, `SecretInput`, a
+ * `Field`): it brings its own label, and the row lays it out (label and help on the
+ * left, the control on the end in a `controlWidth` column, 16rem by default, every
+ * control in a group sharing one right edge). `wide` puts a wide control (a text area,
+ * a tag list, a segmented control) under its 14px label and 13px help line, at full
+ * width, at every width (the Field `wide` layout). `mono` sets identifier values (field
+ * paths) in 13px mono.
+ */
+export interface SettingFieldRowProps {
+  variant: 'field';
+  children: React.ReactNode;
+  wide?: boolean;
+  mono?: boolean;
+  controlWidth?: string;
+  className?: string;
+}
+
+/** A status on the row's end (a `StatusDot`), with an optional action after it. */
+export interface SettingStatusRowProps extends SettingRowText {
+  variant: 'status';
+  status: React.ReactNode;
+  action?: React.ReactNode;
+}
+
+/**
+ * A control that names itself (a segmented control, a radio group): the row shows the
+ * label as text and the help under it, and the control takes the label as its
+ * `aria-label` and the help as its description (`helpId`). `wide` puts the control under
+ * the text; otherwise it sits on the row's end (under the text below 640px). `liveHelp`
+ * reads a changed help line politely (a mode switch that changes what it means).
+ */
+export interface SettingControlRowProps extends SettingRowText {
+  variant: 'control';
+  control: React.ReactNode;
+  /** The id the control's `aria-describedby` points at (the help line). */
+  helpId?: string;
+  wide?: boolean;
+  liveHelp?: boolean;
+  /** Test anchor on the help line. */
+  helpTestId?: string;
+}
+
+/**
+ * Free content on the row inset (a table, a preview, a list that is not a setting): the
+ * group panel's padding and hairline, nothing else.
+ */
+export type SettingBlockRowProps = {
+  variant: 'block';
+  children: React.ReactNode;
+  className?: string;
+} & (
+  | {
+      /** Let a table bleed to the panel's edges (no inset). */
+      bleed: true;
+      width?: 'full';
+    }
+  | {
+      bleed?: false;
+      /**
+       * `full` (the default): the content takes the panel's width (a table, a preview).
+       * `form`: form-like content (a row of fields and a button, a callout between two
+       * switches). In a full-width section it is capped at a form row's content width,
+       * like a labelled control row, so a group that holds both keeps one right edge; in
+       * a form section it is already that width and renders as a plain block.
+       */
+      width?: 'full' | 'form';
+    }
+);
+
+/** One action on the row's end (a button that does something here). */
+export interface SettingActionRowProps extends SettingRowText {
+  variant: 'action';
+  action: React.ReactNode;
+}
+
+/**
+ * A row that opens another page: the whole row is a link, with a trailing value and a
+ * chevron. A plain click goes through the router, so the Settings unsaved-changes guard
+ * is asked first (a bare hash change would drop the draft, typed secrets included). Only
+ * a safe href becomes a link: a hash route, a same-origin path or an http(s) URL;
+ * anything else renders the row as text with its value and no link.
+ */
+export interface SettingLinkRowProps extends SettingRowText {
+  variant: 'link';
+  href: string;
+  /** The trailing value ("5 of 5 enabled"). */
+  value?: React.ReactNode;
+}
+
+export type SettingRowProps =
+  | SettingSwitchRowProps
+  | SettingSelectRowProps
+  | SettingFieldRowProps
+  | SettingStatusRowProps
+  | SettingActionRowProps
+  | SettingLinkRowProps
+  | SettingBlockRowProps
+  | SettingControlRowProps;
+
+function RowText({ label, help, htmlFor, helpId }: { label: string; help?: React.ReactNode; htmlFor?: string; helpId?: string }) {
+  return (
+    <div className="min-w-0 flex-1">
+      {htmlFor ? (
+        <Label htmlFor={htmlFor} className={cn('block cursor-pointer', ROW_LABEL)}>
+          {label}
+        </Label>
+      ) : (
+        <p className={ROW_LABEL}>{label}</p>
+      )}
+      {help ? (
+        <p id={helpId} className={ROW_HELP}>
+          {help}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+/** The link variant of `SettingRow` (its own component: it holds the router click hook). */
+function SettingLinkRow({ label, help, href, value, className }: SettingLinkRowProps) {
+  const safeHref = safeRouteHref(href);
+  const onClick = useRouteLinkClick(safeHref);
+  const trailingValue = value ? (
+    <span className="shrink-0 whitespace-nowrap text-sm text-muted-foreground">{value}</span>
+  ) : null;
+  if (!safeHref) {
+    return (
+      <div data-setting-row="link" className={cn('flex items-center gap-4', ROW_PAD, className)}>
+        <RowText label={label} help={help} />
+        {trailingValue}
+      </div>
+    );
+  }
+  return (
+    <a
+      href={safeHref}
+      onClick={onClick}
+      data-setting-row="link"
+      className={cn(
+        'flex items-center gap-4 transition-colors hover:bg-hover',
+        ROW_PAD,
+        // The ring sits inside the row: the panel clips anything drawn outside it.
+        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
+        className,
+      )}
+    >
+      <RowText label={label} help={help} />
+      {trailingValue}
+      <ChevronRight className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+    </a>
+  );
+}
+
+/** One setting on a group panel; see the variants above. */
+export function SettingRow(props: SettingRowProps) {
+  const id = React.useId();
+  const helpId = `${id}-help`;
+  // In a full-width section the Field-based rows lay out on the capped inline layout (its
+  // root is the row's content box); the other labelled rows cap theirs in ControlRowFrame.
+  const capped = useRowContentCapped();
+  const inlineLayout = capped ? cappedInlineFieldLayout : inlineFieldLayout;
+
+  if (props.variant === 'field') {
+    const { children, wide, mono, controlWidth, className } = props;
+    return (
+      <div
+        data-setting-row="field"
+        className={cn(
+          ROW_PAD,
+          // Identifiers (field paths, evidence fields) read as code: 13px mono.
+          mono && '[&_input]:font-mono [&_input]:text-sm [&_li]:font-mono [&_li]:text-sm',
+          className,
+        )}
+        style={controlWidth ? ({ '--setting-control-w': controlWidth } as React.CSSProperties) : undefined}
+      >
+        <FieldLayoutContext.Provider value={wide ? wideFieldLayout : inlineLayout}>{children}</FieldLayoutContext.Provider>
       </div>
     );
   }
 
-  return (
-    <div className="space-y-8">
-      {heading}
-      {showToc ? (
-        // Sticky chrome over the scrolling section: the ONE Console material (solid under
-        // reduced transparency or increased contrast), never a page-local translucent fill.
-        // Pinned FLUSH under the top bar: an offset left a slit between the two through
-        // which scrolled fields showed. Once pinned over scrolled content its top hairline
-        // gives way to the top bar's own (no doubled rule) and the scroll-edge fade shows.
-        // The horizontal scroll lives on an inner row: an `overflow` on the material itself
-        // would clip that fade (it hangs below the bar) and scroll it into view.
-        <div
-          ref={stripRef}
-          className={cn(
-            'sticky top-[var(--header-h)] z-10 -mx-1 border-y border-border/80',
-            'data-[scrolled=true]:border-t-transparent',
-            materialBar,
+  if (props.variant === 'switch') {
+    const { label, help, checked, onCheckedChange, disabled, className } = props;
+    return (
+      <ControlRowFrame variant="switch" layout={SWITCH_ROW_LAYOUT} capped={capped} className={className}>
+        <RowText label={label} help={help} htmlFor={id} helpId={help ? helpId : undefined} />
+        <Switch
+          id={id}
+          checked={checked}
+          disabled={disabled}
+          onCheckedChange={onCheckedChange}
+          aria-describedby={help ? helpId : undefined}
+          className="mt-0.5"
+        />
+      </ControlRowFrame>
+    );
+  }
+
+  if (props.variant === 'select') {
+    const { label, help, value, onValueChange, options, placeholder, disabled, controlWidth, className } = props;
+    return (
+      <div
+        data-setting-row="select"
+        className={cn(ROW_PAD, className)}
+        style={controlWidth ? ({ '--setting-control-w': controlWidth } as React.CSSProperties) : undefined}
+      >
+        <Field label={label} description={help} layout={inlineLayout}>
+          {({ id: controlId, labelledBy, describedBy }) => (
+            <Select value={value} onValueChange={onValueChange} disabled={disabled}>
+              <SelectTrigger id={controlId} aria-labelledby={labelledBy} aria-describedby={describedBy} className="w-full">
+                <SelectValue placeholder={placeholder} />
+              </SelectTrigger>
+              <SelectContent>
+                {options.map((option) => (
+                  <SelectItem key={option.value} value={option.value}>
+                    {option.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           )}
-        >
-          <div className="overflow-x-auto px-1 py-1">
-            <SettingsTOC items={toc!} active={active} orientation="horizontal" className="min-w-max flex-row gap-1" />
-          </div>
+        </Field>
+      </div>
+    );
+  }
+
+  if (props.variant === 'link') {
+    return <SettingLinkRow {...props} />;
+  }
+
+  if (props.variant === 'control') {
+    const { label, help, control, helpId, wide, liveHelp, helpTestId, className } = props;
+    const helpLine = help ? (
+      <p
+        id={helpId}
+        className={ROW_HELP}
+        aria-live={liveHelp ? 'polite' : undefined}
+        data-testid={helpTestId}
+      >
+        {help}
+      </p>
+    ) : null;
+    if (wide) {
+      return (
+        <div data-setting-row="control" className={cn('min-w-0', ROW_PAD, className)}>
+          <p className={ROW_LABEL}>{label}</p>
+          {helpLine}
+          <div className="mt-2 min-w-0">{control}</div>
         </div>
-      ) : null}
-      {children}
-    </div>
+      );
+    }
+    return (
+      <ControlRowFrame variant="control" layout={END_ROW_LAYOUT} capped={capped} className={className}>
+        <div className="min-w-0 flex-1">
+          <p className={ROW_LABEL}>{label}</p>
+          {helpLine}
+        </div>
+        <div className="flex shrink-0 items-center">{control}</div>
+      </ControlRowFrame>
+    );
+  }
+
+  if (props.variant === 'block') {
+    // Form-like content in a full-width section takes the same capped content box as a
+    // labelled control row (ControlRowFrame), so it ends where their controls end.
+    const formContent = !props.bleed && props.width === 'form' && capped;
+    return (
+      <div data-setting-row="block" className={cn(props.bleed ? 'min-w-0' : cn('min-w-0', ROW_PAD), props.className)}>
+        {formContent ? (
+          <div data-setting-row-content="" className={SETTINGS_ROW_CONTENT_MAX_WIDTH}>
+            {props.children}
+          </div>
+        ) : (
+          props.children
+        )}
+      </div>
+    );
+  }
+
+  // status and action: the row's text on the left, the status and/or action on the end
+  // (under the text below 640px).
+  const { label, help, className } = props;
+  const end =
+    props.variant === 'status' ? (
+      <>
+        {props.status}
+        {props.action}
+      </>
+    ) : (
+      props.action
+    );
+  return (
+    <ControlRowFrame variant={props.variant} layout={END_ROW_LAYOUT} capped={capped} className={className}>
+      <RowText label={label} help={help} />
+      <div className="flex shrink-0 flex-wrap items-center gap-3">{end}</div>
+    </ControlRowFrame>
   );
 }
 
@@ -248,6 +769,8 @@ export function NumPref({
   disabled,
   onChange,
   className,
+  unit,
+  size,
 }: {
   label: string;
   value?: number;
@@ -258,112 +781,54 @@ export function NumPref({
   disabled?: boolean;
   onChange: (v: number) => void;
   className?: string;
+  /** A muted unit inside the field ("h", "s", "min"). */
+  unit?: string;
+  /**
+   * Field width. By default 8rem (SPEC §4.9.6), wider only when the widest value, the
+   * unit and the steppers need it (an unbounded preference plans for six digits).
+   */
+  size?: NumberFieldSize;
 }) {
-  // Keep raw text while EDITING so the field can be cleared/retyped without snapping to
-  // 0 (the old `value ?? 0` controlled input committed `Number('') === 0` on clear and
-  // showed a literal "0" for an unset pref). Commit on blur: parse and clamp to
-  // [min,max].
+  // Round 14: the shared NumberField (unit inside, steppers inside the right edge for
+  // small values, sized to its numbers), no longer a raw number input.
   //
-  // ⚠ AN EMPTY FIELD IS NOT A VALUE. Clearing the input and blurring used to commit
-  // `min ?? 0`, so EVERY numeric preference rendered WITHOUT a `min` silently wrote a
-  // literal 0 — an invented value the operator never typed. For the per-case caps that
-  // is not a stricter limit, it is a broken configuration: `max_tokens = 0` makes the
-  // budget exceeded at the FIRST loop check, before any model call, so the run fails to
-  // human with zero gateway calls and no error audit row (a silent, $0, invisible
-  // failure), and `max_tool_calls = 0` burns the ReAct loop with no evidence gathered.
-  // An empty field now restores the CURRENT value and commits NOTHING — one line here
-  // fixes every numeric preference in Settings at once. (`min` is still enforced for a
-  // value the operator actually typed; it is no longer a fallback for absence.)
-  const [text, setText] = React.useState<string>(value == null ? '' : String(value));
-  const [editing, setEditing] = React.useState(false);
-  React.useEffect(() => {
-    if (!editing) setText(value == null ? '' : String(value));
-  }, [value, editing]);
-
-  const commit = (raw: string) => {
-    setEditing(false);
-    const trimmed = raw.trim();
-    if (trimmed === '') {
-      // Cleared: restore what the pref currently holds and do not call onChange.
-      setText(value == null ? '' : String(value));
-      return;
-    }
-    let n = Number(trimmed);
-    if (Number.isNaN(n)) {
-      setText(value == null ? '' : String(value));
-      return;
-    }
-    if (min != null && n < min) n = min;
-    if (max != null && n > max) n = max;
-    setText(String(n));
-    if (n !== value) onChange(n);
-  };
-
+  // ⚠ AN EMPTY FIELD IS NOT A VALUE (`empty="keep"`). Clearing the input and blurring
+  // once committed `min ?? 0`, so EVERY numeric preference rendered WITHOUT a `min`
+  // silently wrote a literal 0, an invented value the operator never typed. For the
+  // per-case caps that is not a stricter limit, it is a broken configuration:
+  // `max_tokens = 0` makes the budget exceeded at the FIRST loop check, before any model
+  // call, so the run fails to human with zero gateway calls and no error audit row (a
+  // silent, $0, invisible failure), and `max_tool_calls = 0` burns the ReAct loop with no
+  // evidence gathered. An empty field restores the CURRENT value and commits NOTHING.
+  // `min`/`max` still clamp a value the operator actually typed.
+  //
+  // A typed or stored value is NEVER snapped to `step` (`step="any"`): `step` only sets
+  // how far the arrow keys and the steppers move, as it did for the native number input.
+  // Snapping on commit would rewrite values the operator typed (0.72 with a step of 0.05
+  // becoming 0.7), and since a field that is merely tabbed through commits nothing, a
+  // stored value off the step grid is kept as it is.
+  //
+  // Steppers show for values of up to four digits only (a step of 1 on a 20000-token cap
+  // is useless), and the width plans for the digits, the unit and the steppers together.
+  const steppers = (widestValueChars({ min, max, step }) ?? Infinity) <= 4;
+  const width = size ?? defaultNumberFieldSize({ min, max, step, unit, steppers, base: 'sm' });
   return (
-    <Field label={label} description={help} className={cn('min-w-0', className)}>
-      <Input
-        type="number"
-        value={text}
-        step={step}
-        min={min}
-        max={max}
-        disabled={disabled}
-        onFocus={() => setEditing(true)}
-        onChange={(e) => {
-          setEditing(true);
-          setText(e.target.value);
-        }}
-        onBlur={(e) => commit(e.target.value)}
-      />
-    </Field>
-  );
-}
-
-export function SwitchPref({
-  label,
-  help,
-  checked,
-  disabled,
-  onChange,
-  className,
-}: {
-  label: string;
-  help?: string;
-  checked: boolean;
-  disabled?: boolean;
-  onChange: (v: boolean) => void;
-  className?: string;
-}) {
-  const id = React.useId();
-  const helpId = help ? `${id}-help` : undefined;
-  return (
-    <div
-      className={cn(
-        'flex min-h-12 items-start justify-between gap-5 border-b border-border/70 py-3 first:pt-0 last:border-b-0 last:pb-0',
-        disabled && 'opacity-60',
-        className,
-      )}
-    >
-      <div className="min-w-0 flex-1 space-y-1">
-        <Label htmlFor={id} className="block cursor-pointer leading-snug">
-          {label}
-        </Label>
-        {help ? (
-          <p id={helpId} className="max-w-3xl text-xs leading-relaxed text-muted-foreground">
-            {help}
-          </p>
-        ) : null}
-      </div>
-      <Switch
-        id={id}
-        checked={checked}
-        disabled={disabled}
-        onCheckedChange={onChange}
-        aria-label={label}
-        aria-describedby={helpId}
-        className="mt-0.5"
-      />
-    </div>
+    <NumberField
+      label={label}
+      description={help}
+      value={value}
+      onChange={onChange}
+      min={min}
+      max={max}
+      step="any"
+      stepperStep={step}
+      steppers={steppers}
+      unit={unit}
+      size={width}
+      empty="keep"
+      disabled={disabled}
+      className={cn('min-w-0', className)}
+    />
   );
 }
 
@@ -372,11 +837,17 @@ export function ModelPicker({
   models,
   value,
   onChange,
+  label,
+  help,
 }: {
   role: string;
   models: ModelsResponse | null;
   value?: ModelConfig;
   onChange: (next: ModelConfig) => void;
+  /** The field label; defaults to "<Role> model". */
+  label?: string;
+  /** One plain line on what the role does. */
+  help?: string;
 }) {
   const options = React.useMemo(() => {
     const out: Array<{ value: string; label: string; provider: string }> = [];
@@ -392,7 +863,7 @@ export function ModelPicker({
   const hasCurrent = !current || options.some((o) => o.value === current);
 
   return (
-    <Field label={`${humanizeToken(role)} model`}>
+    <Field label={label ?? `${humanizeToken(role)} model`} description={help}>
       {({ id, labelledBy, describedBy, invalid }) => (
         <Select
           value={current || undefined}
@@ -418,13 +889,13 @@ export function ModelPicker({
             aria-describedby={describedBy}
             aria-invalid={invalid}
           >
-            <SelectValue placeholder="— select a model —" />
+            <SelectValue placeholder="Select a model" />
           </SelectTrigger>
           <SelectContent>
             {!hasCurrent ? <SelectItem value={current}>{current}</SelectItem> : null}
             {options.length === 0 ? (
               <div className="px-2 py-1.5 text-xs text-muted-foreground">
-                No models available — add an LLM key.
+                No models available. Add an LLM key first.
               </div>
             ) : (
               options.map((o) => (
@@ -480,41 +951,3 @@ export function SecretInput({
     />
   );
 }
-
-export function PostureTile({
-  label,
-  on,
-  onText,
-  offText,
-}: {
-  label: string;
-  on: boolean;
-  onText: string;
-  offText: string;
-}) {
-  return (
-    <div
-      className={cn(
-        'border-l-2 px-3 py-1.5 first:border-l-0',
-        on ? 'border-success' : 'border-border',
-      )}
-    >
-      <p className="text-xs font-medium uppercase tracking-[0.04em] text-muted-foreground">{label}</p>
-      <div className="mt-2 flex items-center gap-2">
-        <span
-          className={cnDot(on)}
-          aria-hidden
-        />
-        <span className="text-sm font-semibold text-foreground">{on ? onText : offText}</span>
-      </div>
-    </div>
-  );
-}
-
-function cnDot(on: boolean): string {
-  return on
-    ? 'inline-block h-2 w-2 rounded-full bg-success'
-    : 'inline-block h-2 w-2 rounded-full bg-muted-foreground/40';
-}
-
-export type { LucideIcon };

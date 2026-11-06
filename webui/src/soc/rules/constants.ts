@@ -1,10 +1,10 @@
 /**
- * Rules-FE constants (Round-5 G6 · R2/R3) — the option lists + per-tier metadata +
+ * Rules-FE constants (Round-5 G6 · R2/R3): the option lists + per-tier metadata +
  * factory defaults the editor + condition builder render.
  *
  * All option VALUES are wire tokens (byte-identical to the backend enums); the
  * LABELS are operator-facing. Nothing here is a secret. The predicate FIELD list is
- * a curated set of common OCSF/entity dotted paths — the operator may still type a
+ * a curated set of common OCSF/entity dotted paths; the operator may still type a
  * custom dotted path (the field control is a combobox, not a locked select), so this
  * is a convenience allow-suggest, not a restriction.
  */
@@ -35,14 +35,14 @@ export const RULE_TIERS: RuleTierMeta[] = [
   {
     tier: 'detection_anomaly',
     label: 'Detection · Anomaly / Baseline',
-    blurb: 'Fire when a signature deviates from its learned hour-of-week baseline. Advisory — never auto-closes.',
+    blurb: 'Fire when a signature deviates from its learned hour-of-week baseline. Advisory: it never closes a case.',
     detection: true,
   },
   {
     tier: 'case_automation',
     label: 'Case-automation (post-decision)',
     blurb:
-      'React AFTER the deterministic decision: tag, recommend, notify, run a playbook, or request approval. Never sets status.',
+      'React after the deterministic decision: tag, recommend, notify, attach a runbook, or request approval. Never sets status.',
     detection: false,
   },
 ];
@@ -67,7 +67,7 @@ export function opHasValue(op: string): boolean {
 
 /**
  * Curated common predicate FIELDS (dotted OCSF/native paths). The field control is a
- * combobox — the operator may type any custom dotted path, so this only SUGGESTS.
+ * combobox; the operator may type any custom dotted path, so this only SUGGESTS.
  */
 export const PREDICATE_FIELD_SUGGESTIONS: string[] = [
   'rule.id',
@@ -103,7 +103,7 @@ export const ENTITY_OPTIONS: Array<{ value: EntityTypeFull; label: string }> = [
 
 /**
  * The #3-safe case-automation actions (mirrors the existing Settings › Automation
- * editor). Every one can only tag / recommend / notify / queue / propose — none sets
+ * editor). Every one can only tag / recommend / notify / queue / propose; none sets
  * a case status.
  */
 export const AUTOMATION_ACTIONS: Array<{ value: AutomationActionType; label: string; help: string }> = [
@@ -112,8 +112,8 @@ export const AUTOMATION_ACTIONS: Array<{ value: AutomationActionType; label: str
   { value: 'notify', label: 'Send a notification', help: 'Fire a notification. Never changes the case.' },
   {
     value: 'run_playbook',
-    label: 'Queue a playbook run',
-    help: 'Re-investigate with a playbook as context; re-runs the deterministic decision, never sets status.',
+    label: 'Attach a runbook',
+    help: 'Attach a published runbook to the case. It guides the people who work the case and never sets status.',
   },
   {
     value: 'request_approval',
@@ -126,7 +126,7 @@ export const AUTOMATION_ACTIONS: Array<{ value: AutomationActionType; label: str
  * The case-automation `verdict` CONDITION is compared against the case's LLM
  * `Verdict`, which is ONLY ever one of these three (backend `constants.Verdict`).
  * `suspicious`/`benign` are `Disposition` values and can NEVER equal a `Verdict`, so
- * a rule conditioned on them silently never fires — the dropdown is therefore
+ * a rule conditioned on them silently never fires; the dropdown is therefore
  * populated ONLY from the real `Verdict` enum (Rules-FE bug #6).
  */
 export const VERDICT_CONDITION_VALUES = ['true_positive', 'false_positive', 'needs_human'] as const;
@@ -141,8 +141,8 @@ const VALID_VERDICT_SET = new Set<string>(VERDICT_CONDITION_VALUES);
 
 /**
  * True when a rule's `verdict` condition can NEVER match a real `Verdict` (a non-empty
- * value outside the enum — e.g. a legacy `suspicious`/`benign` `Disposition`). Such a
- * rule is inert; the editor surfaces an "inactive — invalid condition" affordance.
+ * value outside the enum, for example a legacy `suspicious`/`benign` `Disposition`). Such a
+ * rule is inert; the editor surfaces an "inactive: invalid condition" affordance.
  * Case-insensitive to mirror the backend matcher.
  */
 export function hasImpossibleVerdict(verdict: string | undefined): boolean {
@@ -154,7 +154,7 @@ export function hasImpossibleVerdict(verdict: string | undefined): boolean {
  * Map a STORED verdict-condition value to the `<Select>` item value that should render.
  * The wire token can arrive UPPERCASE (config.py documents FALSE_POSITIVE|TRUE_POSITIVE|
  * NEEDS_HUMAN and the backend matcher is case-insensitive), while the Select items are
- * lowercase — so a valid uppercase verdict must map to its lowercase item or Radix shows
+ * lowercase, so a valid uppercase verdict must map to its lowercase item or Radix shows
  * a BLANK field for a real, active condition (#28). Returns:
  *   - `''` for an empty/absent condition (caller maps to its "any" sentinel),
  *   - the lowercase wire token for a valid verdict in ANY case,
@@ -211,7 +211,7 @@ const DEFAULT_ANOMALY: AnomalyForm = {
 const DEFAULT_AUTOMATION: CaseAutomationForm = { conditions: {}, action: 'tag', payload: { tags: [] } };
 
 /**
- * A factory for a fresh, valid `RuleForm` per tier — the editor seeds a new rule with
+ * A factory for a fresh, valid `RuleForm` per tier; the editor seeds a new rule with
  * this and the operator fills in the About name. Bounds match `config.py` defaults.
  */
 export function newRuleForm(tier: RuleTier): RuleForm {

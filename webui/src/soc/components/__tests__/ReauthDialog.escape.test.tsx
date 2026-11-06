@@ -9,7 +9,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, act, waitFor } from '@testing-library/react';
 
 const reauthMock = vi.fn();
-let capturedGate: (() => Promise<boolean>) | null = null;
+let capturedGate: ((purpose?: string) => Promise<boolean>) | null = null;
 
 vi.mock('@/lib/api', () => {
   class ApiError extends Error {
@@ -22,7 +22,7 @@ vi.mock('@/lib/api', () => {
   }
   return {
     ApiError,
-    setReauthHandler: (fn: (() => Promise<boolean>) | null) => {
+    setReauthHandler: (fn: ((purpose?: string) => Promise<boolean>) | null) => {
       capturedGate = fn;
     },
     api: { auth: { reauth: (pw: string, code?: string) => reauthMock(pw, code) } },
@@ -47,15 +47,15 @@ describe('ReauthDialog — Escape guard while busy', () => {
     await act(async () => {
       void capturedGate!();
     });
-    expect(await screen.findByText(/fresh authentication required/i)).toBeInTheDocument();
+    expect(await screen.findByText(/confirm your identity/i)).toBeInTheDocument();
 
     // Enter a password + submit → the request is in flight (busy).
     fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'hunter2' } });
-    fireEvent.click(screen.getByRole('button', { name: /^Authenticate$/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^Sign in$/i }));
     await waitFor(() => expect(reauthMock).toHaveBeenCalledWith('hunter2', undefined));
 
     // Escape must be swallowed while busy — the dialog remains open.
     fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape', code: 'Escape' });
-    expect(screen.getByText(/fresh authentication required/i)).toBeInTheDocument();
+    expect(screen.getByText(/confirm your identity/i)).toBeInTheDocument();
   });
 });

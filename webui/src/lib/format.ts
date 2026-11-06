@@ -200,3 +200,10 @@ export function humanizeToken(token?: string | null): string {
   }
   return spaced.charAt(0).toUpperCase() + rest.toLowerCase();
 }
+
+/*
+ * Round 14 (SPEC §4.9.5): durations, overages and case labels. Defined in their own
+ * module and only RE-EXPORTED here, so the entry chunk (this module is an entry module)
+ * never carries them: Rollup keeps a re-export-only module in the lazy chunks that use it.
+ */
+export { caseLabel, fmtDuration, fmtOverage, type CaseLabelSource } from './format-values';

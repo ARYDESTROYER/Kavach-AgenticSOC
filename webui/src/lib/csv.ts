@@ -1,15 +1,20 @@
 /**
  * Spreadsheet-safe field encoders (chat revamp SPEC §9.3, BLOCKS.md amendment 9).
  *
- * The shared home of the formula-injection defusal for the chat answer blocks and report
- * exports (the blocks kit's copy moved here). `KpiDrilldownPanel` still carries its own
- * `csvField`, and a few components their own download helper; they are to migrate here.
+ * The one home of the formula-injection defusal for every spreadsheet the Console
+ * writes: the chat answer blocks' CSV and clipboard, the report CSV, the report Excel
+ * writer (`chat/report/export/xlsx.ts`, which gates its own cell quoting on
+ * `isFormulaLed`), the severity breakdown and the KPI drill-down CSV
+ * (`KpiDrilldownPanel`). None of them carries a lead test of its own.
  * Rules:
  *
- *   - STRING cells are formula-defused: a leading `= + - @ TAB CR` gets a `'` prefix,
- *     also when only spaces precede it. A source-controlled rule named
- *     `=HYPERLINK("http://…","click")` must land in a spreadsheet as the rule's NAME,
- *     never as a live, attacker-authored link.
+ *   - STRING cells are formula-defused: a leading `= + - @`, TAB, CR or LF, or one of
+ *     the full-width `＝ ＋ － ＠`, gets a `'` prefix, also when only spaces precede it.
+ *     A source-controlled rule named `=HYPERLINK("http://…","click")` must land in a
+ *     spreadsheet as the rule's NAME, never as a live, attacker-authored link. The rule
+ *     set is one shared fixture, `csv-formula.contract.json` (Round 14 SPEC §4.5.6), read
+ *     by this module's test, by the Excel writer's and the drill-down export's tests, and
+ *     by the backend audit export writer's test, so they all defuse alike.
  *   - NUMERIC cells stay numeric: a negative count is a number, not a formula, and
  *     defusing it would turn it into text that no longer sums.
  *   - `null` is an empty field (not measured is never 0).
@@ -22,13 +27,23 @@
 /** One spreadsheet cell as the console's tabular exports carry it. */
 export type CsvCell = string | number | boolean | null;
 
-const FORMULA_LEAD = /^(?:[=+\-@\t\r]| +[=+\-@])/;
+/** A formula lead after any run of ASCII spaces (the shared fixture's `leads`). */
+const FORMULA_LEAD = /^ *[=+\-@\t\r\n\uFF1D\uFF0B\uFF0D\uFF20]/;
 /** TSV also treats a leading double quote as dangerous (a paste-time text qualifier). */
 const TSV_LEAD = /^"/;
 
+/**
+ * Does a STRING cell open like a formula (any lead of the shared fixture, also after
+ * spaces)? The lead test for a spreadsheet writer with its own cell quoting (the report
+ * Excel writer), so it defuses exactly the cells this module does.
+ */
+export function isFormulaLed(text: string): boolean {
+  return FORMULA_LEAD.test(text);
+}
+
 /** Neutralise a spreadsheet formula lead in a STRING cell. */
 export function defuseFormula(text: string): string {
-  return FORMULA_LEAD.test(text) ? `'${text}` : text;
+  return isFormulaLed(text) ? `'${text}` : text;
 }
 
 /** One CSV field: numbers raw, strings defused then RFC-4180 quoted, null empty. */

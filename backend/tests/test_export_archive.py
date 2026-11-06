@@ -26,6 +26,7 @@ from app.config import Secrets
 from app.constants import ActionType
 from app.es.fake import InMemoryESClient
 from app.llm.providers import MockProvider
+from app.middleware.request_id import RequestIdMiddleware
 from app.models import AuditDoc
 from app.state import AppState
 
@@ -84,6 +85,9 @@ def _export_app(
         )
     else:
         api.include_router(routes_export.router)
+    # The production request-id middleware (``main.py``), so audit rows carry the id
+    # the response echoes (Round 14 SPEC §4.5.3).
+    api.add_middleware(RequestIdMiddleware)
     return api, holder
 
 
@@ -393,13 +397,26 @@ def test_archive_uses_real_sqlite_pages_and_discloses_weaker_consistency(
     assert names == ["audit.ndjson", "manifest.json"]
     archived = _read_ndjson(members["audit.ndjson"])
     assert archived == [{"record": row} for row in expected_rows]
-    assert [row["record"]["result_summary"] for row in archived] == [
+    # The first start of a store writes one runbook conversion summary row before
+    # anything is seeded (SPEC §4.10.17 step 5); every other row is a seeded one,
+    # in write order.
+    startup = [
+        row["record"] for row in archived if row["record"].get("surface") == "runbook_migration"
+    ]
+    assert [(row["actor"], row["action"]) for row in startup] == [
+        ("runbook_migration", "runbook.migration_completed")
+    ]
+    assert [
+        row["record"]["result_summary"]
+        for row in archived
+        if row["record"].get("surface") != "runbook_migration"
+    ] == [
         "sqlite-row-0",
         "sqlite-row-1",
         "sqlite-row-2",
     ]
     scope_manifest = json.loads(members["manifest.json"])["scopes"]["audit"]
-    assert scope_manifest["snapshot_total"] == len(expected_rows) == 3
+    assert scope_manifest["snapshot_total"] == len(expected_rows) == 3 + len(startup)
     assert scope_manifest["exported"] == len(expected_rows)
     assert scope_manifest["status"] == "complete"
     assert scope_manifest["pit_consistent"] is False
@@ -1040,8 +1057,11 @@ def test_archive_audit_records_actor_and_counts_only_after_integrity_verificatio
         real_record = state.control_audit.record_strict
 
         async def capture_audit(*args: Any, **kwargs: Any) -> Any:
-            order.append("audited")
-            audit_calls.append(dict(kwargs))
+            # Sign-in and session rows are strict appends too (Round 14 SPEC §4.5.4);
+            # this test pins the export row only.
+            if kwargs.get("action_type") == ActionType.DATA_EXPORT:
+                order.append("audited")
+                audit_calls.append(dict(kwargs))
             return await real_record(*args, **kwargs)
 
         state.control_audit.record_strict = capture_audit  # type: ignore[method-assign]
@@ -1077,6 +1097,15 @@ def test_archive_audit_records_actor_and_counts_only_after_integrity_verificatio
         f"prepared archive scopes=configuration records=configuration={exported} "
     )
     assert " complete=true bytes=" in audit_calls[0]["result_summary"]
+    # Round 14 record fields (SPEC §4.5.3): the delivery row names its action, outcome,
+    # the requester's role, session and request, and the exported scopes as target.
+    row = audit_calls[0]
+    assert row["action"] == "export.downloaded" and row["outcome"] == "success"
+    assert row["actor_type"] == "human" and row["actor_role"] == "super_admin"
+    assert row["session_ref"] and row["request_id"] == response.headers["X-Request-ID"]
+    assert row["target"].type == "export" and row["target"].id == "configuration"
+    assert row["tool_input"]["format"] == "zip"
+    assert row["tool_input"]["records"] == {"configuration": exported}
     assert not archive_path.exists()
     _assert_archive_slot_free()
 

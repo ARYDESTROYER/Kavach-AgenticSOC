@@ -466,7 +466,9 @@ async def test_an_oversized_batch_never_drops_later_executed_steps() -> None:
         tool_call("lookup_indicator", indicator="8.8.8.8"),
         final(),
     ])
-    prefs = make_prefs()
+    # Pinned below the per-question lookup limit (10) so the later lookup still runs:
+    # the default (12 since Round 14) would spend the whole limit on the first batch.
+    prefs = make_prefs(max_parallel=4)
     _, resp, outcome = await run(make_engine(gateway), "check 8.8.8.8", prefs, make_ctx(prefs))
     assert IndicatorTool.dispatched == ["8.8.8.8"]
     assert len(resp.steps) == 64

@@ -100,3 +100,21 @@ describe('SegmentedControl — radiogroup semantics', () => {
     expect(screen.getByRole('radio', { name: 'Alpha' })).toHaveFocus();
   });
 });
+
+describe('SegmentedControl in forced colours (Round 14, finding 25)', () => {
+  it('outlines the checked segment in the system selection colour, and only that segment', () => {
+    render(
+      <SegmentedControl aria-label="Pick one" value="b" onValueChange={() => {}} options={options} />,
+    );
+    // Forced colours replace the checked tint with Canvas; the outline keeps the state.
+    for (const radio of screen.getAllByRole('radio')) {
+      expect(radio).toHaveClass(
+        'forced-colors:data-[state=checked]:outline',
+        'forced-colors:data-[state=checked]:outline-2',
+        'forced-colors:data-[state=checked]:outline-[Highlight]',
+      );
+    }
+    expect(screen.getByRole('radio', { name: 'Beta' })).toHaveAttribute('data-state', 'checked');
+    expect(screen.getByRole('radio', { name: 'Alpha' })).toHaveAttribute('data-state', 'unchecked');
+  });
+});

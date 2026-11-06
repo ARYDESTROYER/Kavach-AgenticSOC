@@ -56,7 +56,7 @@ class URLScanProvider(EnrichmentProvider):
             ],
             example=(
                 "Answers 'what does this link actually do?' from prior sandboxed "
-                "scans: a URL whose last urlscan verdict is 'malicious — phishing' "
+                "scans: a URL whose last urlscan verdict is 'malicious: phishing' "
                 "closes the loop on a suspicious-email case without anyone clicking "
                 "it."
             ),

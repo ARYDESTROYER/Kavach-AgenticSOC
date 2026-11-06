@@ -1,5 +1,5 @@
 /**
- * MitreHeatmap — the ATT&CK tactic × technique coverage grid (+ data-table fallback).
+ * MitreHeatmap: the ATT&CK tactic × technique coverage grid (+ data-table fallback).
  *
  * Extracted from `charts-soc.tsx` (chat revamp SPEC §10.10) so a consumer can draw the
  * grid WITHOUT importing recharts: `charts-soc.tsx` pulls the whole recharts vendor
@@ -7,14 +7,58 @@
  * re-exports everything here, so existing imports keep working unchanged.
  *
  * Pure DOM (no SVG paths, no recharts). The ramp is ALWAYS the colorblind-safe viridis
- * `sequential()` scale — a coverage COUNT is a magnitude, never a severity hue.
+ * `sequential()` scale: a coverage COUNT is a magnitude, never a severity hue.
  *
  * UNTRUSTED-data note (#9): every value is numeric or a caller-supplied label rendered as
- * plain DOM text — never HTML.
+ * plain DOM text, never HTML.
+ *
+ * Layout (Round 14, SPEC §4.4.4 "fits all tactics"): the tactic columns share the width
+ * equally and shrink, before the grid scrolls, to what their own content needs and never
+ * below 4.5rem ({@link MITRE_COLUMN_TRACK}): the longest word of the tactic name (a name
+ * wraps at its spaces, never mid-word) and the widest technique id, whose count wraps
+ * under it rather than cutting it. So seven tactics fit an 8-of-12 board panel at 1440 px
+ * (each column then wider than 96 px) and chat's 42rem reading column, and nothing is
+ * ever cut. Where
+ * more tactics than fit still scroll sideways, the scroller is a named, focusable region
+ * (WCAG 2.1.1), so a keyboard user can reach the hidden columns. The visible grid is
+ * hidden from assistive technology in both states: the screen-reader table below is the
+ * one accessible reading, one row per tactic.
  */
 import * as React from 'react';
 import { cn } from '@/lib/cn';
+import { focusRing } from '@/lib/ui-recipes';
 import { sequential } from './palette';
+
+/**
+ * One tactic column's track: an equal share of the width, and never narrower than its own
+ * content (its tactic name's longest word, its widest technique id) or the 4.5rem its
+ * header holds open (so a short id and its count stay on one line), so the grid scrolls
+ * sideways only when the content itself cannot fit.
+ */
+export const MITRE_COLUMN_TRACK = 'minmax(min-content, 1fr)';
+
+/**
+ * Whether `el` is wider inside than it shows (its content scrolls sideways), re-measured
+ * when it or its content resizes and whenever `deps` change.
+ */
+function useOverflowsX(el: HTMLElement | null, deps: readonly unknown[]): boolean {
+  const [overflows, setOverflows] = React.useState(false);
+  const measure = React.useCallback(() => {
+    setOverflows(el ? el.scrollWidth - el.clientWidth > 1 : false);
+  }, [el]);
+  React.useLayoutEffect(() => {
+    measure();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `deps` is the caller's re-measure list
+  }, [measure, ...deps]);
+  React.useEffect(() => {
+    if (!el || typeof ResizeObserver === 'undefined') return undefined;
+    const observer = new ResizeObserver(() => measure());
+    observer.observe(el);
+    if (el.firstElementChild) observer.observe(el.firstElementChild);
+    return () => observer.disconnect();
+  }, [el, measure]);
+  return overflows;
+}
 
 export interface MitreCell {
   /** Technique id (e.g. "T1059"). Plain text. */
@@ -40,7 +84,7 @@ export interface MitreHeatmapProps {
   maxValue?: number;
   /**
    * @deprecated Ignored. A coverage COUNT is a quantitative magnitude, not a severity,
-   * so the ramp is ALWAYS the colorblind-safe viridis `sequential()` scale — never a
+   * so the ramp is ALWAYS the colorblind-safe viridis `sequential()` scale, never a
    * semantic hue like `critical` (DESIGN_STANDARD §1.4). Kept only so existing callers
    * still type-check; it has no effect.
    */
@@ -66,13 +110,15 @@ function intensityAlpha(v: number, max: number): number {
  */
 export const MitreHeatmap = React.forwardRef<HTMLDivElement, MitreHeatmapProps>(
     // `colorToken` is intentionally NOT destructured: the ramp is always viridis
-    // (a magnitude scale must not be read as a severity hue — DESIGN_STANDARD §1.4).
+    // (a magnitude scale must not be read as a severity hue, DESIGN_STANDARD §1.4).
   ({ columns, maxValue, ariaLabel, className }, ref) => {
     const cols = columns ?? [];
     const dataMax =
       maxValue ?? cols.reduce((m, c) => Math.max(m, ...c.cells.map((x) => x.value || 0)), 0);
     const label =
       ariaLabel ?? `MITRE ATT&CK coverage heatmap across ${cols.length} tactic(s)`;
+    const [scroller, setScroller] = React.useState<HTMLDivElement | null>(null);
+    const overflows = useOverflowsX(scroller, [cols.length]);
 
     if (cols.length === 0) {
       return (
@@ -90,19 +136,39 @@ export const MitreHeatmap = React.forwardRef<HTMLDivElement, MitreHeatmapProps>(
     const maxRows = cols.reduce((m, c) => Math.max(m, c.cells.length), 0);
 
     return (
-      <div ref={ref} className={cn('w-full', className)}>
-        {/* Visible grid (decorative; the table below is the accessible source). */}
-        <div role="presentation" className="overflow-x-auto">
+      // `relative`: the screen-reader table below is absolutely positioned (`sr-only`);
+      // without a positioned ancestor of its own it is placed against the page and, being
+      // as wide as its content, widens the whole document on a narrow screen.
+      <div ref={ref} className={cn('relative w-full', className)}>
+        {/* Visible grid (the table below is the accessible source). The columns shrink to
+            their content before anything scrolls; when the tactics still do not fit, the
+            scroller becomes a named region in the Tab order, so the hidden columns can be
+            reached from the keyboard (arrow keys scroll a focused region). */}
+        <div
+          ref={setScroller}
+          role={overflows ? 'region' : 'presentation'}
+          aria-label={overflows ? `${label}, scrolls sideways` : undefined}
+          // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- a named scroller is the documented exception (WCAG 2.1.1)
+          tabIndex={overflows ? 0 : undefined}
+          className={cn('overflow-x-auto', overflows && cn('rounded-sm', focusRing))}
+          data-mitre-scroll={overflows ? 'overflow' : 'fit'}
+        >
+          {/* Hidden from assistive technology: read cell by cell it would be one flat run
+              of headers and counts that ties no count to its tactic, and the table below
+              reads the same data in tactic rows. It holds nothing focusable. */}
           <div
-            className="grid min-w-max gap-1"
-            style={{ gridTemplateColumns: `repeat(${cols.length}, minmax(72px, 1fr))` }}
+            className="grid w-full min-w-0 gap-1"
+            style={{ gridTemplateColumns: `repeat(${cols.length}, ${MITRE_COLUMN_TRACK})` }}
+            aria-hidden
+            data-mitre-grid=""
           >
-            {/* Header row */}
+            {/* Header row: a long tactic name wraps onto a second line rather than being cut. */}
             {cols.map((c) => (
               <div
                 key={`h-${c.tactic}`}
-                className="truncate px-1 pb-1 text-center text-2xs font-semibold uppercase tracking-wide text-muted-foreground"
+                className="flex min-w-[4.5rem] items-end justify-center break-words px-1 pb-1 text-center text-2xs font-medium leading-tight text-muted-foreground"
                 title={c.label}
+                data-mitre-header=""
               >
                 {c.label}
               </div>
@@ -112,17 +178,17 @@ export const MitreHeatmap = React.forwardRef<HTMLDivElement, MitreHeatmapProps>(
               cols.map((c) => {
                 const cell = c.cells[row];
                 if (!cell) {
-                  return <div key={`${c.tactic}-${row}`} className="h-9 rounded-sm bg-muted/20" aria-hidden />;
+                  return <div key={`${c.tactic}-${row}`} className="min-h-9 rounded-sm bg-muted/20" />;
                 }
                 const a = intensityAlpha(cell.value, dataMax);
                 return (
                   <div
                     key={`${c.tactic}-${row}`}
-                    className="flex h-9 items-center justify-center rounded-sm border border-border/40 text-2xs font-medium"
+                    className="flex min-h-9 items-center justify-center rounded-sm border border-border/40 px-0.5 text-2xs font-medium"
                     style={{ backgroundColor: a > 0 ? sequential(a) : 'hsl(var(--muted) / 0.2)' }}
                     title={`${cell.technique}${cell.name ? ` · ${cell.name}` : ''}: ${cell.value}`}
                   >
-                    {/* Contrast scrim (#5 — WCAG 1.4.3): the 10px label sits in a
+                    {/* Contrast scrim (#5, WCAG 1.4.3): the 11px label sits in a
                         near-opaque surface chip so `text-foreground` always meets AA
                         (≥4.5:1) regardless of how saturated the underlying ramp band
                         is. Without the chip, white/foreground text over the critical/
@@ -131,11 +197,18 @@ export const MitreHeatmap = React.forwardRef<HTMLDivElement, MitreHeatmapProps>(
                         Non-color signaling (§6.1): the ramp intensity is quantitative
                         (a sequential scale, not a categorical shape vocabulary), so the
                         redundant channel here is the printed COUNT beside the technique
-                        id — the magnitude the color encodes is now readable without any
-                        color perception (the sr-only table below carries the full data).*/}
-                    <span className="flex max-w-[calc(100%-0.25rem)] items-baseline gap-0.5 rounded-sm bg-background/85 px-1 py-0.5 text-foreground supports-[backdrop-filter]:bg-background/70 supports-[backdrop-filter]:backdrop-blur-[1px]">
-                      <span className="truncate">{cell.technique}</span>
-                      <span className="shrink-0 font-mono tabular-nums text-muted-foreground">
+                        id: the magnitude the color encodes is now readable without any
+                        color perception (the sr-only table below carries the full data).
+
+                        Neither is ever cut: where the id and its count do not fit one line
+                        (a sub-technique id beside a four-digit count), the count wraps under
+                        the id, and the cell grows to hold both. */}
+                    <span
+                      className="flex max-w-full flex-wrap items-baseline justify-center gap-x-0.5 rounded-sm bg-background/85 px-1 py-0.5 text-foreground supports-[backdrop-filter]:bg-background/70 supports-[backdrop-filter]:backdrop-blur-[1px]"
+                      data-mitre-chip=""
+                    >
+                      <span data-mitre-technique="">{cell.technique}</span>
+                      <span className="tabular-nums text-muted-foreground">
                         {cell.value.toLocaleString()}
                       </span>
                     </span>
@@ -158,38 +231,45 @@ export const MitreHeatmap = React.forwardRef<HTMLDivElement, MitreHeatmapProps>(
 
         {/* Accessible data-table fallback (visually hidden, screen-reader source).
             One ROW PER TACTIC; each cell is the `technique: value` pair under that
-            tactic. This keeps every value bound to its OWN technique + tactic — the
+            tactic. This keeps every value bound to its OWN technique + tactic: the
             grid is jagged (each tactic has its own technique list), so a single
             positional matrix would MISATTRIBUTE a value to the wrong technique. The
-            column headers index the technique SLOT within a tactic (1..N). */}
-        <table className="sr-only">
-          <caption>{label}</caption>
-          <thead>
-            <tr>
-              <th scope="col">Tactic</th>
-              {Array.from({ length: maxRows }).map((_, i) => (
-                <th key={i} scope="col">{`Technique ${i + 1}`}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {cols.map((c) => (
-              <tr key={c.tactic}>
-                <th scope="row">{c.label}</th>
-                {Array.from({ length: maxRows }).map((_, slot) => {
-                  const cell = c.cells[slot];
-                  return (
-                    <td key={slot}>
-                      {cell
-                        ? `${cell.technique}${cell.name ? ` (${cell.name})` : ''}: ${cell.value}`
-                        : ''}
-                    </td>
-                  );
-                })}
+            column headers index the technique SLOT within a tactic (1..N). The table sits
+            in a visually hidden box: a table is never narrower than its content, so
+            `sr-only` on the table alone could not clip it, while the box (1px, overflow
+            hidden) does. The table keeps `sr-only` as well: it is the marker the report
+            print stylesheets key on (`table.sr-only`) to leave a screen-reader table out
+            of the printed layout instead of stretching it to the column. */}
+        <div className="sr-only" data-mitre-table="">
+          <table className="sr-only">
+            <caption>{label}</caption>
+            <thead>
+              <tr>
+                <th scope="col">Tactic</th>
+                {Array.from({ length: maxRows }).map((_, i) => (
+                  <th key={i} scope="col">{`Technique ${i + 1}`}</th>
+                ))}
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {cols.map((c) => (
+                <tr key={c.tactic}>
+                  <th scope="row">{c.label}</th>
+                  {Array.from({ length: maxRows }).map((_, slot) => {
+                    const cell = c.cells[slot];
+                    return (
+                      <td key={slot}>
+                        {cell
+                          ? `${cell.technique}${cell.name ? ` (${cell.name})` : ''}: ${cell.value}`
+                          : ''}
+                      </td>
+                    );
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </div>
     );
   },

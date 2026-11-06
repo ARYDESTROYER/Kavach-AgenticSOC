@@ -194,6 +194,7 @@ function ComparisonTile({ item, testId, staticMode, badge }: { item: KpiItem; te
         value={valueNode(item)}
         variant="strip"
         density="compact"
+        chrome="framed"
         accent={accent}
         icon={icon}
         secondary={comparisonSecondary(item, badge)}

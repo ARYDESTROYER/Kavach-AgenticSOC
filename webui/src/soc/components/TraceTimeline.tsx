@@ -36,8 +36,44 @@ import { CodeBlock } from '@/soc/components/CodeBlock';
 import { EmptyState } from '@/soc/components/EmptyState';
 import { LoadError } from '@/soc/components/LoadError';
 
+import { AuditLogLink } from '@/soc/components/audit/AuditLink';
 import type { DecisionPayload, TimelineResponse, TraceSpan } from '@/soc/pages/CaseDetail.api';
 import type { CasePanelPresentation } from '@/soc/pages/casedetail/shared';
+
+/**
+ * "View in audit log" (Round 14 SPEC §4.5.8): every audit row of this case, in all
+ * scopes. Shown only to people who hold `audit:view`, and only for a case id the audit
+ * log's `case` link key accepts. The range starts an hour before the earliest step of the
+ * trace (so the default last 7 days never hides an older investigation) and runs to now,
+ * which keeps the case work that followed; with no readable step time it is the last 90
+ * days.
+ */
+function auditTrailFrom(spans: readonly TraceSpan[] | undefined): string {
+  let earliest = Number.POSITIVE_INFINITY;
+  for (const span of spans ?? []) {
+    const ms = Date.parse(span.ts);
+    if (Number.isFinite(ms) && ms < earliest) earliest = ms;
+  }
+  if (!Number.isFinite(earliest)) return 'now-90d';
+  return new Date(Math.floor((earliest - 3_600_000) / 1000) * 1000).toISOString().replace('.000Z', 'Z');
+}
+
+function AuditTrailLink({
+  caseId,
+  spans,
+  className,
+}: {
+  caseId: string | undefined;
+  spans: readonly TraceSpan[] | undefined;
+  className?: string;
+}) {
+  if (!caseId || !/^[\w.:-]{1,128}$/.test(caseId)) return null;
+  return (
+    <AuditLogLink opts={{ scope: 'all', case: caseId, from: auditTrailFrom(spans) }} className={className}>
+      View in audit log
+    </AuditLogLink>
+  );
+}
 
 /* ------------------------------------------------------------------ kinds -- */
 
@@ -74,6 +110,13 @@ function kindMeta(kind: string): KindMeta {
 }
 
 /* ----------------------------------------------------------- decision step -- */
+
+/**
+ * The decision step's small labels ("Policy clause evaluated", "Verdict", ...): 12 px,
+ * sentence case, in the body face. Never tracked capitals and never below the type floor
+ * (Round 14, SPEC §3.1; the ui-standard keeps context text at 12 px or larger).
+ */
+const MICRO_LABEL = 'text-xs font-medium text-muted-foreground';
 
 /** Read the typed decision payload off a terminal `decision` span (defensive).
  *  Exported so the pinned DecisionCard (casedetail/DecisionCard.tsx) reads the exact
@@ -150,7 +193,7 @@ const DecisionStep: React.FC<{ span: TraceSpan }> = ({ span }) => {
 
         {/* The matched AutoClosePolicy clause (the thresholds decide() compared against). */}
         <div className="mt-3 rounded-lg border border-border bg-card p-3">
-          <div className="mb-1.5 flex items-center gap-1.5 text-[0.65rem] font-semibold uppercase tracking-widest text-muted-foreground">
+          <div className={cn('mb-1.5 flex items-center gap-1.5', MICRO_LABEL)}>
             <GitBranch className="h-3 w-3" />
             Policy clause evaluated
           </div>
@@ -202,11 +245,7 @@ const DecisionStep: React.FC<{ span: TraceSpan }> = ({ span }) => {
 
 const DecisionFact: React.FC<{ label: string; value: string }> = ({ label, value }) => (
   <div className="rounded-md border border-border bg-card px-2.5 py-2">
-    {/* Same micro-label size as the "Policy clause evaluated" eyebrow above and the rest
-        of the app's uppercase eyebrows — was an off-scale text-[0.6rem] (9.6px) outlier. */}
-    <div className="text-[0.65rem] font-semibold uppercase tracking-widest text-muted-foreground">
-      {label}
-    </div>
+    <div className={MICRO_LABEL}>{label}</div>
     <div className="mt-0.5 truncate font-mono text-sm text-foreground">{value}</div>
   </div>
 );
@@ -395,11 +434,12 @@ const TerminalTrace: React.FC<{ data: TimelineResponse; spans: TraceSpan[] }> = 
           );
         })}
       </ol>
-      <div className="flex flex-wrap gap-x-4 gap-y-1 border-t border-border px-4 py-2 font-mono text-2xs text-muted-foreground">
-        <span>cost {fmtMoney(data.totals?.cost)}</span>
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-border px-4 py-2 font-mono text-2xs text-muted-foreground">
+        {typeof data.totals?.cost === 'number' ? <span>cost {fmtMoney(data.totals.cost)}</span> : null}
         {typeof data.totals?.tokens === 'number' ? (
           <span>{fmtTokens(data.totals.tokens)} tokens</span>
         ) : null}
+        <AuditTrailLink caseId={data.case_id} spans={spans} className="ml-auto font-sans text-xs" />
       </div>
     </div>
   );
@@ -464,7 +504,10 @@ export const TraceTimeline: React.FC<TraceTimelineProps> = ({
             <Terminal className="h-3 w-3" />
             {toolCount} tool{toolCount === 1 ? '' : 's'}
           </Badge>
-          <Badge variant="outline">{fmtMoney(data?.totals?.cost)}</Badge>
+          {/* No cost badge when the cost is withheld (`null` without cost:view). */}
+          {typeof data?.totals?.cost === 'number' ? (
+            <Badge variant="outline">{fmtMoney(data.totals.cost)}</Badge>
+          ) : null}
           {typeof data?.totals?.tokens === 'number' && data.totals.tokens > 0 ? (
             <Badge variant="outline">{fmtTokens(data.totals.tokens)} tokens</Badge>
           ) : null}
@@ -474,6 +517,7 @@ export const TraceTimeline: React.FC<TraceTimelineProps> = ({
               Deterministic decision recorded
             </Badge>
           ) : null}
+          <AuditTrailLink caseId={data?.case_id} spans={spans} className="ml-auto text-sm" />
         </div>
       </div>
 

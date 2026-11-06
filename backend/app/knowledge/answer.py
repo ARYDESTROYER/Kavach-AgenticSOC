@@ -10,6 +10,14 @@ product question, the engine answers extractively instead of failing:
 with ``D*`` citations, console links (``allowed`` from the caller's grants), a guide
 block of where to go (the numbered steps stay in the Markdown answer, once),
 ``answer_kind="product_help"``, zero usage and a notice naming why the AI was not used.
+The lead is never empty while the top section has prose or a list (Round 14, see
+:func:`_lead`): when the best-matching chunk is a later part of its section with no
+sentence of its own (a bare bullet list), the section's opening chunk leads instead,
+under the same citation; a section that opens with a list leads with its first three
+items. Only a section that is nothing but a table leads with its title alone. The
+console links are the destinations the lead section names; when the best match names
+none, a close match on the same page whose heading names more of the question leads
+instead (see :func:`_lead_hit`), and only then do the console labels decide.
 A message is a product question only with a product cue and no data signal (a case id,
 an address, a time window, "how many", "show me", …; see :func:`classify_intent`): a
 data question asked while the AI is unavailable gets the plain notice, never docs. A question naming a settings key (``poll_batch_size``, ``rag.top_k``) is answered
@@ -29,12 +37,14 @@ from typing import Any, Iterable, Literal
 from ..agents.blocks import validate_blocks
 from ..models import ChatResponse, Citation, ConsoleLink, TurnNotice, TurnUsage
 from .corpus import AppKnowledge, ConsoleTarget, DocChunk, get_app_knowledge
+from .index import content_terms
 from .render import (
     chunk_title,
     console_link,
     doc_citation,
     doc_href,
     first_sentences,
+    list_points,
     split_procedure,
     target_allowed,
 )
@@ -422,6 +432,80 @@ def _procedure(text: str) -> tuple[str, list[str], str]:
     return first_sentences(before, 3), steps, first_sentences(after, 2)
 
 
+def _section_opening(chunk: DocChunk, knowledge: AppKnowledge) -> DocChunk:
+    """The first chunk of ``chunk``'s section (``chunk`` itself when it is the first)."""
+    return next(
+        (c for c in knowledge.chunks if c.page == chunk.page and c.anchor == chunk.anchor),
+        chunk,
+    )
+
+
+def _lead(chunk: DocChunk, knowledge: AppKnowledge) -> tuple[str, list[str], str, list[str]]:
+    """``(intro, steps, outro, points)`` for the answer's top section, never empty when
+    the section has prose or a list. A long section is split into several chunks, and a
+    later part can be a bare bullet list with no sentence of its own ("How do I export
+    audit events to CSV?" matches the list of export rules best): the section's opening
+    part then leads (same section, same citation), and a section that opens with a list
+    leads with its first items (``points``)."""
+    intro, steps, outro = _procedure(chunk.text)
+    if intro or steps:
+        return intro, steps, outro, []
+    opening = _section_opening(chunk, knowledge)
+    if opening.id != chunk.id:
+        intro, steps, outro = _procedure(opening.text)
+        if intro or steps:
+            return intro, steps, outro, []
+    return "", [], "", list_points(chunk.text, 3)
+
+
+def _section_destinations(chunk: DocChunk, knowledge: AppKnowledge) -> list[str]:
+    """The console target ids ``chunk``'s Help Center section names: its own bold
+    breadcrumbs, then the page of any "Ask about this" topic that cites the section."""
+    ref = f"{knowledge.pages[chunk.page].path}#{chunk.anchor}"
+    return [*chunk.console, *(t.console for t in knowledge.topics.values() if t.console and ref in t.docs)]
+
+
+def _heading_terms(heading: str, terms: frozenset[str]) -> int:
+    """How many of the question's ``terms`` a section heading names. A heading word
+    counts when it is the term or, for a term of four letters or more, starts with it:
+    the index matches whole words only, so "export" misses the heading "Exporting"."""
+    words = content_terms(heading)
+    return sum(1 for term in terms
+               if any(word == term or (len(term) >= 4 and word.startswith(term)) for word in words))
+
+
+def _lead_hit(
+    message: str, hits: list[tuple[DocChunk, float]], knowledge: AppKnowledge,
+) -> tuple[int, DocChunk, list[str]]:
+    """``(index, lead chunk, destinations)``: which hit the answer leads with.
+
+    The best match leads, with the destinations its section names. One exception: when
+    the best match names no destination, a section of the SAME page that does, scores
+    within :data:`SECONDARY_RATIO` of the best and names more of the question's words in
+    its heading than the best match's heading does leads instead, from its opening.
+    "How do I export the audit log?" matches the audit log's short Personal data section
+    ("they are in every export") a little better than the section headed Exporting,
+    because the index does not stem "export"; only Exporting says where the Export menu
+    is. The heading test keeps a neighbour from taking the lead merely for naming a
+    page: "Where is MFA?" stays on the MFA section, not on the Remember me section
+    beside it, and "How do reports work?" does not move from "Work a case" to "Find the
+    work that matters"."""
+    top, top_score = hits[0]
+    destinations = _section_destinations(top, knowledge)
+    if destinations:
+        return 0, top, destinations
+    terms = frozenset(content_terms(message))
+    top_named = _heading_terms(top.heading, terms)
+    for index, (chunk, score) in enumerate(hits[1:], start=1):
+        if score < SECONDARY_RATIO * top_score:
+            break
+        if chunk.page != top.page or _heading_terms(chunk.heading, terms) <= top_named:
+            continue
+        if named := _section_destinations(chunk, knowledge):
+            return index, _section_opening(chunk, knowledge), named
+    return 0, top, []
+
+
 def unavailable_notice(reason: str) -> TurnNotice:
     kind, message, retryable = _NOTICES.get(reason, _NOTICES["unavailable"])
     return TurnNotice(kind=kind, message=message, retryable=retryable)
@@ -484,6 +568,14 @@ def answer_app_question(
     # Secondary sections are cited only when they score close to the best one; a
     # distant runner-up is usually a different topic that shares a word.
     top_score = hits[0][1] if hits else 0.0
+    link_ids: list[str] = []
+    lead_chunk: DocChunk | None = None
+    if hits:
+        # The lead section's bold breadcrumbs (and the page of an "Ask about this" topic
+        # that cites it) are the answer's destinations; the lead section is cited first.
+        index, lead_chunk, link_ids = _lead_hit(message, hits, knowledge)
+        if index:
+            hits = [hits[index], *hits[:index], *hits[index + 1:]]
     citations: list[Citation] = []
     for chunk, score in hits:
         if len(citations) >= MAX_CITATIONS or (citations and score < SECONDARY_RATIO * top_score):
@@ -492,12 +584,6 @@ def answer_app_question(
         if citation is not None and citation.doc not in {c.doc for c in citations}:
             citations.append(citation)
 
-    link_ids: list[str] = list(hits[0][0].console) if hits else []
-    if hits:
-        # A glossary section named by an "Ask about this" topic links that topic's page.
-        page = knowledge.pages[hits[0][0].page]
-        ref = f"{page.path}#{hits[0][0].anchor}"
-        link_ids.extend(t.console for t in knowledge.topics.values() if t.console and ref in t.docs)
     if not link_ids:
         # Only when the cited prose names no destination: the label search is noisier
         # than a breadcrumb the docs wrote down ("active" also matches Active sessions).
@@ -513,16 +599,18 @@ def answer_app_question(
     parts: list[str] = []
     if settings_answer:
         parts.append(settings_answer[0])
-    if hits:
-        top = hits[0][0]
-        intro, steps, outro = _procedure(top.text)
-        ref = f" [{citations[0].id}]" if citations and citations[0].doc == doc_href(top, knowledge) else ""
-        lead = f"From the Help Center ({knowledge.docs_version}), {chunk_title(top, knowledge)}:"
-        parts.append(f"{lead} {intro}{ref}" if intro else f"{lead}{ref}")
+    if lead_chunk is not None:
+        intro, steps, outro, points = _lead(lead_chunk, knowledge)
+        cited_first = bool(citations) and citations[0].doc == doc_href(lead_chunk, knowledge)
+        ref = f" [{citations[0].id}]" if cited_first else ""
+        prefix = f"From the Help Center ({knowledge.docs_version}), {chunk_title(lead_chunk, knowledge)}:"
+        parts.append(f"{prefix} {intro}{ref}" if intro else f"{prefix}{ref}")
         if steps:
             parts.append("\n".join(f"{n}. {step}" for n, step in enumerate(steps, start=1)))
             if outro and not intro:
                 parts.append(outro)
+        elif points:
+            parts.append("\n".join(f"- {point}" for point in points))
         more = citations[1:]
         if more:
             parts.append("See also: " + "; ".join(f"{c.title} [{c.id}]" for c in more) + ".")

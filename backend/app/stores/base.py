@@ -21,8 +21,11 @@ from __future__ import annotations
 import asyncio
 import logging
 from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable
+
+from pydantic import ValidationError
 
 from ..build_identity import stamp_new_record
 from ..config import Preferences
@@ -31,7 +34,17 @@ from ..constants import (
     TERMINAL_CASE_STATUSES,
     ActionType,
 )
-from ..models import AuditDoc, Case, Cursor, UsageDoc
+from ..models import (
+    AUDIT_ROUND14_FIELDS,
+    AuditChange,
+    AuditClient,
+    AuditDoc,
+    AuditRecordRef,
+    AuditTarget,
+    Case,
+    Cursor,
+    UsageDoc,
+)
 from ..utils import parse_millis_strict, relative_to_millis_strict, truncate
 
 logger = logging.getLogger("tlsoc.stores.base")
@@ -592,6 +605,143 @@ def case_in_half_open_window(case: Any, lo: int | None, hi: int | None) -> bool:
     return True
 
 
+class AuditCursorExpired(Exception):
+    """A continuation cursor's store snapshot (an Elasticsearch point-in-time) has
+    expired. The read API answers ``409 audit_cursor_expired`` and the page reloads
+    from the top (SPEC §4.5.5)."""
+
+
+@dataclass(frozen=True)
+class AuditHit:
+    """One row of an audit read page.
+
+    ``store``/``ref``/``index`` identify the stored row (they build the E12
+    ``record_id`` through :func:`app.models.encode_audit_record_id`); ``doc`` is the
+    stored document as written; ``position`` is the JSON-safe store continuation that
+    resumes the read AFTER this row (the merged Demo read keeps one per store)."""
+
+    store: str
+    ref: str | int
+    index: str | None
+    doc: dict[str, Any]
+    position: Any
+
+
+@dataclass
+class AuditSearchPage:
+    """One page of matching rows in the requested order, plus an honest total:
+    exact when ``relation`` is ``eq``, a lower bound when it is ``gte``.
+    ``exhausted`` is True when no matching row follows the last hit. ``start`` is the
+    position BEFORE the first hit (it carries the snapshot the read opened: an
+    Elasticsearch point-in-time, a SQL high-water time), so a merged read that takes
+    no row from this store can resume it from the same place, and the page's per-run
+    totals are counted inside the same snapshot."""
+
+    hits: list[AuditHit] = field(default_factory=list)
+    total: int = 0
+    relation: str = "eq"
+    exhausted: bool = True
+    start: Any = None
+
+
+#: The generic (third-party repository) read scans at most this many newest rows.
+AUDIT_FALLBACK_SCAN = 10_000
+
+
+def build_audit_doc(
+    *,
+    action_type: ActionType,
+    event_id: str | None = None,
+    ts: str | None = None,
+    surface: str = "",
+    actor: str = "",
+    case_id: str | None = None,
+    source_id: str | None = None,
+    model: str | None = None,
+    prompt_excerpt: str | None = None,
+    query_text: str | None = None,
+    tool_name: str | None = None,
+    tool_input: Any = None,
+    tool_output_summary: str | None = None,
+    result_summary: str | None = None,
+    outcome: str | None = None,
+    actor_type: str | None = None,
+    action: str | None = None,
+    actor_role: str | None = None,
+    client: AuditClient | dict[str, Any] | None = None,
+    session_ref: str | None = None,
+    target: AuditTarget | dict[str, Any] | None = None,
+    changes: list[AuditChange | dict[str, Any]] | None = None,
+    request_id: str | None = None,
+    run_id: str | None = None,
+) -> AuditDoc:
+    """The one constructor of an append-only audit row (``record`` and
+    ``record_strict`` in every backend). The three free-text fields are capped at
+    1,000 characters as before; the Round 14 fields (SPEC §4.5.3) are optional,
+    validated and bounded by :class:`app.models.AuditDoc`, and omitted from the stored
+    document when unset, so a row written without them keeps its pre-Round-14 shape."""
+    return AuditDoc(
+        event_id=event_id,
+        **({"ts": ts} if ts else {}),
+        action_type=action_type,
+        surface=surface,
+        actor=actor,
+        case_id=case_id,
+        source_id=source_id,
+        model=model,
+        prompt_excerpt=truncate(prompt_excerpt, 1000) if prompt_excerpt else None,
+        query_text=query_text,
+        tool_name=tool_name,
+        tool_input=tool_input,
+        tool_output_summary=truncate(tool_output_summary, 1000) if tool_output_summary else None,
+        result_summary=truncate(result_summary, 1000) if result_summary else None,
+        outcome=outcome,
+        actor_type=actor_type,
+        action=action,
+        actor_role=actor_role,
+        client=client,
+        session_ref=session_ref,
+        target=target,
+        changes=changes,
+        request_id=request_id,
+        run_id=run_id,
+    )
+
+
+def build_audit_doc_best_effort(**fields: Any) -> AuditDoc:
+    """:func:`build_audit_doc` for a best-effort ``record`` (#2: the row is the
+    evidence). A Round 14 field that fails validation (an over-long ``run_id``, an
+    empty ``target.id``, a malformed ``action``) is left out and named in the log, and
+    the row is written with every other field, so a writer's mistake in the optional
+    enrichment never loses the action itself. A field rows carried before Round 14 that
+    is invalid still raises (the caller logs it), as it always did. ``record_strict``
+    keeps refusing the whole row: an audit-first caller must learn of the mistake."""
+    try:
+        return build_audit_doc(**fields)
+    except ValidationError as exc:
+        problems = [(err.get("loc") or ("",), str(err.get("type") or "")) for err in exc.errors()]
+        invalid = sorted({str(loc[0]) for loc, _kind in problems})
+        if not invalid or not set(invalid) <= set(AUDIT_ROUND14_FIELDS):
+            raise
+        # Field names and error kinds only: the values may be long or sensitive.
+        logger.error(
+            "AUDIT ROW WRITTEN WITHOUT INVALID FIELDS %s (action=%s case=%s): %s",
+            invalid, fields.get("action_type"), fields.get("case_id"),
+            "; ".join(f"{'.'.join(str(part) for part in loc)}: {kind}" for loc, kind in problems),
+        )
+        return build_audit_doc(**{**fields, **{name: None for name in invalid}})
+
+
+def _mem_record_number(doc: dict[str, Any]) -> int:
+    """A stable number for a row of a repository without native record ids: derived
+    from the row's content, so the same row has the same ``mem:<n>`` on every read."""
+    import hashlib
+    import json
+
+    raw = json.dumps(doc, sort_keys=True, default=str, ensure_ascii=True).encode("utf-8")
+    return int.from_bytes(hashlib.sha256(raw).digest()[:8], "big") % 10**12
+
+
 class AuditRepository(ABC):
     """Append-only audit log (Section 7.2 / Non-negotiable #2).
 
@@ -627,7 +777,19 @@ class AuditRepository(ABC):
         tool_input: Any = None,
         tool_output_summary: str | None = None,
         result_summary: str | None = None,
-    ) -> None: ...
+        outcome: str | None = None,
+        actor_type: str | None = None,
+        action: str | None = None,
+        actor_role: str | None = None,
+        client: AuditClient | dict[str, Any] | None = None,
+        session_ref: str | None = None,
+        target: AuditTarget | dict[str, Any] | None = None,
+        changes: list[AuditChange | dict[str, Any]] | None = None,
+        request_id: str | None = None,
+        run_id: str | None = None,
+    ) -> None:
+        """Best-effort append (never raises into the caller). The Round 14 keyword
+        arguments (SPEC §4.5.3) are optional; see :func:`build_audit_doc`."""
 
     async def record_strict(
         self,
@@ -646,31 +808,46 @@ class AuditRepository(ABC):
         tool_input: Any = None,
         tool_output_summary: str | None = None,
         result_summary: str | None = None,
+        outcome: str | None = None,
+        actor_type: str | None = None,
+        action: str | None = None,
+        actor_role: str | None = None,
+        client: AuditClient | dict[str, Any] | None = None,
+        session_ref: str | None = None,
+        target: AuditTarget | dict[str, Any] | None = None,
+        changes: list[AuditChange | dict[str, Any]] | None = None,
+        request_id: str | None = None,
+        run_id: str | None = None,
     ) -> None:
-        """Build and strictly persist one append-only audit document."""
+        """Build and strictly persist one append-only audit document (raises when
+        the append cannot be confirmed; the audit-first writers depend on it)."""
         await self.write_strict(
             stamp_new_record(
-                AuditDoc(
-                    event_id=event_id,
-                    **({"ts": ts} if ts else {}),
+                build_audit_doc(
                     action_type=action_type,
+                    event_id=event_id,
+                    ts=ts,
                     surface=surface,
                     actor=actor,
                     case_id=case_id,
                     source_id=source_id,
                     model=model,
-                    prompt_excerpt=truncate(prompt_excerpt, 1000) if prompt_excerpt else None,
+                    prompt_excerpt=prompt_excerpt,
                     query_text=query_text,
                     tool_name=tool_name,
                     tool_input=tool_input,
-                    tool_output_summary=(
-                        truncate(tool_output_summary, 1000)
-                        if tool_output_summary
-                        else None
-                    ),
-                    result_summary=(
-                        truncate(result_summary, 1000) if result_summary else None
-                    ),
+                    tool_output_summary=tool_output_summary,
+                    result_summary=result_summary,
+                    outcome=outcome,
+                    actor_type=actor_type,
+                    action=action,
+                    actor_role=actor_role,
+                    client=client,
+                    session_ref=session_ref,
+                    target=target,
+                    changes=changes,
+                    request_id=request_id,
+                    run_id=run_id,
                 )
             )
         )
@@ -704,6 +881,98 @@ class AuditRepository(ABC):
         it. Read-only (#2 — never mutates). Never raises. ``source_id`` (A5.3 coverage
         observability) filters to a single source's poll history."""
         return []
+
+    # ------------------------------------------------------------------ #
+    # Round 14 read API (SPEC §4.5.5). Read-only (#2). The bundled Elasticsearch and
+    # SQL repositories page natively; the defaults below serve a third-party
+    # repository from a bounded scan of :meth:`records` and say so honestly.
+    # ------------------------------------------------------------------ #
+    async def _fallback_rows(self, predicate: Any, order: str) -> tuple[list[dict[str, Any]], bool]:
+        from ..audit.query import matches
+
+        rows = await self.records(limit=AUDIT_FALLBACK_SCAN)
+        capped = len(rows) >= AUDIT_FALLBACK_SCAN
+        matched = [dict(r) for r in rows if isinstance(r, dict) and matches(predicate, r)]
+        if order == "asc":
+            matched.reverse()
+        return matched, capped
+
+    async def search_page(
+        self,
+        predicate: Any,
+        *,
+        order: str = "desc",
+        limit: int = 50,
+        cursor: Any = None,
+        track_total: int = 10_000,
+    ) -> AuditSearchPage:
+        """One page of rows matching ``predicate`` (an :mod:`app.audit.query` tree),
+        newest first (``desc``) or oldest first (``asc``), after ``cursor`` (a
+        ``position`` from a previous page). Raises on a store failure and
+        :class:`AuditCursorExpired` when the cursor's snapshot is gone."""
+        matched, capped = await self._fallback_rows(predicate, order)
+        offset = 0
+        if isinstance(cursor, dict):
+            try:
+                offset = max(0, int(cursor.get("offset", 0)))
+            except (TypeError, ValueError):
+                offset = 0
+        size = max(1, int(limit))
+        window = matched[offset: offset + size]
+        hits = [
+            AuditHit("mem", _mem_record_number(doc), None, doc, {"offset": offset + i + 1})
+            for i, doc in enumerate(window)
+        ]
+        total = len(matched)
+        return AuditSearchPage(
+            hits=hits,
+            total=min(total, track_total) if track_total else total,
+            relation="gte" if capped or (track_total and total > track_total) else "eq",
+            exhausted=offset + size >= total,
+            start={"offset": offset},
+        )
+
+    async def count_matching(self, predicate: Any, *, cap: int) -> tuple[int, str]:
+        """``(count, relation)``: exact up to ``cap``, then ``(cap, "gte")``."""
+        matched, capped = await self._fallback_rows(predicate, "desc")
+        if len(matched) > cap:
+            return cap, "gte"
+        return len(matched), "gte" if capped else "eq"
+
+    async def run_totals(
+        self, predicate: Any, run_ids: list[str], *, snapshot: Any = None,
+    ) -> dict[str, int]:
+        """For each ``run_id``, how many rows match ``predicate`` and carry it.
+
+        ``snapshot`` is a position of the page being shown (its ``start``); a store
+        that pages inside a snapshot counts inside the same one, so a run's total never
+        includes rows "Load more" cannot reach. This generic read has no snapshot and
+        counts the rows it scans."""
+        del snapshot
+        wanted = {r for r in run_ids if r}
+        if not wanted:
+            return {}
+        matched, _capped = await self._fallback_rows(predicate, "desc")
+        totals: dict[str, int] = {}
+        for doc in matched:
+            run = doc.get("run_id")
+            if isinstance(run, str) and run in wanted:
+                totals[run] = totals.get(run, 0) + 1
+        return totals
+
+    async def get_record(self, ref: AuditRecordRef) -> AuditHit | None:
+        """The stored row ``ref`` names, or ``None`` when it is not in this store."""
+        if ref.store != "mem":
+            return None
+        rows = await self.records(limit=AUDIT_FALLBACK_SCAN)
+        for doc in rows:
+            if isinstance(doc, dict) and _mem_record_number(doc) == ref.ref:
+                return AuditHit("mem", ref.ref, None, dict(doc), None)
+        return None
+
+    async def close_search_cursor(self, cursor: Any) -> None:
+        """Release a store snapshot a cursor holds (an Elasticsearch point-in-time)."""
+        return None
 
     async def export_page(
         self, *, limit: int = 1000, cursor: Any = None,

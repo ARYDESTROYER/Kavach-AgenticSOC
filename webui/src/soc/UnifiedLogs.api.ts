@@ -61,6 +61,38 @@ export interface UnifiedLogSourceStatus {
    * "unknown" rather than mislabelling a ring read as a search.
    */
   mode?: 'buffer' | 'search' | string;
+  /**
+   * Round 14 (SPEC §4.6.1): `false` when this source could apply the rule or severity
+   * filter only after a bounded read (its count is then "at least"). Absent from an
+   * older backend and when no such filter was asked for.
+   */
+  exact?: boolean;
+  /**
+   * Round 14: how many events in this source matched the filter (`null`: not known), and
+   * whether that is exact (`eq`) or a floor (`gte`). Only with a rule or severity filter.
+   */
+  total?: number | null;
+  total_relation?: 'eq' | 'gte';
+}
+
+/**
+ * Round 14 (SPEC §4.6.1): how many events matched a rule or severity filter across the
+ * sources read: exact (`eq`) or a floor (`gte`, "at least"). The rows are capped at
+ * `limit`, so a page states this figure, never a sum of `sources[].count`.
+ */
+export interface UnifiedLogsMatched {
+  count: number;
+  relation: 'eq' | 'gte';
+}
+
+/** A named severity level (the one ladder, after each source's own scale). */
+export type LogSeverityLevel = 'info' | 'low' | 'medium' | 'high' | 'critical';
+
+/** Round 14 (SPEC §4.6.1): the exact filters the server applied, echoed back. */
+export interface UnifiedLogsFilters {
+  rule: string | null;
+  severity: LogSeverityLevel | null;
+  severity_gte: LogSeverityLevel | null;
 }
 
 /**
@@ -81,6 +113,10 @@ export interface UnifiedLogsResponse {
   limit?: number;
   /** True when the merged set was larger than the cap. */
   truncated?: boolean;
+  /** Round 14: the rule and severity filters the server applied (absent on an older backend). */
+  filters?: UnifiedLogsFilters;
+  /** Round 14: the events the filter matched (only with a rule or severity filter). */
+  matched?: UnifiedLogsMatched;
 }
 
 /** Query params for `GET /api/logs` (all optional; the backend hard-caps limit). */
@@ -96,6 +132,15 @@ export interface UnifiedLogsQuery {
    */
   source_id?: string;
   per_source_timeout?: number;
+  /**
+   * Round 14 (SPEC §4.6.1, §4.6.6): an exact match on the row's rule value (1 to 256
+   * characters, one line), bound as a structured filter, never as query text.
+   */
+  rule?: string;
+  /** Round 14: exactly this named level, projected through each source's own scale. */
+  severity?: LogSeverityLevel;
+  /** Round 14: this named level or above. */
+  severity_gte?: LogSeverityLevel;
 }
 
 /**

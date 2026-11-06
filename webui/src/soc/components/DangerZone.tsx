@@ -1,35 +1,38 @@
 /**
- * DangerZone — tiered platform-reset controls (Round 4, Wave 5, request #7).
+ * DangerZone: tiered platform-reset controls (Round 4, Wave 5, request #7).
  *
- * Three INDEPENDENT, escalating "GitHub danger-zone" cards, each with its own
- * type-to-confirm dialog:
+ * Three INDEPENDENT, escalating reset tiers, each with its own type-to-confirm dialog:
  *
- *   1. Reset cases & logs        (type `RESET CASES`)   — keeps sources/secrets/settings
- *   2. Reset sources + logs      (type `RESET SOURCES`) — also drops sources + cursors
- *   3. Factory reset             (type `FACTORY RESET`) — wipes state → restarts into OOBE
+ *   1. Reset cases and logs    (type `RESET CASES`): keeps sources, secrets and settings
+ *   2. Reset sources and logs  (type `RESET SOURCES`): also drops sources and cursors
+ *   3. Factory reset           (type `FACTORY RESET`): wipes state and restarts into setup
  *
  * The whole surface is gated behind `<Can resource="users" action="manage">` (the
  * `super_admin`/admin grant that mirrors the backend `require_admin` on
  * `POST /api/jobs` with kind `tiered_reset`). The server ALSO enforces a step-up /
- * fresh-auth window;
- * a 401 `reauth_required` from the reset call transparently pops the globally
- * registered `ReauthDialog` and retries once (see `DangerZone.api.ts`).
+ * fresh-auth window; a 401 `reauth_required` from the reset call transparently pops the
+ * globally registered `ReauthDialog` and retries once (see `DangerZone.api.ts`).
+ *
+ * Round 14 (SPEC §4.9.6, SE14): the section is a `SettingsSection` with one group panel
+ * holding the three tiers as rows divided by hairlines. Each tier's button is an OUTLINE
+ * destructive button (red text and border, never a solid red fill on the page); the
+ * solid red button appears only inside the confirm dialog. The consequence lists read
+ * "Clears" and "Keeps" in sentence case. Closing a tier's dialog returns focus to the
+ * tier's button (SPEC §3.3).
  *
  * SAFETY grammar:
- *   - The destructive button ARMS only when the operator has typed the EXACT
- *     per-scope phrase (trimmed byte-match) — belt-and-braces over the server's own
- *     confirm validation, so a fat-fingered scope can never wipe more than typed.
- *   - Each card spells out, in plain copy, WHAT CLEARS and WHAT IS KEPT — and every
- *     tier keeps env-provided secrets (enforced server-side, §6.6).
- *   - On success the dialog shows a receipt of exactly what was cleared.
+ *   - The destructive button ARMS only when the operator has typed the EXACT per-scope
+ *     phrase (trimmed byte-match): belt-and-braces over the server's own confirm
+ *     validation, so a fat-fingered scope can never wipe more than typed.
+ *   - Each tier spells out, in plain copy, WHAT CLEARS and WHAT IS KEPT, and every tier
+ *     keeps env-provided secrets (enforced server-side, §6.6).
  *
- * SECURITY (#9): the server `cleared[]` receipt is rendered as plain, escaped React
- * text (never markup). Nothing here implies the reset runs `decide()` (#3) or touches
- * the read-only log key (#1) — it only destroys the suite's OWN mgmt state.
+ * SECURITY (#9): nothing here renders server text as markup. Nothing here implies the
+ * reset runs `decide()` (#3) or touches the read-only log key (#1): it only destroys the
+ * suite's OWN state.
  *
- * INTEGRATOR NOTE: mount `<DangerZone />` in Settings → Experimental / Organization,
- * super_admin-gated. It self-gates with `<Can>` (renders nothing without the grant),
- * so a bare mount is safe; the enclosing section header/RBAC filter still applies.
+ * INTEGRATOR NOTE: mounted as Settings, Organization, Danger zone. It self-gates with
+ * `<Can>` (renders nothing without the grant), so a bare mount is safe.
  */
 import * as React from 'react';
 import { AlertTriangle, Loader2, ShieldAlert } from 'lucide-react';
@@ -48,13 +51,18 @@ import {
   DialogDescription,
 } from '@/ui/dialog';
 import { Can } from './Can';
+import { useReturnFocus } from '@/soc/hooks/useReturnFocus';
 import { cn } from '@/lib/cn';
 import {
   RESET_CONFIRM_PHRASE,
   type ResetScope,
 } from '@/soc/DangerZone.api';
 import { ApiError } from '@/lib/api';
-import { SectionTitle } from '@/soc/pages/settings/primitives';
+import {
+  SettingsGroup,
+  SettingsSection,
+  SettingsSectionContext,
+} from '@/soc/pages/settings/primitives';
 import { api } from '@/lib/api';
 import { useNavigateOptional } from '@/soc/router';
 import {
@@ -87,7 +95,7 @@ interface TierCopy {
 const TIERS: TierCopy[] = [
   {
     scope: 'cases',
-    title: 'Reset cases & logs',
+    title: 'Reset cases and logs',
     summary: 'Clear every case and its working data, keeping your sources and settings.',
     clears: [
       'All cases, campaigns and baselines',
@@ -105,10 +113,10 @@ const TIERS: TierCopy[] = [
   },
   {
     scope: 'sources',
-    title: 'Reset sources + logs',
+    title: 'Reset sources and logs',
     summary: 'Everything above, plus remove all configured sources and their polling cursors.',
     clears: [
-      'Everything in “Reset cases & logs”',
+      'Everything in “Reset cases and logs”',
       'All configured sources',
       'Polling cursors and per-source connector secrets',
     ],
@@ -119,24 +127,24 @@ const TIERS: TierCopy[] = [
       'Durable application Jobs and their Inbox progress',
     ],
     caution:
-      'After this, no sources are connected — you will need to re-add them from the wizard or Sources page.',
+      'After this, no sources are connected. Add them again from the setup wizard or the Sources page.',
   },
   {
     scope: 'factory',
     title: 'Factory reset',
-    summary: 'Wipe all suite state and restart into first-run setup (OOBE).',
+    summary: 'Wipe all Agentic SOC state and restart into first-run setup.',
     clears: [
       'All state (cases, sources, users, settings, branding)',
       'Personalisation, historical Jobs, personal Inbox and export artifacts',
       'LLM Batch records and the previous audit log',
-      'The setup flag → the app restarts into the first-run wizard',
+      'The setup flag, so the app restarts into the first-run wizard',
     ],
     keeps: [
       'Environment-provided secrets (ES / LLM keys, database URL)',
       'One identity-free operational reset receipt in the new audit lineage',
     ],
     caution:
-      'This signs everyone out and restarts the suite into first-run setup (OOBE). Personal Inbox history is erased; a minimal system receipt records only the reset outcome. Environment secrets remain so you can immediately create the admin account. This cannot be undone.',
+      'This signs everyone out and restarts Agentic SOC into first-run setup. Personal Inbox history is erased; a minimal system receipt records only the reset outcome. Environment secrets remain so you can immediately create the admin account. This cannot be undone.',
   },
 ];
 
@@ -146,6 +154,11 @@ interface ResetDialogProps {
   tier: TierCopy | null;
   onClose: () => void;
   onAccepted: () => void;
+  /**
+   * The dialog opens from state (a tier's button outside its root), so it has no Radix
+   * trigger to hand focus back to; the host returns focus to that button (SPEC §3.3).
+   */
+  onCloseAutoFocus?: (event: Event) => void;
 }
 
 /**
@@ -153,7 +166,7 @@ interface ResetDialogProps {
  * trimmed input byte-matches the tier's phrase; the phrase itself is echoed as an
  * `<InlineCode>`-style token so the operator can see exactly what to type.
  */
-function ResetDialog({ tier, onClose, onAccepted }: ResetDialogProps) {
+function ResetDialog({ tier, onClose, onAccepted, onCloseAutoFocus }: ResetDialogProps) {
   const navigate = useNavigateOptional();
   const jobSubmissionIntentRef = React.useRef<JobSubmissionIntent | null>(null);
   const [value, setValue] = React.useState('');
@@ -171,7 +184,7 @@ function ResetDialog({ tier, onClose, onAccepted }: ResetDialogProps) {
   if (!tier) return null;
 
   const phrase = RESET_CONFIRM_PHRASE[tier.scope];
-  // Arm only on the EXACT (trimmed) phrase — the same byte-match the server enforces.
+  // Arm only on the EXACT (trimmed) phrase: the same byte-match the server enforces.
   const armed = value.trim() === phrase && !busy;
 
   const submit = async () => {
@@ -227,7 +240,7 @@ function ResetDialog({ tier, onClose, onAccepted }: ResetDialogProps) {
 
   return (
     <Dialog open onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-md">
+      <DialogContent className="sm:max-w-md" onCloseAutoFocus={onCloseAutoFocus}>
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2 text-critical">
             <AlertTriangle className="h-5 w-5" aria-hidden />
@@ -238,8 +251,8 @@ function ResetDialog({ tier, onClose, onAccepted }: ResetDialogProps) {
 
         <div className="space-y-4 py-1">
           <div className="grid gap-3 sm:grid-cols-2">
-            <ConsequenceList heading="This clears" tone="danger" items={tier.clears} />
-            <ConsequenceList heading="This keeps" tone="ok" items={tier.keeps} />
+            <ConsequenceList heading="Clears" tone="danger" items={tier.clears} />
+            <ConsequenceList heading="Keeps" tone="ok" items={tier.keeps} />
           </div>
 
           {tier.caution ? (
@@ -311,22 +324,15 @@ function ConsequenceList({
   items: string[];
 }) {
   return (
-    <div>
-      <p
-        className={cn(
-          'mb-1.5 text-xs font-semibold uppercase tracking-wide',
-          tone === 'danger' ? 'text-critical' : 'text-muted-foreground',
-        )}
-      >
-        {heading}
-      </p>
-      <ul className="space-y-1 text-xs text-foreground">
+    <div className="min-w-0">
+      <p className="mb-1.5 text-sm font-medium text-foreground">{heading}</p>
+      <ul className="space-y-1 text-sm text-muted-foreground">
         {items.map((it, i) => (
-          <li key={`${it}-${i}`} className="flex gap-1.5">
+          <li key={`${it}-${i}`} className="flex gap-2">
             <span
               aria-hidden
               className={cn(
-                'mt-1 inline-block h-1 w-1 shrink-0 rounded-full',
+                'mt-2 inline-block size-1.5 shrink-0 rounded-full',
                 tone === 'danger' ? 'bg-critical' : 'bg-success',
               )}
             />
@@ -338,6 +344,57 @@ function ConsequenceList({
   );
 }
 
+/**
+ * The page's tier button: an OUTLINE destructive button (red text on the field, a red
+ * border), quieter than the dialog's solid red confirm. Exported for tests.
+ */
+export const DANGER_OUTLINE_BUTTON =
+  'border-critical/60 text-critical-text hover:border-critical hover:bg-critical/10 hover:text-critical-text active:bg-critical/15';
+
+/** The section's help text outside the Settings page (inside it, the registry's help wins). */
+const DANGER_ZONE_HELP =
+  'Reset Agentic SOC data in explicit tiers. Each reset asks for an exact phrase and a fresh sign-in; environment secrets and upstream logs are never touched.';
+
+/** One reset tier as a row on the group panel: its name and summary, the button, then what it clears and keeps. */
+function TierRow({
+  tier,
+  onReset,
+}: {
+  tier: TierCopy;
+  /** `opener` is the tier's button: focus returns to it when the dialog closes. */
+  onReset: (tier: TierCopy, opener: HTMLElement) => void;
+}) {
+  const titleId = `reset-${tier.scope}-title`;
+  return (
+    <section
+      className="space-y-4 px-4 py-4 xl:px-5"
+      aria-labelledby={titleId}
+      data-settings-tier={tier.scope}
+    >
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between sm:gap-6">
+        <div className="min-w-0">
+          <h4 id={titleId} className="text-base font-medium leading-5 text-foreground">
+            {tier.title}
+          </h4>
+          <p className="mt-0.5 max-w-[42rem] text-sm text-muted-foreground">{tier.summary}</p>
+        </div>
+        <Button
+          variant="outline"
+          size="sm"
+          className={cn('shrink-0 self-start', DANGER_OUTLINE_BUTTON)}
+          onClick={(event) => onReset(tier, event.currentTarget)}
+        >
+          {tier.title}
+        </Button>
+      </div>
+      <div className="grid gap-4 sm:grid-cols-2">
+        <ConsequenceList heading="Clears" tone="danger" items={tier.clears} />
+        <ConsequenceList heading="Keeps" tone="ok" items={tier.keeps} />
+      </div>
+    </section>
+  );
+}
+
 /* -------------------------------------------------------- the surface ------- */
 
 export interface DangerZoneProps {
@@ -346,55 +403,44 @@ export interface DangerZoneProps {
 }
 
 /**
- * The danger-zone surface: three escalating reset tiers. Self-gated behind the
- * `users:manage` (admin / super_admin) grant — renders nothing without it.
+ * The danger-zone surface: three escalating reset tiers on one group panel. Self-gated
+ * behind the `users:manage` (admin / super_admin) grant: renders nothing without it.
  */
 export function DangerZone({ className }: DangerZoneProps) {
   const [pending, setPending] = React.useState<TierCopy | null>(null);
+  const section = React.useContext(SettingsSectionContext);
+  const opener = useReturnFocus();
+  const openTier = React.useCallback(
+    (tier: TierCopy, button: HTMLElement) => {
+      opener.remember(button);
+      setPending(tier);
+    },
+    [opener],
+  );
 
   return (
     <Can resource="users" action="manage">
-      <div className={cn('space-y-6', className)} data-testid="danger-zone">
-        <SectionTitle
-          title="Danger zone"
-          sub="Reset Agentic SOC data in explicit tiers. Every action requires an exact confirmation phrase and a fresh sign-in; environment secrets and upstream logs are never touched."
-        />
-
-        <div className="divide-y divide-border border-y border-border">
-          {TIERS.map((tier) => (
-            <section
-              key={tier.scope}
-              className="space-y-4 py-5"
-              aria-labelledby={`reset-${tier.scope}-title`}
-              data-settings-tier={tier.scope}
-            >
-              <div className="flex flex-wrap items-start justify-between gap-3">
-                <div className="min-w-0 space-y-1">
-                  <h3 id={`reset-${tier.scope}-title`} className="text-base font-semibold text-foreground">
-                    {tier.title}
-                  </h3>
-                  <p className="max-w-3xl text-sm text-muted-foreground">{tier.summary}</p>
-                </div>
-                <Button
-                  variant="destructive"
-                  size="sm"
-                  onClick={() => setPending(tier)}
-                  aria-label={tier.title}
-                >
-                  {tier.title}
-                </Button>
-              </div>
-              <div className="grid gap-4 sm:grid-cols-2">
-                <ConsequenceList heading="This clears" tone="danger" items={tier.clears} />
-                <ConsequenceList heading="This keeps" tone="ok" items={tier.keeps} />
-              </div>
-            </section>
-          ))}
-        </div>
+      <div className={className} data-testid="danger-zone">
+        {/* A form-width section: each tier's button stays within reach of its name. */}
+        <SettingsSection
+          title={section.title ?? 'Danger zone'}
+          help={section.help ?? DANGER_ZONE_HELP}
+          width="form"
+        >
+          <SettingsGroup
+            title="Reset tiers"
+            caption="Each tier clears more than the one before it. Nothing runs until you type its phrase and sign in again."
+          >
+            {TIERS.map((tier) => (
+              <TierRow key={tier.scope} tier={tier} onReset={openTier} />
+            ))}
+          </SettingsGroup>
+        </SettingsSection>
       </div>
 
       <ResetDialog
         tier={pending}
+        onCloseAutoFocus={opener.onCloseAutoFocus}
         onClose={() => setPending(null)}
         onAccepted={() => {
           setPending(null);

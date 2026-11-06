@@ -13,7 +13,7 @@ or motion language.
 |---|---|---|
 | Theme | Semantic CSS variables, Light/Dark values, material, motion and reduced-motion / reduced-transparency / increased-contrast rules | `webui/src/styles/theme.css` |
 | Primitives | Accessible shadcn-style wrappers over Radix | `webui/src/ui/` |
-| Cross-cutting system | Loading feedback, source identities, stable catalog exports | `webui/src/design-system/` |
+| Cross-cutting system | Loading feedback, the Console material, the panel and list grammar (Round 14), source identities, stable catalog exports | `webui/src/design-system/` |
 | SOC components | Tables, case badges, charts, page anatomy, editors, RBAC guards | `webui/src/soc/components/` |
 | Product surfaces | Routed operator workflows | `webui/src/soc/pages/` |
 
@@ -25,28 +25,61 @@ contract. This page describes where shared implementation belongs.
 Import cross-cutting contracts from `@/design-system`:
 
 ```tsx
-import { LoadingState, SourceMark } from '@/design-system';
+import { LoadingState, Panel, SourceMark } from '@/design-system';
 ```
 
 The public barrel currently exposes:
 
 - `LoadingState`, `LoadingGlyph`, `LoadingShape`, and the non-blocking `LoadingBar`;
+- the page grammar added in Round 14 (see [Page anatomy](ui-standard.md#page-anatomy)
+  and [Tables, filters and lists](ui-standard.md#tables-filters-and-lists)):
+  - `Panel`, one module on the tinted borderless panel (14px corner, no border, no
+    resting shadow) with its title row: a 14px semibold heading (`level` 2 or 3), an
+    optional muted `count` and `caption`, and an `aside` or `actions` on the right;
+    `as="section"` makes it a region named by that heading, and `padding="none"` lets a
+    table or list bleed to the panel edge while the title keeps the panel inset;
+  - `SectionTitle`, the 15px semibold sentence-case title for a module or group that
+    sits on the canvas above its panel;
+  - `PANEL_PADDING`, `PANEL_PADDING_X` and `PANEL_GAP`, the one value for panel padding
+    and the gutter between panels (16px, 20px from 1280px, 24px from 1920px), for a
+    page that lays out its own grid of panels (the Cyber Defence Center);
+  - `ListRow` and `ListRows`, a list of records that are not a table, divided by
+    hairlines and never boxed, each row opened from one control named by its title;
+  - `RowActions`, the neutral ghost icon actions at a row's end and its named row menu,
+    destructive actions neutral at rest and red only on hover, focus and in their
+    confirm dialog;
+  - `StatusDot`, a 6px dot and words, coloured only for a state that is not the healthy
+    default;
+  - `Callout`, with three intents only (`warning`, `error`, and a dismissible `intro`
+    remembered per user in `UserPrefs.misc.dismissed_intros`, whose id follows
+    `DISMISSED_INTRO_ID_PATTERN`; `DISMISSED_INTROS_KEY` and `DISMISSED_INTROS_MAX` are
+    exported beside it);
 - the Console material: `MaterialBar`, the `materialBar` / `materialThick` recipes, and
   `useScrollEdge` / `useScrollEdgeRef` (the scroll-edge fade under sticky chrome; the
   shared sticky `PageHeader`, `ControlBar`, `FilterBar` and `TableHeader` already use
   it). Shared primitives import it from `@/design-system/material` rather than the
   barrel, so the catalog never rides into their chunks;
+- the per-user transparency override: `applyTransparencyPreference` with
+  `TRANSPARENCY_PREF_KEY` and `TRANSPARENCY_STORAGE_KEY`;
 - `SourceMark` and the source-mark metadata;
 - `DESIGN_SYSTEM_CATALOG`, a JSON-serializable inventory of the stable component,
   token, asset, and accessibility contracts.
 
 The catalog also documents stable page-anatomy components in their owning modules:
-`Card`, `Tabs`, `SegmentedControl`, `ControlBar`, `FilterBar`, `DataTable`,
+`PageHeader` (the title, a help tip, the `controls` slot beside the title, `actions` on
+the right, and `back`, a link to the list a page was opened from), `KpiStrip` (the one
+KPI strip per page; a tile may be `pressed` as a filter or start a second split with
+`breakBefore`), `KpiTile` (`chrome="strip"` on pages, `chrome="framed"` only for chat
+answer blocks and `StatCard`) and `KpiTileGrid`, `Card`, `Tabs` (`TabsList
+variant="underline"` for page and record sections), `SegmentedControl`, `ControlBar`,
+`FilterBar`, `DataTable`, `NumberField`, `Field`, `TimeRangePicker`, `RefreshButton`,
 `OwnerMonogram` (the one assignee monogram for the Cases list, the Case Manager queue
-and the case header), `EmptyState`, and the divider-led `SettingsCard`. Import these
-from the module named
-in the catalog; they remain SOC/UI-layer components rather than duplicate wrappers in
-`src/design-system/`.
+and the case header), `EmptyState`, the Settings `SettingsSection`, `SettingsGroup` and
+`SettingRow`, and the pre-Round-14 divider-led `SettingsCard`. Import these from the
+module named in the catalog; they remain SOC/UI-layer components rather than duplicate
+wrappers in `src/design-system/`. `PageContainer` owns the page width and, since Round
+14, the rhythm between modules (one panel gutter; `rhythm="none"` for a page that lays
+itself out).
 
 Keep page-specific composition in the page or an SOC-domain component. Move a
 pattern into `src/design-system/` only when it is genuinely cross-cutting, has a
@@ -67,22 +100,30 @@ Routine operator surfaces are border-first and quiet:
   10px menus, popovers and tooltips holding 6px items; 14px dialogs and sheets. Menus
   use `menuSurface` and popovers `overlaySurface` from `lib/ui-recipes.ts`; both are
   solid and scale from their trigger.
-- `ControlBar` and `FilterBar` are the page-level action/filter bands. The default
-  surface is a hairline section, not another nested card.
-- `DataTable` owns a single bounded hairline and a compact shared `EmptyState`.
+- Every page module sits on a `Panel`, one panel gutter from the next; a `Card`,
+  `StatCard` or framed `KpiTile` never sits inside a `Panel`, `ChartCard` or `KpiStrip`
+  (the console grammar guard test fails on it).
+- `ControlBar` and `FilterBar` are the page-level action/filter bands. On a panel the
+  `FilterBar` draws no rules (`variant="plain"`, the default); the hairline band is only
+  for a page not yet on panels.
+- `DataTable` owns a single bounded hairline (or none on `Panel padding="none"` with
+  `surface="panel"`) and a compact shared `EmptyState`.
   Do not wrap the table in decorative elevation. A pointer-clickable row is never
   itself exposed as a button when it can contain checkboxes, links, or menus; provide
   the shared named trailing action, or disable it only when a visible cell already
   contains an equivalent named keyboard action.
-- `SettingsCard` is a divider-led section. Related fields live directly in that
-  section; an extra card around the whole settings area is a regression.
+- A Settings section is a `SettingsSection` whose related settings form
+  `SettingsGroup`s: a title above one tinted panel of `SettingRow`s divided by
+  hairlines. `SettingsCard` is the pre-Round-14 divider-led section, kept only until
+  every section has moved; a new section never uses it.
 
 The Settings workspace composes these primitives with a stable responsive pattern:
 one grouped/searchable desktop rail, one compact Sheet chooser on narrow layouts,
-one renderer-owned section `h2`, a compact non-heading location/status line, flat
-field and switch lanes, and one sticky Save/Discard bar. `SettingsCard`,
-`SettingsGrid`, `SettingsTOC`, and `StickySaveBar` remain SOC-layer components; their
-catalog entry documents the contract but does not move them into `src/design-system/`.
+one renderer-owned section `h2` with its help tip and actions on the same row, grouped
+panels of rows, and one sticky Save/Discard bar. `SettingsSection`, `SettingsGroup`,
+`SettingRow`, `SettingsCard`, `SettingsGrid`, `SettingsTOC`, and `StickySaveBar` remain
+SOC-layer components; their catalog entries document the contract but do not move them
+into `src/design-system/`.
 Section ids, anchor deep links, permission filtering, write-only secrets, and dirty
 state belong to the Settings workflow and must survive visual changes. Preference and
 write-only-secret drafts protect reload/tab close and pause programmatic cross-page
@@ -161,6 +202,14 @@ When adding a connector:
 module/export names, variants, token roles, accessibility requirements, and source
 asset metadata. It can later back examples, code generators, or an MCP resource
 without scraping JSX.
+
+Round 14 added the entries for the page grammar: `surface.panel`,
+`typography.section-title`, `layout.page-header`, `metric.kpi-strip`, `data.list-row`,
+`control.row-actions`, `feedback.status-dot`, `feedback.callout`, `control.number-field`,
+`control.field`, `control.time-range-picker`, `control.refresh-button`, and the Settings
+`settings.group` and `settings.row`. `settings.section` now names `SettingsSection`,
+and the pre-Round-14 `SettingsCard` has its own `settings.card` entry. Every other
+existing id keeps its meaning.
 
 Version **0.1.13 does not ship a design-system MCP server, endpoint, registry
 service, or remote package**. The serializable catalog is the deliberately small

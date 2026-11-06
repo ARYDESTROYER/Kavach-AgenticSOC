@@ -7,7 +7,7 @@
  *   3. reconcile APPENDS new role-default widgets not already present (RBAC-filtered).
  *   4. per-role default widget sets resolve + RBAC-filter.
  *
- * Pure-function tests — no rendering, no network. The registry is the single source
+ * Pure-function tests: no rendering, no network. The registry is the single source
  * of truth for what a widget IS; a layout is data referencing it by type.
  */
 import { describe, it, expect } from 'vitest';
@@ -21,6 +21,7 @@ import {
   buildDefaultWidgets,
   ROLE_DEFAULT_WIDGETS,
   ALLOW_ALL,
+  PENDING_WIDGET_TYPES,
   type WidgetType,
   type PermissionCheck,
 } from '@/soc/dashboard/registry';
@@ -51,12 +52,36 @@ describe('widget registry', () => {
       expect(def.defaultSize.h).toBeGreaterThan(0);
       expect(def.defaultSize.minW).toBeLessThanOrEqual(def.defaultSize.w);
       expect(def.defaultSize.minH).toBeLessThanOrEqual(def.defaultSize.h);
-      expect(def.sources.length).toBeGreaterThan(0);
+      // Every body names the shared sources it reads. The Round 14 stubs (SPEC §4.4.1)
+      // all have real bodies now (WP-W4c), so none reads nothing.
+      expect(def.sources.length, `${def.type} sources`).toBeGreaterThan(0);
+    }
+  });
+
+  it('no widget type is pending once every Round 14 body has landed', () => {
+    expect([...PENDING_WIDGET_TYPES]).toEqual([]);
+  });
+
+  it('a shipped widget is never pending', () => {
+    const shipped = [
+      'kpi.needs_human',
+      'kpi.cost_budget',
+      'chart.verdict_mix',
+      'chart.autonomous_vs_human',
+      'kpi.lifecycle_timing',
+      'table.connector_health',
+      'table.recent_cases',
+      'mitre.heatmap',
+      'gauge.active_risk',
+    ] as const;
+    for (const t of shipped) {
+      expect(PENDING_WIDGET_TYPES.has(t), t).toBe(false);
+      expect(WIDGET_REGISTRY.get(t)!.sources.length, t).toBeGreaterThan(0);
     }
   });
 });
 
-describe('reconcileWidgets — anti-corruption on load', () => {
+describe('reconcileWidgets: anti-corruption on load', () => {
   it('(1) DROPS a widget whose type is no longer registered', () => {
     const known = WIDGET_TYPES[0];
     const input = [
@@ -66,7 +91,7 @@ describe('reconcileWidgets — anti-corruption on load', () => {
     ];
     const out = reconcileWidgets(input, { can: ALLOW_ALL });
     expect(out.map((w) => w.id)).toEqual(['keep-me']);
-    // The dropped widget's geometry goes with it — no hole left behind.
+    // The dropped widget's geometry goes with it: no hole left behind.
     expect(out.every((w) => isKnownWidgetType(w.type))).toBe(true);
   });
 
@@ -108,14 +133,17 @@ describe('reconcileWidgets — anti-corruption on load', () => {
       !(resource === 'metrics' && action === 'view');
     const out = reconcileWidgets([], {
       can: denyMetricsView,
-      // mitre.heatmap requires metrics:view (denied); the bogus id is ignored.
-      appendDefaults: ['mitre.heatmap', 'not.a.widget' as WidgetType, 'kpi.needs_human'],
+      // mitre.heatmap and kpi.needs_human (which counts open cases by AI verdict through
+      // the breakdown endpoint, F4) require metrics:view (denied); the bogus id is ignored;
+      // table.connector_health needs sources:read only (allowed).
+      appendDefaults: ['mitre.heatmap', 'not.a.widget' as WidgetType, 'kpi.needs_human', 'table.connector_health'],
       makeId,
     });
     const types = out.map((w) => w.type);
     expect(types).not.toContain('mitre.heatmap');
     expect(types).not.toContain('not.a.widget');
-    expect(types).toContain('kpi.needs_human');
+    expect(types).not.toContain('kpi.needs_human');
+    expect(types).toContain('table.connector_health');
   });
 
   it('handles null/empty input without throwing', () => {

@@ -58,11 +58,12 @@ describe('navLabel — the registry is the authoritative label source', () => {
 
   it('keeps Intelligence labels explicit and aligned with backend read grants', () => {
     const intelligence = FEATURES.find((feature) => feature.id === 'intelligence');
+    // Round 14 (SPEC §4.8.2): one Runbooks entry replaces "Reference runbooks" and
+    // "Response playbooks"; their old page ids redirect to it for one release.
     expect((intelligence?.children ?? []).map(({ id, label }) => ({ id, label }))).toEqual([
       { id: 'knowledge', label: 'Knowledge corpus' },
-      { id: 'runbooks', label: 'Reference runbooks' },
+      { id: 'runbooks', label: 'Runbooks' },
       { id: 'memory', label: 'Operator memory' },
-      { id: 'playbooks', label: 'Response playbooks' },
       { id: 'personas', label: 'Agent personas' },
     ]);
     const permissions = Object.fromEntries(
@@ -72,8 +73,9 @@ describe('navLabel — the registry is the authoritative label source', () => {
       knowledge: { resource: 'rag', action: 'read' },
       runbooks: { resource: 'runbooks', action: 'read' },
       memory: { resource: 'memory', action: 'read' },
-      playbooks: { resource: 'playbooks', action: 'read' },
     });
+    // No navigation entry, visible or hidden, gates on the retired `playbooks` resource.
+    expect(FEATURES.some((feature) => feature.perm?.resource === 'playbooks')).toBe(false);
     // The read-only persona endpoint is authenticated but has no resource-specific
     // grant. The UI must not invent a stricter permission than the API contract.
     expect(permissions.personas).toBeUndefined();
@@ -89,7 +91,8 @@ describe('navLabel — the registry is the authoritative label source', () => {
   it('derives Docs as the single pinned footer destination', () => {
     expect(NAV_FOOTER_ITEMS.map((item) => item.id)).toEqual(['docs']);
     expect(NAV_ITEMS.some((item) => item.id === 'docs')).toBe(true);
-    expect(navLabel('docs')).toBe('Documentation');
+    // D25: one name per page, the nav item and the page are both "Help Center".
+    expect(navLabel('docs')).toBe('Help Center');
   });
 
   it('keeps the redundant Automated Scans surface out of primary navigation', () => {

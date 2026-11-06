@@ -1,60 +1,52 @@
 /**
- * Cases — the analyst triage surface (new command-center UI).
+ * Cases: the analyst triage list.
  *
- * Lists recent cases (GET /api/cases, single capped fetch) in a dense DataTable
- * with a filter bar (search + Status/Severity/Assignee selects), client-side
- * sort, pagination, row-selection with a bulk-action bar, and an honest "N of M"
- * count. Opening a row performs a short, announced handoff into Case Manager with
- * that exact case selected; Case Manager is the canonical detail workspace.
+ * Lists recent cases (GET /api/cases, single capped fetch) in the Overview's grammar
+ * (Round 14, SPEC §4.9, operator choices C7 1 and C8 1): the page header carries the
+ * title, a help tip, the count and Refresh; one KPI strip splits the loaded cases by state
+ * and then by severity (each tile filters the list); the "Case queue" panel holds one
+ * filter bar and the table, which bleeds to the panel edge. Below 768px the table becomes
+ * Case Manager's list rows and the filters move into one "Filters" sheet. Opening a row
+ * performs a short, announced handoff into Case Manager with that exact case selected;
+ * Case Manager is the canonical detail workspace.
  *
- * All narrowing is CLIENT-SIDE over the loaded list. Filter state SELF-HEALS: any
- * selected facet value that no longer exists after a reload is dropped so the list
- * can never silently empty behind an un-clearable filter.
+ * All narrowing is CLIENT-SIDE over the loaded list, except the Rule filter, which the
+ * server applies. Filter state SELF-HEALS: any selected facet value that no longer exists
+ * after a reload is dropped so the list can never silently empty behind an un-clearable
+ * filter.
  *
  * SECURITY: every case-derived value (title, entity, IPs, rules, tags, assignee,
- * source, model keys) is UNTRUSTED — rendered as plain text or via <InlineCode>,
+ * source, model keys) is UNTRUSTED: rendered as plain text or via <InlineCode>,
  * never as markup.
  */
 import * as React from 'react';
 import { createPortal } from 'react-dom';
 import {
   Briefcase,
-  RefreshCw,
-  SortAsc,
-  SortDesc,
-  Search,
   X,
   XCircle,
   Check,
   UserPlus,
-  Clock,
-  AlertTriangle,
-  AlertOctagon,
-  Square,
-  Circle,
-  HelpCircle,
-  CheckCircle2,
   Link2,
   Tag as TagIcon,
   SlidersHorizontal,
   CircleSlash,
   LoaderCircle,
   Zap,
-  type LucideIcon,
 } from 'lucide-react';
 import { toast } from 'sonner';
 
 import { api } from '@/lib/api';
-import type { BackgroundJobKind, Case, CaseActionInput, SavedView } from '@/lib/types';
+import type { BackgroundJobKind, Case, CaseLifecycleInput, SavedView } from '@/lib/types';
 import { Can, useCan } from '@/soc/components/Can';
 import { humanizeAge, humanizeToken, DASH } from '@/lib/format';
 import { caseTagError } from '@/lib/tags';
 import { cn } from '@/lib/cn';
 
 import { Button } from '@/ui/button';
+import { Badge } from '@/ui/badge';
 import { Card } from '@/ui/card';
 import { Input } from '@/ui/input';
-import { Alert, AlertTitle, AlertDescription } from '@/ui/alert';
 import {
   Select,
   SelectTrigger,
@@ -68,9 +60,17 @@ import {
   PopoverContent,
 } from '@/ui/popover';
 
+import { Callout, Panel } from '@/design-system';
 import { PageContainer } from '@/soc/components/PageContainer';
 import { PageHeader } from '@/soc/components/PageHeader';
-import { ControlBar } from '@/soc/components/ControlBar';
+import { KpiStrip } from '@/soc/components/KpiStrip';
+import { KpiTile } from '@/soc/components/KpiTile';
+import {
+  FilterBar,
+  type FilterBarControlContext,
+  type FilterBarFilter,
+  type FilterChip,
+} from '@/soc/components/FilterBar';
 import { RefreshButton } from '@/soc/components/RefreshButton';
 import { ConfirmDialog } from '@/soc/components/ConfirmDialog';
 import {
@@ -83,6 +83,7 @@ import {
 import { ColumnsMenu, type ColumnMenuItem } from '@/soc/components/ColumnsMenu';
 import { SavedViewsBar } from '@/soc/components/SavedViewsBar';
 import { usePrefs } from '@/soc/prefs';
+import { useIsMobile } from '@/soc/hooks/useMediaQuery';
 import { EmptyState } from '@/soc/components/EmptyState';
 import { LoadError } from '@/soc/components/LoadError';
 import { InlineCode } from '@/soc/components/CodeBlock';
@@ -92,7 +93,7 @@ import { CaseHoverCard } from '@/soc/components/CaseHoverCard';
 import { StartDemoButton } from '@/soc/components/StartDemoButton';
 import { useDemo } from '@/soc/demo';
 import { LoadingBar } from '@/soc/components/LoadingBar';
-import { DemoBadge, isDemoCase } from '@/soc/components/DemoBadge';
+import { isDemoCase } from '@/soc/components/DemoBadge';
 import { OwnerMonogram } from '@/soc/components/OwnerMonogram';
 import {
   StatusBadge,
@@ -104,12 +105,12 @@ import {
   ConfidenceBadge,
   CategoryBadge,
   UrgencyPill,
-  AutoClosedBadge,
   severityBand,
   SEVERITY_BAND_ORDER,
 } from '@/soc/components/badges';
-import { ProvenanceTag, severityProvenance } from '@/soc/components/ProvenanceTag';
-import { caseOutcome } from '@/soc/components/outcome';
+import { severityProvenance } from '@/soc/components/ProvenanceTag';
+import { caseOutcome, pendingDispositionNote } from '@/soc/components/outcome';
+import { statusLabel as statusBadgeLabel } from '@/soc/components/semantic-labels';
 import {
   BulkCloseDialog,
   type BulkCloseInput,
@@ -178,27 +179,30 @@ function AskAiChip(props: AskAiChipProps) {
 
 /** Stable id for the Cases table's per-user column state (Wave 7). */
 const CASES_TABLE_ID = 'cases';
+/** The selection announcements' noun ("25 cases selected"). */
+const CASE_NOUN = { one: 'case', other: 'cases' } as const;
 /** The surface scope saved views on this page belong to. */
 const CASES_VIEW_SCOPE = 'cases';
 
 /**
- * Columns hidden by DEFAULT — but ONLY when the user has never customized this table
- * (no stored ColumnState). Round-7 #8 collapses the overlapping "how bad / how sure"
- * secondary signals (disposition, category, urgency) and the per-case count columns
- * (alerts, playbooks, enrichments) behind the Columns menu, so the list opens clean on
- * the dominant Case ID · Title · Status · Severity · Confidence · Verdict · Risk ·
- * Entity · Updated set. Fully reversible via <ColumnsMenu>; the instant the user toggles
- * any column their explicit stored state wins verbatim (this default no longer applies).
+ * Columns hidden by DEFAULT, but ONLY when the user has never customized this table (no
+ * stored ColumnState). Round 14 (SPEC §4.9.4, C7): the list opens on the columns a triage
+ * pass reads (case, title, severity, status, outcome, assignee, updated); the secondary
+ * signals and the per-case counts wait one click away in the Columns menu. The Outcome
+ * column (id `disposition`, kept so stored column states still address it) stays visible
+ * by default: an analyst's classification is the case's outcome of record (Round 12
+ * D15). Fully reversible via <ColumnsMenu>; the instant the user toggles any column their
+ * explicit stored state wins verbatim (this default no longer applies).
  */
 const CASES_DEFAULT_HIDDEN = [
-  // Round 12 (SPEC D15): the Outcome column (id `disposition`, kept so stored column
-  // states still address it) is VISIBLE by default — an analyst's classification is the
-  // case's outcome of record and must not hide behind the Columns menu.
-  'alerts',
-  'playbooks',
-  'enrichments',
+  'confidence',
+  'verdict',
+  'risk',
+  'entity',
   'category',
   'urgency',
+  'alerts',
+  'enrichments',
 ] as const;
 
 /** Sentinel for "any" in the single-select filters (Radix Select forbids ""). */
@@ -294,11 +298,6 @@ function alertCount(c: Case): number {
   return 0;
 }
 
-/** Count of playbooks attached to a case (0 or 1 in the current model). */
-function playbookCount(c: Case): number {
-  return c.playbook_id ? 1 : 0;
-}
-
 /** Count of enrichment artefacts surfaced on a case (evidence entries proxy). */
 function enrichmentCount(c: Case): number {
   return Array.isArray(c.evidence) ? c.evidence.length : 0;
@@ -325,6 +324,21 @@ function caseSeverityBand(c: Case) {
   const explicit = severityBand(c.severity_band);
   if (explicit) return explicit;
   return severityBand(typeof c.risk_score === 'number' ? c.risk_score : null);
+}
+
+/** The note as read after the badge ("False positive, mapped from the AI verdict; …"). */
+function pendingOutcomeRead(note: string): string {
+  return `, ${note.charAt(0).toLowerCase()}${note.slice(1)}`;
+}
+
+/**
+ * Where a case's severity came from, for the severity chip's tooltip (Round 14: the row
+ * carries no provenance glyph; ProvenanceTag's source/code split, in words).
+ */
+function severitySourceTitle(c: Pick<Case, 'severity_source'>): string {
+  return severityProvenance(c.severity_source) === 'source'
+    ? 'Severity reported by the source'
+    : 'Severity derived from the risk score';
 }
 
 const TIME_RANGE_MS: Record<Exclude<TimeRange, 'all'>, number> = {
@@ -355,6 +369,12 @@ interface CaseFilters {
   timeRange: TimeRange;
   /** Show only cases linked across sources (F6 — related_case_ids / cross-source group). */
   relatedOnly: boolean;
+  /**
+   * Round 14 (SPEC §4.6.6): only cases from exactly this detection rule ('' = any rule).
+   * The list is then read from the server with `rule`, so every case of the rule is
+   * counted, not only those among the newest loaded.
+   */
+  rule: string;
 }
 
 const EMPTY_FILTERS: CaseFilters = {
@@ -366,7 +386,21 @@ const EMPTY_FILTERS: CaseFilters = {
   assignee: ANY,
   timeRange: 'all',
   relatedOnly: false,
+  rule: '',
 };
+
+/** A rule filter value: the exact rule, 1 to 256 characters, no control or format characters. */
+const RULE_FILTER_RE = /^[^\p{C}\u2028\u2029]{1,256}$/u;
+
+/** A usable rule filter value, kept exactly (never trimmed: it is matched as written). */
+function ruleFilterValue(value: unknown): string {
+  return typeof value === 'string' && RULE_FILTER_RE.test(value) && value.trim() ? value : '';
+}
+
+/** The most rule names the Rule filter offers (the rules of the cases loaded so far). */
+const RULE_OPTION_LIMIT = 200;
+/** The Rule filter's "All rules" choice; a rule is chosen by its index (never collides with a value). */
+const ALL_RULES = 'all';
 
 /** Whether a case participates in a cross-source group (F6). */
 function isCrossSourceLinked(c: Case): boolean {
@@ -434,6 +468,30 @@ function healFilters(f: CaseFilters, facets: Facets): CaseFilters {
   return next;
 }
 
+/**
+ * The values the Status, Disposition and Assignee controls offer (Round 14): the facets of
+ * the cases loaded now, those of the last read across every rule (`catalog`, so choosing a
+ * rule never takes away a value the person could pick before), and each value chosen now,
+ * so a control always shows its own filter even when no loaded case carries it.
+ */
+function facetOptions(facets: Facets, catalog: Facets | null, f: CaseFilters): Facets {
+  const merged = (now: string[], before: string[] | undefined, chosen: string | null) =>
+    sortedUniq([...now, ...(before ?? []), ...(chosen ? [chosen] : [])]);
+  return {
+    statuses: merged(
+      facets.statuses,
+      catalog?.statuses,
+      f.status !== ANY && !STATUS_SENTINELS.has(f.status) ? f.status : null,
+    ),
+    dispositions: merged(facets.dispositions, catalog?.dispositions, f.disposition !== ANY ? f.disposition : null),
+    assignees: merged(
+      facets.assignees,
+      catalog?.assignees,
+      f.assignee !== ANY && f.assignee !== UNASSIGNED ? f.assignee : null,
+    ),
+  };
+}
+
 function applyFilters(cases: Case[], f: CaseFilters): Case[] {
   const q = f.search.trim().toLowerCase();
   const now = Date.now();
@@ -458,6 +516,8 @@ function applyFilters(cases: Case[], f: CaseFilters): Case[] {
       return false;
     }
     if (f.relatedOnly && !isCrossSourceLinked(c)) return false;
+    // Exact, as the server filtered it: one of the case's rule values, byte for byte.
+    if (f.rule && !caseRules(c).includes(f.rule)) return false;
 
     if (f.severity !== ANY) {
       if (caseSeverityBand(c) !== f.severity) return false;
@@ -499,16 +559,56 @@ function applyFilters(cases: Case[], f: CaseFilters): Case[] {
   });
 }
 
-function countActiveFilters(f: CaseFilters): number {
+/**
+ * The Rule filter (Round 14, SPEC §4.6.6): "All rules", or exactly one rule. It offers the
+ * rules of the cases loaded so far plus the one a link chose. Rule values are untrusted
+ * source text (#9): plain text in mono, never markup; an option is chosen by its index,
+ * so no rule value can collide with "All rules".
+ */
+function RuleFilterSelect({
+  value,
+  options,
+  onChange,
+  triggerClassName,
+}: {
+  value: string;
+  options: string[];
+  onChange: (rule: string) => void;
+  /** The trigger's width: fixed in the filter bar, the full width in a menu or sheet. */
+  triggerClassName?: string;
+}) {
+  const rules = React.useMemo(
+    () => (value && !options.includes(value) ? [value, ...options] : options),
+    [value, options],
+  );
+  const selected = value ? rules.indexOf(value) : -1;
   return (
-    (f.search.trim() ? 1 : 0) +
-    (f.status !== ANY ? 1 : 0) +
-    (f.disposition !== ANY ? 1 : 0) +
-    (f.severity !== ANY ? 1 : 0) +
-    (f.noiseOutcome !== ANY ? 1 : 0) +
-    (f.assignee !== ANY ? 1 : 0) +
-    (f.timeRange !== 'all' ? 1 : 0) +
-    (f.relatedOnly ? 1 : 0)
+    <Select
+      value={selected >= 0 ? `r:${selected}` : ALL_RULES}
+      onValueChange={(v) => {
+        if (v === ALL_RULES) onChange('');
+        else {
+          const rule = rules[Number(v.slice(2))];
+          if (rule !== undefined) onChange(rule);
+        }
+      }}
+    >
+      <SelectTrigger
+        className={cn('h-8 min-w-0 text-sm', triggerClassName ?? 'w-full')}
+        aria-label="Filter by rule"
+        title={value || undefined}
+      >
+        <SelectValue placeholder="Rule" />
+      </SelectTrigger>
+      <SelectContent className="max-w-[min(32rem,90vw)]">
+        <SelectItem value={ALL_RULES}>All rules</SelectItem>
+        {rules.map((rule, index) => (
+          <SelectItem key={rule} value={`r:${index}`}>
+            <span className="block truncate font-mono">{rule}</span>
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
   );
 }
 
@@ -525,6 +625,7 @@ function filtersToView(f: CaseFilters): Record<string, unknown> {
     assignee: f.assignee,
     timeRange: f.timeRange,
     relatedOnly: f.relatedOnly,
+    rule: f.rule,
   };
 }
 
@@ -547,6 +648,7 @@ function viewToFilters(raw: Record<string, unknown> | undefined): CaseFilters {
     assignee: str(r.assignee, ANY),
     timeRange: (['all', '1h', '24h', '7d', '30d'].includes(tr) ? tr : 'all') as TimeRange,
     relatedOnly: r.relatedOnly === true,
+    rule: ruleFilterValue(r.rule),
   };
 }
 
@@ -615,106 +717,15 @@ export interface CasesProps {
   initialNoiseOutcome?: NoiseOutcomeFilter;
   /** Seed the selected dashboard metrics window (hours) into the Cases horizon. */
   initialWindowHours?: number;
+  /**
+   * Round 14 (SPEC §4.6.6): seed the Rule filter (the rule sheet's "Show the N cases", a
+   * `#/cases?rule=` link). The exact rule value; an invalid one is ignored.
+   */
+  initialRule?: string;
 }
 
 /** Severity-band values the Cases severity filter (and the #38 drill-through) accepts. */
 const SEVERITY_FILTER_VALUES = new Set(['critical', 'high', 'medium', 'low', 'info']);
-
-/**
- * Severity/status tone for the inline icon in the flat summary strip. Every value
- * routes through a semantic token (no raw hex — design gate).
- */
-type SummaryTone =
-  | 'primary'
-  | 'info'
-  | 'critical'
-  | 'high'
-  | 'medium'
-  | 'low'
-  | 'success';
-
-const SUMMARY_TONE: Record<SummaryTone, string> = {
-  primary: 'text-primary',
-  info: 'text-info-text',
-  // Terminal work is a lifecycle OUTCOME, not a severity: it takes the status axis's
-  // AA-tuned standalone companion rather than borrowing a severity band's colour.
-  success: 'text-success-text',
-  critical: 'text-critical-text',
-  high: 'text-high-text',
-  medium: 'text-medium-text',
-  low: 'text-low-text',
-};
-
-/**
- * A compact at-a-glance count tile for the summary strip — the Cortex-XSIAM / Prisma
- * "incident count band". A semantic inline icon, small-caps label, and big tabular
- * count share one continuous surface. Clickable tiles TOGGLE the matching facet
- * filter (`aria-pressed` reflects the active state). The icon + bar are the beside-color
- * redundant channel (§6.1, WCAG 1.4.1) and are decorative (`aria-hidden`); the label +
- * count carry the meaning. Every value is plain text (UNTRUSTED-safe, #9).
- */
-const SummaryTile: React.FC<{
-  label: string;
-  count: number;
-  icon: LucideIcon;
-  tone: SummaryTone;
-  active?: boolean;
-  onClick?: () => void;
-  /** Hover title clarifying the count's basis (e.g. "Among N loaded cases"). */
-  title?: string;
-  /**
-   * A visible basis line under the count, shown only when the list is truncated, so a
-   * tile never reads as a total it is not ("of 200 loaded"), or says how many of a
-   * server total the filtered list can show ("1 loaded").
-   */
-  note?: string;
-  testId?: string;
-}> = ({ label, count, icon: Icon, tone, active = false, onClick, title, note, testId }) => (
-  <button
-    type="button"
-    onClick={onClick}
-    aria-pressed={active}
-    title={title}
-    data-testid={testId}
-    className={cn(
-      'group relative flex items-center gap-2.5 border-l border-border/70 bg-background px-3 py-3 text-left first:border-l-0',
-      'transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-      'focus-visible:ring-offset-2 focus-visible:ring-offset-background',
-      active
-        ? 'bg-accent/40'
-        : 'hover:bg-accent/25',
-    )}
-  >
-    <span
-      className={cn(
-        'inline-flex size-6 shrink-0 items-center justify-center',
-        SUMMARY_TONE[tone],
-      )}
-    >
-      <Icon className="size-4" aria-hidden />
-    </span>
-    <span className="min-w-0">
-      <span className="block truncate text-2xs font-medium uppercase tracking-wide text-muted-foreground">
-        {label}
-      </span>
-      {/* The basis note sits beside the count and wraps under it when the tile is
-          narrow — never truncated, since it is what makes the number honest. */}
-      <span className="flex flex-wrap items-baseline gap-x-1.5">
-        <span className="text-lg font-semibold leading-tight tabular-nums text-foreground">
-          {count.toLocaleString()}
-        </span>
-        {note ? (
-          <span
-            data-testid={testId ? `${testId}-note` : undefined}
-            className="whitespace-nowrap text-xs leading-4 tabular-nums text-muted-foreground"
-          >
-            {note}
-          </span>
-        ) : null}
-      </span>
-    </span>
-  </button>
-);
 
 const CountLink: React.FC<{ count: number; onClick?: () => void }> = ({ count, onClick }) => {
   const enabled = count > 0 && !!onClick;
@@ -760,10 +771,10 @@ const CaseManagerHandoff: React.FC<{ target: CaseManagerHandoffTarget | null }> 
         role="status"
         aria-live="assertive"
         aria-atomic="true"
-        className="w-full max-w-sm border border-border bg-background p-5 shadow-elev2"
+        className="w-full max-w-sm rounded-lg border border-border bg-background p-5 shadow-elev2"
       >
         <div className="flex items-center gap-3">
-          <span className="flex size-9 shrink-0 items-center justify-center rounded-[4px] border border-primary/35 bg-primary/10 text-primary">
+          <span className="flex size-9 shrink-0 items-center justify-center rounded-md border border-primary/35 bg-primary/10 text-primary">
             <LoaderCircle className="size-4 motion-safe:animate-spin" aria-hidden />
           </span>
           <div className="min-w-0">
@@ -794,6 +805,7 @@ export default function Cases({
   initialSeverity: initialSeverityProp,
   initialNoiseOutcome: initialNoiseOutcomeProp,
   initialWindowHours: initialWindowHoursProp,
+  initialRule: initialRuleProp,
 }: CasesProps) {
   const route = useRoute();
   // Bulk changes run as durable jobs, which the server refuses in Demo Mode.
@@ -816,6 +828,7 @@ export default function Cases({
       : undefined;
   const initialWindowHours = initialWindowHoursProp ?? route.opts?.window;
   const initialTimeRange = timeRangeFromWindowHours(initialWindowHours);
+  const initialRule = ruleFilterValue(initialRuleProp ?? route.opts?.rule) || undefined;
 
   // Pervasive customization (Wave 7): terminology labels + saved views + per-table
   // column state, all keyed to the caller (the 'default' bucket when auth is off).
@@ -833,6 +846,14 @@ export default function Cases({
   // control that would 403 (consistent with the <Can resource="cases" action="close">
   // wrap on the bulk buttons).
   const canClose = useCan('cases', 'close');
+  // The bulk bar offers each action only to a role that holds its grant (roles-07):
+  // acknowledge, tag, status and disposition need `cases:write`, Assign `cases:assign`,
+  // Reinvestigate `cases:reinvestigate`, Close and Resolve `cases:close`. A role with none
+  // of them (the read-only auditor) gets no row selection at all.
+  const canWriteCases = useCan('cases', 'write');
+  const canAssignCases = useCan('cases', 'assign');
+  const canReinvestigateCases = useCan('cases', 'reinvestigate');
+  const canBulk = canWriteCases || canAssignCases || canReinvestigateCases || canClose;
 
   const [cases, setCases] = React.useState<Case[]>([]);
   const [total, setTotal] = React.useState(0);
@@ -847,6 +868,7 @@ export default function Cases({
     if (initialSeverity) f = { ...f, severity: initialSeverity };
     if (initialNoiseOutcome) f = { ...f, noiseOutcome: initialNoiseOutcome };
     if (initialTimeRange) f = { ...f, timeRange: initialTimeRange };
+    if (initialRule) f = { ...f, rule: initialRule };
     return f;
   });
   const [sort, setSort] = React.useState<SortState>({ id: 'updated_at', dir: 'desc' });
@@ -879,6 +901,13 @@ export default function Cases({
   };
   // Round 12 (SPEC D15): every bulk Close / Resolve captures the analyst's disposition.
   const [bulkTerminal, setBulkTerminal] = React.useState<BulkTerminalAction | null>(null);
+  // Round 14 (D34): the close dialogs read the runbook progress of the cases they close,
+  // so they can say how many have required steps open and take one reason for them.
+  const closeTargetIds = React.useMemo(() => (closeTarget ? [closeTarget.case_id] : undefined), [closeTarget]);
+
+  // Below 768px the list is Case Manager's rows and the filters one sheet (SPEC §4.9.4).
+  const isMobile = useIsMobile();
+  const [phoneLimit, setPhoneLimit] = React.useState(PHONE_PAGE);
 
   // Exact server totals for the lifecycle tiles when only the newest LIST_LIMIT cases are
   // loaded (Round 12): the loaded slice is the NEWEST cases, which in a busy deployment are
@@ -889,13 +918,44 @@ export default function Cases({
     needsHuman: number | null;
   } | null>(null);
 
+  // The Rule filter is applied by the server (every case of the rule, not only the newest
+  // loaded); the other filters narrow the loaded list here.
+  const serverRule = filters.rule;
+  // The rules the Rule filter offers: every rule seen on the cases loaded so far.
+  const [ruleOptions, setRuleOptions] = React.useState<string[]>([]);
+  const loadSeq = React.useRef(0);
+  // The rule the lifecycle tiles' server totals were read for ('' = every rule). A changed
+  // rule clears them at once, so the tiles never show another rule's figures (or every
+  // case's) while the new reads run.
+  const countsRule = React.useRef('');
+  // The rule the loaded list was read for ('' = every rule): the badge, the tiles and the
+  // empty state say what the figures cover from it, never from a read still in flight.
+  const [loadedRule, setLoadedRule] = React.useState('');
+  // The Status, Disposition and Assignee values of the last read across every rule. A
+  // rule's own read is narrower, so the controls keep offering these while one is chosen.
+  const [catalogFacets, setCatalogFacets] = React.useState<Facets | null>(null);
   const load = React.useCallback(async () => {
+    const seq = ++loadSeq.current;
+    if (countsRule.current !== serverRule) {
+      countsRule.current = serverRule;
+      setServerCounts(null);
+    }
     setLoading(true);
     setError(null);
+    const ruleQuery = serverRule ? { rule: serverRule } : {};
     try {
-      const res = await api.listCases({ limit: LIST_LIMIT });
+      const res = await api.listCases({ limit: LIST_LIMIT, ...ruleQuery });
+      // A newer read (another rule chosen meanwhile) wins.
+      if (seq !== loadSeq.current) return;
       setCases(res.cases);
       setTotal(res.total);
+      setLoadedRule(serverRule);
+      if (!serverRule) setCatalogFacets(buildFacets(res.cases));
+      setRuleOptions((prev) => {
+        const seen = new Set(prev);
+        for (const c of res.cases) for (const r of caseRules(c)) if (ruleFilterValue(r)) seen.add(r);
+        return seen.size === prev.length ? prev : sortedUniq(seen).slice(0, RULE_OPTION_LIMIT);
+      });
       if (res.total > res.cases.length) {
         // Best effort, never blocking the list: a failed count falls back to the
         // loaded-slice count, labelled as such. Needs human is the SAME rule as
@@ -905,7 +965,7 @@ export default function Cases({
         // assignees. The union is |status| + |active ∧ verdict| − |status ∧ verdict|
         // (a needs_human status is always active), so each case counts once.
         const count = (query: Record<string, string | number>) =>
-          api.listCases({ ...query, limit: 1 }).then((r) => (typeof r.total === 'number' ? r.total : null), () => null);
+          api.listCases({ ...query, ...ruleQuery, limit: 1 }).then((r) => (typeof r.total === 'number' ? r.total : null), () => null);
         void Promise.all([
           count({ status_group: 'active' }),
           count({ status_group: 'terminal' }),
@@ -913,6 +973,8 @@ export default function Cases({
           count({ status_group: 'active', verdict: 'NEEDS_HUMAN' }),
           count({ status: 'needs_human', verdict: 'NEEDS_HUMAN' }),
         ]).then(([active, terminal, byStatus, byVerdict, both]) => {
+          // A newer read (another rule chosen, or a refresh) owns the tiles now.
+          if (seq !== loadSeq.current) return;
           const needsHuman =
             byStatus !== null && byVerdict !== null && both !== null
               ? Math.max(0, byStatus + byVerdict - both)
@@ -923,15 +985,20 @@ export default function Cases({
         setServerCounts(null);
       }
     } catch (e) {
-      setError(e);
+      if (seq === loadSeq.current) setError(e);
     } finally {
-      setLoading(false);
+      if (seq === loadSeq.current) setLoading(false);
     }
-  }, []);
+  }, [serverRule]);
 
   React.useEffect(() => {
     void load();
   }, [load]);
+
+  // A rule drill (the rule sheet's "Show the N cases") can change `initialRule` while mounted.
+  React.useEffect(() => {
+    if (initialRule) setFilters((f) => ({ ...f, rule: initialRule }));
+  }, [initialRule]);
 
   // A drill-through can change `initialStatus` while mounted; reseed the filter.
   React.useEffect(() => {
@@ -993,13 +1060,22 @@ export default function Cases({
   }, [openInCaseManager, route.page, routeCaseId]);
 
   const facets = React.useMemo(() => buildFacets(cases), [cases]);
+  // What the facet controls offer: never fewer values because a rule is chosen, and
+  // always the value each one filters by.
+  const controlFacets = React.useMemo(
+    () => facetOptions(facets, loadedRule ? catalogFacets : null, filters),
+    [facets, loadedRule, catalogFacets, filters],
+  );
 
   // Self-heal selected facet values when the loaded rows change.
   React.useEffect(() => {
     // Do not erase a deep-linked assignee while the first case page is still loading
-    // and the facet catalog is necessarily empty.
-    if (!loading) setFilters((f) => healFilters(f, facets));
-  }, [facets, loading]);
+    // and the facet catalog is necessarily empty. Heal only against a read across every
+    // rule (Round 14): a rule's own read holds only that rule's cases, so a value none of
+    // them carries is a filter with no results there, never a value to throw away (the
+    // person's Assignee, say, comes back with its cases when the rule is cleared).
+    if (!loading && !loadedRule) setFilters((f) => healFilters(f, facets));
+  }, [facets, loading, loadedRule]);
 
   const filtered = React.useMemo(() => applyFilters(cases, filters), [cases, filters]);
 
@@ -1009,9 +1085,11 @@ export default function Cases({
     return [...filtered].sort((a, b) => cmp(a, b) * dir);
   }, [filtered, sort]);
 
-  // Reset to page 1 whenever the filtered set or page size changes.
+  // Reset to page 1 (and the phone list to its first page) whenever the filtered set or
+  // the page size changes.
   React.useEffect(() => {
     setPage(1);
+    setPhoneLimit(PHONE_PAGE);
   }, [filters, pageSize]);
 
   const pageCount = Math.max(1, Math.ceil(filteredSorted.length / pageSize));
@@ -1027,7 +1105,9 @@ export default function Cases({
   // Header pill counts over the full LOADED set (`cases`), NOT the filtered view, so
   // (a) they stay a stable triage snapshot that doesn't collapse to 0 when a status
   // filter is applied, and (b) their basis matches the "N loaded" the Total pill shows
-  // when truncated — never read as a fraction of the server total.
+  // when truncated, never read as a fraction of the server total. The one exception is
+  // the Rule filter (Round 14): the server reads only that rule's cases, so every figure
+  // covers them, and the badge, tooltips and empty state say "from this rule".
   const counts = React.useMemo(() => {
     let active = 0;
     let terminal = 0;
@@ -1044,10 +1124,12 @@ export default function Cases({
   }, [cases]);
 
   const truncated = total > cases.length;
+  // " from the rule <value>" when the loaded list is one rule's cases (plain text, #9).
+  const ruleScope = loadedRule ? ` from the rule ${loadedRule}` : '';
   // Tooltip clarifying that the Active/Needs-human/severity pills count the LOADED set.
   const loadedScopeTitle = truncated
-    ? `Among the ${cases.length.toLocaleString()} loaded cases (of ${total.toLocaleString()})`
-    : `Among ${cases.length.toLocaleString()} case${cases.length === 1 ? '' : 's'}`;
+    ? `Among the ${cases.length.toLocaleString()} loaded cases${ruleScope} (of ${total.toLocaleString()})`
+    : `Among ${cases.length.toLocaleString()} case${cases.length === 1 ? '' : 's'}${ruleScope}`;
   // A truncated list: the lifecycle tiles show the exact server total (with how many of
   // them the loaded list can show); the severity tiles count the loaded slice and say so.
   const loadedNote = truncated ? `of ${cases.length.toLocaleString()} loaded` : undefined;
@@ -1061,7 +1143,7 @@ export default function Cases({
           count: server,
           note: `${loadedCount.toLocaleString()} loaded`,
           title:
-            `${server.toLocaleString()} ${server === 1 ? noun[0] : noun[1]} in total; ` +
+            `${server.toLocaleString()} ${server === 1 ? noun[0] : noun[1]}${ruleScope} in total; ` +
             `${loadedCount.toLocaleString()} of them ${loadedCount === 1 ? 'is' : 'are'} among the ` +
             `${cases.length.toLocaleString()} loaded cases this list filters`,
         }
@@ -1090,6 +1172,11 @@ export default function Cases({
     const set = new Set(selected);
     return filteredSorted.filter((c) => set.has(c.case_id));
   }, [selected, filteredSorted]);
+  // The selection the bulk close dialog covers (it reads their runbook progress).
+  const bulkTerminalIds = React.useMemo(
+    () => (bulkTerminal ? selectedCases.map((c) => c.case_id).sort((a, b) => a.localeCompare(b)) : undefined),
+    [bulkTerminal, selectedCases],
+  );
   const jobSubmissionIntentRef = React.useRef<JobSubmissionIntent | null>(null);
 
   /** Submit one immutable Cases selection to the server-owned Jobs subsystem. */
@@ -1121,7 +1208,7 @@ export default function Cases({
           action: { label: 'Open Inbox', onClick: () => navigate('inbox') },
         });
       } catch (e) {
-        const msg = e instanceof Error ? e.message : 'Could not start the background job.';
+        const msg = bulkJobErrorText(e);
         setBulkError(msg);
         toast.error(msg);
       } finally {
@@ -1131,8 +1218,10 @@ export default function Cases({
     [bulkBusy, navigate, selectedCases],
   );
 
+  // Typed with the job's own params (never the single-case `CaseActionInput`), so a
+  // single-case field such as `require_open_steps_reason` fails tsc instead of a 422.
   const runBulk = React.useCallback(
-    (input: CaseActionInput, activity = 'are being updated') =>
+    (input: CaseLifecycleInput, activity = 'are being updated') =>
       submitCaseJob('case_lifecycle', { ...input }, activity),
     [submitCaseJob],
   );
@@ -1153,10 +1242,13 @@ export default function Cases({
           disposition_declared: true,
           resolution: input.resolution || 'Closed by analyst',
           ...(input.note ? { note: input.note } : {}),
+          // Round 14 (D34): the reason for closing with required runbook steps open,
+          // audited with the close. A close by hand never waits for the steps.
+          ...(input.open_steps_reason ? { open_steps_reason: input.open_steps_reason } : {}),
         });
         await load();
       } catch {
-        setBulkError(`Could not close ${target.case_id}.`);
+        setBulkError(`Could not close ${target.case_number || target.case_id}.`);
       }
     },
     [closeTarget, load],
@@ -1165,8 +1257,6 @@ export default function Cases({
   const setFilter = <K extends keyof CaseFilters>(key: K, value: CaseFilters[K]) =>
     setFilters((f) => ({ ...f, [key]: value }));
 
-  const anyActive = countActiveFilters(filters) > 0;
-  const oldestFirst = sort.id === 'updated_at' && sort.dir === 'asc';
 
   /* ------------------------------------------------- saved views (Wave 7) -- */
   // Apply a saved view's stored filter/sort onto the page (null → defaults).
@@ -1206,15 +1296,30 @@ export default function Cases({
   );
 
   /* ----------------------------------------------------------- columns ---- */
+  // Round 14 (SPEC §4.9.4, C7): the columns a triage pass reads come first, in reading
+  // order, and the title takes the spare width (never under 280px); the secondary signals
+  // follow, hidden by default (CASES_DEFAULT_HIDDEN). No provenance glyph and no severity
+  // stripe in the row: the chip's tooltip says where severity came from.
   const columns: DataTableColumn<Case>[] = [
     {
       id: 'case_id',
       header: 'Case ID',
       sortable: true,
-      width: '9.5rem',
+      // 120px (SPEC §4.9.4): an 88px content box that holds "CASE-000048" (79px).
+      width: '7.5rem',
+      kind: 'id',
       lockVisible: true,
+      // The id button truncates itself, so the cell skips the shared one-line clip: the
+      // Ask AI chip below reaches into the cell's trailing padding and must not be cut.
+      wrap: true,
+      text: (c) => c.case_number || c.case_id,
       cell: (c) => (
-        <div className="group/ask flex items-center gap-1.5">
+        // Ask AI shows at the end of the id on hover or focus of the cell, instead of
+        // reserving its width in every row (C7). It sits in the cell's trailing padding,
+        // flush with the cell's edge, and the id never runs under it (the button stops 8px
+        // short of the content box): the case number is the row's open target, and a
+        // click on it must never start a chat instead.
+        <div className="group/ask relative flex min-w-0 items-center" data-testid="case-id-cell">
           <CaseHoverCard case={c}>
             <button
               type="button"
@@ -1222,15 +1327,19 @@ export default function Cases({
                 e.stopPropagation();
                 openInCaseManager(c.case_id, c.case_number || c.case_id);
               }}
-              className="rounded-[3px] font-mono text-xs font-semibold uppercase tracking-wide text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="max-w-[calc(100%-0.5rem)] truncate rounded-sm font-mono text-xs font-medium text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
               {c.case_number || c.case_id}
             </button>
           </CaseHoverCard>
-          <DemoBadge show={isDemoCase(c)} iconless className="px-1 py-0 text-2xs" />
           {/* Round 12 WP-ASK: a new Workspace chat that asks the server's question about this case;
               a case number in a custom format the question cannot name falls back to the id. */}
-          <AskAiChip kind="case" value={c.case_number || c.case_id} fallbackValue={c.case_id} />
+          <AskAiChip
+            kind="case"
+            value={c.case_number || c.case_id}
+            fallbackValue={c.case_id}
+            className="absolute -right-4 top-1/2 -translate-y-1/2"
+          />
         </div>
       ),
     },
@@ -1238,79 +1347,192 @@ export default function Cases({
       id: 'title',
       header: 'Title',
       sortable: true,
+      minWidth: 280,
+      text: (c) => c.title || c.case_id,
       cell: (c) => (
         <CaseHoverCard case={c}>
-          <span className="block max-w-[26rem] cursor-pointer truncate font-semibold text-foreground">
+          <span className="block min-w-0 cursor-pointer truncate font-medium text-foreground">
             {c.title || c.case_id}
           </span>
         </CaseHoverCard>
       ),
     },
     {
-      // Lifecycle status, plus a self-hiding "Auto-closed by AI" badge stacked beneath
-      // it when the deterministic close was recorded to the `agent` actor (Round-7 #11).
-      // AutoClosedBadge renders null for analyst/system/open cases, so the common cell is
-      // just the StatusBadge; the CLOSE itself is still decide()'s call (#3) — this badge
-      // is a read-only presentation of who the recorded decider was.
+      // Severity's provenance changes per row (reported by the source, or derived from the
+      // risk score); the chip's tooltip says which, instead of a glyph in every row.
+      id: 'severity',
+      header: 'Severity',
+      sortable: true,
+      width: '6.5rem',
+      text: (c) => humanizeToken(caseSeverityBand(c) ?? '') || 'Not graded',
+      cell: (c) => {
+        const band = caseSeverityBand(c);
+        return (
+          <span
+            className="inline-flex"
+            title={band ? severitySourceTitle(c) : undefined}
+            data-severity-source={band ? severityProvenance(c.severity_source) : undefined}
+          >
+            <SeverityBadge severity={band} className="px-1.5 text-2xs" />
+            {/* The same fact for assistive technology (a title alone is mouse-only). */}
+            {band ? <span className="sr-only">{`, ${severitySourceTitle(c).toLowerCase()}`}</span> : null}
+          </span>
+        );
+      },
+    },
+    {
+      // One status badge per row: who closed the case is the Outcome column's job.
       id: 'status',
       header: 'Status',
       sortable: true,
-      width: '10.5rem',
+      // Wide enough for the longest common label, "Open · awaiting analyst" (the F8 name
+      // of needs_human). With the widths below, every default column fits at 1440px beside
+      // a 280px title; narrower windows scroll the table with its edge fade.
+      width: '11.75rem',
+      text: (c) => (c.status ? statusBadgeLabel(c.status) : 'Unknown'),
       cell: (c) => (
-        // Fixed min-height so a row is the SAME height whether or not the optional
-        // AutoClosedBadge renders — keeps compact rows uniform and the rowAccent inset
-        // bar even down the margin (Round-8 #2). `justify-center` keeps the StatusBadge
-        // vertically centred in the reserved space.
-        <div className="flex min-h-[2.25rem] flex-col items-start justify-center gap-1">
-          <StatusBadge status={c.status} className="rounded-[3px] px-1.5 text-2xs" />
-          <AutoClosedBadge
-            status={c.status}
-            decisionBy={c.decision_by}
-            objectionWindowExpiresAt={c.objection_window_expires_at}
-          />
-        </div>
+        <StatusBadge
+          status={c.status}
+          className={cn(
+            'px-1.5 text-2xs',
+            // Every status in the tinted style: Investigating was a solid fill.
+            (c.status || '').toLowerCase() === 'investigating' && 'border-info/30 bg-info/10 text-info-text',
+          )}
+        />
       ),
     },
     {
-      // Owner cell — the shared owner monogram + the assignee name, or a muted
-      // "Unassigned". The name is case-derived (UNTRUSTED) so it renders as plain
-      // text; the monogram is decorative here (the name beside it is the text).
+      // Round 12 (SPEC D15): the OUTCOME of record. Once an analyst classified the case
+      // it shows their disposition; an AI auto-close says so; until then the recorded
+      // disposition is shown as what it is, the value triage mapped from the AI verdict
+      // (said in its tooltip), never presented as a person's call.
+      id: 'disposition',
+      header: 'Outcome',
+      sortable: true,
+      width: '9.25rem',
+      // The cut text's tooltip is the whole outcome ("Auto-closed as false positive").
+      text: (c) => caseOutcome(c).headline,
+      cell: (c) => {
+        const outcome = caseOutcome(c);
+        // Closing QA qa2-01: a settled outcome is the compact table badge, a short word
+        // ("Auto-closed", "Not recorded", "False positive") in the Status column's badge
+        // size, with the whole outcome in its tooltip and accessible name. Every label
+        // fits the 9.25rem column, so no badge is ever clipped.
+        if (outcome.source !== 'pending') return <OutcomeBadge outcome={outcome} compact />;
+        // Until an analyst classifies the case, the disposition shown is the one triage
+        // mapped from the AI verdict (D15), or "Undetermined" before there is one. It is
+        // the same table badge size as a settled outcome, so where it came from is in its
+        // read text as well as its tooltip (a title alone is mouse-only): it never reads
+        // like an analyst's call, and never claims a mapping that did not happen.
+        const note = pendingDispositionNote(c);
+        return (
+          <span className="inline-flex items-center gap-1" data-outcome-source="pending" title={note}>
+            <DispositionBadge disposition={c.disposition ?? null} className="px-1.5 text-2xs" />
+            <span className="sr-only">{pendingOutcomeRead(note)}</span>
+          </span>
+        );
+      },
+    },
+    {
+      // Owner cell: the shared owner monogram and the assignee name, or a muted
+      // "Unassigned". The name is case-derived (UNTRUSTED) so it renders as plain text; the
+      // monogram is decorative here (the name beside it is the text).
       id: 'assignee',
       header: 'Assignee',
       sortable: true,
-      width: '9.5rem',
+      width: '7.5rem',
+      text: (c) => (c.assignee || '').trim() || 'Unassigned',
       cell: (c) => {
         const name = (c.assignee || '').trim();
         if (!name) {
           return <span className="text-sm text-muted-foreground">Unassigned</span>;
         }
         return (
-          <span className="flex items-center gap-1.5 text-sm text-foreground">
+          <span className="flex min-w-0 items-center gap-1.5 text-sm text-foreground">
             <OwnerMonogram name={name} decorative />
-            <span className="max-w-[7rem] truncate">{name}</span>
+            <span className="min-w-0 truncate">{name}</span>
           </span>
         );
       },
     },
     {
-      // Round 12 (SPEC D15): the OUTCOME of record. Once an analyst classified the case
-      // it shows their disposition with an Analyst tag; an AI auto-close says so; until
-      // then the recorded disposition is shown as what it is — the value triage mapped
-      // from the AI verdict (AI tag), never presented as a person's call.
-      id: 'disposition',
-      header: 'Outcome',
+      id: 'updated_at',
+      header: 'Updated',
       sortable: true,
-      width: '11rem',
+      width: '5.5rem',
+      kind: 'time',
+      cell: (c) => (
+        <span className="text-sm text-muted-foreground">{humanizeAge(c.updated_at || c.created_at)}</span>
+      ),
+    },
+    {
+      id: 'confidence',
+      header: 'Confidence',
+      sortable: true,
+      width: '7rem',
+      // The confidence score is an AI (LLM) judgement: constant provenance for the whole
+      // column, declared once at the header.
+      provenance: 'ai',
+      cell: (c) => <ConfidenceBadge confidence={c.confidence} />,
+    },
+    {
+      id: 'verdict',
+      header: 'Verdict',
+      width: '8.5rem',
+      // The verdict is an AI (LLM) judgement: constant column provenance.
+      provenance: 'ai',
+      cell: (c) => <VerdictBadge verdict={c.verdict} />,
+    },
+    {
+      id: 'risk',
+      header: 'Risk',
+      width: '6rem',
+      // Risk is the DETERMINISTIC risk_score: constant column provenance.
+      provenance: 'code',
+      cell: (c) => <RiskBadge score={c.risk_score} />,
+    },
+    {
+      id: 'entity',
+      header: 'Entity',
+      width: '12rem',
+      text: (c) => (c.entity ? `${c.entity.type}: ${c.entity.value}` : DASH),
       cell: (c) => {
-        const outcome = caseOutcome(c);
-        if (outcome.source !== 'pending') return <OutcomeBadge outcome={outcome} />;
+        if (!c.entity) return <span className="text-muted-foreground">{DASH}</span>;
         return (
-          <span className="inline-flex items-center gap-1" data-outcome-source="pending">
-            <DispositionBadge disposition={c.disposition ?? null} />
-            <ProvenanceTag kind="ai" variant="icon" />
-          </span>
+          // The value stays on one line (a long one truncates, whole in its title) so the
+          // cell is never squeezed into a letter-per-line column; the Ask AI chip shows
+          // beside it on hover or focus of the cell.
+          <div className="group/ask flex min-w-0 items-center gap-1.5">
+            <span className="flex min-w-0 items-center gap-1 whitespace-nowrap text-sm text-foreground">
+              <span className="text-muted-foreground">{c.entity.type}:</span>
+              <InlineCode className="min-w-0 truncate break-normal" title={c.entity.value}>
+                {c.entity.value}
+              </InlineCode>
+            </span>
+            <AskAiChip type={c.entity.type} value={c.entity.value} />
+          </div>
         );
       },
+    },
+    {
+      id: 'category',
+      header: 'Category',
+      sortable: true,
+      width: '7rem',
+      cell: (c) => <CategoryBadge category={caseCategory(c)} />,
+    },
+    {
+      id: 'urgency',
+      header: 'Urgency',
+      width: '6.5rem',
+      cell: (c) => (
+        <UrgencyPill
+          createdAt={c.created_at}
+          riskScore={c.risk_score}
+          status={c.status}
+          band={c.urgency_band}
+        />
+      ),
     },
     {
       id: 'alerts',
@@ -1329,26 +1551,10 @@ export default function Cases({
       ),
     },
     {
-      id: 'playbooks',
-      header: 'Playbooks',
-      align: 'left',
-      width: '6.5rem',
-      cell: (c) => (
-        <CountLink
-          count={playbookCount(c)}
-          onClick={
-            playbookCount(c) > 0
-              ? () => openInCaseManager(c.case_id, c.case_number || c.case_id)
-              : undefined
-          }
-        />
-      ),
-    },
-    {
       id: 'enrichments',
       header: 'Enrichments',
       align: 'left',
-      width: '7rem',
+      width: '7.5rem',
       cell: (c) => (
         <CountLink
           count={enrichmentCount(c)}
@@ -1360,212 +1566,412 @@ export default function Cases({
         />
       ),
     },
-    {
-      id: 'category',
-      header: 'Category',
-      sortable: true,
-      width: '7rem',
-      cell: (c) => <CategoryBadge category={caseCategory(c)} />,
-    },
-    {
-      // Severity's provenance FLIPS per row (SIEM-asserted vs code-derived), so the
-      // ProvenanceTag lives PER-CELL beside the badge — NOT at the column header like the
-      // constant-provenance columns below (Round-7 #9b, DECISIONS §A.5/§A.10).
-      id: 'severity',
-      header: 'Severity',
-      sortable: true,
-      width: '9rem',
-      cell: (c) => {
-        const band = caseSeverityBand(c);
-        return (
-          <div className="flex items-center gap-1.5">
-            <SeverityBadge severity={band} className="rounded-[3px] px-1.5 text-2xs" />
-            {band ? (
-              <ProvenanceTag
-                kind={severityProvenance(c.severity_source)}
-                variant="icon"
-              />
-            ) : null}
-          </div>
-        );
-      },
-    },
-    {
-      id: 'confidence',
-      header: 'Confidence',
-      sortable: true,
-      width: '7rem',
-      // The confidence score is an AI (LLM) judgement — constant provenance for the
-      // whole column, declared once at the header.
-      provenance: 'ai',
-      cell: (c) => <ConfidenceBadge confidence={c.confidence} />,
-    },
-    {
-      id: 'verdict',
-      header: 'Verdict',
-      width: '8rem',
-      // The verdict is an AI (LLM) judgement — constant column provenance.
-      provenance: 'ai',
-      cell: (c) => <VerdictBadge verdict={c.verdict} />,
-    },
-    {
-      id: 'risk',
-      header: 'Risk',
-      width: '6rem',
-      // Risk is the DETERMINISTIC risk_score — constant column provenance.
-      provenance: 'code',
-      cell: (c) => <RiskBadge score={c.risk_score} />,
-    },
-    {
-      id: 'urgency',
-      header: 'Urgency',
-      width: '6rem',
-      cell: (c) => (
-        <UrgencyPill
-          createdAt={c.created_at}
-          riskScore={c.risk_score}
-          status={c.status}
-          band={c.urgency_band}
-        />
-      ),
-    },
-    {
-      id: 'entity',
-      header: 'Entity',
-      width: '11rem',
-      cell: (c) => {
-        if (!c.entity) return <span className="text-muted-foreground">{DASH}</span>;
-        return (
-          // The value stays on one line (a long one truncates, whole in its title) so
-          // the cell is never squeezed into a letter-per-line column; the Ask AI chip
-          // shows beside it on hover or focus of the cell.
-          <div className="group/ask flex items-center gap-1.5">
-            <span className="flex min-w-0 items-center gap-1 whitespace-nowrap text-sm text-foreground">
-              <span className="text-muted-foreground">{c.entity.type}:</span>
-              <InlineCode className="max-w-[16rem] truncate break-normal" title={c.entity.value}>
-                {c.entity.value}
-              </InlineCode>
-            </span>
-            <AskAiChip type={c.entity.type} value={c.entity.value} />
-          </div>
-        );
-      },
-    },
-    {
-      id: 'updated_at',
-      header: 'Updated',
-      sortable: true,
-      width: '7rem',
-      cell: (c) => (
-        <span className="whitespace-nowrap text-sm text-muted-foreground">
-          {humanizeAge(c.updated_at || c.created_at)}
-        </span>
-      ),
-    },
-    // Actions column — only present when the operator can close (RBAC-mirrored). A
-    // case Close is a REVERSIBLE lifecycle move (it can be reopened), so it uses a
-    // close glyph (XCircle) + neutral tone, NOT the Trash/delete grammar that implies
-    // data loss (DESIGN_STANDARD reserves Trash for real deletes).
+    // Actions column, only present when the operator can close (RBAC-mirrored). A case
+    // Close is a REVERSIBLE lifecycle move (it can be reopened), so it uses a close glyph
+    // (XCircle) and the neutral tone, NOT the Trash/delete grammar that implies data loss.
+    // A closed or resolved case has nothing to close, so its cell is empty.
     ...(canClose
       ? ([
           {
             id: 'actions',
-            header: 'Actions',
+            header: <span className="sr-only">Actions</span>,
+            menuLabel: 'Actions',
             align: 'right',
-            width: '5rem',
-            cell: (c: Case) => (
-              <Button
-                variant="ghost"
-                size="icon"
-                className="size-8 text-muted-foreground hover:text-foreground"
-                aria-label={`Close case ${c.case_id}`}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  closeOpenerRef.current = e.currentTarget;
-                  setCloseTarget(c);
-                }}
-              >
-                <XCircle className="size-4" aria-hidden />
-              </Button>
-            ),
+            // The 28px button plus the cell's 16px padding on each side.
+            width: '4rem',
+            cell: (c: Case) =>
+              isTerminalCase(c) ? null : (
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  // `-my-1`: the 28px target stays out of the row's flow, so an Active row
+                  // keeps the compact height (about 38px) of a row without the button.
+                  className="-my-1 size-7 text-muted-foreground hover:text-foreground"
+                  aria-label={`Close ${c.case_number || c.case_id}`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    closeOpenerRef.current = e.currentTarget;
+                    setCloseTarget(c);
+                  }}
+                >
+                  <XCircle className="size-4" aria-hidden />
+                </Button>
+              ),
           },
         ] as DataTableColumn<Case>[])
       : []),
   ];
 
-  // Column-menu descriptors (plain-text labels; the actions column is hideable but
-  // the locked case_id column always shows). Derived from the columns above so the
-  // menu and the table never drift.
+  // Column-menu descriptors (plain-text labels; the actions column is hideable but the
+  // locked case_id column always shows). Derived from the columns above so the menu and
+  // the table never drift.
   const columnMenuItems: ColumnMenuItem[] = columns.map((c) => ({
     id: c.id,
-    label: typeof c.header === 'string' ? c.header : c.id,
+    label: c.menuLabel ?? (typeof c.header === 'string' ? c.header : c.id),
     lockVisible: c.lockVisible,
   }));
+
+  /* -------------------------------------------------------- page chrome ---- */
+  // ONE count per page, in the header (C7): every case in the store, or the newest slice
+  // that was loaded. "N of M shown" joins it on the queue panel only while a filter narrows
+  // the list. Plain text (the rule is untrusted, #9, and only said as "this rule" here).
+  const caseNoun = (n: number) => (n === 1 ? 'case' : 'cases');
+  const headerCount = truncated
+    ? `Newest ${cases.length.toLocaleString()} of ${total.toLocaleString()} ${caseNoun(total)}${loadedRule ? ' from this rule' : ''}`
+    : `${total.toLocaleString()} ${caseNoun(total)}${loadedRule ? ' from this rule' : ''} · all time`;
+  const headerCountTitle = truncated
+    ? `${cases.length.toLocaleString()} of ${total.toLocaleString()} cases${ruleScope} loaded`
+    : loadedRule
+      ? `${total.toLocaleString()} ${caseNoun(total)}${ruleScope}`
+      : undefined;
+  const narrowed = filteredSorted.length !== cases.length;
+  const demoRows = cases.some(isDemoCase);
+  const pageEmpty = (loading || Boolean(error)) && cases.length === 0;
+
+  // The strip's context lines: a share of the loaded cases ("19% of 77"), or, for a
+  // truncated list, what the loaded slice can show.
+  const shareOf = (n: number) =>
+    cases.length > 0 ? `${Math.round((n / cases.length) * 100)}% of ${cases.length.toLocaleString()}` : undefined;
+  const lifecycleTiles = [
+    {
+      id: 'open',
+      label: 'Active',
+      tile: activeTile,
+      facet: ACTIVE,
+      context: activeTile.note ?? shareOf(activeTile.count),
+    },
+    {
+      id: 'terminal',
+      label: 'Resolved or closed',
+      tile: terminalTile,
+      facet: TERMINAL,
+      context: terminalTile.note ?? shareOf(terminalTile.count),
+    },
+    {
+      id: 'needs-human',
+      label: 'Needs human',
+      tile: needsHumanTile,
+      facet: NEEDS_HUMAN,
+      context: needsHumanTile.note ?? 'awaiting an analyst',
+    },
+  ] as const;
+  const severityTiles = (['critical', 'high', 'medium', 'low'] as const).map((band) => ({
+    band,
+    label: humanizeToken(band),
+    count: counts.bySeverity[band],
+    context: loadedNote ?? shareOf(counts.bySeverity[band]),
+  }));
+
+  // One filter bar (SPEC §4.9.2): the search, three primary filters, and the rest behind
+  // "More filters" (on a phone, all of them in one "Filters" sheet). Each control names
+  // itself; a filter that holds a value shows as a removable chip.
+  const barWidth = (placement: FilterBarControlContext['placement'], width: string) =>
+    placement === 'bar' ? width : 'w-full';
+  const statusLabel = (value: string) =>
+    value === ACTIVE
+      ? 'Active cases'
+      : value === TERMINAL
+        ? 'Resolved or closed'
+        : value === NEEDS_HUMAN
+          ? 'Needs human'
+          : value === 'needs_human'
+            ? 'Open, awaiting an analyst'
+            : humanizeToken(value);
+  const timeRangeLabel: Record<TimeRange, string> = {
+    all: 'Any time',
+    '1h': 'Last 1 hour',
+    '24h': 'Last 24 hours',
+    '7d': 'Last 7 days',
+    '30d': 'Last 30 days',
+  };
+  const noiseOutcomeLabel: Record<NoiseOutcomeFilter, string> = {
+    auto_cleared: 'Auto-cleared by AI',
+    escalated: 'Escalated to analyst',
+    closed: 'Closed by human',
+  };
+  const filterControls: FilterBarFilter[] = [
+    {
+      id: 'status',
+      label: 'Status',
+      active: filters.status !== ANY,
+      control: ({ placement }) => (
+        <Select value={filters.status} onValueChange={(v) => setFilter('status', v)}>
+          <SelectTrigger className={cn('h-8 text-sm', barWidth(placement, 'w-[10.5rem]'))} aria-label="Filter by status">
+            <SelectValue placeholder="Status" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={ANY}>All statuses</SelectItem>
+            <SelectItem value={ACTIVE}>Active cases</SelectItem>
+            <SelectItem value={TERMINAL}>Resolved or closed</SelectItem>
+            <SelectItem value={NEEDS_HUMAN}>Needs human</SelectItem>
+            {controlFacets.statuses.filter((s) => s !== 'needs_human').map((s) => (
+              <SelectItem key={s} value={s}>
+                {humanizeToken(s)}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      ),
+    },
+    {
+      id: 'severity',
+      label: 'Severity',
+      active: filters.severity !== ANY,
+      control: ({ placement }) => (
+        <Select value={filters.severity} onValueChange={(v) => setFilter('severity', v)}>
+          <SelectTrigger className={cn('h-8 text-sm', barWidth(placement, 'w-[9rem]'))} aria-label="Filter by severity">
+            <SelectValue placeholder="Severity" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={ANY}>All severities</SelectItem>
+            <SelectItem value="critical">Critical</SelectItem>
+            <SelectItem value="high">High</SelectItem>
+            <SelectItem value="medium">Medium</SelectItem>
+            <SelectItem value="low">Low</SelectItem>
+            <SelectItem value="info">Info</SelectItem>
+          </SelectContent>
+        </Select>
+      ),
+    },
+    {
+      id: 'assignee',
+      label: 'Assignee',
+      active: filters.assignee !== ANY,
+      control: ({ placement }) => (
+        <Select value={filters.assignee} onValueChange={(v) => setFilter('assignee', v)}>
+          <SelectTrigger className={cn('h-8 text-sm', barWidth(placement, 'w-[9.5rem]'))} aria-label="Filter by assignee">
+            <SelectValue placeholder="Assignee" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={ANY}>All assignees</SelectItem>
+            <SelectItem value={UNASSIGNED}>Unassigned</SelectItem>
+            {controlFacets.assignees.map((a) => (
+              <SelectItem key={a} value={a}>
+                {a}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      ),
+    },
+    {
+      id: 'rule',
+      label: 'Rule',
+      active: Boolean(filters.rule),
+      control: ({ placement }) => (
+        <RuleFilterSelect
+          value={filters.rule}
+          options={ruleOptions}
+          onChange={(rule) => setFilter('rule', rule)}
+          triggerClassName={barWidth(placement, 'w-[13rem]')}
+        />
+      ),
+    },
+    ...(controlFacets.dispositions.length
+      ? [
+          {
+            id: 'disposition',
+            label: 'Outcome',
+            active: filters.disposition !== ANY,
+            control: ({ placement }: FilterBarControlContext) => (
+              <Select value={filters.disposition} onValueChange={(v) => setFilter('disposition', v)}>
+                <SelectTrigger
+                  className={cn('h-8 text-sm', barWidth(placement, 'w-[11rem]'))}
+                  aria-label="Filter by disposition"
+                >
+                  <SelectValue placeholder="Outcome" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={ANY}>All outcomes</SelectItem>
+                  {controlFacets.dispositions.map((d) => (
+                    <SelectItem key={d} value={d}>
+                      {humanizeToken(d)}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            ),
+          } satisfies FilterBarFilter,
+        ]
+      : []),
+    {
+      id: 'noiseOutcome',
+      label: 'Flow outcome',
+      active: filters.noiseOutcome !== ANY,
+      control: ({ placement }) => (
+        <Select value={filters.noiseOutcome} onValueChange={(v) => setFilter('noiseOutcome', v)}>
+          <SelectTrigger
+            className={cn('h-8 text-sm', barWidth(placement, 'w-[12rem]'))}
+            aria-label="Filter by noise-reduction outcome"
+          >
+            <SelectValue placeholder="Flow outcome" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={ANY}>All flow outcomes</SelectItem>
+            <SelectItem value="auto_cleared">Auto-cleared by AI</SelectItem>
+            <SelectItem value="escalated">Escalated to analyst</SelectItem>
+            <SelectItem value="closed">Closed by human</SelectItem>
+          </SelectContent>
+        </Select>
+      ),
+    },
+    {
+      id: 'timeRange',
+      label: 'Created within',
+      active: filters.timeRange !== 'all',
+      control: ({ placement }) => (
+        <Select value={filters.timeRange} onValueChange={(v) => setFilter('timeRange', v as TimeRange)}>
+          <SelectTrigger className={cn('h-8 text-sm', barWidth(placement, 'w-[10rem]'))} aria-label="Created within">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {(Object.keys(timeRangeLabel) as TimeRange[]).map((value) => (
+              <SelectItem key={value} value={value}>
+                {timeRangeLabel[value]}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      ),
+    },
+    {
+      id: 'relatedOnly',
+      label: 'Linked across sources',
+      active: filters.relatedOnly,
+      control: ({ placement }) => (
+        <Button
+          variant={filters.relatedOnly ? 'default' : 'outline'}
+          size="sm"
+          className={cn('h-8 justify-start gap-1.5', barWidth(placement, 'w-auto'))}
+          onClick={() => setFilter('relatedOnly', !filters.relatedOnly)}
+          aria-pressed={filters.relatedOnly}
+        >
+          <Link2 aria-hidden />
+          Only cases linked across sources
+        </Button>
+      ),
+    },
+    // Saved views ride in the phone sheet (the panel's title row holds them from 768px).
+    ...(isMobile
+      ? [
+          {
+            id: 'savedView',
+            label: 'Saved view',
+            control: (
+              <SavedViewsBar
+                scope={CASES_VIEW_SCOPE}
+                activeViewId={activeViewId}
+                onApply={applySavedView}
+                getCurrent={captureCurrent}
+              />
+            ),
+          } satisfies FilterBarFilter,
+        ]
+      : []),
+  ];
+  const filterChips: FilterChip[] = [
+    ...(filters.status !== ANY
+      ? [{ id: 'status', label: `Status: ${statusLabel(filters.status)}`, onRemove: () => setFilter('status', ANY) }]
+      : []),
+    ...(filters.severity !== ANY
+      ? [{ id: 'severity', label: `Severity: ${humanizeToken(filters.severity)}`, onRemove: () => setFilter('severity', ANY) }]
+      : []),
+    ...(filters.assignee !== ANY
+      ? [
+          {
+            id: 'assignee',
+            label: `Assignee: ${filters.assignee === UNASSIGNED ? 'Unassigned' : filters.assignee}`,
+            onRemove: () => setFilter('assignee', ANY),
+          },
+        ]
+      : []),
+    ...(filters.rule ? [{ id: 'rule', label: `Rule: ${filters.rule}`, onRemove: () => setFilter('rule', '') }] : []),
+    ...(filters.disposition !== ANY
+      ? [{ id: 'disposition', label: `Outcome: ${humanizeToken(filters.disposition)}`, onRemove: () => setFilter('disposition', ANY) }]
+      : []),
+    ...(filters.noiseOutcome !== ANY && NOISE_OUTCOMES.has(filters.noiseOutcome as NoiseOutcomeFilter)
+      ? [
+          {
+            id: 'noiseOutcome',
+            label: `Flow outcome: ${noiseOutcomeLabel[filters.noiseOutcome as NoiseOutcomeFilter]}`,
+            onRemove: () => setFilter('noiseOutcome', ANY),
+          },
+        ]
+      : []),
+    ...(filters.timeRange !== 'all'
+      ? [{ id: 'timeRange', label: `Created: ${timeRangeLabel[filters.timeRange].toLowerCase()}`, onRemove: () => setFilter('timeRange', 'all') }]
+      : []),
+    ...(filters.relatedOnly
+      ? [{ id: 'relatedOnly', label: 'Linked across sources', onRemove: () => setFilter('relatedOnly', false) }]
+      : []),
+  ];
+
+  // Phones: Case Manager's list rows instead of a table in which only the id and a cut
+  // title showed (ui-audit X16). The list grows by one page at a time.
+  const phoneRows = filteredSorted.slice(0, phoneLimit);
+  const phoneMore = filteredSorted.length - phoneRows.length;
+
+  const emptyNode = (
+    <EmptyState
+      compact
+      icon={Briefcase}
+      // A rule that matches nothing is a filter with no results, not an empty console.
+      title={cases.length === 0 ? (loadedRule ? 'No cases from this rule' : 'No cases yet') : 'No cases match your filters'}
+      description={
+        cases.length === 0
+          ? loadedRule
+            ? 'No case in the store came from this rule. Choose All rules to see every case.'
+            : 'Run an investigation or enable background scans to start triaging.'
+          : 'No loaded cases match the current filters. Clear them to see all cases.'
+      }
+      action={
+        cases.length === 0 && loadedRule ? (
+          <Button variant="outline" size="sm" onClick={() => setFilter('rule', '')}>
+            <X className="mr-1.5 size-4" aria-hidden />
+            All rules
+          </Button>
+        ) : cases.length > 0 ? (
+          <Button variant="outline" size="sm" onClick={clearAll}>
+            <X className="mr-1.5 size-4" aria-hidden />
+            Clear filters
+          </Button>
+        ) : (
+          <>
+            <Button size="sm" onClick={() => navigate('sources')}>
+              Connect a source
+            </Button>
+            <StartDemoButton onStarted={load} />
+          </>
+        )
+      }
+    />
+  );
 
   /* ------------------------------------------------------------- render ---- */
   return (
     <MotionProvider>
     <PageContainer
       variant="fluid"
-      // Reserve bottom space whenever the fixed bulk bar is showing so it never
-      // covers the last table rows/pager (#3). Keyed to the SAME selection state
-      // the bar's own visibility gate reads, so the padding and the bar are always
-      // in lockstep (no stale gutter after the selection clears).
-      className={cn('space-y-6', selectedCases.length > 0 && 'pb-28')}
+      // Reserve bottom space whenever the fixed bulk bar is showing so it never covers the
+      // last table rows or the pager. Keyed to the SAME selection state the bar's own
+      // visibility gate reads, so the padding and the bar are always in lockstep.
+      className={cn(selectedCases.length > 0 && 'pb-28')}
     >
       <PageHeader
-        variant="dense"
-        breadcrumb={[{ label: 'Triage' }, { label: t('cases', 'Cases') }]}
         title={t('cases', 'Cases')}
-        icon={Briefcase}
-        meta={
-          // A single quiet total badge beside the title (the at-a-glance triage
-          // breakdown now lives in the summary strip below). When only a subset is
-          // loaded it reads "N / M" so the loaded basis is explicit (never a misread).
-          <span
-            data-testid="cases-count-total"
-            title={
-              truncated
-                ? `${cases.length.toLocaleString()} of ${total.toLocaleString()} cases loaded`
-                : undefined
-            }
-            className="inline-flex items-center rounded-[4px] border border-border bg-surface px-2 py-0.5 text-xs font-medium tabular-nums text-muted-foreground"
-          >
-            {truncated
-              ? `${cases.length.toLocaleString()} / ${total.toLocaleString()}`
-              : `${total.toLocaleString()} total`}
-          </span>
-        }
-      />
-
-      <ControlBar
-        title="Case queue"
-        meta={oldestFirst ? 'Oldest activity first' : 'Newest activity first'}
-        label="Case queue controls"
+        help="Every case the agent opened, newest activity first. The tiles filter the list; open a case to work it in Case Manager."
         controls={
           <>
-            {/* A true two-way sort toggle on updated_at — the visible label reflects
-                the CURRENT order, and clicking always flips it, so there is always a
-                way back to newest (the old control only ever set asc). */}
-            <Button
-              variant={oldestFirst ? 'default' : 'outline'}
-              size="sm"
-              className="h-8 rounded-[4px] text-xs"
-              aria-pressed={oldestFirst}
-              aria-label={`Sort by updated time, currently ${oldestFirst ? 'oldest' : 'newest'} first`}
-              onClick={() =>
-                setSort({ id: 'updated_at', dir: oldestFirst ? 'desc' : 'asc' })
-              }
+            <span
+              data-testid="cases-count-total"
+              title={headerCountTitle}
+              className="text-sm tabular-nums text-muted-foreground"
             >
-              {oldestFirst ? (
-                <SortDesc className="mr-1.5 size-4" aria-hidden />
-              ) : (
-                <SortAsc className="mr-1.5 size-4" aria-hidden />
-              )}
-              {oldestFirst ? 'Oldest first' : 'Newest first'}
-            </Button>
+              {headerCount}
+            </span>
             <RefreshButton
-              className="h-8 rounded-[4px] text-xs"
+              display="icon"
+              label="Refresh cases"
               onClick={() => void load()}
               refreshing={loading}
             />
@@ -1573,409 +1979,166 @@ export default function Cases({
         }
       />
 
-      {/* Summary strip — the Cortex-XSIAM / Prisma "incident count band": at-a-glance
-          triage buckets over the LOADED set. Each tile toggles the matching facet
-          filter (severity band or lifecycle status); the icon + left accent bar are the
-          non-color redundant channel (§6.1). Counts are a stable snapshot of the loaded
-          set (they don't collapse when a filter is applied), matching what clicking each
-          tile narrows the list to. */}
-      <div
-        className={cn(
-          'grid grid-cols-2 border-y border-border/70 sm:grid-cols-3 xl:grid-cols-7',
-          /*
-           * Column dividers, stated ONCE PER MUTUALLY-EXCLUSIVE COLUMN COUNT.
-           *
-           * The rule is simple — a hairline between neighbours, never at the start of a
-           * wrapped row — but expressing it as overlapping breakpoint layers made it a
-           * SPECIFICITY TIE decided by Tailwind's emission order: `[&>*:nth-child(odd)]`
-           * and `[&>*:nth-child(3n+1)]` are both (0,2,0), and `border-l-0` is emitted
-           * before `border-l`, so at 3 columns the odd rule re-lit cells 1 and 7 (the
-           * row starts) while the stale 3n+1 rule leaked upward and killed cell 4's
-           * divider at 7 columns. Adding a seventh tile turned that latent tie into a
-           * visible hairline hanging off the third row.
-           *
-           * So each range now owns exactly two rules — an ENABLE at (0,1,0) and a
-           * ROW-START RESET at (0,2,0) — and the ranges cannot overlap. The reset wins
-           * on specificity alone, so the result no longer depends on emission order,
-           * and `Nn+1` is always the range's own `grid-cols-N`. `route-visual-standard`
-           * derives and enforces exactly this from the column counts above.
-           */
-          'max-sm:[&>*]:border-l max-sm:[&>*:nth-child(2n+1)]:border-l-0',
-          'sm:max-xl:[&>*]:border-l sm:max-xl:[&>*:nth-child(3n+1)]:border-l-0',
-          'xl:[&>*]:border-l xl:[&>*:nth-child(7n+1)]:border-l-0',
-          (loading || Boolean(error)) && cases.length === 0 && 'hidden',
-        )}
-      >
-        <SummaryTile
-          label="Active"
-          count={activeTile.count}
-          note={activeTile.note}
-          icon={Briefcase}
-          tone="info"
-          active={filters.status === ACTIVE}
-          onClick={() => setFilter('status', filters.status === ACTIVE ? ANY : ACTIVE)}
-          title={activeTile.title}
-          testId="cases-summary-open"
-        />
-        <SummaryTile
-          label="Terminal"
-          count={terminalTile.count}
-          note={terminalTile.note}
-          icon={CheckCircle2}
-          tone="success"
-          active={filters.status === TERMINAL}
-          onClick={() => setFilter('status', filters.status === TERMINAL ? ANY : TERMINAL)}
-          title={terminalTile.title}
-          testId="cases-summary-terminal"
-        />
-        <SummaryTile
-          label="Needs human"
-          count={needsHumanTile.count}
-          note={needsHumanTile.note}
-          icon={HelpCircle}
-          tone="primary"
-          active={filters.status === NEEDS_HUMAN}
-          onClick={() =>
-            setFilter('status', filters.status === NEEDS_HUMAN ? ANY : NEEDS_HUMAN)
-          }
-          title={needsHumanTile.title}
-          testId="cases-summary-needs-human"
-        />
-        <SummaryTile
-          label="Critical"
-          count={counts.bySeverity.critical}
-          note={loadedNote}
-          icon={AlertOctagon}
-          tone="critical"
-          active={filters.severity === 'critical'}
-          onClick={() =>
-            setFilter('severity', filters.severity === 'critical' ? ANY : 'critical')
-          }
-          title={loadedScopeTitle}
-          testId="cases-summary-critical"
-        />
-        <SummaryTile
-          label="High"
-          count={counts.bySeverity.high}
-          note={loadedNote}
-          icon={AlertTriangle}
-          tone="high"
-          active={filters.severity === 'high'}
-          onClick={() => setFilter('severity', filters.severity === 'high' ? ANY : 'high')}
-          title={loadedScopeTitle}
-          testId="cases-summary-high"
-        />
-        <SummaryTile
-          label="Medium"
-          count={counts.bySeverity.medium}
-          note={loadedNote}
-          icon={Square}
-          tone="medium"
-          active={filters.severity === 'medium'}
-          onClick={() =>
-            setFilter('severity', filters.severity === 'medium' ? ANY : 'medium')
-          }
-          title={loadedScopeTitle}
-          testId="cases-summary-medium"
-        />
-        <SummaryTile
-          label="Low"
-          count={counts.bySeverity.low}
-          note={loadedNote}
-          icon={Circle}
-          tone="low"
-          active={filters.severity === 'low'}
-          onClick={() => setFilter('severity', filters.severity === 'low' ? ANY : 'low')}
-          title={loadedScopeTitle}
-          testId="cases-summary-low"
-        />
-      </div>
+      {/* The KPI strip: the loaded cases split by state, then (after the strong rule) by
+          severity. Each tile toggles the matching filter. Counts are a stable snapshot of
+          the loaded set (they do not collapse when a filter is applied); a truncated list
+          shows exact server totals on the state tiles and says what the loaded slice can
+          show. The hover title states the basis in full. */}
+      {pageEmpty ? null : (
+        // On a phone the strip is two columns of compact tiles, and the strong rule between
+        // state and severity is left out: there Critical starts no row, so the rule would
+        // stand between two tiles of one row.
+        <KpiStrip label="Case summary" density={isMobile ? 'compact' : 'comfortable'} data-testid="cases-summary-strip">
+          {lifecycleTiles.map(({ id, label, tile, facet, context }) => (
+            <div key={id} className="grid min-w-0" title={tile.title} data-testid={`cases-summary-${id}`}>
+              <KpiTile
+                label={label}
+                value={tile.count.toLocaleString()}
+                countTo={tile.count}
+                format={(n) => n.toLocaleString()}
+                context={context}
+                testId={`cases-summary-${id}`}
+                pressed={filters.status === facet}
+                onClick={() => setFilter('status', filters.status === facet ? ANY : facet)}
+              />
+            </div>
+          ))}
+          {severityTiles.map(({ band, label, count, context }) => (
+            <div key={band} className="grid min-w-0" title={loadedScopeTitle} data-testid={`cases-summary-${band}`}>
+              <KpiTile
+                label={label}
+                value={count.toLocaleString()}
+                countTo={count}
+                format={(n) => n.toLocaleString()}
+                context={context}
+                accent={band === 'critical' ? 'critical' : undefined}
+                breakBefore={band === 'critical' && !isMobile}
+                testId={`cases-summary-${band}`}
+                pressed={filters.severity === band}
+                onClick={() => setFilter('severity', filters.severity === band ? ANY : band)}
+              />
+            </div>
+          ))}
+        </KpiStrip>
+      )}
 
-      {/* One flat responsive filter band. Standard laptop widths resolve to a
-          three-column grid instead of squeezing every operator control into a
-          single row; ultrawide screens regain the compact one-line layout. */}
-      <section
-        aria-label="Case filters"
-        data-testid="cases-filter-band"
-        className={cn(
-          'space-y-2.5 border-y border-border/70 py-3',
-          (loading || Boolean(error)) && cases.length === 0 && 'hidden',
-        )}
-      >
-        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3 2xl:flex 2xl:flex-wrap 2xl:items-center">
-          <div className="relative min-w-0 sm:col-span-2 lg:col-span-3 2xl:min-w-[18rem] 2xl:flex-1">
-            <Search
-              className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
-              aria-hidden
-            />
-            <Input
-              value={filters.search}
-              onChange={(e) => setFilter('search', e.target.value)}
-              placeholder="Search cases by ID, title, entity, rule or tag…"
-              aria-label="Search cases"
-              className="h-8 rounded-[4px] pl-9 text-xs"
-            />
-          </div>
-
-          <Select value={filters.status} onValueChange={(v) => setFilter('status', v)}>
-            <SelectTrigger className="h-8 w-full rounded-[4px] text-xs 2xl:w-[11rem]" aria-label="Filter by status">
-              <SelectValue placeholder="Status" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value={ANY}>All statuses</SelectItem>
-              <SelectItem value={ACTIVE}>Active cases</SelectItem>
-              <SelectItem value={TERMINAL}>Terminal (resolved or closed)</SelectItem>
-              <SelectItem value={NEEDS_HUMAN}>Needs human</SelectItem>
-              {facets.statuses.filter((s) => s !== 'needs_human').map((s) => (
-                <SelectItem key={s} value={s}>
-                  {s === 'needs_human' ? 'Open · awaiting analyst' : humanizeToken(s)}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-
-          <Select
-            value={filters.noiseOutcome}
-            onValueChange={(v) => setFilter('noiseOutcome', v)}
-          >
-            <SelectTrigger
-              className="h-8 w-full rounded-[4px] text-xs 2xl:w-[12rem]"
-              aria-label="Filter by noise-reduction outcome"
-            >
-              <SelectValue placeholder="Flow outcome" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value={ANY}>All flow outcomes</SelectItem>
-              <SelectItem value="auto_cleared">Auto-cleared by AI</SelectItem>
-              <SelectItem value="escalated">Escalated to analyst</SelectItem>
-              <SelectItem value="closed">Closed by human</SelectItem>
-            </SelectContent>
-          </Select>
-
-          {facets.dispositions.length ? (
-            <Select
-              value={filters.disposition}
-              onValueChange={(v) => setFilter('disposition', v)}
-            >
-              <SelectTrigger className="h-8 w-full rounded-[4px] text-xs 2xl:w-[11rem]" aria-label="Filter by disposition">
-                <SelectValue placeholder="Disposition" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value={ANY}>All dispositions</SelectItem>
-                {facets.dispositions.map((d) => (
-                  <SelectItem key={d} value={d}>
-                    {humanizeToken(d)}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          ) : null}
-
-          <Select value={filters.severity} onValueChange={(v) => setFilter('severity', v)}>
-            <SelectTrigger className="h-8 w-full rounded-[4px] text-xs 2xl:w-[10rem]" aria-label="Filter by severity">
-              <SelectValue placeholder="Severity" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value={ANY}>All severities</SelectItem>
-              <SelectItem value="critical">Critical</SelectItem>
-              <SelectItem value="high">High</SelectItem>
-              <SelectItem value="medium">Medium</SelectItem>
-              <SelectItem value="low">Low</SelectItem>
-              <SelectItem value="info">Info</SelectItem>
-            </SelectContent>
-          </Select>
-
-          <Select value={filters.assignee} onValueChange={(v) => setFilter('assignee', v)}>
-            <SelectTrigger className="h-8 w-full rounded-[4px] text-xs 2xl:w-[11rem]" aria-label="Filter by assignee">
-              <SelectValue placeholder="Assignee" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value={ANY}>All assignees</SelectItem>
-              <SelectItem value={UNASSIGNED}>Unassigned</SelectItem>
-              {facets.assignees.map((a) => (
-                <SelectItem key={a} value={a}>
-                  {a}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-
-          <Popover>
-            <PopoverTrigger asChild>
-              <Button variant="outline" size="sm" className="h-8 w-full justify-start rounded-[4px] text-xs 2xl:w-auto">
-                <Clock className="mr-1.5 size-4" aria-hidden />
-                {filters.timeRange === 'all'
-                  ? 'Any time'
-                  : `Last ${filters.timeRange}`}
-              </Button>
-            </PopoverTrigger>
-            <PopoverContent className="w-56" align="start">
-              <div className="space-y-1">
-                <p className="px-1 pb-1 text-xs font-medium text-muted-foreground">
-                  Created within
-                </p>
-                {(
-                  [
-                    ['all', 'Any time'],
-                    ['1h', 'Last 1 hour'],
-                    ['24h', 'Last 24 hours'],
-                    ['7d', 'Last 7 days'],
-                    ['30d', 'Last 30 days'],
-                  ] as Array<[TimeRange, string]>
-                ).map(([val, label]) => (
-                  <button
-                    key={val}
-                    type="button"
-                    onClick={() => setFilter('timeRange', val)}
-                    className={cn(
-                      'flex w-full items-center justify-between rounded-md px-2 py-1.5 text-sm transition-colors',
-                      'hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-                      filters.timeRange === val
-                        ? 'bg-accent font-medium text-foreground'
-                        : 'text-muted-foreground',
-                    )}
-                  >
-                    {label}
-                    {filters.timeRange === val ? <Check className="size-4" aria-hidden /> : null}
-                  </button>
-                ))}
-              </div>
-            </PopoverContent>
-          </Popover>
-
-          <Button
-            variant={filters.relatedOnly ? 'default' : 'outline'}
-            size="sm"
-            className="h-8 w-full justify-start rounded-[4px] text-xs 2xl:w-auto"
-            onClick={() => setFilter('relatedOnly', !filters.relatedOnly)}
-            aria-pressed={filters.relatedOnly}
-            title="Show only cases linked across sources"
-          >
-            <Link2 className="mr-1.5 size-4" aria-hidden />
-            Cross-source
-          </Button>
-
-          {anyActive ? (
-            <Button variant="ghost" size="sm" className="h-8 w-full justify-start rounded-[4px] text-xs 2xl:w-auto" onClick={clearAll}>
-              <X className="mr-1.5 size-4" aria-hidden />
-              Clear
-            </Button>
-          ) : null}
-        </div>
-
-        {/* Tier 2 — view switcher, the result count, and column customization, set off
-            from the filter controls by a hairline divider so the band reads calm. */}
-        <div className="flex flex-wrap items-center gap-2 border-t border-border/70 pt-2.5">
-          <SavedViewsBar
-            scope={CASES_VIEW_SCOPE}
-            activeViewId={activeViewId}
-            onApply={applySavedView}
-            getCurrent={captureCurrent}
-          />
-
-          <span className="ml-auto whitespace-nowrap text-xs text-muted-foreground">
-            Showing <strong className="tabular-nums text-foreground">{filteredSorted.length}</strong>{' '}
-            of <span className="tabular-nums">{cases.length}</span>
-            {total > cases.length ? ` (of ${total.toLocaleString()} total)` : ''}
-          </span>
-
-          <ColumnsMenu
-            columns={columnMenuItems}
-            state={effectiveColumnState}
-            onChange={handleColumnState}
-          />
-        </div>
-      </section>
-
-      {/* Truncation note */}
+      {/* A truncated list: filters and tiles act on the loaded cases only. */}
       {truncated ? (
-        <Alert>
-          <AlertTitle>
-            Showing the first {cases.length.toLocaleString()} of {total.toLocaleString()} cases
-          </AlertTitle>
-          <AlertDescription>
-            Only the most recent {cases.length.toLocaleString()} cases are loaded for fast
-            client-side filtering. Narrow the time range or use search to find older cases.
-          </AlertDescription>
-        </Alert>
+        <Callout
+          intent="warning"
+          title={`Showing the newest ${cases.length.toLocaleString()} of ${total.toLocaleString()} cases${loadedRule ? ' from this rule' : ''}`}
+        >
+          Filters work on the loaded cases. Search, or narrow the time range, to find older ones.
+        </Callout>
       ) : null}
 
-      {/* Bulk error */}
       {bulkError ? (
-        <Alert variant="warning">
-          <AlertTriangle className="size-4" aria-hidden />
-          <AlertTitle>Some actions failed</AlertTitle>
-          <AlertDescription>{bulkError}</AlertDescription>
-        </Alert>
+        <Callout intent="error" title="Some actions failed">
+          {bulkError}
+        </Callout>
       ) : null}
 
-      {/* Load error */}
       {error ? (
         <LoadError error={error} title="Could not load cases" onRetry={() => void load()} />
       ) : null}
 
-      {/* Table */}
-      {error && cases.length === 0 ? null : <DataTable<Case>
-        ariaLabel="Cases"
-        className="rounded-[4px] bg-background shadow-none"
-        columns={columns}
-        columnState={effectiveColumnState}
-        rows={pageRows}
-        getRowId={(c) => c.case_id}
-        // 3px left-edge severity band per row (#8) — scan severity down the margin
-        // without a dedicated column; shares the ONE band ladder with the filter/sort.
-        rowAccent={(c) => caseSeverityBand(c)}
-        // NOTE: no `sticky` header here. DataTable's card is `overflow-hidden` and the
-        // inner Table wrapper is `overflow-auto`, so a sticky <thead> would pin against
-        // a never-scrolling ancestor and read as a broken, cut-off header row (Round-8
-        // #2). A plain non-sticky header is clean and correct at this list length.
-        sort={sort}
-        onSortChange={setSort}
-        page={page}
-        pageSize={pageSize}
-        total={filteredSorted.length}
-        onPageChange={setPage}
-        onPageSizeChange={setPageSize}
-        pageSizeOptions={[25, 50, 100]}
-        selectable
-        selected={selected}
-        onSelectedChange={setSelected}
-        onRowClick={(c) => openInCaseManager(c.case_id, c.case_number || c.case_id)}
-        // The named Case ID button is already the keyboard equivalent of the
-        // pointer-clickable row; do not add a second trailing open affordance next
-        // to the lifecycle Actions column.
-        showRowAction={false}
-        loading={loading}
-        loadingRows={8}
-        density="compact"
-        empty={
-          <EmptyState
-            compact
-            icon={Briefcase}
-            title={cases.length === 0 ? 'No cases yet' : 'No cases match your filters'}
-            description={
-              cases.length === 0
-                ? 'Run an investigation or enable background scans to start triaging.'
-                : 'No loaded cases match the current filters. Clear them to see all cases.'
-            }
-            action={
-              cases.length > 0 ? (
-                <Button variant="outline" size="sm" onClick={clearAll}>
-                  <X className="mr-1.5 size-4" aria-hidden />
-                  Clear filters
-                </Button>
-              ) : (
-                <>
-                  <Button size="sm" onClick={() => navigate('sources')}>
-                    Connect a source
-                  </Button>
-                  <StartDemoButton onStarted={load} />
-                </>
-              )
-            }
-          />
-        }
-      />}
+      {error && cases.length === 0 ? null : (
+        <Panel
+          title="Case queue"
+          padding="none"
+          count={narrowed ? `${filteredSorted.length.toLocaleString()} of ${cases.length.toLocaleString()} shown` : undefined}
+          caption={
+            demoRows ? (
+              <Badge
+                variant="warning"
+                className="px-1.5 py-0 text-xs font-medium"
+                title="Demo data: these cases are synthetic, not from a real environment"
+              >
+                Demo
+              </Badge>
+            ) : undefined
+          }
+          actions={
+            isMobile ? undefined : (
+              <>
+                <SavedViewsBar
+                  scope={CASES_VIEW_SCOPE}
+                  activeViewId={activeViewId}
+                  onApply={applySavedView}
+                  getCurrent={captureCurrent}
+                />
+                <ColumnsMenu columns={columnMenuItems} state={effectiveColumnState} onChange={handleColumnState} />
+              </>
+            )
+          }
+          data-testid="cases-queue"
+        >
+          {pageEmpty ? null : (
+            <FilterBar
+              aria-label="Case filters"
+              data-testid="cases-filter-band"
+              className="px-4 pb-3 xl:px-5 3xl:px-6"
+              search={{
+                value: filters.search,
+                onChange: (value) => setFilter('search', value),
+                label: 'Search cases',
+                placeholder: 'Search by ID, title, entity, rule or tag',
+                compactPlaceholder: 'Search cases',
+              }}
+              filters={filterControls}
+              chips={filterChips}
+              activeCount={filterChips.length}
+              onClearAll={clearAll}
+            />
+          )}
+          {isMobile ? (
+            <CasePhoneList
+              rows={phoneRows}
+              loading={loading}
+              empty={emptyNode}
+              more={phoneMore}
+              onMore={() => setPhoneLimit((n) => n + PHONE_PAGE)}
+              onOpen={(c) => openInCaseManager(c.case_id, c.case_number || c.case_id)}
+            />
+          ) : (
+            <DataTable<Case>
+              ariaLabel="Cases"
+              surface="panel"
+              columns={columns}
+              columnState={effectiveColumnState}
+              rows={pageRows}
+              getRowId={(c) => c.case_id}
+              // Name a row by the number the page shows ("Select CASE-000048"), never by
+              // the internal id.
+              getRowLabel={(c) => c.case_number || c.case_id}
+              // The header checkbox selects this page only (25 of a longer list), so it
+              // says so, and the selection is announced in cases.
+              selectAllLabel="Select all cases on this page"
+              rowNoun={CASE_NOUN}
+              sort={sort}
+              onSortChange={setSort}
+              page={page}
+              pageSize={pageSize}
+              total={filteredSorted.length}
+              onPageChange={setPage}
+              onPageSizeChange={setPageSize}
+              pageSizeOptions={[25, 50, 100]}
+              selectable={canBulk}
+              selected={selected}
+              onSelectedChange={setSelected}
+              onRowClick={(c) => openInCaseManager(c.case_id, c.case_number || c.case_id)}
+              // The named Case ID button is already the keyboard equivalent of the
+              // pointer-clickable row; do not add a second trailing open affordance next
+              // to the lifecycle Actions column.
+              showRowAction={false}
+              loading={loading}
+              loadingRows={8}
+              density="compact"
+              empty={emptyNode}
+            />
+          )}
+        </Panel>
+      )}
 
       {/* Bulk action bar */}
       <BulkActionBar
@@ -2009,12 +2172,14 @@ export default function Cases({
 
       <CaseManagerHandoff target={handoffTarget} />
 
-      {/* One-click row-close confirmation. Close is a REVERSIBLE lifecycle move, so
-          this is a plain (non-destructive) confirm — it still posts through the
-          analyst `close` action (server-side decide(), #3). */}
+      {/* One-click row-close confirmation. Close is a REVERSIBLE lifecycle move, so this is
+          a plain (non-destructive) confirm; it still posts through the analyst `close`
+          action (server-side decide(), #3). The dialog reads the case's runbook progress
+          and offers the open-steps reason (Round 14, D34). */}
       <BulkCloseDialog
         action={closeTarget !== null ? 'close' : null}
         count={1}
+        caseIds={closeTargetIds}
         verdict={closeTarget?.verdict ?? null}
         currentDisposition={closeTarget?.disposition ?? null}
         onCancel={() => setCloseTarget(null)}
@@ -2024,10 +2189,13 @@ export default function Cases({
         returnFocusTo={closeOpenerRef}
       />
 
-      {/* Bulk Close / Resolve — the disposition is required on every terminal path. */}
+      {/* Bulk Close / Resolve: the disposition is required on every terminal path, and the
+          one shared open-steps reason (when some selected cases have required runbook
+          steps open) rides on the job. */}
       <BulkCloseDialog
         action={bulkTerminal}
         count={selectedCases.length}
+        caseIds={bulkTerminalIds}
         busy={bulkBusy}
         returnFocusTo={bulkTerminalOpenerRef}
         onCancel={() => setBulkTerminal(null)}
@@ -2046,10 +2214,10 @@ export default function Cases({
         }}
       />
 
-      {/* Bulk reinvestigate confirmation — spends LLM tokens per case (#6) and can
-          change verdict/status, so gate it like the single-case Reinvestigate popover's
-          cost warning (CaseDetail.tsx) rather than firing on one click. Not destructive
-          (it's cost-incurring, not data-destroying), so overlay/Escape dismiss stays on. */}
+      {/* Bulk reinvestigate confirmation: spends LLM tokens per case (#6) and can change
+          verdict and status, so gate it like the single-case Reinvestigate popover's cost
+          warning (CaseDetail.tsx) rather than firing on one click. Not destructive, so
+          overlay and Escape dismiss stay on. */}
       <ConfirmDialog
         open={reinvestConfirmOpen}
         onOpenChange={setReinvestConfirmOpen}
@@ -2066,6 +2234,85 @@ export default function Cases({
   );
 }
 
+/* ---------------------------------------------------------- phone list ---- */
+
+/** How many more cases the phone list shows per "Show more". */
+const PHONE_PAGE = 50;
+
+/**
+ * The Cases list below 768px: Case Manager's list rows (number, severity and age; the
+ * title; the status and the owner), each one 44px or taller and one button that opens
+ * the case. Every value is plain text (#9).
+ */
+function CasePhoneList({
+  rows,
+  loading,
+  empty,
+  more,
+  onMore,
+  onOpen,
+}: {
+  rows: Case[];
+  loading: boolean;
+  empty: React.ReactNode;
+  more: number;
+  onMore: () => void;
+  onOpen: (c: Case) => void;
+}) {
+  if (rows.length === 0) {
+    return loading ? (
+      <LoadingBar size="sm" label="Loading cases" className="mx-4 mb-4" />
+    ) : (
+      <div className="px-4 pb-4">{empty}</div>
+    );
+  }
+  return (
+    <div data-testid="cases-phone-list">
+      <ul className="divide-y divide-border/70 border-t border-border/70" aria-label="Cases">
+        {rows.map((c) => {
+          const band = caseSeverityBand(c);
+          const owner = (c.assignee || '').trim();
+          return (
+            <li key={c.case_id}>
+              <button
+                type="button"
+                onClick={() => onOpen(c)}
+                className="flex min-h-11 w-full flex-col gap-1 px-4 py-3 text-left transition-colors hover:bg-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+              >
+                <span className="flex min-w-0 items-center gap-2">
+                  <span className="truncate font-mono text-xs font-medium text-primary">{c.case_number || c.case_id}</span>
+                  <SeverityBadge severity={band} className="px-1.5 text-2xs" />
+                  <span className="ml-auto shrink-0 text-xs tabular-nums text-muted-foreground">
+                    {humanizeAge(c.updated_at || c.created_at)}
+                  </span>
+                </span>
+                <span className="truncate text-sm font-medium text-foreground">{c.title || c.case_id}</span>
+                <span className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
+                  <StatusBadge
+                    status={c.status}
+                    className={cn(
+                      'px-1.5 text-2xs',
+                      (c.status || '').toLowerCase() === 'investigating' && 'border-info/30 bg-info/10 text-info-text',
+                    )}
+                  />
+                  <span className="truncate">{owner || 'Unassigned'}</span>
+                </span>
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+      {more > 0 ? (
+        <div className="border-t border-border/70 px-4 py-3">
+          <Button variant="outline" size="sm" className="w-full" onClick={onMore}>
+            Show more ({more.toLocaleString()} left)
+          </Button>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 /* ------------------------------------------------------------- bulk bar ---- */
 
 /** Lifecycle statuses an analyst may bulk-set (close goes through the dedicated
@@ -2076,6 +2323,18 @@ const BULK_STATUSES: Array<{ value: string; label: string }> = [
   { value: 'on_hold', label: 'On hold' },
   { value: 'escalated', label: 'Escalated' },
 ];
+
+/**
+ * The toast for a bulk change the server did not accept. A refusal (403: the role lacks
+ * the grant the job needs, or it was removed since the page loaded) is worded, never the
+ * server's raw "permission denied: cases:write"; any other failure keeps its message.
+ */
+export function bulkJobErrorText(error: unknown): string {
+  if ((error as { status?: unknown } | null)?.status === 403) {
+    return 'You do not have permission to make this change to the selected cases.';
+  }
+  return error instanceof Error && error.message ? error.message : 'Could not start the background job.';
+}
 
 /** Dispositions an analyst may bulk-set. */
 const BULK_DISPOSITIONS: Array<{ value: string; label: string }> = [
@@ -2149,6 +2408,9 @@ const BulkActionBar: React.FC<{
       key="bulk-bar"
       role="region"
       aria-label="Bulk actions"
+      // A bulk submit in flight disables every control; the region says it is busy, so
+      // the wait is announced whichever actions the role is offered.
+      aria-busy={busy || undefined}
       initial={{ opacity: 0, x: '-50%', y: 16 }}
       animate={{ opacity: 1, x: '-50%', y: 0 }}
       exit={{ opacity: 0, x: '-50%', y: 16 }}
@@ -2166,7 +2428,19 @@ const BulkActionBar: React.FC<{
         // them before the row starts scrolling.
         className="flex flex-nowrap items-center gap-2 overflow-x-auto px-3 py-2.5 shadow-elev2 [&>*]:shrink-0"
       >
-        <span className="inline-flex items-center rounded-md bg-primary px-2 py-0.5 text-xs font-semibold text-primary-foreground">
+        {/* The one progress cue lives in the count badge, which every role sees: a role
+            without Reinvestigate (tier 1, responder) still sees its submit in flight. */}
+        <span
+          className="inline-flex items-center rounded-md bg-primary px-2 py-0.5 text-xs font-semibold text-primary-foreground"
+          data-testid="cases-bulk-count"
+        >
+          {busy ? (
+            <LoaderCircle
+              className="mr-1 inline size-3.5 motion-safe:animate-spin"
+              aria-hidden
+              data-testid="cases-bulk-busy"
+            />
+          ) : null}
           {count} selected
         </span>
         {unavailableReason ? (
@@ -2180,146 +2454,151 @@ const BulkActionBar: React.FC<{
             badge) instead of `secondary`, whose fill token is identical to `muted`
             (theme.css `--secondary` === `--muted` === `--surface-sunken`, all
             `--slate-3`) and read as a disabled/washed-out control next to the bordered
-            `outline` buttons beside it. */}
-        <Button size="sm" variant="default" onClick={onAcknowledge} disabled={locked}>
-          <Check className="mr-1.5 size-4" aria-hidden />
-          Acknowledge
-        </Button>
+            `outline` buttons beside it. Every action below is shown only to a role that
+            holds its grant, the one the job is checked against on the server. */}
+        <Can resource="cases" action="write">
+          <Button size="sm" variant="default" onClick={onAcknowledge} disabled={locked}>
+            <Check className="mr-1.5 size-4" aria-hidden />
+            Acknowledge
+          </Button>
+        </Can>
 
         {/* Assign owner — a pure owner set (cases:assign), NOT an escalation. To move
             status use "Set status → Escalated" below. */}
-        <Popover open={assignOpen} onOpenChange={setAssignOpen}>
-          <PopoverTrigger asChild>
-            <Button size="sm" variant="outline" disabled={locked}>
-              <UserPlus className="mr-1.5 size-4" aria-hidden />
-              Assign
-            </Button>
-          </PopoverTrigger>
-          <PopoverContent className="w-60" side="top">
-            <div className="space-y-2">
-              <label
-                htmlFor="bulk-assignee"
-                className="block text-xs font-medium text-muted-foreground"
-              >
-                Assign to
-              </label>
-              <Input
-                id="bulk-assignee"
-                value={assignee}
-                onChange={(e) => setAssignee(e.target.value)}
-                placeholder="Analyst or team"
-                aria-label="Owner for bulk assignment"
-              />
-              <Button
-                size="sm"
-                className="w-full"
-                disabled={!assignee.trim() || busy}
-                onClick={() => {
-                  onAssign(assignee.trim());
-                  setAssignOpen(false);
-                }}
-              >
-                Assign {count}
+        <Can resource="cases" action="assign">
+          <Popover open={assignOpen} onOpenChange={setAssignOpen}>
+            <PopoverTrigger asChild>
+              <Button size="sm" variant="outline" disabled={locked}>
+                <UserPlus className="mr-1.5 size-4" aria-hidden />
+                Assign
               </Button>
-            </div>
-          </PopoverContent>
-        </Popover>
+            </PopoverTrigger>
+            <PopoverContent className="w-60" side="top">
+              <div className="space-y-2">
+                <label
+                  htmlFor="bulk-assignee"
+                  className="block text-xs font-medium text-muted-foreground"
+                >
+                  Assign to
+                </label>
+                <Input
+                  id="bulk-assignee"
+                  value={assignee}
+                  onChange={(e) => setAssignee(e.target.value)}
+                  placeholder="Analyst or team"
+                  aria-label="Owner for bulk assignment"
+                />
+                <Button
+                  size="sm"
+                  className="w-full"
+                  disabled={!assignee.trim() || busy}
+                  onClick={() => {
+                    onAssign(assignee.trim());
+                    setAssignOpen(false);
+                  }}
+                >
+                  Assign {count}
+                </Button>
+              </div>
+            </PopoverContent>
+          </Popover>
+        </Can>
 
-        {/* Add tag (cases:write) */}
-        <Popover open={tagOpen} onOpenChange={setTagOpen}>
-          <PopoverTrigger asChild>
-            <Button size="sm" variant="outline" disabled={locked}>
-              <TagIcon className="mr-1.5 size-4" aria-hidden />
-              Add tag
-            </Button>
-          </PopoverTrigger>
-          <PopoverContent className="w-60" side="top">
-            <div className="space-y-2">
-              <label
-                htmlFor="bulk-tag"
-                className="block text-xs font-medium text-muted-foreground"
-              >
-                Tag to add
-              </label>
-              <Input
-                id="bulk-tag"
-                value={tag}
-                onChange={(e) => setTag(e.target.value)}
-                placeholder="e.g. needs-review"
-                aria-label="Tag to add to selected cases"
-                aria-invalid={tagError ? true : undefined}
-                aria-describedby={tagError ? 'bulk-tag-error' : undefined}
-              />
-              {/* Refused as it is typed, never cut to fit. */}
-              {tagError ? (
-                <p id="bulk-tag-error" role="alert" className="text-xs font-medium text-critical-text">
-                  {tagError}
-                </p>
-              ) : null}
-              <Button
-                size="sm"
-                className="w-full"
-                disabled={!tag.trim() || Boolean(tagError) || busy}
-                onClick={() => {
-                  onAddTag(tag.trim());
-                  setTagOpen(false);
-                }}
-              >
-                Tag {count}
+        {/* Add tag, Set status and Set disposition (cases:write) */}
+        <Can resource="cases" action="write">
+          <Popover open={tagOpen} onOpenChange={setTagOpen}>
+            <PopoverTrigger asChild>
+              <Button size="sm" variant="outline" disabled={locked}>
+                <TagIcon className="mr-1.5 size-4" aria-hidden />
+                Add tag
               </Button>
-            </div>
-          </PopoverContent>
-        </Popover>
+            </PopoverTrigger>
+            <PopoverContent className="w-60" side="top">
+              <div className="space-y-2">
+                <label
+                  htmlFor="bulk-tag"
+                  className="block text-xs font-medium text-muted-foreground"
+                >
+                  Tag to add
+                </label>
+                <Input
+                  id="bulk-tag"
+                  value={tag}
+                  onChange={(e) => setTag(e.target.value)}
+                  placeholder="e.g. needs-review"
+                  aria-label="Tag to add to selected cases"
+                  aria-invalid={tagError ? true : undefined}
+                  aria-describedby={tagError ? 'bulk-tag-error' : undefined}
+                />
+                {/* Refused as it is typed, never cut to fit. */}
+                {tagError ? (
+                  <p id="bulk-tag-error" role="alert" className="text-xs font-medium text-critical-text">
+                    {tagError}
+                  </p>
+                ) : null}
+                <Button
+                  size="sm"
+                  className="w-full"
+                  disabled={!tag.trim() || Boolean(tagError) || busy}
+                  onClick={() => {
+                    onAddTag(tag.trim());
+                    setTagOpen(false);
+                  }}
+                >
+                  Tag {count}
+                </Button>
+              </div>
+            </PopoverContent>
+          </Popover>
 
-        {/* Set status (cases:write) */}
-        <Select value="" onValueChange={(v) => v && onSetStatus(v)} disabled={locked}>
-          <SelectTrigger className="h-8 w-[9.5rem]" aria-label="Set status for selected cases">
-            <span className="inline-flex items-center text-sm">
-              <SlidersHorizontal className="mr-1.5 size-4" aria-hidden />
-              Set status
-            </span>
-          </SelectTrigger>
-          <SelectContent>
-            {BULK_STATUSES.map((s) => (
-              <SelectItem key={s.value} value={s.value}>
-                {s.label}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+          {/* Set status (cases:write) */}
+          <Select value="" onValueChange={(v) => v && onSetStatus(v)} disabled={locked}>
+            {/* The icon sits beside the label, outside the clamped span: the trigger's
+                `[&>span]:line-clamp-1` turns a span into a block and stacked the two. */}
+            <SelectTrigger
+              className="h-8 w-[9.5rem] justify-start gap-1.5 [&>svg:last-child]:ml-auto"
+              aria-label="Set status for selected cases"
+            >
+              <SlidersHorizontal className="size-4 shrink-0" aria-hidden />
+              <span className="text-sm">Set status</span>
+            </SelectTrigger>
+            <SelectContent>
+              {BULK_STATUSES.map((s) => (
+                <SelectItem key={s.value} value={s.value}>
+                  {s.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
 
-        {/* Set disposition (cases:write) */}
-        <Select value="" onValueChange={(v) => v && onSetDisposition(v)} disabled={locked}>
-          <SelectTrigger
-            className="h-8 w-[10.5rem]"
-            aria-label="Set disposition for selected cases"
-          >
-            <span className="inline-flex items-center text-sm">
-              <CircleSlash className="mr-1.5 size-4" aria-hidden />
-              Set disposition
-            </span>
-          </SelectTrigger>
-          <SelectContent>
-            {BULK_DISPOSITIONS.map((d) => (
-              <SelectItem key={d.value} value={d.value}>
-                {d.label}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+          {/* Set disposition (cases:write) */}
+          <Select value="" onValueChange={(v) => v && onSetDisposition(v)} disabled={locked}>
+            <SelectTrigger
+              className="h-8 w-[10.5rem] justify-start gap-1.5 [&>svg:last-child]:ml-auto"
+              aria-label="Set disposition for selected cases"
+            >
+              <CircleSlash className="size-4 shrink-0" aria-hidden />
+              <span className="text-sm">Set disposition</span>
+            </SelectTrigger>
+            <SelectContent>
+              {BULK_DISPOSITIONS.map((d) => (
+                <SelectItem key={d.value} value={d.value}>
+                  {d.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </Can>
 
-        {/* Reinvestigate (cases:write-equivalent today — NOT wrapped in <Can>, matching
-            the single-case Reinvestigate button in CaseDetail, which is also ungated
-            pending the tracked RBAC follow-up). Gated behind a ConfirmDialog by the
-            caller since it spends LLM tokens per case (#6). */}
-        <Button size="sm" variant="outline" onClick={onReinvestigate} disabled={locked}>
-          {busy ? (
-            <RefreshCw className="mr-1.5 size-4 animate-spin" aria-hidden />
-          ) : (
+        {/* Reinvestigate (cases:reinvestigate, the grant the `case_reinvestigate` job is
+            checked against, as the single-case action in CaseDetail). Gated behind a
+            ConfirmDialog by the caller since it spends LLM tokens per case (#6). */}
+        <Can resource="cases" action="reinvestigate">
+          <Button size="sm" variant="outline" onClick={onReinvestigate} disabled={locked}>
             <Zap className="mr-1.5 size-4" aria-hidden />
-          )}
-          Reinvestigate
-        </Button>
+            Reinvestigate
+          </Button>
+        </Can>
 
         {/* Close / resolve — cases:close. Hidden unless granted (RBAC-mirrored). */}
         <Can resource="cases" action="close">

@@ -98,7 +98,7 @@ class SpamhausProvider(EnrichmentProvider):
             keyless=True,
             free_tier=(
                 "Keyless for low-volume non-commercial use. IMPORTANT: queries via "
-                "public resolvers (Google/Cloudflare DNS) are refused — the backend "
+                "public resolvers (Google/Cloudflare DNS) are refused, so the backend "
                 "host needs its own recursive resolver. 127.255.255.x answers mean "
                 "'refused/over-quota' and are treated as no-data, never as listed."
             ),
@@ -106,7 +106,7 @@ class SpamhausProvider(EnrichmentProvider):
             default_enabled=False,
             setup_steps=[
                 "Ensure the backend host resolves DNS through its OWN recursive "
-                "resolver (not 8.8.8.8 / 1.1.1.1 — Spamhaus refuses public "
+                "resolver (not 8.8.8.8 / 1.1.1.1: Spamhaus refuses public "
                 "resolvers and answers an error code instead).",
                 "No key needed for low-volume, non-commercial use; heavy or "
                 "commercial use requires a Spamhaus DQS subscription (not wired "
@@ -119,7 +119,7 @@ class SpamhausProvider(EnrichmentProvider):
             example=(
                 "A sender IP on the XBL (exploited/botnet member) turns a 'strange "
                 "outbound SMTP' alert into a likely compromised-host case, while a "
-                "PBL-only hit merely says 'residential line' — the per-list return "
+                "PBL-only hit merely says 'residential line'. The per-list return "
                 "code keeps those apart."
             ),
         )

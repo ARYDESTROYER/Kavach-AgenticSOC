@@ -1,18 +1,14 @@
 /**
- * Secret keys settings section (Round-5 Sett-A decomposition).
+ * Secret keys settings section (Round-5 Sett-A decomposition; Round 14 grouped panels).
  *
- * Lifted verbatim from the former `Settings.tsx` `KeysSection`. Keys are WRITE-ONLY:
+ * Keys are WRITE-ONLY:
  * the console only ever knows whether a key is configured (a boolean), never the
  * value. Entered values are buffered in the page's `secretDraft` and pushed via the
  * dedicated secrets route through the Settings-wide Save/Discard bar (#10).
  */
-import { ShieldCheck } from 'lucide-react';
-
 import type { ConfiguredStatus } from '@/lib/types';
 
-import { Alert, AlertDescription } from '@/ui/alert';
-
-import { SectionTitle, SecretInput } from './primitives';
+import { SecretInput, SettingRow, SettingsGroup, SettingsSection } from './primitives';
 
 type SecretGroup = 'Data access' | 'AI runtime' | 'Threat intelligence';
 
@@ -23,7 +19,7 @@ export const SECRET_KEYS: Array<{ key: string; label: string; help: string; grou
   { key: 'anthropic_api_key', label: 'Anthropic API key', help: 'Optional alternate runtime for Claude models.', group: 'AI runtime' },
   { key: 'embedding_api_key', label: 'Embedding API key', help: 'Defaults to the OpenAI key when blank.', group: 'AI runtime' },
   { key: 'abuseipdb_api_key', label: 'AbuseIPDB API key', help: 'IP reputation enrichment (optional).', group: 'Threat intelligence' },
-  { key: 'virustotal_api_key', label: 'VirusTotal API key', help: 'File/URL/IP reputation (optional).', group: 'Threat intelligence' },
+  { key: 'virustotal_api_key', label: 'VirusTotal API key', help: 'File, URL and IP reputation (optional).', group: 'Threat intelligence' },
 ];
 
 const SECRET_GROUPS: SecretGroup[] = ['Data access', 'AI runtime', 'Threat intelligence'];
@@ -43,43 +39,24 @@ export function KeysSection({
 }) {
   const set = (k: string, v: string) => setDraft({ ...draft, [k]: v });
   return (
-    <div className="space-y-6">
-      <SectionTitle
-        title="Secret keys"
-        sub="Write-only. The console only ever sees whether a key is configured."
-      />
-      <Alert>
-        <ShieldCheck className="h-4 w-4" aria-hidden />
-        <AlertDescription>
-          Existing values are never displayed. Enter a value to replace a key; leave a field blank
-          to keep the current one.
-        </AlertDescription>
-      </Alert>
-      <div className="space-y-7">
-        {SECRET_GROUPS.map((group) => (
-          <fieldset key={group} className="space-y-4 border-t border-border/70 pt-4">
-            <legend className="text-sm font-semibold tracking-tight text-foreground">{group}</legend>
-            <div className="grid gap-4 sm:grid-cols-2">
-              {SECRET_KEYS.filter((key) => key.group === group).map((key) => (
-                <SecretInput
-                  key={key.key}
-                  label={key.label}
-                  secretKey={key.key}
-                  configured={configured[key.key]}
-                  value={draft[key.key] || ''}
-                  help={key.help}
-                  onChange={(value) => set(key.key, value)}
-                  disabled={saving || readOnly}
-                />
-              ))}
-            </div>
-          </fieldset>
-        ))}
-      </div>
-      <p className="border-t border-border/70 pt-4 text-xs leading-relaxed text-muted-foreground">
-        Secret drafts use the Settings Save changes and Discard actions below. Blank fields keep
-        their existing write-only values.
-      </p>
-    </div>
+    <SettingsSection title="Secret keys">
+      {SECRET_GROUPS.map((group) => (
+        <SettingsGroup key={group} title={group}>
+          {SECRET_KEYS.filter((key) => key.group === group).map((key) => (
+            <SettingRow key={key.key} variant="field" controlWidth="18rem">
+              <SecretInput
+                label={key.label}
+                secretKey={key.key}
+                configured={configured[key.key]}
+                value={draft[key.key] || ''}
+                help={key.help}
+                onChange={(value) => set(key.key, value)}
+                disabled={saving || readOnly}
+              />
+            </SettingRow>
+          ))}
+        </SettingsGroup>
+      ))}
+    </SettingsSection>
   );
 }

@@ -2,16 +2,20 @@
  * CaseDetail — Collaboration panel (Coupling-D split).
  *
  * The full collaboration surface for a case (#4): the discussion thread (AI is a
- * first-class author but can only RECOMMEND), an assignee picker, a task checklist,
- * and the activity feed — all over the Round-3 collaboration endpoints. Writes are
- * gated by `canComment` / `canWrite` (the caller passes the resolved RBAC booleans).
+ * first-class author but can only RECOMMEND), an assignee picker and the activity feed,
+ * all over the Round-3 collaboration endpoints. Writes are gated by `canComment` /
+ * `canWrite` (the caller passes the resolved RBAC booleans).
+ *
+ * Round 14 (SPEC §4.10.7, D36): the case's free-form tasks moved to the Runbook tab
+ * ("Other tasks"); this panel points there. A viewer who cannot read runbooks keeps
+ * the tasks here (`tasksSection`).
  *
  * SECURITY (#9): thread bodies, task titles, assignee ids, activity summaries are all
  * UNTRUSTED — rendered plain text inside the child components. #3-safe: nothing here
  * changes the case decision (the backend enforces this).
  */
 import * as React from 'react';
-import { History, MessageSquare, RefreshCw, Save, Users } from 'lucide-react';
+import { ArrowRight, History, ListChecks, LoaderCircle, MessageSquare, Save, Users } from 'lucide-react';
 
 import { toast } from 'sonner';
 
@@ -31,18 +35,15 @@ import {
   SelectItem,
 } from '@/ui/select';
 import { Skeleton } from '@/ui/skeleton';
-import { LoadingBar, LoadingState } from '@/design-system';
+import { LoadingBar } from '@/design-system';
 
 import { CaseThread, visibleMessageCount } from '@/soc/components/CaseThread';
-import { CaseTasks } from '@/soc/components/CaseTasks';
 import { CaseActivityFeed } from '@/soc/components/CaseActivityFeed';
 import { LoadError } from '@/soc/components/LoadError';
 import type {
   CaseMessage as ThreadMessage,
-  CaseTask as CaseTaskItem,
   CaseActivityItem,
   PickableUser,
-  TaskStatus,
 } from '@/soc/pages/CaseDetail.api';
 
 import { CASE_MANAGER_PANEL_PADDING, PanelCard, SectionHeading } from './shared';
@@ -120,7 +121,13 @@ export const AssigneePicker: React.FC<{
             ))}
           </SelectContent>
         </Select>
-        {saving ? <RefreshCw className="h-4 w-4 shrink-0 animate-spin text-muted-foreground" /> : null}
+        {saving ? (
+          <LoaderCircle
+            className="h-4 w-4 shrink-0 text-muted-foreground motion-safe:animate-spin"
+            role="status"
+            aria-label="Saving the assignee"
+          />
+        ) : null}
       </div>
     );
   }
@@ -143,7 +150,11 @@ export const AssigneePicker: React.FC<{
         disabled={!canWrite || !dirty || saving}
         onClick={() => void save(free)}
       >
-        {saving ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+        {saving ? (
+          <LoaderCircle className="h-4 w-4 motion-safe:animate-spin" aria-hidden />
+        ) : (
+          <Save className="h-4 w-4" aria-hidden />
+        )}
         Save
       </Button>
     </div>
@@ -156,10 +167,6 @@ export const CollaborationThreadTab: React.FC<{
   threadLoading: boolean;
   threadError: unknown;
   threadBusyId: string | null;
-  tasks: CaseTaskItem[] | null;
-  tasksLoading: boolean;
-  tasksError: unknown;
-  tasksBusyId: string | null;
   activity: CaseActivityItem[] | null;
   activityLoading: boolean;
   activityError: unknown;
@@ -168,16 +175,19 @@ export const CollaborationThreadTab: React.FC<{
   canComment: boolean;
   canWrite: boolean;
   onRetryThread: () => void;
-  onRetryTasks: () => void;
   onRetryActivity: () => void;
   onPost: (text: string) => void;
   onReply: (parentId: string, text: string) => void;
   onEdit: (msgId: string, text: string) => void;
   onDelete: (msgId: string) => void;
   onReact: (msgId: string, emoji: string, remove: boolean) => void;
-  onAddTask: (title: string) => void;
-  onTaskStatus: (taskId: string, status: TaskStatus) => void;
-  onTaskLog: (taskId: string, note: string) => void;
+  /**
+   * Round 14: open the Runbook tab, where the case's tasks are listed under "Other
+   * tasks". When set, the rail shows a pointer there instead of the tasks.
+   */
+  onOpenTasks?: () => void;
+  /** The tasks themselves, for a viewer with no Runbook tab (no `runbooks:read`). */
+  tasksSection?: React.ReactNode;
   onAssigned: (next: Case) => void;
   /**
    * Optional LIVE wiring (Wave 4): when set, the thread + activity feed subscribe to
@@ -194,10 +204,6 @@ export const CollaborationThreadTab: React.FC<{
   threadLoading,
   threadError,
   threadBusyId,
-  tasks,
-  tasksLoading,
-  tasksError,
-  tasksBusyId,
   activity,
   activityLoading,
   activityError,
@@ -206,16 +212,14 @@ export const CollaborationThreadTab: React.FC<{
   canComment,
   canWrite,
   onRetryThread,
-  onRetryTasks,
   onRetryActivity,
   onPost,
   onReply,
   onEdit,
   onDelete,
   onReact,
-  onAddTask,
-  onTaskStatus,
-  onTaskLog,
+  onOpenTasks,
+  tasksSection,
   onAssigned,
   liveCaseId,
   onLiveThread,
@@ -320,7 +324,7 @@ export const CollaborationThreadTab: React.FC<{
       </div>
 
       {/* -------------------------------------------------- aside: ownership */}
-      {/* Sticky rail on lg+ so ownership/tasks/activity stay in view while the
+      {/* Sticky rail on lg+ so ownership and activity stay in view while the
           thread scrolls; the rail itself scrolls when its own content overflows. */}
       <aside
         data-collaboration-surface={isCaseManager ? 'context-rail' : undefined}
@@ -345,54 +349,31 @@ export const CollaborationThreadTab: React.FC<{
           <AssigneePicker c={c} users={users} canWrite={canWrite} onAssigned={onAssigned} />
         </PanelCard>
 
-        <PanelCard
-          data-collaboration-rail-section={isCaseManager ? 'tasks' : undefined}
-          className={cn(
-            'p-4',
-            isCaseManager &&
-              'rounded-none border-x-0 border-b-0 border-t border-border/60 bg-transparent px-0 py-4 shadow-none',
-          )}
-        >
-          <LoadingBar
-            active={tasksLoading && tasks !== null}
-            size="sm"
-            label="Refreshing case tasks"
-            className="mb-3"
-          />
-          {tasksLoading && tasks === null ? (
-            <LoadingState
-              label="Loading case tasks"
-              description="Retrieving the shared response checklist."
-              layout="panel"
-              shape="rows"
-              shapeRows={3}
-              className="min-h-48"
-            />
-          ) : (
-            <>
-              {tasksError ? (
-                <LoadError
-                  error={tasksError}
-                  title={tasks === null ? 'Could not load tasks' : 'Could not refresh tasks'}
-                  fallback="The shared response checklist is temporarily unavailable."
-                  retryLabel="Retry tasks"
-                  onRetry={onRetryTasks}
-                  className={tasks !== null ? 'mb-3' : undefined}
-                />
-              ) : null}
-              {tasks !== null ? (
-                <CaseTasks
-                  tasks={tasks}
-                  canWrite={canWrite}
-                  busyId={tasksBusyId}
-                  onAdd={onAddTask}
-                  onStatus={onTaskStatus}
-                  onLog={onTaskLog}
-                />
-              ) : null}
-            </>
-          )}
-        </PanelCard>
+        {onOpenTasks || tasksSection ? (
+          <PanelCard
+            data-collaboration-rail-section={isCaseManager ? 'tasks' : undefined}
+            className={cn(
+              'p-4',
+              isCaseManager &&
+                'rounded-none border-x-0 border-b-0 border-t border-border/60 bg-transparent px-0 py-4 shadow-none',
+            )}
+          >
+            {onOpenTasks ? (
+              <>
+                <SectionHeading icon={ListChecks}>Tasks</SectionHeading>
+                <p className="text-xs text-muted-foreground">
+                  Case tasks are in the Runbook tab, under Other tasks.
+                </p>
+                <Button variant="outline" size="sm" className="mt-2.5" onClick={onOpenTasks}>
+                  Open the Runbook tab
+                  <ArrowRight className="h-4 w-4" aria-hidden />
+                </Button>
+              </>
+            ) : (
+              tasksSection
+            )}
+          </PanelCard>
+        ) : null}
 
         <PanelCard
           data-collaboration-rail-section={isCaseManager ? 'activity' : undefined}

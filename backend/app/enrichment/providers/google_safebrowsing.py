@@ -39,7 +39,7 @@ class GoogleSafeBrowsingProvider(EnrichmentProvider):
             display_name="Google Safe Browsing",
             description=(
                 "Google's malware / phishing (social-engineering) / unwanted-"
-                "software URL lists — the same verdicts Chrome warns on. A match is "
+                "software URL lists: the same verdicts Chrome warns on. A match is "
                 "a strong known-bad signal."
             ),
             indicator_kinds=[IndicatorKind.URL, IndicatorKind.DOMAIN],
@@ -68,8 +68,8 @@ class GoogleSafeBrowsingProvider(EnrichmentProvider):
                 "Flip this provider's toggle ON.",
             ],
             example=(
-                "The link a user clicked is on Google's SOCIAL_ENGINEERING list — "
-                "the exact verdict Chrome's red warning page uses — turning a "
+                "The link a user clicked is on Google's SOCIAL_ENGINEERING list "
+                "(the exact verdict Chrome's red warning page uses), turning a "
                 "'suspicious email link' alert into a confirmed phishing case."
             ),
         )

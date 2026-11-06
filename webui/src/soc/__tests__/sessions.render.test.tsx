@@ -54,7 +54,7 @@ vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
 import { AuthProvider } from '../auth';
 import { TooltipProvider } from '@/ui/tooltip';
-import Sessions from '../pages/Sessions';
+import Sessions, { sessionActionLabel } from '../pages/Sessions';
 
 function renderSessions() {
   return render(
@@ -113,21 +113,53 @@ describe('Sessions page', () => {
     expect(screen.getByText('Berlin, DE')).toBeInTheDocument();
   });
 
-  it('opens the revoke confirm dialog when a row Revoke is clicked', async () => {
+  it('opens the sign-out confirm dialog from a row\'s neutral Sign out action', async () => {
     renderSessions();
 
     await screen.findByText('Firefox on Windows');
-    // Revoke the non-current session.
-    const revokeBtn = screen.getByRole('button', { name: /Revoke session sid-other/i });
-    fireEvent.click(revokeBtn);
+    // Sign out the non-current session. The row action is neutral at rest (Round 14,
+    // ui-audit SE9); the red button lives in the confirm dialog.
+    const signOut = screen.getByRole('button', { name: /^Sign out Firefox on Windows/ });
+    expect(signOut.className).toContain('text-muted-foreground');
+    expect(signOut.className).not.toMatch(/(^|\s)text-critical(\s|$)/);
+    fireEvent.click(signOut);
 
     // The AlertDialog confirm appears.
     const dialog = await screen.findByRole('alertdialog');
-    expect(within(dialog).getByText('Revoke this session?')).toBeInTheDocument();
+    expect(within(dialog).getByText('Sign out this session?')).toBeInTheDocument();
 
     // Confirming calls the revoke API with the right sid.
-    const confirm = within(dialog).getByRole('button', { name: /^Revoke$/i });
+    const confirm = within(dialog).getByRole('button', { name: /^Sign out$/i });
     fireEvent.click(confirm);
     await waitFor(() => expect(revoke).toHaveBeenCalledWith('sid-other'));
+  });
+
+  it('renders as one Settings section with underline tabs and Refresh in the section actions', async () => {
+    renderSessions();
+    await screen.findByText('Firefox on Windows');
+    expect(screen.getByRole('heading', { name: 'Sessions & activity', level: 1 })).toBeInTheDocument();
+    expect(screen.queryByText('Account', { selector: 'p' })).toBeNull();
+    const tabs = screen.getByRole('tablist', { name: 'Sessions and activity' });
+    expect(tabs).toHaveAttribute('data-variant', 'underline');
+    const actions = document.querySelector('[data-sessions-actions]') as HTMLElement;
+    expect(within(actions).getByRole('button', { name: 'Refresh' })).toHaveAttribute('data-refresh-display', 'label');
+    // Each tab's table sits on the tinted panel and bleeds to its edge (C9 option A).
+    const panel = document.querySelector('[data-sessions-panel="sessions"]') as HTMLElement;
+    expect(panel.className).toContain('surface-panel');
+    const table = within(panel).getByRole('table', { name: 'Your sessions' });
+    expect(table.closest('[data-surface]')).toHaveAttribute('data-surface', 'panel');
+  });
+});
+
+describe('sessionActionLabel', () => {
+  it('names the session a person recognises, never the internal id', () => {
+    const base = { ua_browser: 'Firefox', ua_os: 'Windows', ua_raw: '', current: false, username: 'alice' };
+    expect(sessionActionLabel('Sign out', base)).toBe('Sign out Firefox on Windows');
+    expect(sessionActionLabel('Sign out', { ...base, ip_city: 'Paris', ip_country: 'FR' })).toBe(
+      'Sign out Firefox on Windows, Paris, FR',
+    );
+    expect(sessionActionLabel('Sign out', { ...base, current: true })).toBe('Sign out Firefox on Windows (this device)');
+    // The owner only where the table shows owners (the admin console).
+    expect(sessionActionLabel('Sign out', base, true)).toBe('Sign out Firefox on Windows for alice');
   });
 });

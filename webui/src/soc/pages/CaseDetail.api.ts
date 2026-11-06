@@ -111,7 +111,12 @@ export interface TimelineResponse {
   case_id: string;
   spans: TraceSpan[];
   total: number;
-  totals: { cost: number; tokens: number };
+  /**
+   * The run's recorded AI cost and tokens. Both are `null` for a caller without
+   * `cost:view` (the server does not read the usage ledger for them), and so is every
+   * span's `cost` and `tokens`; the trace then shows no cost at all.
+   */
+  totals: { cost: number | null; tokens: number | null };
 }
 
 /** The exact decision clause carried on a terminal `decision` span's payload_ref. */

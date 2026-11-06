@@ -491,6 +491,11 @@ class NotificationService:
             logger.debug("in-app event publish failed: %s", exc)
 
     async def _audit_send(self, case_id: str, rec: dict[str, Any], trigger: str) -> None:
+        """One NOTIFICATION row per channel send. Its outcome is the send's own:
+        ``success`` only when the channel confirmed it (``ok`` is ``True``), otherwise
+        ``failure``, so a channel that did not take the notification is listed under
+        the audit log's Failed filter (Round 14 SPEC §4.5.3). A rate-limited channel is
+        not sent and writes no row here; the automation row says so."""
         if self._audit is None:
             return
         try:
@@ -499,6 +504,8 @@ class NotificationService:
             await self._audit.record(
                 action_type=ActionType.NOTIFICATION, surface="notification",
                 actor="notification", case_id=case_id,
+                outcome="success" if rec.get("ok") is True else "failure",
+                actor_type="system",
                 result_summary=(
                     f"channel={rec.get('channel_id')} type={rec.get('type')} "
                     f"trigger={trigger} ok={rec.get('ok')} detail={rec.get('detail')}"
@@ -606,6 +613,15 @@ class NotificationService:
                 await self._audit_send(case_id, inapp_rec, trigger)
         except Exception as exc:  # noqa: BLE001 — fire-and-forget; never raise into the caller
             logger.warning("notification dispatch failed: %s", exc)
+            # A result of its own, so a caller that reads the results (the automation
+            # notify action) records a failed dispatch, never "no channel was due", and
+            # the audit log lists it under Failed. The exception's type only: its text
+            # can carry a channel's URL or address.
+            rec = {"channel_id": "dispatch", "type": "dispatch", "ok": False,
+                   "detail": f"dispatch error: {type(exc).__name__}", "trigger": trigger,
+                   "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+            sent.append(rec)
+            await self._audit_send(_val(case, "case_id", "") or "", rec, trigger)
         return sent
 
     async def notify(self, case: Any, *, save=None, fetch=None) -> list[dict[str, Any]]:

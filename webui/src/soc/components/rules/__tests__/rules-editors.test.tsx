@@ -47,6 +47,12 @@ describe('validateCidr', () => {
     expect(validateCidr('2001:db8::/32')).toBeNull();
     expect(validateCidr('fe80::/200')).toBeTruthy();
   });
+  it('says each range in plain words, with no dashes', () => {
+    expect(validateCidr('10.0.0.0')).toBe('Include a prefix length, for example 10.0.0.0/8.');
+    expect(validateCidr('999.0.0.0/8')).toBe('Each IPv4 octet must be 0 to 255.');
+    expect(validateCidr('10.0.0.0/40')).toBe('IPv4 prefix must be 0 to 32.');
+    expect(validateCidr('fe80::/200')).toBe('IPv6 prefix must be 0 to 128.');
+  });
 });
 
 /* ── AssetCriticalityEditor ────────────────────────────────────────────── */
@@ -180,6 +186,20 @@ describe('PriorityMatrixEditor', () => {
     fireEvent.click(screen.getByLabelText(/enable priority derivation/i));
     expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ enabled: true }));
   });
+
+  it('shows the advisory note by default and drops it with intro={false} (D26)', () => {
+    const { unmount } = wrap(<PriorityMatrixEditor matrix={{ enabled: true }} onChange={vi.fn()} />);
+    expect(screen.getByText('Priority is advisory')).toBeInTheDocument();
+    unmount();
+    wrap(<PriorityMatrixEditor intro={false} matrix={{ enabled: true }} onChange={vi.fn()} />);
+    expect(screen.queryByText('Priority is advisory')).toBeNull();
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.queryByRole('status')).toBeNull();
+    // The grid is still all there.
+    expect(screen.getByRole('combobox', { name: /high impact, high urgency/i })).toBeInTheDocument();
+    // The corner header reads as words, not arrows.
+    expect(screen.getByRole('columnheader', { name: 'Impact by urgency' })).toBeInTheDocument();
+  });
 });
 
 /* ── SuppressionRuleBuilder ────────────────────────────────────────────── */
@@ -233,7 +253,82 @@ describe('SuppressionRuleBuilder', () => {
     );
     // The attacker-influenceable value is rendered inertly as an input value, not markup.
     expect(screen.getByDisplayValue('<script>alert(1)</script>')).toBeInTheDocument();
-    expect(screen.getByText(/agent-drafted/i)).toBeInTheDocument();
+    expect(screen.getByText('Drafted by the agent')).toBeInTheDocument();
+  });
+
+  it('lists rules as hairline rows, never a bordered box per rule (Round 14)', () => {
+    wrap(
+      <SuppressionRuleBuilder
+        rules={[
+          { field: 'rule.name', value: 'scanner', enabled: true },
+          { field: 'source.ip', value: '10.0.0.5', enabled: false },
+        ]}
+        onChange={vi.fn()}
+      />,
+    );
+    const list = screen.getByRole('list', { name: 'Suppression rules' });
+    expect(list).toHaveClass('divide-y');
+    const rows = within(list).getAllByRole('listitem');
+    expect(rows).toHaveLength(2);
+    for (const row of rows) {
+      expect(row.className).not.toMatch(/\bborder\b|\brounded-/);
+    }
+    // States in sentence case: the switch names its rule, the off rule says "Off".
+    expect(screen.getByRole('switch', { name: 'Suppression rule for rule.name enabled' })).toBeChecked();
+    expect(within(rows[1]).getByText('Off')).toBeInTheDocument();
+    expect(screen.getByText('2 suppression rules')).toBeInTheDocument();
+  });
+
+  it('labels every field visibly, like the declarations beside it, and names each by its label', () => {
+    wrap(
+      <SuppressionRuleBuilder
+        rules={[{ field: 'rule.name', value: 'scanner', reason: 'Lab scanner', created_by: 'operator', enabled: true }]}
+        onChange={vi.fn()}
+      />,
+    );
+    // A placeholder is not a label (WCAG 3.3.2): each label is on screen, not sr-only.
+    for (const name of ['Field', 'Value', 'Reason', 'Expires (optional)']) {
+      const input = screen.getByLabelText(name, { selector: 'input' });
+      // The label is the name: no aria-label that says something else (WCAG 2.5.3).
+      expect(input).not.toHaveAttribute('aria-label');
+      const label = document.querySelector(`label[for="${input.id}"]`) as HTMLElement;
+      expect(label).toHaveTextContent(name);
+      expect(label.className).not.toMatch(/\bsr-only\b/);
+    }
+    expect(screen.getByLabelText('Expires (optional)')).toHaveAttribute('type', 'date');
+    // The provenance reads in sentence case, as "Declared by operator" does.
+    expect(screen.getByText('Created by operator')).toBeInTheDocument();
+    expect(document.body.textContent ?? '').not.toMatch(/[\u2013\u2014]/);
+  });
+
+  it('keeps the row glyph beside its text; only the badges wrap', () => {
+    wrap(
+      <SuppressionRuleBuilder
+        rules={[{ field: 'user.name', value: 'svc', created_by: 'agent', enabled: false }]}
+        onChange={vi.fn()}
+      />,
+    );
+    const text = screen.getByText('Drop matching events');
+    const textLine = text.parentElement as HTMLElement;
+    expect(textLine).toHaveClass('flex-wrap');
+    expect(textLine).toContainElement(screen.getByText('Drafted by the agent'));
+    // The glyph and the wrapping line sit in a pair that never wraps.
+    const pair = textLine.parentElement as HTMLElement;
+    expect(pair.className).not.toMatch(/\bflex-wrap\b/);
+    expect(pair.querySelector(':scope > svg')).not.toBeNull();
+  });
+
+  it('shows the standing warning by default and drops it with intro={false} (D26)', () => {
+    const { unmount } = wrap(<SuppressionRuleBuilder rules={[]} onChange={vi.fn()} />);
+    expect(screen.getByText('Suppression drops events before triage')).toBeInTheDocument();
+    expect(document.body.textContent ?? '').not.toMatch(/[\u2013\u2014]/);
+    unmount();
+    wrap(<SuppressionRuleBuilder intro={false} rules={[]} onChange={vi.fn()} />);
+    expect(screen.queryByText('Suppression drops events before triage')).toBeNull();
+    expect(screen.queryByRole('alert')).toBeNull();
+    // The list itself stays: the count, Add rule and the empty state.
+    expect(screen.getByRole('button', { name: /add rule/i })).toBeInTheDocument();
+    expect(screen.getByText('No suppression rules')).toBeInTheDocument();
   });
 });
 

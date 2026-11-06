@@ -365,3 +365,130 @@ def test_non_get_route_rejected_when_auth_on_without_token() -> None:
         assert c.put("/api/dashboards/dash-1", json=_layout("x", id="dash-1")).status_code == 401
         assert c.request("DELETE", "/api/dashboards/dash-1").status_code == 401
         assert c.post("/api/dashboards/dash-1/clone").status_code == 401
+
+
+# --------------------------------------------------------------------------- #
+# Round 14 (SPEC §2.2 item 4, §4.4.1): reserved ids, default_window, derived_from
+# --------------------------------------------------------------------------- #
+def _stored_ids(client) -> set[str]:
+    return {b["id"] for b in client.get("/api/dashboards").json()["dashboards"]}
+
+
+def _seed(client, board_id: str, name: str = "Older board") -> None:
+    """Store a board directly, as a release before Round 14 could have (free-string id)."""
+    from app.models import DashboardLayout, DashboardWidget
+
+    state: AppState = client.state_holder["state"]  # type: ignore[attr-defined]
+    layout = DashboardLayout(
+        id=board_id, name=name,
+        widgets=[DashboardWidget(i="w1", type="kpi.needs_human", x=0, y=0, w=4, h=4)],
+    )
+    client.portal.call(lambda: state.dashboards.save("default", layout))  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize("board_id", [
+    "new", "builtin:soc-operations", "builtin:cyber-defence-center", "builtin:x", "u:1a2b3c4d", "u:",
+])
+def test_creating_a_board_under_a_reserved_id_is_refused(client, board_id: str) -> None:
+    for response in (
+        client.post("/api/dashboards", json=_layout("Mine", id=board_id)),
+        client.put(f"/api/dashboards/{board_id}", json=_layout("Mine", id=board_id)),
+    ):
+        assert response.status_code == 400, response.text
+        detail = response.json()["detail"]
+        assert detail["code"] == "dashboard_id_reserved"
+        assert board_id not in detail["message"]  # the refusal never echoes the id
+    assert _stored_ids(client) == set()
+
+
+@pytest.mark.parametrize("board_id", ["news", "overview", "builtin", "dash-builtin:x", "U:1a2b3c4d", "my:board"])
+def test_ids_that_only_look_reserved_can_be_created(client, board_id: str) -> None:
+    r = client.post("/api/dashboards", json=_layout("Mine", id=board_id))
+    assert r.status_code == 200, r.text
+    assert r.json()["id"] == board_id
+
+
+def test_a_minted_id_is_never_reserved(client) -> None:
+    body = _layout("Mine")
+    body.pop("id", None)
+    created = client.post("/api/dashboards", json=body).json()
+    assert created["id"].startswith("dash-")
+
+
+@pytest.mark.parametrize("board_id", ["new", "builtin:x", "u:deadbeef"])
+def test_a_board_stored_under_a_reserved_id_keeps_working(client, board_id: str) -> None:
+    """Rejected on CREATE only: a board stored before Round 14 under an id that is now
+    reserved is still listed, updated, renamed, replaced, cloned and deleted."""
+    _seed(client, board_id)
+    assert _stored_ids(client) == {board_id}
+
+    renamed = client.put(f"/api/dashboards/{board_id}", json=_layout("Renamed", id=board_id))
+    assert renamed.status_code == 200, renamed.text
+    assert renamed.json()["name"] == "Renamed"
+
+    replaced = client.post("/api/dashboards", json=_layout("Replaced", id=board_id, default_window="now-7d"))
+    assert replaced.status_code == 200, replaced.text
+    assert replaced.json()["default_window"] == "now-7d"
+
+    clone = client.post(f"/api/dashboards/{board_id}/clone")
+    assert clone.status_code == 200, clone.text
+    assert clone.json()["id"].startswith("dash-")
+    assert clone.json()["default_window"] == "now-7d"
+
+    gone = client.request("DELETE", f"/api/dashboards/{board_id}")
+    assert gone.status_code == 200
+    assert _stored_ids(client) == {clone.json()["id"]}
+
+
+@pytest.mark.parametrize("window", ["now-24h", "now-7d", "now-30d", "now-90d"])
+def test_default_window_is_stored_and_returned(client, window: str) -> None:
+    created = client.post("/api/dashboards", json=_layout("Windowed", default_window=window))
+    assert created.status_code == 200, created.text
+    assert created.json()["default_window"] == window
+    stored = client.get("/api/dashboards").json()["dashboards"][0]
+    assert stored["default_window"] == window
+
+
+def test_an_absent_default_window_is_null(client) -> None:
+    created = client.post("/api/dashboards", json=_layout("Plain")).json()
+    assert created["default_window"] is None and created["derived_from"] is None
+
+
+@pytest.mark.parametrize("window", ["now-1d", "now-24H", "24", "all", "", "last 7 days", 7])
+def test_a_bad_default_window_is_refused_not_dropped(client, window: Any) -> None:
+    r = client.post("/api/dashboards", json=_layout("Bad window", default_window=window))
+    assert r.status_code == 422, r.text
+    assert _stored_ids(client) == set()
+
+    did = client.post("/api/dashboards", json=_layout("Good", default_window="now-30d")).json()["id"]
+    r = client.put(f"/api/dashboards/{did}", json=_layout("Good", id=did, default_window=window))
+    assert r.status_code == 422, r.text
+    stored = client.get("/api/dashboards").json()["dashboards"][0]
+    assert stored["default_window"] == "now-30d"  # the update changed nothing
+
+
+def test_derived_from_is_stored_as_plain_data(client) -> None:
+    body = _layout("SOC operations (copy)", derived_from="builtin:soc-operations", default_window="now-24h")
+    created = client.post("/api/dashboards", json=body)
+    assert created.status_code == 200, created.text
+    assert created.json()["derived_from"] == "builtin:soc-operations"
+    did = created.json()["id"]
+    # An update that omits it clears it (PUT replaces the board).
+    cleared = client.put(f"/api/dashboards/{did}", json=_layout("Mine now", id=did))
+    assert cleared.json()["derived_from"] is None
+
+
+@pytest.mark.parametrize("value", ["builtin soc", "../../etc", "a" * 65, "builtin:<b>", "", 3])
+def test_a_bad_derived_from_is_refused(client, value: Any) -> None:
+    r = client.post("/api/dashboards", json=_layout("Copy", derived_from=value))
+    assert r.status_code == 422, r.text
+    assert _stored_ids(client) == set()
+
+
+def test_round14_widget_types_round_trip(client) -> None:
+    """The built-in boards' modules are allowlisted, so Duplicate to customise saves."""
+    types = ["kpi.strip", "chart.case_trend", "table.top_rules", "kpi.agent_quality"]
+    widgets = [_widget(f"w{n}", t, y=n, options={"preset": "operations"}) for n, t in enumerate(types)]
+    r = client.post("/api/dashboards", json=_layout("Copy", widgets=widgets))
+    assert r.status_code == 200, r.text
+    assert [w["type"] for w in r.json()["widgets"]] == types

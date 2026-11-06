@@ -2,7 +2,7 @@
 
 Pure aggregation functions over a list of ``Case`` objects (plus the existing
 usage/cost ledger summary, merged by the route). No new storage, no LLM — these
-power the analytics UI: verdict mix, status breakdown, persona/playbook usage,
+power the analytics UI: verdict mix, status breakdown, persona and runbook usage,
 average risk, a coarse MTTR, a per-day case trend, and the AI-decision feedback
 quality roll-up. Everything is defensive: malformed timestamps are skipped, never
 raised, so a dashboard query can't fail a request.
@@ -286,6 +286,11 @@ def compute_metrics(
         )
     )
     by_persona = Counter((c.agent_persona or "generalist") for c in cases)
+    # Round 14 SPEC §4.10.18: which Published runbook guided each case's investigation
+    # (``Case.runbook_id``; "none" when no runbook reached the investigator). The
+    # retired ``playbook_usage`` is kept for one release, read from the field earlier
+    # runs wrote. Usage only: neither says a runbook caused a faster or slower case.
+    by_runbook = Counter((getattr(c, "runbook_id", None) or "none") for c in cases)
     by_playbook = Counter((c.playbook_id or "none") for c in cases)
 
     risks = [c.risk_score for c in cases if isinstance(c.risk_score, (int, float))]
@@ -348,6 +353,7 @@ def compute_metrics(
             "none": by_verdict.get("none", 0),
         },
         "persona_usage": dict(by_persona),
+        "runbook_usage": dict(by_runbook),
         "playbook_usage": dict(by_playbook),
         "avg_risk_score": avg_risk,
         "active_risk_index": active_risk_index,

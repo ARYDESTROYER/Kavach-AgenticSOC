@@ -548,7 +548,17 @@ caption, because a block can travel alone.
 
 Cases are named by their case number and title. A case without a number shows its title
 followed by a short form of its ID (the full ID is in its tooltip). Verdicts, statuses,
-and kinds read in words, such as "True positive", "Open → Escalated", and "IP".
+and kinds read in words, such as "True positive", "Open · awaiting analyst", and "IP".
+A case card's status history reads each move and its reason in words, such as "Open to
+Escalated" with "Automatic close of a confirmed threat is off (by the system)"; a reason
+an analyst wrote stays as written. An answer saved by an earlier version reads in the same
+words. A detail on any other timeline, such as an audit timeline's result, is shown as
+written even when it reads like a status reason. An answer saved before a case had a
+number shows a short form of its ID, with the full ID in its tooltip, and still links to
+the case. A case card's **Rules** fact names each of the case's rules (up to five), and
+each opens its [rule sheet](#rules-in-an-answer) over the case's own window, with "From
+CASE-000214" in the sheet's header. A rule that cannot be carried exactly, and every rule
+in an answer saved before this version, is plain text.
 
 Figures in an answer's text read the way its blocks show them, so one figure never
 appears in two forms: a rate is a whole percent from 10% up ("78%"), with one decimal
@@ -573,10 +583,15 @@ title reads "Brief: {title}" (unless the title already says brief), its window i
 once, and it shows a **Contents** control from four sections. An infographic Brief leads
 with key figures and trend lines and lays its charts out in a grid.
 
-Charts over time read in calendar terms, such as "Mar 2026" or "W14 2026", name their
-time zone, and draw the current period lighter with "(in progress)". A time chart has one
-row of controls above it: **Group by** on the left, and the zoom hint ("Drag to zoom"),
-the zoomed range, and **Reset zoom** on the right. On a time chart you can:
+Charts over time read in calendar terms: months as "Mar 2026", and a weekly chart's
+ticks as the day each week starts ("Mar 30"), with the ISO week in the tooltip and the
+table ("Week of Mar 30 (W14 2026)"); a week the window cuts says so in the same day
+order ("Week of Mar 30 (W14 2026) (from Apr 1)"). On a chart finer than a day, the first
+tick and each tick that starts a new day carry the date ("Nov 2 12:00"), and later ticks
+on that day only the time. Charts name their time zone and draw the current period
+lighter with "(in progress)". A time chart has one row of controls above it:
+**Group by** on the left, and the zoom hint ("Drag to zoom"), the zoomed range, and
+**Reset zoom** on the right. On a time chart you can:
 
 - **Group by** a coarser unit, such as days into weeks or weeks into months, when the
   data allows it; the table, Copy data, and the downloads follow the grouping shown.
@@ -591,15 +606,16 @@ All of these change only the view of the same numbers; nothing is looked up agai
 horizontal bar shows its value just after the bar, and a donut's legend sits beside it on
 a wide card and under it on a narrow one.
 
-At rest a block shows only its `⋯` menu. **Add to report** appears beside it when you
-point at or tab into the block, and stays while the block is in the report. The menu:
+At rest a block in **Triage → Workspace → Chat** shows only its `⋯` menu.
+**Add to report** appears beside it when you point at or tab into the block, and stays
+while the block is in the report. The menu:
 
 | Action | What it does |
 |---|---|
 | Add to report | Adds the block to this conversation's report, or removes it (also beside the menu, see above) |
 | Expand | Opens the block in a wide view |
 | Full width | Lets the block use the whole conversation width (offered when there is room to gain) |
-| Show as | Switches to another view of the same numbers, such as bars as a donut. Only views that tell the truth are offered: a donut or stacked bar appears only when the parts add up to a whole. |
+| Show as | Switches to another view of the same numbers, such as bars as a donut. Only views that tell the truth are offered: a donut or stacked bar appears only when the parts add up to a whole. A severity breakdown also offers **Rules by level** when a rule falls in two or more levels (see [Severity breakdowns](#severity-breakdowns)). |
 | Series | Shows or hides each line of a chart whose lines are labelled at their ends |
 | Show table / Show chart | Flips between the chart and its data |
 | Copy data | Copies the rows as tab-separated text. Indicators are defanged by default (`hxxp`, `[.]`), and the menu has a toggle. |
@@ -622,6 +638,160 @@ still a figure and is shown, and a duration of zero reads in its unit, such as "
 a duration measured in minutes or hours that is under one second reads "< 1 min". You
 can also ask for a different view in words, such as "show that as a donut" or "now by
 host": the assistant reuses the earlier lookup or its stored result.
+
+### Rules in an answer
+
+Every rule name in an answer opens that rule's picture, the rule sheet:
+
+- a rule row in a table: select the name, or anywhere on the row;
+- a rule bar in a chart: click it, or move to it with the arrow keys and press Enter
+  (the tooltip says "See this rule's alerts and cases");
+- a rule in a [severity breakdown](#severity-breakdowns);
+- a rule in a case card's **Rules** fact (over the case's own window).
+
+It is the same sheet every rule name in the Console opens: the Case Manager facts, a Logs
+row's details, Auto-tuning, Precedent by rule in health diagnostics, the Cyber Defence
+Center's top signatures and the dashboard rule widgets. Rule names that open it carry a
+dotted underline at rest, solid on hover and focus. Opening another rule replaces the
+sheet; Esc closes it and puts focus back on the rule you clicked. While it is open, the
+row or bar you opened it from stays marked, and the keys you type stay in the sheet.
+
+- **Header.** The rule as written, where you opened it ("From your answer", "From
+  CASE-000214", "From Logs"), the window (the answer's or the case's window, or the last 3
+  days) and the source when the sheet is filtered to one. A window of minutes or hours,
+  such as a case's own window, names its times in UTC, such as "Oct 29, 12:14 to 12:17
+  UTC", and the Alerts figure reads the same label. When you pick another window, a
+  screen reader hears what it now shows once the figures arrive, for example "Last 7
+  days: 381 alerts from this rule."
+- **Key figures.** Alerts in the window, with "≥" and "At least this many" when part of
+  the count could not be counted exactly (the note under the chart says why). Cases,
+  Still open ("of N cases") and Analyst outcome count every case the rule ever opened, all
+  time, the same cases **Show the N cases** lists. Still open appears once the rule has
+  opened a case; before that, Cases reads 0 and Analyst outcome says "no cases from this
+  rule". Analyst outcome counts only what an analyst decided: confirmed, benign, and not
+  graded (cases no analyst classified, including cases closed by an analyst policy or
+  closed without a classification). The AI verdict is never counted as an analyst
+  outcome. Under the figures: when the rule was last and first seen, in UTC.
+- **Actions.** **Open all N in Logs** opens Logs filtered to exactly this rule over the
+  same window; the number appears only when the count is exact, otherwise the button
+  reads **Open in Logs**. Logs reads at most 90 days at a time, so over a longer window
+  the button reads **Open the last 90 days in Logs**, with no number. When the rule's
+  last alert is older than those 90 days, it reads **Open 90 days up to the last alert in
+  Logs** (or **Open up to the last alert in Logs** when the window starts less than 90
+  days before that alert), so Logs never opens on a view without the rule's alerts. A
+  line under the button says why, and a screen reader hears it with the button. **Show
+  the N cases** opens the Cases list filtered to the rule.
+  **Ask AI about this rule** starts a new chat with the rule as the question's subject, an
+  ordinary chat question metered like any other. It appears when the rule is a single
+  identifier, such as `ssh_bruteforce`; a rule name with spaces, such as "Web scanner user
+  agent detected", has no Ask AI yet. Following an action closes the sheet.
+- **Sections**, each with its own access line ("You do not have access to log sources.",
+  "... to cases.", "... to detection rules.", "... to tuning."):
+    - **Alerts over time by severity**, captioned "exact", "sampled" (drawn from each
+      source's newest 200 events) or "not exact" (a source did not answer, or a store
+      answered in part), with the reason underneath;
+    - **Top source IPs** and **Top targets**, with the same captions;
+    - **Latest alerts**: the newest 5, shown to you only and never sent to the assistant;
+    - **Cases from this rule**: the newest 5, by case number, with status and the AI
+      verdict;
+    - **About this rule**: defined in the source SIEM, or "A suite rule, <name>, enabled"
+      (or disabled) with **Rule settings**; its tuning state ("False-positive rate at
+      least N%, from N analyst-graded cases", or "No analyst-graded cases yet"); and its
+      analyst policy.
+
+When no source holds an alert from the rule in the window, the sheet says so once,
+naming where it looked ("in the log sources the Console can search"), and leaves out the
+alert lists. When no log source can be read at all it says that instead and offers no
+Logs view. The sheet stays open while the page behind it refreshes; in Logs the live tail
+pauses while it is open and resumes when you close it. If the rule view itself cannot be
+loaded (an older tab after an update, or offline), the sheet says "The rule view could
+not be loaded. Reload the page to try again." with a **Reload page** button, and the page
+behind it is kept.
+
+A block the model wrote never links, and a rule name the server could not validate is
+plain text.
+
+### Logs and Cases opened from an answer
+
+**Open all N in Logs**, a severity level's Logs view and a rule's Logs link open the Logs
+page with exact filters, shown as removable chips:
+
+- **Rule is** `<rule>`: the rule exactly as written, spaces and any letters kept. While it
+  is set, the Rule column is left out, because every row has that rule.
+- **Severity is High**, or **Severity High or above**.
+
+Above the table, Logs states how many events matched across your sources over the window
+it read, such as "381 events · last 3 days" (after you pick another range, the new one),
+or "At least 1,000 events · last 3 days" when a source could only be filtered after
+reading its newest events (a live-tail buffer) or did not answer. It never counts the rows
+on screen, and a screen reader hears each new count. Beside it, which sources applied the
+filter exactly: "Sources: all 5 that support browsing", or, for example, "Sources: 4 of 5
+applied the filter exactly; filtered after a bounded read: Syslog lab". Removing a chip
+keeps the rest of the view and reads again. Removing the last chip keeps the link's window
+and source, so the view still reads that window, and focus moves to **Browse all logs**; a
+link that carried only filters returns to the plain browser, with focus in its search box.
+**Browse all logs** drops the link and puts focus in the search box. Logs reads at most 90 days at a time: a
+link over a longer window, such as a rule from an answer about the last 6 months, keeps
+its filters and shows the last 90 days of that window, and a line under the window says
+so. Opened from an answer, the header offers **Back to answer**, which returns to that
+answer in its conversation (**Back to the case** from a case's chat), for that one view:
+reached from the answer itself or through an action in its rule sheet. It stays while you
+remove chips there. Opening a rule sheet and closing it again does not count, and once you
+move on to another page, or open another link from Logs itself, it is no longer offered.
+
+**Show the N cases** opens Cases with the **Rule** filter set. The list then holds every
+case of that rule, read from the server, not only the newest cases loaded, so the count
+beside the title, the summary tiles and their tooltips cover that rule's cases ("30 from
+this rule"). A rule with no cases reads "No cases from this rule", with **All rules** to
+go back to every case. **Filter by rule** lists the rules of the cases loaded so far;
+choose **All rules** to clear it. Choosing or clearing a rule keeps your other filters,
+such as **Assignee**: when none of the rule's cases match them, the list reads "No cases
+match your filters", and the cases you filtered for come back with **All rules**. A saved
+view keeps the rule.
+
+### Severity breakdowns
+
+In **Triage → Workspace → Chat**, a question such as "Show alerts by severity for the
+last 3 days" answers with a severity breakdown: a table of the five named levels in a
+fixed order (Critical, High, Medium, Low, Info), zeros included.
+
+| Column | What it shows |
+|---|---|
+| Severity | The level, with the raw source values it holds, such as "High (73, 8)"; its help tip names each source's scale ("73 on a 0 to 100 scale and 8 on a 0 to 10 scale") |
+| Events (or Cases) | How many fell in the level |
+| Share | Its share of the events counted, to one decimal, such as "0.0%" |
+| Trend | A small line over the window; dots when there are fewer than five points |
+| Top rules | Up to three rule names with their counts, each opening the rule sheet, then "+7 more rules" |
+
+- **One ladder for every source.** Each event's raw severity is read on its own source's
+  scale before sources are merged, so a Wazuh 0 to 15, a QRadar 0 to 10 and a 0 to 100
+  source land in the same five levels. The footnote says so.
+- **Open a level** with the chevron in its first cell (a button: Enter or Space). The
+  opened row lists the level's rules (up to 20, then "+N more rules"), each with its count,
+  its rule sheet and a Logs view of that rule at that level, then the level's own Logs
+  view.
+- **Split by**, in the block header when the answer carries more than one split (on a
+  phone or in the Case Manager column, in the block's `⋯` menu, so the title keeps the
+  full width): None, Rule or Source. Source swaps the Top column for the top sources, and
+  an opened level then lists its sources. **Host** is listed but not available ("Ask
+  again to add it"). Switching never looks anything up again and never calls the model.
+- **Rules by level.** When a rule falls in two or more levels, **Show as** in the block's
+  `⋯` menu offers a matrix: rules down the side, levels across. In an events breakdown
+  each count opens those events in Logs; a cases breakdown's counts are plain numbers.
+  **Split by** is not offered with the matrix. It takes the wide lane; on a phone it shows
+  as the levels table.
+- **Honest counts.** When the levels do not cover every event, the caption says so, for
+  example "1,000 of 2,500 events sampled, newest 200 per source", and says both when some
+  sources were counted exactly and others sampled. Shares are then of the events counted.
+- On a narrow card (a phone, the Case Manager column) Trend and Top rules drop; open a
+  level to see its rules. On a phone, a level with more raw values than its line can hold
+  wraps them inside its badge, and the help tip stays beside it.
+- **Cases over time.** A trend of cases by severity, such as "Cases by severity per day
+  this month", draws the same five levels, Critical to Info, zeros included, even when
+  the question asks for the top few. Cases with no readable severity get their own
+  **No severity** line while there are any.
+- Reports, print and the exports (CSV, Word, Excel) carry the plain table: each level
+  with its raw values, its count, its share and its top rules.
 
 ### Sources, citations, and console links
 
@@ -901,8 +1071,9 @@ tokens before you generate, and the estimated cost when you hold `models:read`.
 
 ### Export
 
-**Download PDF** opens the browser's print dialog, already named after the report, where
-you choose Save as PDF. **Export** opens one menu with every format:
+In a report's panel in **Triage → Workspace → Chat**, **Download PDF** opens the
+browser's print dialog, already named after the report, where you choose Save as PDF.
+**Export** opens one menu with every format:
 
 | Format | Contents |
 |---|---|
@@ -947,15 +1118,17 @@ and cannot start a second one; a failed export says why and offers **Retry**.
 
 ### The Reports library
 
-Open **Triage → Workspace → Reports** to see every report you own, with its template,
+Open **Triage → Workspace → Reports** to see every report you own on one **Saved
+reports** panel, with its template,
 item count, source conversation (blank for a report saved by an earlier version until
 you next change it), and last update. Search by title or template, and open,
 rename, export, or delete any report; an open report shows the same document view as
 the exports, with **Download PDF** and a link back to its source conversation. A report
 made from an infographic Brief keeps its infographic layout.
 
-A report holds up to **60 items**, and you can keep up to **100 reports**; at that limit,
-delete one to start another. Reports are never removed automatically (deleting your
+A report holds up to **60 items**, and you can keep up to **100 reports**; at that limit
+the panel says "Limit of 100 reached. Delete a report to save a new one.", and deleting
+one lets you start another. Reports are never removed automatically (deleting your
 user account removes them, with your conversations and ratings), and a report
 survives the deletion of its conversation: its source link then reads "Conversation no
 longer available". Reports are visible only to the user who created them, every change
@@ -1163,12 +1336,12 @@ period, so no two demo cases share a number; each number keeps its case's own da
 turning Demo Mode off and on again, or resetting it, gives each case the same number
 again. A case you name by its internal id is answered by its number, with the id you
 used beside it once. A detection rule is written the same way everywhere in an answer: its
-id exactly as written (for example `demo_impossible_travel`), as the case list shows it. Demo answers cover the same ground as a live model, including any time window, breakdowns,
+id exactly as written (for example `LP-ES-RISK-1004`), as the case list shows it. Demo answers cover the same ground as a live model, including any time window, breakdowns,
 comparisons, reports, and clarifying questions. A question that asks to investigate or
 look into a named host, user, email address, IP address, domain or file hash
 ("Investigate the activity of user pnair in the last 3 days") is about that entity over
 the window it names. "Investigate" with a detection rule ("Investigate rule
-demo_impossible_travel") counts that rule's cases by verdict; with a log source
+LP-ES-RISK-1004") counts that rule's cases by verdict; with a log source
 ("Investigate source Wazuh") it shows the source's newest events and says if it is
 silent or disabled; with an attack type ("Investigate ransomware") it runs the hunt; and
 with records Demo can list ("Investigate the false positives from yesterday") it lists
@@ -1183,7 +1356,7 @@ demo conversation's name carries one
 detail that tells it apart from similar ones where there is one: the case number (first,
 so a narrow history list still shows it), the ATT&CK technique, the period, the breakdown
 or the console page a product question is about, such as "CASE-000045 needs a person",
-"CASE-000005 identity_signin case", "Cases by severity, last 7 days" or "Sources help".
+"CASE-000039 LP-ES-RISK-1006 case", "Cases by severity, last 7 days" or "Sources help".
 A name can carry a detection rule id exactly as written, but only one that the
 suggestion rules accept and that does not look like an address, domain or file hash. It
 never repeats any other value from your logs or cases, such as an address, a host or
@@ -1220,12 +1393,12 @@ By default chat has **no per-question limits**: a question runs until the assist
 answered or you press **Stop**, however many lookups and model calls that takes, and
 answers are never cut short. Guards still stop a question that is going nowhere: the
 same lookup never runs twice in one question, a question that stops making progress is
-asked to answer from what it has, a model call that goes silent for five minutes is
+asked to answer from what it has, a model call that goes silent for fifteen minutes is
 retried once, and an exceptionally long investigation wraps up with what it found.
 
 Some bounds always apply:
 
-- **Answers at once:** each user can run 4 questions at once, and the backend 16 in
+- **Answers at once:** each user can run 12 questions at once, and the backend 48 in
   total. Over that, a new question waits ("Waiting for another answer to finish") and
   starts by itself as soon as it can; after five minutes of waiting it stops and offers
   **Retry**.

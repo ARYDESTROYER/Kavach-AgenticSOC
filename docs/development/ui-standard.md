@@ -11,7 +11,7 @@ must use these primitives; existing pages migrate toward them as they are touche
 
 ## Migration contract
 
-The shared shell, navigation rail, route-loading fallback, in-app Documentation
+The shared shell, navigation rail, route-loading fallback, in-app Help Center
 index, Case Manager, Settings frame, and Entity investigation workflow are the
 current reference surfaces. Other routes remain supported while they move to this
 grammar incrementally; a page is not called migrated merely because the shell around
@@ -55,8 +55,9 @@ scale the layout. Dense inside, generous between: `1` (4px) inside chips and men
 insets, `2`–`3` (8–12px) between related controls and for row padding, `4`–`5`
 (16–20px) for instrument and pane insets (a grouped dashboard panel grows to `6`, 24px,
 from 1920px), `6` (24px) for column gutters (between grouped panels the gutter matches
-the panel padding: 16, 20, then 24px), `8`–`10` (32–40px) between bands (a grouped
-dashboard's bands sit 48px apart from 1920px), and otherwise `12` (48px) only for sparse
+the panel padding: 16, 20, then 24px), `8`–`10` (32–40px) between bands on a page that
+still lays out its own bands (on a page of panels, modules sit one panel gutter apart: see
+Page anatomy), and otherwise `12` (48px) only for sparse
 identity screens. The container sets rhythm with `gap-*`/`space-y-*`; children never add
 sibling margins, and a run of siblings that needs a different rhythm gets its own group
 container. One 16–24px rail per pane; never stack page, pane, and panel padding.
@@ -70,13 +71,15 @@ inner radius = outer radius − inset.
 | Buttons, inputs, selects, segmented rails, cards | 8px | `rounded-md` |
 | Menus, popovers, hover cards, tooltips, toasts | 10px | `rounded-lg` |
 | Dialogs, sheets (leading edge only, from `sm`), the command palette | 14px | `rounded-xl` |
-| Grouped dashboard panels (`.surface-panel`: each primary-dashboard module and its KPI strip) | 14px | `rounded-xl` (in the recipe) |
-| Bands, list rows, tables, flat KPI strips, split panes | 0 | divider-led |
+| Panels (`Panel` and the `.surface-panel` recipe: every module on every page, `KpiStrip`) | 14px | `rounded-xl` (in the recipe) |
+| Bands, list rows, tables, tile grids, split panes | 0 | divider-led; a table on a `Panel padding="none"` is clipped to the panel's corners |
 
 A 10px menu with a `p-1` inset holds 6px items; a 14px dialog holds its own 8px
 controls. Focus rings follow the element's radius. Use the `rounded-tr-xl
 rounded-br-xl` pair rather than `rounded-r-xl`, which collides with the `r-xl` token
-key. The 14px step is `--radius + min(--radius, 4px)`, so the brand "Square" preset
+key. Page files never use an arbitrary radius (`rounded-[3px]`, `rounded-t-[6px]`): the
+console grammar guard test fails on one (see Page anatomy). The 14px step is
+`--radius + min(--radius, 4px)`, so the brand "Square" preset
 (`--radius: 0rem`) squares every step, dialogs and sheets included. A rounded side
 sheet clips its children to the curve (`overflow-hidden`), so a full-bleed child with
 its own fill never paints square corners over it.
@@ -88,13 +91,17 @@ step: +0.005em at 11px, 0 at 12px, −0.003 to −0.011em from 13 to 16px, tight
 −0.022em at 32px. Do not add `tracking-tight`/`tracking-wide` on top of a size step.
 Leading is inverse (looser body, tighter display); `leading-none` only on single-line
 numerals. Hierarchy comes from weight + size + leading together; weights stay 400–650.
-Reading prose (chat answers, questions, suggestion text, conversation titles, answer
-block titles and captions, and the answer's scope line) sets `proportional-nums`: the
-body's tabular figures also widen Inter's hyphen ("Read - only", "Highest - risk").
-So do text values on answer blocks: an indicator card's facts and provider names
-("demo-synthetic"), case titles, table text cells, timeline lines, notes, Brief section
-summaries and KPI tile labels. Figures, dates, scores, meta rows and KPI values keep
-tabular numerals. A short reference in chat text (a case number, technique id or rule id of up to
+Figures are proportional by default (Round 14, defect F2): the `body` sets
+`proportional-nums`, because Inter's tabular forms widen the hyphen as well as the digits
+(5.91px against 8.36px at 13px), and a body-wide `tabular-nums` printed "Auto - tuning",
+"Read - only" and "Highest - risk" on every page. Tabular figures are set only where
+numbers are compared or must not jitter, each with `tabular-nums`: KPI numerals and their
+context lines, numeric table cells (counts, scores, times, ids), timestamps, meta rows,
+the time-range pill and live counters. A cell or chip that holds words ("Auto-closed",
+"demo-synthetic", a case title) stays proportional; never put `tabular-nums` on a whole
+table or a whole row. The chat's reading surfaces (answers, questions, suggestion text,
+conversation titles, answer block titles, captions and scope lines) keep their explicit
+`proportional-nums`, which is now also the default they inherit. A short reference in chat text (a case number, technique id or rule id of up to
 27 characters, its punctuation not counted: "CASE-000089?", "sigma-win-proc-creation-01")
 never breaks inside, not even at its hyphen; the sentence wraps between words, and a word
 of 28 characters or more breaks where its line ends, its ends kept
@@ -205,7 +212,7 @@ reducedMotion="user"`), CSS overlays swap their scale/slide keyframes for a 150m
 opacity-only cross-fade, and press scale is dropped. `prefers-reduced-transparency`
 (and `data-transparency="reduced"` on `<html>`, the in-app override for browsers that
 never report it): every material and the top bar become solid. The override is the
-per-user Settings → Appearance & customization → "Reduce transparency" choice
+per-user Settings → Account → Appearance → "Reduce transparency" choice
 (System / On), stored in `UserPrefs.misc.transparency`, mirrored on the device in
 `soc.transparency` and stamped before first paint by `index.html`
 (`design-system/transparency.ts`); Safari never reports the media query and Firefox
@@ -219,14 +226,102 @@ instead of the scroll-edge fade.
 
 ## Page anatomy
 
-Every routed page follows the same order:
+Every page uses the Cyber Defence Center's grammar (Round 14, operator choices C7 option 1
+"panels everywhere" and C8 option 1 "title and controls only"). This section is the binding
+statement; `src/soc/__tests__/console-grammar.guard.test.ts` enforces its mechanical parts.
 
-1. `PageContainer` owns the width (`fixed`, `wide`, `fluid`, or `prose`).
-2. One `PageHeader` owns title, description, status metadata, and primary actions.
-3. Optional controls occupy one compact `ControlBar`/`FilterBar` band.
-4. Content is organized into flat sections or shared data/table/chart components.
-5. Loading, empty, denied, error, and partial-data states occupy the same geometry as
-   the final content so the layout does not jump.
+1. **`PageContainer` owns the width and the rhythm.** It picks the width archetype
+   (`fixed`, `wide`, `fluid`, `prose`) and spaces its children: 24px from the page header
+   to the first module, then one panel gutter between modules, 16px, 20px from 1280px and
+   24px from 1920px (the `.page-rhythm` rule in `theme.css`). Pages do not set `space-y-*`
+   on it. The rule has the specificity of one type selector: it beats the browser reset of
+   a paragraph, heading or list placed directly on the page (so those are spaced like any
+   module) but loses to every class, so a page that still sets its own spacing keeps it
+   until it migrates; a page that lays itself out (a full-height workspace) passes
+   `rhythm="none"`.
+2. **One `PageHeader`, the Overview header.** The title is the page's `h1` (20px on a
+   phone, 24px from `sm`, 30px from 1536px; weight 650 and Inter's tracking come from the
+   size step, never `tracking-tight`). Beside it: a help tip (`help`, one or two plain
+   sentences, a popover so touch and keyboard reach it) and the `controls` slot (the one
+   `TimeRangePicker`, Live, `RefreshButton`). On the right: `actions` (the freshness stamp
+   or the primary action). There is no icon chip, no overline, no breadcrumb (the top bar
+   owns the trail) and no description line: a page's explanation is its help tip text. The
+   title row starts 8px below the content inset, so the title does not move between pages
+   (measured 89px from the top at 1440px, 88px at 1920px). The one sanctioned extra is
+   `back={{ label, href }}`, a 13px primary link with a back arrow above the title for a
+   page opened from a list ("All dashboards"); it is a link, never a breadcrumb. A plain
+   click on an in-app back link goes through the router, so a route-leave guard (an
+   unsaved draft) is asked first; a modified click opens a new tab as usual. Only a hash
+   route, a same-origin root-relative path or an http(s) URL becomes a link.
+3. **Modules sit on panels.** Each module is a `Panel` from `@/design-system`: the tinted
+   borderless `.surface-panel` (14px corner, no border, no resting shadow) with the
+   Overview's padding (16px, 20px from 1280px, 24px from 1920px) and its title row, a 14px
+   semibold `h2` with an optional muted count and caption (the window: "last 24 hours",
+   "open now") on its baseline and an aside or actions on the right. `as="section"` makes it
+   a region named by that heading. A table or list bleeds to the panel edge with
+   `padding="none"`, which keeps the title on the panel inset and clips the rows to the
+   corners, so the first column lines up with the title. A module title that sits on the
+   canvas above a panel or a group (Settings groups) is a `SectionTitle` (15px semibold
+   sentence case). Panels in a row or grid are one gutter apart (`PANEL_GAP`). A panel's
+   title is an `h2` under the page `h1`; a panel inside a titled group passes `level={3}`
+   (`ChartCard` takes the same prop), so the heading outline keeps the group above it.
+4. **No nested cards.** `Card` is for a selectable record, a contained editor or dialog
+   content; never inside a panel (`Panel`, `ChartCard` or `KpiStrip`), and neither is a
+   `StatCard` or a `chrome="framed"` `KpiTile` (the guard test fails on each). Charts use
+   `ChartCard`, which renders on the panel; figures inside a panel are strip tiles.
+5. **At most one KPI strip per page**, the shared `KpiStrip`: strip tiles on a panel,
+   13px sentence-case labels, ink numerals (red only for a critical tile counting something
+   above zero, always with the number), one muted context line, no icons, rules that only
+   ever separate two tiles, two columns below 768px. Its tiles take the panel inset, so each
+   row starts on the module edge, and every numeral sits on one row whether a tile is
+   clickable or not and whether it has a context line (a tile without one keeps the empty
+   two-line slot). Up to eight tiles share one row on a wide strip (seven from 56rem, eight
+   from 64rem of strip). A tile that filters the page is a toggle (`pressed`): the selected
+   wash plus a 2px rule drawn as a border (so forced colours keep it), with its muted text
+   raised to the foreground ink (muted text on the wash is below 4.5:1). A second split of
+   the same total starts with `breakBefore` (a strong rule), on the tile itself or on a
+   wrapper around it such as a hover trend card. `KpiTile` outside a strip uses the same
+   `chrome="strip"` grammar on pages; `chrome="framed"` (the bordered tile with an icon
+   chip) is kept for the chat answer blocks and `StatCard`.
+6. **Sections are underline tabs.** Page and record sections use
+   `TabsList variant="underline"` (13px labels, no icons, a full-width hairline). The
+   selected tab is its label colour and a 2px primary rule under the label, never colour
+   alone; the rule is a border, so forced colours keep it, and the weight does not change
+   (a bolder label would nudge its neighbours). Each tab has 6px of room on both sides so
+   its focus ring frames the label; the list reaches 6px past the column to hold that room
+   and insets its hairline by the same 6px, so the first label and the hairline stay on
+   the column edge. The boxed rail is for an in-module view switch, and a value selector
+   that is not navigation is a `SegmentedControl`.
+7. **Sentence case and shared primitives.** Labels and headings are sentence case, never
+   tracked capitals. Refresh is the `RefreshButton` (never a hand-rolled spinning
+   `RefreshCw`); numbers are a `NumberField` (never a raw `type="number"` input); a live
+   condition is a `Callout`, an explanation a help tip (never `Alert variant="info"` on a
+   page); nothing is smaller than 11px except the badge primitive; a destructive icon
+   button is neutral at rest and red only on hover, focus and in its confirm dialog.
+8. **States keep the geometry.** Loading, empty, denied, error and partial-data states
+   occupy the same geometry as the final content, so the layout does not jump.
+
+Durations, overages and case labels use the shared formatters in `@/lib/format`:
+`fmtDuration(minutes)` ("6d 21h", never "165h"), `fmtOverage(minutes)` ("12d 22h over",
+never "+18613m") and `caseLabel(case)` (always the case number, never the internal id).
+
+**The guard and its allow-list.** `console-grammar.guard.test.ts` fails on: `eyebrow=` or
+`breadcrumb=` in a page file; a page's `PageHeader` passing `icon`, `description` (unless
+`embedded`) or `variant="hero"`; tracked capitals in a page file; an arbitrary radius in a
+page file; a card (`Card`, `StatCard`, a framed `KpiTile`) inside a panel (`Panel`,
+`ChartCard`, `KpiStrip`); a spinning `RefreshCw` outside `RefreshButton`;
+`SectionShell rail`; a raw `type="number"`; `Alert variant="info"` in a page file; an icon
+button red at rest outside a dialog; any arbitrary text size below 11px (`text-[10px]`,
+`text-[0.65rem]`) outside the badge primitive; and any prototype preview folder or
+prototype data attribute in any file under `src`, stylesheets included. A page file is a
+routed page or rule screen, or any other file that renders a routed (not `embedded`)
+`PageHeader`. Violations that existed when the guard landed are listed per owning package
+in `src/soc/__tests__/guard-allow/<package>.json` (one file per package, so page
+migrations running in parallel never edit the same file; `backlog.json` holds files no
+package owns until the orchestrator assigns them). Each entry is the exact count for one
+rule in one file, so it is a ratchet: a change that fixes a violation lowers the entry in
+the same change (and deletes it at 0), and the test fails until it does. A package empties
+its own file as it migrates its pages. Prototype leftovers can never be allowed.
 
 Do not repeat a page title inside the first content panel. Do not add an eyebrow such
 as “Decision brief” when the actual outcome heading is already explicit. A nested
@@ -234,9 +329,10 @@ workflow can have its own section label only when it adds information.
 
 Tabbed or embedded leaves yield width, heading, and page-action authority to their
 host. They may contribute a labelled `ControlBar`, but must not nest another
-`PageContainer` or detach an unlabelled refresh row. Queue filters and refresh actions
-belong in that control band; `PageHeader` stays focused on route identity and the
-single primary action.
+`PageContainer` or detach an unlabelled refresh row. Queue filters belong in that control
+band; `PageHeader` stays focused on route identity, the page's time range and refresh, and
+the single primary action. An `embedded` `PageHeader` is an `h2` and may still show its
+description as a line, because it is a section of a host page, not a routed page.
 
 `ControlBar` adapts to its own available width, including inside a split pane. Put the
 task-defining controls in its primary slot so they remain first in visual and tab order;
@@ -249,6 +345,179 @@ focus to the trigger when the menu closes. Never move form fields, value selecto
 sole primary action, or an in-progress command into overflow. Keep `role="group"` for
 ordinary independently tabbable controls; do not advertise `role="toolbar"` unless the
 implementation also supplies the toolbar roving-focus keyboard model.
+
+## Tables, filters and lists
+
+Round 14 (SPEC §4.9.2, operator choice C7 option 1): one grammar for every list of
+records, implemented once in `ui/table.tsx`, `DataTable`, `FilterBar` and the
+`@/design-system` list primitives. Compose them; do not restyle a table or a row on a
+page.
+
+**Tables.** `DataTable` is the one record table.
+
+- A table that is a page module sits on `Panel padding="none"` with `surface="panel"`:
+  it has no box of its own, its rows bleed to the panel edge and its first and last
+  columns sit on the panel inset (16px, 20px from 1280px, 24px from 1920px), so the
+  first column lines up with the panel title. `surface="bordered"` (the default) keeps
+  the one hairline box for a table on the canvas.
+- Operational tables are compact (the default): a 36px header row and rows of about
+  38px. Column headers are 12px medium, sentence case, muted, with no wash behind
+  them; a pinned header wears the material (see Materials).
+- Declare a `kind` per column: `id`, `time`, `ip` and `number` never wrap and use
+  tabular figures (`number` aligns right); `id` is also set in the identifier face (12px
+  JetBrains Mono), so "CASE-000100" fits a 120px column whole; `text` (the default)
+  stays proportional. Never set tabular figures on a whole table or row, and never break
+  inside an identifier.
+- Declaring a `width` on any column switches the table to `table-layout: fixed`, so the
+  widths hold; give flexible columns a `minWidth` (the Cases title column is 280px). A
+  fixed layout shares the spare width equally among the flexible columns, so the table
+  plans for every one of them at the largest of their minimums and scrolls sideways
+  rather than squeeze any below it. In a fixed-layout table every cell is one line and
+  never runs over its neighbour. A text cell, and inline text inside rich content (a
+  link, a label), is cut with an ellipsis. An atomic piece (a badge, a chip, an icon)
+  cannot take an ellipsis, so it is clipped at the column edge and the cell's trailing
+  1.5rem fades out (`data-cut="fade"`, measured after each render and on every column
+  resize), so a cut always shows. Rich content clips sideways only, and its clip box
+  reaches 4px into the cell padding, so a focus ring on a control in the cell is drawn
+  on all four sides. The full value is the hover title only while the cell is cut
+  (`TruncatedText`, which custom cells use too) and stays in the DOM for screen readers;
+  a rich cell names its plain value with the column's `text` (else its text content is
+  used), so a cut badge still has a readable title. A column meant to be read whole
+  sets `wrap`, and a page gives its columns widths that fit their usual values (a badge
+  column as wide as its longest common label) rather than relying on the fade. A control
+  in a cell (a link button, a menu trigger) must fit its column, or shrink inside it
+  (`max-w-full` on the control, `truncate` on its label), because a control cut at the
+  column edge loses the trailing side of its focus ring with the rest of it.
+- A table wider than its panel scrolls inside it with a right-edge fade while more
+  columns are hidden; `stickyFirstColumn` keeps the record's name in view (its cells
+  keep the row's hover and selected tint, and a `rowAccent` band moves onto the leading
+  sticky cell, composed with that tint). Prefer fewer default columns, with the rest
+  behind Columns, over a sideways scroll.
+- Nothing to list at all: `emptyState` replaces the whole table, header row included,
+  with an `EmptyState` on the panel. Nothing matches the filters: `empty` keeps the
+  header and puts the explanation in one row under it. An emptied later page (rows
+  closed by bulk work, a stale page in the link) is not "nothing at all": it keeps the
+  header, the `empty` row and the pager, so the reader can go back.
+- No pager for one page: the footer appears only when there is a second page, a page
+  size that would change what is shown, or a selection to count.
+
+**Filters.** `FilterBar` is the only filter layout: the search, at most three primary
+filters (the rest behind "More filters", whose button counts the active ones), the
+active filters as removable chips ("Remove filter: Severity: High") and "Clear all".
+It is a labelled group, never a toolbar. On a panel it draws no rules (`variant="plain"`,
+the default) and sits on the panel inset above the table it filters; the hairline band
+(`variant="band"`) is only for a page not yet on panels. Below 768px the bar is the
+search and one "Filters (n)" button that opens a bottom sheet holding every filter with
+its visible label. Removing a chip moves focus to the next chip, else the previous one,
+the search, the bar's first control or the bar itself, never to the page body; "Clear
+all" in the phone sheet keeps focus inside the sheet, on "Done". The "More filters"
+popover is a dialog named "More filters". Each filter control's accessible name contains
+its label ("Filter by status" for Status).
+
+**Page data controls.** A windowed page has one `TimeRangePicker` in the page header's
+controls slot, with the page's own `presets` and `refreshOptions` when it supports fewer
+ranges or cadences, and one `RefreshButton display="icon"` beside it (its name shows in
+the shared tooltip on hover and keyboard focus, never as a native `title`). The picker's
+trigger is named from what it shows: its accessible name starts with the words on the
+trigger and then says what they are ("Last 24h, time range"). When the trigger shows
+words other than the whole range (the `chrome="command"` abbreviation, or a range's
+`shortLabel` on a phone), its description and its tooltip give the whole range. The
+auto-refresh cadences read "Off" and "Live" in sentence case. A section that refreshes
+on its own (Users, Sessions) uses the labelled `RefreshButton` in its actions. No other
+spinner exists.
+
+**Record lists.** A list of records that are not a table (enrichment providers,
+runbooks, sessions, system workers) is `ListRows` of `ListRow`s on a panel: the title,
+one muted line, a status only for exceptions, an optional control (an on/off switch
+named for the record), one trailing action and the rest in the row menu. Rows are
+divided by hairlines, never boxed: a list of bordered cards is not a list. The row opens
+its record from one control named by its title, whose hit area covers the row.
+
+**Links that navigate.** A row, row action or Settings row that opens another Console
+page is an `<a href>`, and a plain click on it goes through the router
+(`useRouteLinkClick` in `soc/route-link.ts`), so a page's unsaved-changes guard is asked
+before the page changes; a modified click keeps the browser's own behaviour (new tab,
+new window). Only a safe href becomes a link (`safeRouteHref`: a hash route, a
+same-origin path or an http(s) URL); anything else renders the title as text, the row
+action disabled, or the Settings row without a link.
+
+**Status and actions.** A status is a `StatusDot`: a 6px dot and words, coloured only
+when it is not the healthy default ("Needs key", "Unsupported"); "Ready" and "Active"
+are the default and are not badged. Row actions are `RowActions`: neutral ghost icons
+named by their label (also the tooltip), with destructive ones neutral at rest and red
+only on hover, keyboard focus and in their confirm dialog; the row menu is named for
+its row ("More actions for CASE-000048") and lists destructive actions last. Row action
+targets are 44px on a phone, where they are the row's primary controls, and 32px from
+640px.
+
+**Messages.** A `Callout` has three intents only: `warning` (a live condition), `error`,
+and `intro` (a first-run explanation the reader dismisses once, remembered per user in
+`UserPrefs.misc.dismissed_intros`). An intro's id follows the server's grammar
+(`DISMISSED_INTRO_ID_PATTERN`: lower case letters and digits, then `_ . : -`, at most 64
+characters); an intro with any other id is not dismissible, since the server would drop
+the id and the note would come back. Dismissing moves focus to the next visible control.
+Reassurance that does not change what the reader
+does is a help tip, not a callout; `Alert variant="info"` in a page file fails the
+console grammar guard.
+
+**Forms.** Every labelled control goes through `Field` (label above, help below; inside
+a `SettingRow`, label and help on the left with the control on the row's end, or, for a
+`wide` row, label and help above the control at full width). `Field` itself draws only
+the stacked layout, because it ships at first paint with Login and Wizard; a row layout
+is a `FieldLayoutRenderer` that places the parts `Field` has already wired. The two
+Settings rows are `inlineFieldLayout` and `wideFieldLayout` in the lazy Settings
+primitives (`pages/settings/field-layouts.tsx`, re-exported by `primitives.tsx`):
+`SettingRow` provides one through `FieldLayoutContext`, and a lone `Field` takes one
+through its `layout` prop (`layout="stacked"` wins over the context). Every number is a
+`NumberField`: one box holding the number, its unit and, when the field accepts values
+of up to four digits, the − and + steppers inside its right edge (pointer conveniences
+outside the tab order). It is an editable spinbutton: its bounds and value are
+announced, the arrow keys step and PageUp and PageDown step by ten, while Home and End
+keep moving the caret. It is as wide as its numbers, never as wide as its column: 8rem
+for up to four digits with a short unit, the next size up (12rem, else full) when the
+digits, the unit and the steppers need more room, and 12rem when there is no maximum.
+A field the reader only tabs through commits nothing, so a stored value is never
+rewritten by focus alone.
+
+## Activity and audit logs
+
+Round 14 (SPEC §4.5, operator choice C1 A): every record of who did what reads the same
+way, whether it is the Audit log page or a case's activity.
+
+**The list.** An audit list is one keyboard grid on one full-bleed panel, newest first,
+with a single roving tab stop: Up and Down move, J and K move and open the record (focus
+stays on the row), Enter opens it (focus moves to the inspector title), Home and End jump,
+and moving past the last loaded row loads the next page. The columns read Time, Outcome,
+Event, Actor, Target and Summary; Outcome is the second column so it stays in view beside
+an open inspector, a phone shows Time, Outcome and Event, and Target folds away below
+1280px. Every column is one line (`table-layout: fixed`): a long value truncates with its
+full text in its title, and nothing scrolls sideways. A scope line under the controls says
+what the list holds ("Showing 1 to 50 of 1,284 events · last 7 days · times in UTC ·
+newest first", "at least" when the store can only bound the total). "Load more" at the
+foot pages through one fixed snapshot, so the total does not move under it. Agent activity
+folds each investigation into one row whose steps show and hide in place.
+
+**The inspector.** Opening a record shows it in a 560px sheet from the right. From 1280px
+it is non-modal, a labelled region beside the live list (clicking another row swaps the
+record); below 1280px it is a modal dialog with a focus trap; below 640px it fills the
+screen. Its sections are divider-led, never nested cards: **Who**, **What changed**,
+**Details**, **Raw record**, **Record** and **Related**. A field an older row does not
+carry is left out, never shown empty. Escape or Close hands focus back to the row last
+shown. The record's address is part of the URL (`record=`), so a link opens the same
+record; opening and paging records replaces the hash, so J and K never flood the history.
+
+**Values.** Every value is a plain text node (#9): the prompt excerpt and tool output sit
+in code blocks labelled as untrusted log data, stored data is shown verbatim, and a secret
+is never shown, only that it changed. Times are UTC by default with a per-viewer local
+option. A filter change is a navigation, so Back returns to the previous view.
+
+**Case activity.** A case's activity (`CaseActivityFeed`) is a timeline, not a log
+viewer: each row reads as one plain sentence, with internal actor tokens shown as names
+("Case manager") and `key=value` summaries rewritten as words, and the recorded text one
+click away under **Details**, exactly as the audit log holds it (#2). One in-module
+`SegmentedControl` ("Show activity by": All, Human, AI, System) filters it. A running
+investigation adds transient step rows above the persisted timeline; they are narration,
+never a record, and nothing is decided from them (#3).
 
 ## Empty-state semantics
 
@@ -377,8 +646,9 @@ provenance. Project the **latest run only** and render applicable inputs conditi
 
 - approved operator **memory consulted**;
 - indexed **RAG knowledge retrieved**;
-- **runbook references retrieved** through RAG, separate from playbooks;
-- a **playbook actually injected and consulted**, never merely selected; and
+- **runbook passages retrieved** through RAG, separate from the matched runbook;
+- the **matched Published runbook actually given to the investigator**, never merely
+  selected; and
 - an immutable **platform threshold-tuning snapshot** for a correlation threshold or
   severity floor that this case traversed.
 
@@ -641,9 +911,9 @@ row per tool call or framed parallel batch, each with a leading 16 px status ico
 check with an sr-only "Done"; the status word is written only for Failed, Timed out,
 Denied, Skipped and Stopped), the engine label, a muted "· 61 ms", parameter chips in
 product words (verdicts, statuses, kinds and transitions through the shared label maps,
-"Open → Escalated"; known reason codes as sentences, unknown codes as written; a chip over
-several sources reads "3 sources" as a disclosure whose names element has an id per
-lookup), the summary, rows/basis/coverage, **Inspect** on the right, and the exact query
+"Open to Escalated"; known reason codes in the server's words, unknown codes as written; a
+chip over several sources reads "3 sources" as a disclosure whose names element has an id
+per lookup), the summary, rows/basis/coverage, **Inspect** on the right, and the exact query
 behind a collapsed disclosure rendered as untrusted code. Engine values are never shown
 raw: a case reads by its number (mono) then title, the internal id in its tooltip. Model
 steps add no rows except the step the turn is waiting on and a failed call; their tokens
@@ -928,32 +1198,147 @@ finishes off screen raises one "Answer ready" toast and one announcement.
 
 `src/soc/registry.tsx` is the only feature registry. It derives routes, the left rail,
 and command-palette destinations. Add, rename, gate, hide, or deprecate a feature there;
-do not hand-build a second nav list.
+do not hand-build a second nav list. A row or child may name a `target`: the page it
+opens when pressed (it defaults to its own id). `navTarget` and `navDest` in
+`soc/nav.ts` resolve it the same way for the rail, the phone sheet, the command palette
+and the generated console map, and a row whose target the viewer cannot read opens its
+own page instead.
 
 - Primary navigation contains distinct operator jobs, not alternate reports over the
   same objects. Legacy destinations may stay hidden and routable for bookmarks during a
-  transition.
-- The **Intelligence** group uses five direct, non-overlapping operator destinations:
-  **Knowledge corpus** is indexed RAG material; **Reference runbooks** are retrievable
-  investigation guidance; **Operator memory** is approved durable context;
-  **Response playbooks** are deterministically selected procedures; and **Agent
-  personas** are read-only specialist profiles. Each destination is a first-level
-  child and stable deep link. Do not hide Personas behind a Playbooks tab or use the
-  generic labels “Knowledge”, “Memory”, “Catalog”, or “Playbooks & agents” when the
-  specific contract is known. The legacy `#/catalog` route remains a compatibility
-  alias that opens **Response playbooks**.
+  transition. The retired ones redirect through the router's `PAGE_REDIRECTS`:
+  `#/dashboard` to `#/overview`, `#/analytics` to `#/metrics`, `#/playbooks` and
+  `#/catalog` to `#/runbooks`, and `#/scans` (the Automated scans page, removed in
+  Round 14) to Case Manager filtered to cases the agent closed. The retired Metrics tabs
+  `#/metrics?tab=effectiveness` and `?tab=cost` open the Agent effectiveness and Cost
+  pages, while the Metrics tabs that remain are deep-linkable (`#/metrics?tab=performance`,
+  `?tab=posture`).
+- **One name per page.** The page title is the label of the navigation element that is
+  current for it (the child that opens it, else the row), so "Sources", "Baseline",
+  "Models" and "Help Center" are the same words in the rail, the palette and the page
+  `h1`; a longer form belongs in the page's help tip. Group rows are exempt (the
+  Overview row reads "Overview" while its pages are titled "Cyber Defence Center" and
+  "Dashboards"), as are hosts whose own id is also one of their pages (Workspace and
+  Chat, Notifications and Inbox). `nav-titles.round14.test.ts` checks it.
+- **Landing and the Overview group.** The Console lands on the Cyber Defence Center
+  (`#/overview`) after sign-in, at `#/`, at an unknown hash and after the first-run
+  wizard; `#/dashboard` is its old alias and is replaced by `#/overview`. The Overview
+  group lists **Cyber Defence Center**, **Dashboards** (gated on `metrics:view`) and
+  **Standup**. Pressing the Overview row opens the Dashboards library (its target), or
+  the Cyber Defence Center for a viewer without `metrics:view`. The brand link opens the
+  Cyber Defence Center.
+- The **Intelligence** group uses four direct, non-overlapping operator destinations:
+  **Knowledge corpus** is indexed RAG material; **Runbooks** are the team's step-by-step
+  response procedures (one feature; the retired `#/playbooks` and `#/catalog` routes
+  redirect to `#/runbooks` for one release); **Operator memory** is approved durable
+  context; and **Agent personas** are read-only specialist profiles. Each destination is
+  a first-level child and stable deep link. Do not use the generic labels "Knowledge",
+  "Memory" or "Catalog" when the specific contract is known.
 - Intelligence catalogs are divider-led reference lists, not card galleries. Each
-  persona or playbook row exposes identity, purpose, and the smallest useful evidence
+  persona or runbook row exposes identity, purpose, and the smallest useful evidence
   summary first; criteria, tools, coverage, and replay evidence disclose in place.
   Reserve a Sheet for a full source document or create/edit workflow so scanning the
   catalog never replaces the operator's route context.
-- The collapsed rail remains a stable 64px dock until the operator explicitly expands
-  it. Hovering or focusing a grouped icon reveals one compact, viewport-clamped
-  destination flyout; it never widens the entire rail. Pointer travel across the gap is
-  delay-safe, focus opens immediately, Escape restores the trigger, and childless
-  destinations retain simple labels/tooltips. Explicit expansion uses the shared
-  reduced-motion-aware transition.
-- The global command palette uses progressive disclosure. Its blank state contains
+- **The docked rail** (`components/NavSidebar.tsx`, `styles/nav.css`). Two states only:
+  a 64px icon rail or a 240px labelled drawer, switched by one explicit toggle (the
+  quiet 28px row under the brand, Ctrl+B or ⌘B, or the 6px strip just past the panel's
+  right edge, which follows the edge and never lies over the destination scrollbar). Hover
+  never expands it. The toggle's vocabulary is **Collapse navigation** (its
+  visible text in the drawer) and **Expand navigation** (its tooltip in the rail); its
+  accessible name follows the state, and the shortcut is shown in the platform's own
+  spelling (`lib/platform-keys.ts`, never a hard-coded ⌘). The toggle stays mounted in
+  one slot, so focus and the pointer stay on it.
+- **One DOM for both states.** Every row is `[40px icon cell at x 12][fixed-width
+  label]`; icons are 18px and sit at the same x and y in both states; nothing is
+  swapped. The panel is fixed and always 240px wide; the in-flow spacer
+  (`desktop-navigation-frame`) changes width once per toggle, without a transition, so
+  the page moves once. The panel and the spacer change in consecutive frames and the
+  opaque 240px panel always covers the seam: collapsing moves the spacer first, and the
+  panel (with an open group's pages) closes over the moved page one frame later,
+  sliding a clipping layer closed while its content slides back the same amount
+  (160ms), so the icons never drift; expanding fills the panel and fades the labels in
+  first (120ms after 60ms), and the spacer moves one frame later. An open group's pages
+  leave or rejoin the tab order in the toggle's own commit; only their look follows the
+  panel. The rail preference is mirrored to local storage at once and sent to the server
+  one frame plus one task later, with changes made in that frame merged into one write.
+  The morph animates only `transform` and `opacity`; on expand an open group's pages
+  reveal with the grid-rows and opacity transition of `.nav-children` (after the labels'
+  60ms delay).
+- **Links and groups.** Every row that navigates is an `<a href>`: a plain click goes
+  through the router (so route guards still ask; a guard for one URL of a page, such as a
+  dashboard board's unsaved edits, registers with `sameRoute` so the way back to the
+  page's other URL asks too), a modified click opens a new tab. A
+  group row opens its target and never opens or closes its group; the chevron beside it
+  is a separate 28px button named "Show <group> pages" or "Hide <group> pages" that only
+  toggles the list. A group whose only page is its own (Notifications) is a plain
+  destination with no chevron. A section holding one item of its own name
+  (Intelligence, Analytics, Notifications) gets a hairline, not a heading that repeats
+  it; other section headings are 12px sentence case. The current page is a tinted pill
+  and a tinted icon, never an accent bar at the window edge.
+- **The 64px rail.** A grouped icon opens its page on a click, with no flyout flash. Its
+  pages appear in one flyout after a 300ms pointer rest (any movement restarts the
+  clock), switch to a neighbour after 120ms once one is open, close 400ms after the
+  pointer leaves the icon and the flyout, keep a safe triangle toward the flyout, open
+  at once on keyboard `:focus-visible` (never on pointer focus or a press). ArrowRight
+  enters the flyout; arrows, Home and End move inside; Escape, ArrowLeft or Shift+Tab
+  return to the icon; Tab moves on to the next rail destination (flyout items are out of
+  the tab order); Enter and Space on a grouped icon do what a click does. A grouped
+  icon carries `aria-haspopup`, `aria-expanded` and `aria-controls` naming the flyout's
+  list, labelled "<group> pages". A flyout opened by the pointer also closes on Escape
+  wherever focus is, and stays closed until the pointer leaves its icon. Other icons
+  share one rail tooltip surface: it moves to the icon after a 300ms rest, shows at once
+  on keyboard focus, never on a press and never while a flyout is open, and is
+  `aria-hidden` (every control has its own name). It meets WCAG 1.4.13: Escape dismisses
+  it (until the pointer leaves that icon or focus moves), the pointer can move onto it
+  (a 100ms grace and an 8px bridge), and it stays while hovered or focused. Hit boxes and
+  focus rings match the visible state: 48px around the icon in the rail, the full row in
+  the drawer. Collapsing never strands focus: a focused chevron or group page hands focus
+  to its row (the group icon) before it becomes inert.
+- **Exactly one `aria-current="page"`** in the navigation landmark ("Console
+  destinations", which holds the flyout too): the current page in a group's list while
+  that list is shown (drawer group open, flyout open, phone sheet), otherwise its group
+  row (drawer group closed) or rail icon (flyout closed).
+- **Forced colours** (Windows high contrast) drop the tints and the inset focus ring, so
+  the current page's pill is drawn as a `Highlight` outline (`.nav-tint[data-active]` in
+  `styles/nav.css`) and every control keeps the system focus outline: use
+  `focus-visible:outline-none` (a transparent outline that forced colours paint), never a
+  bare `outline-none`.
+- **State** (`soc/nav-store.ts`): the rail state, the open groups and the open flyout
+  live in a small external store read with `useSyncExternalStore`, so a toggle
+  re-renders the navigation only, never the shell or the routed page. It hydrates
+  synchronously from a `localStorage` mirror, reconciles once from `UserPrefs.misc`
+  (`nav_collapsed`, `nav_open_groups`), and persists every change to both.
+- **First paint** carries only what paints the navigation: the rows, the toggle, the
+  stable morph and the disclosure attributes. The 64px rail's interaction layer (the
+  group flyouts, their hover intent, the one rail tooltip and the handlers that drive
+  them, `components/nav-rail-interactions.tsx`) is a lazy chunk that
+  `components/nav-rail-loader.ts` loads on the rail's first pointer move or focus. A
+  first interaction that arrives before it lands is not lost: once the handlers attach
+  (before paint), the control the pointer still rests on, or that still holds keyboard
+  focus, receives that event again, so the 300ms rest or the keyboard open starts as if
+  the layer had always been there (a grouped icon registers itself, for its flyout's
+  position, in a layout effect, which runs before that replay); a control the pointer or
+  focus has left is forgotten, and a press made meanwhile acts as a press does (no
+  tooltip, and on a grouped icon no flyout until the pointer leaves). The desktop rail
+  also prefetches the chunk into the HTTP cache when the browser is idle, so that first
+  load is a cache read. A failed load is retried on a later interaction after a pause
+  (5s, doubling after each further failure, at most a minute), never on every pointer
+  move, and the rail navigates and toggles without it.
+  Never import the layer, `nav-hover-intent.ts` or `nav-rail-tip.tsx` statically from a
+  first-paint module (`bundle-first-paint.test.ts` guards it).
+- **The phone sheet** (below `md`) is the existing Radix Sheet with the labelled rows at
+  touch size: 44px destinations, 40px pages inside a group, no inner fade (the sheet's
+  slide is the only motion). It opens the current page's group when it opens and keeps
+  its groups still for that open and close cycle.
+- Insets are 8px left and right; the nav scroller has a 6px scrollbar (not
+  `scrollbar-gutter: stable both-edges`, which moves the icon column). In the 64px rail
+  the scroller is as wide as the rail, so a list that overflows a short window shows its
+  scrollbar there too.
+- Reduced motion: layout changes are instant; labels, the flyout and the rail tooltip
+  cross-fade with opacity only.
+- The global command palette uses progressive disclosure. Each destination opens what
+  the navigation opens ("Cyber Defence Center" opens `#/overview`, the Overview row and
+  "Dashboards" open `#/dashboards`). Its blank state contains
   recent work, a few safe quick actions, and top-level destinations only. Deep child
   routes, individual Settings sections, cases, and sources appear after the operator
   types a query. Do not render the entire route and Settings registry before input: a
@@ -984,10 +1369,21 @@ do not hand-build a second nav list.
   the notification bell (with its unread, jobs and health marks), the demo chip and an
   actionable update stay in the bar at every desktop width. One chip says "Demo mode": while
   demo mutes platform health, the health indicator leaves the bar and the demo chip's
-  popover says health checks are muted (a backend outage still shows).
+  popover says health checks are muted (a backend outage still shows). On a phone the
+  Console controls opener carries agent health as a small dot and says it in its name
+  ("Open console controls, agent health needs attention"), since the bell inside the
+  closed sheet is out of the accessibility tree; the search chip's shortcut uses the
+  platform's spelling ("Ctrl+K" or "⌘K"); menu icons are 16px; nothing in the bar is set
+  below 11px.
+- The breadcrumb keeps one leaf ("Agentic SOC / Overview" on the landing page,
+  "Agentic SOC / Dashboards" on the library). A page that is a child of a list may add
+  segments while it is mounted (`useBreadcrumbTrail` from `soc/nav-store.ts`, re-exported
+  by the shell): a dashboard board reads "Agentic SOC / Dashboards / SOC operations",
+  where "Dashboards" is a link followed through the router and the board name is the
+  current page. Below 46rem of bar only the current segment shows.
 - Product documentation is a bottom utility destination, separate from operational
   feature groups.
-- The in-app **Documentation** destination opens the version-matched Help Center
+- The in-app **Help Center** destination opens the version-matched Help Center
   shipped with the application at `/docs/<major.minor>/`; it never substitutes a
   GitHub directory for product help. Generate that static site from the same Markdown
   and accepted source identity as the application instead of copying articles into
@@ -1026,6 +1422,13 @@ agent-activity glyph while a chat turn is running (a rotation or arc sweep of ab
 may replay one short transform/opacity-only cue tied to the new payload; it must never
 run on its own timer or imply that a request is in flight when it is not. Springs,
 press feedback and overlay origins follow **Foundations → Motion**.
+
+The left navigation's timings are the standard for every side pane (the chat history
+rail, the report panel, inspectors, the rule sheet): one curve, `ease-standard`
+(`cubic-bezier(0.2, 0, 0, 1)`); 200ms to open a pane or drawer, 160ms to close it;
+150ms for chevrons, flyouts and menus; 120ms for tooltips. Animate `transform` and
+`opacity` only; under reduced motion layout changes are instant and overlays cross-fade
+with opacity only.
 
 ## Detection-rule authoring honesty
 
@@ -1080,17 +1483,25 @@ A strip on the canvas is followed by the next band after the normal band gap; it
 bottom rule closes the strip, and the band below draws no second rule against it. The
 primary dashboard's strip sits on its own grouped panel instead (see "Dashboard bands").
 
-**Dashboard bands.** The primary dashboard is a sequence of TITLED bands whose modules sit
-on **grouped panels**, so where one module ends and the next begins reads at a glance,
-without a line or a box edge. Every module (each instrument, the KPI strip, and the Deeper
-analytics header and, open, its timing strip and instruments) sits on its own soft tinted
-panel: the `.surface-panel` recipe in `theme.css`, the `--panel` fill (a step deeper than the
-canvas in light, a step lighter in dark), a 14px `rounded-xl` corner, no border and no resting
-shadow. Band and sub-band titles stay outside the panels, on the canvas; module titles sit
-inside them. Panel padding and the gutters between panels grow together: 16px, 20px from
-1280px, 24px from 1920px. The bands sit 40px under the KPI strip and 40px apart (48px from
-1920px), and the Deeper analytics header sits 40px under the last band (the strip, the
-bands and the fold are one group with that rhythm). Never nest a panel in a panel, and never
+**Dashboard bands: modules on grouped panels, one gutter apart, no section titles.** The
+primary dashboard is the KPI strip, two rows of modules and the Deeper analytics fold, with
+no band or row titles (Round 14, operator choice C3 B: the "Alert flow" and "Cases and
+response" headers are gone). Every module sits on its own **grouped panel**, so where one
+module ends and the next begins reads at a glance, without a line or a box edge: each
+instrument, the KPI strip, and the Deeper analytics header and, open, its timing strip and
+instruments sit on the soft tinted `.surface-panel` recipe in `theme.css` (the `--panel`
+fill, a step deeper than the canvas in light, a step lighter in dark), a 14px `rounded-xl`
+corner, no border and no resting shadow. Every module title sits inside its panel and names
+the window it reads after the title ("last 24 hours", "open now"), since no band caption
+names it for a row any more. Panel padding, the gutters between panels in a row and the gap
+between rows are one value that grows with the screen: 16px, 20px from 1280px, 24px from
+1920px (`PANEL_PADDING` and `PANEL_GAP` from `@/design-system`). The KPI strip, the flow row
+(the noise reduction flow and Human vs AI), the cases row (case state, response time, latest
+cases) and the Deeper analytics header are one group with that gap, set by the group's own
+flex `gap`, never by sibling margins; the page's own 32px rhythm (40px from 1920px) only
+spaces the masthead from that group. Each row is a plain `div` with a `data-band` hook
+(`flow`, `cases`) for tests and the print rules; it is not a landmark. The page outline is
+the `h1` and one `h2` per module in reading order. Never nest a panel in a panel, and never
 add a border, a resting shadow or a lattice of hairlines between modules: the panels do the
 separating. Two modules that share one panel (the two case snapshots) are split by one thin
 hairline centred in the gap between them. The first KPI tile of each strip row (the page's
@@ -1119,12 +1530,12 @@ reduced motion change nothing. On paper a panel prints as its fill. The dashbar 
 rest and takes the Console material once content scrolls under it, so the top of the page
 shows two surface levels, canvas and panel.
 
-Modules in one band row share one height (`items-stretch`, modules `h-full flex flex-col`),
+Modules in one row share one height (`items-stretch`, modules `h-full flex flex-col`),
 and a list fills its share of that height (a queue shows as many rows as fit, within a floor
 and a cap) instead of driving the row taller. The floor is set in rem, so a larger browser
 text size grows it with the rows, and a wider screen never shows fewer rows than a narrower
 one. A module with spare height spreads it between its parts rather than pooling it at the
-bottom (the response pair). From 1920px the queue holds eight rows: its band becomes two rows
+bottom (the response pair). From 1920px the queue holds eight rows: its row becomes two rows
 (the snapshots over the response pair on the left, the queue spanning both on the right, the
 rail at `4xl`) and the snapshot rings grow to 192px, so the modules, not blank space, take the
 height the queue sets. On paper the queue is laid out in flow and kept on one page with its
@@ -1132,25 +1543,31 @@ header. Modules side by side that share a structure (two snapshots) share their 
 (`grid-rows-subgrid`), so a caption that wraps in one moves both donuts and both footnotes
 together. The dashbar pins from `sm` up; on a phone it scrolls away with the page. Above
 1920px a dashboard widens by COLUMN COUNT, not by stretching: `wide` width, rising to 2400px
-at `4xl` (≥2200px), where bands share one track template with a 460px rail. A secondary fold
+at `4xl` (≥2200px), where both rows share one track template with a 460px rail. A secondary fold
 is ONE disclosure, with no nested panels or collapsibles, whose open/closed choice is
 remembered and whose collapsed header states what it holds. That summary wraps (beside the
 title from `md`, under it below) and never truncates; a long item label in it is capped so
 the count after it stays visible, and the whole sentence is the header's tooltip.
 
-Dashboard type ladder: page title 30px at `2xl` (the `4xl` step; 24px below); band titles 15px semibold
-with a 13px muted caption; instrument titles 14px; KPI numerals fluid (24 → 44px);
+Dashboard type ladder: page title 30px at `2xl` (the `4xl` step; 24px below); no band titles
+(a sub-band title inside the Deeper analytics fold is 15px semibold); instrument titles 14px
+with a 13px muted caption naming the window; KPI numerals fluid (24 → 44px);
 instrument numerals 24–28px; lists, legends and stage labels 13–14px; metadata 12px (mono
 only for identifiers); 11px only for chart ticks, badges and timestamps. Section titles are
 sentence case; tracked uppercase is not used for titles or for labels on the dashboard.
-Band headers may carry a quiet right-hand freshness stamp ("Updated 2m ago") — slices load
-independently, so each band states its own. A figure that repeats on the page (a cohort
+The page header carries ONE quiet right-hand freshness stamp ("Updated 2m ago"). Slices load
+independently, so the stamp is the OLDEST of the slices the visible modules read (the case
+list and metric totals, the flow while its panel shows it, the posture rollup); it never
+claims a freshness one of them does not have, and a slice whose modules are hidden is left
+out. Pressing it opens a popover (click, tap, Enter or Space; a tooltip would never open on
+touch) that names the slices it covers and the oldest one's time in UTC ("Oldest of cases,
+flow and response data: 14:02:31 UTC"); a screen reader hears the same with the stamp. A figure that repeats on the page (a cohort
 count beside a stock, a tile beside the instrument that partitions it) gets a distinct label
 and a quiet cross-reference line, never a second identical label.
 
 Every instrument describes ONE population: a donut's centre, its legend and any row beside
 it count the same cases over the same span, and a centre labelled "AI verdicts" counts only
-verdicted cases. Where a band mixes spans (a fold holding window figures, store-wide all-time
+verdicted cases. Where a fold mixes spans (window figures, store-wide all-time
 counts and live coverage), each instrument's caption names its span ("last 24 hours", "all
 time", "right now"), and a row that drills through opens a list over that same span — an
 all-time count opens the list without a window. A tally over a bounded case page says so on
@@ -1173,7 +1590,7 @@ at 1440 × 900). What the rows ARE stays on screen — the rows-read sentence wi
 bound", the completeness badge, any range narrowing — while the long explanation of how
 they were read sits behind one "About these rows" disclosure. A whole-window partition beside
 the stats lays its label · value pairs out two per row, so it never makes the stats column
-taller than the trend (Resolved / Closed keeps ten rows at 1440 × 900). Below `sm` the
+taller than the trend (Resolved or closed keeps ten rows at 1440 × 900). Below `sm` the
 dialog's actions sit under its title; below `md` the switcher, the filters and the evidence
 scroll as one body, so a phone never shows three fixed bands over a sliver of rows. When the
 dialog closes and focus returns to its tile, the tile's hover trend refuses a FOCUS-driven
@@ -1549,15 +1966,57 @@ admin cards:
   active editor. Below the desktop breakpoint, replace that long rail with one compact
   contextual trigger and a searchable Sheet chooser; do not stack the full inventory
   above the form.
-- The active renderer owns exactly one visible `h2` and its description. The workspace
-  may show a compact group/section context line and truthful dirty status, but it must
-  not repeat the section title as a second heading.
-- Related controls sit in flat, divider-led `SettingsCard` bands. Fields, switches,
-  posture summaries, and status text use aligned field/status lanes inside the band;
-  do not wrap the section, each toggle, or each summary in another decorative card.
-- Dirty state is visible globally and per section. Save and Discard live in one sticky,
-  opaque hairline action bar; never introduce a second section-local preference save
-  path.
+- **Grouped panels** (Round 14, operator choice C9 option A). The active renderer is one
+  `SettingsSection` (`pages/settings/primitives.tsx`): its `h2` is the section's title
+  from `settings-sections-meta.ts`, with a help tip beside it (the explanation, never a
+  description line), "Ask about this" and the section's actions (Refresh as a
+  `RefreshButton`, Add user) on the same row, and nothing else above the settings. A
+  form section is capped at 44rem (704px) so a switch sits within reach of its label;
+  a table section (Users, Roles, Sessions, Admin sessions, Enrichment providers) takes
+  the full width. In a full-width section a labelled control row (`switch`, `select`, an
+  inline `field`, `control`, `status`, `action`) still spans the panel, its hairline and
+  hover included, but caps its content at a form row's content width
+  (`SETTINGS_ROW_CONTENT_MAX_WIDTH`: 42rem, 41.5rem from 1280px, which is 44rem less the
+  row inset), so its control sits as near its label as in a form section. A `block` row
+  of form-like content (fields and a button, a callout between two switches) takes the
+  same cap with `width="form"`, so a group keeps one right edge; tables, lists, `bleed`,
+  `link` and `wide` rows keep the full width. In a form section the cap changes nothing.
+  The Settings shell hands the section its "Ask about this" topic and unsaved state
+  through `SettingsSectionContext`.
+- Related settings form a `SettingsGroup`: its title (15px semibold) and an optional
+  one-line caption sit above one tinted panel, on the rows' inset (16px, 20px from
+  1280px), with an optional trailing action; 40px between groups. The panel holds
+  `SettingRow`s divided by hairlines and never another card.
+- A `SettingRow` is a label (14px medium) and at most one line of help (13px muted, at
+  most 42rem) with its control on the row's end: `switch`, `select`, `field` (any
+  `Field`-based control: `NumPref`, `NumberField`, `TextPref`, `SecretInput`; the row
+  provides its row renderer, `inlineFieldLayout` (or `wideFieldLayout` for a `wide` row),
+  through `FieldLayoutContext`, every control in a group
+  sharing one right edge in a 16rem column), `status` (a `StatusDot` and an optional
+  action), `action` or `link` (a row that opens another page: an `<a href>` with its
+  value and a chevron, "Connected sources · 5 of 5 enabled"; a plain click goes through
+  the router, so the unsaved-changes confirmation is asked before Settings is left). A
+  wide control (a text area, a tag list, a segmented choice) is a `field` row with
+  `wide`: the same 14px medium label and 13px help line, then the control at full width
+  under them, at every width; identifiers (field paths, evidence fields) are `mono`,
+  13px mono, with
+  the placeholder "Add a field". Below 640px every field stacks under its label, so a
+  field never draws over its label on a phone; switches stay on the row's end.
+- Numbers use `NumberField` (through `NumPref` in Settings) at 8rem with the unit inside
+  ("h", "s", "min"), wider only when a long unit and the steppers need the room; a
+  reading such as "(24 hours)" goes in the help line. A preference's `step` sets how far
+  the arrows and steppers move and never snaps a typed or stored value (0.72 with a step
+  of 0.05 stays 0.72); steppers show for values of up to four digits only. An emptied
+  preference field restores its current value and saves nothing, and a field that is
+  only tabbed through saves nothing.
+- Dirty state: the Settings rail shows a dot on the section, and Save and Discard live
+  in one sticky, opaque hairline action bar (`StickySaveBar width="form"` under a form
+  section), with 72px of room under the last row so the bar never covers a control.
+  Nothing in the section header says "Modified". Never introduce a second
+  section-local preference save path.
+- `SectionTitle`, `SectionShell`, `SettingsCard` and in-section anchor rails are the
+  pre-Round-14 grammar, kept only until every section has moved; a new section never
+  uses them.
 - A dirty preference or write-only-secret draft must not disappear silently. Protect
   reload/tab close and pause Console-driven cross-page navigation before changing
   React state or the hash; use the shared accessible confirmation dialog rather than

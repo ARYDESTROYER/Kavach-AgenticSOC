@@ -10,8 +10,9 @@ inversions:
 * usage rows land in the REAL ledger, tagged and separable, because real money must
   be visible (#6) — see :class:`_DualUsageStore`;
 * the pipeline's collaborators MIRROR production rather than copying DemoStack's
-  omissions (a real playbook registry, a frozen memory snapshot, a real log-query
-  tool), because a replay that does not reproduce production is not a replay.
+  omissions (the runbook catalog production matches against, frozen at job start; a
+  frozen memory snapshot; a real log-query tool), because a replay that does not
+  reproduce production is not a replay.
 
 Lifetime is ONE stack per ``(fixture, arm, repeat)`` cell rather than per run. The
 pipeline calls ``find_open_case_for_cluster`` on its case store, so a run-lived stack
@@ -477,8 +478,15 @@ def replay_prefs(base: Preferences, fixture: LoadedFixture, arm: Any) -> Prefere
         updates["caps"] = prefs.caps.model_copy(update={"max_tool_calls": int(max_tool_calls)})
     playbooks_enabled = getattr(arm, "playbooks_enabled", None)
     if playbooks_enabled is not None:
+        # Round 14: the arm knob keeps its stored name and switches the runbook
+        # guidance the investigator receives (``runbooks.investigator_guidance``);
+        # ``playbooks.enabled`` is only that switch's read-only mirror, and
+        # ``model_copy`` skips the validator that keeps the two in step, so both are set.
         updates["playbooks"] = prefs.playbooks.model_copy(
             update={"enabled": bool(playbooks_enabled)}
+        )
+        updates["runbooks"] = prefs.runbooks.model_copy(
+            update={"investigator_guidance": bool(playbooks_enabled)}
         )
     personas_enabled = getattr(arm, "personas_enabled", None)
     if personas_enabled is not None:
@@ -530,6 +538,12 @@ class ReplayStack:
             [dataclass_replace(chunk) for chunk in self.run.corpus_chunks]
         )
 
+    async def _frozen_runbook_catalog(self) -> tuple[Any, ...]:
+        """The runbook catalog the run froze at job start (Round 14 SPEC §4.10.18):
+        every cell matches the same Published versions, whatever the live library does
+        meanwhile."""
+        return tuple(getattr(self.run, "runbook_catalog", ()) or ())
+
     def _build_pipeline(self):
         from ...agents.pipeline import InvestigationPipeline
 
@@ -543,7 +557,10 @@ class ReplayStack:
             self.cases,
             self.audit,
             source=self.source,
-            playbooks=state.playbooks,
+            # The frozen Published catalog (never the live library), and no attacher:
+            # a replay cell never writes a runbook run anywhere.
+            runbook_catalog=self._frozen_runbook_catalog,
+            runbook_attacher=None,
             memory=self.memory,
             # No tuning ledger: its snapshot only ever reaches an audit annotation,
             # never a prompt, so its absence cannot move a replayed verdict.

@@ -75,11 +75,22 @@ from ..agents.chat_events import (
     parse_tool_call_header,
 )
 from ..agents.chat_tools.base import granted_tool_names
-from ..agents.chat_tools.cases import ASSIGNEE_ME_NOBODY, ASSIGNEE_ME_OWN
+from ..agents.chat_tools.cases import (
+    ASSIGNEE_ME_NOBODY,
+    ASSIGNEE_ME_OWN,
+    RUN_STANDING_ALL_DONE,
+    RUN_STANDING_WAITING,
+)
 from ..agents.chat_tools.common import console_num, fmt_pct, round_half_up, visible_text
 from ..agents.chat_tools.taint import REFUSED_TAINT
 from ..constants import OPEN_CASE_STATUSES, TERMINAL_CASE_STATUSES, UNTRUSTED_CLOSE, UNTRUSTED_OPEN
+from ..config import CHAT_AGENT_BOUNDS, ChatAgentConfig
 from ..models import ChatStarter
+
+#: How many lookups a step may run at once: the configured ceiling, and the model's
+#: default when the prompt states none (Round 14 SPEC §4.2: 24 and 12).
+_PARALLEL_CEILING: int = CHAT_AGENT_BOUNDS["max_parallel"][1]
+_PARALLEL_DEFAULT: int = int(ChatAgentConfig.model_fields["max_parallel"].default)
 
 __all__ = [
     "DEMO_STARTERS",
@@ -597,7 +608,10 @@ def read_prompt(messages: Sequence[Mapping[str, Any]]) -> PromptView:
         if kinds:
             view.kinds[match.group(1)] = tuple(kinds.group(1).split("|"))
     parallel = _PARALLEL_RE.search(system)
-    view.max_parallel = max(1, min(16, int(parallel.group(1)))) if parallel else 4
+    # The configured ceiling (``CHAT_AGENT_BOUNDS``) and, with no line, the model's own
+    # default: Demo plans exactly as many lookups at once as a live model is allowed.
+    view.max_parallel = (max(1, min(_PARALLEL_CEILING, int(parallel.group(1)))) if parallel
+                         else _PARALLEL_DEFAULT)
     window = _ANALYST_WINDOW_RE.search(system)
     view.analyst_window = window.group(1) if window else None
     scopes = _SCOPES_RE.search(system)
@@ -990,6 +1004,10 @@ def _block(result: Result | None, kind: str, *, nth: int = 1, view: str | None =
     request: dict[str, Any] = {"ref": entry.ref}
     if entry.views:
         request["view"] = view if view in entry.views else entry.views[0]
+        if kind == "categories" and view in ("hbar", "bar") and entry.views[0] == "table":
+            # A severity breakdown (Round 14 SPEC §4.7.3) lists its table first: named
+            # levels with their rules read as the table, never as bare bars.
+            request["view"] = "table"
     if title:
         request["title"] = title[:120]
     if top_n:
@@ -1144,7 +1162,7 @@ _DEFINITION_RE = re.compile(
     r"how do (?:you|we) (?:calculate|compute|measure))")
 _HELP_RE = re.compile(
     r"^\s*(?:/help\b|how (?:do|can|should) (?:i|we)\b|how to\b|where (?:do|can|should) (?:i|we)\b|"
-    r"where (?:is|are) (?:the )?[a-z &-]{0,40}(?:setting|settings|page|option|button|menu|tab)s?\b|"
+    r"where(?:'s|\u2019s| is| are) (?:the )?[a-z &-]{0,40}(?:setting|settings|page|option|button|menu|tab)s?\b|"
     r"can (?:i|we)\b|is it possible\b|help me\b|what can (?:i|you|chat)\b)")
 # Definitional forms ("Ask about this" topic questions, SPEC A7, and their like): what
 # a KPI counts, what a setting controls, how a figure is calculated. They are answered
@@ -1164,6 +1182,108 @@ _DEFINITIONAL_RE = re.compile(
     r")")
 # "Can we see brute force attempts?" asks for data, not for how to use the console.
 _DATA_ASK_RE = re.compile(r"^\s*(?:can|could) (?:i|we|you) (?:see|show|get|find|list|pull|look at)\b")
+#: A question about one case's runbook (Round 14 SPEC §4.10.10): what is next, how far
+#: it is, which steps are left. Asked in the Case Manager chat or about a named case;
+#: "which runbooks cover brute force" (plural, a library question) stays a knowledge one.
+_RUNBOOK_CASE_RE = re.compile(
+    r"\b(?:what(?:'s|\u2019s| is)? (?:left|next)|what should (?:i|we) do next|"
+    r"what (?:are|is) the next steps?|next steps? (?:on|for|in) (?:the|this|its|that) (?:case|runbook)|"
+    r"checklist|steps? (?:are )?(?:left|remaining|open|still open|to do)|"
+    r"(?:the|this|its|case'?s?) runbook|runbook (?:progress|status|steps?))\b")
+#: Words that may sit between a listing verb and "runbooks" ("list the runbooks",
+#: "show me all our published runbooks", "give me the list of playbooks").
+_RUNBOOK_LIST_FILLER = (r"(?:me|us|the|a|all|of|every|our|my|your|available|published|current|existing|"
+                        r"built-in|builtin|live|active|enabled|full|whole|entire|list|catalog|catalogue)")
+#: The determiner or possessive "what are" needs before "runbooks" to ask for the
+#: library ("What are our runbooks?", "What are the runbooks?"). A bare "What are
+#: runbooks?" asks what a runbook is, so it stays a knowledge search.
+_RUNBOOK_LIST_DETERMINER = r"(?:the|our|all|your|my|available|published|current|existing|every)"
+#: A question that asks to see the runbook library itself (Round 14 SPEC §4.10.18), so
+#: the Demo planner calls ``search_knowledge`` with ``kind="list_runbooks"`` rather
+#: than a knowledge search for the words: "List the runbooks", "Show our playbooks",
+#: "Which runbooks do we have?", "What are our runbooks?", "the runbook library" and
+#: the bare word "Runbooks". "How do runbooks work?", "What are runbooks?" and "Which
+#: runbook covers phishing?" stay knowledge searches, and so does a request that names
+#: a topic (:data:`_RUNBOOK_TOPIC_RE`).
+_RUNBOOK_LIST_RE = re.compile(
+    rf"\b(?:(?:list|show|display|give|get|see|view)(?:\s+{_RUNBOOK_LIST_FILLER})*\s+(?:runbooks|playbooks)"
+    rf"|(?:which|what)(?:\s+are\s+{_RUNBOOK_LIST_DETERMINER}(?:\s+{_RUNBOOK_LIST_FILLER})*"
+    rf"|(?:\s+{_RUNBOOK_LIST_FILLER})*)\s+(?:runbooks|playbooks)"
+    r"|(?:runbook|playbook) (?:library|catalog(?:ue)?|list)"
+    r"|(?:list|catalog(?:ue)?) of (?:runbooks|playbooks))\b"
+    r"|^\s*(?:the\s+|our\s+|all\s+)?(?:runbooks|playbooks)\s*[?.!]*\s*$")
+#: A topic after the runbook noun: "runbooks about phishing", "playbooks for brute
+#: force", "the runbooks that handle ransomware", "runbooks on this case", "which
+#: runbooks do we have for credential stuffing", "what are the runbooks used for",
+#: and a filter on the name: "runbooks containing phishing", "runbooks named
+#: ransomware", "runbooks with phishing in the title". The question asks which
+#: runbooks fit the topic (or what they are for), and ``list_runbooks`` takes no
+#: topic, so it is a knowledge search for the words. A relative clause that only says
+#: the runbooks exist ("the runbooks that are published", "which runbooks are
+#: there") is no topic, and neither is a bare "with" ("the runbooks with their
+#: owners"): only "with <words> in the title" or "in the name" filters.
+_RUNBOOK_TOPIC_RE = re.compile(
+    r"\b(?:runbooks|playbooks|library|catalog(?:ue)?)\b(?:\s+[\w'-]+){0,4}?\s+(?:about|for|covering|covers?|"
+    r"against|handl(?:e|es|ing)|deal(?:s|ing)?|appl(?:y|ies)|applicable|mention(?:s|ing)?|related|regarding|"
+    r"involving|concerning|matching|contain(?:s|ing)?|named|titled|called|"
+    r"with\s+(?:[\w'\"-]+\s+){1,4}?in\s+(?:the\s+|their\s+|its\s+)?(?:titles?|names?))\b"
+    r"|\b(?:runbooks|playbooks)\s+(?:on|to|that|which|who|used)\b"
+    r"(?!\s+(?:are|is|were|was|we|you|i|exist|exists|there)\b)")
+
+
+#: Where the runbook library is, and what became of the retired name for it (Round 14
+#: SPEC §3.1 merged the two lists into one Runbooks feature): a question about the
+#: console, answered from the Help Center (the Runbooks page and its "Coming from an
+#: earlier version" section) like any "where do I" question, never a search of runbook
+#: text. Both patterns hold only when the library itself is what the question asks
+#: about: the noun ends the question (a "page", "library", "list", "editor" or
+#: "catalog" and a "now" may follow it), so "Where are the runbook settings?" and
+#: "Where do I find runbook approvals?" keep their own words, and "Where is the runbook
+#: for phishing?", "What's the playbook to go with a phishing case?" and "I can't find
+#: the runbook for phishing" ask about one runbook and stay knowledge searches.
+_LIBRARY_TAIL = (r"(?:\s+(?:page|library|list|editor|catalog(?:ue)?|feature|section))?"
+                 r"(?:\s+(?:now|anymore|any\s+more))?")
+_QUESTION_END = r"\s*[?.!]*\s*$"
+_WHERE_LEAD = (r"\bwhere(?:'s|\u2019s|\s+(?:are|is|did|do|does|have|has|were|was|can|could|should|would))\s+"
+               r"(?:(?:i|we|you)\s+)?(?:(?:find|see|get|open|look\s+for)\s+)?"
+               r"(?:(?:the|our|my|all|all\s+the|all\s+our|any)\s+)?")
+_CANT_FIND = (r"\b(?:can'?t|can\u2019t|cannot|can\s+not|couldn'?t|couldn\u2019t|unable\s+to)\s+(?:(?:i|we)\s+)?"
+              r"(?:find|see|locate)\s+(?:(?:the|our|my|any)\s+)?")
+#: What became of the retired name: "Where are playbooks now?", "Where did the
+#: playbooks go?", "Were playbooks renamed?", "Are playbooks gone?", "What happened to
+#: playbooks?", "Why can't I find playbooks?". The verb form needs the noun as the
+#: clause's subject and nothing after the verb but "now" or "to runbooks", so "Is the
+#: playbook missing a containment step?" and "Which playbook went with the phishing
+#: case?" stay knowledge searches.
+_LEGACY_NAME_RE = re.compile(
+    rf"{_WHERE_LEAD}playbooks?{_LIBRARY_TAIL}{_QUESTION_END}"
+    rf"|{_CANT_FIND}playbooks?{_LIBRARY_TAIL}{_QUESTION_END}"
+    rf"|\bwhat(?:'s|\u2019s|\s+has|\s+have)?\s+happen(?:ed|s)?\s+to\s+(?:(?:the|our|my|all|all\s+the)\s+)?"
+    rf"playbooks?{_LIBRARY_TAIL}{_QUESTION_END}"
+    r"|(?:^|[,;:.!?]\s*|\b(?:so|and|but|hey|hi|ok|okay)\s+)(?:(?:why|where|when|how\s+come)\s+)?"
+    r"(?:(?:are|were|have|has|did|do|does|was|is)\s+)?(?:(?:the|our|my|all|all\s+the|all\s+our)\s+)?"
+    r"playbooks?\s+(?:(?:have|has|had|been|were|was|are|is|got|get|just|now|all)\s+)*"
+    r"(?:go|gone|went|renamed|moved|removed|deleted|replaced|disappeared|vanished|missing)"
+    rf"(?:\s+(?:to|into|as)\s+runbooks?|\s+(?:now|anymore|any\s+more|away))?{_QUESTION_END}")
+#: Where the runbook library is: "Where are runbooks?", "Where are the runbooks?",
+#: "Where can I find runbooks now?", "Where's the runbook library?", "Why can't I find
+#: the runbooks?".
+_RUNBOOK_LOCATION_RE = re.compile(
+    rf"{_WHERE_LEAD}runbooks?{_LIBRARY_TAIL}{_QUESTION_END}"
+    rf"|{_CANT_FIND}runbooks?{_LIBRARY_TAIL}{_QUESTION_END}")
+#: The Help Center query of a question about the retired name: the Runbooks page
+#: section written for someone coming from an earlier version, in the current words
+#: (the console's Runbooks page is the place it names); and of a question about where
+#: the runbooks are: the Runbooks page.
+_RUNBOOK_UPGRADE_QUERY = "Runbooks coming from an earlier version response procedures"
+_RUNBOOK_LOCATION_QUERY = "Intelligence Runbooks library"
+
+
+def _asks_for_runbook_library(lowered: str) -> bool:
+    """True when the question asks to see the runbook library as a whole (Round 14
+    SPEC §4.10.18): a listing phrasing (:data:`_RUNBOOK_LIST_RE`) that names no topic
+    (:data:`_RUNBOOK_TOPIC_RE`)."""
+    return bool(_RUNBOOK_LIST_RE.search(lowered)) and not _RUNBOOK_TOPIC_RE.search(lowered)
 # Records a question can ask to see: cases and their kinds (the verdict nouns),
 # incidents, alerts. A console noun after one makes it a qualifier ("the cases page",
 # "the open cases KPI", "the false positives rate"): that question is about the console
@@ -2684,11 +2804,14 @@ def _requested_view(lowered: str) -> str | None:
 
 
 def _help_topic(question: str) -> str:
-    """The Help Center query: the first clause, without question scaffolding."""
+    """The Help Center query: the first clause, without question scaffolding. A
+    contraction reads as its spelled-out form ("Where's the runbook tab?" asks for "the
+    runbook tab", as "Where is the runbook tab?" does), with either apostrophe."""
     text = re.split(r",?\s+and\s+(?=what|how|where|which|who|can|is|are)", question.strip(), maxsplit=1)[0]
     text = re.sub(r"^\s*(?:/help\s+|how (?:do|can|should) (?:i|we)\s+|how to\s+|where (?:do|can|should) "
-                  r"(?:i|we)\s+|where (?:is|are)\s+|what (?:is|are|does|do)\s+|can (?:i|we)\s+|"
-                  r"is it possible to\s+|help me\s+(?:with\s+)?|please\s+)", "", text, flags=re.IGNORECASE)
+                  r"(?:i|we)\s+|where(?:['’]s|\s+(?:is|are))\s+|what(?:['’]s|\s+(?:is|are|does|do))\s+|"
+                  r"can (?:i|we)\s+|is it possible to\s+|help me\s+(?:with\s+)?|please\s+)", "", text,
+                  flags=re.IGNORECASE)
     text = re.sub(r"\s+in this console\b", "", text, flags=re.IGNORECASE)
     text = text.strip(" ?.!")
     return display_text(text or question, 200)
@@ -3569,6 +3692,23 @@ def _investigation_subject(q: str, low: str, view: PromptView, ask: Callable[...
     return None if shown.intent in _UNMAPPED_INTENTS else shown
 
 
+#: "Any suspicious activity in the last 3 days?", "anything suspicious today?",
+#: "suspicious events this week" (Round 14): a survey of what the detection rules
+#: flagged, answered from the logs by rule (``log_stats``), as a live model answers it.
+#: "Any suspicious cases?" stays a case question; a named value stays a hunt.
+_SUSPICIOUS_RE = re.compile(
+    r"\b(?:any(?:thing)?|something|anything else)\s+suspicious\b"
+    r"|\bsuspicious\s+(?:activit(?:y|ies)|events?|behaviou?rs?|alerts?|detections?|traffic)\b")
+#: A case outcome ("closed as false positive", "auto-closed", "escalated", "true
+#: positives"): a question about what happened to cases, never a survey of the rules.
+_SUSPICIOUS_OUTCOME_RE = re.compile(
+    r"\b(?:auto[- ]?clos\w*|closed|close|false[- ]positives?|true[- ]positives?|escalat\w*|resolved)\b")
+#: "across all sources", "from every source": the scope of a suspicious-activity survey,
+#: not the source-health subject ("Any suspicious sources?" still is).
+_ALL_SOURCES_SCOPE_RE = re.compile(
+    r"\b(?:across|from|in|over|on)\s+(?:all|every|each|any)\s+(?:(?:of\s+)?(?:the|our)\s+)?(?:log\s+)?sources?\b")
+
+
 def classify(question: str, view: PromptView | None = None) -> Ask:
     """The intent of ``question`` (deterministic regex rules; order matters)."""
     view = view or PromptView()
@@ -3693,6 +3833,11 @@ def classify(question: str, view: PromptView | None = None) -> Ask:
         return ask("clarify", clarify=clarify, save=False)
 
     case_id = _case_id(q)
+    if ((view.case_scoped or case_id) and not template and _RUNBOOK_CASE_RE.search(low)
+            and not _HELP_RE.search(low)):
+        # "What is next on this case?", "Summarise the runbook progress": the case's
+        # runbook run, read through get_case (Round 14 SPEC §4.10.10).
+        return ask("runbook", case_id=case_id)
     if case_id:
         if template == "investigation_brief" or re.search(r"\bbrief\b|\bhandoff note\b", low):
             return ask("brief", case_id=case_id, report="investigation_brief",
@@ -3760,7 +3905,10 @@ def classify(question: str, view: PromptView | None = None) -> Ask:
             return ask("explain_metric", metric=metric[0], topic=metric[1], definition=True)
         return ask("help", definition=True, wants_access=bool(_ACCESS_RE.search(low)),
                    wants_overview=bool(_OVERVIEW_RE.search(low)), save=False)
-    help_like = bool(_HELP_RE.search(low)) and not _DATA_ASK_RE.match(low)
+    # "Where are the runbooks?" and "What happened to playbooks?" ask where the console
+    # keeps the library (a product question), like "where do I find ...".
+    help_like = (bool(_HELP_RE.search(low)) or bool(_LEGACY_NAME_RE.search(low))
+                 or bool(_RUNBOOK_LOCATION_RE.search(low))) and not _DATA_ASK_RE.match(low)
     if view.case_scoped and not help_like and re.search(
             r"\b(this|it|why|what happened|summar\w+|explain|evidence|decision|decided|timeline|verdict|"
             r"risk|closed|escalat\w*|status|entity|attack|mitre|logs?|activity)\b", low):
@@ -3885,6 +4033,13 @@ def classify(question: str, view: PromptView | None = None) -> Ask:
     if re.search(r"\bhunt\w*\b|\bpivot\b", low):
         found = _keyword(low)
         return ask("pivot", keyword=found[0] if found else None, topic=found[1] if found else "")
+    # "Any suspicious activity in the last 3 days?" (Round 14) is a survey of the rules
+    # that fired. It is answered only after every rule below that names its own subject
+    # (an investigation, ATT&CK, sources, campaigns, the audit trail, automation), so
+    # "Any suspicious campaigns?" stays a campaigns question; a case outcome ("closed as
+    # false positive", "auto-closed", "escalated") stays a case question.
+    suspicious = bool(_SUSPICIOUS_RE.search(low)) and not _CASE_SUBJECT_RE.search(low) and (
+        not view.case_scoped) and not _SUSPICIOUS_OUTCOME_RE.search(low)
     if re.search(r"\binvestigat\w*\b|\b(newest|latest|most recent)\b.*\bcase\b|\bwhy (?:was|is|did)\b.*\bcase\b",
                  low):
         named = None if view.case_scoped else _investigation_subject(q, low, view, ask)
@@ -3895,7 +4050,9 @@ def classify(question: str, view: PromptView | None = None) -> Ask:
         return ask("metric", metric="mitre_coverage")
     if re.search(r"\b(att&ck|mitre|tactics?|techniques?)\b", low) and not base["group"]:
         return ask("mitre")
-    if re.search(r"\b(silent|sources?|ingest\w*|connectors?|feeds?|coverage)\b", low) and not re.search(
+    # A survey "across all sources" names its scope, not the source-health subject.
+    source_text = _ALL_SOURCES_SCOPE_RE.sub(" ", low) if suspicious else low
+    if re.search(r"\b(silent|sources?|ingest\w*|connectors?|feeds?|coverage)\b", source_text) and not re.search(
             r"\bsource[- ]?(?:ips?|address(?:es)?)\b", low) and not (_CASE_SUBJECT_RE.search(low) and base["group"]):
         # "top source IPs" is a log question (handled by the top-N rule below).
         return ask("sources")
@@ -3910,6 +4067,25 @@ def classify(question: str, view: PromptView | None = None) -> Ask:
     ) if re.search(pattern, low)), None)
     if automation:
         return ask("automation", metric=automation)
+    if suspicious:
+        # The detection rules that fired, with each rule's sheet one click away, and the
+        # events over time. One that names a host, user or IP is about that entity; one
+        # that names a breakdown ("by severity") gets that breakdown.
+        entity = _deep_entity(q)
+        if entity is not None:
+            return ask("deep", entity=entity)
+        named = _group_field(low)
+        if named and named not in ("rule", "rule_name"):
+            return ask("top", field=named)
+        # "Which hosts had suspicious activity?", "Any suspicious users?": the entity
+        # kind the question names, counted by that field (the top-N answer). The fields
+        # are tried in the top-N rule's order below (IPs, rules, users, hosts), so a
+        # question that names the rules ("Which rules flagged suspicious activity on
+        # hosts?") stays the survey.
+        noun = next((f for words, f in _GROUP_FIELDS if re.search(rf"\b{words}\b", low)), None)
+        if noun in ("host", "user", "ip"):
+            return ask("top", field=noun)
+        return ask("suspicious", field="rule")
     entity_cases = _ENTITY_CASES_RE.search(low)
     if entity_cases and not help_like:
         word = (entity_cases.group(1) or entity_cases.group(2) or "user").split()[0].rstrip("s")
@@ -6290,6 +6466,12 @@ def _posture_calls(v: PromptView, a: Ask) -> list[Call]:
     ]
 
 
+def _suspicious_calls(v: PromptView, a: Ask) -> list[Call]:
+    """The detection rules that fired in the window (the last 24 hours unless one is
+    named or selected), counted per rule over time (Round 14)."""
+    return [Call("log_stats", {"group_by": ["rule"], "top_n": 10, **_log_window(a, v, default=24)})]
+
+
 def _top_calls(v: PromptView, a: Ask) -> list[Call]:
     inp: dict[str, Any] = {"group_by": [a.field or "host"], "top_n": _top_n(a.lowered),
                            **_log_window(a, v, default=168)}
@@ -6326,6 +6508,7 @@ def _plan_mitre(view: PromptView, ask: Ask, done: int) -> list[Call]:
 
 _SIMPLE_PLANS: dict[str, Callable[[PromptView, Ask], list[Call]]] = {
     "posture": _posture_calls,
+    "suspicious": _suspicious_calls,
     "shift": lambda v, a: [
         Call("shift_report", _win_args("shift_report", a, v)),
         Call("soc_metrics", {"kind": "posture", **_metric_window(a, v)}),
@@ -6364,10 +6547,12 @@ _SIMPLE_PLANS: dict[str, Callable[[PromptView, Ask], list[Call]]] = {
     "audit": lambda v, a: [Call("audit_search", {**_windowed(a, v), **(
         {"action_type": a.slot("action_type")} if a.slot("action_type") else {})})],
     "automation": lambda v, a: [Call("automation_status", {"kind": a.metric or "approvals"})],
+    # Playbooks are runbooks since Round 14: both phrasings list the runbook library.
     "knowledge": lambda v, a: [Call("search_knowledge", (
-        {"kind": "list_runbooks"} if re.search(r"\b(list|which|what) runbooks\b", a.lowered)
-        else {"kind": "list_playbooks"} if re.search(r"\b(list|which|what) playbooks\b", a.lowered)
+        {"kind": "list_runbooks"} if _asks_for_runbook_library(a.lowered)
         else {"query": a.topic or a.question}))],
+    "runbook": lambda v, a: [Call("get_case", {**({"case_id": a.case_id} if a.case_id else {}),
+                                               "include": ["summary", "runbook"]})],
     "help": lambda v, a: [
         Call("app_help", {"query": _help_query(a)}),
         *([Call("app_status", {"kind": "access"})] if a.wants_access else []),
@@ -6444,11 +6629,13 @@ _PLANS: dict[str, Callable[[PromptView, Ask, int], list[Call]]] = {
 _INTENT_TOOLS: dict[str, tuple[str, ...]] = {
     "posture": ("soc_metrics",), "shift": ("shift_report",), "noise": ("soc_metrics",),
     "metric": ("soc_metrics",), "cost": ("cost_usage",), "brute": ("log_stats", "search_cases"),
-    "top": ("log_stats",), "tp": ("search_cases",), "hunt": ("lookup_indicator", "search_logs", "search_cases"),
+    "top": ("log_stats",), "suspicious": ("log_stats",), "tp": ("search_cases",),
+    "hunt": ("lookup_indicator", "search_logs", "search_cases"),
     "pivot": ("search_cases", "get_case", "lookup_indicator", "search_logs"),
     "case": ("get_case", "explain_decision"), "mitre": ("mitre_lookup",), "sources": ("source_health",),
     "campaigns": ("list_campaigns",), "audit": ("audit_search",), "automation": ("automation_status",),
     "knowledge": ("search_knowledge",), "explain_metric": ("soc_metrics",), "cases": ("search_cases",),
+    "runbook": ("get_case",),
     "regroup": ("log_stats",), "rerun": (), "logs": ("search_logs",), "log_count": ("log_stats",),
     "breakdown": ("case_stats",), "trend": ("case_stats", "soc_metrics"), "compare": ("case_stats", "soc_metrics"),
     "perf_report": ("case_stats", "soc_metrics", "cost_usage", "search_cases"),
@@ -6489,6 +6676,11 @@ _TOOL_NAMES = {
 #: work?" matches "Work a case"): the product area they are about, in the corpus's
 #: words. The first matching pattern wins; other export questions keep their words.
 _HELP_HINTS: tuple[tuple[str, str], ...] = (
+    # Round 14: what became of the retired name, and where the runbooks are. Both
+    # patterns hold only when the library is what the question asks about, so a help
+    # question about one part of it ("Where are the runbook settings?") keeps its words.
+    (_LEGACY_NAME_RE.pattern, _RUNBOOK_UPGRADE_QUERY),
+    (_RUNBOOK_LOCATION_RE.pattern, _RUNBOOK_LOCATION_QUERY),
     ((r"\breports?\b.*\b(?:export\w*|pdf|download\w*|print\w*)\b|"
       r"\b(?:export\w*|pdf|download\w*|print\w*)\b.*\breports?\b"), "Workspace Chat Export report"),
     (r"\b(?:export\w*|pdf|download\w*|print\w*)\b", ""),
@@ -6744,6 +6936,11 @@ def _say_log_stats(r: Result, *, subject: str | None = None) -> str:
             return _no_log_events(o, what)
         scope = f"matching {what}" if what else ""
     lead = _with_coverage(f"**{_plural(total, 'event')}** {scope + ' ' if scope else ''}{_in(window)}", coverage)
+    levels = _say_severity_levels(o) if fld == "severity" and total else None
+    if levels:
+        # Round 14 (SPEC §4.7): a severity breakdown reads as named levels with the
+        # rules behind them, never as raw source numbers.
+        return f"{lead}; {levels}"
     if not total or not top:
         return lead + "."
     lead += f"; by {label}, {_ranked(top)}."
@@ -6752,6 +6949,45 @@ def _say_log_stats(r: Result, *, subject: str | None = None) -> str:
         lead += f" {_plural(other, 'more event')} fall outside the top {len(top)}."
     basis = _basis_phrase(o)
     return f"{lead} {basis}".strip()
+
+
+_LEVEL_NAMES = {"critical": "Critical", "high": "High", "medium": "Medium", "low": "Low", "info": "Info"}
+
+
+def _say_severity_levels(o: Mapping[str, Any]) -> str | None:
+    """A severity breakdown (``log_stats`` ``observation["severity"]``) in words: the
+    busiest named levels with the rules behind each, a Critical level stated even when it
+    is empty, and what the levels cover when they were sampled. ``None`` when the
+    observation has no breakdown."""
+    sev = o.get("severity") if isinstance(o.get("severity"), Mapping) else None
+    levels = [lv for lv in (sev or {}).get("levels") or [] if isinstance(lv, Mapping)]
+    if not levels:
+        return None
+    named = [lv for lv in levels if (_num(lv.get("count")) or 0) > 0]
+    busiest = sorted(named, key=lambda lv: -(_num(lv.get("count")) or 0))[:2]
+    parts: list[str] = []
+    for index, lv in enumerate(busiest):
+        name = _LEVEL_NAMES.get(str(lv.get("level")), "Info")
+        rules = [r for r in lv.get("top_rules") or [] if isinstance(r, Mapping)][:2]
+        said = [_code(r.get("rule")) for r in rules]
+        if index == 0:
+            text = f"**{name}** leads with {_plural(lv.get('count'), 'event')}"
+            if said:
+                text += f", mostly {_join(said)}"
+        else:
+            text = f"**{name}** has {_count(lv.get('count'))}"
+            if said:
+                text += f", mostly {said[0]}"
+        parts.append(text)
+    critical = next((lv for lv in levels if lv.get("level") == "critical"), None)
+    tail = ""
+    if critical is not None and not (_num(critical.get("count")) or 0):
+        tail = " No Critical events."
+    sample = (sev or {}).get("sample")
+    basis = f" The levels count {display_text(sample, 200)}." if isinstance(sample, str) and sample else ""
+    if not parts:
+        return f"no event carries a severity.{tail}{basis}".strip()
+    return f"by severity, {'; '.join(parts)}.{tail}{basis}"
 
 
 def _say_search_logs(r: Result, *, subject: str | None = None) -> str:
@@ -7392,22 +7628,80 @@ def _say_case_mix(r: Result) -> str:
     return text + "."
 
 
-def _say_timing(r: Result) -> str:
+#: The response clocks a question names, by the words it uses for them ("What is our
+#: MTTR?", "the acknowledgement delay", "time to detect").
+_TIMING_FOCUS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("mtta_minutes", re.compile(r"\b(?:mtta|acknowledg\w*)\b")),
+    ("mttr_minutes", re.compile(r"\b(?:mttr|resol(?:ve|ved|ution|ving)|time to close)\b")),
+    ("mttd_minutes", re.compile(r"\b(?:mttd|detect(?:ed|ion)?|time to detect)\b")),
+    ("dwell_minutes", re.compile(r"\b(?:dwell|first response)\b")),
+)
+#: The clocks a response-times answer states when the question names none: the two a
+#: person works to (acknowledgement and resolution), then detection, then dwell.
+_TIMING_ORDER = ("mtta_minutes", "mttr_minutes", "mttd_minutes", "dwell_minutes")
+_TIMING_NAMES = {"mttd_minutes": "MTTD", "mtta_minutes": "MTTA", "mttr_minutes": "MTTR", "dwell_minutes": "dwell"}
+
+
+def _timing_focus(lowered: str) -> tuple[str, ...]:
+    """The response clocks ``lowered`` names, in the order it names them."""
+    hits = sorted((m.start(), key) for key, pattern in _TIMING_FOCUS for m in [pattern.search(lowered or "")] if m)
+    return tuple(dict.fromkeys(key for _at, key in hits))
+
+
+def _say_timing(r: Result, focus: tuple[str, ...] = (), *, most: int = 2) -> str:
+    """The response-times takeaway: at most ``most`` medians of the Response times block
+    (two, T15), the clocks the question names first (``focus``, :func:`_timing_focus`),
+    else acknowledgement and resolution. A clock not measured yet is said so (that states
+    no figure); a measured block clock left out is pointed to, since the block beside it
+    shows every median and p90.
+
+    Dwell is no figure of that block, so it never takes one of the ``most`` places and
+    is never pointed to: a question that names it always gets its median (the takeaway
+    rule counts block figures only), and an answer to one that does not states it only
+    in a place the block clocks left free. The chat's response-time lookup measures no
+    dwell, so a question that names it without a dwell figure in the result is told
+    where the console shows it instead of being answered as if it had not asked."""
     o = r.obs
     lifecycle = o.get("lifecycle_minutes") if isinstance(o.get("lifecycle_minutes"), Mapping) else {}
-    parts = []
-    for key, name in (("mttd_minutes", "MTTD"), ("mtta_minutes", "MTTA"), ("mttr_minutes", "MTTR"),
-                      ("dwell_minutes", "dwell")):
+    stated: list[str] = []
+    unmeasured: list[str] = []
+    pointed: list[str] = []
+    block_stated = 0
+    unreported = False
+    for key in dict.fromkeys([*focus, *_TIMING_ORDER]):
         metric = lifecycle.get(key) if isinstance(lifecycle.get(key), Mapping) else None
+        dwell = key == "dwell_minutes"
         if metric is None:
+            unreported = unreported or (dwell and key in focus)
             continue
-        if metric.get("measured") and _num(metric.get("p50")) is not None:
-            # The medians only (T15): the Response times block beside it shows the p90s.
-            count = f" over {_plural(metric.get('count'), 'case')}" if _num(metric.get("count")) else ""
-            parts.append(f"{name} p50 {_minutes(metric.get('p50'))}{count}")
+        name = _TIMING_NAMES[key]
+        if not (metric.get("measured") and _num(metric.get("p50")) is not None):
+            # Dwell is said to be unmeasured only when asked: the block never shows it.
+            if not dwell or key in focus:
+                unmeasured.append(f"{name} not measured yet")
+            continue
+        count = f" over {_plural(metric.get('count'), 'case')}" if _num(metric.get("count")) else ""
+        median = f"{name} p50 {_minutes(metric.get('p50'))}{count}"
+        if dwell:
+            # The loop reaches an unasked dwell last, after every block clock.
+            if key in focus or len(stated) < most:
+                stated.append(median)
+        elif block_stated < most:
+            block_stated += 1
+            stated.append(median)
         else:
-            parts.append(f"{name} not measured yet")
-    return f"Response times {_in(_window(o))}: {_join(parts)}." if parts else ""
+            pointed.append(name)
+    parts = [*stated, *unmeasured]
+    if not parts:
+        return ""
+    text = f"Response times {_in(_window(o))}: {_join(parts)}"
+    if pointed:
+        text += f"; {_join(pointed)} {'is' if len(pointed) == 1 else 'are'} in the figures below"
+    text += "."
+    if unreported:
+        text += (" Dwell (time to first response) is not one of these figures; Analytics › Metrics shows it on "
+                 "the Performance tab.")
+    return text
 
 
 def _say_auto_close(r: Result) -> str:
@@ -7436,7 +7730,9 @@ def _say_mitre_coverage(r: Result) -> str:
     return text + "."
 
 
-def _say_soc_metrics(r: Result) -> list[str]:
+def _say_soc_metrics(r: Result, focus: tuple[str, ...] = ()) -> list[str]:
+    """The narration of a ``soc_metrics`` result; ``focus`` names the response clocks
+    the question asks about (:func:`_timing_focus`)."""
     kind = r.kind
     if kind == "posture":
         return _say_posture(r)
@@ -7447,7 +7743,7 @@ def _say_soc_metrics(r: Result) -> list[str]:
     if kind == "case_mix":
         return [_say_case_mix(r)]
     if kind == "timing":
-        return [_say_timing(r)]
+        return [_say_timing(r, focus)]
     if kind == "auto_close_health":
         return [_say_auto_close(r)]
     if kind == "mitre_coverage":
@@ -7809,8 +8105,27 @@ def _say_knowledge(r: Result) -> tuple[list[str], list[str]]:
         if ref:
             cites.append(ref)
     if not chunks:
-        items = [x for x in (o.get("runbooks") or o.get("playbooks") or o.get("items") or [])
-                 if isinstance(x, Mapping)]
+        runbooks = [x for x in (o.get("runbooks") or []) if isinstance(x, Mapping)]
+        if runbooks:
+            # The runbook library (Round 14 SPEC §4.10.18): how many are published,
+            # then a few of them (the generic final keeps four lines per lookup).
+            total = _num(o.get("total"))
+            total = int(total) if total is not None else len(runbooks)
+            verb = "is" if total == 1 else "are"
+            lead = f"There {verb} {_plural(total, 'published runbook')}"
+            if str(o.get("catalogue") or "") == "built-in only":
+                lead += " in the built-in library"
+            lead += ", for example:" if total > 3 else ":"
+            lines.append(lead)
+            for item in runbooks[:3]:
+                title = _plain(item.get("title") or item.get("id"), 80) or "Untitled runbook"
+                # Rule ids keep their underscores (escaped, never deleted).
+                applies = _escaped(item.get("applies_to"), 80)
+                origin = "" if item.get("origin") in (None, "", "Built-in") else f", {_plain(item.get('origin'), 20)}"
+                lines.append(f"- **{title}**" + (f" (applies to {applies}{origin})" if applies
+                                                  else (f" ({origin[2:]})" if origin else "")))
+            return lines, cites
+        items = [x for x in (o.get("playbooks") or o.get("items") or []) if isinstance(x, Mapping)]
         for item in items[:5]:
             lines.append(f"- {_plain(item.get('title') or item.get('name') or item.get('id'), 80)}")
     return lines, cites
@@ -7989,9 +8304,24 @@ def _help_paragraphs(ref: Reference, limit: int = 2, *, topic: str = "",
 
 
 def _console_ids(ref: Reference, limit: int = 3) -> list[str]:
+    """The answer's console links: the destinations the lookup offered (the ones the
+    caller can open first), then the breadcrumbs of the sections on the BEST section's
+    page, the ``app_help`` rule (``chat_tools.app_help._destinations``). A lower-ranked
+    section of another page that merely shares a word with the question never lends its
+    page ("How do I export a chart as CSV?" never links the locked audit log); the other
+    sections' breadcrumbs answer only when nothing else names a destination."""
+    def page_of(section: HelpSection) -> str | None:
+        # The Help Center page a section is on: its link without the ``#anchor``.
+        return section.href.split("#", 1)[0] if section.href else None
+
     ids = [t.id for t in ref.targets if t.allowed] + [t.id for t in ref.targets if not t.allowed]
-    for section in ref.sections:
-        ids.extend(section.console)
+    if ref.sections:
+        best = ref.sections[0]
+        page = page_of(best)
+        on_page = [section is best or (page is not None and page_of(section) == page) for section in ref.sections]
+        ids.extend(i for section, same in zip(ref.sections, on_page) if same for i in section.console)
+        if not ids:
+            ids.extend(i for section, same in zip(ref.sections, on_page) if not same for i in section.console)
     return list(dict.fromkeys(ids))[:limit]
 
 
@@ -8042,6 +8372,7 @@ _FOLLOW_UP_ORDER: dict[str, tuple[str, ...]] = {
     "cost": ("cost_compare", "cost_month", "posture", "noise"),
     "brute": ("pivot", "mitre", "by_user"),
     "top": ("by_user", "case", "sources"),
+    "suspicious": ("by_user", "case", "sources"),
     "logs": ("by_user", "week", "top", "sources"),
     "log_count": ("by_user", "week", "top", "sources"),
     "regroup": ("as_table", "case", "posture"),
@@ -8055,6 +8386,7 @@ _FOLLOW_UP_ORDER: dict[str, tuple[str, ...]] = {
     "audit": ("cost", "posture", "access"),
     "automation": ("posture", "shift", "access"),
     "knowledge": ("case", "mitre", "help"),
+    "runbook": ("case", "pivot", "mitre"),
     "help": ("access", "posture", "explain_metric"),
     "explain_metric": ("posture", "shift", "help"),
     "reshape": ("posture", "shift", "case"),
@@ -8286,7 +8618,7 @@ def _final_metric(view: PromptView, ask: Ask) -> Final | None:
         return None
     blocks = [b for kind in ("kpis", "series", "categories", "funnel", "mitre")
               for b in [_block(result, kind)] if b]
-    return Final(body=_say_soc_metrics(result), blocks=blocks[:4],
+    return Final(body=_say_soc_metrics(result, _timing_focus(ask.lowered)), blocks=blocks[:4],
                  follow_ups=_follow_ups(view, "metric", charts=True))
 
 
@@ -8514,6 +8846,7 @@ _INTENT_SUBJECTS = {
     "mitre": "ATT&CK", "audit": "Audit trail", "deep": "Investigation", "case": "Case", "hunt": "IOC",
     "pivot": "Hunt", "sources": "Source health", "campaigns": "Campaigns", "knowledge": "Knowledge",
     "automation": "Automation", "rate": "Detection rates", "entity_cases": "Cases by entity",
+    "suspicious": "Suspicious activity",
 }
 
 
@@ -8962,11 +9295,38 @@ def _final_top(view: PromptView, ask: Ask, intent: str = "top") -> Final | None:
             body.extend(lines)
     if intent == "regroup":
         body.insert(0, f"Re-ran the earlier lookup grouped by {label} (same filters).")
-    # One block per figure set: the chart's view switcher already offers the table.
+    # One block per figure set: the chart's view switcher already offers the table. A
+    # severity breakdown is a table of named levels first (Round 14 SPEC §4.7.3).
+    title = (f"Events by severity ({window.split(' (')[0]})" if fld == "severity"
+             else f"Top {_plural_noun(label)} ({window.split(' (')[0]})")
     return Final(body=body, blocks=_keep(
-        _block(stats, "categories", view="hbar", title=f"Top {_plural_noun(label)} ({window.split(' (')[0]})"),
+        _block(stats, "categories", view="table" if fld == "severity" else "hbar", title=title),
         _block_titled(stats, "comparison", view="grouped_bar"),
     ), follow_ups=_follow_ups(view, intent, charts=True, field=fld))
+
+
+#: What a rule's count is (and is not), under a suspicious-activity answer.
+_SUSPICIOUS_NOTE = ("Each row counts a detection rule's hits, not confirmed threats: open a rule to see its alerts "
+                    "over time, the cases it raised and how analysts graded them.")
+
+
+def _final_suspicious(view: PromptView, ask: Ask) -> Final | None:
+    """"Any suspicious activity in the last 3 days?" (Round 14): the detection rules
+    that fired, as a table whose rows open each rule's sheet over the answer's window,
+    and the events over time. The same shape a live model gives this question; the
+    builders are the rule answer's (``_final_top``)."""
+    stats = view.ok("log_stats")
+    if stats is None:
+        return None
+    total = _num(stats.obs.get("total")) or 0
+    if not total:
+        return Final(body=[_no_log_events(stats.obs, "")],
+                     follow_ups=_follow_ups(view, "suspicious", skip=("by_user",)))
+    window = _window(stats.obs).split(" (")[0]
+    return Final(body=[_say_log_stats(stats), _SUSPICIOUS_NOTE], blocks=_keep(
+        _block(stats, "categories", view="table", title=f"Top detection rules ({window})"),
+        _block(stats, "series", title="Events over time"),
+    ), follow_ups=_follow_ups(view, "suspicious", charts=True, field="rule"))
 
 
 def _log_subject(ask: Ask) -> str:
@@ -9464,7 +9824,7 @@ def _final_cases(view: PromptView, ask: Ask) -> Final | None:
     explained = _explained_cases(cases, int(planned.get("limit") or 10)) if count and _explains_each(ask) else []
     body.extend(explained or _case_bullets(cases))
     if timing:
-        said = _say_timing(timing)
+        said = _say_timing(timing, _timing_focus(ask.lowered))
         if said:
             body.append(said)
     if mix:
@@ -9616,7 +9976,8 @@ def _final_explain_metric(view: PromptView, ask: Ask) -> Final | None:
         body.append(f"**What the {ask.topic} {verb}**, from the Help Center:")
         body.extend(paragraphs)
     if metric is not None:
-        sentences = _say_cost(metric) if metric.tool == "cost_usage" else _say_soc_metrics(metric)
+        sentences = (_say_cost(metric) if metric.tool == "cost_usage"
+                     else _say_soc_metrics(metric, _timing_focus(ask.lowered)))
         body.append(f"**Ours:** {sentences[0]}")
         body.extend(sentences[1:3])
     blocks = []
@@ -9724,9 +10085,8 @@ def _change_reference(ref: Reference, question: str) -> tuple[Reference, bool]:
     """The part of ``ref`` about a change request, and whether that is all of it: the
     sections about it, and the console pages a kept section links to or whose label or
     console-map keywords name the object ("Analytics › Jobs" for "Kill the export job",
-    "Appearance & customization" for "Change the theme to dark"; never "Overview ›
-    Standup" for "Create a case"). The verb alone keeps no page: "change" or "turn"
-    is in many keywords."""
+    "Appearance" for "Change the theme to dark"; never "Overview › Standup" for "Create
+    a case"). The verb alone keeps no page: "change" or "turn" is in many keywords."""
     terms = _change_terms(question)
     cited = [s for s in ref.sections if s.ref]
     sections = [s for s in ref.sections if _about_change(s, terms)]
@@ -10228,7 +10588,13 @@ def _final_generic(view: PromptView, ask: Ask) -> Final:
         body.append("Lookups that did not complete:")
         body.extend(failures)
     if not body:
-        body.append("I could not read any data for this question.")
+        if data:
+            # The lookups ran and found nothing to show: say that, never that nothing
+            # could be read (a search with no match is a read that succeeded).
+            names = list(dict.fromkeys(_TOOL_NAMES.get(r.tool, r.tool.replace("_", " ")) for r in data))
+            body.append(f"Nothing matched this question in {_join(names)}.")
+        else:
+            body.append("I could not read any data for this question.")
     if data and paragraphs:
         kind = "mixed"
     elif data:
@@ -11299,10 +11665,19 @@ def _final_trend(view: PromptView, ask: Ask) -> Final | None:
         o = stats.obs
         body.insert(0, f"**{_TREND_WORDS['timing']} {_in(window)}**, by {o.get('bucket') or 'period'} "
                        f"({_plural(o.get('total'), 'case')}, exact):")
+        # The clocks the question names, period by period ("How has MTTD changed?"
+        # follows MTTD; "response times" in general follows all three), then one
+        # overall sentence about the same clocks: the takeaway, never every figure of
+        # the Response times block again (T15). Dwell has no series and no block
+        # figure, so it is not followed period by period, and the overall sentence
+        # states its median whenever the question names it (:func:`_say_timing`).
+        focus = _timing_focus(ask.lowered)
+        asked = [k for k in focus if k != "dwell_minutes"]
         for metric, name in (("mttr_p50", "MTTR median"), ("mtta_p50", "MTTA median"), ("mttd_p50", "MTTD median")):
-            body.append(f"- {_say_bucket_metric(o, metric, name)}")
+            if not asked or f"{metric[:4]}_minutes" in asked:
+                body.append(f"- {_say_bucket_metric(o, metric, name)}")
         if timing is not None:
-            body.append(_say_timing(timing))
+            body.append(_say_timing(timing, focus, most=min(len(asked), 2) if asked else 2))
     elif subject == "automation" and stats is not None:
         o = stats.obs
         filters = _filters_of(o)
@@ -11764,6 +12139,80 @@ def _case_missing(view: PromptView, ask: Ask) -> Final | None:
             "Check the id, or find the case by searching for words from its title."]
     follow = ["List the open cases", "Which cases were escalated this week?", "Show the newest escalated case"]
     return Final(body=body, follow_ups=follow, narrated={r.ordinal for r in view.failed()})
+
+
+#: The two ``standing`` sentences that say where a run with no next step stands
+#: (``chat_tools.cases.run_standing``): finished, or held up by approvals. The others
+#: describe the next step itself, which the "Next step" line already names.
+_RUN_STANDING_WITHOUT_NEXT = frozenset({RUN_STANDING_ALL_DONE, RUN_STANDING_WAITING})
+
+
+def _final_runbook(view: PromptView, ask: Ask) -> Final | None:
+    """The case's runbook (Round 14 SPEC §4.10.10): per run, how far it is, the next
+    step, the steps waiting for approval and the required steps still open, from
+    ``get_case``'s run summary. ``get_case`` leaves ``next_step`` empty for a run whose
+    required steps are all done or wait for approval (the Console's Next step rule);
+    such a run is then described by its ``standing`` sentence, never as if it had a
+    step to work on. A run is advice for people: the answer never implies it changes
+    the verdict or the status."""
+    missing = _case_missing(view, ask)
+    if missing is not None:
+        return missing
+    got = view.ok("get_case")
+    if got is None:
+        return None
+    case = _dig(got.obs, "case")
+    case = case if isinstance(case, Mapping) else {}
+    runbook = got.obs.get("runbook") if isinstance(got.obs.get("runbook"), Mapping) else {}
+    lead = _case_head_as_asked(case, ask, start=True) if case else "This case"
+    body: list[str] = []
+    runs = [r for r in runbook.get("runs") or [] if isinstance(r, Mapping)] if runbook.get("available") else []
+    if not runbook.get("available"):
+        body.append(f"{lead}: its runbook could not be read here. Open the case's Runbook tab to see it.")
+    elif not runs:
+        body.append(f"{lead} has no runbook yet. Start one from the case's Runbook tab; the matching runbook "
+                    "is attached automatically when a case needs a person.")
+    for index, run in enumerate(runs[:2]):
+        title = _plain(run.get("title"), 80) or "Untitled runbook"
+        version = _num(run.get("version"))
+        name = f"**{title}**" + (f" v{int(version)}" if version is not None else "")
+        done, total = _num(run.get("done")), _num(run.get("total"))
+        where = (f"{int(done):,} of {_plural(total, 'step')} done" if done is not None and total is not None
+                 else "progress not recorded")
+        opening = f"{lead} follows {name}: " if index == 0 else f"It also follows {name}: "
+        if str(run.get("status") or "") == "completed":
+            body.append(opening + f"{where}, and the run is complete.")
+            continue
+        extra = []
+        if _num(run.get("blocked")):
+            extra.append(f"{_plural(run.get('blocked'), 'step')} blocked")
+        if _num(run.get("waiting_for_approval")):
+            extra.append(f"{_plural(run.get('waiting_for_approval'), 'step')} waiting for approval")
+        body.append(opening + where + (f" ({_join(extra)})" if extra else "") + ".")
+        nxt = _plain(run.get("next_step"), 160)
+        if nxt:
+            phase = _plain(run.get("next_step_phase"), 40)
+            body.append(f"Next step: **{nxt}**" + (f" ({phase})" if phase else "") + ".")
+        else:
+            # No step to act on: the run is finished or held up by approvals. Only
+            # those two code-authored sentences are spoken; any other value is not.
+            standing = run.get("standing")
+            if isinstance(standing, str) and standing in _RUN_STANDING_WITHOUT_NEXT:
+                body.append(standing)
+        waiting = [_plain(t, 120) for t in run.get("waiting_for_approval_steps") or [] if isinstance(t, str)]
+        waiting = list(dict.fromkeys(t for t in waiting if t))
+        if waiting:
+            body.append("Waiting for approval: " + "; ".join(waiting[:4]) + ".")
+        open_steps = [_plain(t, 120) for t in run.get("open_required_steps") or [] if isinstance(t, str)]
+        held = set(waiting)
+        later = [t for t in dict.fromkeys(open_steps) if t and t != _plain(nxt, 120) and t not in held]
+        if later:
+            lead_in = "Required steps still open after it: " if nxt else "Required steps still open: "
+            body.append(lead_in + "; ".join(later[:4]) + ".")
+    if runs:
+        body.append("A runbook guides the people working the case; it never changes the verdict or closes the case.")
+    return Final(body=body, blocks=_keep(_block(got, "entity", view="entity", title="Case entity")),
+                 follow_ups=_follow_ups(view, "runbook"), lead=body[:1])
 
 
 def _final_brief(view: PromptView, ask: Ask) -> Final | None:
@@ -13162,6 +13611,8 @@ _CHIPS: dict[str, tuple[tuple[str, tuple[str, ...]], ...]] = {
                ("Show the AI spend by role {in_window}", ("cost_usage",))),
     "top": (("Which cases involve the top {dimension} {in_window}?", ("search_cases",)),
             ("Which rules fired most {in_window}?", ("log_stats",))),
+    "suspicious": (("Show alerts by severity {in_window}", ("log_stats",)),
+                   ("Which cases were escalated {in_window}?", ("search_cases",))),
     "logs": (("Show these events by host {in_window}", ("log_stats",)),),
     "brute": (("Which cases involve the top source IP {in_window}?", ("search_cases",)),
               ("Show the failed sign-ins by user {in_window}", ("log_stats",))),
@@ -13339,7 +13790,8 @@ _INTENT_TITLES: dict[str, str] = {
     "deep": "Entity deep dive", "clarify": "Choosing a trend", "summary": "Period summary",
     "rate": "True-positive rate", "entity_cases": "Cases by entity", "audit": "Audit trail",
     "automation": "Automation status", "knowledge": "Runbooks and guidance", "fallback": "Getting started",
-    "top": "Top log activity", "metric": "SOC metrics",
+    "runbook": "Case runbook",
+    "top": "Top log activity", "metric": "SOC metrics", "suspicious": "Suspicious activity",
     # Round 13 (T6): every intent a first question can reach has a title, the starter
     # intents typed in words too ("Which cases are past their SLA?").
     "technique_cases": "ATT&CK technique cases", "source_cases": "Cases from a log source",
@@ -14040,6 +14492,7 @@ def _final_source_cases(view: PromptView, ask: Ask) -> Final | None:
 _FINALS: dict[str, Callable[[PromptView, Ask], Final | None]] = {
     "posture": _final_posture, "noise": _final_noise, "metric": _final_metric, "shift": _final_shift,
     "cost": _final_cost, "top": _final_top, "brute": _final_brute, "tp": _final_tp, "case": _final_case,
+    "suspicious": _final_suspicious,
     "logs": _final_logs, "log_count": _final_log_count,
     "hunt": _final_hunt, "pivot": _final_pivot, "mitre": _final_mitre, "sources": _final_sources,
     "campaigns": _final_campaigns, "cases": _final_cases, "help": _final_help,
@@ -14047,7 +14500,7 @@ _FINALS: dict[str, Callable[[PromptView, Ask], Final | None]] = {
     "respond": _final_respond, "out_of_scope": _final_out_of_scope,
     "remember": _final_remember, "reshape": _final_reshape, "rerun": _final_rerun,
     "explain_step": _final_explain_step, "rerun_step": _final_rerun_step,
-    "regroup": lambda v, a: _final_regroup(v, a), "empty": _final_empty,
+    "regroup": lambda v, a: _final_regroup(v, a), "empty": _final_empty, "runbook": _final_runbook,
     "breakdown": _final_breakdown, "trend": _final_trend, "compare": _final_compare,
     "perf_report": _final_perf_report, "brief": _final_brief, "deep": _final_deep, "clarify": _final_clarify,
     "summary": _final_summary, "rate": _final_rate, "entity_cases": _final_entity_cases,

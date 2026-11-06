@@ -69,8 +69,9 @@ describe('KpiTile — the hero numeral', () => {
     );
     expect(numeral(screen.getByTestId('kpi-total-cases'))).toHaveClass('text-4xl');
 
+    // The framed chrome (the chat answer blocks) keeps the compact numeral one prop apart.
     rerender(
-      <KpiTile label="Total Cases" value="4" countTo={4} variant="strip" density="compact" />,
+      <KpiTile label="Total Cases" value="4" countTo={4} variant="strip" density="compact" chrome="framed" />,
     );
     const plain = numeral(screen.getByTestId('kpi-total-cases'));
     expect(plain).toHaveClass('text-2xl');
@@ -81,6 +82,14 @@ describe('KpiTile — the hero numeral', () => {
     // the landing strip's copy of it is gone.
     expect(plain.parentElement).toHaveClass('mt-1');
     expect(plain.parentElement).not.toHaveClass('mt-auto');
+
+    // Round 14: a compact tile on the strip chrome (every page) follows the hero grammar
+    // at the page strip size, 24px, bottom-aligned with its neighbours.
+    rerender(<KpiTile label="Total Cases" value="4" countTo={4} variant="strip" density="compact" />);
+    const page = numeral(screen.getByTestId('kpi-total-cases'));
+    expect(page).toHaveClass('text-3xl');
+    expect(page).not.toHaveClass('text-4xl');
+    expect(page.parentElement).toHaveClass('mt-auto');
   });
 
   it('bottom-aligns the hero numeral so a wrapped label cannot stagger the row', () => {
@@ -233,9 +242,18 @@ describe('KpiTile — the bound marker', () => {
     expect(sentence).toHaveAttribute('data-kpi-line', 'bound');
   });
 
-  it('keeps the bound sr-only on a non-hero tile, which has no context line to show it', () => {
-    render(<KpiTile label="Open Cases" value="12" countTo={12} bound={BOUND} variant="strip" />);
+  it('keeps the bound sr-only on a non-hero (framed) tile, which has no context line to show it', () => {
+    render(
+      <KpiTile label="Open Cases" value="12" countTo={12} bound={BOUND} variant="strip" chrome="framed" />,
+    );
     expect(within(screen.getByTestId('kpi-open-cases')).getByText(BOUND)).toHaveClass('sr-only');
+  });
+
+  it('shows the bound on the context line of a strip-chrome tile (the hero grammar, Round 14)', () => {
+    render(<KpiTile label="Open Cases" value="12" countTo={12} bound={BOUND} variant="strip" />);
+    const sentence = within(screen.getByTestId('kpi-open-cases')).getByText(BOUND);
+    expect(sentence).not.toHaveClass('sr-only');
+    expect(sentence).toHaveAttribute('data-kpi-line', 'bound');
   });
 
   it('UNBOUNDED: no marker of any kind when no bound is in force', () => {

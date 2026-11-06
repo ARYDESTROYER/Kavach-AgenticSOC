@@ -96,6 +96,17 @@ import Login from '../pages/Login';
 // The MOCKED ApiError (status, message) — for driving 401 expired-pending paths.
 import { ApiError as ApiErrorFromMock } from '@/lib/api';
 
+/**
+ * Every accessible name on the sign-in screen, the shared theme pill
+ * (`components/auth/ThemeModePill.tsx`) included: it names its state and action with a
+ * colon, never an em dash (Round 14).
+ */
+function loginAriaLabels(): string[] {
+  return Array.from(document.body.querySelectorAll('[aria-label]')).map(
+    (el) => el.getAttribute('aria-label') ?? '',
+  );
+}
+
 function renderLogin() {
   return render(
     <ThemeProvider>
@@ -119,7 +130,9 @@ async function advanceSigninToPassword(username = 'alice') {
   const passwordInput = await screen.findByLabelText('Password');
   expect(passwordInput).toHaveAttribute('placeholder', 'Enter your password');
   expect(screen.getByRole('button', { name: 'Back' })).toBeInTheDocument();
-  expect(screen.getByRole('button', { name: 'Sign in' })).toBeDisabled();
+  // Round 14 (LI2): Sign in keeps its primary look and stays enabled with an empty
+  // password; an empty submit names the field instead (see the test below).
+  expect(screen.getByRole('button', { name: 'Sign in' })).toBeEnabled();
   expect(screen.queryByRole('button', { name: 'Continue' })).not.toBeInTheDocument();
   return { usernameInput, passwordInput };
 }
@@ -220,12 +233,12 @@ describe('Login — four-mode render', () => {
     );
     // The appearance pill names the mode you are IN and switches to the other one.
     // jsdom's matchMedia reports no dark preference, so `system` resolves to light.
-    const pill = screen.getByRole('button', { name: 'Light mode — switch to dark mode' });
+    const pill = screen.getByRole('button', { name: 'Light mode: switch to dark mode' });
     expect(pill).toHaveAttribute('data-appearance', 'light');
     fireEvent.click(pill);
     expect(window.localStorage.getItem('soc.theme')).toBe('dark');
     expect(
-      screen.getByRole('button', { name: 'Dark mode — switch to light mode' }),
+      screen.getByRole('button', { name: 'Dark mode: switch to light mode' }),
     ).toHaveAttribute('data-appearance', 'dark');
     // Choosing an explicit appearance releases `system`.
     expect(screen.getByRole('button', { name: 'Use system theme' })).toHaveAttribute(
@@ -242,7 +255,7 @@ describe('Login — four-mode render', () => {
     );
     // `system` resolves back to light under jsdom's matchMedia, so the pill follows.
     expect(
-      screen.getByRole('button', { name: 'Light mode — switch to dark mode' }),
+      screen.getByRole('button', { name: 'Light mode: switch to dark mode' }),
     ).toHaveAttribute('data-appearance', 'light');
     expect(document.querySelector('[data-login-shell]')).toHaveAttribute(
       'data-login-theme-palette-settling',
@@ -272,7 +285,7 @@ describe('Login — four-mode render', () => {
     expect(password).toHaveClass('text-lg', 'sm:text-base');
     expect(password).toBeRequired();
     expect(screen.getByRole('button', { name: 'Back' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Sign in' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Sign in' })).toBeEnabled();
     expect(screen.queryByRole('button', { name: 'Continue' })).not.toBeInTheDocument();
   });
 
@@ -320,6 +333,10 @@ describe('Login — four-mode render', () => {
     expect(group).toBeInTheDocument();
     const cells = screen.getAllByLabelText(/Authentication code digit/);
     expect(cells).toHaveLength(6);
+    // One vocabulary with the two-factor setup cards ("Verify and sign in", "Verify and
+    // turn on"): the submit says "and", never an ampersand (Round 14).
+    expect(screen.getByRole('button', { name: 'Verify and continue' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Verify &/ })).toBeNull();
   });
 
   it('transitions to CHANGE-PASSWORD mode after a must_change login', async () => {
@@ -350,6 +367,49 @@ describe('Login — four-mode render', () => {
     expect(screen.queryByLabelText('Username')).not.toBeInTheDocument();
     expect(await screen.findByLabelText('Password')).toHaveValue('Admin@123');
     expect(screen.getByRole('button', { name: 'Sign in' })).toBeEnabled();
+  });
+
+  it('names an empty password on submit and focuses it, without calling the server (LI2)', async () => {
+    renderLogin();
+    const { passwordInput: password } = await advanceSigninToPassword('analyst');
+
+    const signIn = screen.getByRole('button', { name: 'Sign in' });
+    // Never the flat inert face: the button is enabled and not busy.
+    expect(signIn).toBeEnabled();
+    expect(signIn).not.toHaveAttribute('data-busy');
+    fireEvent.click(signIn);
+
+    expect(await screen.findByText('Enter your password.')).toBeInTheDocument();
+    await waitFor(() => expect(password).toHaveFocus());
+    expect(password).toHaveAttribute('aria-invalid', 'true');
+    expect(password).toHaveAttribute('aria-describedby', 'login-error');
+    expect(loginMock).not.toHaveBeenCalled();
+
+    // Typing a password and submitting again clears the message and signs in.
+    loginMock.mockResolvedValue({ user: {} });
+    fireEvent.change(password, { target: { value: 'correct horse' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in' }));
+    await waitFor(() => expect(loginMock).toHaveBeenCalledWith('analyst', 'correct horse'));
+    expect(screen.queryByText('Enter your password.')).not.toBeInTheDocument();
+  });
+
+  it('shows no em dash in the sign-in copy or any accessible name', async () => {
+    renderLogin();
+    await screen.findByLabelText('Username');
+    expect(document.body.textContent ?? '').not.toContain('\u2014');
+    // The theme pill is checked like every other name on the screen.
+    expect(loginAriaLabels()).toContain('Light mode: switch to dark mode');
+    loginAriaLabels().forEach((label) => expect(label).not.toMatch(/[\u2013\u2014]/));
+  });
+
+  it('keeps the focus-only mode heading free of an always-on outline (forced colours)', async () => {
+    renderLogin();
+    const heading = await screen.findByRole('heading', { level: 1 });
+    // Tailwind 3 `outline-none` is a permanent 2px transparent outline, which
+    // forced-colours mode paints as a box over the subtitle; `outline-0` removes it.
+    expect(heading).toHaveAttribute('tabindex', '-1');
+    expect(heading.className).not.toMatch(/\boutline-none\b/);
+    expect(heading).toHaveClass('outline-0');
   });
 
   it('keeps the username and returns focus to an announced invalid password after failure', async () => {
@@ -394,6 +454,23 @@ describe('Login — OOBE account-setup (setup/account)', () => {
     fireEvent.change(screen.getByLabelText('Password'), { target: { value: pw } });
     fireEvent.change(screen.getByLabelText('Confirm password'), { target: { value: confirmPw } });
   }
+
+  it('shows no em dash in the setup copy or any accessible name, before and after a policy message', async () => {
+    renderLogin();
+    await screen.findByText('Create your admin account');
+    const noEmDash = () => {
+      expect(document.body.textContent ?? '').not.toContain('\u2014');
+      loginAriaLabels().forEach((label) => expect(label).not.toContain('\u2014'));
+    };
+    expect(
+      screen.getByText('No accounts exist yet. Create the first administrator to get started. Choose a strong, unique password.'),
+    ).toBeInTheDocument();
+    expect(screen.getByText('Use at least 12 characters, not your username or a common password.')).toBeInTheDocument();
+    noEmDash();
+    await fillSetup('admin12345678');
+    expect(screen.getByText('That password is too common. Choose a less predictable one.')).toBeInTheDocument();
+    noEmDash();
+  });
 
   it('keeps the create button DISABLED for a weak/short password (client policy gate)', async () => {
     renderLogin();
@@ -620,7 +697,7 @@ describe('Login — mandated MFA enrollment during login', () => {
     // Confirm success destroys the one-time recovery codes → the explicit
     // saved-codes acknowledgment gates the submit.
     fireEvent.click(screen.getByLabelText(/saved my recovery codes/i));
-    fireEvent.click(screen.getByRole('button', { name: 'Verify & sign in' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Verify and sign in' }));
 
     await waitFor(() =>
       expect(enrollConfirmMock).toHaveBeenCalledWith('pend-enroll-1', '123456'),
@@ -648,7 +725,7 @@ describe('Login — mandated MFA enrollment during login', () => {
       target: { value: '123456' },
     });
     fireEvent.click(screen.getByLabelText(/saved my recovery codes/i));
-    fireEvent.click(screen.getByRole('button', { name: 'Verify & sign in' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Verify and sign in' }));
 
     expect(await screen.findByText('Set a new password')).toBeInTheDocument();
     expect(onAuth).not.toHaveBeenCalled();

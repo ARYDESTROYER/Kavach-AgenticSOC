@@ -50,8 +50,18 @@ import { useAuth } from '@/soc/auth';
 import { usePrefs } from '@/soc/prefs';
 import { useTheme } from '@/soc/theme';
 import { useDemo } from '@/soc/demo';
-import { NAV_FOOTER_ITEMS, NAV_GROUPS, isPageId, type PageId } from '@/soc/nav';
-import type { Navigate } from '@/soc/router';
+import {
+  NAV_FOOTER_ITEMS,
+  NAV_GROUPS,
+  isPageId,
+  navCurrentLabel,
+  navDest,
+  navLabel,
+  navTarget,
+  navVisible,
+  type PageId,
+} from '@/soc/nav';
+import { redirectRoute, type Navigate } from '@/soc/router';
 // The always-on command palette needs only the section SEARCH metadata, never a
 // Settings renderer — import from the COMPONENT-FREE meta module so the heavy Settings
 // component tree stays out of the first-paint entry chunk (Round-5 Coupling-A).
@@ -63,10 +73,27 @@ const PaletteSearch = React.lazy(() => import('@/soc/chat/report/PaletteSearch')
 const RECENTS_KEY = 'tlsoc.cmdk.recents';
 const RECENTS_MAX = 6;
 
-/** A recently-jumped palette target persisted in localStorage. */
+/**
+ * A recently-jumped palette target persisted in localStorage. `kind: 'item'` marks a
+ * jump to one thing on a page (a case, a Settings section) whose own label is kept; a
+ * page jump (`'page'`, or no kind in entries saved before Round 14) is shown by the
+ * page's current navigation name.
+ */
 interface RecentItem {
   page: PageId;
   label: string;
+  kind?: 'page' | 'item';
+}
+
+/**
+ * A stored recent as it reads today: a retired route resolves to its destination (the
+ * old "Response playbooks" entry opens Runbooks), and a page jump takes the name the
+ * navigation gives that page now, so retired names never come back from storage.
+ */
+function currentRecent(r: RecentItem): RecentItem {
+  const page = redirectRoute(r.page).page;
+  if (r.kind === 'item' && page === r.page) return r;
+  return { page, label: navCurrentLabel(page) ?? navLabel(page), kind: 'page' };
 }
 
 function loadRecents(): RecentItem[] {
@@ -75,6 +102,7 @@ function loadRecents(): RecentItem[] {
     if (!raw) return [];
     const parsed: unknown = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
+    const seen = new Set<PageId>();
     return parsed
       .filter(
         (r): r is RecentItem =>
@@ -84,6 +112,13 @@ function loadRecents(): RecentItem[] {
           isPageId((r as RecentItem).page) &&
           typeof (r as RecentItem).label === 'string',
       )
+      .map(currentRecent)
+      .filter((r) => {
+        // Two entries that now open the same page show once (the newer one).
+        if (seen.has(r.page)) return false;
+        seen.add(r.page);
+        return true;
+      })
       .slice(0, RECENTS_MAX);
   } catch {
     return [];
@@ -92,13 +127,14 @@ function loadRecents(): RecentItem[] {
 
 function pushRecent(item: RecentItem): void {
   try {
-    const next = [item, ...loadRecents().filter((r) => r.page !== item.page)].slice(
+    const entry = currentRecent(item);
+    const next = [entry, ...loadRecents().filter((r) => r.page !== entry.page)].slice(
       0,
       RECENTS_MAX,
     );
     window.localStorage.setItem(RECENTS_KEY, JSON.stringify(next));
   } catch {
-    /* best-effort — recents are cosmetic */
+    /* best effort: recents are cosmetic */
   }
 }
 
@@ -159,10 +195,12 @@ export function CommandPalette({ open, onOpenChange, onNavigate }: CommandPalett
     };
   }, [query, open]);
 
-  // Navigate + record the jump + close. Settings-section nav ids are valid PageIds.
+  // Navigate + record the jump + close. Settings-section nav ids are valid PageIds. A
+  // page jump is remembered by the page's navigation name; an `item` jump (a source)
+  // keeps its own label.
   const go = React.useCallback(
-    (page: PageId, label: string, opts?: NavOpts) => {
-      pushRecent({ page, label });
+    (page: PageId, label: string, opts?: NavOpts, kind: RecentItem['kind'] = 'page') => {
+      pushRecent({ page, label, kind });
       // Plain jumps keep the one-argument call the shell (and its tests) rely on.
       if (opts) onNavigate(page, opts);
       else onNavigate(page);
@@ -172,13 +210,14 @@ export function CommandPalette({ open, onOpenChange, onNavigate }: CommandPalett
   );
 
   // RBAC-filtered nav jump targets (mirrors the shell): each group's visible top-level
-  // items PLUS their disclosure children — each child gated on its OWN perm — flattened
-  // so EVERY routable page is a Cmd-K target, not just the rail hosts. Without this the
-  // children-only destinations (Cost, Models, Baseline, Batch jobs, Standup, Knowledge,
-  // Memory, Investigate, Playbooks) were unreachable from the palette. A parent host and
-  // a child can share a PageId (e.g. `chat`), so targets carry a unique `key`/`value`
-  // (host = `nav-<id>`, child = `navc-<parent>-<id>`) — the `nav-<id>` host values are
-  // relied on by the command-palette spec.
+  // items PLUS their disclosure children, each gated through the one visibility authority
+  // (`navVisible`), flattened so EVERY routable page is a Cmd-K target, not just the rail
+  // hosts. A target opens exactly what the navigation opens (Round 14, SPEC §2.2 item 13):
+  // a host its `target` (the Overview row: the Dashboards library, or the Cyber Defence
+  // Center without `metrics:view`), a child its page ("Cyber Defence Center" opens
+  // `#/overview`). A parent host and a child can share a PageId (e.g. `chat`), so targets
+  // carry a unique `key`/`value` (host = `nav-<id>`, child = `navc-<parent>-<id>`); the
+  // `nav-<id>` host values are relied on by the command-palette spec.
   const navGroups = React.useMemo<
     {
       id: string;
@@ -207,18 +246,18 @@ export function CommandPalette({ open, onOpenChange, onNavigate }: CommandPalett
           depth: 'host' | 'child';
         }[] = [];
         for (const item of group.items) {
-          if (item.perm && !hasPermission(item.perm.resource, item.perm.action)) continue;
+          if (!navVisible(item, hasPermission)) continue;
           targets.push({
-            id: item.id,
+            id: navTarget(item, hasPermission),
             label: item.label,
             icon: item.icon,
             key: `nav-${item.id}`,
             depth: 'host',
           });
           for (const child of item.children ?? []) {
-            if (child.perm && !hasPermission(child.perm.resource, child.perm.action)) continue;
+            if (!navVisible(child, hasPermission)) continue;
             targets.push({
-              id: child.id,
+              id: navDest(child),
               label: child.label,
               icon: child.icon ?? item.icon,
               key: `navc-${item.id}-${child.id}`,
@@ -257,6 +296,39 @@ export function CommandPalette({ open, onOpenChange, onNavigate }: CommandPalett
   );
   const showRecents = term.length === 0 && recents.length > 0;
   const isDiscoveryState = term.length === 0;
+
+  // A page whose name IS the query ranks first (Round 14): typing "Approvals", "Cases" or
+  // "Models" opens that page on Enter, never a Settings section, an action or a search
+  // hit whose words merely contain it. Each such page is listed once, here, and left out
+  // of its rail group below (cmdk values stay unique).
+  const exactPages = React.useMemo(() => {
+    if (!term) return [];
+    const seen = new Set<string>();
+    const out: (typeof navGroups)[number]['targets'] = [];
+    for (const group of navGroups) {
+      for (const t of group.targets) {
+        if (t.label.toLowerCase() !== term || seen.has(t.key)) continue;
+        seen.add(t.key);
+        out.push(t);
+      }
+    }
+    return out;
+  }, [navGroups, term]);
+  const exactKeys = new Set(exactPages.map((t) => t.key));
+
+  const navItem = (t: (typeof navGroups)[number]['targets'][number]) => {
+    const Icon = t.icon;
+    return (
+      // `group` here is load-bearing: the ArrowRight below reveals via the
+      // `group-data-[selected=true]` variant, which needs an ancestor with
+      // the literal `group` class carrying cmdk's `data-selected`.
+      <CommandItem key={t.key} value={t.key} className="group" onSelect={() => go(t.id, t.label)}>
+        {Icon ? <Icon aria-hidden /> : null}
+        <span>{t.label}</span>
+        <ArrowRight className="ml-auto opacity-0 group-data-[selected=true]:opacity-60" aria-hidden />
+      </CommandItem>
+    );
+  };
   const matchNewChat = localMatch('new chat workspace investigate assistant');
   const matchTheme = localMatch('toggle theme dark light appearance');
   const matchSettings = localMatch('go to settings preferences configuration');
@@ -286,6 +358,11 @@ export function CommandPalette({ open, onOpenChange, onNavigate }: CommandPalett
           <CommandList className="max-h-[min(60dvh,420px)]">
             <CommandEmpty>No results.</CommandEmpty>
 
+            {/* The page the query names exactly: first, so it takes the default Enter. */}
+            {exactPages.length > 0 ? (
+              <CommandGroup heading="Go to page">{exactPages.map(navItem)}</CommandGroup>
+            ) : null}
+
             {/* Recently visited (only on an empty query). */}
             {showRecents ? (
               <CommandGroup heading="Recent">
@@ -293,7 +370,7 @@ export function CommandPalette({ open, onOpenChange, onNavigate }: CommandPalett
                   <CommandItem
                     key={`recent-${r.page}`}
                     value={`recent ${r.label} ${r.page}`}
-                    onSelect={() => go(r.page, r.label)}
+                    onSelect={() => go(r.page, r.label, undefined, r.kind)}
                   >
                     <History aria-hidden />
                     <span>{r.label}</span>
@@ -311,7 +388,7 @@ export function CommandPalette({ open, onOpenChange, onNavigate }: CommandPalett
                     // Force a match (server already ranked) — include the id so it is unique.
                     value={`case ${c.id} ${c.case_number ?? ''} ${c.title ?? ''} ${c.entity ?? ''}`}
                     onSelect={() => {
-                      pushRecent({ page: 'cases', label: c.title || c.id });
+                      pushRecent({ page: 'cases', label: c.title || c.id, kind: 'item' });
                       onNavigate('cases', { caseId: c.id });
                       onOpenChange(false);
                     }}
@@ -333,7 +410,7 @@ export function CommandPalette({ open, onOpenChange, onNavigate }: CommandPalett
                   <CommandItem
                     key={`source-${s.id}`}
                     value={`source ${s.id} ${s.label ?? ''} ${s.source_type ?? ''}`}
-                    onSelect={() => go('sources', s.label || s.id)}
+                    onSelect={() => go('sources', s.label || s.id, undefined, 'item')}
                   >
                     <Database aria-hidden />
                     <span className="truncate">{s.label || s.id}</span>
@@ -416,7 +493,7 @@ export function CommandPalette({ open, onOpenChange, onNavigate }: CommandPalett
                         key={key}
                         value={key}
                         onSelect={() => {
-                          pushRecent({ page: 'settings', label: t.label });
+                          pushRecent({ page: 'settings', label: t.label, kind: 'item' });
                           onNavigate('settings', { section: t.section, anchor: t.anchor });
                           onOpenChange(false);
                         }}
@@ -441,33 +518,14 @@ export function CommandPalette({ open, onOpenChange, onNavigate }: CommandPalett
             {navGroups.map((group) => {
               const items = group.targets.filter(
                 (t) =>
+                  !exactKeys.has(t.key) &&
                   (!isDiscoveryState || t.depth === 'host') &&
                   localMatch('page', t.label, t.id),
               );
               if (!items.length) return null;
               return (
                 <CommandGroup key={`nav-${group.id}`} heading={group.label}>
-                  {items.map((t) => {
-                    const Icon = t.icon;
-                    return (
-                      // `group` here is load-bearing: the ArrowRight below reveals via the
-                      // `group-data-[selected=true]` variant, which needs an ancestor with
-                      // the literal `group` class carrying cmdk's `data-selected`.
-                      <CommandItem
-                        key={t.key}
-                        value={t.key}
-                        className="group"
-                        onSelect={() => go(t.id, t.label)}
-                      >
-                        {Icon ? <Icon aria-hidden /> : null}
-                        <span>{t.label}</span>
-                        <ArrowRight
-                          className="ml-auto opacity-0 group-data-[selected=true]:opacity-60"
-                          aria-hidden
-                        />
-                      </CommandItem>
-                    );
-                  })}
+                  {items.map(navItem)}
                 </CommandGroup>
               );
             })}

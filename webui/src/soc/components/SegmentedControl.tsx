@@ -95,6 +95,9 @@ export function SegmentedControl<T extends string = string>({
             fitted && 'flex-1',
             'text-muted-foreground hover:text-foreground',
             'data-[state=checked]:bg-accent/70 data-[state=checked]:text-foreground',
+            // Forced colours drop the tint, so the checked segment keeps a system outline
+            // in the selection colour (a system keyword survives a forced palette).
+            'forced-colors:data-[state=checked]:outline forced-colors:data-[state=checked]:outline-2 forced-colors:data-[state=checked]:-outline-offset-2 forced-colors:data-[state=checked]:outline-[Highlight]',
             'disabled:pointer-events-none disabled:opacity-50',
             focusRing,
           )}

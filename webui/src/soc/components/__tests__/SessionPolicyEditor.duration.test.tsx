@@ -29,7 +29,7 @@ describe('SessionPolicyEditor DurationField (Round-6)', () => {
       <SessionPolicyEditor policy={{ access_ttl: 1800 }} onChange={onChange} />,
     );
 
-    const input = screen.getByLabelText('Access token TTL') as HTMLInputElement;
+    const input = screen.getByLabelText('Access token lifetime') as HTMLInputElement;
     // Shows 30 (minutes) for the 1800s starting value.
     expect(input.value).toBe('30');
 
@@ -49,7 +49,7 @@ describe('SessionPolicyEditor DurationField (Round-6)', () => {
     const onChange = vi.fn();
     render(<SessionPolicyEditor policy={{ access_ttl: 900 }} onChange={onChange} />);
 
-    const input = screen.getByLabelText('Access token TTL') as HTMLInputElement;
+    const input = screen.getByLabelText('Access token lifetime') as HTMLInputElement;
     fireEvent.focus(input);
     fireEvent.change(input, { target: { value: '5' } });
     fireEvent.blur(input);
@@ -66,9 +66,9 @@ describe('SessionPolicyEditor DurationField (Round-6)', () => {
     render(<SessionPolicyEditor />);
 
     expect(await screen.findByText('Could not load session policy')).toBeInTheDocument();
-    expect(screen.queryByLabelText('Access token TTL')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Access token lifetime')).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
-    await waitFor(() => expect(screen.getByLabelText('Access token TTL')).toHaveValue(20));
+    await waitFor(() => expect(screen.getByLabelText('Access token lifetime')).toHaveValue('20'));
   });
 });

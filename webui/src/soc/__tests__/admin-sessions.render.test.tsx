@@ -105,16 +105,44 @@ describe('Admin Sessions console', () => {
     expect(screen.getByText('Safari on iOS')).toBeInTheDocument();
   });
 
-  it('opens the force-terminate confirm dialog from a row', async () => {
+  it('opens the sign-out confirm dialog from a row, with the notify choice', async () => {
     renderAdmin();
     await screen.findByText('alice');
 
-    const terminateBtn = screen.getByRole('button', { name: /Terminate session sid-a/i });
-    fireEvent.click(terminateBtn);
+    // Named by the session a person recognises (device, place, owner), never its id.
+    const signOut = screen.getByRole('button', { name: 'Sign out Chrome on macOS, London, UK for alice' });
+    expect(screen.queryByRole('button', { name: /sid-a/ })).toBeNull();
+    fireEvent.click(signOut);
 
     const dialog = await screen.findByRole('alertdialog');
-    expect(within(dialog).getByText('Terminate this session?')).toBeInTheDocument();
+    expect(within(dialog).getByText('Sign out this session?')).toBeInTheDocument();
     // The "notify the user" checkbox is present in the confirm.
     expect(within(dialog).getByLabelText('Notify the user')).toBeInTheDocument();
+  });
+
+  it('offers "Sign out all for" one filtered user, and keeps Refresh in the section actions', async () => {
+    renderAdmin();
+    await screen.findByText('alice');
+    expect(screen.getByRole('heading', { name: 'Active sessions', level: 1 })).toBeInTheDocument();
+    expect(screen.queryByText('Administration')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Refresh' })).toHaveAttribute('data-refresh-display', 'label');
+    expect(screen.queryByRole('button', { name: /Sign out all for/ })).toBeNull();
+    fireEvent.change(screen.getByLabelText('Filter by user'), { target: { value: 'ali' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Sign out all for alice' }));
+    const dialog = await screen.findByRole('alertdialog');
+    expect(within(dialog).getByText('Sign out all sessions for alice?')).toBeInTheDocument();
+  });
+
+  it('draws the user filter and the table on one panel, the table bleeding to its edge', async () => {
+    renderAdmin();
+    await screen.findByText('alice');
+    const panel = document.querySelector('[data-admin-sessions-panel]') as HTMLElement;
+    expect(panel).not.toBeNull();
+    expect(panel.className).toContain('surface-panel');
+    // The filter is the shared FilterBar (the one filter layout), not a bespoke field.
+    expect(within(panel).getByRole('group', { name: 'Session filters' })).toBeInTheDocument();
+    expect(within(panel).getByLabelText('Filter by user')).toBeInTheDocument();
+    const table = within(panel).getByRole('table', { name: 'All active sessions' });
+    expect(table.closest('[data-surface]')).toHaveAttribute('data-surface', 'panel');
   });
 });

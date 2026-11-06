@@ -276,20 +276,17 @@ describe('Tuning page', () => {
     expect(pageHeadings).toHaveLength(1);
     expect(pageHeadings[0]).toHaveTextContent('Auto-tuning');
 
+    // Round 14 (SPEC §4.9.2): the one KPI strip on the Overview's panel (KpiStrip), a
+    // named group of three ink tiles with no icons; the compact density is shared.
     const healthStrip = screen.getByTestId('tuning-health-strip');
-    expect(healthStrip).toHaveClass('grid', 'border-y');
-    expect(healthStrip.className).toMatch(/(?:sm|md|lg|xl):grid-cols-/);
-    expect(healthStrip.className).not.toMatch(/rounded|shadow|bg-card/);
-
-    const cells = Array.from(healthStrip.children);
-    expect(cells).toHaveLength(3);
-    expect(cells[1]).toHaveClass('border-t', 'sm:border-l', 'sm:border-t-0');
-    expect(cells[2]).toHaveClass('border-t', 'sm:border-l', 'sm:border-t-0');
-    // `density="compact"` is a SHARED token: it tightened from `py-3` to `py-2` when the
-    // landing dashboard had to seat its flow diagram, case queue and timing pair in one
-    // screen, and every compact strip on the console — this one included — takes the same
-    // rhythm deliberately. Update it here too if the density changes again; never delete it.
-    expect(screen.getByTestId('kpi-needs-attention')).toHaveClass('min-h-0', 'py-2');
+    expect(healthStrip).toHaveAttribute('role', 'group');
+    expect(healthStrip).toHaveAttribute('aria-label', 'Health summary');
+    expect(healthStrip).toHaveAttribute('data-kpi-strip', 'compact');
+    expect(healthStrip).toHaveClass('surface-panel');
+    for (const label of ['Needs attention', 'Collecting evidence', 'Within target']) {
+      expect(within(healthStrip).getByText(label)).toBeInTheDocument();
+    }
+    expect(healthStrip.querySelector('svg')).toBeNull();
   });
 
   it('uses task-focused workspace tabs and opens on Operations', async () => {
@@ -333,7 +330,7 @@ describe('Tuning page', () => {
     );
     getConfigMock.mockResolvedValueOnce(CONFIG);
 
-    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh auto-tuning' }));
     expect(
       await screen.findByRole('progressbar', { name: /refreshing auto-tuning/i }),
     ).toBeInTheDocument();
@@ -422,7 +419,150 @@ describe('Tuning page', () => {
   it('states the honest authority boundary without a separate banner', async () => {
     renderTuning();
     await screen.findAllByText('auth-brute');
-    expect(screen.getByText(/tuning never decides a case/i)).toBeInTheDocument();
+    // Round 14 (C8): the page's explanation lives in the header help tip, not a line.
+    expect(screen.queryByText(/tuning never decides a case/i)).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'About Auto-tuning' }));
+    expect(await screen.findByText(/tuning never decides a case/i)).toBeInTheDocument();
+  });
+
+  it('puts the operating policy in one muted header line, not a band of its own', async () => {
+    renderTuning();
+    await screen.findAllByText('auth-brute');
+    const line = screen.getByTestId('tuning-operating-policy');
+    expect(line.closest('[data-page-header-actions]')).not.toBeNull();
+    expect(line).toHaveAccessibleName('Operating policy');
+    expect(screen.queryByRole('region', { name: 'Tuning operating status' })).toBeNull();
+    expect(line.textContent).toMatch(/Active|Paused/);
+  });
+
+  it('ends each policy fact with its separator, so a wrapped line never starts with "·" (closing QA qa2-09)', async () => {
+    renderTuning();
+    await screen.findAllByText('auth-brute');
+    const line = screen.getByTestId('tuning-operating-policy');
+    const facts = Array.from(line.children) as HTMLElement[];
+    expect(facts).toHaveLength(4);
+    facts.forEach((fact, index) => {
+      const last = index === facts.length - 1;
+      // The dot is the fact's last child, never its first (a phone wraps between facts).
+      expect(fact.firstElementChild?.tagName).toBe('DT');
+      expect(fact.querySelectorAll('[data-separator]')).toHaveLength(last ? 0 : 1);
+      if (!last) {
+        expect(fact.lastElementChild).toHaveAttribute('data-separator');
+        expect(fact.lastElementChild).toHaveAttribute('aria-hidden', 'true');
+      }
+    });
+    expect(line.textContent).toBe('PolicyActive·WritesConfirmed auto-apply·CadenceNightly·Evidence120 closed cases');
+  });
+
+  it('names each monitored rule as a RuleLink beside, never inside, its inspect control (closing QA qa2-03)', async () => {
+    renderTuning();
+    await screen.findAllByText('auth-brute');
+    const list = screen.getByLabelText('Monitored rules');
+    const inspect = within(list).getByRole('button', { name: 'Inspect rule auth-brute' });
+    const link = within(list).getByRole('button', { name: 'Open rule auth-brute' });
+    expect(link).toHaveTextContent('auth-brute');
+    expect(link).toHaveAttribute('data-rule-link');
+    expect(link).toHaveAttribute('aria-haspopup', 'dialog');
+    expect(link).toHaveAttribute('title', 'auth-brute');
+    // Siblings in one row: no control nested in another.
+    expect(inspect).not.toContainElement(link);
+    expect(link.closest('button')).toBe(link);
+    const row = inspect.closest('[role="listitem"]') as HTMLElement;
+    expect(row).toContainElement(link);
+    expect(list.querySelectorAll('button button')).toHaveLength(0);
+    // The inspect control covers the whole row and the link is drawn above it.
+    expect(inspect).toHaveClass('absolute', 'inset-0', 'z-10');
+    expect(link).toHaveClass('relative', 'z-20');
+    expect(row).toHaveClass('relative', 'isolate');
+    // Tab order: inspect first, then the rule.
+    expect(inspect.compareDocumentPosition(link) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // The row's long explanation is the inspect control's description, read once.
+    expect(inspect).toHaveAccessibleDescription(/auto-apply|threshold|confirmed|bounded/i);
+
+    // Opening the rule does not inspect the row; the inspect control still does.
+    fireEvent.click(link);
+    expect(inspect).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByRole('complementary', { name: 'Detail for rule auth-brute' })).toBeNull();
+    fireEvent.click(inspect);
+    expect(inspect).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByRole('complementary', { name: 'Detail for rule auth-brute' })).toBeInTheDocument();
+  });
+
+  it('draws the selection accent on the inspect control, never on a divided row', async () => {
+    // The rows are children of a `divide-y divide-border/70` list. Its border colour rule
+    // (`.divide-border\/70 > :not([hidden]) ~ :not([hidden])`, specificity 0,3,0) sets every
+    // side and outranks a `border-l-*` class on the row (0,1,0), so a left accent there
+    // turned grey on every row but the first and lost its primary colour when selected.
+    // jsdom computes no Tailwind, so this pins where the classes live.
+    renderTuning();
+    await screen.findAllByText('auth-brute');
+    const list = screen.getByLabelText('Monitored rules');
+    const divided = list.querySelector('[role="list"]') as HTMLElement;
+    expect(divided).toHaveClass('divide-y');
+    const rows = within(divided).getAllByRole('listitem');
+    expect(rows.length).toBeGreaterThan(1);
+    for (const row of rows) {
+      expect(row.parentElement).toBe(divided);
+      expect(row.className).not.toMatch(/(^|\s)border-l(-|\s|$)/);
+    }
+    const inspects = rows.map((row) => row.querySelector('[data-rule-inspect]') as HTMLElement);
+    for (const inspect of inspects) {
+      expect(inspect).toHaveClass('border-l-2', 'border-l-transparent');
+      expect(inspect).not.toHaveClass('border-l-primary/70');
+    }
+
+    // Selecting a row after the first marks its own inspect control, and only that one.
+    fireEvent.click(inspects[1]);
+    expect(inspects[1]).toHaveAttribute('aria-expanded', 'true');
+    expect(inspects[1]).toHaveClass('border-l-primary/70');
+    expect(rows[1]).toHaveClass('bg-accent/25');
+    expect(rows[1].className).not.toMatch(/(^|\s)border-l(-|\s|$)/);
+    inspects
+      .filter((_, index) => index !== 1)
+      .forEach((inspect) => expect(inspect).not.toHaveClass('border-l-primary/70'));
+  });
+
+  it('sets tabular figures on numbers only, never on hyphenated prose ([uib] TU2)', async () => {
+    const view = renderTuning();
+    await screen.findAllByText('auth-brute');
+    // Inter's tabular hyphen opens a gap in "analyst-confirmed" and "false-positive", so
+    // no tabular-nums element may hold a hyphenated word.
+    const tabular = Array.from(view.container.querySelectorAll<HTMLElement>('.tabular-nums'));
+    expect(tabular.length).toBeGreaterThan(0);
+    const hyphenated = tabular
+      .map((node) => node.textContent ?? '')
+      .filter((text) => /[A-Za-z]-[A-Za-z]/.test(text));
+    expect(hyphenated).toEqual([]);
+    // The prose itself still reads the same.
+    expect(view.container.textContent ?? '').toMatch(/analyst-confirmed cases/);
+    expect(view.container.textContent ?? '').toMatch(/observed false-positive ratio/);
+  });
+
+  it('uses underline tabs without icons and modules on panels', async () => {
+    renderTuning();
+    await screen.findAllByText('auth-brute');
+    const tabs = screen.getByRole('tablist', { name: 'Auto-tuning workspace' });
+    expect(tabs).toHaveAttribute('data-variant', 'underline');
+    expect(tabs.querySelector('svg')).toBeNull();
+    const review = screen.getByRole('region', { name: 'Rule review' });
+    expect(review).toHaveClass('surface-panel');
+  });
+
+  it('has no tracked-capitals labels and no em dash in its copy', async () => {
+    const { container } = renderTuning();
+    await screen.findAllByText('auth-brute');
+    for (const el of container.querySelectorAll('[class]')) {
+      const cls = el.getAttribute('class') ?? '';
+      expect(cls.includes('uppercase') && cls.includes('tracking-'), cls).toBe(false);
+    }
+    const texts: string[] = [];
+    const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+    for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+      const t = (n.textContent ?? '').trim();
+      if (t && t !== '—') texts.push(t);
+    }
+    expect(texts.filter((t) => t.includes('—'))).toEqual([]);
+    expect(texts.filter((t) => /playbook/i.test(t))).toEqual([]);
   });
 
   it('routes a suppression drop to Approvals instead of applying it', async () => {
@@ -601,10 +741,10 @@ describe('Tuning page', () => {
 
     fireEvent.keyDown(screen.getByRole('tab', { name: 'Outcomes' }), { key: 'Enter' });
     fireEvent.click(screen.getByRole('button', { name: 'View full evidence' }));
-    expect(onNavigate).toHaveBeenCalledWith('metrics', { tab: 'effectiveness' });
+    expect(onNavigate).toHaveBeenCalledWith('effectiveness');
   });
 
-  it('drills through to the Analytics host when navigation comes from router context', async () => {
+  it('drills through to Agent effectiveness when navigation comes from router context', async () => {
     window.location.hash = '#/tuning';
     render(
       <RouterProvider>
@@ -617,7 +757,7 @@ describe('Tuning page', () => {
 
     fireEvent.keyDown(screen.getByRole('tab', { name: 'Outcomes' }), { key: 'Enter' });
     fireEvent.click(screen.getByRole('button', { name: 'View full evidence' }));
-    await waitFor(() => expect(window.location.hash).toBe('#/metrics?tab=effectiveness'));
+    await waitFor(() => expect(window.location.hash).toBe('#/effectiveness'));
   });
 
   it('keeps tuning available when the operator lacks the separate metrics grant', async () => {

@@ -5,7 +5,7 @@ description: Interpret ATT&CK mappings, indicator reputation, and related cases 
 
 # MITRE ATT&CK and threat context
 
-The case **Threat** tab brings together indicator enrichment, MITRE ATT&CK metadata,
+The case **Threat context** tab brings together indicator enrichment, MITRE ATT&CK metadata,
 and related cases. The service is fail-open: missing enrichment or mapping data does
 not prevent case handling.
 
@@ -17,8 +17,8 @@ Investigations can record technique IDs on a case. Agentic SOC resolves them aga
 bundled Enterprise ATT&CK corpus and can fall back from an unavailable sub-technique
 to its parent. The mapping is evidence context, not proof that a technique occurred.
 
-Open **Analytics → Metrics → MITRE coverage** to see tactic and technique counts over
-cases. The Navigator export uses the ATT&CK Navigator 4.5 layer format. Coverage means
+Open **Analytics → Metrics → Posture** and read **MITRE ATT&CK coverage** to see tactic
+and technique counts over cases. The Navigator export uses the ATT&CK Navigator 4.5 layer format. Coverage means
 “present on stored cases”; it does not measure preventive-control coverage or test
 effectiveness.
 
@@ -37,12 +37,12 @@ lineage, and evidence before treating two records as one incident.
 
 ## How this case was clustered
 
-The Threat tab's three-node explanation shows **Input alerts → Correlation cluster →
-Opened case** from fields already persisted on the case. Hover or keyboard-focus a
-node to inspect source counts, grouping, matched rule, threshold and time window,
-opened-case status/verdict, and bounded related-case links. It is an explanation of
-the original correlation—not a second correlation run and not a path that can change
-risk or the deterministic decision.
+The **Threat context** tab's three-node explanation shows **Input alerts → Correlation
+cluster → Opened case** from fields already persisted on the case. Hover or
+keyboard-focus a node to inspect source counts, grouping, matched rule, threshold and
+time window, opened-case status/verdict, and bounded related-case links. It is an
+explanation of the original correlation, not a second correlation run and not a path
+that can change risk or the deterministic decision.
 
 Member alert references are stable one-way hashes and are capped at 12; the response
 reports any additional truncated count. Raw source event identifiers and payloads are

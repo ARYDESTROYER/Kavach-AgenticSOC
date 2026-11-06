@@ -1,11 +1,9 @@
-/** Read-only upstream source discovery and its operator-configurable GitHub refs. */
+/**
+ * Updates & releases settings section: read-only upstream source discovery and its
+ * operator-configurable GitHub refs (Round 14 grouped panels).
+ */
 import * as React from 'react';
-import {
-  ExternalLink,
-  GitBranch,
-  RefreshCw,
-  ShieldCheck,
-} from 'lucide-react';
+import { ExternalLink } from 'lucide-react';
 import { toast } from 'sonner';
 
 import { api } from '@/lib/api';
@@ -15,14 +13,12 @@ import type {
   UpstreamReleaseCandidate,
   UpstreamReleasesResponse,
 } from '@/lib/types';
-import { cn } from '@/lib/cn';
-import { LoadingState } from '@/design-system';
-import { Alert, AlertDescription, AlertTitle } from '@/ui/alert';
+import { Callout, LoadingState } from '@/design-system';
 import { Badge } from '@/ui/badge';
 import { Button } from '@/ui/button';
-import { SettingsCard, SettingsGrid, type SettingsTOCItem } from '@/soc/components/SettingsGrid';
+import { RefreshButton } from '@/soc/components/RefreshButton';
 
-import { NumPref, SectionShell, SwitchPref, TextPref, errMsg } from './primitives';
+import { NumPref, SettingRow, SettingsGroup, SettingsSection, TextPref, errMsg } from './primitives';
 
 const DEFAULT_RELEASE_UPDATES: ReleaseUpdateConfig = {
   enabled: true,
@@ -31,11 +27,6 @@ const DEFAULT_RELEASE_UPDATES: ReleaseUpdateConfig = {
   testing_branch: 'Testing',
   check_interval_minutes: 360,
 };
-
-const RELEASE_TOC: SettingsTOCItem[] = [
-  { anchor: 'release-source', label: 'Source & channels', icon: GitBranch },
-  { anchor: 'release-observed', label: 'Observed revisions', icon: RefreshCw },
-];
 
 function normalizedConfig(value?: Partial<ReleaseUpdateConfig> | null): ReleaseUpdateConfig {
   return { ...DEFAULT_RELEASE_UPDATES, ...(value ?? {}) };
@@ -62,7 +53,7 @@ function ChannelObservation({ candidate }: { candidate: UpstreamReleaseCandidate
   const available = candidate.state === 'available';
   const disabled = candidate.state === 'disabled';
   return (
-    <section className="border-t border-border/70 py-4 first:border-t-0 first:pt-0 last:pb-0">
+    <SettingRow variant="block">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
@@ -139,10 +130,10 @@ function ChannelObservation({ candidate }: { candidate: UpstreamReleaseCandidate
         </p>
       ) : (
         <p className="mt-3 text-xs text-muted-foreground">
-          Source discovery is disabled. The running application continues unchanged.
+          Source discovery is off. The running application continues unchanged.
         </p>
       )}
-    </section>
+    </SettingRow>
   );
 }
 
@@ -216,144 +207,142 @@ export function ReleaseUpdatesSection({
   };
 
   return (
-    <SectionShell
-      title="Updates & release channels"
-      sub="Track Stable and Testing source revisions; supported Compose deployments can install a verified Stable release through the supervised top-bar update flow."
-      toc={RELEASE_TOC}
-    >
-      <SettingsGrid>
-        <SettingsCard
-          anchor="release-source"
-          title="Source & channels"
-          icon={GitBranch}
-          description="The backend checks one canonical public GitHub repository. Repository and branch values are validated before they can be saved."
-          wide="full"
-        >
-          <SwitchPref
-            label="Check for source updates"
-            help="Enabled by default. Branch checks are cached observation only; they never clone, execute, deploy, restart, or migrate anything."
-            checked={draft.enabled}
-            disabled={readOnly}
-            onChange={(enabled) => change({ enabled })}
+    <SettingsSection title="Updates & releases">
+      <SettingsGroup
+        id="release-source"
+        title="Source and channels"
+        caption="The backend checks one public GitHub repository. Repository and branch values are checked before they can be saved."
+      >
+        <SettingRow
+          variant="switch"
+          label="Check for source updates"
+          help="On by default. Branch checks are cached and read-only; they never clone, run, deploy, restart or migrate anything."
+          checked={draft.enabled}
+          disabled={readOnly}
+          onCheckedChange={(enabled) => change({ enabled })}
+        />
+        <SettingRow variant="field" wide mono>
+          <TextPref
+            label="Public repository"
+            help="A https://github.com/owner/repository address. Private hosts and other addresses are refused."
+            value={draft.repository_url}
+            disabled={readOnly || !draft.enabled}
+            onChange={(repository_url) => change({ repository_url })}
           />
-          <div className="mt-5 grid gap-4 lg:grid-cols-2">
-            <TextPref
-              label="Public repository"
-              help="Canonical https://github.com/owner/repository URL. Private hosts and arbitrary URLs are rejected."
-              value={draft.repository_url}
-              disabled={readOnly || !draft.enabled}
-              onChange={(repository_url) => change({ repository_url })}
-              className="lg:col-span-2"
-            />
-            <TextPref
-              label="Stable branch"
-              help="The supported release branch, normally main. Only an immutable, signed Stable release derived from this path can become installable."
-              value={draft.stable_branch}
-              disabled={readOnly || !draft.enabled}
-              onChange={(stable_branch) => change({ stable_branch })}
-            />
-            <TextPref
-              label="Testing branch"
-              help="The integration and acceptance branch. Testing observations are never installable from the Console."
-              value={draft.testing_branch}
-              disabled={readOnly || !draft.enabled}
-              onChange={(testing_branch) => change({ testing_branch })}
-            />
-            <NumPref
-              label="Check interval (minutes)"
-              help="Default 360 minutes. Cached checks keep public API use low."
-              value={draft.check_interval_minutes}
-              min={15}
-              max={10_080}
-              step={15}
-              disabled={readOnly || !draft.enabled}
-              onChange={(check_interval_minutes) => change({ check_interval_minutes })}
-            />
-          </div>
-        </SettingsCard>
+        </SettingRow>
+        <SettingRow variant="field" controlWidth="12rem" mono>
+          <TextPref
+            label="Stable branch"
+            help="The supported release branch, normally main. Only a signed Stable release from it can be installed."
+            value={draft.stable_branch}
+            disabled={readOnly || !draft.enabled}
+            onChange={(stable_branch) => change({ stable_branch })}
+          />
+        </SettingRow>
+        <SettingRow variant="field" controlWidth="12rem" mono>
+          <TextPref
+            label="Testing branch"
+            help="The integration branch. Testing revisions can never be installed from the Console."
+            value={draft.testing_branch}
+            disabled={readOnly || !draft.enabled}
+            onChange={(testing_branch) => change({ testing_branch })}
+          />
+        </SettingRow>
+        <SettingRow variant="field" controlWidth="9rem">
+          <NumPref
+            label="Check interval"
+            help="Default 360 minutes. Cached checks keep public API use low."
+            unit="min"
+            value={draft.check_interval_minutes}
+            min={15}
+            max={10_080}
+            step={15}
+            disabled={readOnly || !draft.enabled}
+            onChange={(check_interval_minutes) => change({ check_interval_minutes })}
+          />
+        </SettingRow>
+      </SettingsGroup>
 
-        <SettingsCard
-          anchor="release-observed"
-          title="Observed revisions"
-          icon={RefreshCw}
-          description="The latest readable VERSION and commit on each saved branch. These observations do not authorize or describe an installation."
-          wide="full"
-          actions={
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              disabled={checking || loading || draftDiffers}
-              onClick={() => void checkNow()}
-            >
-              <RefreshCw className={cn('h-4 w-4', checking && 'animate-spin')} aria-hidden />
-              {checking ? 'Checking…' : 'Check now'}
-            </Button>
-          }
-          footer={
-            draftDiffers
-              ? 'Save or discard the source changes before checking; discovery always uses the server-saved configuration.'
-              : status
-                ? `Automatic checks are cached for ${Math.round(status.cache.max_age_seconds / 60)} minutes.`
-                : undefined
-          }
-        >
-          {loading ? (
+      <SettingsGroup
+        id="release-observed"
+        title="Observed revisions"
+        caption={
+          draftDiffers
+            ? 'Save or discard the source changes before checking; discovery always uses the saved configuration.'
+            : status
+              ? `The latest version and commit on each saved branch. Automatic checks are cached for ${Math.round(status.cache.max_age_seconds / 60)} minutes.`
+              : 'The latest version and commit on each saved branch. These do not authorize an installation.'
+        }
+        action={
+          <RefreshButton
+            label="Check now"
+            refreshing={checking}
+            disabled={loading || draftDiffers}
+            onClick={() => void checkNow()}
+          />
+        }
+      >
+        {loading ? (
+          <SettingRow variant="block">
             <LoadingState
               label="Checking release source"
               description="Reading the backend's cached branch observations."
               layout="panel"
               shape="rows"
             />
-          ) : error ? (
-            <Alert variant="destructive">
-              <AlertTitle>Release source unavailable</AlertTitle>
-              <AlertDescription className="space-y-3">
-                <p>{error}</p>
+          </SettingRow>
+        ) : error ? (
+          <SettingRow variant="block">
+            <Callout
+              intent="error"
+              title="Release source unavailable"
+              action={
                 <Button type="button" variant="outline" size="sm" onClick={() => void load()}>
                   Retry
                 </Button>
-              </AlertDescription>
-            </Alert>
-          ) : status ? (
-            <div>
-              <ChannelObservation candidate={status.channels.stable} />
-              <ChannelObservation candidate={status.channels.testing} />
-            </div>
-          ) : null}
-        </SettingsCard>
-      </SettingsGrid>
+              }
+            >
+              {error}
+            </Callout>
+          </SettingRow>
+        ) : status ? (
+          <>
+            <ChannelObservation candidate={status.channels.stable} />
+            <ChannelObservation candidate={status.channels.testing} />
+          </>
+        ) : null}
+      </SettingsGroup>
 
-      <Alert className="mt-8" variant="info">
-        <ShieldCheck className="h-4 w-4" aria-hidden />
-        <AlertTitle>Stable updates use a separate supervisor</AlertTitle>
-        <AlertDescription className="space-y-2">
-          <p>
-            Discovery is not deployment. Branch observations remain read-only; they never make a
-            mutable branch installable or authorize a host change.
-          </p>
-          <p>
-            A supported standalone Compose deployment can expose <strong>Update vX</strong> to a
-            freshly authenticated platform owner after the backend and updater verify an immutable
-            signed release plan, compatibility, durable configuration, backup readiness, and
-            automatic rollback.
-          </p>
-          <p>
-            Older deployments need the documented one-time supervisor bootstrap. Custom stacks,
-            unsupported state backends, and mutable Testing branch revisions remain manual and
-            show an explicit blocker instead of a misleading update action.
-          </p>
-          <p>
-            The browser only confirms the server-advertised release identifier. It never receives
-            or submits image references, host paths, commands, or deployment credentials.
-          </p>
-          <p>
-            After a successful job, this tab reloads only when the same-origin Console manifest
-            exactly matches the healthy Stable backend version and commit. Unknown provenance
-            remains blocked, with a manual activation retry instead of a reload loop.
-          </p>
-        </AlertDescription>
-      </Alert>
-    </SectionShell>
+      <SettingsGroup title="How Stable updates are installed">
+        <SettingRow variant="block">
+          <div className="max-w-[42rem] space-y-2 text-sm text-muted-foreground">
+            <p>
+              Discovery is not deployment. Branch observations stay read-only; they never make a
+              branch installable or authorize a change on the host.
+            </p>
+            <p>
+              A supported standalone Compose deployment can offer <strong className="font-medium text-foreground">Update vX</strong> to
+              a freshly signed-in platform owner after the backend and the updater verify an
+              immutable signed release plan, compatibility, durable configuration, backup readiness
+              and automatic rollback.
+            </p>
+            <p>
+              Older deployments need the documented one-time supervisor bootstrap. Custom stacks,
+              unsupported state backends and Testing branch revisions stay manual and show a clear
+              blocker instead of an update action.
+            </p>
+            <p>
+              The browser only confirms the release the server offers. It never receives or sends
+              image references, host paths, commands or deployment credentials.
+            </p>
+            <p>
+              After a successful update, this tab reloads only when the same-origin Console manifest
+              exactly matches the healthy Stable backend version and commit. Unknown provenance stays
+              blocked, with a manual retry instead of a reload loop.
+            </p>
+          </div>
+        </SettingRow>
+      </SettingsGroup>
+    </SettingsSection>
   );
 }

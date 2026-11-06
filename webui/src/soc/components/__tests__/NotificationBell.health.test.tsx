@@ -119,7 +119,7 @@ describe('NotificationBell — Agent health', () => {
     await userEvent.click(await screen.findByRole('button', { name: /notifications/i }));
 
     await userEvent.click(await screen.findByRole('button', { name: /view effectiveness/i }));
-    expect(navigate).toHaveBeenCalledWith('metrics', { tab: 'effectiveness' });
+    expect(navigate).toHaveBeenCalledWith('effectiveness');
     expect(screen.queryByTestId('health-degradation-section')).toBeNull();
   });
 });

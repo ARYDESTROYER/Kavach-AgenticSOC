@@ -113,9 +113,11 @@ describe('Inbox page (read-state)', () => {
     renderInbox();
     await waitFor(() => expect(listMock).toHaveBeenCalled());
 
-    expect(await screen.findByText('Inbox')).toBeInTheDocument();
-    expect(screen.getByRole('group', { name: 'Inbox controls' })).toBeInTheDocument();
-    expect(screen.getByText('1 unread · 2 total')).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { level: 1, name: 'Inbox' })).toBeInTheDocument();
+    // The list's view controls sit in its panel's title row; the count is the header's.
+    const panel = screen.getByRole('region', { name: 'Notifications' });
+    expect(within(panel).getByRole('group', { name: 'Inbox controls' })).toBeInTheDocument();
+    expect(screen.getByTestId('inbox-count')).toHaveTextContent('1 unread · 2 total');
     // Both titles render as plain text.
     expect(screen.getByText('Case escalated: brute force')).toBeInTheDocument();
     expect(screen.getByText('Assigned to you')).toBeInTheDocument();
@@ -320,10 +322,43 @@ describe('Inbox page (read-state)', () => {
     const { onNavigate } = renderInbox();
     await screen.findByText('Known export');
 
-    const actions = screen.getAllByRole('button', { name: 'View result' });
+    // The action says where it goes, as the toast's does.
+    const actions = screen.getAllByRole('button', { name: 'Open Data export' });
     expect(actions).toHaveLength(1);
+    expect(screen.queryByRole('button', { name: 'View result' })).not.toBeInTheDocument();
     fireEvent.click(actions[0]);
     expect(onNavigate).toHaveBeenCalledWith('settings', { section: 'data_export' });
+  });
+
+  it('names a finished audit export\'s action by the audit log it opens', async () => {
+    listMock.mockResolvedValue({
+      items: [
+        {
+          id: 'audit-export-done',
+          category: 'system',
+          title: 'Background job · audit export',
+          body: '12 events exported',
+          state: 'read',
+          job_id: 'job-audit-1',
+          job_status: 'succeeded',
+          progress: { done: 12, total: 12, unit: 'events' },
+          result: { kind: 'audit_export', artifact_id: 'a1', counts: { events: 12 } },
+          url: '#/audit?scope=people&from=2026-09-29T17%3A58%3A15Z&to=2026-10-29T17%3A58%3A15Z&q=Admin',
+        },
+      ],
+      total: 1,
+      limit: 50,
+      offset: 0,
+    });
+    const { onNavigate } = renderInbox();
+    await screen.findByText('12 events exported');
+    fireEvent.click(screen.getByRole('button', { name: 'Open audit log' }));
+    expect(onNavigate).toHaveBeenCalledWith('audit', {
+      scope: 'people',
+      from: '2026-09-29T17:58:15Z',
+      to: '2026-10-29T17:58:15Z',
+      q: 'Admin',
+    });
   });
 
   it('switches to the unread-only view and re-queries', async () => {
@@ -332,9 +367,9 @@ describe('Inbox page (read-state)', () => {
     listMock.mockClear();
     listMock.mockResolvedValue({ items: [ITEMS[0]], total: 1, limit: 50, offset: 0 });
 
-    // The toggle button text starts as "All"; clicking flips to unread-only.
-    const toggle = screen.getByRole('button', { name: /^all$/i });
-    fireEvent.click(toggle);
+    // "Show" is a two-way choice (All or Unread) in the list's own title row.
+    expect(screen.getByRole('radio', { name: /^all$/i })).toHaveAttribute('aria-checked', 'true');
+    fireEvent.click(screen.getByRole('radio', { name: /^unread$/i }));
     await waitFor(() =>
       expect(listMock).toHaveBeenCalledWith(
         expect.objectContaining({ unread_only: true }),
@@ -351,8 +386,34 @@ describe('Inbox page (read-state)', () => {
     // Radix RadioGroup (role="radio"), not a tab surface. Drive it with userEvent.
     const byCat = screen.getByRole('radio', { name: /by category/i });
     await userEvent.click(byCat);
-    // The category group heading appears (curated label for case_escalated).
-    const heading = await screen.findByRole('heading', { name: /escalations/i });
-    expect(within(heading.parentElement as HTMLElement).getByText(/escalations/i)).toBeInTheDocument();
+    // Each category is its own panel, titled by its curated label (case_escalated).
+    const group = await screen.findByRole('region', { name: /escalations/i });
+    expect(group).toHaveClass('surface-panel');
+    expect(within(group).getByText('Case escalated: brute force')).toBeInTheDocument();
+  });
+
+  it('reads like the Overview (Round 14): title, help, count and Refresh, Preferences on the right, the list on a panel', async () => {
+    renderInbox();
+    const h1 = await screen.findByRole('heading', { level: 1, name: 'Inbox' });
+    const header = h1.closest('[data-page-header]') as HTMLElement;
+    expect(within(header).getByRole('button', { name: 'About Inbox' })).toBeInTheDocument();
+    expect(within(header).getByRole('button', { name: 'Refresh inbox' })).toBeInTheDocument();
+    expect(within(header).getByRole('button', { name: /preferences/i })).toBeInTheDocument();
+    // The plain-text disclaimer moved into the help tip: no footer line.
+    expect(screen.queryByText(/never executed as markup/i)).toBeNull();
+    await screen.findByText('Case escalated: brute force');
+    expect(screen.getByRole('region', { name: 'Notifications' })).toHaveClass('surface-panel');
+    // The "New" marker is sentence case, no tracked capitals.
+    expect(screen.getByText('New').className).not.toMatch(/uppercase/);
+    const text = document.body.textContent ?? '';
+    expect(text).not.toMatch(/\u2014/);
+    expect(text).not.toMatch(/playbook/i);
+  });
+
+  it('shows an empty inbox on the panel, without table chrome', async () => {
+    listMock.mockResolvedValue({ items: [], total: 0, limit: 50, offset: 0 });
+    renderInbox();
+    const panel = await screen.findByRole('region', { name: 'Notifications' });
+    expect(await within(panel).findByText('Your inbox is empty')).toBeInTheDocument();
   });
 });

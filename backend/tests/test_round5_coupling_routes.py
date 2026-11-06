@@ -22,7 +22,7 @@ from fastapi.testclient import TestClient
 from app.api import routes_notifications, routes_prefs, routes_rag, routes_search
 from app.constants import CaseStatus, EntityType, SourceSurface
 from app.main import app, discover_feature_routers
-from app.models import Case, Entity
+from app.models import AuditPage, Case, Entity
 
 
 # --------------------------------------------------------------------------- #
@@ -54,7 +54,8 @@ def test_moved_routes_are_registered_on_the_app() -> None:
         "/api/branding",                      # prefs router
         "/api/prefs/effective", "/api/views", "/api/terminology",
         "/api/rag/stats", "/api/memory",      # rag router
-        "/api/search", "/api/audit",          # search router
+        "/api/search",                        # search router
+        "/api/audit",                         # audit router (Round 14)
         "/api/notifications/providers", "/api/cases/{case_id}/notify",  # notif router
     ):
         assert moved in paths, f"moved route {moved} is not registered"
@@ -113,7 +114,10 @@ def test_extracted_response_models_have_expected_keys() -> None:
     # The extracted envelope response models declare exactly the keys the webui reads —
     # additive typing that never drops a key.
     assert set(routes_search.SearchResponse.model_fields) == {"query", "cases", "sources", "nav"}
-    assert set(routes_search.AuditListResponse.model_fields) == {"records", "total"}
+    # Round 14 moved GET /api/audit to routes_audit; its AuditPage keeps the old
+    # envelope's two keys (records, total) so existing clients keep working.
+    assert not hasattr(routes_search, "AuditListResponse")
+    assert {"records", "total"} <= set(AuditPage.model_fields)
     assert set(routes_rag.RagDocumentsResponse.model_fields) == {"documents", "count"}
     assert set(routes_rag.MemoryListResponse.model_fields) == {"entries", "count"}
     assert set(routes_notifications.NotificationProvidersResponse.model_fields) == {

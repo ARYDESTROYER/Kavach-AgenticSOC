@@ -81,6 +81,11 @@ class ReplayRunContext:
     corpus_chunks: list[Any]
     corpus_fingerprint: str
     memory_entries: list[Any] = field(default_factory=list)
+    # The matchable runbook catalog, frozen at job start (Round 14 SPEC §4.10.18, F18):
+    # every cell matches against these Published versions, never the live library, so
+    # a runbook published or retired mid-run cannot reach only some cells.
+    runbook_catalog: tuple[Any, ...] = ()
+    runbook_fingerprint: str = ""
 
 
 class ReplayRefused(RuntimeError):
@@ -305,6 +310,7 @@ async def _build_run(state: Any, job: Any, params: ReplayExperimentParams):
     except Exception as exc:  # noqa: BLE001 — memory is advisory
         logger.warning("replay memory snapshot failed (%s); continuing without it", exc)
         memory_entries = []
+    runbook_catalog = await _frozen_runbook_catalog(state)
     return ReplayRunContext(
         state=state,
         job_id=job.job_id,
@@ -315,7 +321,38 @@ async def _build_run(state: Any, job: Any, params: ReplayExperimentParams):
         corpus_chunks=chunks,
         corpus_fingerprint=corpus_fingerprint(chunks),
         memory_entries=list(memory_entries),
+        runbook_catalog=runbook_catalog,
+        runbook_fingerprint=runbook_fingerprint(runbook_catalog),
     )
+
+
+async def _frozen_runbook_catalog(state: Any) -> tuple[Any, ...]:
+    """The matchable runbook catalog every cell of this run uses: the built-ins and
+    the Published operator runbooks as they are at job start (the production
+    matcher's catalog, ``runbook_runs.load_catalog``). A library that cannot be read
+    refuses the run, having spent nothing: a replay against a catalog that differs
+    from production's would measure the wrong thing."""
+    from ..runbook_runs import load_catalog
+
+    try:
+        catalog = await load_catalog(state)
+    except Exception as exc:  # noqa: BLE001
+        raise ReplayRefused(
+            f"the runbook library could not be read, so its catalog cannot be pinned: {exc}"
+        ) from exc
+    return tuple(catalog.matchable)
+
+
+def runbook_fingerprint(catalog: tuple[Any, ...]) -> str:
+    """A short, stable identity of a frozen runbook catalog (id, version and content
+    hash of each entry), recorded in the report so two runs can be compared."""
+    from ..runbook_model import content_hash
+
+    parts = sorted(
+        f"{getattr(entry, 'id', '')}:{getattr(entry, 'version', '')}:{content_hash(entry.definition)}"
+        for entry in catalog
+    )
+    return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()[:16] if parts else ""
 
 
 async def _pinned_corpus(state: Any, params: ReplayExperimentParams) -> list[Any]:
@@ -538,6 +575,10 @@ async def _build_report(
             "alpha": params.alpha,
             "corpus_chunk_limit": params.corpus_chunk_limit,
         },
+        "runbooks": {
+            "fingerprint": run.runbook_fingerprint,
+            "count": len(run.runbook_catalog),
+        },
         "corpus": {
             "fingerprint": run.corpus_fingerprint,
             "chunk_count": len(run.corpus_chunks),
@@ -596,6 +637,8 @@ async def _build_report(
 
 def _arm_knobs(arm: Any) -> dict[str, Any]:
     """The arm's effective NON-default knobs, recorded so the report names them.
+    ``playbooks_enabled`` keeps its stored name (an accepted field under
+    ``extra="forbid"``) and switches the runbook guidance (Round 14).
 
     Without this the artifact emits a full paired table for a factor it never
     identifies, and a reader cannot tell what distinguished one arm from the other.

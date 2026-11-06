@@ -24,11 +24,16 @@
  * analyst choice rather than a value `case_manager.apply()` derived from the model's own
  * verdict (G1).
  *
+ * Round 14 (SPEC §4.10.11, D34): a close or resolve on a case whose active runbook still
+ * has required steps open lists those steps and asks "Why are you closing with required
+ * steps open?" (required, except for a duplicate). The close is never blocked by the
+ * runbook; the reason is audited. Automatic closes never look at runbook steps (#3).
+ *
  * SECURITY (#9): resolution/priority/disposition options are static enums; the free
  * text (assignee / reason / note / tags) is stored, never rendered as markup here.
  */
 import * as React from 'react';
-import { ArrowRight, Bot, RefreshCw } from 'lucide-react';
+import { ArrowRight, Bot, LoaderCircle } from 'lucide-react';
 
 import { cn } from '@/lib/cn';
 import { Input } from '@/ui/input';
@@ -67,6 +72,8 @@ import {
   RESOLUTION_OPTIONS,
 } from './shared';
 import { DispositionPicker, focusDispositionPicker } from './DispositionPicker';
+import { OpenStepsNotice } from '@/soc/runbooks/run/OpenStepsNotice';
+import type { OpenRequiredStep } from '@/soc/runbooks/run/model';
 import { GradingSection, type GradingDraft } from './grading';
 
 export interface ConfirmActionDialogProps {
@@ -136,7 +143,20 @@ export interface ConfirmActionDialogProps {
   /** The in-dialog grading draft (owned by the orchestrator). */
   grading: GradingDraft;
   onGradingChange: (next: GradingDraft) => void;
+
+  // Round 14 (D34): required runbook steps still open on a close or resolve.
+  /** The open required steps; empty or omitted when none (or the action ends nothing). */
+  openSteps?: readonly OpenRequiredStep[];
+  openStepsReason?: string;
+  onOpenStepsReasonChange?: (v: string) => void;
+  /** Set by the orchestrator (for example after a `409 runbook_steps_open`). */
+  openStepsError?: string | null;
 }
+
+/** The footer and field message when a reason for the open steps is missing. */
+export const OPEN_STEPS_REASON_MISSING = 'Say why you are closing with required steps open.';
+
+const EMPTY_STEPS: readonly OpenRequiredStep[] = [];
 
 /** A binary "what actually happened" maps onto the disposition it implies. */
 function impliedDisposition(outcome?: string): string | null {
@@ -181,6 +201,10 @@ export const ConfirmActionDialog: React.FC<ConfirmActionDialogProps> = ({
   confidence,
   grading,
   onGradingChange,
+  openSteps = EMPTY_STEPS,
+  openStepsReason = '',
+  onOpenStepsReasonChange,
+  openStepsError = null,
 }) => {
   // The element that held focus when the dialog OPENED, captured during render (the
   // same pattern as the case sheet): child effects run before ours, so by the time an
@@ -196,6 +220,9 @@ export const ConfirmActionDialog: React.FC<ConfirmActionDialogProps> = ({
   // Enter to add it, or clear it.
   const [tagsBlocked, setTagsBlocked] = React.useState(false);
   const tagInputRef = React.useRef<HTMLInputElement | null>(null);
+  // A submit with required runbook steps open and no reason: the field says so.
+  const [stepsBlocked, setStepsBlocked] = React.useState(false);
+  const stepsReasonRef = React.useRef<HTMLTextAreaElement | null>(null);
   React.useEffect(() => {
     if (pending) return;
     // The captured opener is NOT released here: Radix fires `onCloseAutoFocus` from a
@@ -203,6 +230,7 @@ export const ConfirmActionDialog: React.FC<ConfirmActionDialogProps> = ({
     // opener. `restoreFocus` releases it.
     setReconcileDismissed(false);
     setTagsBlocked(false);
+    setStepsBlocked(false);
   }, [pending]);
 
   // Which actions carry the note into DURABLE, AGENT-VISIBLE context. The backend
@@ -215,8 +243,13 @@ export const ConfirmActionDialog: React.FC<ConfirmActionDialogProps> = ({
 
   const hasDisposition = Boolean(pending?.fields.includes('disposition'));
   const hasGrading = Boolean(pending?.fields.includes('grading'));
-  const wide = hasDisposition || hasGrading;
+  const hasOpenSteps = openSteps.length > 0;
+  const wide = hasDisposition || hasGrading || hasOpenSteps;
   const committed = pending?.key === 'confirm_fp' ? 'false_positive' : disposition;
+  // Marking a duplicate needs no reason (the work lives in the other case).
+  const stepsReasonRequired = hasOpenSteps && committed !== 'duplicate';
+  const stepsReasonMissing = stepsReasonRequired && !openStepsReason.trim();
+  const stepsError = openStepsError ?? (stepsBlocked && stepsReasonMissing ? OPEN_STEPS_REASON_MISSING : null);
   const agreement = committed ? outcomeAgreement(verdict, committed) : null;
   const aiLine = aiVerdictLine(verdict, confidence);
   const implied = impliedDisposition(grading.actual_outcome);
@@ -263,6 +296,26 @@ export const ConfirmActionDialog: React.FC<ConfirmActionDialogProps> = ({
     return false;
   };
 
+  /** False (and points at the reason) while required steps are open with no reason. */
+  const stepsSettled = (): boolean => {
+    if (!stepsReasonMissing) return true;
+    setStepsBlocked(true);
+    const field = stepsReasonRef.current;
+    if (field) {
+      field.focus({ preventScroll: true });
+      field.scrollIntoView?.({ block: 'nearest' });
+    }
+    return false;
+  };
+  const settled = () => tagsSettled() && stepsSettled();
+  // What the footer says before the submit can go (polite, never an alert).
+  const footerStatus =
+    hasDisposition && !disposition
+      ? 'Pick a disposition.'
+      : stepsReasonMissing
+        ? OPEN_STEPS_REASON_MISSING
+        : '';
+
   // Which submit closed the dialog (null: cancelled or dismissed). Reset on every open.
   const submitRef = React.useRef<'submit' | 'next' | null>(null);
   const contentRef = React.useRef<HTMLDivElement | null>(null);
@@ -271,6 +324,15 @@ export const ConfirmActionDialog: React.FC<ConfirmActionDialogProps> = ({
     // focus handler runs after that render and must still see which submit closed it.)
     if (pending) submitRef.current = null;
   }, [pending]);
+  // A submit that finished with the dialog still open (the server refused it because
+  // required runbook steps are open, or a field was missing) did not close it, so a later
+  // Cancel returns focus to the opener, never to where a finished submit would have gone
+  // (the next queue row after "Close & next").
+  const wasActing = React.useRef(false);
+  React.useEffect(() => {
+    if (wasActing.current && !acting && pending) submitRef.current = null;
+    wasActing.current = acting;
+  }, [acting, pending]);
 
   const restoreFocus = (event: Event) => {
     const submitted = submitRef.current;
@@ -485,6 +547,22 @@ export const ConfirmActionDialog: React.FC<ConfirmActionDialogProps> = ({
               </div>
 
               <div className="min-w-0 space-y-4">
+                {hasOpenSteps ? (
+                  <OpenStepsNotice
+                    steps={openSteps}
+                    reason={openStepsReason}
+                    onReasonChange={(value) => {
+                      onOpenStepsReasonChange?.(value);
+                      setStepsBlocked(false);
+                    }}
+                    required={stepsReasonRequired}
+                    error={stepsError}
+                    disabled={acting}
+                    fieldRef={stepsReasonRef}
+                    idPrefix="confirm-action-open-steps"
+                  />
+                ) : null}
+
                 <div className="space-y-1.5">
                   <Label htmlFor="confirm-action-note" className="text-xs">
                     Analyst note (optional)
@@ -528,8 +606,15 @@ export const ConfirmActionDialog: React.FC<ConfirmActionDialogProps> = ({
 
           <DialogFooter
             data-testid="confirm-action-footer"
-            className="shrink-0 border-t border-border bg-card px-6 py-4"
+            className="shrink-0 border-t border-border bg-card px-6 py-4 sm:items-center"
           >
+            <p
+              data-testid="confirm-action-status"
+              aria-live="polite"
+              className="text-xs text-muted-foreground sm:mr-auto"
+            >
+              {footerStatus}
+            </p>
             <Button variant="ghost" onClick={onClose} disabled={acting}>
               Cancel
             </Button>
@@ -538,24 +623,32 @@ export const ConfirmActionDialog: React.FC<ConfirmActionDialogProps> = ({
                 <Button
                   variant="outline"
                   onClick={() => {
-                    if (!tagsSettled()) return;
+                    if (!settled()) return;
                     submitRef.current = 'submit';
                     onSubmit();
                   }}
                   disabled={!canSubmit}
                 >
-                  {acting ? <RefreshCw className="h-4 w-4 animate-spin" /> : <pending.icon className="h-4 w-4" />}
+                  {acting ? (
+                    <LoaderCircle className="h-4 w-4 motion-safe:animate-spin" aria-hidden />
+                  ) : (
+                    <pending.icon className="h-4 w-4" aria-hidden />
+                  )}
                   {pending.label}
                 </Button>
                 <Button
                   onClick={() => {
-                    if (!tagsSettled()) return;
+                    if (!settled()) return;
                     submitRef.current = 'next';
                     onSubmitAndNext?.();
                   }}
                   disabled={!canSubmit}
                 >
-                  {acting ? <RefreshCw className="h-4 w-4 animate-spin" /> : <ArrowRight className="h-4 w-4" />}
+                  {acting ? (
+                    <LoaderCircle className="h-4 w-4 motion-safe:animate-spin" aria-hidden />
+                  ) : (
+                    <ArrowRight className="h-4 w-4" aria-hidden />
+                  )}
                   {pending.key === 'resolve' ? 'Resolve & next' : 'Close & next'}
                 </Button>
               </>
@@ -563,13 +656,17 @@ export const ConfirmActionDialog: React.FC<ConfirmActionDialogProps> = ({
               <Button
                 variant={pending.variant === 'outline' ? 'default' : pending.variant}
                 onClick={() => {
-                  if (!tagsSettled()) return;
+                  if (!settled()) return;
                   submitRef.current = 'submit';
                   onSubmit();
                 }}
                 disabled={!canSubmit}
               >
-                {acting ? <RefreshCw className="h-4 w-4 animate-spin" /> : <pending.icon className="h-4 w-4" />}
+                {acting ? (
+                    <LoaderCircle className="h-4 w-4 motion-safe:animate-spin" aria-hidden />
+                  ) : (
+                    <pending.icon className="h-4 w-4" aria-hidden />
+                  )}
                 {pending.label}
               </Button>
             )}

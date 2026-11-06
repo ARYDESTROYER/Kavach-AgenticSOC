@@ -58,7 +58,7 @@ class IPQualityScoreProvider(EnrichmentProvider):
                 "Set TLSOC_IPQUALITYSCORE_API_KEY in .env (compose maps it to "
                 "IPQUALITYSCORE_API_KEY), or paste it in this card (in-memory until "
                 "restart).",
-                "Flip this provider's toggle ON — one key covers IP, URL and email "
+                "Flip this provider's toggle ON. One key covers IP, URL and email "
                 "lookups.",
             ],
             example=(

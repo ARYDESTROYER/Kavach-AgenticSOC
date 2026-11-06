@@ -16,13 +16,14 @@ permission overrides. RBAC is enforced only when authentication and RBAC are ena
 | `soc_manager` | SOC administration | Cases, sources, users, settings, rules, knowledge, audit, and operational administration |
 | `analyst_tier2` | Senior analyst | Full case investigation and closure; read-only administration |
 | `analyst_tier1` | Analyst | Read, update, assign, and comment on cases; no case closure by default |
-| `responder` | Response operator | Tier-1-style case access plus playbook execution and proposal approval |
+| `responder` | Response operator | Tier-1-style case access plus working runbooks on cases and proposal approval |
 | `auditor` | Independent review | Read/view only, including the audit trail |
 
-The backend permission vocabulary is resource/action based—for example
+The backend permission vocabulary is resource/action based, for example
 `cases:close`, `sources:manage`, `models:manage`, and `audit:view`. The effective
 permission calculation is authoritative; hiding a button in the UI is not an
-authorization boundary.
+authorization boundary. The Console reads that same effective calculation, so a person
+sees the actions their base role and assigned custom roles allow, and no others.
 
 ## Add a local user
 
@@ -58,6 +59,16 @@ and knowledge metadata. The built-in grant is limited to `super_admin` and
 `soc_manager`; add it to a custom role only when that operator is authorized to read
 all records in the selected scopes. Export remains audited and secret-free, but it is
 not row-scoped to the requesting analyst.
+
+Treat `audit:export` the same way: it writes a file of every audit row its holder can
+read, including client addresses and user agents (personal data). The built-in grant
+is limited to `super_admin`, `soc_manager` and `auditor`, and each export also asks for
+a fresh sign-in. See [Audit log](audit-log.md#exporting).
+
+Runbook grants are separate: `runbooks:run` works a case's checklist (every built-in
+role except `auditor`), `runbooks:manage` writes drafts, and `runbooks:publish` makes a
+version live and trusted by the investigator (`super_admin` and `soc_manager`). Grant
+publish deliberately; see [Permissions](../reference/permissions.md#runbooks).
 
 ## Account and session response
 

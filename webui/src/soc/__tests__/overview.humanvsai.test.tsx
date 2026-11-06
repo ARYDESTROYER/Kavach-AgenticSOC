@@ -435,7 +435,7 @@ describe('Overview — Human vs AI card', () => {
       expect(within(within(card).getByTestId('human-vs-ai-ai')).getByText('6')).toBeInTheDocument(),
     );
 
-    await user.click(screen.getByRole('button', { name: /Time range: Last 24 hours/i }));
+    await user.click(screen.getByRole('button', { name: 'Last 24h, time range' }));
     await user.click(
       within(screen.getByRole('group', { name: /Relative time ranges/i })).getByRole('button', {
         name: /Last 7 days/i,
@@ -485,32 +485,27 @@ describe('Overview — Human vs AI card', () => {
     const card = await screen.findByTestId('human-vs-ai');
     await within(card).findByTestId('human-vs-ai-chart');
 
-    // The close-attribution chart is hand-built SVG now (stacked columns), so its x labels
-    // are read from its own tick nodes rather than recharts' axis class. The intent is
-    // unchanged: every label this chart prints is HH:mm on a 24h window and dated on a
-    // multi-day one.
+    // The close-attribution chart is hand-built SVG (stacked columns), so its x labels are
+    // read from its own tick nodes. The chart dates them itself by the chart kit's one
+    // time-axis rule, in UTC from each bucket's start, whatever this page's own bucket
+    // labels say: the first tick and each tick that starts a new day name the day ("Jul 1
+    // 05:00", or "Jul 2" alone at midnight); a later tick on the same day reads its time.
     const ticks = () =>
       Array.from(container.querySelectorAll('[data-testid="human-vs-ai-x-tick"]')).map(
         (n) => n.textContent ?? '',
       );
-    // A 24h window fits inside one day: a bare HH:mm tick is unambiguous there.
-    expect(ticks().length).toBeGreaterThan(0);
-    for (const tick of ticks()) expect(tick).toMatch(/^\d{2}:\d{2}$/);
+    // A 24h window: the first tick is dated too (it used to read a bare "05:00").
+    expect(ticks()).toEqual(['Jul 1 05:00', '06:00', '07:00']);
 
-    await user.click(screen.getByRole('button', { name: /Time range: Last 24 hours/i }));
+    await user.click(screen.getByRole('button', { name: 'Last 24h, time range' }));
     await user.click(
       within(screen.getByRole('group', { name: /Relative time ranges/i })).getByRole('button', {
         name: /Last 7 days/i,
       }),
     );
-    await waitFor(() =>
-      expect(ticks().some((t) => /^\d{2}-\d{2} \d{2}:\d{2}$/.test(t))).toBe(true),
-    );
-    const dated = ticks();
-    for (const tick of dated) expect(tick).toMatch(/^\d{2}-\d{2} \d{2}:\d{2}$/);
-    // Two calendar days are distinguishable, which is the whole point.
-    expect(new Set(dated.map((t) => t.slice(0, 5))).size).toBeGreaterThan(1);
-    expect(new Set(dated).size).toBe(dated.length);
+    // A 7-day window in the kit's one day format: a midnight reads its day alone, never
+    // "07-02 00:00", so two calendar days are distinguishable on the axis.
+    await waitFor(() => expect(ticks()).toEqual(['Jul 1', '06:00', 'Jul 2']));
   });
 
   it('hands each column its OWN bucket’s payload, and marks only the still-filling bucket', async () => {

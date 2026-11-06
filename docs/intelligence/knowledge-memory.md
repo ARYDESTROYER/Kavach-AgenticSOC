@@ -11,10 +11,11 @@ investigation, but they have different trust and lifecycle rules.
 
 ## Knowledge base
 
-The built-in corpus contains runbooks, MITRE ATT&CK reference text, and suppression
-guidance. Authorized operators can also create versioned runbook knowledge under
-**Intelligence → Reference runbooks**. When enabled, resolved-case summaries can be indexed for
-similarity. Knowledge search combines lexical and vector retrieval and returns source
+The built-in corpus contains the Published runbooks, MITRE ATT&CK reference text, and
+suppression guidance. Runbooks are written, reviewed and published under
+**Intelligence → Runbooks**; only a Published version enters the corpus, and drafts,
+versions in review and retired runbooks never do. When enabled, resolved-case summaries
+can be indexed for similarity. Knowledge search combines lexical and vector retrieval and returns source
 and score metadata.
 
 Use the Knowledge page to:
@@ -59,22 +60,22 @@ The projection window is bounded, and two settings decide which precedents fill 
 `precedent.window.stratify_by` is an ordered list of projection keys the window is
 filled round-robin across. It defaults to detection rule identity and then the
 analyst-confirmed outcome, so neither a bulk confirmation on one rule nor a run of
-identical outcomes can evict every other rule's precedent — or leave the corpus
+identical outcomes can evict every other rule's precedent, or leave the corpus
 unanimous about a rule the analysts have in fact resolved two ways. The second key is
 the analyst's confirmed outcome and not the agent's own verdict: the two differ exactly
 when an analyst overturned the agent, and those corrections are the precedent worth
 keeping. A key whose values are all identical carries no information and is skipped.
 
 `precedent.window.max_transaction_fraction` (default `0.5`) is the largest share of the
-window one operator transaction — a bulk analyst action, or the coarse time bucket that
-stands in for one on cases labelled before bulk actions were marked — may occupy. It is
+window one operator transaction (a bulk analyst action, or the coarse time bucket that
+stands in for one on cases labelled before bulk actions were marked) may occupy. It is
 a fraction rather than a count, so it does not encode one deployment's volume, and it is
 soft: over-cap cases move to the back of the queue rather than being dropped, so the
 window still fills completely whenever enough qualifying cases exist. Set it to `0` or
 `1.0` to disable the cap.
 
 Set `precedent.window.stratify_by_rule` to `false` to switch window fairness off
-entirely — both the keys above and the admission cap. Note that an empty
+entirely: both the keys above and the admission cap. Note that an empty
 `stratify_by` list disables only the keys; the admission cap is governed separately.
 
 The window's ordering is always globally newest-first across the terminal case statuses,
@@ -103,7 +104,7 @@ projection pages the case store newest-first, so if a bulk confirmation put a sk
 at the head of the qualifying population, a rebuild re-selects the same records and
 converges on the composition it just replaced. Where the qualifying pool is itself more
 skewed than the window drawn from it, no selection policy over that pool can produce a
-healthy corpus, and the answer is better ground truth or a different window — not
+healthy corpus, and the answer is better ground truth or a different window, not
 another rebuild.
 
 The report is deliberately a cross-tabulation of the analyst-confirmed outcome against
@@ -125,7 +126,7 @@ undoes itself. `POST /api/rag/precedent/exclusions` is the supported way to make
 removal hold: it records a durable, case-scoped exclusion marker and performs the delete
 together, in that order, so no projection can re-derive the record while its chunks are
 being removed. The marker suppresses every path that could otherwise re-create the
-record — the bounded confirmed window, the lower-trust unconfirmed tier, the bulk
+record: the bounded confirmed window, the lower-trust unconfirmed tier, the bulk
 ratification indexer, and the preserved-precedent path taken when the embedding model
 changes.
 
@@ -166,8 +167,8 @@ comparison as unknown rather than publishing a confident one.
 
 ## Trust labels
 
-Only administrator-controlled `runbook` knowledge and the system-verified `mitre` and
-`suppression` sources are treated as trusted reference material in a prompt. Imported documents, pasted threat
+Only Published `runbook` knowledge and the system-verified `mitre` and `suppression`
+sources are treated as trusted reference material in a prompt. Imported documents, pasted threat
 intelligence, resolved-case summaries, and unknown future source types are fenced as
 untrusted data before model use.
 
@@ -191,7 +192,7 @@ decision.
 
 - Keep each entry narrow, dated, and attributable.
 - Deactivate or delete obsolete facts.
-- Prefer a [versioned runbook](runbooks.md) for reusable investigation guidance and
+- Prefer a [runbook](runbooks.md) for reusable, reviewed investigation guidance and
   memory for short local facts.
 - Test retrieval after large corpus changes.
 - Treat missing retrieval as degraded context, not permission to drop a case.
@@ -199,4 +200,4 @@ decision.
 See [Runbooks](runbooks.md),
 [Background jobs](../operations/background-jobs.md), [Enrichment](enrichment.md),
 [MITRE and threat context](mitre-threat-context.md), and
-[Playbooks and approvals](../automation/playbooks-approvals.md).
+[Approvals](../automation/approvals.md).

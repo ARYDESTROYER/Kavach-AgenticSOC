@@ -244,6 +244,7 @@ export function KpiItemCell({ item, testId, staticMode = false }: { item: KpiIte
         value={valueNode(item)}
         variant="strip"
         density="compact"
+        chrome="framed"
         accent={accent}
         icon={icon}
         // The caption ("Right now", "of 1 queried") is prose: the sans muted caption

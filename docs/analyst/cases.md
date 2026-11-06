@@ -17,18 +17,50 @@ internal case ID, title, entity, rule, source, or tag. Narrow the table by statu
 disposition, severity, assignee, time, or cross-source relationship. Saved views and
 column choices are personal preferences; they do not change the underlying case.
 
-The summary tiles above the table count the whole store, not only the loaded rows:
-**Active**, **Terminal**, **Needs human**, and the severity bands. **Needs human**
-counts open cases that need a person: an active case whose status is needs human or
-whose AI verdict is Needs human. A closed case is never counted there, whatever the AI
-said. When a count cannot be read, the tile falls back to the loaded rows and says so.
+The table sits on one **Case queue** panel. It opens on the columns a triage pass reads:
+**Case ID**, **Title**, **Severity**, **Status**, **Outcome**, **Assignee** and
+**Updated**. Confidence, Verdict, Risk, Entity, Category, Urgency, Alerts and Enrichments
+are one click away in the **Columns** menu, and once you change the columns your choice
+is kept. The search, three primary filters and **More filters** sit above the table, and
+an active filter shows as a removable chip. When the list holds Demo cases, one **Demo**
+badge beside the panel title says so (its tooltip: the cases are synthetic). A **Rule**
+filter shows the cases one rule opened, which is where a rule sheet's **Show the N
+cases** lands. On a phone the table becomes a list of cases, 50 at a time, the summary
+strip is two columns, and every filter (and your saved views) is in one **Filters**
+sheet.
 
-The **Outcome** column shows each case's outcome of record: the analyst's
-classification once a person has classified the case (for example **False positive**,
-marked as the analyst's), **Declared benign** for an operator rule-policy close,
-**Auto-closed** for an automatic close, and otherwise the AI verdict, attributed to the
-AI (for example "AI: Needs human"). The column follows the same rule as the case header
-in Case Manager; see [The outcome of a case](case-manager.md#the-outcome-of-a-case).
+The summary strip above the table counts the whole store, not only the loaded rows:
+**Active**, **Resolved or closed**, **Needs human**, and the severity bands. Active,
+Resolved or closed and each severity band show their share of the loaded cases under them;
+Needs human reads "awaiting an analyst". Pressing a tile filters the table to it.
+**Needs human** counts open cases that need a person: an active case whose status is
+needs human or whose AI verdict is Needs human. A closed case is never counted there,
+whatever the AI said. When a count cannot be read, the tile falls back to the loaded rows
+and says so.
+
+The **Outcome** column shows each case's outcome of record:
+
+- the analyst's classification once a person has classified the case, for example
+  **False positive** with the person glyph in the badge; its tooltip reads "Closed as
+  false positive by an analyst";
+- **Not recorded** for a case an analyst closed without recording a classification; its
+  tooltip reads "Closed by analyst: outcome not recorded" ("Resolved by analyst: ..."
+  for a resolved case);
+- **Declared benign**, also with the person glyph, for an operator rule-policy close;
+  its tooltip reads "Closed by analyst policy (declared benign)";
+- **Auto-closed**, with the AI glyph, for an automatic close; the verdict it closed on,
+  such as "Auto-closed as false positive", is its tooltip; and
+- otherwise the case's current disposition, which no analyst has classified yet. Its
+  tooltip says where that value came from: "Mapped from the AI verdict", "Recorded on
+  the case", "No outcome recorded yet", or "Not yet assessed by the AI" (the badge then
+  reads Undetermined), each followed by "no analyst has classified this case yet".
+
+The cell uses the Status column's badge size, and a screen reader hears the tooltip's
+words too. Once a person has classified, resolved or closed a case, or a rule policy or
+the automatic close policy closed it, the column reads as the case header in Case
+Manager does. Before that, Case Manager shows the AI's assessment (for example "AI:
+Needs human") and this column shows the case's disposition, marked as no analyst's
+call; see [The outcome of a case](case-manager.md#the-outcome-of-a-case).
 Entity values in the table offer **Ask AI**, which opens a Workspace chat about that
 value.
 
@@ -41,8 +73,10 @@ dedicated [Case Manager guide](case-manager.md) for exact selection, resize,
 permission, and failure semantics.
 
 Selecting rows opens bulk actions. Closing or resolving cases, from the bulk bar or with
-a row's one-click close, opens a dialog that requires a disposition, so every closed
-case records what it was. Bulk changes are unavailable in Demo Mode. Long-running Case
+a row's one-click **Close** (shown only on an open row, and only with `cases:close`),
+opens a dialog that requires a disposition, so every closed case records what it was.
+When a case's runbook still has required steps open, the dialog also asks why; the close
+is never blocked (see [Runbooks](../intelligence/runbooks.md)). Bulk changes are unavailable in Demo Mode. Long-running Case
 Manager operations snapshot the
 selected case IDs and submit one server-owned background job. The dialog closes after
 `202 Accepted`; work continues across navigation or reload and reports progress in
@@ -76,28 +110,37 @@ positive"), and the AI verdict stays visible as a labelled second line.
 
 ## Work a case
 
-The canonical Case Manager detail has six tabs. Cases no longer opens a separate
+The canonical Case Manager detail has seven tabs. Cases no longer opens a separate
 sheet with another copy of the same controls.
 
-- **Overview** — a compact decision brief, risk and confidence signal profile,
+- **Overview**: a compact decision brief, risk and confidence signal profile,
   persisted risk-factor values, source/agent/code provenance, entity context, attack story,
-  ownership, and history without duplicating the same verdict in every card.
-- **Timeline** — the chronological input → correlate → risk assigned → triage →
+  ownership, and history without duplicating the same verdict in every card. When a
+  runbook is attached to an open case, its **Next step** card sits at the top.
+- **Runbook**: the runbook attached to the case with its pinned version and progress,
+  the Next step card, one tab per phase with its steps, and **Other tasks** (the case's
+  free-form tasks). The tab shows "None" when no runbook is attached, with **Start
+  runbook**, and "Abandoned" when the only runs on the case were abandoned. A completed
+  run stays workable (its optional steps, **Reopen step**); only an abandoned run, or
+  every run while runbooks are turned off in Settings, is read only. See
+  [Case Manager](case-manager.md#work-the-runbook).
+- **Timeline**: the chronological input → correlate → risk assigned → triage →
   investigate → decision story. Expanding Risk Assigned reconstructs current-weight
   arithmetic from persisted factors and flags any historical-weight mismatch. In
   Case Manager only, the final stage marker pulses.
-- **Investigation** — AI assessment, pinned deterministic decision, and the full
+- **Investigation**: AI assessment, pinned deterministic decision, and the full
   tool/reasoning trace.
-- **Threat** — indicator reputation, ATT&CK context, related cases, and the persisted
+- **Threat context**: indicator reputation, ATT&CK context, related cases, and the persisted
   redacted Input alerts → Correlation cluster → Opened case explanation. Focus or
   hover its nodes for source counts, grouping, threshold/window, status, and verdict;
   raw identifiers and payloads are excluded.
-- **Collab** — discussion, reactions, activity, and tasks.
-- **Chat** — case-scoped questions using the shared chat engine.
+- **Collaboration**: discussion, reactions, and activity. The case's tasks are in the
+  Runbook tab under **Other tasks**.
+- **Chat**: case-scoped questions using the shared chat engine.
 
 In Case Manager, the header's **Take action** menu contains state-changing, investigative, and export
-commands: the appropriate lifecycle action, disposition, re-investigation, playbook,
-refresh, case chat, open in a new tab, JSON/Markdown export, and notification as
+commands: the appropriate lifecycle action, disposition, re-investigation, **Start
+runbook**, refresh, case chat, open in a new tab, JSON/Markdown export, and notification as
 permissions allow. Timeline and Investigation are visible tabs and are intentionally
 not repeated as menu actions. **Share** remains separate. Exports are available as
 JSON or a Markdown handoff report.
@@ -109,8 +152,12 @@ JSON or a Markdown handoff report.
   changes require `cases:write`.
 - Closing, resolving, or otherwise reaching a terminal state requires `cases:close`.
 - Assignment requires `cases:assign`; discussion requires `cases:comment`.
-- Re-investigation requires `cases:reinvestigate`; running a playbook requires
-  `playbooks:run`.
+- Re-investigation requires `cases:reinvestigate`.
+- Seeing the Runbook tab requires `runbooks:read`; starting a runbook and working its
+  steps requires `runbooks:run`. Approving an action step also needs the step's
+  approval role (someone without it sees which role can approve instead of a working
+  **Approve**), and the person who recorded the action cannot approve it. Each
+  read-only lookup also needs the grant of the data it reads.
 
 The server rejects illegal transitions. Reopen a terminal case before moving it to
 another non-terminal state; use the dedicated close or resolve action rather than a
@@ -118,6 +165,13 @@ generic status setter. A resolved case is the one exception: closing it is its f
 step, so **Close case** works on it directly. A closed case cannot go back to Resolved
 without a reopen. Setting a disposition changes no status, so it works on resolved and
 closed cases alike.
+
+Closing or resolving by hand is never blocked by a runbook. When the attached runbook
+still has required steps open, the close dialog lists them and asks **Why are you
+closing with required steps open?**; the answer is saved with your name in the case
+activity and the audit log, and the steps stay open in the runbook record. Marking a
+duplicate needs no reason, a bulk close takes one optional shared reason, and automatic
+closes never look at runbook steps.
 
 ## Automatic decisions
 
@@ -144,5 +198,5 @@ Confirmed false positives can produce a pending suppression proposal and can be
 indexed as prior-case context. Neither process silently changes decision policy.
 
 See [Investigation](investigation.md), [Collaboration](collaboration.md),
-[Background jobs](../operations/background-jobs.md), and
-[Playbooks and approvals](../automation/playbooks-approvals.md).
+[Background jobs](../operations/background-jobs.md),
+[Runbooks](../intelligence/runbooks.md), and [Approvals](../automation/approvals.md).

@@ -76,6 +76,12 @@ describe('blockWidth', () => {
     expect(blockWidth(chart('funnel', 5))).toBe('compact');
   });
 
+  it('keeps a severity breakdown in the reading column whatever its column count (Round 14)', () => {
+    const severity = { subject: 'events', levels: [], splits: {}, multi_level_rules: 0 };
+    expect(blockWidth({ ...table(COMPACT_TABLE_COLUMNS + 1), severity } as AnswerBlock)).toBe('compact');
+    expect(widestBlock([{ ...table(COMPACT_TABLE_COLUMNS + 1), severity } as AnswerBlock])).toBe('compact');
+  });
+
   it('makes time series, line charts, heatmaps, timelines, queries and Briefs wide', () => {
     expect(blockWidth(chart('bar', 6, 'time'))).toBe('wide');
     expect(blockWidth(chart('line', 6, 'time'))).toBe('wide');

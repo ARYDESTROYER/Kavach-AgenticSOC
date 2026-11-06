@@ -260,7 +260,8 @@ describe('AppShell top-nav search (W0.10)', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: 'Open navigation' }));
     const dialog = await screen.findByRole('dialog', { name: 'Primary navigation' });
-    const docs = within(dialog).getByRole('button', { name: 'Documentation' });
+    // Destinations are links (Round 14, SPEC §3.3); D25 renamed the item "Help Center".
+    const docs = within(dialog).getByRole('link', { name: 'Help Center' });
     expect(within(dialog).getByTestId('nav-footer')).toContainElement(docs);
 
     fireEvent.click(docs);

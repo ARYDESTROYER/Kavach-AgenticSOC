@@ -32,3 +32,37 @@ describe('BarList footer row', () => {
     expect(getByText('last 24h')).toBeInTheDocument();
   });
 });
+
+describe('BarList figures and shares (Round 14, audit finding 24)', () => {
+  const ITEMS = [
+    { label: 'Alpha', value: 60 },
+    { label: 'Beta', value: 30 },
+    { label: 'Gamma', value: 10 },
+  ];
+
+  it('reads the percentage as a share of the largest row by default', () => {
+    const { getAllByText } = render(<BarList items={ITEMS} showPercent />);
+    expect(getAllByText(/%$/).map((el) => el.textContent)).toEqual(['100%', '50%', '17%']);
+  });
+
+  it('reads it as a share of the total with percentOf="total", bars still relative to the largest', () => {
+    const { getAllByText, getAllByRole } = render(<BarList items={ITEMS} showPercent percentOf="total" />);
+    expect(getAllByText(/%$/).map((el) => el.textContent)).toEqual(['60%', '30%', '10%']);
+    expect(getAllByRole('progressbar').map((bar) => bar.getAttribute('aria-valuenow'))).toEqual(['100', '50', '17']);
+  });
+
+  it('says "<1%" for a share that rounds to nothing, never 0%', () => {
+    const { getByText } = render(
+      <BarList items={[{ label: 'Big', value: 999 }, { label: 'Tiny', value: 1 }]} showPercent percentOf="total" />,
+    );
+    expect(getByText('<1%')).toBeInTheDocument();
+  });
+
+  it('sets values, ranks and percentages in Inter with tabular figures, and has no capital title', () => {
+    const { container, getByText } = render(<BarList items={ITEMS} showPercent showRank />);
+    expect(container.querySelector('[class*="font-mono"]')).toBeNull();
+    expect(container.querySelector('.uppercase')).toBeNull();
+    expect(getByText('60')).toHaveClass('tabular-nums');
+    expect(getByText('01')).toHaveClass('tabular-nums');
+  });
+});

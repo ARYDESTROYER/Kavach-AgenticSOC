@@ -504,7 +504,7 @@ type PreviewHero = Omit<BrandHeroProps, 'variant'>;
 
 /**
  * A small, faithful identity-slab preview. It mirrors the real login's standalone
- * mark, single title hierarchy, and 48px credential rhythm—there is
+ * mark, single title hierarchy, and 48px credential rhythm; there is
  * intentionally no marketing hero, illustration, floating card, or elevation.
  */
 function LoginPreviewCard({ hero }: { hero: PreviewHero }) {
@@ -1061,7 +1061,7 @@ export function BrandingEditor({ readOnly = false }: BrandingEditorProps) {
       <div className="space-y-3">
         <Heading
           title="Accent presets"
-          sub="One-click brand hues — each vetted to keep white text at WCAG-AA on the accent fill."
+          sub="One-click brand hues, each checked to keep white text at WCAG AA on the accent fill."
         />
         <div className="flex flex-wrap gap-2">
           {ACCENT_PRESETS.map((p) => {
@@ -1141,7 +1141,7 @@ export function BrandingEditor({ readOnly = false }: BrandingEditorProps) {
       <div className="space-y-3">
         <Heading
           title="Design tokens"
-          sub="Bounded layout tokens — corner radius and display font. Semantic severity, status, and verdict colours stay system-owned so their measured text contrast and colour-blind-safe pairings cannot drift."
+          sub="Bounded layout tokens: corner radius and display font. Semantic severity, status and verdict colours stay system-owned, so their measured text contrast and colour-blind-safe pairings cannot drift."
         />
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {SAFE_TOKEN_SPECS.map((spec) => {
@@ -1199,7 +1199,7 @@ export function BrandingEditor({ readOnly = false }: BrandingEditorProps) {
       <div className="space-y-3">
         <Heading
           title="Material pack"
-          sub="The shell surface treatment. “Command” adds a faint glow + grid overlay for a denser command-center feel — colours and text contrast are unchanged."
+          sub="The shell surface treatment. “Command” adds a faint glow and grid overlay for a denser command-center feel; colours and text contrast are unchanged."
         />
         {/* Not a <label>: a native <label> does not forward clicks to a Radix
             Switch (a <button role="switch">), so it provided no association —

@@ -71,12 +71,15 @@ beforeEach(() => {
 });
 
 describe('Account — Round-6 fixes', () => {
-  it('renders the "2FA on" badge with the AA-tuned success-text token (finding 4)', async () => {
+  it('states two-factor in words with a success dot, never colour alone (finding 4, Round 14)', async () => {
     accountGet.mockResolvedValue({ ...BASE, mfa_enabled: true });
     renderAccount();
-    const badge = await screen.findByText('2FA on', {}, { timeout: 5000 });
-    expect(badge).toHaveClass('text-success-text');
-    expect(badge).not.toHaveClass('text-success');
+    const status = await screen.findByTestId('profile-mfa-status', undefined, { timeout: 5000 });
+    expect(status).toHaveTextContent('On');
+    expect(status).toHaveAttribute('data-status-tone', 'success');
+    // The words carry the state in the foreground ink (AA), the dot only repeats it.
+    expect(status).toHaveClass('text-foreground');
+    expect(status).not.toHaveClass('text-success');
   });
 
   it('associates the read-only Username label with a real input (finding 15)', async () => {

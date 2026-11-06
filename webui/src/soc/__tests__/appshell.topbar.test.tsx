@@ -64,12 +64,26 @@ vi.mock('@/lib/api', () => {
   };
 });
 
+// Agent health as the shell's HealthWatch reports it; empty unless a test sets it.
+let degradations: { id: string; label: string; severity: 'critical' | 'warning'; detail: string; remediation: string }[] = [];
+vi.mock('../components/HealthWatch', async () => {
+  const React = await import('react');
+  function HealthWatch({ onChange }: { onChange: (d: typeof degradations) => void }) {
+    React.useEffect(() => {
+      if (degradations.length > 0) onChange(degradations);
+    }, [onChange]);
+    return null;
+  }
+  return { HealthWatch, default: HealthWatch };
+});
+
 import { ThemeProvider } from '../theme';
 import { PrefsProvider } from '../prefs';
 import { AuthProvider } from '../auth';
 import { DemoProvider } from '../demo';
 import { RouterProvider } from '../router';
 import { TooltipProvider } from '@/ui/tooltip';
+import { comboLabel } from '@/lib/platform-keys';
 import { AppShell, TOP_BAR_TIERS } from '../AppShell';
 import { TOP_BAR_FOLD_HIDDEN } from '../top-bar-fold';
 import type { PageId } from '../nav';
@@ -183,8 +197,11 @@ describe('AppShell top bar — priority and compaction', () => {
     expect(short).toHaveClass('hidden', '@[9.5rem]/search:block', '@[19rem]/search:hidden');
     const long = within(wide).getByText('Search cases, sources, actions…');
     expect(long).toHaveClass('hidden', '@[19rem]/search:block');
-    const kbd = within(wide).getByText('⌘K');
-    expect(kbd).toHaveClass('hidden', '@[9.5rem]/search:inline-block');
+    // The shortcut in the platform's own spelling (Round 14, SPEC §4.8.1): "Ctrl+K" here
+    // (jsdom is not an Apple platform), "⌘K" on a Mac; never a hard-coded "⌘K".
+    const kbd = within(wide).getByText(comboLabel(['Mod', 'K']));
+    expect(kbd).toHaveTextContent(/^(Ctrl\+K|⌘K)$/);
+    expect(kbd).toHaveClass('hidden', '@[9.5rem]/search:inline-block', 'text-2xs');
     expect(kbd.className).not.toMatch(/\b(?:sm|md|lg|xl):/);
   });
 
@@ -253,6 +270,42 @@ describe('AppShell top bar — priority and compaction', () => {
     const sheet = await screen.findByRole('dialog', { name: 'Console controls' });
     expect(within(sheet).queryByRole('button', { name: /^Notifications, / })).toBeNull();
     expect(sheet).toHaveAccessibleDescription('Appearance, platform status, and account controls.');
+  });
+
+  it('on a phone, marks agent health on the sheet opener with a dot AND in its name', async () => {
+    // The bell that carries health sits inside the closed sheet, out of the accessibility
+    // tree, so the opener says it (SPEC §3.3: status never by colour alone).
+    setMobileViewport(true);
+    degradations = [
+      { id: 'precedent', label: 'Precedent store', severity: 'warning', detail: 'Stale', remediation: 'Rebuild it' },
+    ];
+    try {
+      renderShell();
+      const opener = await screen.findByRole('button', {
+        name: 'Open console controls, agent health needs attention',
+      });
+      const marker = within(opener).getByTestId('compact-controls-health-marker');
+      expect(marker).toHaveAttribute('aria-hidden', 'true');
+      expect(marker).toHaveClass('rounded-full', 'bg-warning');
+      expect(marker.querySelector('svg')).toBeNull();
+    } finally {
+      degradations = [];
+    }
+  });
+
+  it('keeps the plain opener name on a desktop bar, where the bell beside it carries health', async () => {
+    degradations = [
+      { id: 'precedent', label: 'Precedent store', severity: 'warning', detail: 'Stale', remediation: 'Rebuild it' },
+    ];
+    try {
+      renderShell();
+      // Health has reached the bar: the bell beside the opener says it.
+      await screen.findByRole('button', { name: /^Notifications, .*agent health needs attention$/ });
+      const opener = screen.getByRole('button', { name: 'Open console controls' });
+      expect(within(opener).queryByTestId('compact-controls-health-marker')).toBeNull();
+    } finally {
+      degradations = [];
+    }
   });
 
   it('always shows the sheet opener on mobile, whatever the bar width, and hands it the bell', async () => {

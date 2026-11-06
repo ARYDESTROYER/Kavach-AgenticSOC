@@ -332,14 +332,20 @@ async def test_report_leads_say_the_headline_and_name_the_case(demo_state) -> No
     entity = next(b for b in iter_leaf_blocks(hunt.blocks) if b.get("type") == "entity")
     anchor, found = hunt.answer.split("\n\n")[:2]
     assert anchor.startswith("The question names no indicator") and "Name an indicator" in anchor
-    assert f"scores {int(round(entity['risk']))}/100" in found and "It is quiet in the logs" in found
+    # Round 14 FX3b2: a seeded case's Demo source keeps the case's own rows, so the hunt's
+    # log search finds the anchor's sightings and the reading says what they mean.
+    logs = next(s for s in _tool_steps(hunt) if s.tool == "search_logs")
+    assert re.match(r"[1-9]\d* events? matched", logs.summary), logs.summary
+    assert f"scores {int(round(entity['risk']))}/100" in found and "It is still active in the logs" in found
     case = await _turn(demo_state, "Give me a report on case demo-00000539-0004", origin="user")
     # Round 13 A8: the case's display number leads, then what happened to which user;
     # the internal id the question named is stated once beside the number (polish).
-    number = (await demo_state.cases.get("demo-00000539-0004")).case_number
+    seeded = await demo_state.cases.get("demo-00000539-0004")
+    number = seeded.case_number
     assert number, "every seeded Demo case is numbered"
-    assert re.match(rf"\*\*`{re.escape(number)}`\*\* \(`demo-00000539-0004`, `[a-z_]+` on user `[^`]+`\) "
-                    r"needs human review", case.answer), case.answer
+    # Round 14 FX3b2: the seeded case names the rule its Demo source raises.
+    assert re.match(rf"\*\*`{re.escape(number)}`\*\* \(`demo-00000539-0004`, `{re.escape(seeded.rule_ids[0])}` "
+                    rf"on user `{re.escape(seeded.entity.value)}`\) needs human review", case.answer), case.answer
 
 
 @pytest.mark.parametrize("question", ["Build a posture report", "Build a noise reduction report"])
@@ -399,10 +405,13 @@ async def test_case_manager_chat_answers_about_its_case(demo_state) -> None:
     assert ("get_case", "ok") in tools and ("explain_decision", "ok") in tools
     # The machine title reads as what happened to which entity (D6), after the case's
     # display number (Round 13 A8; every seeded Demo case is numbered).
-    number = (await demo_state.cases.get(case_id)).case_number
+    case = await demo_state.cases.get(case_id)
+    number = case.case_number
     assert number, "every seeded Demo case is numbered"
-    assert re.match(rf"\*\*`{re.escape(number)}`\*\* \(`[a-z_, `]+` on [A-Za-z ]+ `[^`]+`\) is a true positive",
-                    response.answer), response.answer
+    # Round 14 FX3b2: a seeded case carries the rule its Demo source raises (a
+    # storyline's source-native rule), and the answer names that rule.
+    assert re.match(rf"\*\*`{re.escape(number)}`\*\* \(`{re.escape(case.rule_ids[0])}` on [A-Za-z ]+ "
+                    rf"`{re.escape(case.entity.value)}`\) is a true positive", response.answer), response.answer
     assert "How the policy sees it:" in response.answer
     assert response.case_id == case_id
 

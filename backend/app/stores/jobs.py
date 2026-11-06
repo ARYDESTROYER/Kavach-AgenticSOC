@@ -47,7 +47,26 @@ _RETRY_SAFE_KINDS = frozenset(
         # uses stable document ids (so a repeat converges on the identical corpus
         # rather than duplicating it), and preserves the existing corpus on failure.
         JobKind.RAG_REBUILD,
+        # A read-only audit export rewrites its whole file under a fresh artifact
+        # reservation on every attempt (Round 14 SPEC §4.5.6).
+        JobKind.AUDIT_EXPORT,
     }
+)
+#: Kinds a person may have only one of queued or running at a time (Round 14 SPEC
+#: §4.5.6: an audit export answers ``429 job_busy`` while the actor already has one).
+ONE_ACTIVE_PER_ACTOR_KINDS = frozenset({JobKind.AUDIT_EXPORT})
+#: Kinds whose progress the handler reports itself (events written, not items done),
+#: so the item journal never overwrites it.
+_HANDLER_PROGRESS_KINDS = frozenset({JobKind.AUDIT_EXPORT})
+#: The file types a job artifact may be: the data export ZIPs and the plain audit
+#: export files (CSV and JSON Lines, never zipped).
+ARTIFACT_SUFFIXES = frozenset({".zip", ".csv", ".ndjson"})
+#: The refusal of any job but a fresh factory reset retry while a failed factory
+#: reset holds the recovery fence (the submit route answers it before writing an
+#: audit row; the create below stays the authority for a racing submit).
+FACTORY_RECOVERY_REFUSAL = (
+    "factory reset recovery is in progress; only a fresh factory reset retry may be "
+    "submitted"
 )
 
 
@@ -57,6 +76,10 @@ class JobConflict(RuntimeError):
 
 class JobCapacityError(RuntimeError):
     """The registry is full and contains no terminal record safe to prune."""
+
+
+class JobBusy(RuntimeError):
+    """The actor already has a queued or running job of a one-at-a-time kind."""
 
 
 def idempotency_hash(
@@ -74,6 +97,36 @@ def _json_size(value: Any) -> int:
             value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
         ).encode("utf-8")
     )
+
+
+#: The structured filter keys an audit export carries (the read API's names).
+_AUDIT_EXPORT_FILTER_KEYS: tuple[str, ...] = (
+    "action", "event", "actor", "actor_contains", "actor_kind", "outcome", "surface",
+    "case_id", "source_id", "target", "ip",
+)
+
+
+def _audit_export_params(raw: dict[str, Any]) -> dict[str, Any]:
+    """The audit export's own question, bounded: format, scope, the absolute range,
+    the order, the structured filters and the search text. All of it is the actor's
+    own input (the projection is self-scoped); nothing is secret."""
+    filters_in = raw.get("filters") if isinstance(raw.get("filters"), dict) else {}
+    filters = {
+        key: str(filters_in[key])[:256]
+        for key in _AUDIT_EXPORT_FILTER_KEYS
+        if isinstance(filters_in.get(key), str) and filters_in.get(key)
+    }
+    out: dict[str, Any] = {
+        "format": str(raw.get("format") or "")[:8],
+        "scope": str(raw.get("scope") or "")[:8],
+        "from": str(raw.get("from") or "")[:40],
+        "to": str(raw.get("to") or "")[:40],
+        "order": str(raw.get("order") or "asc")[:4],
+        "filters": filters,
+    }
+    if isinstance(raw.get("q"), str) and raw.get("q"):
+        out["q"] = str(raw["q"])[:200]
+    return out
 
 
 def public_job(job: Job) -> JobPublic:
@@ -142,6 +195,8 @@ def public_job(job: Job) -> JobPublic:
             "repeats": raw.get("repeats"),
             "spend_bound_usd": raw.get("spend_bound_usd"),
         }
+    elif kind == "audit_export":
+        params = _audit_export_params(raw)
     else:  # pragma: no cover - JobKind makes this unreachable
         params = {}
     return JobPublic(
@@ -219,6 +274,8 @@ def _compact_params(job: Job) -> dict[str, Any]:
             "repeats": int(raw.get("repeats") or 0),
             "spend_bound_usd": float(raw.get("spend_bound_usd") or 0.0),
         }
+    if kind == JobKind.AUDIT_EXPORT:
+        return _audit_export_params(raw)
     return {}
 
 
@@ -364,6 +421,19 @@ class JobStore:
                 # terminal-row pruning removes the old binding atomically.
                 return (existing, False, []), fence
 
+            if job.kind in ONE_ACTIVE_PER_ACTOR_KINDS:
+                actor = job.actor.strip().lower()
+                if any(
+                    row.kind == job.kind
+                    and row.actor.strip().lower() == actor
+                    and row.actor_generation == job.actor_generation
+                    and row.status not in TERMINAL_STATUSES
+                    for row in jobs.values()
+                ):
+                    raise JobBusy(
+                        f"{job.kind.value} is already queued or running for this actor"
+                    )
+
             recovery = False
             if fence:
                 fenced_job = jobs.get(fence)
@@ -396,10 +466,7 @@ class JobStore:
                     and fresh_enough
                 )
                 if not recovery:
-                    raise JobCapacityError(
-                        "factory reset recovery is in progress; only a fresh "
-                        "factory reset retry may be submitted"
-                    )
+                    raise JobCapacityError(FACTORY_RECOVERY_REFUSAL)
 
             pruned: list[JobArtifact] = []
             while len(jobs) >= MAX_JOBS:
@@ -459,6 +526,31 @@ class JobStore:
     async def get(self, job_id: str) -> Job | None:
         jobs, _ = await self._load_strict()
         return jobs.get((job_id or "").strip())
+
+    async def find_by_idempotency(self, key_hash: str) -> Job | None:
+        """The retained job an idempotency key hash is bound to, or ``None``. A read:
+        a submit route uses it to recognise a client retry before its own pre-checks
+        (a retry is never "busy" with itself and never audited twice)."""
+        jobs, keys = await self._load_strict()
+        bound = keys.get(key_hash or "")
+        return jobs.get(bound) if bound else None
+
+    async def active_for_actor(
+        self, actor: str, generation: str, kind: JobKind
+    ) -> Job | None:
+        """The actor's queued or running job of ``kind``, if any (a read; the create
+        CAS enforces :data:`ONE_ACTIVE_PER_ACTOR_KINDS` atomically)."""
+        jobs, _ = await self._load_strict()
+        needle = (actor or "").strip().lower()
+        for row in jobs.values():
+            if (
+                row.kind == kind
+                and row.actor.strip().lower() == needle
+                and row.actor_generation == generation
+                and row.status not in TERMINAL_STATUSES
+            ):
+                return row
+        return None
 
     async def factory_cache_epoch(self) -> str:
         """Stable cache namespace derived from the latest sanitized reset receipt."""
@@ -876,7 +968,7 @@ class JobStore:
     async def reserve_artifact(
         self, job_id: str, token: str, *, suffix: str
     ) -> tuple[Job, str]:
-        if suffix not in {".zip"}:
+        if suffix not in ARTIFACT_SUFFIXES:
             raise ValueError("unsupported artifact suffix")
 
         def change(jobs: dict[str, Job], _keys: dict[str, str]) -> tuple[Job, str]:
@@ -1157,6 +1249,9 @@ class JobStore:
 
     @staticmethod
     def _recount(job: Job) -> None:
+        if job.kind in _HANDLER_PROGRESS_KINDS:
+            # Progress counts what the handler wrote (events), not journal items.
+            return
         job.progress.done = sum(
             1 for state in job.item_states.values() if state in {"succeeded", "failed"}
         )

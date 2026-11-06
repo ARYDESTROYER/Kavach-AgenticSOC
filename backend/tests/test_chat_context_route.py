@@ -418,7 +418,11 @@ async def test_build_chat_tool_context_real_and_demo(app_state: AppState) -> Non
     try:
         demo = await app_state.build_chat_tool_context(request, body)
         assert demo.demo_active is True and demo.enrich is None and demo.budget_gate is None
-        assert demo.secrets_status is None and demo.runbooks is None and demo.rule_versions is None
+        assert demo.secrets_status is None and demo.rule_versions is None
+        # The real runbook library, read only (D45): only its Published catalog.
+        from app.engine.demo_runtime import ReadOnlyRunbookLibrary
+
+        assert isinstance(demo.runbooks, ReadOnlyRunbookLibrary) and not hasattr(demo.runbooks, "create")
         assert demo.cases is app_state._demo.cases and demo.audit is app_state._demo.audit
         assert demo.log_source is app_state._demo.sources["splunk"]
         targets = demo.browse_sources()

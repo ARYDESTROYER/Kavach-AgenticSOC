@@ -109,9 +109,9 @@ the receipt or linked automated evidence.
 | Area | Required browser path |
 | --- | --- |
 | Identity and setup | Sign-in username → password flow, optional demo/SSO controls when configured, theme switch, error/retry, software-keyboard-safe narrow layout, first-run setup progress/content/footer, and close/re-run behavior |
-| Overview | Dashboard time/refresh controls, KPI and case drill-down, Latest Cases hover and focus detail, Noise Reduction expand/close, custom Dashboards, and Standup |
+| Overview | Cyber Defence Center time/refresh controls, KPI and case drill-down, Latest Cases hover and focus detail, Noise Reduction expand/close, the Dashboards library with each built-in board and a personal board in Edit mode, and Standup |
 | Triage | Cases filters/table/loading and exact Case Manager handoff; Case Manager Active/All queue, resize/keyboard reset, selection/bulk menu, Overview/Timeline/Investigation/Threat context/Collaboration/Chat tabs, Campaigns, Logs, Workspace Chat/history, Entity investigation, and Approvals |
-| Intelligence and analytics | Knowledge corpus, Reference runbooks, Operator memory, Response playbooks, Agent personas, Metrics, Agent effectiveness, Cost, Models, Baseline, Batch jobs, and Auto-tuning Operations/Outcomes/Policy & history |
+| Intelligence and analytics | Knowledge corpus, Runbooks (library, editor, history, a run on a case with its Next step card), Operator memory, Agent personas, Metrics, Agent effectiveness, Cost, Models, Baseline, Jobs, and Auto-tuning Operations/Outcomes/Policy & history |
 | Platform and help | Sources catalog/detail/health, Audit log, Settings section search/deep links/dirty state/sticky actions, narrow Settings Sheet, appearance/branding isolation, and the in-app Help Center plus an installed `/docs/<major.minor>/` article |
 | Release update | Current release badge/popover; mutable Stable candidate versus signed preflight; unsupported-supervisor/manual boundary; blocker remediation; reauth and known-dirty blocking; durable progress/reconnect; cancellation-before-switch; automatic rollback; post-success image-only rollback; successful same-hash-route activation |
 | Compatibility paths | Hidden or consolidated bookmarked routes load or redirect to their documented replacement without reappearing in primary navigation |
@@ -219,6 +219,29 @@ output even when every assertion passes. Fix noise at its owning fixture or comp
 do not add a global warning filter or weaken the strict runner. A test that deliberately
 exercises logging should install a local spy, assert the expected call, and restore it
 before the test ends.
+
+### Round 14 guards
+
+Round 14 added guards that read the source rather than render it, so a regression fails
+in the ordinary suites:
+
+- **Console grammar** (`webui/src/soc/__tests__/console-grammar.guard.test.ts`) fails
+  when a page brings back what the one console grammar removed: a header overline or a
+  removed `PageHeader` prop, tracked capitals, an arbitrary radius, a card inside a
+  panel, a hand-made spinning refresh, a raw number input, a permanent info alert, a red
+  icon button at rest, text below 11 px, or a prototype leftover. Existing violations are
+  counted per package in `guard-allow/<package>.json`; each count is a ratchet that must
+  fall to zero as the package migrates, and `backlog.json` lists files no package owns.
+- **Retired procedure modules** (`backend/tests/test_runbook_removals.py`) fails when any
+  backend module imports, or names for a dynamic import, a removed procedure module, and
+  pins that `playbooks` left the permission vocabulary while a stored `playbooks` grant
+  or deny keeps its `runbooks` meaning in every layer.
+- **Console copy**: Round 14 page and component tests assert that Console-authored text
+  holds no em dash, no en dash used as punctuation, and never the word "playbook". Stored
+  data shown verbatim (an audit record, a transcript, runbook text) is exempt, and a
+  separate test pins that a legacy row's raw value is shown unchanged in Raw record.
+- **Bundled runbooks**: every file in `backend/app/runbooks/library/` validates and fits
+  the 3,000-character investigator guidance budget unchanged.
 
 ## API contract drift
 

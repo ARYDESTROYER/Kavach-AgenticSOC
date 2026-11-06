@@ -25,7 +25,8 @@ ONLY the new ``POST /api/setup/account`` writer.
 
 Non-negotiables upheld
 ----------------------
-* **#2** — the account creation is appended to the append-only audit log (setup surface).
+* **#2**: the account creation is appended to the append-only audit log (setup
+  surface) BEFORE the account exists (Round 14 SPEC §3.6, ``user.created``).
 * **#3** — nothing here touches ``case_manager.decide()`` (this is identity bootstrap).
 * **#9** — the password is NEVER echoed; responses carry BOOLEANS + the username only.
   The username / display-name are operator-supplied but are returned as PLAIN data (the
@@ -43,11 +44,15 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from ..audit.changes import diff_changes
+from ..audit.context import audit_context
+from ..audit.write import audited_write
 from ..auth.passwords import hash_password
 from ..constants import ActionType, UserRole
+from ..models import AuditChange, AuditTarget
 from ..state import AppState
 from .deps import get_state
 
@@ -112,7 +117,7 @@ class SetupAccountBody(BaseModel):
 
 @router.post("/setup/account")
 async def setup_account(
-    body: SetupAccountBody, state: AppState = Depends(get_state)
+    body: SetupAccountBody, request: Request, state: AppState = Depends(get_state)
 ) -> dict[str, Any]:
     """PUBLIC OOBE: create the FIRST ``super_admin`` account.
 
@@ -126,8 +131,10 @@ async def setup_account(
 
     On success it hashes the (policy-checked) password via PBKDF2-SHA256, creates the
     ``super_admin`` (``must_change_password=False`` — the operator just chose it),
-    refreshes the auth view, clears the demo-seed hint, and audits the bootstrap (#2).
-    The password is NEVER echoed — the response carries booleans + the username only."""
+    refreshes the auth view and clears the demo-seed hint. The bootstrap is audited
+    BEFORE the account exists (#2, Round 14 SPEC §3.6): with the audit log unavailable
+    the answer is ``503 audit_unavailable`` and no account is created. The password is
+    NEVER echoed: the response carries booleans and the username only."""
     # 1) auth must be on (the no-auth default has no account layer to bootstrap).
     if not state.secrets.auth_enabled:
         raise HTTPException(status_code=400, detail="authentication is disabled")
@@ -166,42 +173,57 @@ async def setup_account(
             status_code=409, detail="an admin already exists; setup is already bootstrapped"
         )
 
-    # 5) create the first super_admin (race-safe create-if-absent). must_change_password
-    #    is False because the operator is choosing this credential right now.
-    created = await state.users.create_if_absent(
-        username=uname,
-        password_hash=hash_password(body.password),
-        role=UserRole.SUPER_ADMIN.value,
-        active=True,
-        must_change_password=False,
-    )
-    if created is None:  # lost the race — someone else just bootstrapped
-        raise HTTPException(
-            status_code=409, detail="an admin already exists; setup is already bootstrapped"
-        )
-
-    # Persist the optional display name (additive self-service profile field).
+    # 5) create the first super_admin (race-safe create-if-absent), audited BEFORE the
+    #    account exists (Round 14 SPEC §3.6, #2): a ``user.created`` row (password NEVER
+    #    logged) is appended first, and a failed append answers ``503
+    #    audit_unavailable`` with no account created. must_change_password is False
+    #    because the operator is choosing this credential right now. The caller has not
+    #    signed in, so the row's context never reads a credential the request carries.
     display = (body.display_name or "").strip()
+
+    async def _create():
+        created = await state.users.create_if_absent(
+            username=uname,
+            password_hash=hash_password(body.password),
+            role=UserRole.SUPER_ADMIN.value,
+            active=True,
+            must_change_password=False,
+        )
+        if created is None:  # lost the race: someone else just bootstrapped
+            raise HTTPException(
+                status_code=409, detail="an admin already exists; setup is already bootstrapped"
+            )
+        # Persist the optional display name (additive self-service profile field).
+        if display:
+            try:
+                await state.users.update(created.username, display_name=display)
+            except Exception as exc:  # noqa: BLE001 (the account exists; a profile patch is best-effort)
+                logger.warning("setup/account: display_name patch failed (%s); continuing", exc)
+        return created
+
+    created_fields: dict[str, Any] = {
+        "role": UserRole.SUPER_ADMIN.value, "active": True, "must_change_password": False,
+    }
     if display:
-        try:
-            await state.users.update(created.username, display_name=display)
-        except Exception as exc:  # noqa: BLE001 — the account exists; a profile patch is best-effort
-            logger.warning("setup/account: display_name patch failed (%s); continuing", exc)
+        created_fields["display_name"] = display
+    changes = [
+        *diff_changes({}, created_fields),
+        AuditChange(field="password", before=None, after=None, secret=True),
+    ]
+    created = await audited_write(
+        state, sink="control", action="user.created",
+        target=AuditTarget(type="user", id=uname, label=display or uname),
+        expected_revision=None, changes=changes, write=_create,
+        action_type=ActionType.USER_MGMT, actor=uname, actor_type="human",
+        surface="setup",
+        context=audit_context(request, from_request=False),
+        result_summary=f"OOBE first super_admin '{uname}' created",
+        tool_input={"method": "first_run_setup"},
+    )
 
     # The demo Admin/Admin@123 hint no longer applies once a real admin is created.
     state._seeded_default_admin = False
     await state.refresh_users()
-
-    # #2 — append-only audit of the bootstrap (password NEVER logged).
-    try:
-        await state.control_audit.record(
-            action_type=ActionType.USER_MGMT,
-            surface="setup",
-            actor=created.username,
-            result_summary=f"OOBE first super_admin '{created.username}' created",
-        )
-    except Exception as exc:  # noqa: BLE001 — the account is created; auditing is best-effort
-        logger.warning("setup/account: audit record failed (%s); continuing", exc)
 
     # Response: booleans + username only (#9 — the password is never echoed).
     return {

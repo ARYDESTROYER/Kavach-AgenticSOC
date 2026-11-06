@@ -140,8 +140,8 @@ describe('Sessions — Remember me', () => {
     // The table is a size container: in a narrow table the row action keeps only its
     // icon (named by aria-label and the tooltip), so no column is pushed out of view.
     expect(document.querySelector('[data-sessions-table]')).toHaveClass('@container/sessions');
-    const action = within(browser).getByRole('button', { name: 'Revoke session sid-browser' });
-    expect(action).toHaveAttribute('title', 'Revoke');
+    const action = within(browser).getByRole('button', { name: /^Sign out Firefox on Windows/ });
+    expect(action).toHaveAttribute('title', 'Sign out');
     expect(action.querySelector('[data-session-action-label]')).toHaveClass(
       'hidden',
       '@[52rem]/sessions:inline',
@@ -215,7 +215,7 @@ describe('Sessions — Remember me', () => {
     expect(ended.getAttribute('title')).toMatch(/^Ended /);
     expect(within(idle).queryByText('in 10h')).toBeNull();
     // It can still be revoked, so a later, looser policy can never bring it back.
-    expect(within(idle).getByRole('button', { name: 'Revoke session sid-idle' })).toBeEnabled();
+    expect(within(idle).getByRole('button', { name: /^Sign out Edge on Windows/ })).toBeEnabled();
 
     expect(within(rowFor('Firefox on Linux')).getByText('Ended (time limit)')).toBeInTheDocument();
 

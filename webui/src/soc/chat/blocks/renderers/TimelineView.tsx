@@ -5,10 +5,14 @@
  * so log text is fenced visually and never linkified), and an optional validated ref.
  * Ten or more events get a decorative density strip above the list.
  *
- * Engine words read as product words (Round 13, SPEC-chat T14): a status change
- * ("open -> escalated") reads "Open → Escalated" and a known decision reason ("by system:
- * True positive routed to human: tp auto-close disabled.") reads as a sentence, both as
- * plain text. Anything else (an analyst's own reason, log text) stays exactly as written.
+ * Status history reads in words (Round 13 T14, Round 14 SPEC §4.6.3), in ONE vocabulary
+ * (`display.ts`): a status move reads "Open to Escalated" ("Created as New"), whether the
+ * answer stored the server's words or, saved before Round 14, the engine's form ("open ->
+ * escalated"); its engine reason reads "Automatic close of a confirmed threat is off (by
+ * the system)", both as plain product text. A detail is read as an engine reason ONLY on
+ * a recognised status move: on any other event (an audit timeline's untrusted result
+ * summary, log text) a detail that happens to match a template stays fenced as written,
+ * and so does an analyst's own reason or a person's name on a status move.
  */
 import { Bell, Briefcase, Play, Radar, StickyNote, type LucideIcon } from 'lucide-react';
 
@@ -70,8 +74,10 @@ export function TimelineView({ block }: { block: TimelineBlock }) {
           const newDay = day !== lastDay;
           lastDay = day;
           const Icon = ev.semantic ? SEMANTIC_ICON[ev.semantic] : ev.kind ? KIND_ICON[ev.kind] : undefined;
+          // A status move and its engine reason read as words (see the header): the
+          // reason only on a status move, so no other event's detail is ever unfenced.
           const transition = statusTransitionLabel(ev.label);
-          const reason = ev.detail ? reasonSentence(ev.detail) : null;
+          const reason = transition && ev.detail ? reasonSentence(ev.detail) : null;
           return (
             <li key={i} className="relative grid grid-cols-[3.5rem_1rem_minmax(0,1fr)] gap-x-2 pb-3 last:pb-0">
               {newDay ? (

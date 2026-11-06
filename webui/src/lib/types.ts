@@ -7,7 +7,14 @@
  *   - `backend/app/connectors/base.py`  (ConnectorManifest / AuthField / ConnectionTest)
  *   - `backend/app/config.py`           (Preferences / SourceInstance)
  *   - `backend/app/api/routes.py`       (endpoint shapes)
+ *
+ * The Round 14 contracts live in type-only modules beside this one
+ * (`types-audit.ts`, `types-dashboards.ts`, `types-rules.ts`, `types-runbooks.ts`)
+ * and are re-exported at the end of this module, so `@/lib/types` names every
+ * contract. Their names never repeat a name declared here (a test pins it).
  */
+import type { AuditExportJobParams } from './types-audit';
+import type { MatchExplanation, RunbookGuidanceStatus } from './types-runbooks';
 
 // --------------------------------------------------------------------------- //
 // Auth (optional; the gate is a no-op when `enabled` is false).
@@ -72,12 +79,21 @@ export interface AuthMe {
   user: AuthUser | null;
   /** Present when the presented session has ended (registry-aware, Round 12). */
   reason?: SessionEndReason;
-  /** The limit that ended it, in seconds (e.g. 86400 → "after 24 hours"). */
+  /**
+   * The limit that ended it, in seconds. Reported for API clients; the Console never
+   * shows it (Round 14 SPEC §4.1).
+   */
   lifetime_seconds?: number;
   /** Whether the ended session had been remembered. */
   remembered?: boolean;
   /** The live session summary (authenticated only). */
   session?: AuthSessionSummary;
+  /**
+   * Round 14 (SPEC §4.4.5, D16): true when row-level data scope (`can_object`) is on
+   * and applies to this viewer's role for cases. Case-derived dashboard widgets then
+   * do not fetch and read "Hidden while row-level scope is on.".
+   */
+  object_scoped?: boolean;
 }
 
 // --------------------------------------------------------------------------- //
@@ -480,8 +496,27 @@ export interface RolesResponse {
   matrix: Record<string, Record<string, string[]>>;
 }
 
+/**
+ * GET /api/account/permissions: the signed-in person's effective grants, answered by
+ * the server's own permission resolver (the base role together with every assigned
+ * custom role, each with its denies applied). The Console's permission checks read
+ * only this map, so they show exactly what the API allows.
+ */
+export interface AccountPermissions {
+  authenticated: boolean;
+  /** The base role; `super_admin` when auth or RBAC is off. */
+  role: string;
+  /** The assigned custom roles that take part in the decision. */
+  custom_roles: string[];
+  /** False when RBAC is off: everyone signed in holds every action. */
+  rbac_enabled: boolean;
+  /** resource → the actions held on it; concrete actions only, never `*`. */
+  permissions: Record<string, string[]>;
+}
+
 // --------------------------------------------------------------------------- //
-// Agent personas + operator-managed playbooks/runbooks.
+// Agent personas. Runbooks (the one procedure feature since Round 14) are mirrored
+// in `types-runbooks.ts` and re-exported at the end of this module.
 // --------------------------------------------------------------------------- //
 /** One specialist persona the router can specialise the investigator into. */
 export interface AgentPersona {
@@ -495,109 +530,6 @@ export interface AgentPersona {
 export interface PersonasResponse {
   enabled: boolean;
   personas: AgentPersona[];
-}
-
-/** The match criteria that select a playbook for a cluster. */
-export interface PlaybookMatch {
-  rule_ids: string[];
-  entity_types: string[];
-  mitre: string[];
-  min_event_count: number | null;
-  any_tags: string[];
-}
-
-/** One plain-text runbook/playbook (mirrors the backend loader shape). */
-export interface Playbook {
-  id: string;
-  name: string;
-  version: number;
-  description: string;
-  priority: number;
-  match: PlaybookMatch;
-  suggested_tools: string[];
-  rag_queries: string[];
-  escalate_if: string;
-  suggested_verdict_bias: string;
-  /** Packaged reference procedures are readable but immutable. */
-  source_type: 'bundled' | 'operator';
-  protected: boolean;
-  editable: boolean;
-  file_name: string;
-  /** Operator catalog revision used for optimistic concurrency. */
-  revision: number;
-  /** Bundled package data or durable application StateStore data. */
-  storage: 'package' | 'state';
-  created_at?: string;
-  updated_at?: string;
-  created_by?: string;
-  updated_by?: string;
-}
-
-/** One opened Markdown document. Render as plain text; never as raw HTML. */
-export interface PlaybookDetail extends Playbook {
-  content: string;
-  body: string;
-}
-
-export interface PlaybooksResponse {
-  enabled: boolean;
-  count: number;
-  playbooks: Playbook[];
-}
-
-export interface PlaybookMutationResponse {
-  ok: boolean;
-  playbook: Playbook;
-  reload: {
-    loaded: number;
-    skipped: { file: string; reason: string }[];
-    ids: string[];
-  };
-}
-
-/** Aggregate deterministic playbook coverage over the stored case population. */
-export interface PlaybookCoverageResponse {
-  scanned_cases: number;
-  covered_cases: number;
-  uncovered_cases: number;
-  coverage_percent: number | null;
-  scan_limit: number;
-  truncated: boolean;
-  selected_playbooks: Array<{ playbook_id: string; case_count: number }>;
-  unmatched_rule_families: Array<{ rule_id: string; case_count: number }>;
-}
-
-export interface PlaybookDryRunInput {
-  rule_ids: string[];
-  entity_type: EntityTypeFull;
-  event_count: number;
-}
-
-export interface PlaybookDryRunCheck {
-  criterion: string;
-  passed: boolean;
-  expected: unknown;
-  actual: unknown;
-  reason: string;
-}
-
-export interface PlaybookDryRunCandidate {
-  playbook_id: string;
-  playbook_name: string;
-  priority: number;
-  version: number;
-  matched: boolean;
-  checks: PlaybookDryRunCheck[];
-  failed_criteria: string[];
-}
-
-/** Pure, read-only explanation of the registry's exact selection predicate. */
-export interface PlaybookDryRunResponse {
-  selected_playbook_id: string | null;
-  selection_reason: string;
-  matched_count: number;
-  candidate_count: number;
-  candidates: PlaybookDryRunCandidate[];
 }
 
 export interface SchedulerWorkerHealth {
@@ -614,99 +546,6 @@ export interface SchedulerWorkerHealth {
 export interface SchedulerHealthResponse {
   scheduler_runtime_running: boolean;
   workers: Record<string, SchedulerWorkerHealth>;
-}
-
-/**
- * One trusted investigation-reference runbook. Runbooks are retrieval knowledge,
- * not executable procedures: a match may inform an investigation, but it never
- * changes deterministic case authority.
- */
-export interface Runbook {
-  id: string;
-  title: string;
-  summary: string;
-  persona: string;
-  applies_to_rules: string[];
-  applies_to_techniques: string[];
-  applies_to_entities: string[];
-  keywords: string[];
-  source_type: 'bundled' | 'operator';
-  /** Packaged reference runbooks are protected; operator runbooks are editable. */
-  protected: boolean;
-  editable: boolean;
-  /** Opaque optimistic-concurrency token supplied back on update/delete. */
-  revision: string | number;
-  created_at: string | null;
-  updated_at: string | null;
-  /** Authoritative projection state for the runbook's RAG document. */
-  index_status: string;
-  indexed_revision: string | number | null;
-  last_indexed_at: string | null;
-  index_error: string | null;
-}
-
-/** One opened Markdown document. Render as plain text; never as raw HTML. */
-export interface RunbookDetail extends Runbook {
-  content: string;
-  body: string;
-}
-
-/** Backend-owned Runbook authoring contract exposed to Console clients. */
-export interface RunbookAuthoringStandard {
-  version: number;
-  body_max_characters: number;
-  retrieval_descriptor_max_characters: number;
-  document_max_bytes: number;
-  section_min_characters: number;
-  reserved_ids: string[];
-  character_count: string;
-  metadata_limits: {
-    title_max_characters: number;
-    summary_max_characters: number;
-    persona_max_characters: number;
-    list_max_items: number;
-    list_item_max_characters: number;
-  };
-  required_manifest_fields: string[];
-  optional_manifest_fields: string[];
-  required_body_labels: string[];
-  optional_body_labels: string[];
-  investigation_steps: string;
-  allowed_metadata_format: string;
-  allowed_body_format: string;
-  prohibited_metadata_format: string[];
-  prohibited_body_format: string[];
-}
-
-export interface RunbooksResponse {
-  enabled: boolean;
-  /** Whether runbook knowledge is currently eligible for RAG retrieval. */
-  retrieval_enabled: boolean;
-  /** Missing only while interoperating with a legacy backend during a rolling upgrade. */
-  authoring_standard?: RunbookAuthoringStandard;
-  count: number;
-  runbooks: Runbook[];
-}
-
-/** Result of reconciling one or more runbooks into the RAG corpus. */
-export interface RunbookIndexResult {
-  ok: boolean;
-  indexed: number;
-  deleted: number;
-  failed: number;
-  errors: Array<string | { id?: string; error: string }>;
-}
-
-export interface RunbookMutationResponse {
-  ok: boolean;
-  runbook: Runbook;
-  index: RunbookIndexResult;
-}
-
-export interface RunbookDeleteResponse {
-  ok: boolean;
-  id: string;
-  index: RunbookIndexResult;
 }
 
 // --------------------------------------------------------------------------- //
@@ -1485,7 +1324,11 @@ export type BackgroundJobKind =
   | 'rag_import'
   | 'rag_rebuild'
   | 'tiered_reset'
-  | 'storage_lifecycle_apply';
+  | 'storage_lifecycle_apply'
+  /** A replay experiment (submitted from the replay harness; never from a Console page). */
+  | 'replay_experiment'
+  /** Round 14 (SPEC §4.5.6): params `AuditExportJobParams` (`types-audit.ts`). */
+  | 'audit_export';
 
 export interface BackgroundJobProgress {
   done: number;
@@ -1524,11 +1367,86 @@ export interface BackgroundJob {
   cancel_requested: boolean;
 }
 
-export interface BackgroundJobSubmit {
-  kind: BackgroundJobKind;
-  idempotency_key: string;
-  params: Record<string, unknown>;
+/**
+ * The params of the job kinds whose strict server model the Console mirrors (the
+ * `*Params` models in `backend/app/api/routes_jobs.py`, where an unknown key answers
+ * `422`). A submit that names one of these kinds as a literal is checked against its
+ * mirror by `tsc`, so a stray field (for example the single-case
+ * `require_open_steps_reason`) fails the Type check gate instead of the request.
+ */
+export interface BackgroundJobParamsByKind {
+  case_lifecycle: CaseLifecycleParams;
+  audit_export: AuditExportJobParams;
 }
+
+/** The params a submit of job kind `K` sends: its mirror, or a free object for the rest. */
+export type BackgroundJobParams<K extends BackgroundJobKind> = K extends keyof BackgroundJobParamsByKind
+  ? BackgroundJobParamsByKind[K]
+  : Record<string, unknown>;
+
+/**
+ * `POST /api/jobs`. With a literal `kind` the params are that kind's mirror; a `kind`
+ * typed as the whole union (a shared submit helper) accepts any of them.
+ */
+export interface BackgroundJobSubmit<K extends BackgroundJobKind = BackgroundJobKind> {
+  kind: K;
+  idempotency_key: string;
+  params: BackgroundJobParams<K>;
+}
+
+/** The analyst verbs a `case_lifecycle` job applies to every case it names. */
+export type CaseLifecycleAction =
+  | 'close'
+  | 'reopen'
+  | 'escalate'
+  | 'confirm_fp'
+  | 'acknowledge'
+  | 'hold'
+  | 'resume'
+  | 'resolve'
+  | 'set_disposition'
+  | 'deescalate'
+  | 'set_status';
+
+/**
+ * Params of the `case_lifecycle` job (`POST /api/jobs`; mirrors `CaseLifecycleParams`
+ * in `backend/app/api/routes_jobs.py`). The model is strict: an unknown key answers
+ * `422`, so a bulk close never forwards `require_open_steps_reason` (single-case
+ * actions only). The server sorts and de-duplicates `case_ids`, so a retry that only
+ * reorders them binds the same request.
+ */
+export interface CaseLifecycleParams {
+  /** 1 to 5,000 case ids, each 1 to 200 characters. */
+  case_ids: string[];
+  action: CaseLifecycleAction;
+  /** At most 4,000 characters. */
+  note?: string;
+  /** At most 1,000 characters. */
+  reason?: string;
+  /** At most 4,000 characters. */
+  resolution?: string | null;
+  /** Required by `set_disposition`; at most 80 characters. */
+  disposition?: Disposition | null;
+  /** True only when a person chose `disposition` for this submission (see `CaseActionInput`). */
+  disposition_declared?: boolean;
+  /** Required by `set_status`. */
+  status?: CaseStatus | null;
+  /**
+   * Round 14 (SPEC §4.10.15, D34): the bulk dialog's one shared reason for closing
+   * cases whose active runbook still has required steps open (1 to 500 characters;
+   * whitespace collapses and a blank reason is absent). Optional: a bulk close never
+   * fails an item for open steps.
+   */
+  open_steps_reason?: string | null;
+}
+
+/**
+ * What a bulk action passes for a `case_lifecycle` job before the selection is added:
+ * the params without `case_ids`. Type a bulk helper's input with it (never with the
+ * single-case `CaseActionInput`), so a single-case field fails `tsc` instead of
+ * turning the job into a `422`.
+ */
+export type CaseLifecycleInput = Omit<CaseLifecycleParams, 'case_ids'>;
 
 export interface RelatedLlmBatchJob {
   id: string;
@@ -2395,6 +2313,8 @@ export interface UserPrefs {
    * invalid value so the org default (`chat_agent.default_stream_mode`) applies.
    * Round 13: `misc.chat_suggest_start` and `misc.chat_suggest_follow_ups` are the
    * personal suggestion switches ({@link ChatSuggestPrefs}; absent means on).
+   * Round 14: `misc.dashboards_hidden` and `misc.dismissed_intros` are lists the
+   * server normalises on load (`Round14PrefsMisc` in `types-dashboards.ts`).
    */
   misc?: Record<string, unknown>;
   /** Saved chat prompts (≤ 50; title ≤ 60, text ≤ 2000). Plain user text (#9). */
@@ -2566,10 +2486,18 @@ export interface Case {
   analyst_policy?: AnalystPolicyRecord | null;
   title?: string;
   summary?: string;
-  token_cost?: number;
+  /** The case's own AI spend; `null` for a viewer without `cost:view`. */
+  token_cost?: number | null;
   error?: string;
   agent_persona?: string;
+  /** Kept readable for cases investigated before Round 14; never written by new code. */
   playbook_id?: string;
+  /**
+   * Round 14 (SPEC §4.10.9): the Published runbook whose guidance the investigator
+   * received, and its version. Null or absent on older cases (history is never rewritten).
+   */
+  runbook_id?: string | null;
+  runbook_version?: number | null;
   /** The source instance this case originated from (additive; mirrors backend). */
   source_id?: string | null;
   /** Human-readable display name of the originating source (additive). */
@@ -2735,9 +2663,27 @@ export interface CasesResponse {
   search_applied?: string | null;
   assignee_applied?: string | null;
   severity_applied?: string | null;
+  verdict_applied?: string | null;
+  /**
+   * Round 14 (SPEC §4.6.1): the exact rule value the list was filtered by, echoed as
+   * stored (never trimmed or case-folded); present only when `rule` was sent. Plain
+   * text (#9).
+   */
+  rule_applied?: string | null;
+  /** Round 14: the `closed_by` filter the server applied, present only when it was sent. */
+  closed_by_applied?: CaseClosedBy | null;
   /** The multi-status lifecycle group that was applied, if any. */
   status_group_applied?: string | null;
 }
+
+/**
+ * Who closed a terminal case, in the exact-aggregation engine's values (the
+ * `closed_by` filter of `GET /api/cases`): `agent` (an automatic close), `analyst` (a
+ * person), `analyst_policy` (an operator's declared-benign policy) and `system`
+ * (deterministic routing, and older rows with no recorded decider). Any other value
+ * answers `400`.
+ */
+export type CaseClosedBy = 'agent' | 'analyst' | 'analyst_policy' | 'system';
 
 // --------------------------------------------------------------------------- //
 // Global search (W7c) — GET /api/search?q= — powers the Cmd-K palette + top bar.
@@ -2805,62 +2751,6 @@ export interface BulkResult {
   results: BulkResultItem[];
 }
 
-// --------------------------------------------------------------------------- //
-// Audit-log viewer (W7c) — GET /api/audit — read-only over the append-only audit
-// (#2). Gated by audit:view server-side. EVERY field is system/operator/LOG-derived
-// → render as PLAIN text (#9); `prompt_excerpt`/`tool_output_summary` carry fenced
-// UNTRUSTED log data and render only inside a code block. No mutate path exists.
-// --------------------------------------------------------------------------- //
-/** One append-only audit record (mirrors backend `AuditDoc`). */
-export interface AuditRecord {
-  ts?: string;
-  /** Producing application version; null/absent on historical audit rows. */
-  app_version?: string | null;
-  /** Producing commit SHA; `unknown` is explicit, null/absent is historical. */
-  build_sha?: string | null;
-  case_id?: string | null;
-  surface?: string;
-  actor?: string;
-  action_type?: string;
-  model?: string | null;
-  prompt_excerpt?: string | null;
-  query_text?: string | null;
-  tool_name?: string | null;
-  tool_input?: unknown;
-  tool_output_summary?: string | null;
-  result_summary?: string | null;
-  [key: string]: unknown;
-}
-
-/** GET /api/audit — bounded, NEWEST-first list + total. */
-export interface AuditResponse {
-  records: AuditRecord[];
-  total: number;
-}
-
-/** Query params for GET /api/audit (all optional; filters are ANDed). */
-export interface AuditQuery {
-  actor?: string;
-  /** The audit `action_type` value (the wire param name is `action`). */
-  action?: string;
-  surface?: string;
-  case_id?: string;
-  /** ISO lower/upper time bounds (wire param names `from`/`to`). */
-  from?: string;
-  to?: string;
-  limit?: number;
-}
-
-/**
- * GET /api/scans/notifications — how many automated-scan cases are new since the
- * caller's last-seen timestamp. Drives the "N new" pill on the Scans surface.
- */
-export interface ScanNotifications {
-  new_count: number;
-  since?: string | null;
-  now?: string | null;
-}
-
 /**
  * Navigation options threaded through `Navigate` (router.tsx / App.tsx) so
  * deep-links / drill-throughs can pre-seed a destination page's filters/tab.
@@ -2918,6 +2808,21 @@ export interface CaseActionInput {
   status?: CaseStatus;
   /** Deprecated compatibility input; the Console does not expose escalation tiers. */
   level?: number;
+  /**
+   * Round 14 (SPEC §4.10.15, D34): why a person closes with required runbook steps
+   * still open (at most 500 characters, audited on `case.closed_with_open_steps`). The
+   * server collapses runs of whitespace and treats a blank reason as absent. Also a
+   * `case_lifecycle` job param ({@link CaseLifecycleParams}), where one shared reason
+   * covers the whole bulk close.
+   */
+  open_steps_reason?: string;
+  /**
+   * Round 14: ask the server to answer `409 runbook_steps_open` (with the open steps)
+   * instead of closing when required steps are open and no reason is given. The
+   * Console sends it so it can show the close dialog; a close never blocks otherwise.
+   * Single-case actions only; a `case_lifecycle` job refuses it (422).
+   */
+  require_open_steps_reason?: boolean;
 }
 
 /** Response from POST /api/settings/case-id/preview (F7 live preview). */
@@ -4000,7 +3905,8 @@ export interface CasesPerDay {
 /**
  * One UTC-day bucket of the burndown series (GET /api/metrics → `burndown`): how many
  * cases were `opened` that day vs how many reached a terminal (resolved/closed) state.
- * Powers the open-vs-resolved BurnDownChart. Advisory / reporting only (never #3).
+ * The open-vs-resolved burndown series (no Console chart draws it today). Advisory /
+ * reporting only (never #3).
  */
 export interface BurndownPoint {
   /** UTC date, `YYYY-MM-DD`. */
@@ -4096,6 +4002,16 @@ export interface Metrics {
   by_disposition?: Record<string, number>;
   by_verdict: VerdictBreakdown;
   persona_usage: Record<string, number>;
+  /**
+   * Cases per Published runbook that guided the investigation (Round 14, runbook id to
+   * count; `none` when no runbook reached the investigator). Usage only: it never says a
+   * runbook made a case faster or slower.
+   */
+  runbook_usage: Record<string, number>;
+  /**
+   * @deprecated Round 14: the retired procedure usage, kept by the server for one release
+   * (read from the field earlier releases stored). Read `runbook_usage`.
+   */
   playbook_usage: Record<string, number>;
   /** Mean normalised risk score (0..100). */
   avg_risk_score: number;
@@ -4113,8 +4029,9 @@ export interface Metrics {
   resolved_count: number;
   cases_per_day: CasesPerDay[];
   /**
-   * Open-vs-resolved per UTC day over the trend window (additive) — the BurnDownChart
-   * series. Each point is `{date, opened, resolved}`. Advisory only (never #3).
+   * Open-vs-resolved per UTC day over the trend window (additive): the burndown series
+   * (no Console chart draws it today). Each point is `{date, opened, resolved}`. Advisory
+   * only (never #3).
    */
   burndown?: BurndownPoint[];
   /**
@@ -5474,7 +5391,11 @@ export interface RationaleTool {
   summary?: string;
 }
 
-/** The playbook actually injected into the investigation + its selection context. */
+/**
+ * The procedure an investigation from before Round 14 was given (the retired playbook
+ * feature) and why. Kept so old cases still explain themselves; a Round 14 run reports
+ * {@link RationaleRunbook} instead and leaves this empty.
+ */
 export interface RationalePlaybook {
   id: string;
   version?: string;
@@ -5482,11 +5403,42 @@ export interface RationalePlaybook {
   consulted?: boolean;
 }
 
+/**
+ * Round 14 (SPEC §4.10.9): the runbook that guided the latest investigation run.
+ * Selected and consulted are different facts: `id` is set only when the runbook's
+ * Published guidance reached the investigator (`consulted`), while `selected_id`
+ * names the runbook the matcher chose even when the run never used it (the cheap
+ * router path, guidance turned off, a runbook over the guidance budget). Every string
+ * is plain text (#9); a runbook never decides the case (#3).
+ */
+export interface RationaleRunbook {
+  id: string;
+  version: number | null;
+  /** The runbook title when it was recorded, else empty. */
+  title: string;
+  /** Why it was chosen (the match explanation in words), or why no runbook guided the run. */
+  reason: string;
+  consulted: boolean;
+  /** The matcher's choice; empty when nothing matched or on a run before Round 14. */
+  selected_id: string;
+  /** The guidance outcome; empty on a run before Round 14. */
+  status: RunbookGuidanceStatus | '';
+  /** The match tier (3 rule, 2 technique, 1 other criteria, 0 the fallback), when one matched. */
+  tier: MatchExplanation['tier'] | null;
+  explanation: MatchExplanation | null;
+}
+
 /** One procedure selected for the latest run, kept distinct from consultation. */
 export interface RationaleProcedureSelection {
   selected_id: string;
   selection_reason: string;
   consulted: boolean;
+}
+
+/** Round 14: the runbook half of the latest run's procedure provenance. */
+export interface RationaleRunbookProvenance extends RationaleProcedureSelection {
+  version: number | null;
+  title: string;
 }
 
 /** One exact retrieval query issued by the latest investigation run. */
@@ -5498,7 +5450,10 @@ export interface RationaleRetrievalQueryGroup {
 /** Append-only latest-run projection of selected and actually consulted procedures. */
 export interface RationaleProcedureProvenance {
   persona: RationaleProcedureSelection;
+  /** The retired playbook selection of a run before Round 14 (empty on newer runs). */
   playbook: RationaleProcedureSelection;
+  /** Round 14: the runbook selection of the latest run (absent from an older server). */
+  runbook?: RationaleRunbookProvenance;
   consultation_path: string;
   /** Latest-run retrieval observation; missing legacy telemetry is unavailable. */
   retrieval_status?: 'measured' | 'not_attempted' | 'unavailable';
@@ -5542,7 +5497,10 @@ export interface CaseRationale {
   persona?: string;
   /** Exact selected-vs-consulted facts from the latest procedure-provenance audit row. */
   procedure_provenance?: RationaleProcedureProvenance;
+  /** The procedure of an investigation before Round 14 (legacy rows; read beside `runbook`). */
   playbook?: RationalePlaybook | null;
+  /** Round 14: the runbook that guided the latest run (absent from an older server). */
+  runbook?: RationaleRunbook | null;
   /** Operator memories the investigation drew on. */
   memory_used?: string[];
   knowledge?: RationaleKnowledge[];
@@ -6038,6 +5996,16 @@ export interface DashboardLayout {
   schema_version?: number;
   created_at?: string;
   updated_at?: string;
+  /**
+   * Round 14 (SPEC §4.4.1): the window the board's time-range picker starts on.
+   * Absent or null means the client default `now-24h`.
+   */
+  default_window?: 'now-24h' | 'now-7d' | 'now-30d' | 'now-90d' | null;
+  /**
+   * Round 14: the built-in board this one was copied from (for example
+   * `builtin:soc-operations`), shown as "Copied from SOC operations". Plain data.
+   */
+  derived_from?: string | null;
   [key: string]: unknown;
 }
 
@@ -6176,3 +6144,12 @@ export interface UserPrefs {
   /** Per-user saved custom dashboards (dashboard id → layout). */
   dashboards?: Record<string, DashboardLayout>;
 }
+
+// --------------------------------------------------------------------------- //
+// Round 14 contracts, re-exported (type-only: zero runtime bytes). New code may
+// import them from here or from their own module; both name the same declarations.
+// --------------------------------------------------------------------------- //
+export type * from './types-audit';
+export type * from './types-dashboards';
+export type * from './types-rules';
+export type * from './types-runbooks';

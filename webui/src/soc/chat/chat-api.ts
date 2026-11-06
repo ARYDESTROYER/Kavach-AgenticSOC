@@ -210,13 +210,17 @@ export async function cancelChatTurn(turnId: string, signal?: AbortSignal): Prom
 /* Meter + catalogue: GET /api/chat/context.                                   */
 /* -------------------------------------------------------------------------- */
 
-/** SPEC §4.2 defaults, used until (or when) `/chat/context` is unavailable. */
+/**
+ * The backend `ChatAgentConfig` defaults (Round 14 SPEC §4.2: the tripled Timeouts and
+ * capacity values), used until (or when) `/chat/context` is unavailable. A test pins
+ * every value to `config.py` so this fallback can never go stale again.
+ */
 export const DEFAULT_CHAT_BOUNDS: ChatContextBounds = {
   max_model_calls: 5,
   max_tool_calls: 10,
-  max_parallel: 4,
-  tool_timeout_s: 15,
-  model_step_timeout_s: 30,
+  max_parallel: 12,
+  tool_timeout_s: 45,
+  model_step_timeout_s: 900,
   turn_timeout_s: 90,
   turn_token_ceiling: 60_000,
   final_reserve_tokens: 12_000,

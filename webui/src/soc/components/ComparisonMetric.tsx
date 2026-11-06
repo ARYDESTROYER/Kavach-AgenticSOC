@@ -42,12 +42,15 @@ export interface MetricDefinitionProps extends MetricDefinitionDetails {
   contentClassName?: string;
 }
 
+/**
+ * One labelled line of a metric definition. The label is a sentence-case word in the body
+ * face (Round 14, SPEC §3.1 and §4.9.1: no tracked capitals, nothing below 12 px for
+ * content).
+ */
 function DefinitionRow({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="grid gap-1 border-t border-border/70 py-2.5 first:border-t-0 sm:grid-cols-[96px_minmax(0,1fr)] sm:gap-3">
-      <dt className="text-2xs font-semibold uppercase tracking-wider text-muted-foreground">
-        {label}
-      </dt>
+      <dt className="text-xs font-medium text-muted-foreground">{label}</dt>
       <dd className="min-w-0 text-xs leading-relaxed text-foreground">{children}</dd>
     </div>
   );
@@ -92,18 +95,22 @@ export function MetricDefinition({
       </PopoverTrigger>
       <PopoverContent
         align="end"
-        className={cn('w-[min(24rem,calc(100vw-2rem))] p-0', contentClassName)}
+        // A 16 px gutter from the screen edge, and never taller than the room it has: a
+        // long definition scrolls instead of running off a phone screen.
+        collisionPadding={16}
+        className={cn(
+          'max-h-[var(--radix-popover-content-available-height)] w-[min(24rem,calc(100vw-2rem))] overflow-y-auto p-0',
+          contentClassName,
+        )}
         aria-label={`${metric} metric definition`}
       >
         <div className="border-b border-border/70 px-4 py-3">
-          <p className="text-2xs font-semibold uppercase tracking-wider text-muted-foreground">
-            Metric definition
-          </p>
+          <p className="text-xs font-medium text-muted-foreground">Metric definition</p>
           <p className="mt-1 text-sm font-semibold text-foreground">{metric}</p>
         </div>
         <dl className="px-4 py-1">
           <DefinitionRow label="Formula">
-            <code className="break-words font-mono text-2xs text-foreground">{formula}</code>
+            <code className="break-words font-mono text-xs text-foreground">{formula}</code>
           </DefinitionRow>
           {numerator ? <DefinitionRow label="Numerator">{numerator}</DefinitionRow> : null}
           {denominator ? <DefinitionRow label="Denominator">{denominator}</DefinitionRow> : null}
@@ -221,6 +228,13 @@ function sampleText(
 }
 
 /**
+ * The prior figure: the body face with tabular figures (JetBrains Mono is for identifiers
+ * only, SPEC §3.1), and never truncated, because a cut number reads as a plausible wrong
+ * one (ui-standard "Numerals").
+ */
+const FIGURE = 'whitespace-nowrap font-medium tabular-nums text-foreground';
+
+/**
  * Flat, divider-led comparison block. `KpiTile` remains the sole owner of delta
  * direction, judgement, and accessible trend text; this wrapper adds prior/sample
  * context and an explicit data-quality state without inventing another KPI grammar.
@@ -282,9 +296,7 @@ export function ComparisonMetric(props: ComparisonMetricProps) {
           <div className="flex min-w-0 items-center justify-between gap-2">
             <span className="inline-flex min-w-0 items-baseline gap-1.5 text-xs text-muted-foreground">
               <span>{priorLabel}</span>
-              <span className="truncate font-mono font-medium tabular-nums text-foreground">
-                {prior ?? DASH}
-              </span>
+              <span className={FIGURE}>{prior ?? DASH}</span>
             </span>
             <span className="flex shrink-0 items-center gap-1.5">
               <span
@@ -304,14 +316,10 @@ export function ComparisonMetric(props: ComparisonMetricProps) {
             </span>
           </div>
           {renderedSample ? (
-            <p className="mt-1 truncate font-mono text-2xs tabular-nums text-muted-foreground">
-              {renderedSample}
-            </p>
+            <p className="mt-1 text-xs tabular-nums text-muted-foreground">{renderedSample}</p>
           ) : null}
           {statusReason ? (
-            <p className="mt-1 text-2xs leading-relaxed text-muted-foreground">
-              {statusReason}
-            </p>
+            <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{statusReason}</p>
           ) : null}
         </div>
       ) : (
@@ -319,14 +327,10 @@ export function ComparisonMetric(props: ComparisonMetricProps) {
           <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-2">
             <span className="inline-flex min-w-0 items-baseline gap-1.5 text-xs text-muted-foreground">
               <span>{priorLabel}</span>
-              <span className="truncate font-mono font-medium tabular-nums text-foreground">
-                {prior ?? DASH}
-              </span>
+              <span className={FIGURE}>{prior ?? DASH}</span>
             </span>
             {renderedSample ? (
-              <span className="font-mono text-xs tabular-nums text-muted-foreground">
-                {renderedSample}
-              </span>
+              <span className="text-xs tabular-nums text-muted-foreground">{renderedSample}</span>
             ) : null}
 
             <span

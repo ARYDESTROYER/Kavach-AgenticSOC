@@ -99,10 +99,14 @@ For how these values feed the dashboard, see the [KPI glossary](../analyst/kpi-g
   behaviors, including comprehensive ingestion, risk admission, tuning, campaigns,
   cross-source correlation, baselines, SLA policy, and coverage signals.
 - **Detection rule** describes source matching, thresholding, or anomaly logic.
-- **Case-automation rule** can tag, recommend, notify, request approval, or queue
-  an allowed playbook action after a decision. It cannot bypass case policy.
-- **Playbook** is trusted operator-authored investigation context. It recommends;
-  it does not decide.
+- **Case-automation rule** can tag, recommend, notify, request approval, or attach a
+  runbook after a decision. It cannot bypass case policy.
+- **Runbook** is a team's step-by-step response procedure: phases of Check, Lookup,
+  Decision, Action and Record steps. The matching runbook is attached to cases that need
+  a person, and a Published runbook guides the investigator as trusted context. It
+  recommends and records; it never decides, closes or escalates a case.
+- **Run** is one runbook being worked on one case: its steps, their status and the
+  evidence collected. A run never changes the case's verdict or state.
 
 ## Source and state terms
 

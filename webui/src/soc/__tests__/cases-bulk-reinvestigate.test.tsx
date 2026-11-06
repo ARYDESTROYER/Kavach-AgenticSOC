@@ -71,7 +71,7 @@ describe('Cases durable bulk reinvestigation', () => {
   it('keeps the cost confirmation, then submits one sorted immutable job snapshot', async () => {
     renderCases();
     await screen.findByText('Alpha');
-    fireEvent.click(screen.getByLabelText('Select all rows'));
+    fireEvent.click(screen.getByLabelText('Select all cases on this page'));
     const bar = await screen.findByRole('region', { name: /bulk actions/i });
     fireEvent.click(within(bar).getByRole('button', { name: /reinvestigate/i }));
 
@@ -95,7 +95,7 @@ describe('Cases durable bulk reinvestigation', () => {
     submitJobMock.mockRejectedValueOnce(new Error('jobs unavailable'));
     renderCases();
     await screen.findByText('Alpha');
-    fireEvent.click(screen.getByLabelText('Select all rows'));
+    fireEvent.click(screen.getByLabelText('Select all cases on this page'));
     const bar = await screen.findByRole('region', { name: /bulk actions/i });
     fireEvent.click(within(bar).getByRole('button', { name: /reinvestigate/i }));
     fireEvent.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: /^reinvestigate$/i }));

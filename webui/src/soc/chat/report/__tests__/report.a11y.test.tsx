@@ -100,10 +100,15 @@ describe('report surfaces a11y', () => {
       </TooltipProvider>,
     );
     const open = await screen.findByRole('button', { name: title });
-    expect(open.className).toMatch(/max-w-\[18rem\]/);
+    // Round 14: the columns declare their widths, so the table keeps a fixed layout and
+    // each text column is capped by its own width; the buttons truncate inside it.
+    const table = screen.getByRole('table', { name: 'Reports' });
+    expect(table).toHaveClass('table-fixed');
+    expect(open).toHaveClass('max-w-full', 'truncate');
     const same = await screen.findByRole('button', { name: `Open the source conversation of ${title}: ${title}` });
     await waitFor(() => expect(same).toHaveTextContent('Open conversation'));
-    expect(same.className).toMatch(/max-w-\[12rem\]/);
+    expect(same).toHaveClass('max-w-full');
+    expect((same.closest('td') as HTMLElement).style.width).toBe('14rem');
     expect(screen.getByRole('button', { name: 'Open the source conversation of Shift brief: Night shift questions' })).toHaveTextContent(
       'Night shift questions',
     );

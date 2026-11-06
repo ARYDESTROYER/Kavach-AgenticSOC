@@ -256,6 +256,12 @@ GOLDEN: list[tuple[str, set[str]]] = [
     ("why was my case closed automatically", {"analyst/cases.md", "concepts/deterministic-decisions.md"}),
     ("turn on demo mode", {"getting-started/demo.md"}),
     ("what is a campaign", {"analyst/campaigns.md"}),
+    # Round 14 tasks (closing acceptance integ-01).
+    ("how do I export audit events to CSV", {"administration/audit-log.md"}),
+    ("how do I start a runbook on a case", {"analyst/case-manager.md"}),
+    ("how do I read an audit record", {"administration/audit-log.md"}),
+    ("how do I duplicate a dashboard", {"analyst/dashboards.md"}),
+    ("how do I open a rule's picture", {"analyst/logs-search.md", "analyst/chat.md"}),
 ]
 
 
@@ -264,8 +270,9 @@ def test_golden_questions_retrieve_the_right_page_in_the_top_three():
         question for question, pages in GOLDEN
         if not any(chunk.page in pages for chunk, _ in search_docs(question, 3))
     ]
-    # Research target: >= 20 of 22 (recall@3 >= 0.9). Extend the set when a gap is fixed.
-    assert len(GOLDEN) - len(misses) >= 20, misses
+    # Research target: recall@3 >= 0.9 (it was 20 of the first 22). Extend the set when
+    # a gap is fixed.
+    assert len(GOLDEN) - len(misses) >= -(-9 * len(GOLDEN) // 10), misses
 
 
 def test_retrieval_is_diverse_deterministic_and_abstains_off_topic():
@@ -276,7 +283,7 @@ def test_retrieval_is_diverse_deterministic_and_abstains_off_topic():
         per_page[chunk.page] = per_page.get(chunk.page, 0) + 1
     assert max(per_page.values()) <= 2
     assert search_docs("weather in Paris") == []
-    assert search_docs("what is T1110") == []
+    assert search_docs("what is T1003") == []
 
 
 def test_tokenizer_reuses_the_rag_tokenizer_and_splits_sub_tokens():
@@ -962,7 +969,10 @@ def test_lazy_exports_match_all():
 # --------------------------------------------------------------------------- #
 # "Ask about this" topic passthrough (SPEC A7; ChatRequest.topic → ctx.topic).
 # --------------------------------------------------------------------------- #
-_AUTO_CLOSED = "kpi:auto_closed"
+# A topic whose own question, searched plainly, leads with a neighbouring section ("How
+# to read a KPI"), so pinning is what puts its own section first. Re-pick it when a
+# corpus change makes the plain search land on the topic's section by itself.
+_PINNED = "kpi:total_cases"
 
 
 def _anchor(doc: str | None) -> str:
@@ -973,17 +983,17 @@ async def test_app_help_defaults_its_topic_to_the_turns_topic():
     """The page sends the topic's question; without the topic the plain retrieval
     leads with a neighbouring glossary entry. ``ctx.topic`` pins the topic's own
     section first, and a model-chosen query is kept (it ranks the rest)."""
-    question = topic_question(_AUTO_CLOSED)
+    question = topic_question(_PINNED)
     plain = await AppHelpTool().run(_ctx(), query=question)
-    assert plain.ok and _anchor(plain.citations[0].doc) != "auto-closed"
-    pinned = await AppHelpTool().run(_ctx(topic=_AUTO_CLOSED), query=question)
-    assert pinned.ok and _anchor(pinned.citations[0].doc) == "auto-closed"
-    own_query = await AppHelpTool().run(_ctx(topic=_AUTO_CLOSED), query="how is resolved closed counted")
-    assert _anchor(own_query.citations[0].doc) == "auto-closed"
-    assert own_query.untrusted_params["query"] == "how is resolved closed counted"
+    assert plain.ok and _anchor(plain.citations[0].doc) != "total-cases"
+    pinned = await AppHelpTool().run(_ctx(topic=_PINNED), query=question)
+    assert pinned.ok and _anchor(pinned.citations[0].doc) == "total-cases"
+    own_query = await AppHelpTool().run(_ctx(topic=_PINNED), query="how are cases counted")
+    assert _anchor(own_query.citations[0].doc) == "total-cases"
+    assert own_query.untrusted_params["query"] == "how are cases counted"
     # No query at all: the topic's own question is searched.
-    bare = await AppHelpTool().run(_ctx(topic=_AUTO_CLOSED))
-    assert bare.ok and _anchor(bare.citations[0].doc) == "auto-closed"
+    bare = await AppHelpTool().run(_ctx(topic=_PINNED))
+    assert bare.ok and _anchor(bare.citations[0].doc) == "total-cases"
     # An unknown (well-formed) topic is ignored, never an error.
     unknown = await AppHelpTool().run(_ctx(topic="kpi:not_a_topic"), query=question)
     assert [c.doc for c in unknown.citations] == [c.doc for c in plain.citations]
@@ -998,12 +1008,12 @@ async def test_zero_cost_answer_pins_the_turns_topic():
     from app.stores.cases import CaseStore
 
     adapter = _discover_app_knowledge()
-    question = topic_question(_AUTO_CLOSED)
+    question = topic_question(_PINNED)
     plain = adapter.fallback_answer(question, grants=frozenset(), reason="not_configured")
-    assert _anchor(plain.citations[0].doc) != "auto-closed"
-    pinned = adapter.fallback_answer(question, grants=frozenset(), reason="not_configured", topic=_AUTO_CLOSED)
-    assert _anchor(pinned.citations[0].doc) == "auto-closed"
-    console = get_app_knowledge().topics[_AUTO_CLOSED].console
+    assert _anchor(plain.citations[0].doc) != "total-cases"
+    pinned = adapter.fallback_answer(question, grants=frozenset(), reason="not_configured", topic=_PINNED)
+    assert _anchor(pinned.citations[0].doc) == "total-cases"
+    console = get_app_knowledge().topics[_PINNED].console
     assert pinned.console_links[0].id == console
     unknown = adapter.fallback_answer(question, grants=frozenset(), reason="not_configured", topic="kpi:nope")
     assert [c.doc for c in unknown.citations] == [c.doc for c in plain.citations]
@@ -1014,7 +1024,7 @@ async def test_zero_cost_answer_pins_the_turns_topic():
         raise RuntimeError("console map unavailable")
 
     adapter.resolve_console_links = broken_links  # instance attribute: this adapter only
-    kept = adapter.fallback_answer(question, grants=frozenset(), reason="not_configured", topic=_AUTO_CLOSED)
+    kept = adapter.fallback_answer(question, grants=frozenset(), reason="not_configured", topic=_PINNED)
     assert kept is not None and [c.doc for c in kept.citations] == [c.doc for c in pinned.citations]
     # The answer's own links, without the lead the failed lookup would have added.
     assert [link.id for link in kept.console_links if link.id != console] == [
@@ -1028,6 +1038,464 @@ async def test_zero_cost_answer_pins_the_turns_topic():
     prefs.chat_model = ModelConfig(provider="mock", model="mock")
     engine = ChatEngine(es, LLMGateway.__new__(LLMGateway), AuditLogger(es), CaseStore(es))
     outcome = TurnOutcome()
-    response = await engine.chat(question, prefs, tool_context=_ctx(topic=_AUTO_CLOSED), outcome=outcome)
+    response = await engine.chat(question, prefs, tool_context=_ctx(topic=_PINNED), outcome=outcome)
     assert response.answer_kind == "product_help" and response.usage and response.usage.calls == 0
-    assert _anchor(response.citations[0].doc) == "auto-closed"
+    assert _anchor(response.citations[0].doc) == "total-cases"
+
+
+# --------------------------------------------------------------------------- #
+# Round 14: app help names the destination it actually reaches (SPEC §2.2 item 13,
+# §4.5.6, §11.1 "Start runbook placement"; closing acceptance finding integ-01).
+# --------------------------------------------------------------------------- #
+def _role_grants(role: str) -> frozenset[tuple[str, str]]:
+    """The console-relevant grants ``role`` holds under the default matrix."""
+    from app.rbac.policy import can
+
+    return frozenset(pair for pair in console_grant_pairs() if can(role, *pair))
+
+
+#: (question, role, the exact console destinations its $0 answer links, in order). The
+#: auditor holds ``audit:export`` but not ``data_export:export``; the tier-1 analyst
+#: holds ``runbooks:run`` but not ``settings:manage``; the SOC manager holds both.
+_R14_DESTINATIONS: list[tuple[str, str, tuple[str, ...]]] = [
+    ("How do I export audit events to CSV?", "auditor", ("page:audit",)),
+    ("How do I export audit events as JSON Lines?", "auditor", ("page:audit",)),
+    ("How do I export the audit log?", "auditor", ("page:audit",)),
+    ("How do I read an audit record?", "auditor", ("page:audit",)),
+    ("How do I search the audit log?", "auditor", ("page:audit",)),
+    # "filter" and "log" also name the Logs page: the audit log's filters stay its own.
+    ("How do I filter the audit log by actor?", "auditor", ("page:audit",)),
+    ("How do I filter the audit log by outcome?", "auditor", ("page:audit",)),
+    ("How do I change the audit log scope?", "auditor", ("page:audit",)),
+    ("How do I start a runbook on a case?", "analyst_tier1", ("page:case_manager",)),
+    ("How do I mark a runbook step done?", "analyst_tier1", ("page:case_manager",)),
+    # Review and publishing names the library (where a version is published) and the
+    # Publishing and review card (where separate approval is switched on). The Case
+    # Manager overlay must not drown the card (finding: a 'runbook' repeated in the
+    # overlay lowered the word's weight below the link floor).
+    ("How do I require a distinct approver for runbooks?", "soc_manager",
+     ("page:runbooks", "settings:runbooks.runbooks-publishing")),
+    ("How do I publish a runbook?", "soc_manager", ("page:runbooks", "settings:runbooks.runbooks-publishing")),
+    # Steps are written in the library's editor, never in Case Manager, which works them.
+    ("How do I add a runbook step?", "soc_manager", ("page:runbooks",)),
+    # The Cyber Defence Center is the Default built-in board; the library holds the rest.
+    ("How do I find a built-in dashboard?", "analyst_tier1", ("page:overview", "page:dashboards")),
+    ("How do I duplicate a dashboard?", "analyst_tier1", ("page:dashboards",)),
+    # Cases has its own exact Rule filter: never the Logs page.
+    ("How do I filter cases by rule?", "analyst_tier1", ("page:cases",)),
+    # Logs has its own exact filters: never the Cases page or Jobs.
+    ("How do I filter logs by rule?", "analyst_tier1", ("page:logs",)),
+    # The Runbooks on cases card holds the fallback (generic incident) switch: the Case
+    # Manager words must not lower 'runbook' under the link floor for it (review finding).
+    ("What happens when a case has no runbook?", "soc_manager", ("settings:runbooks.runbooks-cases",)),
+]
+
+
+@pytest.mark.parametrize("question, role, expected", _R14_DESTINATIONS, ids=[q for q, *_ in _R14_DESTINATIONS])
+def test_round14_tasks_link_the_destination_they_reach(question: str, role: str, expected: tuple[str, ...]):
+    answer = answer_app_question(question, grants=_role_grants(role))
+    assert answer is not None, question
+    ids = [link.id for link in answer.console_links]
+    assert ids == list(expected), (question, ids)
+    # The task needs no grant the role lacks, so no access notice is shown for it.
+    assert all(link.allowed for link in answer.console_links), (question, ids)
+    assert "You need additional access" not in answer.answer, answer.answer
+    # The guide block offers the destination itself.
+    guide = answer.blocks[0]
+    opens = [link["ref"].get("page") for link in guide["links"] if "page" in link["ref"]]
+    assert opens and opens[0] == answer.console_links[0].page
+
+
+#: Questions whose page the cited Help Center section does not name yet: the answer may
+#: link nothing, but never a page that does another task (the keyword search must not
+#: guess). (question, role, the only destinations it may link).
+_R14_NO_WRONG_DESTINATION: list[tuple[str, str, frozenset[str]]] = [
+    ("How do I filter by rule in cases?", "analyst_tier1", frozenset({"page:cases"})),
+]
+
+
+@pytest.mark.parametrize("question, role, allowed", _R14_NO_WRONG_DESTINATION,
+                         ids=[q for q, *_ in _R14_NO_WRONG_DESTINATION])
+def test_round14_tasks_never_link_another_tasks_page(question: str, role: str, allowed: frozenset[str]):
+    answer = answer_app_question(question, grants=_role_grants(role))
+    assert answer is not None, question
+    ids = {link.id for link in answer.console_links}
+    assert ids <= allowed, (question, ids)
+
+
+#: Other pages' tasks that share a word with the audit log ("export", "CSV", "log"): the
+#: $0 answer must not send them there (review finding: the bare 'csv' and 'json lines'
+#: keywords lent the audit log to every CSV question whose cited section named no page).
+_NOT_THE_AUDIT_LOG: list[str] = [
+    "How do I export a chart as CSV?",
+    "How do I export cases to CSV?",
+    "How do I export a table to CSV?",
+    "How do I export chat answers to CSV?",
+    "How do I export a severity breakdown to CSV?",
+    "How do I export a report to CSV?",
+    "How do I download logs as CSV?",
+    "How do I search logs?",
+    # Re-review finding: the record's six-part list ("the host it names", "its logs") and
+    # the export rules (CSV, JSON Lines) once carried their section's breadcrumb, so a
+    # question about the Logs page or about ingesting a format was sent to the audit log.
+    "How do I filter logs by host?",
+    "How do I ingest CSV logs?",
+    "How do I ingest JSON Lines files from S3?",
+]
+
+
+@pytest.mark.parametrize("question", _NOT_THE_AUDIT_LOG)
+def test_other_tasks_never_link_the_audit_log(question: str):
+    answer = answer_app_question(question, grants=_role_grants("analyst_tier1"))
+    assert answer is not None, question
+    ids = [link.id for link in answer.console_links]
+    assert "page:audit" not in ids, (question, ids)
+    # A tier-1 analyst holds no audit grant: no access notice may claim one is needed.
+    assert "Platform › Audit log (audit:view)" not in answer.answer, answer.answer
+    # Nor any other page the analyst cannot open: each of these tasks is done on a page a
+    # tier-1 analyst holds (Chat, Logs, Sources), never on a locked one that does another
+    # job (Settings › Organization › Data export once took the audit log's place).
+    assert all(link.allowed for link in answer.console_links), (question, ids)
+
+
+@pytest.mark.parametrize("question", _NOT_THE_AUDIT_LOG)
+async def test_app_help_tool_never_sends_log_tasks_to_the_audit_log(question: str):
+    """The model's (and the Demo planner's) lookup agrees: its destinations come from the
+    best section's page, and the audit log's record list and export rules name none, so no
+    locked Platform › Audit log reaches a tier-1 analyst's answer for another task."""
+    outcome = await AppHelpTool().run(_ctx(_role_grants("analyst_tier1")), query=question)
+    assert outcome.ok and outcome.citations
+    assert "page:audit" not in outcome.console_links, (question, outcome.console_links)
+    assert all(t["id"] != "page:audit" for t in outcome.observation["console_targets"])
+    assert all(t["allowed"] for t in outcome.observation["console_targets"]), (
+        question, outcome.observation["console_targets"])
+
+
+def test_search_logs_links_the_logs_page_only():
+    answer = answer_app_question("How do I search logs?", grants=_role_grants("analyst_tier1"))
+    assert answer is not None
+    assert [link.id for link in answer.console_links] == ["page:logs"]
+
+
+async def test_app_help_tool_names_the_keyboard_page_asked_about():
+    """Case Manager, chat and the audit log each document shortcuts; Case Manager's
+    section now names its page, so the question about it leads there instead of with the
+    audit log's (the only one that named a page)."""
+    outcome = await AppHelpTool().run(_ctx(_role_grants("analyst_tier1")),
+                                      query="What keyboard shortcuts does Case Manager have?")
+    assert outcome.ok and outcome.citations
+    assert outcome.console_links[0] == "page:case_manager", outcome.console_links
+
+
+def test_audit_export_answer_names_the_audit_log_export_menu():
+    """The CSV question matches the section's bullet list best; the answer still leads
+    with the section's own opening (never an empty body) and names the Export menu."""
+    answer = answer_app_question("How do I export audit events to CSV?", grants=_role_grants("auditor"))
+    assert answer is not None
+    lead = answer.answer.split("\n\n", 1)[0]
+    assert lead.startswith("From the Help Center (0.1), Audit log › Exporting: **Export** in the header of "
+                           "**Platform → Audit log**"), lead
+    # The export job needs both grants: a person exports only what they may read.
+    assert "It needs `audit:view` and `audit:export`, not the data export permission." in lead
+    assert lead.endswith("[D1]")
+    assert answer.citations[0].doc == "/docs/0.1/administration/audit-log/#exporting"
+    assert [link.id for link in answer.console_links] == ["page:audit"]
+    assert "Open: Platform › Audit log." in answer.answer
+    # The section describes Data export as it is: the secret-free bundle of the state the
+    # person chooses (Settings › Organization › Data export), never "the whole application".
+    exporting = " ".join(c.text for c in get_app_knowledge().chunks
+                         if c.page == "administration/audit-log.md" and c.anchor == "exporting")
+    assert "a separate secret-free bundle of the application state you choose" in " ".join(exporting.split())
+    assert "whole application" not in exporting
+
+
+@pytest.mark.parametrize("question", [
+    "How do I export audit events to CSV?",
+    "How do I export audit events as JSON Lines?",
+])
+def test_a_format_question_leads_with_the_exporting_section(question: str):
+    """The format questions match the export rules (Exporting › Files and delivery) best.
+    That subsection names no destination: the breadcrumb sits in the section's opening,
+    so the rules' format words never lend the audit log to another task. Exporting is on
+    the same page, scores within the secondary ratio, names "export" in its heading and
+    names the destination, so it leads, from its opening, and is cited first; the rules
+    are still cited after it."""
+    hits = search_docs(question, 4)
+    assert hits[0][0].id == "administration/audit-log#files-and-delivery:0", [c.id for c, _ in hits]
+    assert hits[0][0].console == ()
+    answer = answer_app_question(question, grants=_role_grants("auditor"))
+    assert answer is not None
+    lead = answer.answer.split("\n\n", 1)[0]
+    assert lead.startswith("From the Help Center (0.1), Audit log › Exporting: **Export** in the header of "
+                           "**Platform → Audit log**"), lead
+    assert lead.endswith("[D1]"), lead
+    docs = [c.doc for c in answer.citations]
+    assert docs[:2] == ["/docs/0.1/administration/audit-log/#exporting",
+                        "/docs/0.1/administration/audit-log/#files-and-delivery"], docs
+    assert [link.id for link in answer.console_links] == ["page:audit"]
+
+
+def test_export_the_audit_log_leads_with_the_exporting_section():
+    """The plainest wording matches Exporting itself first, ahead of the short Personal
+    data section ("they are in every export"), which is still cited after it."""
+    question = "How do I export the audit log?"
+    answer = answer_app_question(question, grants=_role_grants("auditor"))
+    assert answer is not None
+    lead = answer.answer.split("\n\n", 1)[0]
+    assert lead.startswith("From the Help Center (0.1), Audit log › Exporting: **Export** in the header of "
+                           "**Platform → Audit log**"), lead
+    assert lead.endswith("[D1]"), lead
+    docs = [c.doc for c in answer.citations]
+    assert docs[0] == "/docs/0.1/administration/audit-log/#exporting", docs
+    assert "/docs/0.1/administration/audit-log/#personal-data" in docs, docs
+    assert [link.id for link in answer.console_links] == ["page:audit"]
+
+
+@pytest.mark.parametrize("question, section", [
+    # A neighbour that names a page never takes the lead for that alone: its heading must
+    # name more of the question than the best match's heading does.
+    ("where is MFA", "authentication#mfa"),
+    ("how do I configure SSO", "authentication#oidc-sso"),
+    ("How do I duplicate a dashboard?", "dashboards#duplicate-a-built-in-board"),
+    ("How do reports work?", "cases#work-a-case"),
+])
+def test_the_best_match_keeps_the_lead_when_no_neighbour_heading_names_more(question: str, section: str):
+    answer = answer_app_question(question, grants=_role_grants("super_admin"))
+    assert answer is not None
+    assert answer.citations[0].doc.endswith(section.replace("#", "/#")), answer.citations[0].doc
+
+
+def test_search_answer_leads_with_a_sentence_that_names_the_audit_log():
+    """Finding events opens with a complete sentence (not a colon left hanging before a
+    list the $0 answer does not show) that says where and how to search."""
+    answer = answer_app_question("How do I search the audit log?", grants=_role_grants("auditor"))
+    assert answer is not None
+    lead = answer.answer.split("\n\n", 1)[0]
+    assert lead.startswith("From the Help Center (0.1), Audit log › Finding events: In **Platform → Audit log**, "
+                           "type in the search box"), lead
+    assert lead.endswith(". [D1]"), lead
+
+
+def test_start_runbook_answer_names_case_manager_take_action():
+    answer = answer_app_question("How do I start a runbook on a case?", grants=_role_grants("analyst_tier1"))
+    assert answer is not None
+    assert answer.answer.startswith("From the Help Center (0.1), Case Manager › Work the runbook: To start a runbook")
+    assert "**Start runbook** in **Take action**" in answer.answer
+    assert [link.id for link in answer.console_links] == ["page:case_manager"]
+    assert answer.console_links[0].label == "Triage › Case Manager"
+
+
+@pytest.mark.parametrize("question, role, expected", [
+    ("How do I export audit events to CSV?", "auditor", ["page:audit"]),
+    ("How do I export audit events as JSON Lines?", "auditor", ["page:audit"]),
+    ("How do I filter the audit log by actor?", "auditor", ["page:audit"]),
+    ("How do I filter the audit log by outcome?", "auditor", ["page:audit"]),
+    ("How do I start a runbook on a case?", "analyst_tier1", ["page:case_manager"]),
+    ("How do I mark a runbook step done?", "analyst_tier1", ["page:case_manager"]),
+    ("How do I require a distinct approver for runbooks?", "soc_manager",
+     ["page:runbooks", "settings:runbooks.runbooks-publishing"]),
+    ("How do I publish a runbook?", "soc_manager", ["page:runbooks", "settings:runbooks.runbooks-publishing"]),
+    ("How do I add a runbook step?", "soc_manager", ["page:runbooks"]),
+    ("How do I filter logs by rule?", "analyst_tier1", ["page:logs"]),
+    ("What happens when a case has no runbook?", "soc_manager", ["settings:runbooks.runbooks-cases"]),
+])
+async def test_app_help_tool_links_the_round14_destination(question: str, role: str, expected: list[str]):
+    """The model's (and the Demo planner's) ``app_help`` lookup carries the same
+    destinations: the cited sections' breadcrumbs, never the Data export section, the
+    Logs page or the Runbooks settings for these tasks."""
+    outcome = await AppHelpTool().run(_ctx(_role_grants(role)), query=question)
+    assert outcome.ok and outcome.citations
+    assert outcome.console_links == expected, outcome.console_links
+    targets = outcome.observation["console_targets"]
+    assert [t["id"] for t in targets] == expected and all(t["allowed"] for t in targets)
+
+
+@pytest.mark.parametrize("question", ["How do I search the audit log?", "How do I read an audit record?"])
+async def test_app_help_tool_leads_with_the_audit_log(question: str):
+    """Before the cited audit-log sections named their page, the tool's destinations
+    came only from other pages' sections (Triage › Logs for "search the audit log").
+    The audit log now leads; another page's section among the hits can still add its own
+    breadcrumb after it."""
+    outcome = await AppHelpTool().run(_ctx(_role_grants("auditor")), query=question)
+    assert outcome.ok and outcome.citations
+    assert outcome.console_links and outcome.console_links[0] == "page:audit", outcome.console_links
+    assert "settings:data_export" not in outcome.console_links
+
+
+def test_round14_help_sections_carry_their_console_breadcrumb():
+    """The root of integ-01: the cited sections named no console destination, so the
+    noisier keyword search picked one. Each how-to section now names the page it
+    documents, on one line (a breadcrumb wrapped across a line is not read)."""
+    knowledge = get_app_knowledge()
+    for page, anchor, target in (
+        ("administration/audit-log.md", "scopes", "page:audit"),
+        ("administration/audit-log.md", "finding-events", "page:audit"),
+        ("administration/audit-log.md", "reading-the-list", "page:audit"),
+        # The record names no page on purpose (see the next test); the "audit record"
+        # keyword sends the record questions to the audit log instead.
+        ("administration/audit-log.md", "keyboard", "page:audit"),
+        ("administration/audit-log.md", "exporting", "page:audit"),
+        ("analyst/case-manager.md", "work-the-runbook", "page:case_manager"),
+        # Three pages document keyboard shortcuts; each names its own, so a question about
+        # one never borrows another's page (review finding: Case Manager's named none).
+        ("analyst/case-manager.md", "keyboard", "page:case_manager"),
+    ):
+        chunks = [c for c in knowledge.chunks if c.page == page and c.anchor == anchor]
+        assert chunks, (page, anchor)
+        assert all(c.console == (target,) for c in chunks), [(c.id, c.console) for c in chunks]
+
+
+def test_audit_log_reference_parts_name_no_destination():
+    """A breadcrumb names its destination for every chunk of its section, and a later
+    chunk can share words with another page's task. The record's six-part list ("the host
+    it names", "its logs") answered "How do I filter logs by host?", and the export rules
+    (CSV, JSON Lines) answered "How do I ingest CSV logs?", each with a locked Platform ›
+    Audit log (re-review finding). The record names no page, and Exporting keeps its
+    breadcrumb in its short opening while the details sit in subsections of their own."""
+    knowledge = get_app_knowledge()
+    exporting = [c for c in knowledge.chunks
+                 if c.page == "administration/audit-log.md" and c.anchor == "exporting"]
+    assert len(exporting) == 1 and "**Platform → Audit log**" in exporting[0].text
+    for anchor in ("the-record", "time-range-and-size-limit", "files-and-delivery", "requests-and-downloads"):
+        chunks = [c for c in knowledge.chunks if c.page == "administration/audit-log.md" and c.anchor == anchor]
+        assert chunks, anchor
+        assert all(c.console == () for c in chunks), [(c.id, c.console) for c in chunks]
+
+
+def test_console_map_keywords_send_round14_tasks_to_their_page():
+    """The keyword fallback agrees: the Audit log owns audit export (auditors can open
+    it), the Data export section does not claim the word "audit" in chat, Logs claims no
+    "filter" or "rule" word (the Audit log's label holds "log" too), and Case Manager's
+    Start runbook words leave the Runbooks settings their match."""
+    from app.knowledge import search_targets
+    from app.knowledge.index import tokenize
+
+    knowledge = get_app_knowledge()
+    audit = knowledge.targets["page:audit"]
+    assert {"audit events", "audit record"} <= set(audit.keywords)
+    # Neither a verb nor a file format is an audit-log word: "export" alone ("Kill the
+    # export job") names Jobs or Data export, and "csv" or "json lines" alone would send
+    # "How do I ingest CSV logs?" or a chart's CSV download to the audit log.
+    audit_words = {w for k in audit.keywords for w in tokenize(k)}
+    assert not audit_words & {"export", "csv", "json", "line"}, audit_words
+    assert "audit" not in knowledge.targets["settings:data_export"].keywords
+    assert {"start runbook", "runbook tab", "take action"} <= set(knowledge.targets["page:case_manager"].keywords)
+    manager_words = [w for k in knowledge.targets["page:case_manager"].keywords for w in tokenize(k)]
+    assert manager_words.count("runbook") <= 2, manager_words
+    assert "distinct approver" in knowledge.targets["settings:runbooks.runbooks-publishing"].keywords
+    assert {"no runbook", "fallback runbook"} <= set(knowledge.targets["settings:runbooks.runbooks-cases"].keywords)
+    logs_words = {w for k in knowledge.targets["page:logs"].keywords for w in tokenize(k)}
+    assert not logs_words & {"filter", "rule"}, logs_words
+    assert {"rule filter", "cases for a rule"} <= set(knowledge.targets["page:cases"].keywords)
+
+    def ids(question: str) -> list[str]:
+        return [t.id for t in search_targets(question)]
+
+    # The Exporting breadcrumb names the destination; the label search, used only when
+    # the cited section names none, still ranks the audit log first.
+    assert ids("How do I export audit events to CSV?")[0] == "page:audit"
+    assert ids("How do I export audit events as JSON Lines?")[0] == "page:audit"
+    assert ids("How do I export the audit log?") == ["page:audit"]
+    # A format word alone reaches no destination.
+    assert ids("How do I ingest CSV logs?") == []
+    assert ids("How do I download logs as CSV?") == []
+    assert ids("How do I ingest JSON Lines files from S3?") == []
+    assert ids("What happens when a case has no runbook?") == ["settings:runbooks.runbooks-cases"]
+    assert ids("How do I start a runbook on a case?")[0] == "page:case_manager"
+    # Without any breadcrumb the keyword search alone keeps these on the right page.
+    assert ids("How do I filter the audit log by actor?") == ["page:audit"]
+    assert ids("How do I search the audit log?")[0] == "page:audit"
+    assert ids("How do I filter cases by rule?") == ["page:cases"]
+    assert ids("How do I require a distinct approver for runbooks?") == ["settings:runbooks.runbooks-publishing"]
+
+
+def test_an_answer_never_has_an_empty_body_when_its_section_has_text():
+    """A later part of a long section can be a bare bullet list: the section's opening
+    part leads instead, and a section that opens with a list leads with its first items.
+    Only a chunk that is nothing but a table may lead with its title alone."""
+    from app.knowledge.answer import _lead
+    from app.knowledge.render import list_points
+
+    knowledge = get_app_knowledge()
+    for chunk in knowledge.chunks:
+        intro, steps, _outro, points = _lead(chunk, knowledge)
+        if not (intro or steps or points):
+            prose = [line for line in chunk.text.splitlines() if line.strip() and not line.lstrip().startswith("|")]
+            assert not prose, chunk.id
+    # A later part that is a bare list leads with its section's opening sentence (the
+    # Work the runbook strip, panel and card bullets lead with what a runbook is).
+    later = knowledge.chunks_by_id["analyst/case-manager#work-the-runbook:1"]
+    assert later.text.startswith("- **The strip**")
+    intro, steps, _outro, points = _lead(later, knowledge)
+    assert intro.startswith("A runbook is the procedure the people on a case follow") and not steps and not points
+    # A section that opens with a list leads with its first three items.
+    limits = knowledge.chunks_by_id["administration/audit-log#limits:0"]
+    intro, steps, _outro, points = _lead(limits, knowledge)
+    assert not intro and not steps and len(points) == 3
+    assert points[0].startswith("Sign-in, sign-out and session events never block signing in.")
+    answer = answer_app_question("How do I sign in when the audit log cannot be written?", grants=_role_grants("auditor"))
+    assert answer is not None and answer.citations[0].doc.endswith("/administration/audit-log/#limits")
+    assert "\n- Sign-in, sign-out and session events never block signing in." in answer.answer
+    # The list reader: markers removed, wrapped lines joined, nested tables and code left
+    # out, each item cut to its first sentences, prose after the list ends it.
+    text = ("Intro line.\n\n- First item wraps\n  onto two lines. Second sentence. Third sentence.\n"
+            "- Second item:\n\n  | a | b |\n  |---|---|\n  continued after the table.\n"
+            "* Third item.\n- Fourth item.\n\nProse after the list.\n- Not part of the first list.")
+    assert list_points(text, 3) == [
+        "First item wraps onto two lines. Second sentence.", "Second item:", "Third item."]
+    assert list_points(text, 10) == [
+        "First item wraps onto two lines. Second sentence.", "Second item:", "Third item.", "Fourth item."]
+    assert list_points("No list here.\n\n1. A numbered step.") == []
+
+
+# --------------------------------------------------------------------------- #
+# ``app_help`` destinations come from the best section's page (review finding: a
+# lower-ranked section of another page lent its page to the whole answer).
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize("question, role, expected", [
+    # The 4th hit is Settings › Export portable application state: it no longer adds the
+    # locked Data export destination for an auditor.
+    ("How do I export the audit log?", "auditor", ["page:audit"]),
+    ("How do I read an audit record?", "auditor", ["page:audit"]),
+    ("How do I search logs?", "analyst_tier1", ["page:logs"]),
+    ("What keyboard shortcuts does Case Manager have?", "analyst_tier1", ["page:case_manager"]),
+    ("How do I filter cases by rule?", "analyst_tier1", ["page:cases"]),
+    # The library page leads; Case Manager, where a case works its runbook, follows
+    # because a cited section and the console keywords both name it.
+    ("Where are runbooks?", "analyst_tier1", ["page:runbooks", "page:case_manager"]),
+    # A chart, table or report export is done in Workspace Chat, never in the locked
+    # Settings › Organization › Data export that exports application state.
+    ("How do I export a chart as CSV?", "analyst_tier1", ["page:chat"]),
+    ("How do I export a severity breakdown to CSV?", "analyst_tier1", ["page:chat"]),
+    ("How do I export a report to Word?", "analyst_tier1", ["page:chat"]),
+    # Data export keeps the questions about exporting application state.
+    ("How do I export application state?", "super_admin", ["settings:data_export", "page:batchjobs"]),
+    # The case number format is set in Settings › General › Cases, even though the chat
+    # export rules also talk about case IDs and formats.
+    ("Change the case ID format", "super_admin", ["settings:cases"]),
+    # The demo is reset in its own settings, never in the Danger zone's factory reset.
+    ("How do I reset the demo?", "super_admin", ["settings:demo"]),
+    ("How do I reset the demo?", "analyst_tier1", ["settings:demo"]),
+])
+async def test_app_help_tool_destinations_come_from_the_best_sections_page(question: str, role: str, expected: list[str]):
+    outcome = await AppHelpTool().run(_ctx(_role_grants(role)), query=question)
+    assert outcome.ok and outcome.citations
+    assert outcome.console_links == expected, outcome.console_links
+
+
+async def test_app_help_tool_keeps_a_destination_the_console_labels_confirm():
+    """Another page's section adds its destination only when the console labels and
+    keywords name it too: "Kill the export job" keeps Analytics › Jobs (the Data export
+    section and the 'jobs' keywords both name it), never the Data export section alone."""
+    outcome = await AppHelpTool().run(_ctx(_role_grants("super_admin")), query="Kill the export job")
+    assert outcome.ok
+    assert "page:batchjobs" in outcome.console_links, outcome.console_links
+    assert "settings:data_export" not in outcome.console_links, outcome.console_links
+
+
+async def test_app_help_tool_keeps_the_standup_for_a_shift_brief():
+    """The shift handoff section names Overview › Standup and the console keywords name
+    it too ("shift brief"), so a shift brief question keeps the Standup page."""
+    outcome = await AppHelpTool().run(_ctx(_role_grants("analyst_tier1")), query="How do I write a shift brief?")
+    assert outcome.ok and outcome.citations
+    assert "page:standup" in outcome.console_links, outcome.console_links

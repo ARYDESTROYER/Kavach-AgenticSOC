@@ -61,10 +61,10 @@ not the source version.
 `GET /api/health/build-info` answers two deliberately different questions about the
 same revision:
 
-* `provenance_complete` / `provenance_missing` — **was it stamped at all?** Any
+* `provenance_complete` / `provenance_missing`: **was it stamped at all?** Any
   non-blank, non-`unknown` value passes, so a tarball, Nix, Bazel, or CI build
   identifier counts as honest provenance.
-* `provenance_advisories` — **is it an exact source revision an upgrade can be
+* `provenance_advisories`: **is it an exact source revision an upgrade can be
   pinned to?** A build may be complete and still carry
   `commit_sha_not_exact_source_revision` (an abbreviated revision, a `<sha>-dirty`
   suffix, a tag name, a build number) or `build_identity_partially_stamped` (only one
@@ -105,6 +105,7 @@ touches them. These additive fields do not require a version bump or SQL migrati
 | Security middleware | `SECURITY_HEADERS_ENABLED`, `RATE_LIMIT_ENABLED`, `RATE_LIMIT_CAPACITY`, `RATE_LIMIT_REFILL_PER_SECOND`, `CSRF_ENABLED` | Headers default on; rate limiting and CSRF default off |
 | Secret maps | `CONNECTOR_SECRETS`, `SSO_CLIENT_SECRETS`, `NOTIFICATION_SECRETS` | JSON objects parsed directly by the backend; mapping support differs by Compose file |
 | MFA protection | `MFA_OBFUSCATION_KEY` | Stable key for TOTP-secret obfuscation; distinct from user preferences |
+| Audit client address | `TRUSTED_PROXIES` | Proxies whose forwarded address the audit log believes; default `tlsoc-webui`, the bundled Web UI service |
 
 The reference standalone Compose file maps the SSO and notification JSON maps. It
 does **not** map a `TLSOC_CONNECTOR_SECRETS` variable in 0.1. To boot per-source
@@ -122,6 +123,27 @@ upgrade protocol and does not gain a new volume in this release. Its files survi
 backend process or ordinary container restart, but not a container replacement. Use a
 reviewed Compose override/bind mount when that installation needs longer retention;
 do not repurpose the updater control/state volumes.
+
+### Trusted proxies for the audit log
+
+The audit log records each request's client address. `TRUSTED_PROXIES` is a comma list
+of host names, IP addresses or CIDR ranges. Only when a request arrives from one of them
+does the backend read `X-Forwarded-For`, and then it records the rightmost entry that is
+not itself a trusted proxy (it reads at most the last 32 entries; an entry it cannot
+parse stops the walk and the connection address is recorded instead). Any other request
+is recorded with its connection address, whatever headers it carries, and the raw header
+is kept beside it, labelled as untrusted, cut to its last 256 characters when longer.
+
+The default, `tlsoc-webui`, is the bundled Web UI service, so the standalone (agnostic)
+Compose stack needs no setting. The legacy ELK attachment has no Web UI service: run the
+Web UI there as `tlsoc-webui` on the backend's network, or set `TRUSTED_PROXIES` to the
+proxy that fronts the backend, or every audit row records that proxy's address as the
+client. A deployment with another proxy or a load balancer in front adds it here. Host names are resolved at startup and every 5 minutes; a name that does not
+resolve yet (the Web UI starts after the backend is healthy) is retried within seconds,
+and a name that stops resolving keeps its last addresses for three rounds. The setting
+is audit metadata only and never grants access. Uvicorn's own `FORWARDED_ALLOW_IPS`
+(loopback by default) only affects Uvicorn's scheme handling; the audit log does not
+trust an address Uvicorn rewrote from a loopback peer.
 
 ## State backends
 
@@ -225,7 +247,7 @@ Every `Preferences` field has a default. Major blocks include:
   chat assistant's bounds;
 - deterministic auto-close policy, analyst rule policies, case ID format, priority, and
   SLA targets;
-- playbooks, RAG, memory, enrichment, threat context, personas, and analyst-precedent
+- runbooks, RAG, memory, enrichment, threat context, personas, and analyst-precedent
   promotion, window fairness, and futility reporting;
 - auth policy, MFA/SSO metadata, RBAC, sessions, notifications, and realtime events;
 - branding, terminology, themes, saved views, dashboard defaults, and the desired
@@ -264,7 +286,7 @@ widen what chat may do; the assistant is read-only by construction.
 
 | Key | Default | Range | Applies in | Meaning |
 |---|---|---|---|---|
-| `limits_mode` | `unlimited` | `unlimited`, `bounded` | — | Whether the per-question limits apply |
+| `limits_mode` | `unlimited` | `unlimited`, `bounded` | Always | Whether the per-question limits apply |
 | `max_model_calls` | 5 | 1–12 | Bounded | Model calls per question, including the final answer |
 | `max_tool_calls` | 10 | 1–40 | Bounded | Lookups per question |
 | `turn_token_ceiling` | 60,000 | 4,000–1,000,000 | Bounded | Input plus output tokens across one question's model calls |
@@ -272,21 +294,21 @@ widen what chat may do; the assistant is read-only by construction.
 | `final_max_tokens` | 4,000 | 256–32,000 | Bounded | Output tokens for the final answer |
 | `observation_chars` | 6,000 | 1,500–60,000 | Bounded | Characters of aggregated lookup results sent to the model per step |
 | `turn_timeout_s` | 90 | 10–600 | Bounded | Wall-clock seconds per question; no new lookup starts after it, and a model call then gets at most the time left (at least 30 seconds) |
-| `max_parallel` | 4 | 1–8 | Both | Lookups run side by side in one step; in Bounded mode never more than `max_tool_calls` (applied at run time, the stored value is kept) |
-| `tool_timeout_s` | 15 | 1–120 | Both | Seconds one lookup may take; aggregate lookups (case counts and breakdowns, log statistics, metrics, and cost) get up to 10 minutes, never less than this value |
-| `model_step_timeout_s` | 300 | 5–900 | Both | Seconds one model call may stay silent before it counts as stalled and is retried once |
-| `max_concurrent_turns_per_user` | 4 | 1–10 | Both | Questions one user may run at once (Workspace and case chat together) |
-| `max_concurrent_turns_global` | 16 | 1–100 | Both | Questions one backend process runs at once |
+| `max_parallel` | 12 | 1–24 | Both | Lookups run side by side in one step; in Bounded mode never more than `max_tool_calls` (applied at run time, the stored value is kept) |
+| `tool_timeout_s` | 45 | 1–120 | Both | Seconds one lookup may take; aggregate lookups (case counts and breakdowns, log statistics, metrics, and cost) get up to 10 minutes, never less than this value |
+| `model_step_timeout_s` | 900 | 5–1,800 | Both | Seconds one model call may stay silent before it counts as stalled and is retried once |
+| `max_concurrent_turns_per_user` | 12 | 1–24 | Both | Questions one user may run at once (Workspace and case chat together) |
+| `max_concurrent_turns_global` | 48 | 1–100 | Both | Questions one backend process runs at once |
 | `max_indicator_lookups` | 3 | 0–10 | Both | Third-party indicator lookups per question; 0 turns the lookup off |
 | `max_indicator_lookups_per_conversation` | 10 | 0–50 | Both | Third-party indicator lookups per conversation |
 | `chat_daily_cap_usd` | `null` | ≥ 0 | Both | Optional daily chat spending limit in US dollars (UTC day); `null` or 0 is off |
 | `default_stream_mode` | `steps` | `steps`, `text` | Both | Live mode for viewers who have not chosen one |
-| `allow_text_streaming` | `true` | — | Both | Allow answers to be typed out word by word |
-| `animated_brand` | `true` | — | Both | Turn a ring around the logo while chat works (a custom logo itself never moves) |
+| `allow_text_streaming` | `true` | `true`, `false` | Both | Allow answers to be typed out word by word |
+| `animated_brand` | `true` | `true`, `false` | Both | Turn a ring around the logo while chat works (a custom logo itself never moves) |
 | `dynamic_starters` | `true` | `true`, `false` | Both | New chats open with suggested questions computed by code from data each viewer can read, at no AI cost; off serves only the everyday questions and no catch-up line |
 | `internal_domains` | `[]` | ≤ 100 suffixes | Both | Domain suffixes never sent to enrichment providers |
-| `allow_email_lookup` | `false` | — | Both | Allow e-mail addresses to be sent to enrichment providers |
-| `chat_limits_version` | 1 | — | — | Internal marker of the one-time limits migration below |
+| `allow_email_lookup` | `false` | `true`, `false` | Both | Allow e-mail addresses to be sent to enrichment providers |
+| `chat_limits_version` | 2 | 0–2 | Always | Internal marker of the staged limits migration below |
 
 The editor shows `allow_text_streaming` and `default_stream_mode` as one **Typed-out
 answers** control: **Off** stores `allow_text_streaming: false` and
@@ -300,15 +322,86 @@ Chat is outside the AI budget (`budget`), both `budget.daily_usd` and
 toward either. `chat_daily_cap_usd` is the only spending bound for chat; there is no
 monthly chat bound.
 
-**One-time migration.** A stored `chat_agent` block without `chat_limits_version` is
-migrated once when it is read. An explicit `limits_mode` is kept. Otherwise the block
-becomes `bounded` if any of the seven per-question knobs differs from its shipped
-default (5, 10, 60,000, 12,000, 4,000, 6,000, and 90 seconds) and `unlimited` if not.
-In a stored block, the old defaults of three knobs move to the new ones:
-`model_step_timeout_s` 30 → 300 (only when the block becomes `unlimited`),
-`max_concurrent_turns_per_user` 2 → 4, and `max_concurrent_turns_global` 8 → 16. Values
-an administrator chose are kept. The marker is then stamped, so a later choice is never
-re-decided.
+**Staged migration.** A stored `chat_agent` block is migrated when it is read, once per
+step above its `chat_limits_version` (a block without the marker is version 0), and then
+stamped with the current version, so a later choice is never re-decided.
+
+- **Version 1** (Round 12). An explicit `limits_mode` is kept. Otherwise the block becomes
+  `bounded` if any of the seven per-question knobs differs from its shipped default (5,
+  10, 60,000, 12,000, 4,000, 6,000, and 90 seconds) and `unlimited` if not. In a stored
+  block, the old defaults of three knobs move to the new ones: `model_step_timeout_s` 30
+  to 300 (only when the block becomes `unlimited`), `max_concurrent_turns_per_user` 2 to
+  4, and `max_concurrent_turns_global` 8 to 16.
+- **Version 2** (Round 14). Every "Timeouts and capacity" default is tripled, in both
+  modes: `max_parallel` 4 to 12, `tool_timeout_s` 15 to 45, `model_step_timeout_s` 300 to
+  900, `max_concurrent_turns_per_user` 4 to 12 and `max_concurrent_turns_global` 16 to
+  48. A stored value moves only when it equals the Round 12 default. A Bounded question
+  is still cut at its remaining time, so a longer stall timeout never lengthens it.
+
+Each step moves only a value that equals the default of the release the block was stored
+by; a value an administrator chose is kept through every later step, even when it
+happens to equal a later default (a block from before Round 12 that chose 4 questions per
+user keeps 4). Only blocks stored as a whole are migrated. One limitation: an
+administrator who deliberately chose exactly the default of the release that stored the
+block cannot be told apart from it, and that value moves once. The client's five-minute
+wait for a free chat slot is unchanged, and the report summary wait stays capped at 280
+seconds, below the Web UI proxy's 300-second limit.
+
+### Runbooks
+
+`runbooks` holds the switches of the one Runbooks feature, edited under **Settings →
+Integrations → Runbooks**. None of them changes a case decision.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `enabled` | `true` | The feature: the library, runs on cases and investigator guidance. Off stops every run write (`409 runbook_state`) |
+| `auto_attach` | `true` | Attach the matching Published runbook to each case that needs a person |
+| `fallback` | `true` | Attach the Generic incident runbook when nothing else matches |
+| `investigator_guidance` | `true` | Give the matching Published runbook to the investigator as trusted, advisory guidance |
+| `rag_corpus` | `true` | Index Published runbooks for the knowledge search |
+| `ai_suggest` | `true` | Offer **Suggest a runbook** on a case (one metered model call per click) |
+| `ai_step_drafts` | `true` | Offer **Draft note** on a step (one metered model call per click) |
+| `require_distinct_approver` | `false` | Nobody who wrote or edited a version may publish it |
+| `step_approvals` | `false` | Honour the approver role an Action or Record step names |
+| `review_every_days_default` | 180 | Review cadence of a new operator runbook, 30 to 730 days |
+| `runbooks_config_version` | 1 | Internal marker of the one-time mapping below |
+
+Stored values are repaired, never rejected: a malformed switch takes its default and an
+out-of-range cadence is clamped.
+
+**Keys accepted from earlier versions.** A stored configuration from before Round 14 is
+mapped once, by meaning, when it is read, and then stamped:
+
+| Earlier key | Becomes |
+|---|---|
+| `playbooks.enabled: false` (procedures off in the investigator) | `runbooks.investigator_guidance: false` |
+| `runbooks.enabled: false` (the earlier meaning: stop reference runbook retrieval) | `runbooks.rag_corpus: false` |
+| `rag.use_runbooks: false` | `runbooks.rag_corpus: false` |
+
+An earlier `true` maps to nothing, because the new defaults are on, and the new
+`runbooks.enabled` is never derived from an earlier key. After the mapping,
+`playbooks.enabled` and `rag.use_runbooks` stay readable as mirrors of
+`investigator_guidance` and `rag_corpus`: a settings write that changes only a mirror is
+carried onto its successor, and a write that names the successor too keeps the
+successor's value. A case-automation rule keeps the stored action value `run_playbook`;
+it now attaches a runbook (see [Detection and rules](../automation/rules.md)).
+
+### Personal preferences and dashboards
+
+Each user's preferences (`PUT /api/prefs/user`) carry two Round 14 lists in `misc`,
+normalised when read (a bad value is removed, never rejected):
+
+| Key | Holds |
+|---|---|
+| `misc.dashboards_hidden` | Built-in dashboard ids the user hid from the Dashboards library (`builtin:<name>`, at most 8; the Cyber Defence Center cannot be hidden) |
+| `misc.dismissed_intros` | Ids of the introductory notes the user dismissed (lower-case ids, at most 50) |
+
+A change to either list is recorded in the audit log before it is saved. A personal
+dashboard (`DashboardLayout`) gains two optional fields: `default_window`, the window
+its time-range picker starts on (`now-24h`, `now-7d`, `now-30d` or `now-90d`; absent means
+the last 24 hours), and `derived_from`, the built-in board it was copied from. A request
+with another value is refused (`422`); a stored value a later release added reads as
+absent. The built-in boards are defined by the Console and are not stored.
 
 ### Session policy and Remember me
 
@@ -318,11 +411,11 @@ the sign-in page:
 
 | Key | Default | Range | Meaning |
 |---|---|---|---|
-| `remember_me.enabled` | `true` | — | Offer Remember me on the sign-in page; turning it off ends existing remembered sessions where an ordinary sign-in would (at the standard token lifetime, `AUTH_TOKEN_HOURS`) |
+| `remember_me.enabled` | `true` | `true`, `false` | Offer Remember me on the sign-in page; turning it off ends existing remembered sessions where an ordinary sign-in would (at the standard token lifetime, `AUTH_TOKEN_HOURS`) |
 | `remember_me.duration_seconds` | 86,400 | 3,600–86,400 | How long a remembered device stays signed in; the console offers 6, 12, and 24 hours. Never longer than `absolute_lifetime` |
 | `remember_me.idle_seconds` | `null` | 300–86,400 | Optional separate inactivity limit for remembered sessions; `null` uses `idle_timeout` |
 | `remember_me.excluded_roles` | `[]` | ≤ 50 roles | Roles that are never remembered |
-| `remember_me.allow_insecure_http` | `false` | — | Allow a persistent cookie on plain HTTP when secure cookies are off (not recommended) |
+| `remember_me.allow_insecure_http` | `false` | `true`, `false` | Allow a persistent cookie on plain HTTP when secure cookies are off (not recommended) |
 
 Stored values are repaired, not rejected, but a settings write with an out-of-range or
 malformed `remember_me` value is refused with HTTP 422, so an administrator never gets a
@@ -351,6 +444,11 @@ providers/models remain standard before the call. `batch.fallback_to_standard`
 defaults to `true`, so an OpenAI 429 or Flex/service-tier-specific 400 retries at
 standard service and is metered as standard. Chat, standup, embeddings, and
 model-test calls are not automatically moved to Flex.
+
+These switches are edited under **Settings → General → Discounted inference** and save
+with the other preferences, so changing them needs `settings:manage`. (Before Round 14
+they were on the Jobs page and saved through `PUT /api/batch/config`, which needs
+`models:manage`; that route still exists.)
 
 The existing `batch.enabled` switch remains the separate, true asynchronous provider
 Batch path for the aggregated event-feed funnel. Ordinary case investigations require

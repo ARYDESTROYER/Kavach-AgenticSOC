@@ -60,7 +60,7 @@ class HybridAnalysisProvider(EnrichmentProvider):
             example=(
                 "A hash with a prior sandbox detonation verdict 'malicious, family "
                 "RedLine Stealer, threat score 100' hands the analyst a behavioural "
-                "conviction — stronger evidence than static AV ratios alone."
+                "conviction: stronger evidence than static AV ratios alone."
             ),
         )
 

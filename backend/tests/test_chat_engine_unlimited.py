@@ -1468,10 +1468,11 @@ async def test_the_chat_cap_reached_mid_answer_says_the_answer_stops_here() -> N
 
 
 async def test_bounded_mode_never_lets_one_call_outlast_the_question(monkeypatch: pytest.MonkeyPatch) -> None:
-    """``model_step_timeout_s`` defaults to 300 s (the unlimited stall timeout); in
-    bounded mode one call still ends with the question's ``turn_timeout_s``."""
+    """``model_step_timeout_s`` defaults to 900 s (the unlimited stall timeout, tripled
+    in Round 14); in bounded mode one call still ends with the question's
+    ``turn_timeout_s``."""
     monkeypatch.setattr(chat_module, "_BOUNDED_STEP_FLOOR_S", 0.1)
-    assert ChatAgentConfig(limits_mode="bounded").model_step_timeout_s == 300
+    assert ChatAgentConfig(limits_mode="bounded").model_step_timeout_s == 900
     gateway = FakeGateway([tool_call("log_stats", group_by="a")])
     original = gateway.complete
     calls = {"n": 0}
@@ -1484,7 +1485,7 @@ async def test_bounded_mode_never_lets_one_call_outlast_the_question(monkeypatch
 
     gateway.complete = slow_after_first  # type: ignore[method-assign]
     prefs = uprefs(limits_mode="bounded", turn_timeout_s=0.5)
-    assert prefs.chat_agent.model_step_timeout_s == 300
+    assert prefs.chat_agent.model_step_timeout_s == 900
     started = asyncio.get_running_loop().time()
     _, resp, _ = await run(make_engine(gateway), "q", prefs, make_ctx(prefs))
     assert asyncio.get_running_loop().time() - started < 2.0

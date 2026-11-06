@@ -1,34 +1,41 @@
 /**
  * Auth + RBAC React context for the SOC console (Wave 1).
  *
- * Loads GET /api/auth/me (session + role) and GET /api/roles (the permission
- * matrix) once on mount, and exposes a `hasPermission(resource, action)` helper the
- * whole app uses to gate nav, routes and actions.
+ * Loads GET /api/auth/me (session + role) and GET /api/account/permissions (the
+ * signed-in person's effective grants) once on mount and on every `refresh()`, and
+ * exposes a `hasPermission(resource, action)` helper the whole app uses to gate nav,
+ * routes and actions.
+ *
+ * The grants come from the server's own resolver, the one every API gate uses: the
+ * base role together with every custom role assigned to the person, each with its
+ * denies applied (Round 14 FX7e). The Console never works out access from the role
+ * matrix itself, so a custom role that grants `runbooks:publish` shows its controls
+ * and one whose deny removes `runbooks:run` hides them, exactly as the API decides.
  *
  * Back-compat is preserved end-to-end:
  *   - auth DISABLED                → `authEnabled=false`, hasPermission() === true.
- *   - auth ON but RBAC disabled    → backend reports the role as `super_admin`, so
- *                                    the matrix grants everything (and we also short-
- *                                    circuit `rbacEnabled=false` → allow).
- *   - auth ON + RBAC ON            → hasPermission consults the matrix for the role.
+ *   - auth ON but RBAC disabled    → the server reports `rbac_enabled=false` and
+ *                                    every action, so we short-circuit to allow.
+ *   - auth ON + RBAC ON            → hasPermission consults the effective grants.
  *
  * The provider also owns the login/logout transitions so App.tsx can stay thin.
  */
 import * as React from 'react';
 import { api, setUnauthorizedHandler } from '@/lib/api';
-import type { AuthMe, RolesResponse, SessionEndReason, UserRole } from '@/lib/types';
+import { notifySignedOut } from '@/lib/session-events';
+import type { AccountPermissions, AuthMe, SessionEndReason, UserRole } from '@/lib/types';
 
 // Remember-me device helpers live in a lazy chunk (this provider is first-paint code).
 const loadRememberDevice = () => import('@/soc/components/auth/rememberMe');
 
 /**
  * Why the previous session ended, as reported by the registry-aware
- * GET /api/auth/me (Round 12). The sign-in page turns it into a calm notice.
+ * GET /api/auth/me (Round 12). The sign-in page turns it into a calm notice that
+ * never states how long the session lasted (Round 14 SPEC §4.1), so the server's
+ * `lifetime_seconds` is not carried here.
  */
 export interface SessionEnded {
   reason: SessionEndReason;
-  /** The limit that ended it, in seconds, when known. */
-  lifetimeSeconds?: number;
   /** Whether the ended session had been remembered. */
   remembered?: boolean;
 }
@@ -46,9 +53,7 @@ export interface AuthContextValue {
   role: UserRole | string | null;
   /** Whether the current user must change their password before continuing. */
   mustChangePassword: boolean;
-  /** The role → resource → [actions] matrix from GET /api/roles (when available). */
-  matrix: Record<string, Record<string, string[]>>;
-  /** Whether the initial auth/roles load is still in flight. */
+  /** Whether the initial sign-in and grants load is still in flight. */
   loading: boolean;
   /**
    * True when the LAST GET /api/auth/me call FAILED (network / 5xx), as opposed to a
@@ -63,36 +68,39 @@ export interface AuthContextValue {
    * sign-out. Optional so older test doubles of this context stay valid.
    */
   sessionEnded?: SessionEnded | null;
-  /** Re-fetch /api/auth/me (+ /api/roles); call after login / password change. */
+  /** Re-fetch /api/auth/me (+ the effective grants); call after login / password change. */
   refresh: () => Promise<AuthMe | null>;
   /** Log out (best-effort) and reset the session to unauthenticated. */
   logout: () => Promise<void>;
   /**
    * Whether the current principal may perform `action` on `resource`.
    * Returns true when auth is off OR rbac is genuinely off (back-compat). When rbac
-   * is on it consults the loaded matrix for the user's role (deny-by-default if
-   * unknown). If GET /api/roles FAILED to load for an authenticated principal it is
-   * deny-by-default (super_admin excepted) — never allow-all — so a transient fetch
-   * failure can't surface admin controls to a low-privilege user.
+   * is on it consults the effective grants from GET /api/account/permissions
+   * (deny-by-default for anything not listed). If that read FAILED for an
+   * authenticated principal it is deny-by-default (super_admin excepted), never
+   * allow-all, so a transient fetch failure can't surface admin controls to a
+   * low-privilege user.
    */
   hasPermission: (resource: string, action: string) => boolean;
 }
 
 const AuthContext = React.createContext<AuthContextValue | null>(null);
 
-const EMPTY_MATRIX: Record<string, Record<string, string[]>> = {};
+/** resource → the actions held on it (GET /api/account/permissions). */
+type Grants = Record<string, string[]>;
+const NO_GRANTS: Grants = {};
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [me, setMe] = React.useState<AuthMe | null>(null);
-  const [matrix, setMatrix] = React.useState<Record<string, Record<string, string[]>>>(EMPTY_MATRIX);
+  const [grants, setGrants] = React.useState<Grants>(NO_GRANTS);
   const [rbacEnabled, setRbacEnabled] = React.useState(false);
   const [loading, setLoading] = React.useState(true);
   // GET /api/auth/me could not be reached (network / 5xx) — NOT the clean auth-off 200.
   const [loadError, setLoadError] = React.useState(false);
-  // GET /api/roles failed for an authenticated principal — force deny-by-default in
-  // hasPermission (rather than the allow-all that `rbacEnabled=false` means when RBAC
-  // is genuinely off).
-  const [rolesError, setRolesError] = React.useState(false);
+  // The effective grants failed to load for an authenticated principal: force
+  // deny-by-default in hasPermission (rather than the allow-all that
+  // `rbacEnabled=false` means when RBAC is genuinely off).
+  const [grantsError, setGrantsError] = React.useState(false);
 
   const refresh = React.useCallback(async (): Promise<AuthMe | null> => {
     let next: AuthMe | null = null;
@@ -100,36 +108,34 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     try {
       next = await api.auth.me();
     } catch {
-      next = null;
       meFailed = true;
     }
+    // Only read the grants for an authenticated principal (the route requires a
+    // session); when auth is off, allow-all makes them unnecessary. They are read
+    // BEFORE anything is published: a session shown without its grants would read
+    // the signed-out empty map as "RBAC off" and allow every action until they land.
+    let access: AccountPermissions | undefined;
+    let grantsFailed = false;
+    if (next?.authenticated && next.auth_enabled) {
+      try {
+        access = await api.account.permissions();
+      } catch {
+        grantsFailed = true;
+      }
+    }
+    // One render publishes the session and its grants together (React batches these).
     // The server reports why a session ended ONCE (it clears the cookie at the same
     // time), and other 401s can trigger more /auth/me calls right after. Keep that
     // reason until someone signs in again or signs out on purpose.
     setMe((prev) =>
       next && !next.authenticated && !next.reason && prev?.reason && !prev.authenticated
-        ? { ...next, reason: prev.reason, lifetime_seconds: prev.lifetime_seconds, remembered: prev.remembered }
+        ? { ...next, reason: prev.reason, remembered: prev.remembered }
         : next,
     );
     setLoadError(meFailed);
-    // Only fetch the matrix when there is an authenticated principal (the /roles
-    // route requires a session). When auth is off, allow-all makes it unnecessary.
-    if (next && next.authenticated && next.auth_enabled) {
-      try {
-        const roles: RolesResponse = await api.roles.get();
-        setMatrix(roles.matrix ?? EMPTY_MATRIX);
-        setRbacEnabled(Boolean(roles.rbac_enabled));
-        setRolesError(false);
-      } catch {
-        setMatrix(EMPTY_MATRIX);
-        setRbacEnabled(false);
-        setRolesError(true);
-      }
-    } else {
-      setMatrix(EMPTY_MATRIX);
-      setRbacEnabled(false);
-      setRolesError(false);
-    }
+    setGrants(access?.permissions ?? NO_GRANTS);
+    setRbacEnabled(Boolean(access?.rbac_enabled));
+    setGrantsError(grantsFailed);
     return next;
   }, []);
 
@@ -160,27 +166,35 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       /* drop to unauthenticated regardless */
     }
     // A deliberate sign-out is not an expiry: the sign-in page must not later say
-    // "you were signed out after 24 hours".
+    // the session ended on its own.
     void loadRememberDevice().then((m) => m.clearRememberedSessionEnd(), () => undefined);
     setMe((prev) => (prev ? { auth_enabled: prev.auth_enabled, authenticated: false, user: null } : prev));
-    setMatrix(EMPTY_MATRIX);
+    setGrants(NO_GRANTS);
     setRbacEnabled(false);
-    setRolesError(false);
+    setGrantsError(false);
   }, []);
 
   const authEnabled = Boolean(me?.auth_enabled);
   const isAuthenticated = !authEnabled || Boolean(me?.authenticated);
   const endedReason = authEnabled && !me?.authenticated ? me?.reason : undefined;
   const sessionEnded = React.useMemo<SessionEnded | null>(
-    () =>
-      endedReason
-        ? { reason: endedReason, lifetimeSeconds: me?.lifetime_seconds, remembered: me?.remembered }
-        : null,
-    [endedReason, me?.lifetime_seconds, me?.remembered],
+    () => (endedReason ? { reason: endedReason, remembered: me?.remembered } : null),
+    [endedReason, me?.remembered],
   );
   const role = me?.user?.role ?? null;
   const username = me?.user?.username ?? null;
   const mustChangePassword = Boolean(me?.user?.must_change_password);
+
+  // Who is signed in to this tab (null: nobody, or auth is off). When that person leaves
+  // (a sign-out, an ended session, another person in this browser) the lazy modules that
+  // remember things for them (the Analytics range) forget it (`lib/session-events.ts`).
+  const signedInAs = authEnabled && me?.authenticated ? (username ?? '') : null;
+  const signedInAsRef = React.useRef<string | null>(null);
+  React.useEffect(() => {
+    const previous = signedInAsRef.current;
+    signedInAsRef.current = signedInAs;
+    if (previous !== null && previous !== signedInAs) notifySignedOut();
+  }, [signedInAs]);
 
   const hasPermission = React.useCallback(
     (resource: string, action: string): boolean => {
@@ -188,17 +202,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (!authEnabled) return true;
       // super_admin always has every grant (it also holds everything backend-side).
       if (role === 'super_admin') return true;
-      // /roles failed to load → deny-by-default (never allow-all on an error), so a
-      // transient fetch failure can't surface admin controls to a lesser role.
-      if (rolesError) return false;
-      // rbac GENUINELY off (a clean /roles response) → allow-all (back-compat).
+      // The grants failed to load → deny-by-default (never allow-all on an error), so
+      // a transient fetch failure can't surface admin controls to a lesser role.
+      if (grantsError) return false;
+      // rbac GENUINELY off (a clean response) → allow-all (back-compat).
       if (!rbacEnabled) return true;
-      if (!role) return false;
-      const actions = matrix[role]?.[resource];
-      if (!actions) return false;
-      return actions.includes('*') || actions.includes(action);
+      // The server's own answer: concrete actions only, so no wildcard rule here.
+      return Boolean(grants[resource]?.includes(action));
     },
-    [authEnabled, rbacEnabled, rolesError, role, matrix],
+    [authEnabled, rbacEnabled, grantsError, role, grants],
   );
 
   const value = React.useMemo<AuthContextValue>(
@@ -209,7 +221,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       username,
       role,
       mustChangePassword,
-      matrix,
       loading,
       loadError,
       sessionEnded,
@@ -224,7 +235,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       username,
       role,
       mustChangePassword,
-      matrix,
       loading,
       loadError,
       sessionEnded,

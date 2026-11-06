@@ -5,7 +5,7 @@ description: Coordinate analysts with case ownership, discussion, activity, and 
 
 # Case collaboration
 
-The **Collab** tab keeps human coordination beside the evidence and decision it
+The **Collaboration** tab keeps human coordination beside the evidence and decision it
 concerns. Collaboration data is case state; it does not alter the deterministic
 close policy.
 
@@ -31,7 +31,10 @@ data even when pasted into a discussion.
 
 ## Tasks
 
-Use tasks for work that needs an owner or a visible completion state:
+Case tasks live on the **Runbook** tab, under **Other tasks**, beside the case's runbook
+steps; **Open the Runbook tab** in Collaboration takes you there. Each task shows who
+added it and when, and tasks never count toward runbook progress. Use tasks for work
+that needs an owner or a visible completion state and is not a runbook step:
 
 1. Add a concise task with its assignee and context.
 2. Update its state as work progresses.
@@ -42,8 +45,13 @@ Creating, editing, and logging tasks requires `cases:write`.
 
 ## Activity and audit
 
-The case activity stream brings collaboration events into one chronological view.
-Lifecycle changes also remain in the case's append-only status history. The platform
+The case activity stream brings collaboration events into one chronological view,
+newest first. Each row reads as one plain sentence, with the system's internal names
+shown as names ("Case manager") rather than codes; the text exactly as the audit log
+recorded it is one click away under **Details**. **Show activity by** filters the stream
+to **All**, **Human**, **AI** or **System**. While an investigation is running, its
+steps appear above the stream as they happen; they are a live narration, not part of the
+record. Lifecycle changes also remain in the case's append-only status history. The platform
 audit log is the authority for privileged or state-changing actions; the discussion
 thread is not a substitute for it.
 

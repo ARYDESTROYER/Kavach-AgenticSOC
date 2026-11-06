@@ -65,7 +65,7 @@ class VirusTotalProvider(EnrichmentProvider):
                 "Set TLSOC_VIRUSTOTAL_API_KEY in .env (compose maps it to "
                 "VIRUSTOTAL_API_KEY), or paste it in this card (in-memory until "
                 "restart).",
-                "Enabled by default — covers IPs, domains, URLs and file hashes with "
+                "Enabled by default. It covers IPs, domains, URLs and file hashes with "
                 "one key.",
             ],
             example=(

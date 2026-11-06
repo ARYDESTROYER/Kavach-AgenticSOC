@@ -10,9 +10,10 @@
  *   - #9: every text is escaped (model `<script>` stays text), XML-invalid control
  *     characters are dropped (one would make Word/Excel reject the file), the only
  *     external link is a constructed ATT&CK page;
- *   - Excel: formula-led strings take the quote-prefix style; any that could act as a
- *     formula elsewhere also keep a literal `'` (a plain "+10 vs previous window" shows
- *     none); a literal `_xHHHH_` reads back literally (never a decoded `=` or NUL);
+ *   - Excel: formula-led strings (the shared `lib/csv` lead rule) take the quote-prefix
+ *     style; any that could act as a formula elsewhere (a sign before a name or a cell
+ *     reference among them) also keep a literal `'` (a plain "+10 vs previous window"
+ *     shows none); a literal `_xHHHH_` reads back literally (never a decoded `=` or NUL);
  *     numbers stay numeric, sheet names are sanitised and unique; the "Report" sheet is
  *     defanged by default (a human document, like Word) while the table sheets stay
  *     exact (data, like CSV);
@@ -20,6 +21,7 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { isFormulaLed } from '@/lib/csv';
 import type { Report } from '@/lib/types';
 
 import { buildReportDoc, sourceTurnsFromConversation } from '../model';
@@ -76,6 +78,8 @@ function hostileReport(): Report {
       ['<script>alert(1)</script> & "q"', 5, 5],
       ['bell\u0001 nul\u0000 vt\u000b ok', 6, 6],
       ['203.0.113.10 via http://evil.example/x', 7, 7],
+      ['＝HYPERLINK("http://evil.example","full-width")', 8, 8],
+      ['＠cmd', 9, 9],
     ],
   };
   return {
@@ -233,8 +237,9 @@ describe('Excel export', () => {
   it('defuses formula leads in every string cell and keeps numbers numeric', () => {
     // Every lead takes the quote-prefix style; any that could act as a formula outside
     // Excel's own cell keeps a literal apostrophe too.
-    for (const lead of ['=', '@', '\t', '\r']) expect(sheetString(`${lead}x`)).toEqual({ text: `'${lead}x`, quoted: true });
-    for (const v of ['+SUM(1,2)', '-2+3', '+cmd|"/c calc"!A1', '-HYPERLINK("http://e")', ' +x("y")'])
+    for (const lead of ['=', '@', '\t', '\r', '\n', '＝', '＋', '－', '＠'])
+      expect(sheetString(`${lead}x`)).toEqual({ text: `'${lead}x`, quoted: true });
+    for (const v of ['+SUM(1,2)', '-2+3', '+cmd|"/c calc"!A1', '-HYPERLINK("http://e")', ' +x("y")', '+A1', '-$B$2', '+1:1'])
       expect(sheetString(v)).toEqual({ text: `'${v}`, quoted: true });
     // A plain sign and words cannot call, link or reference: no visible apostrophe.
     for (const v of ['+10 vs previous window', '-3%', '+1,960 vs prev 24h', '+$1.20 today', '-'])
@@ -253,15 +258,17 @@ describe('Excel export', () => {
     // that could act as a formula elsewhere starts with its lead.
     for (const c of strCells) {
       const t = c.textContent ?? '';
-      if (/^(?:[=+\-@\t\r]| +[=+\-@])/.test(t)) {
+      if (isFormulaLed(t)) {
         expect(Number(c.getAttribute('s')), t).toBeGreaterThanOrEqual(QUOTED_STYLE_BASE);
-        expect(t, t).toMatch(/^ *[+-][^=+\-@()|!"'&^*/<>;[\]{}\\~`\t\r]*$/);
+        expect(t, t).toMatch(/^ *[+-][^=+\-@()|!"'&^*/<>;[\]{}\\~`\t\r\n\uFF1D\uFF0B\uFF0D\uFF20]*$/);
       }
     }
     expect(strings).toContain('\'=HYPERLINK("http://evil.example","click")');
     expect(strings).toContain("'+SUM(1,2)");
     expect(strings).toContain("'@cmd");
     expect(strings).toContain("'-2+3");
+    expect(strings).toContain('\'＝HYPERLINK("http://evil.example","full-width")');
+    expect(strings).toContain("'＠cmd");
     // No formula element anywhere: nothing is ever written as a formula.
     for (const [, x] of all) expect(x.getElementsByTagName('f')).toHaveLength(0);
     // Markup stays text; control characters are dropped.

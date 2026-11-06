@@ -1,216 +1,551 @@
 /**
- * Dashboards — the custom-dashboards page (Round 5 / G7). The operator's personal,
- * build-your-own landing surface. It ships ON by default with a read-only, per-role
- * DEFAULT layout; an explicit Edit mode (in `DashboardBuilder`) lets a user customize
- * it (clone-to-customize on first save).
+ * Dashboards: the library and its boards (Round 14, SPEC §2.2 and §4.4, operator choice C2).
  *
- * RESOLUTION (org ← user cascade, §4.3):
- *   effective dashboard = the user's SAVED copy (from `api.dashboards.list`) if present,
- *   else a code-defined per-role DEFAULT built from the widget registry
- *   (`buildDefaultWidgets`). The default is READ-ONLY in place — the first Save persists
- *   the customized copy into the user's bucket (a real dashboard id), so a default is
- *   never edited in place.
+ * The landing route still opens the Cyber Defence Center; the left navigation's "Overview"
+ * row opens this page, `#/dashboards`, the library of boards:
  *
- * BUNDLE: the drag/resize grid (`react-grid-layout`) is loaded ONLY when the user
- * enters Edit mode (the WidgetGrid lazy boundary). This page + view mode + first paint
- * ship ZERO grid JS (`bundle-first-paint` guardrail).
+ *   `#/dashboards`                         the library ("Built-in" and "Yours")
+ *   `#/dashboards?board=builtin:<id>`      a built-in widget board
+ *   `#/dashboards?board=<personal id>`     a personal board (`overview` is "My dashboard")
+ *   `#/dashboards?board=u:<sha8>`          a personal board stored under an id a link cannot
+ *                                          carry (resolved against the loaded list)
+ *   `#/dashboards?board=new`               the builder on an unsaved draft
  *
- * NON-NEGOTIABLES: a dashboard is ADVISORY presentation only (#3 — never feeds
- * `decide()`); dashboard names + widget titles are UNTRUSTED and render as plain text
- * (#9); the read-only default is the calm default (#10). Layouts persist per-user via
- * the `DashboardStore` (KV, zero-migration).
+ * (`builtin:cyber-defence-center` is the landing page itself; the router sends it to
+ * `#/overview`.) A `board` value that names no board the viewer can open (unknown, hidden
+ * by role, deleted) shows the library with a toast, and the address is replaced with
+ * `#/dashboards`. Opening a board is a history entry, so Back returns to the library.
+ *
+ * This host owns the viewer's personal board list (`GET /api/dashboards`, the role default
+ * "My dashboard" offered until its first Save), the built-ins the viewer hid
+ * (`UserPrefs.misc.dashboards_hidden`, written through `PUT /api/prefs/user`, which the
+ * server audits before it shows), and the navigation after a board is created, renamed,
+ * reset, deleted or hidden. An address that depends on the list (a saved draft's new id,
+ * the library after a delete) is replaced only once the list holds the change, so the new
+ * address never resolves against the old list. The board page itself is lazy
+ * (`BoardView`), and react-grid-layout loads only in a board's Edit mode.
+ *
+ * Keyboard focus: when an in-page move removes the control that was pressed (a card, "All
+ * dashboards", a saved draft, a delete or a hide), a board hands focus to the main
+ * landmark and the library to the card of the board just left (else the main landmark),
+ * as the shell does after a navigation. The first view (a fresh load, a link from another
+ * page) moves nothing.
+ *
+ * Gate: `metrics:view` (the same grant every dashboards route requires); without it the
+ * page says so and the navigation sends the viewer to the Cyber Defence Center instead.
+ *
+ * NON-NEGOTIABLES: boards are presentation only and never feed `decide()` (#3); nothing here
+ * calls a model (#6); names are untrusted and render as plain text (#9).
  */
 import * as React from 'react';
-import { LayoutDashboard, Plus } from 'lucide-react';
+import { Plus } from 'lucide-react';
 import { toast } from 'sonner';
 
 import { api } from '@/lib/api';
-import { LoadingState } from '@/design-system';
 import { errorMessage } from '@/lib/errorMessage';
 import type { DashboardLayout, DashboardWidget } from '@/lib/types';
-
+import type { BuiltinBoardId } from '@/lib/types-dashboards';
+import { LoadingState } from '@/design-system';
 import { Button } from '@/ui/button';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/ui/select';
 
 import { PageContainer } from '@/soc/components/PageContainer';
 import { PageHeader } from '@/soc/components/PageHeader';
 import { LoadError } from '@/soc/components/LoadError';
-import { Can } from '@/soc/components/Can';
+import { Unauthorized } from '@/soc/components/Can';
 import { useAuth } from '@/soc/auth';
-import { useAsync } from '@/soc/hooks/useAsync';
+import { useOptionalPrefs } from '@/soc/prefs';
+import { useRouteLinkClick } from '@/soc/route-link';
+import { pageHash, useNavigateOptional, useRoute } from '@/soc/router';
 
-import { DashboardBuilder } from '@/soc/dashboard/DashboardBuilder';
-import { buildDefaultWidgets, reconcileWidgets } from '@/soc/dashboard/registry';
+import type { BoardTarget } from '@/soc/dashboard/BoardView';
+import { DashboardsLibrary, NEW_BOARD_HREF, builtinVisible, type PersonalBoardEntry } from '@/soc/dashboard/Library';
+import {
+  BOARD_LIMIT_TEXT,
+  MAX_PERSONAL_BOARDS,
+  MY_DASHBOARD_ID,
+  MY_DASHBOARD_NAME,
+  NEW_BOARD_ID,
+  boardRouteId,
+  builtinBoard,
+  hiddenBuiltinIds,
+  type BuiltinBoard,
+} from '@/soc/dashboard/builtins';
+import { buildDefaultWidgets, type PermissionCheck } from '@/soc/dashboard/registry';
 
-/** The id of the primary, per-role default dashboard (never persisted until customized). */
-const DEFAULT_DASHBOARD_ID = 'overview';
+const BoardView = React.lazy(() => import('@/soc/dashboard/BoardView'));
 
-/** Build the code-defined per-role default dashboard (read-only until first Save). */
-function buildRoleDefault(
-  role: string | null | undefined,
-  can: (r: string, a: string) => boolean,
-): DashboardLayout {
-  const widgets = buildDefaultWidgets(role, { can }) as DashboardWidget[];
+/** The library's help tip (C8: the screenshot's description line moved here, E1). */
+export const LIBRARY_HELP =
+  'Built-in boards for each role, and the ones you made. Built-in boards are read-only; duplicate one to make it your own.';
+
+// --------------------------------------------------------------------------- //
+// Route helpers
+// --------------------------------------------------------------------------- //
+
+/**
+ * Replace the address without a history entry and tell the router, so its route follows
+ * (an unknown board becomes the library; a saved new board becomes its own id). The
+ * router reads a hash change it did not write as a traversal of the same page.
+ */
+function replaceRoute(hash: string): void {
+  try {
+    const oldURL = window.location.href;
+    window.history.replaceState(window.history.state, '', hash);
+    window.dispatchEvent(new HashChangeEvent('hashchange', { oldURL, newURL: window.location.href }));
+  } catch {
+    /* a sandboxed frame may refuse; the page still shows the right content */
+  }
+}
+
+/** True when keyboard focus fell to the page (its control went with the view it lived in). */
+function focusDropped(): boolean {
+  const active = typeof document === 'undefined' ? null : document.activeElement;
+  return !active || active === document.body || !active.isConnected;
+}
+
+/** Hand focus to the routed main landmark, as the shell does after a navigation. */
+function focusMain(): void {
+  document.getElementById('socMain')?.focus({ preventScroll: true });
+}
+
+/** The library card of a board (by its `board` value), when it is listed. */
+function libraryCard(board: string): HTMLElement | null {
+  for (const el of document.querySelectorAll<HTMLElement>('[data-board-card]')) {
+    if (el.getAttribute('data-board-card') === board) return el;
+  }
+  return null;
+}
+
+/** The per-role default board, offered as "My dashboard" until its first Save. */
+function roleDefaultBoard(role: string | null | undefined, can: PermissionCheck): DashboardLayout {
   return {
-    id: DEFAULT_DASHBOARD_ID,
-    name: 'Overview',
+    id: MY_DASHBOARD_ID,
+    name: MY_DASHBOARD_NAME,
     schema_version: 1,
     columns: 12,
-    widgets,
+    widgets: buildDefaultWidgets(role, { can }) as DashboardWidget[],
   };
 }
 
-export function Dashboards() {
-  const { role, hasPermission } = useAuth();
+type Resolution =
+  | { status: 'library' }
+  | { status: 'loading' }
+  | { status: 'error' }
+  | { status: 'missing' }
+  | { status: 'board'; key: string; target: BoardTarget };
 
-  const {
-    data,
-    loading,
-    error,
-    reload,
-  } = useAsync<DashboardLayout[]>(async () => {
-    const res = await api.dashboards.list();
-    return res.dashboards ?? [];
+/** What a `board` value opens, against the loaded personal list. */
+export function resolveBoard(
+  param: string | undefined,
+  ctx: {
+    boards: readonly DashboardLayout[] | null;
+    failed: boolean;
+    roleDefault: DashboardLayout;
+    hidden: readonly BuiltinBoardId[];
+    can: PermissionCheck;
+  },
+): Resolution {
+  if (!param) return { status: 'library' };
+  if (param === NEW_BOARD_ID) return { status: 'board', key: NEW_BOARD_ID, target: { kind: 'new' } };
+  const builtin = builtinBoard(param);
+  if (builtin) {
+    return builtinVisible(builtin, ctx.can)
+      ? { status: 'board', key: param, target: { kind: 'builtin', board: builtin, hidden: ctx.hidden.includes(builtin.id) } }
+      : { status: 'missing' };
+  }
+  if (!ctx.boards) return ctx.failed ? { status: 'error' } : { status: 'loading' };
+  const stored = ctx.boards.find((b) => boardRouteId(b.id) === param);
+  if (stored) return { status: 'board', key: param, target: { kind: 'personal', layout: stored, persisted: true } };
+  if (param === MY_DASHBOARD_ID) {
+    return { status: 'board', key: param, target: { kind: 'personal', layout: ctx.roleDefault, persisted: false } };
+  }
+  return { status: 'missing' };
+}
+
+// --------------------------------------------------------------------------- //
+// Data
+// --------------------------------------------------------------------------- //
+
+/**
+ * The viewer's personal boards (`null` until the first answer), kept in step with edits.
+ * The list is only ever what the server returned plus the edits made on top of it: a
+ * change made while no list is held (it failed or is still loading) reads the list again
+ * instead of inventing a one-item list, and the new read supersedes any older one.
+ */
+function usePersonalBoards(enabled: boolean) {
+  const [boards, setBoards] = React.useState<DashboardLayout[] | null>(null);
+  const [error, setError] = React.useState<unknown>(null);
+  const seq = React.useRef(0);
+  // The list as last set, for the edits (kept beside the state, never written in render).
+  const listRef = React.useRef<DashboardLayout[] | null>(null);
+  const setList = React.useCallback((next: DashboardLayout[] | null) => {
+    listRef.current = next;
+    setBoards(next);
   }, []);
 
-  // Which dashboard is selected in the switcher. Starts on the default; a saved board
-  // supersedes it once one exists.
-  const [selectedId, setSelectedId] = React.useState<string>(DEFAULT_DASHBOARD_ID);
-
-  // The role default (recomputed as RBAC resolves). Memo so its identity is stable for
-  // the builder's dirty-draft seeding.
-  const roleDefault = React.useMemo(
-    () => buildRoleDefault(role, hasPermission),
-    [role, hasPermission],
-  );
-
-  const saved = React.useMemo(() => data ?? [], [data]);
-
-  // The list shown in the switcher: the user's saved boards + (if none is customized
-  // yet) the read-only default. Reconcile each board's widgets on load (drop unknown
-  // types, RBAC-filter) so a stale layout never renders a hole.
-  const options = React.useMemo<DashboardLayout[]>(() => {
-    const reconciled = saved.map((b) => ({
-      ...b,
-      widgets: reconcileWidgets(b.widgets as DashboardWidget[], { can: hasPermission }),
-    }));
-    // The default is offered when the user has not saved a board of that id.
-    const hasDefaultSaved = reconciled.some((b) => b.id === DEFAULT_DASHBOARD_ID);
-    return hasDefaultSaved ? reconciled : [roleDefault, ...reconciled];
-  }, [saved, roleDefault, hasPermission]);
-
-  // Resolve the active dashboard (selected id → default).
-  const active = React.useMemo<DashboardLayout>(() => {
-    return options.find((b) => b.id === selectedId) ?? options[0] ?? roleDefault;
-  }, [options, selectedId, roleDefault]);
-
-  // Keep the selection valid as data changes.
-  React.useEffect(() => {
-    if (!options.some((b) => b.id === selectedId) && options.length) {
-      setSelectedId(options[0].id);
-    }
-  }, [options, selectedId]);
-
-  const createBlank = React.useCallback(async () => {
+  const load = React.useCallback(async () => {
+    const n = (seq.current += 1);
+    setError(null);
     try {
-      // Auto-number so repeated "New dashboard" boards stay distinguishable in the
-      // picker (they can be renamed in edit mode; the switcher shows the name).
-      const base = 'New dashboard';
-      const taken = new Set(saved.map((b) => (b.name ?? '').trim()));
-      let name = base;
-      for (let n = 2; taken.has(name); n += 1) name = `${base} ${n}`;
-      const created = await api.dashboards.create({
-        id: '',
-        name,
-        schema_version: 1,
-        columns: 12,
-        widgets: [],
-      });
-      toast.success('Dashboard created');
-      await reload();
-      if (created?.id) setSelectedId(created.id);
+      const res = await api.dashboards.list();
+      if (n === seq.current) setList(res?.dashboards ?? []);
     } catch (err) {
-      toast.error(errorMessage(err, 'Could not create a dashboard'));
+      if (n === seq.current) setError(err ?? new Error('The dashboards could not be loaded.'));
     }
-  }, [reload, saved]);
+  }, [setList]);
 
-  const header = (
-    <PageHeader
-      variant="dense"
-      icon={LayoutDashboard}
-      title="Dashboards"
-      description="Your build-your-own operations view. Edit to add, arrange, and resize widgets."
-      data-testid="dashboards-header"
-      meta={
-        options.length > 1 ? (
-          <Select value={active.id} onValueChange={setSelectedId}>
-            <SelectTrigger className="h-8 w-56" aria-label="Select dashboard">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {options.map((b) => (
-                <SelectItem key={b.id} value={b.id}>
-                  {/* Name is UNTRUSTED → rendered as plain text (#9). */}
-                  {b.name || 'Untitled dashboard'}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        ) : undefined
+  React.useEffect(() => {
+    if (enabled) void load();
+    return () => {
+      seq.current += 1;
+    };
+  }, [enabled, load]);
+
+  const upsert = React.useCallback(
+    (layout: DashboardLayout) => {
+      const list = listRef.current;
+      if (!list) {
+        // No list to add to: the next read includes the board just stored.
+        void load();
+        return;
       }
-      actions={
-        <Can resource="metrics" action="view">
-          <Button type="button" variant="outline" size="sm" onClick={createBlank}>
-            <Plus className="h-3.5 w-3.5" aria-hidden />
-            New dashboard
-          </Button>
-        </Can>
-      }
-    />
+      setList(
+        list.some((b) => b.id === layout.id) ? list.map((b) => (b.id === layout.id ? layout : b)) : [...list, layout],
+      );
+    },
+    [load, setList],
   );
+
+  const remove = React.useCallback(
+    (id: string) => {
+      const list = listRef.current;
+      if (list) setList(list.filter((b) => b.id !== id));
+    },
+    [setList],
+  );
+
+  return { boards, error, reload: load, upsert, remove };
+}
+
+/**
+ * Whether row-level data scope applies to the viewer (`GET /api/auth/me` `object_scoped`),
+ * for the library's "N panels need permissions" note. Unknown (`undefined`) while it loads
+ * or when it cannot be read: the note then counts only the panels the role cannot read.
+ */
+function useObjectScoped(): boolean | undefined {
+  const auth = useAuth();
+  const signedIn = Boolean(auth.authEnabled && auth.isAuthenticated);
+  const [scoped, setScoped] = React.useState<boolean | undefined>(undefined);
+  React.useEffect(() => {
+    if (!signedIn) {
+      setScoped(false);
+      return undefined;
+    }
+    let alive = true;
+    Promise.resolve()
+      .then(() => api.auth.me())
+      .then(
+        (me) => {
+          if (alive) setScoped(me?.object_scoped === true);
+        },
+        () => {
+          if (alive) setScoped(undefined);
+        },
+      );
+    return () => {
+      alive = false;
+    };
+  }, [signedIn, auth.username, auth.role]);
+  return scoped;
+}
+
+const sameIds = (a: readonly string[], b: readonly string[]) =>
+  a.length === b.length && a.every((id) => b.includes(id));
+
+/**
+ * The built-ins the viewer hid, and the write that changes them. The write is
+ * `PUT /api/prefs/user` (audited before it shows); the list updates at once and goes back
+ * if the write fails.
+ */
+function useHiddenBuiltins() {
+  const prefs = useOptionalPrefs();
+  const stored = React.useMemo(
+    () => hiddenBuiltinIds((prefs?.prefs.misc as Record<string, unknown> | undefined)?.dashboards_hidden),
+    [prefs?.prefs.misc],
+  );
+  const [override, setOverride] = React.useState<BuiltinBoardId[] | null>(null);
+  const hidden = override ?? stored;
+  React.useEffect(() => {
+    if (override && sameIds(override, stored)) setOverride(null);
+  }, [override, stored]);
+
+  const refresh = prefs?.refresh;
+  const write = React.useCallback(
+    async (next: BuiltinBoardId[], previous: BuiltinBoardId[]): Promise<boolean> => {
+      setOverride(next);
+      try {
+        await api.prefs.putUser({ misc: { dashboards_hidden: next } });
+        // Bring the shared preferences up to date (the write is already stored).
+        void Promise.resolve(refresh?.()).catch(() => undefined);
+        return true;
+      } catch (err) {
+        setOverride(previous);
+        toast.error('Your dashboard list could not be updated.', {
+          description: errorMessage(err, 'Try again in a moment.'),
+        });
+        return false;
+      }
+    },
+    [refresh],
+  );
+
+  return { hidden, write };
+}
+
+// --------------------------------------------------------------------------- //
+// The page
+// --------------------------------------------------------------------------- //
+
+/**
+ * The header's "New dashboard" (a link to the draft, styled as an outline button). At the
+ * board limit it is a disabled button: a draft there could never be saved, and the Yours
+ * tile says why.
+ */
+function NewDashboardLink({ atLimit }: { atLimit: boolean }) {
+  const onClick = useRouteLinkClick(NEW_BOARD_HREF);
+  if (atLimit) {
+    return (
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        className="max-sm:h-9"
+        disabled
+        aria-label="New dashboard"
+        title={BOARD_LIMIT_TEXT}
+        data-testid="dashboards-new"
+      >
+        <Plus className="size-3.5" aria-hidden />
+        <span className="sm:hidden">New</span>
+        <span className="max-sm:hidden">New dashboard</span>
+      </Button>
+    );
+  }
+  return (
+    <Button asChild variant="outline" size="sm" className="max-sm:h-9">
+      <a href={NEW_BOARD_HREF} onClick={onClick} aria-label="New dashboard" data-testid="dashboards-new">
+        <Plus className="size-3.5" aria-hidden />
+        <span className="sm:hidden">New</span>
+        <span className="max-sm:hidden">New dashboard</span>
+      </a>
+    </Button>
+  );
+}
+
+function BoardLoading() {
+  return <LoadingState label="Loading dashboard" layout="page" shape="page" />;
+}
+
+export function Dashboards() {
+  const { role, hasPermission, loading: authLoading } = useAuth();
+  // Nothing is read until the viewer's grants are known (no 403 to explain).
+  const allowed = !authLoading && hasPermission('metrics', 'view');
+  const { opts } = useRoute();
+  const navigate = useNavigateOptional();
+  const boardParam = typeof opts?.board === 'string' && opts.board ? opts.board : undefined;
+
+  const { boards, error, reload, upsert, remove } = usePersonalBoards(allowed);
+  const objectScoped = useObjectScoped();
+  const { hidden, write } = useHiddenBuiltins();
+  const [editIntent, setEditIntent] = React.useState<string | null>(null);
+  // An address to take once the list holds the change that names it (see the effect).
+  const [pendingHash, setPendingHash] = React.useState<string | null>(null);
+  const atLimit = (boards?.length ?? 0) >= MAX_PERSONAL_BOARDS;
+
+  const roleDefault = React.useMemo(() => roleDefaultBoard(role, hasPermission), [role, hasPermission]);
+
+  // Yours: My dashboard first (saved or the role default), then the rest as stored.
+  const personal = React.useMemo<PersonalBoardEntry[] | null>(() => {
+    if (!boards) return null;
+    const mine = boards.find((b) => b.id === MY_DASHBOARD_ID);
+    const rest = boards.filter((b) => b.id !== MY_DASHBOARD_ID).map((layout) => ({ layout, persisted: true }));
+    return [mine ? { layout: mine, persisted: true } : { layout: roleDefault, persisted: false }, ...rest];
+  }, [boards, roleDefault]);
+
+  const resolution = resolveBoard(boardParam, {
+    boards,
+    failed: Boolean(error),
+    roleDefault,
+    hidden,
+    can: hasPermission,
+  });
+
+  // Take the pending address only now, after the commit that holds the list change: the
+  // router renders a replaced address at once (inside the hashchange), so changing it in
+  // the same tick as the list would resolve the new id against the old list ("not
+  // available" for a board just created, the deleted board for one frame).
+  React.useEffect(() => {
+    if (pendingHash === null) return;
+    setPendingHash(null);
+    replaceRoute(pendingHash);
+  }, [pendingHash]);
+
+  // A board no one can open here: say so once and show the library at its own address.
+  // (Not while an address change is pending: a board just deleted is not "unavailable".)
+  const reportedRef = React.useRef<string | null>(null);
+  React.useEffect(() => {
+    if (resolution.status !== 'missing' || !boardParam || pendingHash !== null) return;
+    if (reportedRef.current === boardParam) return;
+    reportedRef.current = boardParam;
+    toast.error('That dashboard is not available.');
+    replaceRoute(pageHash('dashboards'));
+  }, [resolution.status, boardParam, pendingHash]);
+  React.useEffect(() => {
+    if (!boardParam) reportedRef.current = null;
+  }, [boardParam]);
+
+  // Keyboard focus after an in-page move (see the module note). Loading and error states
+  // are not views: the move completes when the board or the library shows.
+  const viewKey =
+    resolution.status === 'board'
+      ? `board:${resolution.key}`
+      : resolution.status === 'library' || resolution.status === 'missing'
+        ? 'library'
+        : null;
+  const lastViewRef = React.useRef<string | null>(null);
+  React.useEffect(() => {
+    if (viewKey === null) return;
+    const previous = lastViewRef.current;
+    lastViewRef.current = viewKey;
+    if (previous === null || previous === viewKey || !focusDropped()) return;
+    const card = viewKey === 'library' && previous.startsWith('board:') ? libraryCard(previous.slice(6)) : null;
+    if (card) card.focus();
+    else focusMain();
+  }, [viewKey]);
+
+  const hide = React.useCallback(
+    async (board: BuiltinBoard) => {
+      const previous = [...hidden];
+      const next = [...previous.filter((id) => id !== board.id), board.id];
+      if (!(await write(next, previous))) return;
+      navigate('dashboards');
+      toast.success(`${board.name} is hidden.`, {
+        action: { label: 'Undo', onClick: () => void write(previous, next) },
+      });
+    },
+    [hidden, write, navigate],
+  );
+
+  const unhide = React.useCallback(
+    async (board: BuiltinBoard) => {
+      const previous = [...hidden];
+      const next = previous.filter((id) => id !== board.id);
+      if (await write(next, previous)) toast.success(`${board.name} is back in your list.`);
+    },
+    [hidden, write],
+  );
+
+  const onCreated = React.useCallback(
+    (layout: DashboardLayout, how: 'duplicate' | 'new') => {
+      upsert(layout);
+      const board = boardRouteId(layout.id);
+      if (how === 'duplicate') {
+        // The copy opens in Edit mode (SPEC §4.4.6); a history entry, so Back returns.
+        // (The router's own navigate renders with the list update, in one batch.)
+        setEditIntent(board);
+        navigate('dashboards', { board });
+      } else {
+        // The saved draft takes its own address in place of `board=new`, once the list
+        // holds it.
+        setPendingHash(pageHash('dashboards', { board }));
+      }
+    },
+    [upsert, navigate],
+  );
+
+  const onRemoved = React.useCallback(
+    (layout: DashboardLayout, how: 'reset' | 'delete') => {
+      remove(layout.id);
+      // A reset leaves My dashboard on its role default; a deleted board is gone.
+      if (how === 'delete') setPendingHash(pageHash('dashboards'));
+    },
+    [remove],
+  );
+
+  if (authLoading) {
+    return (
+      <PageContainer variant="wide">
+        <BoardLoading />
+      </PageContainer>
+    );
+  }
+
+  if (!allowed) {
+    return (
+      <PageContainer variant="wide">
+        <Unauthorized message="You do not have access to dashboards." />
+      </PageContainer>
+    );
+  }
+
+  if (resolution.status === 'board') {
+    const { key, target } = resolution;
+    return (
+      <React.Suspense fallback={<BoardLoading />}>
+        <BoardView
+          key={key}
+          target={target}
+          savedCount={boards?.length ?? 0}
+          startInEdit={editIntent === key}
+          onStartedInEdit={() => setEditIntent(null)}
+          onHide={hide}
+          onUnhide={unhide}
+          onCreated={onCreated}
+          onSaved={upsert}
+          onRemoved={onRemoved}
+        />
+      </React.Suspense>
+    );
+  }
+
+  if (resolution.status === 'loading') {
+    return (
+      <PageContainer variant="wide">
+        <BoardLoading />
+      </PageContainer>
+    );
+  }
+
+  if (resolution.status === 'error') {
+    return (
+      <PageContainer variant="wide">
+        <PageHeader back={{ label: 'All dashboards', href: '#/dashboards' }} title="Dashboard" />
+        <LoadError error={error} title="This dashboard could not be loaded." onRetry={() => void reload()} />
+      </PageContainer>
+    );
+  }
 
   return (
-    <PageContainer variant="fluid">
-      {header}
-
-      <div className="mt-6">
-        {loading && !data ? (
-          <LoadingState
-            label="Loading dashboards"
-            description="Preparing saved layouts and the role-based operations view."
-            layout="page"
-            shape="page"
-          />
-        ) : error && !data ? (
-          <LoadError error={error} title="Couldn't load dashboards" onRetry={reload} />
-        ) : (
-          <DashboardBuilder
-            // Remount the builder when the active dashboard identity changes so its
-            // draft re-seeds cleanly from the newly-selected board.
-            key={active.id}
-            dashboard={active}
-            can={hasPermission}
-            // The role default (id 'overview') RESTORES on reset and is not persisted
-            // until first Save; a user-created board is persisted + permanently deleted.
-            isDefaultBoard={active.id === DEFAULT_DASHBOARD_ID}
-            persisted={saved.some((b) => b.id === active.id)}
-            onSaved={() => {
-              void reload();
-            }}
-            onReset={() => {
-              // After a reset the saved copy is gone; fall back to the default id.
-              setSelectedId(DEFAULT_DASHBOARD_ID);
-              void reload();
-            }}
-          />
-        )}
-      </div>
+    <PageContainer variant="wide">
+      <PageHeader
+        title="Dashboards"
+        help={LIBRARY_HELP}
+        actions={<NewDashboardLink atLimit={atLimit} />}
+        data-testid="dashboards-header"
+      />
+      <DashboardsLibrary
+        personal={personal}
+        error={error}
+        onRetry={() => void reload()}
+        hidden={hidden}
+        onUnhide={(id) => {
+          const board = builtinBoard(id);
+          if (board) void unhide(board);
+        }}
+        can={hasPermission}
+        objectScoped={objectScoped}
+        atLimit={atLimit}
+      />
     </PageContainer>
   );
 }

@@ -31,6 +31,7 @@ from app.agents.chat_protocol import PriorExchange, parse_reply, parse_report_su
 from app.agents.chat_tools.base import Artifact, render_tool_call_header, render_tool_signatures
 from app.agents.chat_tools.registry import catalogue, get_tool
 from app.agents.prompts import fence_block, render_chat_agent_system
+from app.config import CHAT_AGENT_BOUNDS, ChatAgentConfig
 from app.engine import demo_chat
 from app.engine.demo_chat import DEMO_STARTERS, classify, plan_turn, read_prompt, summarise_report
 from app.knowledge import render_app_docs
@@ -48,7 +49,12 @@ ALL_TOOLS = tuple(t.name for t in catalogue())
 # --------------------------------------------------------------------------- #
 # Prompt builders (mirroring agents/chat.py exactly).
 # --------------------------------------------------------------------------- #
-def system(tools: tuple[str, ...] | list[str] = ALL_TOOLS, *, max_parallel: int = 4,
+#: Lookups at once as the engine renders it by default: the configured
+#: ``chat_agent.max_parallel`` (12 since Round 14, SPEC §4.2), never a literal.
+DEFAULT_PARALLEL = ChatAgentConfig().max_parallel
+
+
+def system(tools: tuple[str, ...] | list[str] = ALL_TOOLS, *, max_parallel: int = DEFAULT_PARALLEL,
            window: str | None = None, case_scoped: bool = False,
            scopes: tuple[str, ...] = (), disabled: tuple[str, ...] = ()) -> dict[str, str]:
     granted = [get_tool(name) for name in tools if name not in disabled]
@@ -197,6 +203,34 @@ def test_read_prompt_takes_tools_question_and_bounds_from_the_engine_prompt() ->
     assert view.case_scoped is True
     assert view.question == "How are we doing?"
     assert view.rounds == []
+
+
+@pytest.mark.parametrize("configured", [DEFAULT_PARALLEL, 1, 16])
+def test_read_prompt_takes_lookups_at_once_from_the_configured_value(configured: int) -> None:
+    """Round 14 SPEC §4.2.3: the planner reads the configured "Lookups at once" (12 by
+    default) from the engine's prompt, never a fixed 4."""
+    assert DEFAULT_PARALLEL == 12
+    assert read_prompt(prompt("How are we doing?", max_parallel=configured)).max_parallel == configured
+
+
+def test_the_new_lookups_ceiling_keeps_a_working_plan() -> None:
+    """The highest configurable value (24) still yields a working plan, and the Demo
+    planner reads it whole: its clamp in ``read_prompt`` is the configured ceiling
+    (``CHAT_AGENT_BOUNDS``), so a configured 17 to 24 plans that many a step in Demo
+    Mode, exactly as a live model may. Pinned exactly so any change to that clamp is
+    deliberate and moves this test with it."""
+    assert CHAT_AGENT_BOUNDS["max_parallel"] == (1, 24)
+    assert read_prompt(prompt("How are we doing?", max_parallel=24)).max_parallel == 24
+    assert read_prompt(prompt("How are we doing?", max_parallel=17)).max_parallel == 17
+    # A prompt that states no limit plans the model's own default, never a stale 4.
+    bare = [{"role": "system", "content": "No lookup limit is stated here."},
+            {"role": "user", "content": "How are we doing?"}]
+    assert read_prompt(bare).max_parallel == DEFAULT_PARALLEL == 12
+    assert read_prompt(prompt("How are we doing?", max_parallel=DEFAULT_PARALLEL)).max_parallel == 12
+    # A brief plans its whole first batch at the ceiling, the same as at the default.
+    wide = tools_of(plan_turn(prompt("/shift-brief", max_parallel=24)))
+    assert wide == tools_of(plan_turn(prompt("/shift-brief", max_parallel=DEFAULT_PARALLEL)))
+    assert [t for t, _ in wide] == ["shift_report", "soc_metrics", "list_campaigns"]
 
 
 def test_results_observations_and_refs_come_only_from_trusted_headers() -> None:
@@ -1126,7 +1160,9 @@ def test_case_chat_still_searches_a_named_value(question: str, expected: tuple[s
     ("Show logs for that host", "fallback"),
     ("Show logs for that user", "fallback"),
     ("Search logs for attacker IP", "fallback"),
-    ("Check the logs for anything suspicious", "fallback"),
+    # Round 14: "anything suspicious" is a survey of the detection rules that fired
+    # (log_stats by rule), still with no value searched for.
+    ("Check the logs for anything suspicious", "suspicious"),
     ("Can you search logs for a user?", "fallback"),
     # The other intents these phrasings had before explicit log search keep them.
     ("Show logs for the escalated cases", "cases"),
@@ -1729,3 +1765,136 @@ def test_a_case_answer_names_its_entity_once() -> None:
         call("get_case", GET_CASE_OBS, artifacts=GET_CASE_ARTS, inp={"case_id": "case-0042"}),
         call("explain_decision", DECISION_OBS, artifacts=DECISION_ARTS, inp={"case_id": "case-0042"})])))
     assert "It covers user `amy` and rule `phish`." in body
+
+
+# --------------------------------------------------------------------------- #
+# Round 14 closing fixes (FX6c): the Demo help answer links the BEST section's page, as
+# ``app_help`` does, and "Where's the … tab?" is a product question.
+# --------------------------------------------------------------------------- #
+def _help_obs(results: list[dict[str, Any]], targets: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    return {"kind": "app_help", "available": True, "results": results, "console_targets": targets or []}
+
+
+def _section(ref: str, title: str, href: str, console: list[str]) -> dict[str, Any]:
+    return {"ref": ref, "title": title, "breadcrumb": "Help Center", "href": href,
+            "text": f"{title}: open the page and choose Export.", "console": console}
+
+
+def test_demo_help_links_only_the_best_sections_page() -> None:
+    """A lower-ranked section of another page that shares a word with the question
+    ("CSV", "export") never lends its page: the chat Export section is best, so the
+    audit log's Exporting section (third) adds no locked Platform › Audit log link."""
+    obs = _help_obs([
+        _section("D1", "Export", "/docs/0.1/analyst/chat/#export", []),
+        _section("D2", "Charts and tables", "/docs/0.1/analyst/chat/#charts", ["page:chat"]),
+        _section("D3", "Exporting", "/docs/0.1/administration/audit-log/#exporting", ["page:audit"]),
+    ])
+    msgs = prompt("How do I export a chart as CSV?", [call("app_help", obs, inp={"query": "export a chart as CSV"})])
+    assert demo_chat._console_ids(read_prompt(msgs).reference) == ["page:chat"]
+    header, body = final_of(plan_turn(msgs))
+    assert header["console_links"] == ["page:chat"]
+    assert "page:audit" not in header["console_links"] and "Audit log" not in body
+
+
+def test_demo_help_keeps_the_lookups_destinations_first() -> None:
+    """The destinations the lookup offered come first (the ones the caller can open,
+    then the locked ones); another page's section never adds to them."""
+    obs = _help_obs(
+        [_section("D1", "Exporting", "/docs/0.1/administration/audit-log/#exporting", ["page:audit"]),
+         _section("D2", "Personal data", "/docs/0.1/administration/audit-log/#personal-data", []),
+         _section("D3", "Export portable application state",
+                  "/docs/0.1/administration/settings/#export-portable-application-state",
+                  ["settings:data_export", "page:batchjobs"])],
+        [{"id": "page:audit", "label": "Platform › Audit log", "requires": "audit:view", "allowed": False}])
+    msgs = prompt("How do I export the audit log?", [call("app_help", obs, inp={"query": "export the audit log"})])
+    assert demo_chat._console_ids(read_prompt(msgs).reference) == ["page:audit"]
+
+
+def test_demo_help_falls_back_to_other_pages_only_when_nothing_names_a_destination() -> None:
+    """When neither the lookup nor the best section's page names a destination, the
+    other cited sections' breadcrumbs still answer ("Where are runbooks?")."""
+    obs = _help_obs([
+        _section("D1", "Work the runbook", "/docs/0.1/analyst/investigation/#work-the-runbook", []),
+        _section("D2", "Runbooks", "/docs/0.1/intelligence/runbooks/", ["page:runbooks"]),
+    ])
+    msgs = prompt("Where are runbooks?", [call("app_help", obs, inp={"query": "runbooks"})])
+    assert demo_chat._console_ids(read_prompt(msgs).reference) == ["page:runbooks"]
+    # A section with no link is its own page: only its own breadcrumbs count.
+    unlinked = _help_obs([
+        {"ref": "D1", "title": "Help Center", "breadcrumb": "", "text": "Start here.", "console": ["page:docs"]},
+        {"ref": "D2", "title": "Sources", "breadcrumb": "", "text": "Add a source.", "console": ["page:sources"]},
+    ])
+    msgs = prompt("Where do I start?", [call("app_help", unlinked, inp={"query": "start"})])
+    assert demo_chat._console_ids(read_prompt(msgs).reference) == ["page:docs"]
+
+
+@pytest.mark.parametrize("question", [
+    "How do I export a chart as CSV?",
+    "How do I export cases to CSV?",
+    "How do I export a severity breakdown to CSV?",
+])
+async def test_demo_help_csv_answers_never_link_the_audit_log_for_a_tier1_analyst(question: str) -> None:
+    """End to end over the bundled Help Center: the Demo planner's lookup, the real
+    ``app_help`` tool under a tier-1 analyst's grants, and the planner's answer."""
+    import app
+    from app.agents.chat_tools.app_help import AppHelpTool
+    from app.agents.chat_tools.base import ChatToolContext
+    from app.config import Preferences
+    from app.knowledge import console_grant_pairs
+    from app.rbac.policy import can
+
+    grants = frozenset(pair for pair in console_grant_pairs() if can("analyst_tier1", *pair))
+    plan = tools_of(plan_turn(prompt(question)))
+    assert [tool for tool, _ in plan] == ["app_help"], plan
+    ctx = ChatToolContext(prefs=Preferences(), grants=grants, app_version=app.__version__)
+    outcome = await AppHelpTool().run(ctx, **plan[0][1])
+    assert outcome.ok and outcome.citations
+    header, body = final_of(plan_turn(prompt(question, [call("app_help", outcome.observation, inp=plan[0][1])])))
+    assert header["answer_kind"] == "product_help"
+    assert "page:audit" not in header["console_links"], header["console_links"]
+    assert "Platform › Audit log" not in body, body
+    # Nor another locked page: these exports are done in Workspace Chat.
+    assert all(t["allowed"] for t in outcome.observation["console_targets"]), outcome.observation["console_targets"]
+    assert header["console_links"] == ["page:chat"], header["console_links"]
+    assert "Locked for your role" not in body, body
+
+
+@pytest.mark.parametrize("question", [
+    "Where's the runbook tab?",
+    "Where’s the runbooks page?",
+    "Where's the export button?",
+    "Where is the runbook tab?",
+])
+def test_where_contractions_are_product_questions_in_demo(question: str) -> None:
+    assert demo_chat._HELP_RE.search(question.lower()), question
+    assert classify(question).intent == "help", question
+    plan = tools_of(plan_turn(prompt(question)))
+    assert [tool for tool, _ in plan] == ["app_help"], plan
+
+
+@pytest.mark.parametrize("contracted, spelled", [
+    ("Where's the attacker coming from?", "Where is the attacker coming from?"),
+    ("Where's host web-01 in the logs?", "Where is host web-01 in the logs?"),
+])
+def test_a_where_contraction_reads_as_its_spelled_out_form(contracted: str, spelled: str) -> None:
+    """The contraction is a product question only before a console word (page, tab,
+    setting, button, menu, option), as "where is" always was: without one it is read
+    exactly as the spelled-out question."""
+    assert not demo_chat._HELP_RE.search(contracted.lower())
+    assert classify(contracted).intent == classify(spelled).intent
+
+
+@pytest.mark.parametrize("contracted, spelled", [
+    ("Where's the runbook tab?", "Where is the runbook tab?"),
+    ("Where’s the runbook tab?", "Where is the runbook tab?"),
+    ("WHERE'S the audit log page?", "Where is the audit log page?"),
+    ("Where's the export button?", "Where is the export button?"),
+    ("What's the difference between MTTA and MTTR?", "What is the difference between MTTA and MTTR?"),
+    ("What’s the meaning of dwell time?", "What is the meaning of dwell time?"),
+])
+def test_a_contracted_help_question_searches_what_its_spelled_out_form_searches(contracted: str, spelled: str) -> None:
+    """The Help Center query (shown in the step's run log and step inspector) drops the
+    contraction as it drops "where is" or "what is": both forms send the same query."""
+    assert demo_chat._help_topic(contracted).lower() == demo_chat._help_topic(spelled).lower()
+    assert "'" not in demo_chat._help_topic(contracted) and "’" not in demo_chat._help_topic(contracted)
+    assert tools_of(plan_turn(prompt(contracted))) == tools_of(plan_turn(prompt(spelled)))

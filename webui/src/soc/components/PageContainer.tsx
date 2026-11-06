@@ -29,6 +29,17 @@
  * viewport (via `@tailwindcss/container-queries`, shipped by W0-A's tailwind.config).
  *
  * `min-w-0` is set so flex/grid children inside can shrink and truncate correctly.
+ *
+ * Round 14 (SPEC §4.9.2): PageContainer also owns the page RHYTHM, so pages stop setting
+ * `space-y-*` themselves: 24px from the page header to the first module, then one panel
+ * gutter between modules (16px, 20px from 1280px, 24px from 1920px), the Overview's
+ * spacing on every page. It is the `.page-rhythm` rule in `theme.css`, written at the
+ * specificity of one type selector (`:where(...)` plus a trailing `:not(template)`): that
+ * beats Preflight's element resets, so a paragraph, heading or list placed directly on the
+ * page is spaced like any module, and loses to every class, so a page that still sets its
+ * own `space-y-*`, a child's own margin utility, or a page laid out as flex or grid (which
+ * spaces itself with `gap`) keeps its spacing until it migrates. `rhythm="none"` opts out
+ * (a full-height workspace such as Case Manager).
  */
 import * as React from 'react';
 import { cn } from '@/lib/cn';
@@ -52,6 +63,11 @@ export interface PageContainerProps
    * plain `div`. Kept intentionally minimal (no `asChild`) — this is a layout box.
    */
   as?: React.ElementType;
+  /**
+   * `page` (default): the page rhythm described above. `none`: no spacing between
+   * children (the page lays itself out).
+   */
+  rhythm?: 'page' | 'none';
   children: React.ReactNode;
 }
 
@@ -62,6 +78,7 @@ export interface PageContainerProps
 export function PageContainer({
   variant = 'fixed',
   as: Comp = 'div',
+  rhythm = 'page',
   className,
   children,
   ...rest
@@ -73,6 +90,7 @@ export function PageContainer({
         // owned once by the AppShell content wrapper (see the module docstring).
         '@container mx-auto w-full min-w-0',
         WIDTHS[variant],
+        rhythm === 'page' && 'page-rhythm',
         className,
       )}
       {...rest}

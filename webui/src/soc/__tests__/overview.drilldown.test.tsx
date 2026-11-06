@@ -536,11 +536,11 @@ describe('Overview — KPI drill-down', () => {
       Array.from(container.querySelectorAll('[aria-live]'))
         .map((n) => n.textContent ?? '')
         .join(' ');
-    await waitFor(() => expect(regions()).toContain('Total Critical details opened'));
+    await waitFor(() => expect(regions()).toContain('Total critical details opened'));
 
     await userEvent.keyboard('{Escape}');
     await waitFor(() => expect(screen.queryByTestId('kpi-drilldown')).toBeNull());
-    await waitFor(() => expect(regions()).toContain('Total Critical details closed'));
+    await waitFor(() => expect(regions()).toContain('Total critical details closed'));
     expect(tile).toHaveFocus();
   });
 

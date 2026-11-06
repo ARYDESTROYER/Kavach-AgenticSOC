@@ -20,6 +20,7 @@ import logging
 from typing import TYPE_CHECKING, Any, Callable
 
 from ..audit.audit_log import AuditLogger
+from ..audit.changes import redact_text
 from ..config import Preferences
 from ..connectors.base import PullConnector
 from ..connectors.elastic import ElasticConnector
@@ -46,7 +47,7 @@ from ..es.querybuilder import (
 )
 from ..models import Cursor, RawEvent
 from ..stores.cursor_store import CursorStore
-from ..utils import now_utc, to_millis
+from ..utils import now_utc, to_millis, truncate
 from ..agents.pipeline import InvestigationPipeline
 
 if TYPE_CHECKING:
@@ -414,6 +415,37 @@ class Poller:
         *,
         investigation_budget: InvestigationBudget | None = None,
     ) -> dict[str, Any]:
+        """One poll tick. Every tick leaves one system ``poll`` row in the audit log
+        (Round 14 SPEC §4.5.3: ``actor_type`` and ``outcome`` on every new row): the
+        tick's own row on return, or a ``failure`` row when the tick raised, so the
+        audit log's Failed filter finds a source that cannot be read. The exception
+        still propagates unchanged to the loop or the caller."""
+        try:
+            return await self._poll_once(prefs, investigation_budget=investigation_budget)
+        except Exception as exc:  # noqa: BLE001 (recorded, then re-raised unchanged)
+            try:
+                # A connector's error text is source-controlled and can carry its
+                # address with ``user:password@`` or a credential header: the export's
+                # secret patterns, a basic credential and any userinfo are removed
+                # before the text reaches the durable, exportable record (and before
+                # it is cut, so a cut can never leave half a credential behind).
+                summary, _removed = redact_text(f"poll failed: {type(exc).__name__}: {exc}")
+                await self._audit.record(
+                    action_type=ActionType.POLL, surface="poller", actor="poller",
+                    actor_type="system", outcome="failure",
+                    source_id=(getattr(self._source, "connector_id", None) or None),
+                    result_summary=truncate(summary, 500),
+                )
+            except Exception as audit_exc:  # noqa: BLE001 (the poll error is what propagates)
+                logger.warning("poll failure audit failed: %s", audit_exc)
+            raise
+
+    async def _poll_once(
+        self,
+        prefs: Preferences | None = None,
+        *,
+        investigation_budget: InvestigationBudget | None = None,
+    ) -> dict[str, Any]:
         prefs = prefs or self._get_prefs()
         cold_from = to_millis(now_utc()) - prefs.cold_start_lookback_minutes * 60 * 1000
 
@@ -456,6 +488,9 @@ class Poller:
         # only; never feeds ``decide()`` (#3). The un-fed path leaves this empty → byte-
         # identical ``ok=True``.
         feed_failures: list[tuple[str, str]] = []
+        # How many feeds could not be read this tick (``feed_failures`` also holds a
+        # funnel rejection): every feed failing makes the tick's audit row ``failure``.
+        feed_read_failures = 0
         if feeds:
             for feed in feeds:
                 # Per-feed exception isolation (#4): a single feed whose operator
@@ -477,6 +512,7 @@ class Poller:
                     # (silent-vs-broken fix) — the cursor stays untouched, healthy feeds
                     # proceed, and the events that DID arrive are still processed.
                     feed_failures.append((str(getattr(feed, "id", "?")), str(exc)))
+                    feed_read_failures += 1
                     continue
                 fbatch = scan.events
                 # Advance over the full scanned watermark, not just the kept batch (#4).
@@ -761,12 +797,24 @@ class Poller:
             if new_cursor != fcursor:
                 await self._cursor_store.save_keyed(key, new_cursor)
 
+        # The tick's outcome (SPEC §4.5.3): ``partial`` when a feed (or the event
+        # funnel) failed while the rest proceeded, ``failure`` when no feed could be
+        # read. Only the count of failures is appended, after the existing tokens:
+        # each feed's error text stays on the source health surface (``record_tick``).
+        if feeds and feed_read_failures >= len(feeds):
+            poll_outcome = "failure"
+        elif feed_failures:
+            poll_outcome = "partial"
+        else:
+            poll_outcome = "success"
         await self._audit.record(
             action_type=ActionType.POLL, surface="poller", actor="poller",
+            actor_type="system", outcome=poll_outcome,
             source_id=(getattr(self._source, "connector_id", None) or None),
             result_summary=(f"polled={stats['polled']} new={stats['new']} "
                             f"clusters={stats['clusters']} investigated={stats['investigated']} "
-                            f"candidates={stats['candidates']} attached={stats['attached']}"),
+                            f"candidates={stats['candidates']} attached={stats['attached']}"
+                            + (f" failed={len(feed_failures)}" if feed_failures else "")),
         )
         # Coverage observability (A5.1): record this tick's in-memory snapshot AFTER the
         # durable audit write, so the "last poll attempt" wall-clock + ok/error + events/min

@@ -1,27 +1,29 @@
 /**
- * Approvals — the human-in-the-loop queue for agent-drafted proposals.
+ * Approvals: the human-in-the-loop queue for agent-drafted proposals.
  *
- * The agent parks governed suppression, durable-memory, threshold-tuning, and
- * acknowledgement-only automation reviews here for an operator decision.
- * The deterministic, operator-controlled case-decision spine stays intact:
- * Approvals can never change decide() or make model output authoritative.
+ * The agent parks governed suppression, durable-memory, threshold-tuning and
+ * acknowledgement-only automation reviews here for an operator decision. The
+ * deterministic, operator-controlled case-decision spine stays intact: Approvals can
+ * never change decide() or make model output authoritative.
  *
- * UNTRUSTED-safe: a proposal's `payload` (field / value / text) and `rationale`
- * derive from log events, so they render as plain text / <CodeBlock> /
- * <InlineCode> — never as markup.
+ * Round 14 (SPEC §4.9.4, ui-audit AP1 to AP4): the Overview's grammar. The page header
+ * is the title, a help tip (which now holds the always-on explanation callout and the
+ * old footer) and the pending count with an icon Refresh. The queue is one panel whose
+ * rows are the proposals (no card per proposal, no coloured accent bar), with sentence
+ * case labels. A source case is named by its case number, and the automation's default
+ * rationale ("... (verdict=NEEDS_HUMAN, risk=62.0) ...") reads as plain words.
+ *
+ * UNTRUSTED-safe: a proposal's `payload` (field, value, text) and `rationale` derive
+ * from log events, so they render as plain text or <InlineCode>, never as markup.
  */
 import * as React from 'react';
 import {
-  AlertTriangle,
   CheckCircle2,
-  Clock,
   ClipboardCheck,
+  Clock,
   Flag,
   FolderClosed,
   Gauge,
-  Info,
-  Layers,
-  Link2,
   MemoryStick,
   ShieldOff,
   SlidersHorizontal,
@@ -37,7 +39,7 @@ import type {
   TuningProposalPayload,
 } from '@/lib/types';
 import {
-  DASH,
+  caseLabel,
   fmtNumber,
   fmtPercent,
   formatTimestamp,
@@ -50,25 +52,24 @@ import { materialBar } from '@/lib/ui-recipes';
 import { toast } from 'sonner';
 
 import { Button } from '@/ui/button';
-import { Card } from '@/ui/card';
 import { Badge } from '@/ui/badge';
-import { Alert, AlertDescription, AlertTitle } from '@/ui/alert';
 import { Checkbox } from '@/ui/checkbox';
 import { Switch } from '@/ui/switch';
-import { LoadingState } from '@/design-system';
-import { Separator } from '@/ui/separator';
+import { Callout, LoadingState, Panel, PANEL_PADDING_X } from '@/design-system';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/ui/tooltip';
 
 import { PageContainer } from '@/soc/components/PageContainer';
 import { PageHeader } from '@/soc/components/PageHeader';
-import { ControlBar } from '@/soc/components/ControlBar';
 import { RefreshButton } from '@/soc/components/RefreshButton';
 import { EmptyState } from '@/soc/components/EmptyState';
 import { LoadError } from '@/soc/components/LoadError';
 import { SegmentedControl } from '@/soc/components/SegmentedControl';
 import { InlineCode } from '@/soc/components/CodeBlock';
 import { useCan } from '@/soc/components/Can';
+import { verdictLabel } from '@/soc/components/semantic-labels';
 import { useNavigateOptional, type Navigate } from '@/soc/router';
+import { useAuth } from '@/soc/auth';
+import { useDemo } from '@/soc/demo';
 import type { LucideIcon } from 'lucide-react';
 
 /* ----------------------------------------------------------------- helpers -- */
@@ -118,7 +119,7 @@ function kindMeta(kind?: string): KindMeta {
   }
 }
 
-/** A stable "source / rule" group label for a proposal (UNTRUSTED-safe plain text). */
+/** A stable "source or rule" group label for a proposal (UNTRUSTED-safe plain text). */
 function groupKeyOf(p: Proposal): string {
   if (kindBand(p.kind) === 'suppression') {
     const sup = (p.payload || {}) as SuppressionPayload;
@@ -148,8 +149,8 @@ function tuningActionLabel(payload: TuningProposalPayload): string {
 
 function approvedToast(proposal: Proposal): string {
   const band = kindBand(proposal.kind);
-  if (band === 'suppression') return 'Suppression approved — it is now live.';
-  if (band === 'memory') return 'Memory approved — it is now trusted and active.';
+  if (band === 'suppression') return 'Suppression approved. It is now live.';
+  if (band === 'memory') return 'Memory approved. It is now trusted and active.';
   if (band === 'tuning') {
     const payload = (proposal.payload || {}) as TuningProposalPayload;
     return payload.action === 'apply_change'
@@ -164,8 +165,8 @@ function approvedToast(proposal: Proposal): string {
 
 function describeError(e: unknown): string {
   if (e instanceof ApiError) {
-    if (e.status === 403) return 'Approving requires admin access — you are not authorised.';
-    if (e.status === 404) return 'This proposal no longer exists (it may have been decided already).';
+    if (e.status === 403) return 'You do not have permission to decide proposals.';
+    if (e.status === 404) return 'This proposal no longer exists. It may have been decided already.';
     if (e.status === 409) {
       return e.message.toLowerCase().includes('applying')
         ? 'This approval is already in progress. Wait briefly, refresh, then resume if needed.'
@@ -176,19 +177,213 @@ function describeError(e: unknown): string {
   return e instanceof Error ? e.message : 'Action failed.';
 }
 
+/**
+ * The automation's default rationale (`threshold_automation.py`): "Threshold automation
+ * rule '<rule>' requested approval for case <id> (verdict=<VERDICT>, risk=<n>). Review
+ * before approving." Matched whole, so an operator-written rationale is never rewritten.
+ */
+const AUTOMATION_RATIONALE =
+  /^Threshold automation rule '([^']*)' requested approval for case (\S+) \(verdict=([^,()]*), risk=([0-9]+(?:\.[0-9]+)?|n\/a)\)\. Review before approving\.$/;
+
+/** A risk score in plain digits: "62.0" reads "62", "61.5" stays "61.5". */
+function plainRisk(raw: string): string | null {
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return null;
+  return Number.isInteger(n) ? String(n) : n.toFixed(1);
+}
+
+/** A string matched literally inside a regular expression. */
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * A proposal's rationale in plain words (SPEC §4.9.4, X11): the automation's default
+ * template becomes a sentence naming the case by its number and the verdict and risk in
+ * words; any other rationale keeps its text, with each source case id replaced by its
+ * case number once that number is known. `labelFor` answers null while a case's number
+ * is still being looked up: the template then says "this case", and an operator-written
+ * rationale keeps the internal id, so its wording is never changed to a guess. Pure and
+ * plain text: the result is rendered as text, never markup.
+ */
+export function plainRationale(
+  text: string,
+  labelFor: (caseId: string) => string | null,
+  sourceCaseIds: readonly string[] = [],
+): string {
+  const trimmed = text.trim();
+  const match = AUTOMATION_RATIONALE.exec(trimmed);
+  if (match) {
+    const [, rule, caseId, verdict, risk] = match;
+    const verdictText = verdict.trim().toLowerCase() === 'n/a' ? null : verdictLabel(verdict.trim());
+    const riskText = plainRisk(risk);
+    const facts = [
+      verdictText ? `the agent's verdict is ${verdictText}` : 'the case has no verdict yet',
+      riskText ? `the risk score is ${riskText}` : null,
+    ].filter(Boolean);
+    const ruleText = rule.trim() ? `Automation rule ${rule.trim()}` : 'An automation rule';
+    return `${ruleText} asked for a review of ${labelFor(caseId) ?? 'this case'}: ${facts.join(' and ')}. Review it before approving.`;
+  }
+  // Only the ids whose number is known are replaced. One pass, longest id first, so an id
+  // that is a prefix of another ("case-1", "case-12") never splits it, and a number just
+  // written in is never read again as an id.
+  const labels = new Map<string, string>();
+  for (const id of sourceCaseIds) {
+    if (!id || labels.has(id)) continue;
+    const label = labelFor(id);
+    if (label && label !== id) labels.set(id, label);
+  }
+  if (!labels.size) return text;
+  const pattern = new RegExp(
+    Array.from(labels.keys())
+      .sort((a, b) => b.length - a.length)
+      .map(escapeRegExp)
+      .join('|'),
+    'g',
+  );
+  return text.replace(pattern, (id) => labels.get(id) ?? id);
+}
+
+/* ------------------------------------------------------ case number lookup -- */
+
+/** At most this many distinct source cases are looked up per page load. */
+const MAX_CASE_LOOKUPS = 60;
+/** Lookups in flight at once. */
+const CASE_LOOKUP_BATCH = 4;
+/** At most this many identities keep resolved case numbers (a sign-out, a Demo run). */
+const MAX_LABEL_SCOPES = 8;
+
+/**
+ * The case numbers one identity resolved this session. `labels` holds each answered
+ * lookup (`''` when the case has no number of its own, or no longer exists, so the
+ * internal id is its name); `failed` holds the ids whose last read failed for another
+ * reason (a 5xx, a network loss). A failed id shows its internal id meanwhile and is read
+ * again on the page's next load, never cached for the life of the tab.
+ */
+interface CaseLabelScope {
+  labels: Map<string, string>;
+  failed: Set<string>;
+}
+
+/**
+ * Resolved case numbers, kept per identity: the signed-in user and the confirmed Demo run
+ * (`caseLabelScopeKey`). A number one identity read under its grant is never shown to
+ * another, and a Demo reset, which re-seeds the same case ids with new numbers, starts
+ * empty.
+ */
+const CASE_LABEL_SCOPES = new Map<string, CaseLabelScope>();
+
+function caseLabelScope(key: string): CaseLabelScope {
+  let scope = CASE_LABEL_SCOPES.get(key);
+  if (!scope) {
+    // Bounded: the oldest identity goes first (a Map iterates in insertion order).
+    while (CASE_LABEL_SCOPES.size >= MAX_LABEL_SCOPES) {
+      const oldest = CASE_LABEL_SCOPES.keys().next().value;
+      if (oldest === undefined) break;
+      CASE_LABEL_SCOPES.delete(oldest);
+    }
+    scope = { labels: new Map(), failed: new Set() };
+    CASE_LABEL_SCOPES.set(key, scope);
+  }
+  return scope;
+}
+
+/** Forget every resolved case number (tests). */
+export function resetCaseLabelsForTests(): void {
+  CASE_LABEL_SCOPES.clear();
+}
+
+/**
+ * The identity resolved case numbers belong to: the signed-in user and the Demo run.
+ * Only a confirmed Demo status changes it: the provider's OFF stand-in while a status
+ * read is failing is no answer, so the last confirmed run holds (the chat caches' rule).
+ */
+function useCaseLabelScopeKey(): string {
+  const { username } = useAuth();
+  const demo = useDemo();
+  const confirmed =
+    demo.confirmed === false ? null : demo.active ? `demo:${demo.status.run_id ?? ''}` : 'live';
+  const [demoKey, setDemoKey] = React.useState(confirmed ?? 'live');
+  // Derived from the last confirmed read (React's "state from previous renders" pattern).
+  if (confirmed !== null && confirmed !== demoKey) setDemoKey(confirmed);
+  return `${username ?? ''}\u0000${demoKey}`;
+}
+
+/**
+ * The case number for each source case the visible proposals cite. A proposal stores
+ * only internal case ids, so each distinct id is read once per identity (bounded and
+ * cached); until it answers, the link reads "Case". Without `cases:read` nothing is
+ * fetched or read from the cache, and the internal id stays the name (the case could not
+ * be opened anyway). `generation` is the page's load count: a lookup that failed is read
+ * again on the next load.
+ */
+function useCaseLabels(
+  ids: readonly string[],
+  enabled: boolean,
+  scopeKey: string,
+  generation: number,
+): (caseId: string) => string | null {
+  const [, setVersion] = React.useState(0);
+  const key = ids.join('\n');
+  React.useEffect(() => {
+    if (!enabled) return undefined;
+    const scope = caseLabelScope(scopeKey);
+    const missing = Array.from(new Set(ids.filter((id) => id && !scope.labels.has(id)))).slice(0, MAX_CASE_LOOKUPS);
+    if (!missing.length) return undefined;
+    let cancelled = false;
+    void (async () => {
+      for (let i = 0; i < missing.length && !cancelled; i += CASE_LOOKUP_BATCH) {
+        const batch = missing.slice(i, i + CASE_LOOKUP_BATCH);
+        const results = await Promise.allSettled(batch.map((id) => api.getCase(id)));
+        results.forEach((result, j) => {
+          const id = batch[j];
+          if (result.status === 'fulfilled') {
+            const label = result.value ? caseLabel(result.value) : '';
+            scope.labels.set(id, label === id ? '' : label);
+            scope.failed.delete(id);
+          } else if (result.reason instanceof ApiError && result.reason.status === 404) {
+            // The case is gone: its id is the last name it has, for good.
+            scope.labels.set(id, '');
+            scope.failed.delete(id);
+          } else {
+            scope.failed.add(id);
+          }
+        });
+        if (!cancelled) setVersion((v) => v + 1);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // `key` stands for `ids` (a fresh array on every render).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key, enabled, scopeKey, generation]);
+  return React.useCallback(
+    (caseId: string) => {
+      // The grant first: a warm cache never names a case for a viewer without it.
+      if (!enabled) return caseId;
+      const scope = CASE_LABEL_SCOPES.get(scopeKey);
+      const known = scope?.labels.get(caseId);
+      if (known) return known;
+      if (known === '' || scope?.failed.has(caseId)) return caseId;
+      return null;
+    },
+    [enabled, scopeKey],
+  );
+}
+
 /* ------------------------------------------------------------ small badges -- */
 
 function ConfidencePill({ confidence }: { confidence?: number }) {
   if (typeof confidence !== 'number' || Number.isNaN(confidence)) return null;
   const pct = confidence <= 1 ? confidence * 100 : confidence;
-  const variant: 'success' | 'warning' | 'low' =
-    pct >= 80 ? 'success' : pct >= 50 ? 'warning' : 'low';
+  const variant: 'success' | 'warning' | 'low' = pct >= 80 ? 'success' : pct >= 50 ? 'warning' : 'low';
   return (
     <Tooltip>
       <TooltipTrigger asChild>
         <Badge variant={variant}>
           <Gauge className="h-3 w-3" aria-hidden />
-          {fmtPercent(confidence)} conf
+          {fmtPercent(confidence)} confidence
         </Badge>
       </TooltipTrigger>
       <TooltipContent>The agent&apos;s confidence in this recommendation</TooltipContent>
@@ -207,23 +402,30 @@ function KindBadge({ kind }: { kind?: string }) {
   );
 }
 
-/* ------------------------------------------------------------ proposal card -- */
+/** A field label inside a proposal row: sentence case, muted, on the 13px step. */
+function FieldLabel({ children }: { children: React.ReactNode }) {
+  return <div className="text-sm font-medium text-muted-foreground">{children}</div>;
+}
 
-interface ProposalCardProps {
+/* ------------------------------------------------------------- proposal row -- */
+
+interface ProposalRowProps {
   proposal: Proposal;
-  /** This card's own decision is in flight (drives the "Working…" label). */
+  /** This row's own decision is in flight (drives the "Working…" label). */
   busy: boolean;
-  /** ANY decision (this or another card / bulk) is in flight — disables the actions
-   *  so a click on a second card is never a silent no-op behind the page-level guard. */
+  /** ANY decision (this or another row, or bulk) is in flight. It disables the actions
+   *  so a click on a second row is never a silent no-op behind the page-level guard. */
   locked: boolean;
   selected: boolean;
   onToggleSelect: (id: string) => void;
   onApprove: (p: Proposal) => void;
   onReject: (p: Proposal) => void;
   onOpenCase?: (caseId: string) => void;
+  /** The case number for a source case id; null while it is still being looked up. */
+  labelFor: (caseId: string) => string | null;
 }
 
-function ProposalCard({
+function ProposalRow({
   proposal,
   busy,
   locked,
@@ -232,8 +434,10 @@ function ProposalCard({
   onApprove,
   onReject,
   onOpenCase,
-}: ProposalCardProps) {
+  labelFor,
+}: ProposalRowProps) {
   const band = kindBand(proposal.kind);
+  const meta = kindMeta(proposal.kind);
   const sup = (proposal.payload || {}) as SuppressionPayload;
   const mem = (proposal.payload || {}) as MemoryPayload;
   const tuning = (proposal.payload || {}) as TuningProposalPayload;
@@ -246,85 +450,63 @@ function ProposalCard({
   const approvalLocked = decisionIntent === 'reject';
   const rejectionLocked = decisionIntent === 'approve';
 
-  const accentClass =
-    band === 'suppression'
-      ? 'before:bg-warning'
-      : band === 'memory'
-      ? 'before:bg-info'
-      : band === 'tuning'
-      ? 'before:bg-warning'
-      : band === 'automation_ack'
-      ? 'before:bg-info'
-      : 'before:bg-primary';
-
   const approveTip =
     band === 'suppression'
-      ? 'Approving makes this suppression rule LIVE. Privileged action — the server enforces admin access.'
+      ? 'Approving makes this suppression rule live. The server checks that you may approve proposals.'
       : band === 'memory'
-        ? 'Approving saves this as a trusted durable memory. The server enforces the proposal approval grant.'
+        ? 'Approving saves this as a trusted durable memory. The server checks that you may approve proposals.'
         : band === 'tuning' && tuning.action === 'apply_change'
-          ? 'Approving validates the live value again, then applies only this bounded detection-volume change. Case decisions are unchanged.'
+          ? 'Approving checks the live value again, then applies only this bounded detection-volume change. Case decisions are unchanged.'
           : band === 'tuning'
             ? 'Approving acknowledges this review item only. It does not change a threshold or case decision.'
             : band === 'automation_ack'
               ? 'Acknowledging records the operator review only. It does not change configuration, Memory, suppression, or case state.'
-            : 'The server validates and applies this proposal according to its type.';
+              : 'The server validates and applies this proposal according to its type.';
 
   return (
-    <Card
-      className={cn(
-        'relative overflow-hidden p-6 transition-colors hover:border-primary/35',
-        'before:absolute before:inset-y-0 before:left-0 before:w-[3px] before:content-[""]',
-        accentClass,
-        selected && 'ring-1 ring-primary',
-      )}
-    >
-      {/* header row */}
-      <div className="flex flex-wrap items-center gap-2 pl-3">
-        <Checkbox
-          checked={selected}
-          onCheckedChange={() => onToggleSelect(proposal.id)}
-          aria-label="Select this proposal for a bulk action"
-          disabled={busy}
-        />
-        <KindBadge kind={proposal.kind} />
-        <ConfidencePill confidence={proposal.confidence} />
-        {decided || applying ? (
-          <Badge variant={proposal.status?.toLowerCase() === 'approved' ? 'success' : 'secondary'}>
-            {humanizeToken(proposal.status)}
-          </Badge>
-        ) : null}
-        <span className="text-xs text-muted-foreground" title={formatTimestamp(proposal.created_at)}>
-          drafted {humanizeAge(proposal.created_at)}
-          {proposal.created_by ? ` · by ${proposal.created_by}` : ''}
-        </span>
-        {proposal.expires_at ? (
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Badge variant="outline">
-                <Clock className="h-3 w-3" aria-hidden />
-                expires {humanizeUntil(proposal.expires_at)}
-              </Badge>
-            </TooltipTrigger>
-            <TooltipContent>Expires {formatTimestamp(proposal.expires_at)}</TooltipContent>
-          </Tooltip>
-        ) : null}
-      </div>
+    <li className={cn('py-4', PANEL_PADDING_X, selected && 'bg-primary/5')} data-selected={selected || undefined}>
+      <article aria-label={`${meta.label} proposal`} className="flex flex-col gap-3">
+        {/* header row */}
+        <div className="flex flex-wrap items-center gap-2">
+          <Checkbox
+            checked={selected}
+            onCheckedChange={() => onToggleSelect(proposal.id)}
+            aria-label="Select this proposal for a bulk action"
+            disabled={busy}
+          />
+          <KindBadge kind={proposal.kind} />
+          <ConfidencePill confidence={proposal.confidence} />
+          {decided || applying ? (
+            <Badge variant={status === 'approved' ? 'success' : 'secondary'}>{humanizeToken(proposal.status)}</Badge>
+          ) : null}
+          <span className="text-sm text-muted-foreground" title={formatTimestamp(proposal.created_at)}>
+            Drafted {humanizeAge(proposal.created_at)}
+            {proposal.created_by ? ` by ${proposal.created_by}` : ''}
+          </span>
+          {proposal.expires_at ? (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Badge variant="outline">
+                  <Clock className="h-3 w-3" aria-hidden />
+                  Expires {humanizeUntil(proposal.expires_at)}
+                </Badge>
+              </TooltipTrigger>
+              <TooltipContent>Expires {formatTimestamp(proposal.expires_at)}</TooltipContent>
+            </Tooltip>
+          ) : null}
+        </div>
 
-      {/* the candidate rule / fact (UNTRUSTED → InlineCode / plain text) */}
-      <div className="mt-4 pl-3">
+        {/* the candidate rule or fact (UNTRUSTED: InlineCode or plain text) */}
         {band === 'suppression' ? (
           <div>
-            <div className="text-2xs font-semibold uppercase tracking-wider text-muted-foreground">
-              Candidate suppression rule
-            </div>
-            <div className="mt-1.5">
+            <FieldLabel>Candidate suppression rule</FieldLabel>
+            <div className="mt-1">
               <InlineCode>
                 {asText(sup.field) || '(field)'} == {asText(sup.value) || '(value)'}
               </InlineCode>
             </div>
             {sup.reason ? (
-              <p className="mt-2.5 whitespace-pre-wrap text-sm leading-relaxed text-foreground">
+              <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed text-foreground">
                 <span className="text-muted-foreground">Reason: </span>
                 {asText(sup.reason)}
               </p>
@@ -332,26 +514,20 @@ function ProposalCard({
           </div>
         ) : band === 'memory' ? (
           <div>
-            <div className="text-2xs font-semibold uppercase tracking-wider text-muted-foreground">
-              Candidate memory
-            </div>
-            <p className="mt-1.5 whitespace-pre-wrap text-sm leading-relaxed text-foreground">
-              {asText(mem.text)}
-            </p>
+            <FieldLabel>Candidate memory</FieldLabel>
+            <p className="mt-1 whitespace-pre-wrap text-sm leading-relaxed text-foreground">{asText(mem.text)}</p>
             {mem.category ? (
-              <Badge variant="outline" className="mt-2.5">
+              <Badge variant="outline" className="mt-2">
                 <FolderClosed className="h-3 w-3" aria-hidden />
                 {humanizeToken(asText(mem.category))}
               </Badge>
             ) : null}
           </div>
         ) : band === 'tuning' ? (
-          <div className="space-y-4">
+          <div className="flex flex-col gap-3">
             <div>
-              <div className="text-2xs font-semibold uppercase tracking-wider text-muted-foreground">
-                {tuningActionLabel(tuning)}
-              </div>
-              <div className="mt-1.5 flex flex-wrap items-center gap-2 text-sm">
+              <FieldLabel>{tuningActionLabel(tuning)}</FieldLabel>
+              <div className="mt-1 flex flex-wrap items-center gap-2 text-sm">
                 <InlineCode>{asText(tuning.rule_id) || '(rule)'}</InlineCode>
                 {tuning.target ? <Badge variant="outline">{humanizeToken(asText(tuning.target))}</Badge> : null}
                 {tuning.before !== undefined || tuning.after !== undefined ? (
@@ -361,175 +537,176 @@ function ProposalCard({
                 ) : null}
               </div>
             </div>
-
             {tuning.reason ? (
               <div>
-                <div className="text-2xs font-semibold uppercase tracking-wider text-muted-foreground">
-                  Why this needs attention
-                </div>
-                <p className="mt-1.5 whitespace-pre-wrap text-sm leading-relaxed text-foreground">
+                <FieldLabel>Why this needs attention</FieldLabel>
+                <p className="mt-1 whitespace-pre-wrap text-sm leading-relaxed text-foreground">
                   {asText(tuning.reason)}
                 </p>
               </div>
             ) : null}
-
             {tuning.recommended_action ? (
               <div>
-                <div className="text-2xs font-semibold uppercase tracking-wider text-muted-foreground">
-                  Recommended action
-                </div>
-                <p className="mt-1.5 whitespace-pre-wrap text-sm leading-relaxed text-foreground">
+                <FieldLabel>Recommended action</FieldLabel>
+                <p className="mt-1 whitespace-pre-wrap text-sm leading-relaxed text-foreground">
                   {asText(tuning.recommended_action)}
                 </p>
               </div>
             ) : null}
-
-            <div className="grid gap-3 border-t border-border/70 pt-3 sm:grid-cols-3">
+            <dl className="grid gap-3 sm:grid-cols-3">
               <div>
-                <div className="text-2xs uppercase tracking-wider text-muted-foreground">Analyst labels</div>
-                <div className="mt-1 font-mono text-sm tabular-nums text-foreground">
+                <dt className="text-sm text-muted-foreground">Analyst labels</dt>
+                <dd className="mt-0.5 font-mono text-sm tabular-nums text-foreground">
                   {fmtNumber(tuning.analyst_samples ?? 0)}
-                </div>
+                </dd>
               </div>
               <div>
-                <div className="text-2xs uppercase tracking-wider text-muted-foreground">Confirmed FP / TP</div>
-                <div className="mt-1 font-mono text-sm tabular-nums text-foreground">
+                <dt className="text-sm text-muted-foreground">Confirmed FP / TP</dt>
+                <dd className="mt-0.5 font-mono text-sm tabular-nums text-foreground">
                   {fmtNumber(tuning.confirmed_false_positives ?? 0)} / {fmtNumber(tuning.confirmed_true_positives ?? 0)}
-                </div>
+                </dd>
               </div>
               <div>
-                <div className="text-2xs uppercase tracking-wider text-muted-foreground">Unconfirmed cases</div>
-                <div className="mt-1 font-mono text-sm tabular-nums text-foreground">
+                <dt className="text-sm text-muted-foreground">Unconfirmed cases</dt>
+                <dd className="mt-0.5 font-mono text-sm tabular-nums text-foreground">
                   {fmtNumber(tuning.unconfirmed_cases ?? 0)}
-                </div>
+                </dd>
               </div>
-            </div>
+            </dl>
           </div>
         ) : band === 'automation_ack' ? (
           <div>
-            <div className="text-2xs font-semibold uppercase tracking-wider text-muted-foreground">
-              Operator acknowledgement
-            </div>
-            <div className="mt-1.5 flex flex-wrap items-center gap-2">
+            <FieldLabel>Operator acknowledgement</FieldLabel>
+            <div className="mt-1 flex flex-wrap items-center gap-2">
               {ack.rule_id ? <InlineCode>{asText(ack.rule_id)}</InlineCode> : null}
               {ack.requested_kind ? (
-                <Badge variant="outline">Requested {humanizeToken(asText(ack.requested_kind))}</Badge>
+                <Badge variant="outline">Requested {humanizeToken(asText(ack.requested_kind)).toLowerCase()}</Badge>
               ) : null}
             </div>
-            <p className="mt-2.5 text-sm leading-relaxed text-foreground">
-              This checkpoint asks an operator to confirm review only. Acknowledging it does not
-              change a setting, create Memory, add suppression, or move the case.
+            <p className="mt-2 text-sm leading-relaxed text-foreground">
+              This checkpoint asks an operator to confirm review only. Acknowledging it does not change a setting,
+              create Memory, add suppression, or move the case.
             </p>
           </div>
         ) : (
-          // Unknown kind: render the payload defensively as plain text so we never
-          // drop a proposal (and never inject markup).
-          <p className="whitespace-pre-wrap text-sm leading-relaxed text-foreground">
-            {asText(proposal.payload)}
-          </p>
+          // Unknown kind: render the payload defensively as plain text so a proposal is
+          // never dropped (and no markup is ever injected).
+          <p className="whitespace-pre-wrap text-sm leading-relaxed text-foreground">{asText(proposal.payload)}</p>
         )}
-      </div>
 
-      {/* rationale (UNTRUSTED → plain text) */}
-      {proposal.rationale ? (
-        <div className="mt-4 pl-3">
-          <div className="text-2xs font-semibold uppercase tracking-wider text-muted-foreground">
-            Why the agent drafted this
+        {/* rationale (UNTRUSTED: plain text) */}
+        {proposal.rationale ? (
+          <div>
+            <FieldLabel>Why the agent drafted this</FieldLabel>
+            <p className="mt-1 whitespace-pre-wrap text-sm leading-relaxed text-muted-foreground">
+              {plainRationale(asText(proposal.rationale), labelFor, cases)}
+            </p>
           </div>
-          <p className="mt-1.5 whitespace-pre-wrap text-sm leading-relaxed text-muted-foreground">
-            {asText(proposal.rationale)}
-          </p>
-        </div>
-      ) : null}
+        ) : null}
 
-      {proposal.approval_error ? (
-        <Alert variant="destructive" className="mt-4 ml-3">
-          <AlertTriangle aria-hidden />
-          <AlertTitle>
-            Previous {decisionIntent === 'reject' ? 'rejection' : 'approval'} attempt did not complete
-          </AlertTitle>
-          <AlertDescription>
+        {proposal.approval_error ? (
+          <Callout
+            intent="error"
+            title={`Previous ${decisionIntent === 'reject' ? 'rejection' : 'approval'} attempt did not complete`}
+          >
             {asText(proposal.approval_error)} Review the item, then retry.
-          </AlertDescription>
-        </Alert>
-      ) : null}
+          </Callout>
+        ) : null}
 
-      {/* linked source case(s) */}
-      {cases.length ? (
-        <div className="mt-4 flex flex-wrap items-center gap-2 pl-3">
-          <span className="text-xs text-muted-foreground">
-            Source {cases.length === 1 ? 'case' : 'cases'}:
-          </span>
-          {cases.map((cid) =>
-            onOpenCase ? (
-              <button
-                key={cid}
-                type="button"
-                onClick={() => onOpenCase(cid)}
-                className="rounded-md focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                aria-label={`Open case ${cid}`}
+        {/* linked source case(s), named by case number */}
+        {cases.length ? (
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
+            <span className="text-muted-foreground">Source {cases.length === 1 ? 'case' : 'cases'}</span>
+            {cases.map((cid) => {
+              const label = labelFor(cid);
+              return onOpenCase ? (
+                <button
+                  key={cid}
+                  type="button"
+                  onClick={() => onOpenCase(cid)}
+                  className="rounded-sm font-medium text-primary underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  aria-label={label ? `Open case ${label}` : 'Open case'}
+                  data-testid="approval-source-case"
+                >
+                  {label ?? 'Case'}
+                </button>
+              ) : (
+                <span key={cid} className="font-medium text-foreground" data-testid="approval-source-case">
+                  {label ?? 'Case'}
+                </span>
+              );
+            })}
+          </div>
+        ) : null}
+
+        {/* actions: Approve is always shown enabled; the server enforces the privileged
+            check and a 403 surfaces inline. The per-action detail lives on the Approve
+            button's own tooltip, not a padlock that reads as "disabled". */}
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          {/* The console's row actions: Reject is a neutral ghost action, red only on
+              hover and focus (§4.9.2 RowActions); both are 44px tall on phones (§3.3). */}
+          <Button
+            variant="ghost"
+            size="sm"
+            className={REJECT_ACTION}
+            onClick={() => onReject(proposal)}
+            disabled={busy || locked || decided || rejectionLocked || (applying && decisionIntent !== 'reject')}
+          >
+            <X className="h-4 w-4" aria-hidden />
+            {applying && decisionIntent === 'reject'
+              ? 'Resume rejection'
+              : decisionIntent === 'reject'
+                ? 'Retry rejection'
+                : 'Reject'}
+          </Button>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                size="sm"
+                className={PHONE_TARGET}
+                onClick={() => onApprove(proposal)}
+                disabled={busy || locked || decided || approvalLocked}
               >
-                <Badge variant="outline" className="cursor-pointer hover:bg-accent">
-                  <Link2 className="h-3 w-3" aria-hidden />
-                  {cid}
-                </Badge>
-              </button>
-            ) : (
-              <Badge variant="outline" key={cid}>
-                <Link2 className="h-3 w-3" aria-hidden />
-                {cid}
-              </Badge>
-            ),
-          )}
+                <CheckCircle2 className="h-4 w-4" aria-hidden />
+                {busy
+                  ? 'Working…'
+                  : applying
+                    ? 'Resume approval'
+                    : decisionIntent === 'approve'
+                      ? 'Retry approval'
+                      : band === 'automation_ack'
+                        ? 'Acknowledge'
+                        : 'Approve'}
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent className="max-w-xs">{approveTip}</TooltipContent>
+          </Tooltip>
         </div>
-      ) : null}
-
-      <Separator className="my-4" />
-
-      {/* actions — Approve is always shown enabled; the server enforces the
-          privileged check and a 403 surfaces inline (see the page Alert). The
-          per-action detail lives on the Approve button's own tooltip, not a
-          misleading padlock that reads as "disabled". */}
-      <div className="flex flex-wrap items-center justify-end gap-2 pl-3">
-        <Button
-          variant="ghost"
-          size="sm"
-          className="text-critical hover:bg-critical/10 hover:text-critical"
-          onClick={() => onReject(proposal)}
-          disabled={busy || locked || decided || rejectionLocked || (applying && decisionIntent !== 'reject')}
-        >
-          <X className="h-4 w-4" aria-hidden />
-          {applying && decisionIntent === 'reject' ? 'Resume rejection' : decisionIntent === 'reject' ? 'Retry rejection' : 'Reject'}
-        </Button>
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button
-              size="sm"
-              onClick={() => onApprove(proposal)}
-              disabled={busy || locked || decided || approvalLocked}
-            >
-              <CheckCircle2 className="h-4 w-4" aria-hidden />
-              {busy
-                ? 'Working…'
-                : applying
-                  ? 'Resume approval'
-                  : decisionIntent === 'approve'
-                    ? 'Retry approval'
-                    : band === 'automation_ack'
-                      ? 'Acknowledge'
-                      : 'Approve'}
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent className="max-w-xs">{approveTip}</TooltipContent>
-        </Tooltip>
-      </div>
-    </Card>
+      </article>
+    </li>
   );
 }
 
 /* -------------------------------------------------------------------- page -- */
 
 type StatusFilter = 'pending' | 'all';
+
+/**
+ * The page help, two sentences (SPEC §4.9.3). What each kind of approval does in detail
+ * is the Help Center's (Automation, "Case automation and proposals").
+ */
+export const APPROVALS_HELP =
+  'Human review for suppression rules, memories, tuning changes and automation acknowledgements. ' +
+  'Nothing applies until someone approves it, and the close or escalate decision never changes here.';
+
+/** A primary row action is 44px tall on phones (SPEC §3.3), 32px from 768px. */
+const PHONE_TARGET = 'max-md:min-h-11';
+
+/** Reject: neutral at rest, red only on hover and keyboard focus (§4.9.2 RowActions). */
+const REJECT_ACTION = cn(
+  'text-muted-foreground hover:bg-critical/10 hover:text-critical focus-visible:text-critical',
+  PHONE_TARGET,
+);
 
 export interface ApprovalsProps {
   onNavigate?: Navigate;
@@ -541,6 +718,7 @@ export default function Approvals({ onNavigate }: ApprovalsProps) {
   const contextNavigate = useNavigateOptional();
   const navigate = onNavigate ?? contextNavigate;
   const canReadTuning = useCan('automation', 'read');
+  const canReadCases = useCan('cases', 'read');
   const [proposals, setProposals] = React.useState<Proposal[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<unknown>(null);
@@ -551,10 +729,17 @@ export default function Approvals({ onNavigate }: ApprovalsProps) {
   const [groupBy, setGroupBy] = React.useState(false);
   const [bulkBusy, setBulkBusy] = React.useState(false);
 
-  const openCase = React.useCallback(
-    (caseId: string) => navigate('cases', { caseId }),
-    [navigate],
+  const openCase = React.useCallback((caseId: string) => navigate('cases', { caseId }), [navigate]);
+
+  const sourceCaseIds = React.useMemo(
+    () => Array.from(new Set(proposals.flatMap((p) => p.source_case_ids ?? []))),
+    [proposals],
   );
+  // Each completed list load is a generation: a case number that failed to resolve is
+  // read again on the next one.
+  const [loadGeneration, setLoadGeneration] = React.useState(0);
+  const labelScopeKey = useCaseLabelScopeKey();
+  const labelFor = useCaseLabels(sourceCaseIds, canReadCases, labelScopeKey, loadGeneration);
 
   const load = React.useCallback(async () => {
     setLoading(true);
@@ -562,6 +747,7 @@ export default function Approvals({ onNavigate }: ApprovalsProps) {
     try {
       const res = await api.listProposals(statusFilter === 'all' ? undefined : 'pending');
       setProposals(res.proposals ?? []);
+      setLoadGeneration((n) => n + 1);
     } catch (e) {
       setError(e);
     } finally {
@@ -573,7 +759,7 @@ export default function Approvals({ onNavigate }: ApprovalsProps) {
     void load();
   }, [load]);
 
-  // The count badge tracks pending proposals regardless of the active filter.
+  // The header count tracks pending proposals regardless of the active filter.
   const pendingCount = React.useMemo(
     () => proposals.filter((p) => ['pending', 'applying'].includes((p.status || '').toLowerCase())).length,
     [proposals],
@@ -593,7 +779,7 @@ export default function Approvals({ onNavigate }: ApprovalsProps) {
     });
   }, []);
 
-  // Keep selection in sync with the currently-loaded proposals.
+  // Keep selection in sync with the currently loaded proposals.
   React.useEffect(() => {
     setSelected((prev) => {
       const ids = new Set(proposals.map((p) => p.id));
@@ -637,9 +823,7 @@ export default function Approvals({ onNavigate }: ApprovalsProps) {
       setActionError(null);
       try {
         const updated =
-          kind === 'approve'
-            ? await api.approveProposal(proposal.id)
-            : await api.rejectProposal(proposal.id);
+          kind === 'approve' ? await api.approveProposal(proposal.id) : await api.rejectProposal(proposal.id);
         applyDecision(proposal, kind, updated);
         const meta = kindMeta(proposal.kind);
         if (kind === 'approve') toast.success(approvedToast(proposal));
@@ -656,7 +840,7 @@ export default function Approvals({ onNavigate }: ApprovalsProps) {
     [busyId, applyDecision, load],
   );
 
-  // Decide every selected proposal sequentially — each call is still individually
+  // Decide every selected proposal sequentially. Each call is still individually
   // guarded server-side; nothing here bypasses the per-proposal approval.
   const decideSelected = React.useCallback(
     async (kind: 'approve' | 'reject') => {
@@ -668,8 +852,7 @@ export default function Approvals({ onNavigate }: ApprovalsProps) {
       let failed = 0;
       for (const p of targets) {
         try {
-          const updated =
-            kind === 'approve' ? await api.approveProposal(p.id) : await api.rejectProposal(p.id);
+          const updated = kind === 'approve' ? await api.approveProposal(p.id) : await api.rejectProposal(p.id);
           applyDecision(p, kind, updated);
           ok += 1;
         } catch (e) {
@@ -692,7 +875,7 @@ export default function Approvals({ onNavigate }: ApprovalsProps) {
     [proposals, selected, bulkBusy, applyDecision, clearSelection, load],
   );
 
-  // Group the visible proposals by source/rule when group-by is on.
+  // Group the visible proposals by source or rule when grouping is on.
   const groups = React.useMemo(() => {
     if (!groupBy) return null;
     const map = new Map<string, Proposal[]>();
@@ -705,8 +888,8 @@ export default function Approvals({ onNavigate }: ApprovalsProps) {
     return Array.from(map.entries()).sort((a, b) => a[0].localeCompare(b[0]));
   }, [proposals, groupBy]);
 
-  const renderCard = (p: Proposal) => (
-    <ProposalCard
+  const renderRow = (p: Proposal) => (
+    <ProposalRow
       key={p.id}
       proposal={p}
       busy={busyId === p.id || bulkBusy}
@@ -715,26 +898,16 @@ export default function Approvals({ onNavigate }: ApprovalsProps) {
       onToggleSelect={toggleSelect}
       onApprove={(pr) => void decide(pr, 'approve')}
       onReject={(pr) => void decide(pr, 'reject')}
-      onOpenCase={openCase}
+      onOpenCase={canReadCases ? openCase : undefined}
+      labelFor={labelFor}
     />
   );
 
-  /* ---- filter / refresh toolbar ---- */
-  const headerActions = (
-    <>
-      {pendingCount > 0 ? (
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Badge variant="warning">
-              <Flag className="h-3 w-3" aria-hidden />
-              {fmtNumber(pendingCount)} pending
-            </Badge>
-          </TooltipTrigger>
-          <TooltipContent>Pending proposals awaiting a decision</TooltipContent>
-        </Tooltip>
-      ) : null}
+  /* ---- the queue's own controls, in its panel's title row (C7) ---- */
+  const queueControls = (
+    <div role="group" aria-label="Approval queue controls" className="flex flex-wrap items-center gap-x-4 gap-y-2">
       <SegmentedControl<StatusFilter>
-        aria-label="Filter by status"
+        aria-label="Show"
         size="sm"
         value={statusFilter}
         onValueChange={setStatusFilter}
@@ -743,126 +916,94 @@ export default function Approvals({ onNavigate }: ApprovalsProps) {
           { value: 'all', label: 'All' },
         ]}
       />
-      <RefreshButton onClick={() => void load()} refreshing={loading} />
-    </>
+      {proposals.length > 0 ? (
+        // Not a <label>: a native label does not forward clicks to a Radix Switch (a
+        // <button role="switch">); the Switch is self-labelled via aria-label.
+        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+          <Switch checked={groupBy} onCheckedChange={setGroupBy} aria-label="Group by source or rule" />
+          Group by source or rule
+        </div>
+      ) : null}
+    </div>
   );
 
-  /* ---- body ---- */
-  let body: React.ReactNode;
-  if (error) {
-    body = (
-      <LoadError
-        error={error}
-        title="Couldn't load proposals"
-        onRetry={() => void load()}
-      />
-    );
-  } else if (loading && proposals.length === 0) {
-    body = (
+  /* ---- queue body ---- */
+  let queueBody: React.ReactNode;
+  if (loading && proposals.length === 0) {
+    queueBody = (
       <LoadingState
         layout="panel"
-        shape="panel"
+        shape="rows"
+        shapeRows={3}
         label="Loading approvals"
         description="Preparing pending proposals and decision controls."
       />
     );
   } else if (proposals.length === 0) {
-    body = (
-      <EmptyState
-        icon={Flag}
-        title={statusFilter === 'pending' ? 'No pending proposals' : 'No proposals yet'}
-        description={
-          statusFilter === 'pending'
-            ? 'Nothing currently requires sign-off. Tuning proposals appear only when analyst-confirmed outcomes support a bounded change or when more human evidence is required; model verdicts and auto-closed cases do not count as confirmation.'
-            : 'No proposal history exists yet. Suppressions, durable memories, evidence-grounded tuning changes, and automation reviews appear here before an operator decision.'
-        }
-        action={
-          canReadTuning ? (
-            <Button variant="outline" size="sm" onClick={() => navigate('tuning')}>
-              <SlidersHorizontal className="h-4 w-4" aria-hidden />
-              Review auto-tuning evidence
-            </Button>
-          ) : undefined
-        }
-      />
+    queueBody = (
+      <div className={cn('pb-4 xl:pb-5 3xl:pb-6', PANEL_PADDING_X)}>
+        <EmptyState
+          compact
+          icon={Flag}
+          title={statusFilter === 'pending' ? 'No pending proposals' : 'No proposals yet'}
+          description={
+            statusFilter === 'pending'
+              ? 'Nothing needs sign-off. Tuning proposals appear only when analyst-confirmed outcomes support a bounded change or when more human evidence is required; model verdicts and auto-closed cases do not count as confirmation.'
+              : 'No proposal history exists yet. Suppressions, durable memories, evidence-grounded tuning changes and automation reviews appear here before an operator decision.'
+          }
+          action={
+            canReadTuning ? (
+              <Button variant="outline" size="sm" onClick={() => navigate('tuning')}>
+                <SlidersHorizontal className="h-4 w-4" aria-hidden />
+                Review auto-tuning evidence
+              </Button>
+            ) : undefined
+          }
+        />
+      </div>
     );
   } else if (groups) {
-    body = (
-      <div className="flex flex-col gap-6">
+    queueBody = (
+      <div className="flex flex-col">
         {groups.map(([label, rows]) => (
-          <div key={label}>
-            <div className="mb-3 flex items-center gap-2">
-              <Badge variant="info">
-                <Layers className="h-3 w-3" aria-hidden />
-                {label}
-              </Badge>
-              <span className="text-xs tabular-nums text-muted-foreground">
+          <section key={label} aria-label={label} className="border-t border-border/70 first:border-t-0">
+            <div className={cn('flex flex-wrap items-baseline gap-x-2 pt-3', PANEL_PADDING_X)}>
+              <h3 className="min-w-0 break-words text-sm font-semibold text-foreground">{label}</h3>
+              <span className="text-sm tabular-nums text-muted-foreground">
                 {fmtNumber(rows.length)} proposal{rows.length === 1 ? '' : 's'}
               </span>
             </div>
-            <div className="flex flex-col gap-4">{rows.map(renderCard)}</div>
-          </div>
+            <ul className="divide-y divide-border/70">{rows.map(renderRow)}</ul>
+          </section>
         ))}
       </div>
     );
   } else {
-    body = <div className="flex flex-col gap-4">{proposals.map(renderCard)}</div>;
+    queueBody = <ul className="divide-y divide-border/70 border-t border-border/70">{proposals.map(renderRow)}</ul>;
   }
 
   return (
-    <PageContainer variant="wide" className="space-y-6">
+    <PageContainer variant="wide">
       <PageHeader
-        variant="dense"
-        icon={Flag}
-        breadcrumb={[{ label: 'Automation' }, { label: 'Approvals' }]}
         title="Approvals"
-        description="Human review for suppression rules, durable memories, evidence-grounded tuning changes, and automation acknowledgements."
+        help={APPROVALS_HELP}
+        controls={
+          <>
+            <span className="text-sm tabular-nums text-muted-foreground" data-testid="approvals-count">
+              {`${fmtNumber(pendingCount)} pending`}
+            </span>
+            <RefreshButton
+              display="icon"
+              label="Refresh approvals"
+              onClick={() => void load()}
+              refreshing={loading}
+            />
+          </>
+        }
       />
 
-      <ControlBar
-        title="Review queue"
-        meta="Filter and refresh proposals before making a governed decision."
-        controls={headerActions}
-        label="Approval queue controls"
-      />
-
-      <Alert>
-        <Info aria-hidden />
-        <AlertTitle>Every pending item requires an explicit decision</AlertTitle>
-        <AlertDescription>
-          <p className="leading-relaxed">
-            These are <strong>evidence-backed recommendations</strong>. An apply proposal changes only
-            the bounded setting shown on its card; evidence and history proposals are
-            acknowledgement-only. Generic automation reviews also acknowledge only; they never
-            create trusted Memory. The server enforces the <strong>proposal approval</strong> grant,
-            and deterministic close/escalate logic is never changed here.
-          </p>
-        </AlertDescription>
-      </Alert>
-
-      {/* section header + group toggle */}
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border pb-3">
-        <div className="flex items-baseline gap-2.5">
-          <h2 className="text-base font-semibold tracking-tight text-foreground">
-            {statusFilter === 'pending' ? 'Pending proposals' : 'All proposals'}
-          </h2>
-          <span className="text-sm tabular-nums text-muted-foreground">
-            {loading ? 'Loading…' : `${fmtNumber(proposals.length)} shown`}
-          </span>
-        </div>
-        {proposals.length > 0 ? (
-          // Not a <label>: a native label does not forward clicks to a Radix
-          // Switch (a <button role="switch">); the Switch is self-labeled via
-          // aria-label. A <div> keeps the layout/behavior identical.
-          <div className="flex items-center gap-2 text-sm text-muted-foreground">
-            <Switch checked={groupBy} onCheckedChange={setGroupBy} aria-label="Group by source or rule" />
-            Group by source / rule
-          </div>
-        ) : null}
-      </div>
-
-      {/* sticky bulk-action bar — pin flush BELOW the app header (matches the
-          PageHeader/FilterBar convention) so it isn't drawn behind the z-30 top bar. */}
+      {/* sticky bulk-action bar, pinned flush below the app header so it is never
+          drawn behind the z-30 top bar */}
       {selected.size > 0 ? (
         <div
           role="region"
@@ -870,7 +1011,7 @@ export default function Approvals({ onNavigate }: ApprovalsProps) {
           // Floating chrome over the scrolling queue: the ONE Console material (solid
           // under reduced transparency or increased contrast), never a page-local blur.
           className={cn(
-            'sticky top-[var(--header-h)] z-20 flex flex-wrap items-center gap-2 border-y border-primary/30 px-3 py-2 shadow-sm',
+            'sticky top-[var(--header-h)] z-20 flex flex-wrap items-center gap-2 rounded-md border border-primary/30 px-3 py-2 shadow-sm',
             materialBar,
           )}
         >
@@ -884,7 +1025,7 @@ export default function Approvals({ onNavigate }: ApprovalsProps) {
           <Button
             variant="ghost"
             size="sm"
-            className="text-critical hover:bg-critical/10 hover:text-critical"
+            className={REJECT_ACTION}
             onClick={() => void decideSelected('reject')}
             disabled={bulkBusy}
           >
@@ -893,29 +1034,30 @@ export default function Approvals({ onNavigate }: ApprovalsProps) {
           </Button>
           <Button size="sm" onClick={() => void decideSelected('approve')} disabled={bulkBusy}>
             <CheckCircle2 className="h-4 w-4" aria-hidden />
-            {bulkBusy ? 'Working…' : 'Approve / acknowledge selected'}
+            {bulkBusy ? 'Working…' : 'Approve or acknowledge selected'}
           </Button>
         </div>
       ) : null}
 
       {actionError ? (
-        <Alert variant="destructive">
-          <AlertTriangle aria-hidden />
-          <AlertTitle>Could not complete that action</AlertTitle>
-          <AlertDescription>{actionError}</AlertDescription>
-        </Alert>
+        <Callout intent="error" title="Could not complete that action">
+          {actionError}
+        </Callout>
       ) : null}
 
-      {body}
-
-      <Separator />
-      <p className="max-w-3xl text-xs leading-relaxed text-muted-foreground">
-        A suppression rule only suppresses future matching alerts once approved; a memory only
-        becomes trusted once approved; and a tuning change is revalidated against the live value
-        before application. Rejected proposals are retained in history but never materialised.
-        Automation acknowledgements record review only and materialise nothing.
-        Proposal fields, values and rationale are rendered as plain text. {DASH}
-      </p>
+      {error ? (
+        <LoadError error={error} title="Could not load proposals" onRetry={() => void load()} />
+      ) : (
+        <Panel
+          title={statusFilter === 'pending' ? 'Pending proposals' : 'All proposals'}
+          count={loading && proposals.length === 0 ? undefined : proposals.length}
+          padding="none"
+          actions={queueControls}
+          data-testid="approvals-queue"
+        >
+          {queueBody}
+        </Panel>
+      )}
     </PageContainer>
   );
 }

@@ -1,19 +1,19 @@
 /**
- * Log Sources page (WS-C rebuild) — QRadar-style Log Source Management table.
+ * Sources page (WS-C rebuild, migrated to the Round 14 console grammar, SPEC §4.9.4).
  *
- * Fully mocked / offline. Verifies the rebuilt DataTable surface:
- *   - renders a row per source from the listSources mock (+ a live count),
- *   - the toolbar search filters the list client-side,
+ * Fully mocked / offline. Verifies the DataTable surface on its panel:
+ *   - a row per source from the listSources mock, and the source count beside the title,
+ *   - the filter bar's search and filters narrow the list client-side ("N of M shown"),
  *   - the inline per-row Enabled toggle round-trips through api.upsertSource,
- *   - "+ New Log Source" opens the SourceEditor dialog,
- *   - the Manage-Columns gear is present.
+ *   - "Add source" opens the SourceEditor dialog,
+ *   - the Columns menu is present.
  *
  * The heavy manifest-driven <SourceEditor> and the <SourceLogsSheet> are stubbed so
  * the test exercises the PAGE (toolbar/table/toggle/actions), not those children.
  */
 import * as React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor, fireEvent, within } from '@testing-library/react';
+import { act, render, screen, waitFor, fireEvent, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 const {
@@ -23,6 +23,7 @@ const {
   sourcesCoverageMock,
   upsertSourceMock,
   demoStatusMock,
+  deleteSourceMock,
 } = vi.hoisted(() => ({
   listConnectorsMock: vi.fn(),
   listSourcesMock: vi.fn(),
@@ -30,6 +31,7 @@ const {
   sourcesCoverageMock: vi.fn(),
   upsertSourceMock: vi.fn(),
   demoStatusMock: vi.fn(),
+  deleteSourceMock: vi.fn(),
 }));
 
 vi.mock('@/lib/api', () => {
@@ -61,7 +63,7 @@ vi.mock('@/lib/api', () => {
       sourcesHealth: sourcesHealthMock,
       sourcesCoverage: sourcesCoverageMock,
       upsertSource: upsertSourceMock,
-      deleteSource: vi.fn().mockResolvedValue({ ok: true, sources: [] }),
+      deleteSource: deleteSourceMock,
     },
   };
 });
@@ -75,10 +77,29 @@ vi.mock('sonner', () => ({
 vi.mock('@/soc/components/SourceEditor', () => ({
   SourceEditor: () => <div data-testid="source-editor" />,
 }));
-vi.mock('@/soc/components/SourceLogsSheet', () => ({
-  SourceLogsSheet: ({ source }: { source: unknown }) =>
-    source ? <div data-testid="logs-sheet" /> : null,
-}));
+// The logs sheet keeps the real Sheet shell (so the page's focus return can be checked)
+// around a stub body.
+vi.mock('@/soc/components/SourceLogsSheet', async () => {
+  const sheet = await vi.importActual<typeof import('@/ui/sheet')>('@/ui/sheet');
+  return {
+    SourceLogsSheet: ({
+      source,
+      onClose,
+      onCloseAutoFocus,
+    }: {
+      source: unknown;
+      onClose: () => void;
+      onCloseAutoFocus?: (event: Event) => void;
+    }) => (
+      <sheet.Sheet open={!!source} onOpenChange={(o) => !o && onClose()}>
+        <sheet.SheetContent aria-describedby={undefined} onCloseAutoFocus={onCloseAutoFocus}>
+          <sheet.SheetTitle>Source logs</sheet.SheetTitle>
+          <div data-testid="logs-sheet" />
+        </sheet.SheetContent>
+      </sheet.Sheet>
+    ),
+  };
+});
 
 import { ThemeProvider } from '../../theme';
 import { PrefsProvider } from '../../prefs';
@@ -256,7 +277,18 @@ function renderSources() {
   );
 }
 
-describe('Log Sources page (WS-C)', () => {
+/** The panel's "N of M shown" count (only while a filter is on). */
+const shownCount = () => screen.getByTestId('sources-panel').querySelector('[data-panel-count]');
+
+/** Open a filter-bar select by its accessible name and pick an option. */
+async function pickFilter(name: string, option: string) {
+  const trigger = screen.getByRole('combobox', { name });
+  fireEvent.keyDown(trigger, { key: 'Enter' });
+  const listbox = await screen.findByRole('listbox');
+  fireEvent.click(within(listbox).getByRole('option', { name: option }));
+}
+
+describe('Sources page (WS-C)', () => {
   beforeEach(() => {
     listConnectorsMock.mockReset().mockResolvedValue({ connectors: CONNECTORS });
     listSourcesMock.mockReset().mockResolvedValue({ sources: SOURCES });
@@ -264,6 +296,7 @@ describe('Log Sources page (WS-C)', () => {
     sourcesCoverageMock.mockReset().mockResolvedValue(COVERAGE);
     upsertSourceMock.mockReset().mockResolvedValue({ ok: true, sources: SOURCES });
     demoStatusMock.mockReset().mockResolvedValue({ mode: 'off', active: false, run_id: null });
+    deleteSourceMock.mockReset().mockResolvedValue({ ok: true, sources: [] });
     window.localStorage.clear();
   });
 
@@ -271,28 +304,28 @@ describe('Log Sources page (WS-C)', () => {
     renderSources();
     await waitFor(() => expect(screen.getByText('Prod ES')).toBeInTheDocument());
     expect(screen.getByText('Webhook Ingest')).toBeInTheDocument();
-    // The QRadar-style count line "Log Sources (N)".
-    expect(screen.getByTestId('sources-count')).toHaveTextContent('(2)');
+    // The count sits beside the title (C8); the panel repeats no total while unfiltered.
+    expect(screen.getByTestId('sources-total')).toHaveTextContent('2 sources');
+    expect(shownCount()).toBeNull();
   });
 
   it('filters the list client-side via the toolbar search', async () => {
     renderSources();
     await waitFor(() => expect(screen.getByText('Webhook Ingest')).toBeInTheDocument());
 
-    fireEvent.change(screen.getByLabelText('Search log sources'), {
+    fireEvent.change(screen.getByRole('searchbox', { name: 'Search sources' }), {
       target: { value: 'Prod' },
     });
 
     expect(screen.getByText('Prod ES')).toBeInTheDocument();
     expect(screen.queryByText('Webhook Ingest')).not.toBeInTheDocument();
-    expect(screen.getByTestId('sources-count')).toHaveTextContent('(1)');
+    expect(shownCount()).toHaveTextContent('1 of 2 shown');
 
-    const clear = screen.getByRole('button', { name: 'Clear search' });
-    expect(clear).toHaveClass('min-h-6', 'min-w-6');
-    expect(clear.querySelector('svg')).toHaveClass('size-4');
-    fireEvent.click(clear);
-    expect(screen.getByLabelText('Search log sources')).toHaveValue('');
+    // "Clear all" in the filter bar clears the search too.
+    fireEvent.click(screen.getByRole('button', { name: 'Clear all' }));
+    expect(screen.getByRole('searchbox', { name: 'Search sources' })).toHaveValue('');
     expect(screen.getByText('Webhook Ingest')).toBeInTheDocument();
+    expect(shownCount()).toBeNull();
   });
 
   it('the inline Enabled toggle round-trips through api.upsertSource', async () => {
@@ -308,13 +341,13 @@ describe('Log Sources page (WS-C)', () => {
     );
   });
 
-  it('"+ New Log Source" opens the SourceEditor dialog', async () => {
+  it('"Add source" opens the SourceEditor dialog', async () => {
     renderSources();
     await waitFor(() => expect(screen.getByText('Prod ES')).toBeInTheDocument());
 
-    fireEvent.click(screen.getByRole('button', { name: /new log source/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add source' }));
 
-    expect(await screen.findByText('Add a log source')).toBeInTheDocument();
+    expect(await screen.findByText('Add a source')).toBeInTheDocument();
     expect(screen.getByTestId('source-editor')).toBeInTheDocument();
   });
 
@@ -330,10 +363,10 @@ describe('Log Sources page (WS-C)', () => {
     expect(sourcesCoverageMock).toHaveBeenCalled();
     const banner = screen.getByTestId('coverage-banner');
     // 1 of 2 enabled · 42 events/min · 7 triaged · 0 silent (all from COVERAGE).
-    expect(within(banner).getByTestId('coverage-sources')).toHaveTextContent('1 of 2');
-    expect(within(banner).getByTestId('coverage-events')).toHaveTextContent('42');
-    expect(within(banner).getByTestId('coverage-alerts')).toHaveTextContent('7');
-    expect(within(banner).getByTestId('coverage-silent')).toHaveTextContent('0');
+    expect(within(banner).getByTestId('kpi-coverage-sources')).toHaveTextContent('1 of 2');
+    expect(within(banner).getByTestId('kpi-coverage-events')).toHaveTextContent('42');
+    expect(within(banner).getByTestId('kpi-coverage-alerts')).toHaveTextContent('7');
+    expect(within(banner).getByTestId('kpi-coverage-silent')).toHaveTextContent('0');
   });
 
   it('surfaces server-truth per-row status: Active / Silent / Error over the client 24h heuristic', async () => {
@@ -366,9 +399,9 @@ describe('Log Sources page (WS-C)', () => {
     await waitFor(() => expect(screen.getByTestId('coverage-banner')).toBeInTheDocument());
     const banner = screen.getByTestId('coverage-banner');
     // 3 of 3 enabled, 1 silent → the Silent cell reports 1 with the "need attention" sub.
-    expect(within(banner).getByTestId('coverage-sources')).toHaveTextContent('3 of 3');
-    expect(within(banner).getByTestId('coverage-silent')).toHaveTextContent('1');
-    expect(within(banner).getByTestId('coverage-silent')).toHaveTextContent(/need attention/i);
+    expect(within(banner).getByTestId('kpi-coverage-sources')).toHaveTextContent('3 of 3');
+    expect(within(banner).getByTestId('kpi-coverage-silent')).toHaveTextContent('1');
+    expect(within(banner).getByTestId('kpi-coverage-silent')).toHaveTextContent(/need attention/i);
   });
 
   it('derives the banner client-side when the coverage endpoint is unavailable', async () => {
@@ -383,22 +416,23 @@ describe('Log Sources page (WS-C)', () => {
     await waitFor(() => expect(screen.getByTestId('coverage-banner')).toBeInTheDocument());
     const banner = screen.getByTestId('coverage-banner');
     // Derived from health: 3 enabled, events/min 30 (only ok-1 flows), 1 silent.
-    expect(within(banner).getByTestId('coverage-sources')).toHaveTextContent('3 of 3');
-    expect(within(banner).getByTestId('coverage-events')).toHaveTextContent('30');
-    expect(within(banner).getByTestId('coverage-silent')).toHaveTextContent('1');
+    expect(within(banner).getByTestId('kpi-coverage-sources')).toHaveTextContent('3 of 3');
+    expect(within(banner).getByTestId('kpi-coverage-events')).toHaveTextContent('30');
+    expect(within(banner).getByTestId('kpi-coverage-silent')).toHaveTextContent('1');
     // Alerts-triaged is server-only → an em-dash, never a fabricated number.
-    expect(within(banner).getByTestId('coverage-alerts')).toHaveTextContent('—');
+    expect(within(banner).getByTestId('kpi-coverage-alerts')).toHaveTextContent('—');
   });
 
   it('shows one retryable error state instead of a misleading empty table when the initial list fails', async () => {
     listSourcesMock.mockRejectedValue(new Error('source inventory unavailable'));
 
     renderSources();
-    expect(await screen.findByText('Something went wrong')).toBeInTheDocument();
+    expect(await screen.findByText('Could not load sources')).toBeInTheDocument();
     expect(screen.getByText('source inventory unavailable')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument();
-    expect(screen.queryByRole('table', { name: 'Log Sources' })).toBeNull();
-    expect(screen.queryByTestId('sources-count')).toBeNull();
+    expect(screen.queryByRole('table', { name: 'Sources' })).toBeNull();
+    expect(screen.queryByTestId('sources-total')).toBeNull();
+    expect(screen.queryByTestId('sources-panel')).toBeNull();
   });
 
   it('keeps Pull/Push filtering useful when best-effort runtime health is unavailable', async () => {
@@ -406,15 +440,19 @@ describe('Log Sources page (WS-C)', () => {
     renderSources();
     await waitFor(() => expect(screen.getByText('Prod ES')).toBeInTheDocument());
 
-    fireEvent.click(screen.getByRole('button', { name: 'Filter log sources' }));
-    const kind = screen.getByRole('group', { name: 'Kind' });
-    fireEvent.click(within(kind).getByRole('button', { name: 'Pull' }));
+    await pickFilter('Kind', 'Pull');
     expect(screen.getByText('Prod ES')).toBeInTheDocument();
     expect(screen.queryByText('Webhook Ingest')).toBeNull();
+    // The active filter is a removable chip.
+    expect(screen.getByRole('button', { name: 'Remove filter: Kind: Pull' })).toBeInTheDocument();
 
-    fireEvent.click(within(kind).getByRole('button', { name: 'Push' }));
+    await pickFilter('Kind', 'Push');
     expect(screen.getByText('Webhook Ingest')).toBeInTheDocument();
     expect(screen.queryByText('Prod ES')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Remove filter: Kind: Push' }));
+    expect(screen.getByText('Prod ES')).toBeInTheDocument();
+    expect(screen.getByText('Webhook Ingest')).toBeInTheDocument();
   });
 
   it('takes browse capability from the SERVER, not from connector manifests or health', async () => {
@@ -444,7 +482,9 @@ describe('Log Sources page (WS-C)', () => {
 
     renderSources();
     await screen.findByText('Splunk Enterprise (Demo)');
-    expect(screen.getByRole('button', { name: /new log source/i })).toBeDisabled();
+    // Said in words, never a disabled button whose reason only a hover could reach.
+    expect(screen.queryByRole('button', { name: 'Add source' })).toBeNull();
+    expect(screen.getByTestId('sources-demo-fixed')).toHaveTextContent('Sources are fixed in Demo mode');
     expect(screen.queryByTestId('source-editor')).toBeNull();
   });
 
@@ -462,9 +502,12 @@ describe('Log Sources page (WS-C)', () => {
     const sourceName = await screen.findByText('Splunk Enterprise (Demo)');
 
     // Demo rows explain their ownership and render the source-native wire format,
-    // rather than the generic push/pull transport direction.
+    // rather than the generic push/pull transport direction. The list mixes a Demo source
+    // with a real one, so the Demo row is marked too, beside the panel's own Demo note.
     expect(sourceName.tagName).toBe('SPAN');
-    expect(screen.getByText('Demo')).toHaveAttribute('title', 'Managed by Demo Mode');
+    const demoMarks = screen.getAllByText('Demo');
+    expect(demoMarks).toHaveLength(2);
+    expect(demoMarks.some((mark) => mark.getAttribute('title') === 'Managed by Demo Mode')).toBe(true);
     expect(screen.getByText('HEC')).toBeInTheDocument();
 
     const enabled = screen.getByRole('switch', {
@@ -475,7 +518,8 @@ describe('Log Sources page (WS-C)', () => {
     });
     expect(enabled).toBeDisabled();
     expect(selected).toBeDisabled();
-    expect(screen.getByRole('button', { name: /new log source/i })).toBeDisabled();
+    expect(screen.queryByRole('button', { name: 'Add source' })).toBeNull();
+    expect(screen.getByTestId('sources-demo-fixed')).toBeInTheDocument();
 
     // Tenant mutations are absent/disabled, but read-only exploration remains useful.
     const user = userEvent.setup();
@@ -491,5 +535,289 @@ describe('Log Sources page (WS-C)', () => {
     expect(screen.queryByRole('menuitem', { name: 'Remove' })).toBeNull();
 
     expect(upsertSourceMock).not.toHaveBeenCalled();
+  });
+});
+
+/** Every visible text node, minus the lone DASH placeholder of an empty value. */
+function visibleCopy(root: HTMLElement): string[] {
+  const out: string[] = [];
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    const text = (node.textContent ?? '').trim();
+    if (text && text !== '—') out.push(text);
+  }
+  return out;
+}
+
+describe('Sources on the Round 14 console grammar (SPEC §4.9.4, C7 and C8)', () => {
+  beforeEach(() => {
+    listConnectorsMock.mockReset().mockResolvedValue({ connectors: CONNECTORS });
+    listSourcesMock.mockReset().mockResolvedValue({ sources: SOURCES_STATUS });
+    sourcesHealthMock.mockReset().mockResolvedValue({ sources: HEALTH_STATUS });
+    sourcesCoverageMock.mockReset().mockResolvedValue(COVERAGE_STATUS);
+    upsertSourceMock.mockReset().mockResolvedValue({ ok: true, sources: SOURCES_STATUS });
+    demoStatusMock.mockReset().mockResolvedValue({ mode: 'off', active: false, run_id: null });
+    deleteSourceMock.mockReset().mockResolvedValue({ ok: true, sources: [] });
+    window.localStorage.clear();
+    vi.unstubAllGlobals();
+  });
+
+  it('titles the page "Sources" with the explanation in a help tip, the count and Refresh beside it', async () => {
+    const user = userEvent.setup();
+    const { container } = renderSources();
+    await screen.findByText('Healthy ES');
+    const header = container.querySelector('[data-page-header="page"]') as HTMLElement;
+    expect(within(header).getByRole('heading', { level: 1 })).toHaveTextContent(/^Sources$/);
+    // No description line, overline or breadcrumb: the explanation is in the help tip.
+    expect(within(header).queryByText(/Connect and manage/)).toBeNull();
+    await user.click(within(header).getByRole('button', { name: 'About Sources' }));
+    expect(await screen.findByText('Connect and manage the systems the agent reads security events from.')).toBeInTheDocument();
+    const controls = header.querySelector('[data-page-header-controls]') as HTMLElement;
+    expect(within(controls).getByTestId('sources-total')).toHaveTextContent('3 sources');
+    expect(within(controls).getByRole('button', { name: 'Refresh sources' })).toBeInTheDocument();
+    expect(within(header).getByRole('button', { name: 'Add source' })).toBeInTheDocument();
+  });
+
+  it('puts the coverage on one KPI strip and the table on the "Connected sources" panel', async () => {
+    renderSources();
+    await screen.findByText('Healthy ES');
+    const strip = screen.getByRole('group', { name: 'Ingest coverage' });
+    // Compact, as on every other configuration page strip (C7).
+    expect(strip).toHaveAttribute('data-kpi-strip', 'compact');
+    expect(within(strip).getByTestId('kpi-coverage-silent')).toHaveTextContent('Silent sources');
+    const panel = screen.getByRole('region', { name: 'Connected sources' });
+    expect(panel).toHaveClass('surface-panel');
+    expect(within(panel).getByRole('table', { name: 'Sources' })).toBeInTheDocument();
+    expect(within(panel).getByRole('button', { name: /customize columns/i })).toBeInTheDocument();
+  });
+
+  it('gives Name the spare width, shrinks every other column to its content, and drops the pager for one page', async () => {
+    renderSources();
+    await screen.findByText('Healthy ES');
+    const table = screen.getByRole('table', { name: 'Sources' });
+    const headers = within(table).getAllByRole('columnheader');
+    const name = headers.find((th) => th.textContent?.includes('Name')) as HTMLElement;
+    expect(name).toHaveClass('w-full');
+    for (const label of ['Type', 'Status', 'Enabled', 'Last event', 'Protocol']) {
+      const th = headers.find((h) => h.textContent?.includes(label)) as HTMLElement;
+      expect(th, label).toHaveClass('w-px', 'whitespace-nowrap');
+    }
+    // Three sources fit one page: no pager, no page-size control.
+    expect(screen.queryByRole('combobox', { name: /rows per page/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /next page/i })).toBeNull();
+  });
+
+  it('keeps healthy statuses quiet and colours only the exceptions', async () => {
+    renderSources();
+    await screen.findByText('Healthy ES');
+    expect(screen.getByTestId('source-status-ok-1')).toHaveAttribute('data-status-tone', 'neutral');
+    expect(screen.getByTestId('source-status-silent-1')).toHaveAttribute('data-status-tone', 'warning');
+    expect(screen.getByTestId('source-status-broken-1')).toHaveAttribute('data-status-tone', 'critical');
+  });
+
+  it('notes Demo once beside the module title when every source is a Demo source', async () => {
+    demoStatusMock.mockResolvedValue({ mode: 'live', active: true, run_id: 'demo-ui' });
+    listSourcesMock.mockResolvedValue({ sources: [DEMO_SPLUNK] });
+    sourcesHealthMock.mockResolvedValue({ sources: [DEMO_SPLUNK_HEALTH] });
+    sourcesCoverageMock.mockResolvedValue({ ...COVERAGE, sources_total: 1, sources_enabled: 1 });
+    renderSources();
+    await screen.findByText('Splunk Enterprise (Demo)');
+    const panel = screen.getByRole('region', { name: 'Connected sources' });
+    const notes = within(panel).getAllByText('Demo');
+    expect(notes).toHaveLength(1);
+    expect(notes[0].closest('[data-panel-caption]')).not.toBeNull();
+  });
+
+  it('shows no em dash and never the word "playbook" in its copy', async () => {
+    const { container } = renderSources();
+    await screen.findByText('Healthy ES');
+    const copy = visibleCopy(container);
+    expect(copy.filter((text) => text.includes('—'))).toEqual([]);
+    expect(copy.filter((text) => /playbook/i.test(text))).toEqual([]);
+  });
+
+  it('spells product names as their owners do (QRadar), in the type column, the subline and the type filter', async () => {
+    listSourcesMock.mockResolvedValue({
+      sources: [
+        ...SOURCES_STATUS,
+        { id: 'qr-1', source_type: 'qradar', display_name: '', enabled: true, is_primary: false, ingest_mode: 'pull', config: {}, configured_secrets: [] },
+      ],
+    });
+    renderSources();
+    await screen.findByText('Healthy ES');
+    const table = screen.getByRole('table', { name: 'Sources' });
+    expect(within(table).getAllByText('QRadar').length).toBeGreaterThan(0);
+    expect(table.textContent ?? '').not.toContain('Qradar');
+    expect(table.textContent ?? '').toContain('QRadar · Pull');
+    fireEvent.keyDown(screen.getByRole('combobox', { name: 'Type' }), { key: 'Enter' });
+    const listbox = await screen.findByRole('listbox');
+    expect(within(listbox).getByRole('option', { name: 'QRadar' })).toBeInTheDocument();
+  });
+
+  it('names the "any" filter options plainly', async () => {
+    renderSources();
+    await screen.findByText('Healthy ES');
+    fireEvent.keyDown(screen.getByRole('combobox', { name: 'Enabled' }), { key: 'Enter' });
+    expect(within(await screen.findByRole('listbox')).getByRole('option', { name: 'Any state' })).toBeInTheDocument();
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByRole('listbox')).toBeNull());
+    fireEvent.keyDown(screen.getByRole('combobox', { name: 'Kind' }), { key: 'Enter' });
+    expect(within(await screen.findByRole('listbox')).getByRole('option', { name: 'Any kind' })).toBeInTheDocument();
+    expect(screen.queryByText('Enabled or not')).toBeNull();
+    expect(screen.queryByText('Pull or push')).toBeNull();
+  });
+
+  it('keeps the row menu Remove neutral at rest, red only on focus (the RowActions rule)', async () => {
+    const user = userEvent.setup();
+    renderSources();
+    await screen.findByText('Healthy ES');
+    await user.click(screen.getByRole('button', { name: 'Actions for Quiet ES' }));
+    const remove = await screen.findByRole('menuitem', { name: 'Remove' });
+    const resting = remove.className.split(/\s+/).filter((cls) => !cls.includes(':'));
+    expect(resting.filter((cls) => cls.includes('critical'))).toEqual([]);
+    expect(remove.className).toContain('focus:text-critical-text');
+    expect(remove.className).toContain('focus:bg-critical/10');
+  });
+
+  it('returns focus to the row Actions button when Browse logs closes (SPEC §3.3)', async () => {
+    listSourcesMock.mockResolvedValue({ sources: SOURCES });
+    sourcesHealthMock.mockResolvedValue({ sources: HEALTH });
+    const user = userEvent.setup();
+    renderSources();
+    await screen.findByText('Prod ES');
+    const trigger = screen.getByRole('button', { name: 'Actions for Prod ES' });
+    await user.click(trigger);
+    await user.click(await screen.findByRole('menuitem', { name: 'Browse logs' }));
+    const sheet = await screen.findByRole('dialog', { name: 'Source logs' });
+    await user.click(within(sheet).getByRole('button', { name: 'Close' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await waitFor(() => expect(document.activeElement).toBe(trigger));
+  });
+
+  it('returns focus to the row Actions button when the editor or the remove confirmation closes', async () => {
+    const user = userEvent.setup();
+    renderSources();
+    await screen.findByText('Healthy ES');
+    const trigger = screen.getByRole('button', { name: 'Actions for Broken ES' });
+
+    await user.click(trigger);
+    await user.click(await screen.findByRole('menuitem', { name: 'Edit' }));
+    const editor = await screen.findByRole('dialog', { name: 'Edit Broken ES' });
+    await user.click(within(editor).getByRole('button', { name: 'Close' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await waitFor(() => expect(document.activeElement).toBe(trigger));
+
+    await user.click(trigger);
+    await user.click(await screen.findByRole('menuitem', { name: 'Remove' }));
+    const confirm = await screen.findByRole('alertdialog');
+    await user.click(within(confirm).getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
+    await waitFor(() => expect(document.activeElement).toBe(trigger));
+  });
+
+  it("moves focus to the next row's Actions after a removal, never to the page body", async () => {
+    const user = userEvent.setup();
+    renderSources();
+    await screen.findByText('Healthy ES');
+    const triggers = () =>
+      Array.from(document.querySelectorAll<HTMLElement>('[data-source-row-actions]'));
+    const trigger = screen.getByRole('button', { name: 'Actions for Quiet ES' });
+    const before = triggers();
+    const index = before.indexOf(trigger);
+    const expected = before[index + 1] ?? before[index - 1];
+
+    // The delete answers only after the confirmation has closed and handed focus back.
+    let finishDelete!: () => void;
+    deleteSourceMock.mockImplementationOnce(
+      () => new Promise((resolve) => (finishDelete = () => resolve({ ok: true, sources: [] }))),
+    );
+    listSourcesMock.mockResolvedValue({ sources: SOURCES_STATUS.filter((s) => s.id !== 'silent-1') });
+    await user.click(trigger);
+    await user.click(await screen.findByRole('menuitem', { name: 'Remove' }));
+    await user.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Remove source' }));
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
+    await waitFor(() => expect(document.activeElement).toBe(trigger));
+
+    await act(async () => finishDelete());
+    await waitFor(() => expect(screen.queryByText('Quiet ES')).toBeNull());
+    await waitFor(() => expect(document.activeElement).toBe(expected));
+    expect(deleteSourceMock).toHaveBeenCalledWith('silent-1');
+  });
+
+  it('moves focus to the panel heading when a bulk removal hides the bulk bar', async () => {
+    const user = userEvent.setup();
+    renderSources();
+    await screen.findByText('Healthy ES');
+    await user.click(screen.getByRole('checkbox', { name: 'Select row silent-1' }));
+    await user.click(screen.getByRole('checkbox', { name: 'Select row broken-1' }));
+    const bar = screen.getByRole('region', { name: 'Bulk actions' });
+    listSourcesMock.mockResolvedValue({ sources: [SOURCES_STATUS[0]] });
+    await user.click(within(bar).getByRole('button', { name: 'Remove' }));
+    await user.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Remove sources' }));
+    await waitFor(() => expect(screen.queryByRole('region', { name: 'Bulk actions' })).toBeNull());
+    const heading = screen.getByRole('heading', { name: 'Connected sources' });
+    await waitFor(() => expect(document.activeElement).toBe(heading));
+    expect(deleteSourceMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('moves focus to the panel heading when Clear selection hides the bulk bar', async () => {
+    const user = userEvent.setup();
+    renderSources();
+    await screen.findByText('Healthy ES');
+    await user.click(screen.getByRole('checkbox', { name: 'Select row silent-1' }));
+    const bar = screen.getByRole('region', { name: 'Bulk actions' });
+    await user.click(within(bar).getByRole('button', { name: 'Clear selection' }));
+    await waitFor(() => expect(screen.queryByRole('region', { name: 'Bulk actions' })).toBeNull());
+    await waitFor(() =>
+      expect(document.activeElement).toBe(screen.getByRole('heading', { name: 'Connected sources' })),
+    );
+  });
+
+  it('moves focus to the first-run panel when the last source is removed', async () => {
+    listSourcesMock.mockResolvedValue({ sources: [SOURCES_STATUS[0]] });
+    const user = userEvent.setup();
+    renderSources();
+    await screen.findByText('Healthy ES');
+
+    listSourcesMock.mockResolvedValue({ sources: [] });
+    await user.click(screen.getByRole('button', { name: 'Actions for Healthy ES' }));
+    await user.click(await screen.findByRole('menuitem', { name: 'Remove' }));
+    await user.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Remove source' }));
+    const firstRun = (await screen.findByText('Connect your first source')).closest<HTMLElement>('[data-panel]');
+    await waitFor(() => expect(document.activeElement).toBe(firstRun));
+  });
+
+  it('returns focus to Add source when the editor closes', async () => {
+    const user = userEvent.setup();
+    renderSources();
+    await screen.findByText('Healthy ES');
+    const add = screen.getByRole('button', { name: 'Add source' });
+    await user.click(add);
+    const editor = await screen.findByRole('dialog', { name: 'Add a source' });
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(editor).not.toBeInTheDocument());
+    await waitFor(() => expect(document.activeElement).toBe(add));
+  });
+
+  it('collapses the filters into one "Filters" sheet at phone width', async () => {
+    vi.stubGlobal(
+      'matchMedia',
+      vi.fn((query: string) => ({
+        matches: query === '(max-width: 767.98px)',
+        media: query,
+        onchange: null,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+        dispatchEvent: vi.fn(),
+      })),
+    );
+    renderSources();
+    await screen.findByText('Healthy ES');
+    const bar = screen.getByRole('group', { name: 'Source filters' });
+    expect(within(bar).getByRole('button', { name: /^Filters/ })).toBeInTheDocument();
+    expect(within(bar).queryByRole('combobox', { name: 'Kind' })).toBeNull();
+    vi.unstubAllGlobals();
   });
 });

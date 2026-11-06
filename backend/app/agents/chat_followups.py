@@ -58,7 +58,7 @@ ANCHOR_MAX_CHARS = 120
 
 #: Tools whose artifacts are product help, not data (no anchors, no deterministic chips).
 PRODUCT_TOOLS = frozenset({"app_help", "app_status"})
-#: Tools whose artifacts are reference text (runbooks, playbooks, knowledge search):
+#: Tools whose artifacts are reference text (the runbook library, knowledge search):
 #: they anchor chips, but an answer that shows only reference is judged like product
 #: help (its model chips are kept unchecked, at most two).
 REFERENCE_TOOLS = frozenset({"search_knowledge"})
@@ -794,7 +794,7 @@ def select_follow_ups(
        lookup observed anchors only when the answer shows it (an artifact or
        ``answer_text`` names it, or the lookup was asked about it);
     2. a model chip is kept only when anchored; without data artifacts (product help,
-       conversation, or reference only: runbooks, playbooks, knowledge) model chips are
+       conversation, or reference only: the runbook library, knowledge) model chips are
        kept unchecked, at most two. A chip that asks one of ``widening`` (the questions
        of this answer's own zero-result suggestions, :func:`suggestion_question`) is
        anchored: it re-runs this answer's lookup;

@@ -84,12 +84,14 @@ describe('InvestigationInputs', () => {
     expect(heading).not.toHaveClass('uppercase');
 
     const labels = screen.getAllByTestId('investigation-input-label');
+    // Round 14: runbook passages found by retrieval are "Runbook references"; this
+    // fixture's procedure is from before Round 14, so it keeps the legacy label.
     expect(labels.map((label) => label.textContent)).toEqual([
       'Memory',
       'Knowledge',
-      'Runbook',
+      'Runbook references',
       'Persona',
-      'Playbook',
+      'Runbook (before Round 14)',
       'Threshold tuning',
     ]);
     for (const label of labels) {
@@ -99,7 +101,7 @@ describe('InvestigationInputs', () => {
     expect(container.querySelectorAll('.uppercase')).toHaveLength(0);
   });
 
-  it('does not claim that a merely selected playbook was consulted', () => {
+  it('does not claim that a merely selected procedure from before Round 14 was consulted', () => {
     render(
       <InvestigationInputs
         rationale={{
@@ -111,7 +113,69 @@ describe('InvestigationInputs', () => {
     );
 
     expect(screen.queryByText('selected-only')).toBeNull();
-    expect(screen.getByText('Runbook')).toBeInTheDocument();
+    expect(screen.getByText('Runbook references')).toBeInTheDocument();
+  });
+
+  it('names the Published runbook the latest run received, with its version (Round 14)', () => {
+    const { container } = render(
+      <InvestigationInputs
+        rationale={{
+          case_id: 'case-r14',
+          knowledge: [],
+          runbook: {
+            id: 'brute-force',
+            version: 4,
+            title: 'Brute force and password spray',
+            reason: 'Matched rule auth-failures',
+            consulted: true,
+            selected_id: 'brute-force',
+          },
+          procedure_provenance: {
+            persona: { selected_id: '', selection_reason: '', consulted: false },
+            playbook: { selected_id: '', selection_reason: '', consulted: false },
+            consultation_path: 'strong_investigator',
+            retrieval_status: 'measured',
+            retrieval_query_groups: [],
+            knowledge: [],
+          },
+          // A stale legacy field never shows beside a Round 14 runbook.
+          playbook: { id: 'old-procedure', consulted: true },
+        } as unknown as CaseRationale}
+      />,
+    );
+
+    expect(screen.getByText('Brute force and password spray · v4 · Consulted')).toBeInTheDocument();
+    expect(screen.getByLabelText(/^Runbook: Brute force/)).toHaveAttribute(
+      'aria-label',
+      expect.stringMatching(/received this Published runbook as guidance\. Matched because: Matched rule auth-failures/),
+    );
+    expect(screen.queryByText(/old-procedure/)).toBeNull();
+    expect(container.textContent).not.toMatch(/playbook|\u2014/i);
+    expect(screen.getByText(/Deterministic policy still made the final route/)).toBeInTheDocument();
+  });
+
+  it('discloses a matched runbook the run never received as selected only, never as an input', () => {
+    render(
+      <InvestigationInputs
+        showSelectionStatus
+        rationale={{
+          case_id: 'case-r14-selected',
+          knowledge: [],
+          runbook: { id: '', version: null, title: '', reason: '', consulted: false, selected_id: 'brute-force' },
+          procedure_provenance: {
+            persona: { selected_id: '', selection_reason: '', consulted: false },
+            playbook: { selected_id: '', selection_reason: '', consulted: false },
+            consultation_path: 'kill_switch',
+            retrieval_status: 'not_attempted',
+            retrieval_query_groups: [],
+            knowledge: [],
+          },
+        } as unknown as CaseRationale}
+        onReview={vi.fn()}
+      />,
+    );
+    expect(screen.getByText('brute-force · Selected only')).toBeInTheDocument();
+    expect(screen.queryByText(/These inputs informed preprocessing/)).toBeNull();
   });
 
   it('discloses selected-only procedures in the Investigation view without calling them inputs', () => {

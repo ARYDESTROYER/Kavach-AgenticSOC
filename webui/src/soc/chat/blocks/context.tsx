@@ -11,22 +11,34 @@
  *   costs a keyboard user their focus (see {@link CaseHoverArm}).
  *
  * Every navigation is a READ: blocks cannot trigger a mutation (G10).
+ *
+ * Round 14 (SPEC §4.6.3): a drill target may also be a {@link RuleRef} (`page: "rule"`),
+ * which is not a route. `navigate` accepts it so a chart bar or a table row hands it over
+ * like any other target; a block card's provider opens it as the rule sheet
+ * (`rule-drill.tsx`), and the shell router's default navigation ignores it.
  */
 import * as React from 'react';
 
 import { cn } from '@/lib/cn';
 import type { Case } from '@/lib/types';
+import type { AnswerLocation } from '@/soc/answer-origin';
 import { focusRing } from '@/lib/ui-recipes';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/ui/tooltip';
+import { navLabel } from '@/soc/nav';
 import { pageHash, settingsSectionHash, useNavigateOptional } from '@/soc/router';
 import { isSafeCaseId } from '@/soc/case-result-route';
 import { softBreakLongTokens } from '../starters/soft-breaks';
 
-import type { BlockRef, CaseStatusKey, InternalRef, SeverityKey, VerdictKey } from './schema';
-import { isDocRef, parseDocRef, parseInternalRef } from './schema';
+import type { BlockRef, CaseStatusKey, DrillRef, InternalRef, SeverityKey, VerdictKey } from './schema';
+import { isDocRef, isRuleRef, parseDocRef, parseInternalRef } from './schema';
 
 export interface BlocksContextValue {
-  /** Navigate to a validated in-app ref (defaults to the router). */
-  navigate: (ref: InternalRef) => void;
+  /**
+   * Follow a validated drill target: an in-app route (defaults to the router), or a rule
+   * ref, which a block card opens as the rule sheet. `opener` is the element focus returns
+   * to when a sheet it opened closes (a chart's plot).
+   */
+  navigate: (ref: DrillRef, opener?: HTMLElement | null) => void;
   /** Transcript density (Case Manager embed). */
   compact: boolean;
   /** Sanitised DOM id prefix for in-message anchors (citations, report TOC). */
@@ -41,6 +53,12 @@ export interface BlocksContextValue {
    * top-level citations anchor.
    */
   citationOwner?: string;
+  /**
+   * The saved answer these blocks belong to (Round 14, "Back to answer"): a drill that
+   * leaves the answer remembers exactly this conversation and message, never whichever
+   * thread the Chat page would reopen. Absent outside a saved chat answer.
+   */
+  answer?: AnswerLocation;
 }
 
 const NOOP = () => undefined;
@@ -55,10 +73,27 @@ export function useBlocks(): BlocksContextValue {
   return React.useContext(BlocksContext);
 }
 
-/** The default navigation: the shell router (a no-op outside a RouterProvider). */
-export function useRouterNavigate(): (ref: InternalRef) => void {
+/**
+ * The default navigation: the shell router (a no-op outside a RouterProvider). A rule ref
+ * is not a route, so it is ignored here (the block card opens it as the rule sheet).
+ */
+export function useRouterNavigate(): (ref: DrillRef) => void {
   const navigate = useNavigateOptional();
-  return React.useCallback((ref: InternalRef) => navigate(ref.page, ref.opts), [navigate]);
+  return React.useCallback(
+    (ref: DrillRef) => {
+      if (isRuleRef(ref)) return;
+      navigate(ref.page, ref.opts);
+    },
+    [navigate],
+  );
+}
+
+/**
+ * What following a drill target does, in words (a tooltip note, a button name): "Open in
+ * Logs" for a route, "See this rule's alerts and cases" for a rule.
+ */
+export function drillLabel(ref: DrillRef): string {
+  return isRuleRef(ref) ? "See this rule's alerts and cases" : `Open in ${navLabel(ref.page)}`;
 }
 
 const DOM_ID_SAFE = /[^A-Za-z0-9_-]/g;
@@ -145,6 +180,37 @@ export const RefLink = React.forwardRef<HTMLAnchorElement, RefLinkProps>(functio
     </a>
   );
 });
+
+export interface RefIconLinkProps {
+  refValue: InternalRef;
+  /** What it opens ("Open in Logs: sshd, High"): its accessible name and its tooltip. */
+  label: string;
+  icon: React.ReactNode;
+}
+
+/**
+ * A row's icon-only drill ("Open in Logs"), the `RowActions` grammar (ui-standard, Status
+ * and actions): a neutral ghost icon named by its label, which is also its tooltip, shown
+ * on hover AND on keyboard focus (never a native `title`, which a keyboard user never
+ * sees); 44px on a phone, where it is the row's primary control, and 32px from 640px.
+ * Needs the app's one root `TooltipProvider`.
+ */
+export function RefIconLink({ refValue, label, icon }: RefIconLinkProps) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <RefLink
+          refValue={refValue}
+          aria-label={label}
+          className="inline-flex size-11 shrink-0 items-center justify-center rounded-md text-muted-foreground no-underline hover:bg-muted hover:text-foreground hover:no-underline sm:size-8 [&_svg]:size-4"
+        >
+          {icon}
+        </RefLink>
+      </TooltipTrigger>
+      <TooltipContent side="top">{label}</TooltipContent>
+    </Tooltip>
+  );
+}
 
 /* -------------------------------------------------------------------------- */
 /* Case links with a lazy hover preview.                                       */

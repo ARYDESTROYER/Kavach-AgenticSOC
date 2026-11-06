@@ -186,10 +186,111 @@ SOURCE_NATIVE_ALERT_KEYS: tuple[str, ...] = tuple(_NATIVE_ALERT_RULES)
 SYSLOG_DETECTION_RULE_IDS: frozenset[str] = frozenset(
     gen.NATIVE_STORY_RULE_IDS["syslog"].values()
 )
+#: Each source's routine telemetry (``rule id``, ``rule name``, ``action``): the
+#: benign traffic it streams, and the rule a routine-telemetry seeded case carries.
+ROUTINE_TELEMETRY_RULES: dict[str, tuple[str, str, str]] = {
+    "splunk": ("web_access", "Successful portal API request", "request"),
+    "qradar": ("LP-QR-0001", "Allowed application flow", "allow"),
+    "wazuh": ("osquery_process_event", "Expected signed process start", "process_start"),
+    "syslog": ("SSHD-SESSION", "SSH session accepted", "authentication"),
+    "entra": ("Entra sign-in", "Successful interactive sign-in", "authentication"),
+}
+#: The subject of each storyline's detection (source IP, user, host, action,
+#: outcome, 0..100 severity). All public addresses are RFC 5737 documentation ranges.
+_STORY_SUBJECTS: dict[str, tuple[str, str, str, str, str, float]] = {
+    "phishing_chain": ("203.0.113.77", "pnair", "web-api", "login", "success", 91.0),
+    "rdp_bruteforce": ("198.51.100.42", "admin0", "jumpbox01", "login", "failure", 86.0),
+    "sqli_webshell": ("192.0.2.90", "svc_bureau", "web-api", "upload", "success", 90.0),
+    "impossible_travel": ("203.0.113.190", "rmenon", "vpn01", "login", "success", 74.0),
+    "ransomware_beacon": ("198.51.100.77", "svc_bureau", "appsrv02", "file_modify", "success", 96.0),
+    "insider_staging": ("10.20.6.12", "akulkarni", "bureau-gw", "download", "success", 76.0),
+}
+_DEFAULT_STORY_SUBJECT = ("203.0.113.77", "pnair", "web-api", "alert", "success", 85.0)
+#: The source address and user of a low-confidence native alert (a known scanner).
+_NATIVE_ALERT_SUBJECT = ("198.51.100.23", "scanner_service")
+#: What an outside address reaches in a seeded row: an account no person owns, on the
+#: public web tier (a storyline row uses its own service host instead).
+_OUTSIDE_SUBJECT = ("anonymous", "web-api")
+
+#: The kinds of detection a seeded case can carry (``demo_generator`` templates):
+#: a storyline's own detection, a source's low-confidence native alert, or an
+#: anomaly flagged in a source's routine telemetry.
+SEEDED_SIGNAL_STORY = "story"
+SEEDED_SIGNAL_ALERT = "alert"
+SEEDED_SIGNAL_TELEMETRY = "telemetry"
+
+
+def seeded_detection_rule(kind: str, source_key: str, story_id: str | None = None) -> tuple[str, str]:
+    """The ``(rule id, rule name)`` a Demo source raises for a seeded case's
+    detection: the storyline's source-native rule (``NATIVE_STORY_RULE_IDS``), the
+    source's low-confidence native alert, or its routine telemetry rule. These are
+    the rule values the source's log rows carry, so a seeded case's rule sheet and
+    Logs read rows that exist. ``ValueError`` for a combination the source never
+    raises (raw syslog has no native alert; an unknown storyline)."""
+    if source_key not in DEMO_SOURCE_SPECS:
+        raise ValueError(f"unknown demo source: {source_key}")
+    if kind == SEEDED_SIGNAL_STORY:
+        story = gen._STORYLINE_BY_ID.get(story_id or "")  # noqa: SLF001 - same Demo world
+        if story is None:
+            raise ValueError(f"unknown demo storyline: {story_id}")
+        return gen.NATIVE_STORY_RULE_IDS[source_key][story.id], story.name
+    if kind == SEEDED_SIGNAL_ALERT:
+        if source_key not in _NATIVE_ALERT_RULES:
+            raise ValueError(f"the {source_key} demo source raises no native alert")
+        return _NATIVE_ALERT_RULES[source_key]
+    if kind == SEEDED_SIGNAL_TELEMETRY:
+        rule_id, rule_name, _action = ROUTINE_TELEMETRY_RULES[source_key]
+        return rule_id, rule_name
+    raise ValueError(f"unknown seeded signal kind: {kind}")
+
+
+def describe_seeded_rule(source_key: str, rule_id: str) -> tuple[str, str, str | None] | None:
+    """``(kind, rule name, storyline id)`` of a rule value ``source_key`` raises, or
+    ``None`` for a value the source never raises (a capability seed's own rule)."""
+    for story_id, native in gen.NATIVE_STORY_RULE_IDS.get(source_key, {}).items():
+        if native == rule_id:
+            return SEEDED_SIGNAL_STORY, gen._STORYLINE_BY_ID[story_id].name, story_id  # noqa: SLF001
+    alert = _NATIVE_ALERT_RULES.get(source_key)
+    if alert is not None and alert[0] == rule_id:
+        return SEEDED_SIGNAL_ALERT, alert[1], None
+    routine = ROUTINE_TELEMETRY_RULES.get(source_key)
+    if routine is not None and routine[0] == rule_id:
+        return SEEDED_SIGNAL_TELEMETRY, routine[1], None
+    return None
+
+#: The domain of the user principal names Entra ID's sign-in records carry in the Demo
+#: world: the Demo org's own (``demo_generator.build_org``).
+_ENTRA_UPN_DOMAIN = "lumenpay.example"
+
+
+def source_user_name(source_key: str, user: str) -> str:
+    """The name ``source_key``'s records carry for the Demo person ``user``. Entra ID
+    names a person by the user principal name of its sign-in records
+    (``userPrincipalName``, the field the Entra receiver maps to the user); every other
+    Demo source by the account name. A seeded case on Entra therefore carries the
+    identity a live Entra case for that person carries, and its rows match it."""
+    if source_key == "entra" and "@" not in user:
+        return f"{user}@{_ENTRA_UPN_DOMAIN}"
+    return user
+
 
 # The deterministic mock provider imports this mapping through demo_generator.  Values
 # here are source-native rule identities, not hidden demo control strings.
 NATIVE_RULE_TO_STORY = gen.NATIVE_RULE_TO_STORY
+
+
+def _case_created_millis(case: Any) -> int | None:
+    """When a case was opened, in epoch milliseconds (``None`` when unreadable)."""
+    raw = getattr(case, "created_at", None)
+    if not raw:
+        return None
+    try:
+        moment = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return int(moment.timestamp() * 1000)
 
 
 def _iso_millis(ts_millis: int) -> str:
@@ -492,9 +593,7 @@ def render_entra_signin(signal: NativeSignal) -> str:
         "id": signal.native_id,
         "createdDateTime": _iso_millis(signal.timestamp_millis),
         "userDisplayName": signal.user.split("@")[0].replace(".", " ").title(),
-        "userPrincipalName": (
-            signal.user if "@" in signal.user else f"{signal.user}@lumenpay.example"
-        ),
+        "userPrincipalName": source_user_name("entra", signal.user),
         "userId": stable_signature("demo-entra-user", signal.user),
         "ipAddress": signal.source_ip,
         "appDisplayName": "LumenPay Borrower Operations",
@@ -569,6 +668,11 @@ class NativeDemoSource:
     """Offline source adapter: native wire payload -> production parser -> RawEvent."""
 
     _RECENT_MAX = 500
+    #: The seeded cases' own detections (:meth:`record_case_history`) a source keeps
+    #: beside its live ring; seeding stops at this many, so it stays bounded.
+    _HISTORY_MAX = 2_000
+    #: The most rows one seeded case contributes (one per member event).
+    _HISTORY_ROWS_PER_CASE = 20
 
     def __init__(self, key: str, *, seed: int = 1337) -> None:
         if key not in DEMO_SOURCE_SPECS:
@@ -579,6 +683,11 @@ class NativeDemoSource:
         self._seed = int(seed)
         self._org = gen.build_org(seed)
         self._recent: deque[RawEvent] = deque(maxlen=self._RECENT_MAX)
+        # Rows of the seeded cases, dated inside each case's window. Logs and the rule
+        # sheet search them with the live ring; the pipeline never polls them (they
+        # already became the seeded cases) and source health ignores them.
+        self._history: list[RawEvent] = []
+        self._history_keys: set[str] = set()
         self._events_total = 0
         self._alerts_total = 0
         self._system_detections_total = 0
@@ -724,8 +833,11 @@ class NativeDemoSource:
                 event.index_role = "alerts"
         return events
 
-    def emit_signal(self, signal: NativeSignal, prefs: Preferences) -> NativeEmission:
-        """Render and parse one signal, retaining it in the bounded browse ring."""
+    def _render_and_parse(
+        self, signal: NativeSignal, prefs: Preferences, *, structured_syslog: bool = False,
+    ) -> tuple[str, list[RawEvent], bool]:
+        """Render ``signal`` in this source's wire format and parse it with the
+        production receiver: ``(payload, events, is_native_alert)``. Nothing is kept."""
         if self.spec.key == "splunk":
             payload = render_splunk_hec(signal)
         elif self.spec.key == "qradar":
@@ -741,7 +853,9 @@ class NativeDemoSource:
                 ordinal = 1
             # A quarter of benign messages use legacy BSD syslog; incident bursts stay
             # RFC 5424 so their structured entity fields reach deterministic detection.
-            use_3164 = not signal.story_id and ordinal % 4 == 0
+            # A BSD record carries no rule, so a row that must keep its rule
+            # (``structured_syslog``) is always RFC 5424.
+            use_3164 = not structured_syslog and not signal.story_id and ordinal % 4 == 0
             payload = render_rfc3164(signal) if use_3164 else render_rfc5424(signal)
 
         # Syslog is raw telemetry even during a coordinated incident; Agentic SOC's own
@@ -755,6 +869,11 @@ class NativeDemoSource:
             # truthful fallback so health/correlation never report epoch zero.
             if not event.timestamp_millis:
                 event.timestamp_millis = signal.timestamp_millis
+        return payload, events, is_native_alert
+
+    def emit_signal(self, signal: NativeSignal, prefs: Preferences) -> NativeEmission:
+        """Render and parse one signal, retaining it in the bounded browse ring."""
+        payload, events, is_native_alert = self._render_and_parse(signal, prefs)
         self._last_payload = payload
         self._recent.extend(events)
         self._events_total += len(events)
@@ -774,6 +893,130 @@ class NativeDemoSource:
             story_id=signal.story_id,
         )
 
+    def record_case_history(self, case: Any, prefs: Preferences) -> int:
+        """Keep a seeded case's own detection rows in this source (FX3b2): one row per
+        member event (at most :attr:`_HISTORY_ROWS_PER_CASE`), carrying the member
+        event's id, the case's rule and entity, dated evenly inside the case's window
+        (first seen to opened), and rendered and parsed exactly as live rows are. So
+        the case's rule sheet, Logs and runbook lookups (a lookup on the case's entity
+        included) read rows that exist for it, and re-fetching the case's member events
+        by id (``case_cluster.cluster_for_case``, which a lookup's case span comes from)
+        returns these rows, never newer live rows of the same entity. The case's other
+        identities are drawn once per case, so all of its rows agree
+        (:meth:`_history_signal`). A rule this source never raises (the tuner's
+        Demo-only rule) records nothing. Idempotent per case; never touches the live
+        ring, the pipeline's poll or source health. Returns the rows recorded."""
+        rules = list(getattr(case, "rule_ids", None) or [])
+        described = describe_seeded_rule(self.spec.key, str(rules[0])) if rules else None
+        if described is None:
+            return 0
+        kind, rule_name, story_id = described
+        case_id = str(getattr(case, "case_id", "") or "")
+        created = _case_created_millis(case)
+        if not case_id or created is None:
+            return 0
+        first = int(getattr(case, "first_seen_millis", None) or (created - 60_000))
+        first = min(first, created)
+        member_ids = [str(m) for m in (getattr(case, "member_event_ids", None) or []) if m]
+        count = max(1, min(len(member_ids) or 1, self._HISTORY_ROWS_PER_CASE))
+        rng = random.Random(f"{self._seed}:{case_id}:history")
+        # One internal address, one person and one host of the Demo org for the whole
+        # case: every row of a case agrees on the identities the case is not keyed by.
+        employee = self._org.employees[rng.randrange(len(self._org.employees))]
+        host = self._org.hosts[rng.randrange(len(self._org.hosts))]
+        internal = (f"10.20.{20 + rng.randrange(20)}.{2 + rng.randrange(248)}",
+                    source_user_name(self.spec.key, employee.user), host.name)
+        recorded = 0
+        for ordinal in range(count):
+            key = f"{case_id}:{ordinal}"
+            if key in self._history_keys:
+                continue
+            if len(self._history) >= self._HISTORY_MAX:
+                break
+            signal = self._history_signal(
+                case, kind=kind, rule_id=str(rules[0]), rule_name=rule_name, story_id=story_id, rng=rng,
+                timestamp_millis=first + (created - first) * ordinal // count, ordinal=ordinal,
+                internal=internal,
+            )
+            _payload, events, _alert = self._render_and_parse(signal, prefs, structured_syslog=True)
+            # The row IS the case's member event: it answers a fetch of that id.
+            member_id = member_ids[ordinal] if ordinal < len(member_ids) else f"{case_id}-{ordinal:02d}"
+            for position, event in enumerate(events):
+                event.id = member_id if len(events) == 1 else f"{member_id}-{position}"
+            self._history.extend(events)
+            self._history_keys.add(key)
+            recorded += len(events)
+        return recorded
+
+    def _history_signal(
+        self, case: Any, *, kind: str, rule_id: str, rule_name: str, story_id: str | None,
+        rng: random.Random, timestamp_millis: int, ordinal: int, internal: tuple[str, str, str],
+    ) -> NativeSignal:
+        """One seeded detection row: the live signal of the same kind (a storyline's
+        action, a known scanner, or routine traffic) carrying the case's own entity.
+
+        ``internal`` is the case's ``(internal address, person, host)``, drawn once per
+        case by :meth:`record_case_history`, so every row of one case agrees on them.
+        An outside address (an IP case's entity) meets only the service it reached,
+        under an account no person owns; a person's or a host's rows stay on the case's
+        one internal address. So a seeded row never borrows a live incident's attacker
+        and never invents an outside indicator for a person: an outside indicator
+        appears only as an IP case's own entity. Two seeded cases may still share a
+        host, a person or an internal address of the Demo org by chance, as two cases
+        on one real fleet can."""
+        ip, user, host_name = internal
+        techniques: tuple[str, ...] = ()
+        # A case's rows are its member events. A QRadar offense names no user or
+        # host, so QRadar's rows are its LEEF events, which keep the case's entity.
+        alert_rows = self.spec.key not in ("syslog", "qradar")
+        subject_user, subject_host = _OUTSIDE_SUBJECT
+        if kind == SEEDED_SIGNAL_STORY and story_id:
+            _ip, story_user, story_host, action, outcome, severity = _STORY_SUBJECTS.get(
+                story_id, _DEFAULT_STORY_SUBJECT)
+            story = gen._STORYLINE_BY_ID.get(story_id)  # noqa: SLF001 - same Demo world
+            techniques = tuple(story.techniques) if story is not None else ()
+            native_alert = alert_rows
+            employees = {e.user for e in self._org.employees}
+            subject_user = story_user if story_user not in employees else subject_user
+            subject_host = story_host
+        elif kind == SEEDED_SIGNAL_ALERT:
+            action, outcome, severity, native_alert = "scan", "blocked", 58.0, alert_rows
+            subject_user = _NATIVE_ALERT_SUBJECT[1]
+        else:
+            action, outcome, native_alert = ROUTINE_TELEMETRY_RULES[self.spec.key][2], "success", False
+            severity = round(15.0 + rng.random() * 15.0, 1)
+        entity = getattr(case, "entity", None)
+        etype = getattr(getattr(entity, "type", None), "value", getattr(entity, "type", None))
+        value = str(getattr(entity, "value", "") or "")
+        if value and etype == "ip":
+            ip, user, host_name = value, subject_user, subject_host
+        elif value and etype == "user":
+            user = value
+        elif value and etype == "host":
+            host_name = value
+        if kind == SEEDED_SIGNAL_STORY:
+            message = f"{rule_name}: correlated activity for {user} from {ip} on {host_name}"
+        elif kind == SEEDED_SIGNAL_ALERT:
+            message = f"{rule_name}: activity from {ip} was blocked"
+        else:
+            message = f"{rule_name}: {user} on {host_name} from {ip}"
+        return NativeSignal(
+            native_id=f"{self.spec.source_id}-case-{case.case_id}-{ordinal:02d}",
+            timestamp_millis=int(timestamp_millis),
+            source_ip=ip,
+            user=user,
+            host=host_name,
+            action=action,
+            outcome=outcome,
+            severity=severity,
+            rule_id=rule_id,
+            rule_name=rule_name,
+            message=message,
+            native_alert=native_alert,
+            story_id=story_id or "",
+            techniques=techniques,
+        )
+
     def record_system_detections(self, count: int) -> None:
         """Record detections Agentic SOC raised from this source's raw telemetry."""
         self._system_detections_total += max(0, int(count))
@@ -790,14 +1033,7 @@ class NativeDemoSource:
         host = hosts[rng.randrange(len(hosts))]
         employee = self._org.employees[rng.randrange(len(self._org.employees))]
         source_ip = f"10.20.{20 + rng.randrange(20)}.{2 + rng.randrange(248)}"
-        rules = {
-            "splunk": ("web_access", "Successful portal API request", "request"),
-            "qradar": ("LP-QR-0001", "Allowed application flow", "allow"),
-            "wazuh": ("osquery_process_event", "Expected signed process start", "process_start"),
-            "syslog": ("SSHD-SESSION", "SSH session accepted", "authentication"),
-            "entra": ("Entra sign-in", "Successful interactive sign-in", "authentication"),
-        }
-        rule_id, rule_name, action = rules[self.spec.key]
+        rule_id, rule_name, action = ROUTINE_TELEMETRY_RULES[self.spec.key]
         native_id = f"{self.spec.source_id}-{ts_millis}-{ordinal:04d}"
         return NativeSignal(
             native_id=native_id,
@@ -836,17 +1072,7 @@ class NativeDemoSource:
     ) -> NativeSignal:
         # All public indicators are RFC 5737 documentation ranges.  Demo Mode must
         # never teach a presenter to investigate/contact live third-party addresses.
-        subjects = {
-            "phishing_chain": ("203.0.113.77", "pnair", "web-api", "login", "success", 91.0),
-            "rdp_bruteforce": ("198.51.100.42", "admin0", "jumpbox01", "login", "failure", 86.0),
-            "sqli_webshell": ("192.0.2.90", "svc_bureau", "web-api", "upload", "success", 90.0),
-            "impossible_travel": ("203.0.113.190", "rmenon", "vpn01", "login", "success", 74.0),
-            "ransomware_beacon": ("198.51.100.77", "svc_bureau", "appsrv02", "file_modify", "success", 96.0),
-            "insider_staging": ("10.20.6.12", "akulkarni", "bureau-gw", "download", "success", 76.0),
-        }
-        ip, user, host, action, outcome, severity = subjects.get(
-            story.id, ("203.0.113.77", "pnair", "web-api", "alert", "success", 85.0)
-        )
+        ip, user, host, action, outcome, severity = _STORY_SUBJECTS.get(story.id, _DEFAULT_STORY_SUBJECT)
         native_rule = gen.NATIVE_STORY_RULE_IDS[self.spec.key][story.id]
         # QRadar offense descriptions are the normalized rule identity.  Other sources
         # carry a source-native rule id and keep the human title separate.
@@ -902,12 +1128,12 @@ class NativeDemoSource:
             return []
         rule_id, rule_name = _NATIVE_ALERT_RULES[self.spec.key]
         host = self._org.hosts[rng.randrange(len(self._org.hosts))]
-        ip = "198.51.100.23"
+        ip, user = _NATIVE_ALERT_SUBJECT
         signal = NativeSignal(
             native_id=f"{self.spec.source_id}-native-alert-{start_millis}",
             timestamp_millis=start_millis,
             source_ip=ip,
-            user="scanner_service",
+            user=user,
             host=host.name,
             action="scan",
             outcome="blocked",
@@ -943,7 +1169,7 @@ class NativeDemoSource:
 
     async def search(self, prefs: Preferences, query: StructuredQuery) -> SearchResult:
         del prefs
-        events = list(self._recent)
+        events = [*self._history, *self._recent]
         bound_now = now_utc()
         if query.time_from:
             floor = relative_to_millis(query.time_from, now=bound_now)
@@ -993,7 +1219,8 @@ class NativeDemoSource:
     async def fetch_by_ids(self, prefs: Preferences, ids: list[str], size: int) -> SearchResult:
         del prefs
         wanted = set(ids)
-        events = [event for event in reversed(self._recent) if event.id in wanted][:max(1, size)]
+        held = [*reversed(self._recent), *reversed(self._history)]
+        events = [event for event in held if event.id in wanted][:max(1, size)]
         return SearchResult(events=events, total=len(events))
 
     async def test_connection(self, prefs: Preferences) -> ConnectionTest:

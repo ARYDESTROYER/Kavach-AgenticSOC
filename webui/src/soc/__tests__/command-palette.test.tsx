@@ -166,13 +166,13 @@ describe('CommandPalette (W7c)', () => {
     await renderPalette();
     const input = await screen.findByPlaceholderText(/search cases, sources, settings/i);
 
-    expect(document.querySelector('[cmdk-item][data-value="nav-metrics"]')).toBeTruthy();
-    expect(document.querySelector('[cmdk-item][data-value="navc-metrics-cost"]')).toBeNull();
+    expect(document.querySelector('[cmdk-item][data-value="nav-analytics"]')).toBeTruthy();
+    expect(document.querySelector('[cmdk-item][data-value="navc-analytics-cost"]')).toBeNull();
     expect(screen.getByText(/type to search every page, setting, case, and source/i)).toBeInTheDocument();
 
     fireEvent.change(input, { target: { value: 'Cost' } });
     await waitFor(() =>
-      expect(document.querySelector('[cmdk-item][data-value="navc-metrics-cost"]')).toBeTruthy(),
+      expect(document.querySelector('[cmdk-item][data-value="navc-analytics-cost"]')).toBeTruthy(),
     );
   });
 });
@@ -193,5 +193,141 @@ describe('CommandPalette — quick actions group', () => {
     await waitFor(() => expect(headings()).not.toContain('Actions'));
     fireEvent.change(input, { target: { value: 'theme' } });
     await waitFor(() => expect(headings()).toContain('Actions'));
+  });
+});
+
+describe('CommandPalette: destinations open what the navigation opens (Round 14, SPEC §2.2 item 13)', () => {
+  beforeEach(() => {
+    searchMock.mockReset();
+    searchMock.mockResolvedValue({ query: '', cases: [], sources: [], nav: [] });
+    window.localStorage.clear();
+  });
+
+  const item = (value: string) => document.querySelector(`[cmdk-item][data-value="${value}"]`) as HTMLElement | null;
+
+  it('"Cyber Defence Center" opens the landing page and "Dashboards" the library', async () => {
+    const { onNavigate } = await renderPalette();
+    const input = await screen.findByPlaceholderText(/search cases, sources, settings/i);
+    fireEvent.change(input, { target: { value: 'Cyber Defence' } });
+    await waitFor(() => expect(item('navc-overview-dashboard')).toBeTruthy());
+    expect(item('navc-overview-dashboard')).toHaveTextContent('Cyber Defence Center');
+    fireEvent.click(item('navc-overview-dashboard') as HTMLElement);
+    expect(onNavigate).toHaveBeenCalledWith('overview');
+  });
+
+  it('the Overview row opens the Dashboards library, like the navigation', async () => {
+    const { onNavigate } = await renderPalette();
+    await waitFor(() => expect(item('nav-overview')).toBeTruthy());
+    fireEvent.click(item('nav-overview') as HTMLElement);
+    expect(onNavigate).toHaveBeenCalledWith('dashboards');
+  });
+
+  it('lists one Runbooks destination and names the Help Center', async () => {
+    await renderPalette();
+    const input = await screen.findByPlaceholderText(/search cases, sources, settings/i);
+    fireEvent.change(input, { target: { value: 'book' } });
+    await waitFor(() => expect(item('navc-intelligence-runbooks')).toBeTruthy());
+    expect(item('navc-intelligence-runbooks')).toHaveTextContent('Runbooks');
+    expect(item('navc-intelligence-playbooks')).toBeNull();
+    fireEvent.change(input, { target: { value: 'help' } });
+    await waitFor(() => expect(item('nav-docs')).toHaveTextContent('Help Center'));
+  });
+});
+
+describe('CommandPalette: recents read as what they open today (Round 14, D25)', () => {
+  beforeEach(() => {
+    searchMock.mockReset();
+    searchMock.mockResolvedValue({ query: '', cases: [], sources: [], nav: [] });
+    window.localStorage.clear();
+  });
+
+  const recentItems = () =>
+    Array.from(document.querySelectorAll<HTMLElement>('[cmdk-item]')).filter((el) =>
+      /^recent /i.test(el.getAttribute('data-value') ?? ''),
+    );
+
+  it('resolves retired routes, renames pages by the navigation and shows each page once', async () => {
+    window.localStorage.setItem(
+      'tlsoc.cmdk.recents',
+      JSON.stringify([
+        { page: 'playbooks', label: 'Response playbooks' },
+        { page: 'runbooks', label: 'Reference runbooks' },
+        { page: 'docs', label: 'Documentation' },
+        { page: 'dashboards', label: 'Overview' },
+        { page: 'scans', label: 'Automated scans (legacy)' },
+        { page: 'cases', label: 'Phishing burst', kind: 'item' },
+      ]),
+    );
+    const { onNavigate } = await renderPalette();
+    await waitFor(() => expect(recentItems().length).toBeGreaterThan(0));
+    expect(recentItems().map((el) => el.textContent)).toEqual([
+      'Runbooks',
+      'Help Center',
+      'Dashboards',
+      'Case Manager',
+      'Phishing burst',
+    ]);
+    expect(document.body.textContent).not.toMatch(/playbook/i);
+    fireEvent.click(recentItems()[0]);
+    expect(onNavigate).toHaveBeenCalledWith('runbooks');
+  });
+
+  it('stores the page a jump resolves to, under its navigation name', async () => {
+    window.localStorage.setItem('tlsoc.cmdk.recents', JSON.stringify([{ page: 'catalog', label: 'Catalog' }]));
+    await renderPalette();
+    await waitFor(() => expect(recentItems()).toHaveLength(1));
+    fireEvent.click(recentItems()[0]);
+    expect(JSON.parse(window.localStorage.getItem('tlsoc.cmdk.recents') ?? '[]')).toEqual([
+      { page: 'runbooks', label: 'Runbooks', kind: 'page' },
+    ]);
+  });
+});
+
+describe('CommandPalette: a page named exactly by the query comes first (Round 14)', () => {
+  beforeEach(() => {
+    searchMock.mockReset();
+    searchMock.mockResolvedValue({ query: '', cases: [], sources: [], nav: [] });
+    window.localStorage.clear();
+  });
+
+  const items = () => Array.from(document.querySelectorAll<HTMLElement>('[cmdk-item]'));
+  const headings = () => Array.from(document.querySelectorAll('[cmdk-group-heading]')).map((el) => el.textContent);
+
+  // Every one of these also matches a Settings section, a setting or an action by its
+  // words; the page itself must still take the default Enter.
+  for (const query of ['Approvals', 'Cases', 'Models', 'Runbooks', 'Sources', 'Chat', 'Cost', 'Notifications', 'Users', 'Roles']) {
+    it(`"${query.toLowerCase()}" puts the ${query} page first, above every Settings target`, async () => {
+      await renderPalette();
+      const input = await screen.findByPlaceholderText(/search cases, sources, settings/i);
+      fireEvent.change(input, { target: { value: query.toLowerCase() } });
+      await waitFor(() => expect(headings()[0]).toBe('Go to page'));
+      const first = items()[0];
+      expect(first.textContent).toBe(query);
+      expect(first.getAttribute('data-value')).toMatch(/^navc?-/);
+      expect(first).toHaveAttribute('data-selected', 'true');
+      // Listed once: the page is not repeated in its rail group further down.
+      expect(items().filter((el) => el.getAttribute('data-value') === first.getAttribute('data-value'))).toHaveLength(1);
+      const settingsHeading = headings().indexOf('Settings');
+      if (settingsHeading >= 0) expect(settingsHeading).toBeGreaterThan(0);
+    });
+  }
+
+  it('opens the page on Enter even though a Runbooks setting mentions step approvals', async () => {
+    const { onNavigate } = await renderPalette();
+    const input = await screen.findByPlaceholderText(/search cases, sources, settings/i);
+    fireEvent.change(input, { target: { value: 'approvals' } });
+    // The Runbooks section is still found by its words, below the page.
+    await waitFor(() => expect(document.querySelector('[cmdk-item][data-value="set-runbooks"]')).toBeTruthy());
+    expect(items()[0].getAttribute('data-value')).toBe('nav-approvals');
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(onNavigate).toHaveBeenCalledWith('approvals');
+  });
+
+  it('adds no "Go to page" group for a partial name', async () => {
+    await renderPalette();
+    const input = await screen.findByPlaceholderText(/search cases, sources, settings/i);
+    fireEvent.change(input, { target: { value: 'appro' } });
+    await waitFor(() => expect(document.querySelector('[cmdk-item][data-value="nav-approvals"]')).toBeTruthy());
+    expect(headings()).not.toContain('Go to page');
   });
 });

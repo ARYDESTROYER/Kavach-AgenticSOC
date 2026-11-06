@@ -7,7 +7,7 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { totalCasesSub } from '../Metrics';
+import { populationCaption, statusSplit, totalCasesSub } from '../Metrics';
 import type { Metrics } from '@/lib/types';
 
 const base = (patch: Partial<Metrics>): Metrics =>
@@ -72,5 +72,40 @@ describe('totalCasesSub', () => {
   it('keeps the plain wording for a fully exact payload and says nothing for an older server', () => {
     expect(totalCasesSub(base({ counts_exact: true, store_total: 15 }))).toBe('Every case in the store');
     expect(totalCasesSub(base({}))).toBeUndefined();
+  });
+});
+
+describe('statusSplit (Round 14, §4.9.4: resolved or closed against active)', () => {
+  it('splits the server status breakdown into terminal and active', () => {
+    expect(
+      statusSplit(base({ by_status: { new: 1, investigating: 2, resolved: 2, closed: 3 } })),
+    ).toEqual({ terminal: 5, active: 3 });
+  });
+
+  it('matches status names case-insensitively and ignores unusable counts', () => {
+    expect(
+      statusSplit(
+        base({ by_status: { Closed: 4, NEW: 1, broken: Number.NaN, negative: -2 } as unknown as Record<string, number> }),
+      ),
+    ).toEqual({ terminal: 4, active: 1 });
+  });
+
+  it('is null when the server reported no breakdown, never total minus a count', () => {
+    expect(statusSplit(base({ by_status: {} }))).toBeNull();
+    expect(statusSplit(base({}))).toBeNull();
+  });
+});
+
+describe('populationCaption', () => {
+  it('says "all time" when every case was analysed', () => {
+    expect(populationCaption(base({ truncated: false, fetched: 15, store_total: 15 }))).toBe('all time');
+    expect(populationCaption(base({}))).toBe('all time');
+  });
+
+  it('names the newest cases analysed out of a truncated read', () => {
+    expect(populationCaption(base({ truncated: true, fetched: 5000, store_total: 12000 }))).toBe(
+      'newest 5,000 of 12,000 cases',
+    );
+    expect(populationCaption(base({ truncated: true, fetched: 5000 }))).toBe('newest 5,000 cases');
   });
 });

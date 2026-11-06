@@ -33,15 +33,27 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
+from ..audit.context import audit_context
+from ..audit.settings_write import audited_settings_write
 from ..config import BaselineConfig
 from ..constants import ActionType
 from ..engine.baseline import SEASONAL_PERIODS, SKETCH_VERSION, _TDigest
+from ..models import AuditTarget
 from ..state import AppState
 from .deps import current_username, get_state, require_permission
 
 logger = logging.getLogger("tlsoc.api.baseline")
 
 router = APIRouter(prefix="/api")
+
+
+def _actor(request: Request) -> str:
+    """The authenticated username, or ``""`` when no principal resolves (sign-in off,
+    or a caller without one): the row is then written anonymously, never refused."""
+    try:
+        return current_username(request) or ""
+    except Exception:  # noqa: BLE001 (no resolvable principal; audit anonymously)
+        return ""
 
 
 def _safe(value: Any) -> str:
@@ -166,24 +178,42 @@ async def put_baseline_config(
     """Update the ``baseline`` policy, DEEP-MERGING only the keys the caller sent onto
     the live config (mirrors the ``PUT /api/settings`` contract). Additive + validated
     by the Pydantic model; never touches ``decide()`` (#3) — the baseline is a pure
-    advisory producer. Audited (#2)."""
-    active_prefs = state.execution_prefs
-    current = (getattr(active_prefs, "baseline", None) or BaselineConfig()).model_dump(mode="json")
-    merged = _deep_update(current, body or {})
-    try:
-        cfg = BaselineConfig.model_validate(merged)
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=422, detail=f"Invalid baseline config: {exc}") from exc
-    prefs = active_prefs.model_copy(update={"baseline": cfg})
-    await state.update_execution_prefs(prefs)
-    await _audit(
-        state, request, "baseline_config_update",
-        f"enabled={cfg.enabled} seasonality={cfg.seasonality} "
-        f"half_life_days={cfg.half_life_days} warmup_multiplier={cfg.warmup_multiplier} "
-        f"modified_z_threshold={cfg.modified_z_threshold} "
-        f"tdigest_compression={cfg.tdigest_compression}",
+    advisory producer.
+
+    Audited before it is saved (#2, Round 14 SPEC §3.6): a ``settings.updated`` row
+    naming every changed field is appended first, and a failed append answers ``503
+    audit_unavailable`` with nothing saved. The baseline policy follows the active
+    execution stack, so in Demo Mode the edit stays in the Demo sandbox and its row goes
+    to the Demo audit (SPEC §3.5)."""
+    saved: dict[str, BaselineConfig] = {}
+
+    def _apply(current):
+        cfg_now = (getattr(current, "baseline", None) or BaselineConfig()).model_dump(mode="json")
+        merged = _deep_update(cfg_now, body or {})
+        try:
+            cfg = BaselineConfig.model_validate(merged)
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=422, detail=f"Invalid baseline config: {exc}") from exc
+        saved["cfg"] = cfg
+        return current.model_copy(update={"baseline": cfg})
+
+    def _summary(_changes, _total) -> str:
+        cfg = saved["cfg"]
+        return (
+            "baseline_config_update: "
+            f"enabled={cfg.enabled} seasonality={cfg.seasonality} "
+            f"half_life_days={cfg.half_life_days} warmup_multiplier={cfg.warmup_multiplier} "
+            f"modified_z_threshold={cfg.modified_z_threshold} "
+            f"tdigest_compression={cfg.tdigest_compression}"
+        )[:500]
+
+    await audited_settings_write(
+        state, transform=_apply, scope="execution", actor=_actor(request),
+        context=audit_context(request), summary=_summary,
+        action_type=ActionType.USER_MGMT, surface="baseline",
+        target=AuditTarget(type="setting", id="baseline", label="Baseline"),
     )
-    return {"ok": True, "config": cfg.model_dump(mode="json")}
+    return {"ok": True, "config": saved["cfg"].model_dump(mode="json")}
 
 
 # --------------------------------------------------------------------------- #
@@ -235,30 +265,3 @@ async def baseline_for_signature(
         "seasonality": _safe(getattr(cfg, "seasonality", "hour_of_week")),
         "series": rows,
     }
-
-
-# --------------------------------------------------------------------------- #
-# Audit helper (#2 — append-only)
-# --------------------------------------------------------------------------- #
-async def _audit(state: AppState, request: Request, event: str, detail: str) -> None:
-    """Append-only audit of an operator baseline-config mutation (#2). Best-effort.
-
-    Uses ``USER_MGMT`` with ``surface="baseline"`` — constants are frozen this wave so
-    no new ActionType is introduced (mirrors ``routes_campaigns._audit``). The actor is
-    the authenticated username when present. NEVER raises."""
-    audit = getattr(state, "audit", None)
-    if audit is None:
-        return
-    try:
-        actor = current_username(request) or ""
-    except Exception:  # noqa: BLE001 — no resolvable principal; audit anonymously
-        actor = ""
-    try:
-        await audit.record(
-            action_type=ActionType.USER_MGMT,
-            surface="baseline",
-            actor=actor,
-            result_summary=f"{event}: {detail}"[:500],
-        )
-    except Exception:  # noqa: BLE001
-        pass

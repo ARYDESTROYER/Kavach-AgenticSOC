@@ -220,15 +220,46 @@ def _kpis(block: dict[str, Any], lv: _Level) -> dict[str, Any]:
     return {"kpis": items}
 
 
+def _measured_values(s: dict[str, Any]) -> list[int | float]:
+    return [v for v in (_num(v) for v in (s.get("values") or [])) if v is not None]
+
+
+def _shown_series(series: list[dict[str, Any]], room: int) -> list[dict[str, Any]]:
+    """The series a digest level has room for, in the chart's own order. When some must
+    go, the lines that carry a non-zero figure are kept first: a fixed-order chart (a
+    severity trend draws Critical to Info, zeros included) can lead with flat-zero
+    lines, and keeping only the first lines would describe empty levels while the ones
+    holding every case went unnamed."""
+    if len(series) <= room:
+        return series
+    carries = [s for s in series if any(v != 0 for v in _measured_values(s))]
+    keep = {id(s) for s in (carries + [s for s in series if s not in carries])[: max(0, room)]}
+    return [s for s in series if id(s) in keep]
+
+
+def _omitted(out: dict[str, Any], series: list[dict[str, Any]], shown: list[dict[str, Any]], lv: _Level) -> None:
+    """Count the series the level left out, and name the ones that measured zero
+    throughout (the summary may still say a level had none)."""
+    left = [s for s in series if all(s is not t for t in shown)]
+    if not left:
+        return
+    out["series_omitted"] = len(left)
+    zero = [_clip(s.get("label"), 60) for s in left
+            if (values := _measured_values(s)) and not any(v != 0 for v in values)]
+    if zero and lv.labels:
+        out["zero_series"] = zero[: lv.labels]
+
+
 def _chart(block: dict[str, Any], lv: _Level) -> dict[str, Any]:
     x = block.get("x") if isinstance(block.get("x"), dict) else {}
     labels = [lbl for lbl in (x.get("values") or [])]
     series = [s for s in (block.get("series") or []) if isinstance(s, dict)]
+    shown = _shown_series(series, lv.series)
     out: dict[str, Any] = {"unit": block.get("unit"), "points": len(labels)}
     if x.get("kind") == "time" or block.get("kind") in ("line", "area", "sparkline"):
         stats = []
-        for s in series[: lv.series]:
-            values = [v for v in (_num(v) for v in (s.get("values") or [])) if v is not None]
+        for s in shown:
+            values = _measured_values(s)
             stats.append(_drop_empty({
                 "series": _clip(s.get("label"), 60),
                 "min": min(values) if values else "not measured",
@@ -239,8 +270,7 @@ def _chart(block: dict[str, Any], lv: _Level) -> dict[str, Any]:
         out["from"] = _clip(labels[0], 40) if labels else None
         out["to"] = _clip(labels[-1], 40) if labels else None
         out["series"] = stats
-        if len(series) > lv.series:
-            out["series_omitted"] = len(series) - lv.series
+        _omitted(out, series, shown, lv)
         return out
     # Categories: one value per label (the sum across series for a stacked chart),
     # ranked by size, ties by label, top N.
@@ -260,7 +290,7 @@ def _chart(block: dict[str, Any], lv: _Level) -> dict[str, Any]:
     out["categories"] = [{"label": k, "value": v} for k, v in totals[: lv.categories]]
     out["categories_total"] = len(totals)
     if len(series) > 1:
-        out["series"] = [_clip(s.get("label"), 60) for s in series[: lv.series]]
+        out["series"] = [_clip(s.get("label"), 60) for s in shown]
     return out
 
 

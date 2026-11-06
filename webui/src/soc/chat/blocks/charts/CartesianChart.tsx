@@ -22,7 +22,20 @@
  *
  * One unit, one y axis (G6). Ticks are clean steps from zero. The newest bucket is drawn
  * lighter (0.6, the house value that still clears 3:1) or dashed while `last_in_progress`,
- * and says "(in progress)" under its slot.
+ * and says "(in progress)" under its own tick.
+ *
+ * Round 14 (closing acceptance): the x axis is laid out by `x-axis.ts`, the one time-axis
+ * rule of the kit (the first tick and each tick that starts a new day carry the day, a
+ * weekly bucket reads the day its week starts, the in-progress note is centred under the
+ * newest bucket's own tick and sits under no other). Line-end labels are spread over the
+ * whole set (sorted by value, at least one line apart, kept inside the plot band above the
+ * baseline, so the tick and note rows under the label column stay free), with a short
+ * leader in the series colour where a label had to move off its line: from the line's end
+ * dot when the line reaches the newest position, else only across the label gutter, so no
+ * stroke ever runs through buckets that were not measured. When they cannot fit, the
+ * legend names the series instead. `minAxisChars` lets a board line two charts that share
+ * an x axis up on the same plot edge, and `zoom={false}` leaves brush zoom (its row and
+ * its hint) to chat, for a board whose time range is its zoom.
  *
  * Calendar axes (Round 12, P0-5): ticks, tooltips and the data table read the server's
  * period labels ("Mar 2026", "W14 2026") and name the axis's time zone; a plain time axis
@@ -45,11 +58,10 @@ import * as React from 'react';
 
 import { cn } from '@/lib/cn';
 import { focusRing } from '@/lib/ui-recipes';
-import { navLabel } from '@/soc/nav';
 import { token } from '@/soc/components/palette';
 import { useAnnouncer } from '@/soc/components/announcer';
 
-import { useBlocks } from '../context';
+import { drillLabel, useBlocks } from '../context';
 import {
   IN_PROGRESS_SUFFIX,
   axisZone,
@@ -58,14 +70,13 @@ import {
   formatTick,
   formatValue,
   hasCalendarLabels,
-  instantOf,
   unitLabel,
   xAxisHeader,
   xPositionLabel,
   xRangeLabel,
-  xTickLabel,
 } from '../format';
 import type { ChartBlock } from '../schema';
+import { isRuleRef } from '../schema';
 import { ChartControlsContext, usePublishChartView } from './export-context';
 import { HatchPattern, MARK_FORCED, ChartShell, useSvgId } from './ChartShell';
 import type { AnchorRect } from './ChartTooltipPortal';
@@ -74,6 +85,7 @@ import { srValue } from './DataTableFallback';
 import {
   BAR_MAX,
   CHAR_W,
+  END_LABEL_LINE,
   areaPath,
   barPlotFrame,
   barWidth,
@@ -84,10 +96,9 @@ import {
   lastMeasured,
   lineRuns,
   niceScale,
-  pickXLabels,
-  placeXLabels,
   reconcilingShares,
   roundedTopPath,
+  spreadLabels,
   stackSegments,
   stackTotals,
 } from './geometry';
@@ -95,6 +106,7 @@ import { Legend, useSeriesVisibility } from './Legend';
 import { categoryStyles, seriesStyles } from './series';
 import { useChartNavigator, type ChartCursor } from './useChartNavigator';
 import { useChartSize } from './useChartSize';
+import { layoutXAxis } from './x-axis';
 
 const PAD_TOP = 10;
 const X_AXIS_H = 20;
@@ -115,6 +127,18 @@ export interface CartesianChartProps {
   title: string;
   height: number;
   staticMode?: boolean;
+  /**
+   * The y-axis gutter holds at least this many tick characters: two charts that share an
+   * x axis on one board pass the wider of their two (`yAxisOf(...).chars`), so both plots
+   * start at the same x and their ticks line up.
+   */
+  minAxisChars?: number;
+  /**
+   * Brush zoom on a line or area chart (on by default). A board chart turns it off: the
+   * board's own time range is its zoom, so it draws no zoom row and no zoom hint (SPEC
+   * §4.4.4), and its keyboard instructions do not offer one.
+   */
+  zoom?: boolean;
 }
 
 const KIND_WORD: Record<CartesianKind, string> = {
@@ -154,10 +178,39 @@ function isNum(v: number | null | undefined): v is number {
   return typeof v === 'number' && Number.isFinite(v);
 }
 
-export function CartesianChart({ block: full, title, height, staticMode = false }: CartesianChartProps) {
+/**
+ * The y axis of `block` over its shown series (`hidden[k]` hides series k): the clean,
+ * zero-anchored scale, its tick texts, the stack totals of a stacked chart, and how many
+ * characters the widest tick takes.
+ */
+export function yAxisOf(block: ChartBlock, hidden: readonly boolean[] = []) {
+  const stacked = block.kind === 'stacked_bar';
+  const n = block.x.values.length;
+  const unit = block.unit;
+  const visibleSeries = block.series.filter((_, k) => !hidden[k]).map((s) => s.values);
+  const totals = stacked ? stackTotals(visibleSeries, n) : null;
+  const [lo, hi] = stacked ? extent([totals ?? []]) : extent(visibleSeries);
+  const refY = block.reference?.axis === 'y' ? block.reference.value : null;
+  const integer =
+    (unit === 'count' || unit === 'tokens' || unit === 'bytes') &&
+    visibleSeries.every((vs) => vs.every((v) => v === null || Number.isInteger(v)));
+  const scale = niceScale(Math.min(lo, refY ?? lo), Math.max(hi, refY ?? hi), 4, integer);
+  const tickTexts = scale.ticks.map((t) => formatTick(t, unit));
+  return { scale, tickTexts, totals, chars: Math.max(0, ...tickTexts.map((t) => t.length)) };
+}
+
+export function CartesianChart({
+  block: full,
+  title,
+  height,
+  staticMode = false,
+  minAxisChars = 0,
+  zoom: zoomAllowed = true,
+}: CartesianChartProps) {
   const { navigate } = useBlocks();
   const announce = useAnnouncer();
-  const zoomable = !staticMode && (full.kind === 'line' || full.kind === 'area') && full.x.values.length >= MIN_ZOOM_POINTS;
+  const zoomable =
+    zoomAllowed && !staticMode && (full.kind === 'line' || full.kind === 'area') && full.x.values.length >= MIN_ZOOM_POINTS;
   const key = dataKey(full);
   const [zoom, setZoom] = React.useState<{ key: string; range: [number, number] } | null>(null);
   // A zoom belongs to the data it was made on: a new grouping or kind drops it for good,
@@ -186,31 +239,31 @@ export function CartesianChart({ block: full, title, height, staticMode = false 
     : null;
   usePublishChartView(block, hidden, zoomView);
   const visibleIdx = block.series.map((_, k) => k).filter((k) => !hidden[k]);
-  const visibleSeries = visibleIdx.map((k) => block.series[k].values);
   const n = block.x.values.length;
   const unit = block.unit;
 
   /* ---- scale ---- */
   // Visible totals size the stack; ALL-series totals feed the sr-only table, whose row
   // lists every series (a Total over fewer series than its row shows would not add up).
-  const totals = stacked ? stackTotals(visibleSeries, n) : null;
+  const { scale, tickTexts, totals, chars: tickChars } = yAxisOf(block, hidden);
   const allTotals = stacked ? stackTotals(block.series.map((s) => s.values), n) : null;
   const anyHidden = visibleIdx.length < block.series.length;
   const totalWord = anyHidden ? 'total of shown series' : 'total';
-  const [lo, hi] = stacked ? extent([totals ?? []]) : extent(visibleSeries);
-  const refY = block.reference?.axis === 'y' ? block.reference.value : null;
-  const integer =
-    (unit === 'count' || unit === 'tokens' || unit === 'bytes') &&
-    visibleSeries.every((vs) => vs.every((v) => v === null || Number.isInteger(v)));
-  const scale = niceScale(Math.min(lo, refY ?? lo), Math.max(hi, refY ?? hi), 4, integer);
-  const tickTexts = scale.ticks.map((t) => formatTick(t, unit));
   // CHAR_W is a digit's advance; "%", "$", "k" and "h" run wider, so the tick column
   // keeps a few pixels of slack: a card without side padding (a Brief leaf) clips any
   // tick that starts left of the plot.
-  const axisX0 = Math.ceil(Math.max(...tickTexts.map((t) => t.length)) * CHAR_W) + Y_GAP + TICK_SLACK;
+  const axisX0 = Math.ceil(Math.max(tickChars, minAxisChars) * CHAR_W) + Y_GAP + TICK_SLACK;
+  const plotTop = PAD_TOP;
+  const baseline = Math.max(plotTop + 24, height - X_AXIS_H - (block.last_in_progress ? IN_PROGRESS_LINE_H : 0));
+  // End labels sit inside the plot band, one 14 px line apart: their boxes never cross the
+  // baseline into the tick row (or the "(in progress)" note under it).
+  const labelTop = plotTop;
+  const labelBottom = baseline - END_LABEL_LINE / 2;
+  const endLabelsFit = (block.series.length - 1) * END_LABEL_LINE <= labelBottom - labelTop;
   // 2 to 4 lines are named at their ends (T16). The column is sized by EVERY series, so
-  // hiding one never moves the plot, and the shown lines keep their names.
-  const labelMode = isLine && block.series.length >= 2 && block.series.length <= 4;
+  // hiding one never moves the plot, and the shown lines keep their names. Labels that
+  // cannot all fit one line apart in the plot leave the naming to the legend.
+  const labelMode = isLine && block.series.length >= 2 && block.series.length <= 4 && endLabelsFit;
   const endLabels = labelMode && visibleIdx.length >= 1;
   // The end labels take what their longest label needs, up to a quarter of the chart
   // (`endLabelColumn`): a label is clipped only beyond that, never at a fixed length.
@@ -230,8 +283,6 @@ export function CartesianChart({ block: full, title, height, staticMode = false 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [publishSeries, seriesKey, styles, toggle]);
   const padRight = endColumn ? endColumn.padRight : 8;
-  const plotTop = PAD_TOP;
-  const baseline = Math.max(plotTop + 24, height - X_AXIS_H - (block.last_in_progress ? IN_PROGRESS_LINE_H : 0));
   // Columns keep a slot of at most six times their marks: a few buckets on a wide card
   // draw a narrower plot centred in it (ticks included) rather than hairline bars far
   // apart (`barPlotFrame`). Sized by EVERY series, so a legend toggle never moves the plot.
@@ -254,10 +305,25 @@ export function CartesianChart({ block: full, title, height, staticMode = false 
   const isTime = block.x.kind === 'time';
   const calendar = hasCalendarLabels(block.x);
   const zoneNote = calendar && axisZone(block.x) !== 'UTC' ? `Times in ${axisZone(block.x)}` : null;
-  const shortX = block.x.values.map((_, i) => xTickLabel(block.x, i));
-  // Calendar periods (months, local days) are not regular UTC steps: they step evenly.
-  const instants = isTime && !calendar ? block.x.values.map((v) => instantOf(v)) : undefined;
-  const xLabels = placeXLabels(pickXLabels(shortX, plotW, instants), shortX, xOf, width);
+  // The zone is named only when it is known: a calendar axis without `tz` (a board's
+  // operator-zone buckets) says nothing rather than claim UTC.
+  const zoneName = isTime && (!calendar || block.x.tz) ? axisZone(block.x) : null;
+  // One time-axis rule for the kit (`x-axis.ts`): dated ticks, the week's first day, and
+  // "(in progress)" centred under the newest bucket's own tick. The end labels of a line
+  // chart stay above the baseline, so the note may run under their column.
+  // Laid out once per data and size, not on every pointer move.
+  const xAxis = React.useMemo(
+    () =>
+      layoutXAxis({
+        x: block.x,
+        centre: (i: number) => x0 + (i + 0.5) * slot,
+        width,
+        plotWidth: plotW,
+        inProgress: block.last_in_progress,
+      }),
+    [block.x, block.last_in_progress, x0, slot, width, plotW],
+  );
+  const xLabels = xAxis.ticks;
 
   /* ---- interaction ---- */
   const secondary = visibleIdx.length > 1 ? visibleIdx.length : 0;
@@ -321,7 +387,8 @@ export function CartesianChart({ block: full, title, height, staticMode = false 
     summarize,
     onActivate: (c) => {
       const ref = drillAt(c.i);
-      if (ref) navigate(ref);
+      // A rule ref opens the rule sheet (the card's provider); focus comes back to the plot.
+      if (ref) navigate(ref, navRef.current?.plotRef.current);
     },
     disabled: staticMode,
     onRange: zoomable ? applyZoom : undefined,
@@ -370,7 +437,7 @@ export function CartesianChart({ block: full, title, height, staticMode = false 
     }
     clickAnchor.current = { view: viewId, i: active.i };
     const ref = drillAt(active.i);
-    if (ref) navigate(ref);
+    if (ref) navigate(ref, nav.plotRef.current);
   };
   const selection: [number, number] | null = drag ? [Math.min(drag.from, drag.to), Math.max(drag.from, drag.to)] : nav.range;
 
@@ -478,8 +545,13 @@ export function CartesianChart({ block: full, title, height, staticMode = false 
   }
 
   const lines: React.ReactNode[] = [];
-  /** `full`: the whole label when `text` had to be clipped (its hover title). */
-  const labels: Array<{ k: number; y: number; text: string; full: string | null }> = [];
+  /**
+   * `full`: the whole label when `text` had to be clipped (its hover title); `lineY`: the
+   * line's own end, where a label moved off it draws its leader from; `leaderX`: where that
+   * leader starts (the end dot when the line reaches the newest position, else the plot's
+   * right edge, so it never crosses buckets that were not measured).
+   */
+  const labels: Array<{ k: number; y: number; lineY: number; leaderX: number; text: string; full: string | null }> = [];
   if (isLine) {
     visibleIdx.forEach((k) => {
       const values = block.series[k].values;
@@ -530,15 +602,25 @@ export function CartesianChart({ block: full, title, height, staticMode = false 
         if (endColumn) {
           const full = block.series[k].label;
           const text = clipText(full, endColumn.budget);
-          labels.push({ k, y: yOf(values[end] as number), text, full: text === full ? null : full });
+          const lineY = yOf(values[end] as number);
+          // A series whose newest buckets are not measured ends early: its leader stays in
+          // the label gutter rather than running across those buckets to the label.
+          const leaderX = end === n - 1 ? xOf(end) + 5 : x0 + plotW;
+          labels.push({ k, y: lineY, lineY, leaderX, text, full: text === full ? null : full });
         }
       }
     });
-    // De-collide end labels vertically (12 px apart), keeping their order.
+    // Spread the end labels over the whole set: sorted by value, at least one line apart,
+    // inside the plot band. `labelMode` checked that every series fits, so the shown ones do.
+    const spread = spreadLabels(
+      labels.map((l) => l.lineY),
+      labelTop,
+      labelBottom,
+      END_LABEL_LINE,
+    );
+    if (spread) labels.forEach((l, q) => (l.y = spread[q]));
+    else labels.length = 0;
     labels.sort((a, b) => a.y - b.y);
-    for (let q = 1; q < labels.length; q += 1) {
-      if (labels[q].y - labels[q - 1].y < 12) labels[q].y = labels[q - 1].y + 12;
-    }
   }
 
   /* ---- reference ---- */
@@ -600,7 +682,7 @@ export function CartesianChart({ block: full, title, height, staticMode = false 
     }
     if (block.last_in_progress && i === lastIdx) notes.push('In progress: this period is still filling.');
     const ref = drillAt(i);
-    if (ref) notes.push(`Open in ${navLabel(ref.page)} ›`);
+    if (ref) notes.push(`${drillLabel(ref)} ›`);
     tooltip = (
       <TooltipBody
         heading={
@@ -615,12 +697,12 @@ export function CartesianChart({ block: full, title, height, staticMode = false 
     );
   }
 
-  const ariaLabel = `${title}. ${KIND_WORD[kind]}, ${unitLabel(unit)}${isTime ? `, ${axisZone(block.x)}` : ''}${range ? `, zoomed to ${n} of ${full.x.values.length} points` : ''}.`;
+  const ariaLabel = `${title}. ${KIND_WORD[kind]}, ${unitLabel(unit)}${zoneName ? `, ${zoneName}` : ''}${range ? `, zoomed to ${n} of ${full.x.values.length} points` : ''}.`;
   const instructions =
     'Use the left and right arrow keys to read each position' +
     (secondary ? ', up and down to pick a series' : '') +
     '; Home and End jump to the first and last. ' +
-    (block.drill ? 'Enter opens the linked page. ' : '') +
+    (block.drill ? (block.drill.some(isRuleRef) ? "Enter opens the rule's alerts and cases. " : 'Enter opens the linked page. ') : '') +
     (zoomable ? 'To zoom, hold Shift with the left or right arrow key to select a range, then press Enter. ' : '') +
     'A data table follows the chart.';
 
@@ -834,11 +916,11 @@ export function CartesianChart({ block: full, title, height, staticMode = false 
               {l.text}
             </text>
           ))}
-          {block.last_in_progress && n > 0 ? (
-            // The newest period is still filling: say so in words under its slot, not
+          {xAxis.inProgress ? (
+            // The newest period is still filling: say so in words under its own tick, not
             // only by the lighter / dashed mark (WCAG 1.4.1).
             <text
-              x={Math.min(xOf(lastIdx), width - (IN_PROGRESS_SUFFIX.length * CHAR_W) / 2)}
+              x={xAxis.inProgress.x}
               y={baseline + 15 + IN_PROGRESS_LINE_H}
               textAnchor="middle"
               className="text-2xs"
@@ -848,6 +930,19 @@ export function CartesianChart({ block: full, title, height, staticMode = false 
               {IN_PROGRESS_SUFFIX.trim()}
             </text>
           ) : null}
+          {labels.map((l) =>
+            // A label moved off its line end is tied back to it in the series colour.
+            Math.abs(l.y - l.lineY) > 1.5 ? (
+              <path
+                key={`ll${l.k}`}
+                d={`M${Math.round(l.leaderX)},${Math.round(l.lineY)}L${Math.round(x0 + plotW + 5)},${Math.round(l.y)}`}
+                fill="none"
+                stroke={styles[l.k].color}
+                strokeWidth={1}
+                data-end-leader={l.k}
+              />
+            ) : null,
+          )}
           {labels.map((l) => (
             <text
               key={`el${l.k}`}

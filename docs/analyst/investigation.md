@@ -52,8 +52,10 @@ In a case:
    agent findings, deterministic code result, entities, and attack story. Recorded
    risk factors are visualized without inventing factors that are not stored. When
    applicable, **Investigation inputs** summarizes the memory consulted, RAG
-   knowledge retrieved, runbook references retrieved, playbook actually consulted,
-   and platform threshold-tuning snapshot for the latest run.
+   knowledge retrieved, runbook references retrieved, the Published runbook whose
+   guidance the investigator received (with its version), and the platform
+   threshold-tuning snapshot for the latest run. When a runbook is attached to an
+   open case, its **Next step** card sits at the top of the Overview.
 2. **Timeline** shows when the six pipeline stages occurred. The visible labels are
    Input, Correlate, Risk Assigned, Triage, Investigate, and Decision. Expanding
    **Risk Assigned** reconstructs the arithmetic from persisted factor values and
@@ -62,8 +64,8 @@ In a case:
    The terminal marker alone pulses to identify the current end of the story.
 3. **Investigation** shows the agent assessment, evidence, recommended action,
    reproduction query, detailed Investigation inputs, deterministic decision, and
-   optional full trace. Runbooks retrieved through RAG remain distinct from a
-   playbook injected into the investigator. Platform tuning records correlation or
+   optional full trace. Runbook passages retrieved through RAG remain distinct from
+   the runbook whose guidance the investigator received. Platform tuning records correlation or
    severity-threshold changes, not model fine-tuning. When the narrative sentence
    already states the verdict and confidence, duplicate verdict and confidence chips
    are suppressed rather than shown twice.
@@ -75,9 +77,13 @@ In a case:
    are not returned. Older cases may show limited or no cluster metadata rather than
    a reconstructed story.
 
-Investigation inputs are projected from the **latest investigation run** only. A
-playbook appears only when it was actually injected and consulted; selection alone is
-not sufficient. If no applicable input was recorded, the summary stays absent. If
+Investigation inputs are projected from the **latest investigation run** only. The
+runbook appears as an input only when the investigator actually received its guidance;
+a runbook that was matched but never reached the investigator (the cheap router path,
+the kill switch, a guidance budget) shows as **Selected only** in the Investigation
+view and never counts as an input. A case investigated before Round 14 keeps its stored
+procedure id under **Runbook (before Round 14)**. If no applicable input was recorded,
+the summary stays absent. If
 provenance could not be read, the Console reports that limitation instead of treating
 it as a successful empty result.
 
@@ -97,7 +103,7 @@ For the latest run, `procedure_provenance` independently records retrieval as
 `measured`, `not_attempted`, or `unavailable` with a reason. This tells you whether that
 specific run completed retrieval, deliberately skipped it, or could not establish the
 result. It does not repair or replace the Case's lifetime history status, and a populated
-reference list proves reference coverage only—not retrieval quality or whether every run
+reference list proves reference coverage only, not retrieval quality or whether every run
 retrieved knowledge.
 
 RAG remains fail-soft. If corpus refresh/seeding cannot be verified, the investigator may
@@ -110,9 +116,21 @@ run `measured`; a completed zero-hit result is then an honest measured empty res
 
 The trace is diagnostic evidence, not a second decision system. Tool calls available
 to the investigator are read-only log search, cached enrichment, and knowledge
-retrieval. Memory, knowledge, runbooks, playbooks, and threshold tuning may inform
-preprocessing or the agent assessment; deterministic case policy remains the final
-close/escalate route authority.
+retrieval. Memory, knowledge, runbooks, and threshold tuning may inform preprocessing
+or the agent assessment; deterministic case policy remains the final close/escalate
+route authority.
+
+## Work the runbook
+
+The **Runbook** tab is the procedure the people on the case follow; the investigator
+reads the same Published runbook as guidance. It never closes a case and never changes
+the verdict. The Next step card shows the first required step not yet done: confirm an
+AI draft note, run a read-only lookup, record a decision or an action, or mark the step
+Not applicable or Blocked with a reason. When every required step is done it says so and
+offers **Close case**, which opens the case's own close dialog. Lookup results are collected under your
+permissions and shown as untrusted data; a lookup you cannot see says so instead of
+showing its rows. See [Case Manager](case-manager.md#work-the-runbook) for the full
+tab, and [Runbooks](../intelligence/runbooks.md) for writing one.
 
 ## Chat in context
 

@@ -55,7 +55,7 @@ class CrowdSecProvider(EnrichmentProvider):
                 "Create a free account at app.crowdsec.net and open Settings → CTI "
                 "API keys.",
                 "Create a CTI key (the free tier allows a small number of queries "
-                "per day — the Redis cache stretches it).",
+                "per day; the Redis cache stretches it).",
                 "Set TLSOC_CROWDSEC_API_KEY in .env (compose maps it to "
                 "CROWDSEC_API_KEY), or paste it in this card (in-memory until "
                 "restart).",
@@ -64,7 +64,7 @@ class CrowdSecProvider(EnrichmentProvider):
             example=(
                 "CrowdSec reports the IP behind a web-app alert as 'malicious' with "
                 "behaviours 'http:bruteforce, http:scan' seen by hundreds of other "
-                "installations this week — crowd confirmation that this is an "
+                "installations this week: crowd confirmation that this is an "
                 "active attacker, not a one-off."
             ),
         )

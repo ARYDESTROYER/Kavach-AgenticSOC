@@ -2,9 +2,11 @@
  * RBAC visibility helpers for the SOC console (Wave 1).
  *
  * `<Can resource action>` renders its children ONLY when the current principal has
- * the `resource:action` grant (per the AuthProvider matrix); otherwise it renders
- * the optional `fallback` (default: nothing). `ProtectedRoute` gates a whole page,
- * rendering the `<Unauthorized>` view when the grant is missing.
+ * the `resource:action` grant; otherwise it renders the optional `fallback`
+ * (default: nothing). `ProtectedRoute` gates a whole page, rendering the
+ * `<Unauthorized>` view when the grant is missing. Both ask `hasPermission`, which
+ * reads the effective grants the AuthProvider loads from the server (the base role
+ * together with every assigned custom role), so they show what the API allows.
  *
  * Back-compat: when auth or RBAC is disabled, `hasPermission` returns true, so these
  * are transparent (everything renders) — the no-auth experience is unchanged.

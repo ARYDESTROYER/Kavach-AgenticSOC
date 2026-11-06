@@ -14,11 +14,10 @@
  * views, and Chat must not download that chunk (nor Investigate the chat one).
  */
 import * as React from 'react';
-import { Search } from 'lucide-react';
-
 import type { NavOpts } from '@/lib/types';
 import { LoadingState } from '@/design-system/loading';
 import { useNavigateOptional, type Navigate } from '@/soc/router';
+import { Button } from '@/ui/button';
 import { PageHeader } from '@/soc/components/PageHeader';
 import { PageContainer } from '@/soc/components/PageContainer';
 
@@ -53,12 +52,30 @@ export default function Workspace({ onNavigate, tab, caseId, opts }: WorkspacePr
   }
 
   return (
-    <PageContainer variant="wide" className="space-y-6">
+    <PageContainer variant="wide">
+      {/* The Overview's header (Round 14, C8): the explanation in the help tip, the one
+          action on the right. Investigate renders its modules into this page's rhythm. */}
       <PageHeader
-        icon={Search}
-        eyebrow="Agent workspace"
         title="Entity investigation"
-        description="Check one IP, user, or host across the selected log window. Matching evidence is correlated, investigated, and saved as a case."
+        help="Check one IP, user or host across the selected log window. Matching evidence is correlated, investigated and saved as a case."
+        actions={
+          // A control that navigates is a link (SPEC §3.3): it opens in a new tab, and
+          // assistive technology announces it as one. A plain click goes through the
+          // router, so a route-leave guard is asked first (route-link.ts).
+          <Button asChild variant="outline" size="sm">
+            <a
+              href="#/cases"
+              onClick={(event) => {
+                if (event.defaultPrevented || event.button !== 0) return;
+                if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+                event.preventDefault();
+                navigate('cases');
+              }}
+            >
+              View cases
+            </a>
+          </Button>
+        }
       />
       <React.Suspense fallback={<LoadingState layout="panel" label="Loading investigation" />}>
         <Investigate embedded onNavigate={navigate} />

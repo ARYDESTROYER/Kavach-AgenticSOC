@@ -16,10 +16,14 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..constants import ActionType
+from ..constants import RUNBOOK_SELECTOR_ACTOR, ActionType
 from ..utils import parse_es_timestamp
 
-__all__ = ["audit_get", "build_rationale"]
+__all__ = ["audit_get", "build_rationale", "is_selection_row"]
+
+#: The selector actor of investigations before Round 14 (the retired playbook
+#: selection). Its rows stay readable forever (SPEC §4.10.16).
+LEGACY_SELECTOR_ACTOR = "playbook_selector"
 
 
 def audit_get(row: Any, key: str, default: Any = None) -> Any:
@@ -29,17 +33,46 @@ def audit_get(row: Any, key: str, default: Any = None) -> Any:
     return getattr(row, key, default)
 
 
+def is_selection_row(row: Any) -> bool:
+    """True for the procedure-selection row an investigation writes before it runs:
+    the ``runbook.selected`` DECISION by ``runbook_selector`` (Round 14), or the
+    ``playbook_selector`` row of an earlier investigation. It is the durable run
+    boundary. The ``runbook_selector`` rows a run ATTACHMENT writes (``run.attached``,
+    action type ``runbook``, after the decision) are not: they would otherwise start
+    a new "run" after the investigation they follow."""
+    actor = audit_get(row, "actor")
+    if actor == LEGACY_SELECTOR_ACTOR:
+        return True
+    return (
+        actor == RUNBOOK_SELECTOR_ACTOR
+        and audit_get(row, "action_type") == ActionType.DECISION.value
+    )
+
+
+def _int_or_none(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.strip().isdigit():
+        return int(value.strip())
+    return None
+
+
 def build_rationale(case_id: str, case: Any, rows: list[Any]) -> dict[str, Any]:
     """Assemble the explainability "why" object from a case + its audit rows.
 
     Pure + defensive: any missing audit piece degrades to an empty value. Reads the
     CONTEXT record (knowledge/memory/enrichment), TOOL_CALL records (tools/queries),
-    the VERDICT record (reasoning excerpt), the playbook_selector DECISION (playbook
-    reason) and the case_manager DECISION (deterministic rationale)."""
+    the VERDICT record (reasoning excerpt), the selection DECISION (the runbook and
+    why, ``runbook_selector``; ``playbook_selector`` before Round 14) and the
+    case_manager DECISION (deterministic rationale). Old and new provenance rows are
+    both read, forever: ``runbook`` describes a Round 14 run, ``playbook`` an earlier
+    one, and the other stays in its empty shape."""
     # Audit rows are OLDEST-first.  A case can be re-investigated many times, so
     # project only the LATEST run instead of mixing the first run's context/tools
-    # with the current Case fields.  ``playbook_selector`` is the usual durable run
-    # boundary (including the cheap path).  A failure can happen before selection,
+    # with the current Case fields.  The selection row (``is_selection_row``) is the
+    # usual durable run boundary (including the cheap path).  A failure can happen before selection,
     # though; in that case the terminal ``pipeline error:`` row must start a new run
     # rather than inheriting the previous run's measured retrieval or other artifacts.
     # The prefix deliberately excludes the non-terminal timeout ERROR row: timeout
@@ -51,7 +84,7 @@ def build_rationale(case_id: str, case: Any, rows: list[Any]) -> dict[str, Any]:
     last_selector = -1
     last_terminal = -1
     for idx, row in enumerate(rows):
-        if audit_get(row, "actor") == "playbook_selector":
+        if is_selection_row(row):
             run_start = idx
             run_boundary_reason = "historical_provenance_missing"
             last_selector = idx
@@ -93,10 +126,7 @@ def build_rationale(case_id: str, case: Any, rows: list[Any]) -> dict[str, Any]:
         run_boundary_reason = "pipeline_failure_provenance_missing"
     run_rows = rows[run_start:]
 
-    selector_row = next(
-        (row for row in reversed(run_rows) if audit_get(row, "actor") == "playbook_selector"),
-        None,
-    )
+    selector_row = next((row for row in reversed(run_rows) if is_selection_row(row)), None)
     context_row = next(
         (
             row
@@ -123,6 +153,10 @@ def build_rationale(case_id: str, case: Any, rows: list[Any]) -> dict[str, Any]:
     playbook_id = ""
     playbook_version = ""
     playbook_consulted = False
+    runbook_id = ""
+    runbook_version: int | None = None
+    runbook_title = ""
+    runbook_consulted = False
     if context_row is not None:
         ti = audit_get(context_row, "tool_input") or {}
         if isinstance(ti, dict):
@@ -142,6 +176,13 @@ def build_rationale(case_id: str, case: Any, rows: list[Any]) -> dict[str, Any]:
                     "is_malicious": enr.get("is_malicious"),
                     "country": enr.get("country"),
                 }
+            rb_detail = ti.get("runbook_detail")
+            if isinstance(rb_detail, dict) and str(rb_detail.get("id") or "").strip():
+                # Round 14: the runbook whose guidance this prompt carried.
+                runbook_id = str(rb_detail.get("id") or "").strip()
+                runbook_version = _int_or_none(rb_detail.get("version"))
+                runbook_title = str(rb_detail.get("title") or "")
+                runbook_consulted = True
             detail = ti.get("playbook_detail")
             if isinstance(detail, dict) and str(detail.get("id") or "").strip():
                 playbook_id = str(detail.get("id") or "").strip()
@@ -162,6 +203,10 @@ def build_rationale(case_id: str, case: Any, rows: list[Any]) -> dict[str, Any]:
     procedure_provenance: dict[str, Any] = {
         "persona": {"selected_id": "", "selection_reason": "", "consulted": False},
         "playbook": {"selected_id": "", "selection_reason": "", "consulted": False},
+        "runbook": {
+            "selected_id": "", "version": None, "title": "", "selection_reason": "",
+            "consulted": False,
+        },
         "consultation_path": "",
         # Missing procedure telemetry is UNKNOWN, never a measured zero.
         "retrieval_status": "unavailable",
@@ -180,6 +225,15 @@ def build_rationale(case_id: str, case: Any, rows: list[Any]) -> dict[str, Any]:
                     "selected_id": str(raw.get("selected_id") or ""),
                     "selection_reason": str(raw.get("selection_reason") or ""),
                     "consulted": bool(raw.get("consulted", False)),
+                }
+            raw_runbook = procedure_input.get("runbook")
+            if isinstance(raw_runbook, dict):
+                procedure_provenance["runbook"] = {
+                    "selected_id": str(raw_runbook.get("selected_id") or ""),
+                    "version": _int_or_none(raw_runbook.get("version")),
+                    "title": str(raw_runbook.get("title") or ""),
+                    "selection_reason": str(raw_runbook.get("selection_reason") or ""),
+                    "consulted": bool(raw_runbook.get("consulted", False)),
                 }
             procedure_provenance["consultation_path"] = str(
                 procedure_input.get("consultation_path") or ""
@@ -236,6 +290,16 @@ def build_rationale(case_id: str, case: Any, rows: list[Any]) -> dict[str, Any]:
         else:
             playbook_id = ""
             playbook_version = ""
+        runbook_provenance = procedure_provenance["runbook"]
+        runbook_consulted = bool(runbook_provenance["consulted"])
+        if runbook_consulted:
+            runbook_id = str(runbook_provenance["selected_id"] or runbook_id)
+            runbook_version = runbook_provenance["version"] or runbook_version
+            runbook_title = str(runbook_provenance["title"] or runbook_title)
+        else:
+            runbook_id = ""
+            runbook_version = None
+            runbook_title = ""
         knowledge = list(procedure_provenance["knowledge"])
 
     # --- platform threshold tuning snapshot (run-boundary audit row) ---------
@@ -287,16 +351,34 @@ def build_rationale(case_id: str, case: Any, rows: list[Any]) -> dict[str, Any]:
             reasoning = rs.split(marker, 1)[1].strip()
         break
 
-    # --- playbook reason (playbook_selector DECISION) ------------------------
+    # --- selection reason (the selection DECISION) -------------------------
+    # A ``runbook_selector`` row explains a runbook selection; a ``playbook_selector``
+    # row (before Round 14) explains a playbook selection. Each fills its own key.
     playbook_reason = ""
+    runbook_reason = ""
+    runbook_selection: dict[str, Any] = {}
     if selector_row is not None:
         selector_input = audit_get(selector_row, "tool_input") or {}
+        legacy = audit_get(selector_row, "actor") == LEGACY_SELECTOR_ACTOR
         if isinstance(selector_input, dict):
-            selection = selector_input.get("playbook_selection")
-            if isinstance(selection, dict):
-                playbook_reason = str(selection.get("reason") or "")
-        if not playbook_reason:
+            if legacy:
+                selection = selector_input.get("playbook_selection")
+                if isinstance(selection, dict):
+                    playbook_reason = str(selection.get("reason") or "")
+            else:
+                selection = selector_input.get("runbook_selection")
+                if isinstance(selection, dict):
+                    runbook_selection = selection
+                    runbook_reason = str(selection.get("reason") or "")
+                if not runbook_reason:
+                    runbook_reason = str(selector_input.get("runbook_reason") or "")
+        if legacy and not playbook_reason:
             playbook_reason = str(audit_get(selector_row, "result_summary") or "")
+        if not legacy and not runbook_reason:
+            runbook_reason = str(audit_get(selector_row, "result_summary") or "")
+    if not runbook_reason:
+        runbook_reason = str(procedure_provenance["runbook"]["selection_reason"] or "")
+    explanation = runbook_selection.get("explanation")
 
     # --- deterministic decision rationale (case_manager DECISION, then the
     #     case.history "decision" event as a fallback) ------------------------
@@ -351,6 +433,23 @@ def build_rationale(case_id: str, case: Any, rows: list[Any]) -> dict[str, Any]:
             "version": playbook_version,
             "reason": playbook_reason,
             "consulted": playbook_consulted,
+        },
+        # Round 14: the runbook that guided the latest run. ``id`` is set only when
+        # its guidance reached the investigator (``consulted``); ``selected_id`` names
+        # the runbook the matcher chose, also when the run never used it (the cheap
+        # router path, the kill switch, a matched runbook over the budget).
+        "runbook": {
+            "id": runbook_id,
+            "version": runbook_version,
+            "title": runbook_title or (
+                str(runbook_selection.get("title") or "") if runbook_consulted else ""
+            ),
+            "reason": runbook_reason,
+            "consulted": runbook_consulted,
+            "selected_id": str(runbook_selection.get("id") or ""),
+            "status": str(runbook_selection.get("status") or ""),
+            "tier": _int_or_none(runbook_selection.get("tier")),
+            "explanation": explanation if isinstance(explanation, dict) else None,
         },
         "memory_used": memory_used,
         "knowledge": knowledge,

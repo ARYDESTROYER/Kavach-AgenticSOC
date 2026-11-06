@@ -255,6 +255,7 @@ GHCR packages must be public and anonymously pullable by exact digest. See
 | `TLSOC_AUTH_TOKEN_HOURS` | `AUTH_TOKEN_HOURS` | access-token lifetime in **hours** for sign-ins **without** Remember me (default `12`; values above 144 are reduced to 144 with a startup warning, bearer-token API clients included). Those sign-ins get a browser-session cookie; a remembered sign-in lasts `session_policy.remember_me.duration_seconds` instead. NOTE: the *richer* session policy below (idle / absolute / refresh / step-up / remember me) is **UI-editable Preferences**, not env. |
 | `TLSOC_AUTH_COOKIE_SECURE` | `AUTH_COOKIE_SECURE` | set `true` behind TLS so the session cookie is HTTPS-only (default `false`). Required for **Remember me** except on a direct loopback request, or unless `session_policy.remember_me.allow_insecure_http` is `true` (not recommended); a same-host reverse proxy must send `X-Forwarded-For`. |
 | `TLSOC_AUTH_ADMIN_USERNAME` / `TLSOC_AUTH_ADMIN_PASSWORD` | `AUTH_ADMIN_USERNAME` / `AUTH_ADMIN_PASSWORD` | optional env single-admin (hashed in memory at boot, never stored; granted super_admin) — separate from the auto-seeded `Admin/Admin@123`. |
+| (not mapped) | `TRUSTED_PROXIES` | **Round 14.** Comma list of host names, IP addresses or CIDR ranges whose `X-Forwarded-For` the audit log believes when it records a client address. Default `tlsoc-webui` (the bundled Web UI service), so the standalone (agnostic) Compose stack needs nothing. On the legacy ELK attachment, whose merge block has no Web UI service, run the Web UI as a `tlsoc-webui` service on the backend's network or set `TRUSTED_PROXIES` in the copied `tlsoc-backend` block to the proxy that fronts the backend; otherwise every audit row records that proxy's address as the client. Behind another proxy or a load balancer, add it here through a Compose override's `environment:` block. Only a request from a listed peer has its forwarded header read, and then the rightmost entry that is not itself a trusted proxy is recorded (at most the last 32 entries are read); every other request is recorded with its connection address and the raw header is kept as untrusted (its tail when longer than 256 characters). Names resolve at startup and every 5 minutes; a name that does not resolve yet is retried within seconds. Audit metadata only, never an access decision. Uvicorn's own `FORWARDED_ALLOW_IPS` (loopback by default) only affects its scheme handling. |
 | `TLSOC_MFA_OBFUSCATION_KEY` | `MFA_OBFUSCATION_KEY` | obfuscation key for per-user TOTP secrets at rest (blank → derived from `AUTH_JWT_SECRET`; stdlib, not a KMS). |
 | `TLSOC_SSO_CLIENT_SECRETS` | `SSO_CLIENT_SECRETS` | JSON map `provider_id → client_secret` for OIDC SSO (Google / Microsoft / generic); the rest of each provider (issuer / client-id / redirect / group→role) is configured in **Settings**. May also be pushed at runtime via `POST /api/auth/sso/providers/{id}/secret`. Redirect/callback URI to register with the IdP: `<base-url>/api/auth/sso/callback`. |
 | `TLSOC_NOTIFICATION_SECRETS` | `NOTIFICATION_SECRETS` | JSON map `channel_id → {field: value}` seeding the per-channel **secret tier** at boot — covers the **SMTP password**, the **Resend API key**, the **SES IAM secret**, and Slack/Teams/webhook URLs + PagerDuty/Telegram tokens. The rest of each channel (provider/host/port/region/from/recipients) is **non-secret config set in Settings**. May also be pushed at runtime via `POST /api/notifications/channels/{id}/secret`. |
@@ -441,7 +442,23 @@ install** simply starts at the defaults above with no banner at all.
 
 **Still opt-in (unchanged defaults):** `batch.enabled` (§2.6 covers the batch/flex LLM
 paths), changing the default blocking budget to warning-only, any
-`run_playbook`/`notify` action on a
+attach-runbook (`run_playbook`) or `notify` action on a
 case-automation rule, and baseline-driven auto-investigation — baseline stays a pure
 advisory producer that never calls `decide()` or forwards to investigation by itself
 (#3/#4).
+
+### 2.9 Round 14 preferences (UI-editable, not env)
+
+Round 14 adds or changes these `Preferences` and per-user values; none is an env var.
+Full tables are in `docs/reference/configuration.md`.
+
+| Preference | Default | Notes |
+|---|---|---|
+| `chat_agent.max_parallel` · `tool_timeout_s` · `model_step_timeout_s` · `max_concurrent_turns_per_user` · `max_concurrent_turns_global` | `12` · `45` · `900` · `12` · `48` | the Chat assistant's "Timeouts and capacity", tripled from `4` · `15` · `300` · `4` · `16`. `chat_agent.chat_limits_version` is now `2`: a stored block whose value still equals the Round 12 default moves once, in both limits modes; a value an administrator chose stays. The report summary wait stays capped at 280 s, below the Web UI proxy's 300 s |
+| `runbooks.{enabled,auto_attach,fallback,investigator_guidance,rag_corpus,ai_suggest,ai_step_drafts}` | all `true` | the one Runbooks feature (Settings → Integrations → Runbooks). None of them feeds `decide()` (#3) |
+| `runbooks.{require_distinct_approver,step_approvals}` | `false` | separation of duties for publishing, and per-step approver roles |
+| `runbooks.review_every_days_default` | `180` | review cadence of a new operator runbook, 30 to 730 days |
+| retired keys `playbooks.enabled`, the earlier `runbooks.enabled`, `rag.use_runbooks` | accepted | mapped once by meaning (a stored `false` becomes `runbooks.investigator_guidance: false` or `runbooks.rag_corpus: false`), then stamped with `runbooks.runbooks_config_version: 1`; `playbooks.enabled` and `rag.use_runbooks` stay readable as mirrors of their successors |
+| `UserPrefs.misc.dashboards_hidden` · `UserPrefs.misc.dismissed_intros` | `[]` | per user: built-in dashboards hidden from the library (at most 8) and dismissed introductory notes (at most 50); a change is audited before it is saved |
+| `DashboardLayout.default_window` | absent (last 24 hours) | a personal board's starting window: `now-24h`, `now-7d`, `now-30d` or `now-90d` |
+| `batch.*` (Discounted inference) | unchanged | edited in Settings → General → Discounted inference and saved with the other settings, so it needs `settings:manage` (on the Jobs page it needed `models:manage`) |

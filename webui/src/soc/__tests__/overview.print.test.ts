@@ -65,11 +65,13 @@ describe('Overview print rules', () => {
     expect(svg).not.toMatch(/(^|[\s;{])width:\s*100%/);
   });
 
-  it('keeps the card on one page inside a plain block band', () => {
+  it('keeps the card on one page inside a plain block row', () => {
     expect(rule(block, "#socMain [data-testid='human-vs-ai'] {")).toMatch(/break-inside:\s*avoid/);
-    expect(rule(block, "#socMain [aria-labelledby='overview-band-flow'] > div {")).toMatch(
-      /display:\s*block !important/,
-    );
+    // Round 14: the flow row has no band title any more, so the print rules target its
+    // `data-band` hook, never the heading that used to name it.
+    expect(rule(block, "#socMain [data-band='flow'] > div {")).toMatch(/display:\s*block !important/);
+    expect(rule(block, "#socMain [data-band='flow'] > div > * + * {")).toMatch(/margin-top:\s*2rem/);
+    expect(block).not.toContain('overview-band-flow');
   });
 
   it('puts the absolutely positioned figure in flow so it gives the box its height', () => {
@@ -87,9 +89,12 @@ describe('Overview print rules', () => {
     expect(rule(block, "#socMain [data-testid='latest-cases-box'] > ul {")).toMatch(
       /position:\s*static !important/,
     );
-    expect(rule(block, "#socMain section[aria-label='Latest cases'] {")).toMatch(
+    // Round 14: the region is named by its heading (`aria-labelledby`), so the print rule
+    // reaches it through its `data-testid` hook, never a label attribute it no longer has.
+    expect(rule(block, "#socMain [data-testid='latest-cases'] {")).toMatch(
       /break-inside:\s*avoid/,
     );
+    expect(block).not.toContain("aria-label='Latest cases'");
   });
 
   it('still hides the console chrome and releases the shell heights', () => {

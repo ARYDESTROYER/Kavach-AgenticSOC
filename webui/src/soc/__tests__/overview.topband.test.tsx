@@ -77,7 +77,7 @@ const POSTURE: PostureResponse = {
   sla: { enabled: false },
 } as unknown as PostureResponse;
 
-describe('Overview — Total Critical follows the ladder, not a literal', () => {
+describe('Overview: Total critical follows the ladder, not a literal', () => {
   beforeEach(() => {
     fetchPostureMock.mockReset().mockResolvedValue(POSTURE);
     listCasesMock.mockReset().mockResolvedValue({ cases: CASES, total: CASES.length });
@@ -101,7 +101,7 @@ describe('Overview — Total Critical follows the ladder, not a literal', () => 
     // than accepting their deletion. The band name must stay a template literal: the label
     // says "Total Critical" while the ladder's real top band here is High, and the two are
     // designed to be able to disagree.
-    await userEvent.click(screen.getByRole('button', { name: 'About Total Critical' }));
+    await userEvent.click(screen.getByRole('button', { name: 'About Total critical' }));
     const help = await screen.findByText(/^The High band\./);
     expect(help).toHaveTextContent(/The High band\. Counted SERVER-SIDE/);
     expect(help).toHaveTextContent('Right now: 82% of 11.');

@@ -32,6 +32,7 @@ import {
   AlertTriangle,
   ArrowRight,
   Bell,
+  BellOff,
   BookOpen,
   Bot,
   Check,
@@ -80,6 +81,9 @@ import {
   severityBand,
 } from '@/soc/components/badges';
 import { ProvenanceTag, severityProvenance, type Provenance } from '@/soc/components/ProvenanceTag';
+import { RuleLink, RuleSheetHost } from '@/soc/components/RuleLink';
+import { notifyDelivery } from '@/soc/components/caseActivityText';
+import { caseLabel } from '@/lib/format-values';
 import { AskAi } from './AskAi';
 import { DecisionCard } from './DecisionCard';
 import {
@@ -573,17 +577,45 @@ const RelatedCrossSource: React.FC<{ c: Case; onNavigate?: Navigate; flat?: bool
 
 /* ----------------------------------------------- threshold automation (F10) */
 
+type AutomationMeta = { label: string; icon: React.ComponentType<{ className?: string }>; tone: ScoreTone };
+
 /** Map an automation action verb → label + icon + tone. */
-const AUTOMATION_META: Record<
-  string,
-  { label: string; icon: React.ComponentType<{ className?: string }>; tone: ScoreTone }
-> = {
+const AUTOMATION_META: Record<string, AutomationMeta> = {
   tag: { label: 'Tagged', icon: Tag, tone: 'info' },
   recommend: { label: 'Recommendation', icon: Info, tone: 'medium' },
   notify: { label: 'Notified', icon: Bell, tone: 'info' },
-  run_playbook: { label: 'Queued playbook', icon: BookOpen, tone: 'low' },
+  // A record from before Round 14 keeps its token; the label is Console-authored.
+  run_playbook: { label: 'Runbook automation (before Round 14)', icon: BookOpen, tone: 'low' },
   request_approval: { label: 'Proposed (needs approval)', icon: Lock, tone: 'high' },
 };
+
+/** What an "Attach a runbook" action records (`engine/threshold_automation.py`). */
+const ATTACH_RUNBOOK_DETAIL = /^attach_runbook=(.*) attached=(True|False)$/s;
+
+/**
+ * The badge of an automation record. A `notify` record says whether the notification went
+ * out: its detail notes "Not sent" or "Partly sent" with the reason when it did not all go
+ * (`notifyDelivery`, the reading the case activity uses), so the badge never claims a send
+ * that did not happen.
+ *
+ * A `run_playbook` record keeps its stored token (the naming contract). Since Round 14 the
+ * action is the rule editor's "Attach a runbook" and records whether it attached one; a
+ * record from before Round 14 keeps its legacy name (SPEC §3.1).
+ */
+function automationMeta(action: string, detail: unknown): AutomationMeta | undefined {
+  if (action === 'notify') {
+    const { delivery } = notifyDelivery(detail);
+    if (delivery === 'not_sent') return { label: 'Not notified', icon: BellOff, tone: 'high' };
+    if (delivery === 'partly_sent') return { label: 'Partly notified', icon: Bell, tone: 'medium' };
+    return AUTOMATION_META.notify;
+  }
+  if (action !== 'run_playbook') return AUTOMATION_META[action];
+  const attach = typeof detail === 'string' ? ATTACH_RUNBOOK_DETAIL.exec(detail) : null;
+  if (!attach) return AUTOMATION_META.run_playbook;
+  return attach[2] === 'True'
+    ? { label: 'Runbook attached', icon: BookOpen, tone: 'low' }
+    : { label: 'Runbook not attached', icon: BookOpen, tone: 'info' };
+}
 
 /**
  * Shows the SAFE actions threshold automation applied to this case (F10). Renders
@@ -602,12 +634,13 @@ const AutomationApplied: React.FC<{ c: Case; flat?: boolean }> = ({ c, flat = fa
       <SectionHeading icon={Zap}>Automation applied</SectionHeading>
       <p className="mb-3 text-xs text-muted-foreground">
         Threshold-automation actions taken after the deterministic decision. These are
-        non-binding: automation can tag, recommend, notify, queue a re-investigation, or draft a
-        proposal, but it never changes the lifecycle status or auto-closes a case.
+        non-binding: automation can tag, recommend, notify, attach a runbook, queue a
+        re-investigation, or draft a proposal, but it never changes the lifecycle status or
+        auto-closes a case.
       </p>
       <ul className="space-y-2">
         {actions.map((a, i) => {
-          const meta = AUTOMATION_META[String(a.action || '')] || {
+          const meta = automationMeta(String(a.action || ''), a.detail) || {
             label: humanizeToken(String(a.action || 'Action')),
             icon: Zap,
             tone: 'info' as ScoreTone,
@@ -712,6 +745,17 @@ export const OverviewPanel: React.FC<{
    * the case without recording an outcome (D15 row 3) — the honest next step.
    */
   onSetDisposition?: (opener: HTMLElement) => void;
+  /**
+   * Round 14 (SPEC §4.10.11): the runbook's Next step card, repeated at the top of the
+   * Overview when a runbook is attached to an open case. Read only here; its button opens
+   * the Runbook tab. Nothing in it changes the case (#3).
+   */
+  runbookCard?: React.ReactNode;
+  /**
+   * Whether the viewer holds `cost:view`. Without it the profile line leaves the
+   * investigation cost out (the server answers `token_cost: null` for that viewer too).
+   */
+  canViewCost: boolean;
 }> = ({
   c,
   fpPolicy,
@@ -726,6 +770,8 @@ export const OverviewPanel: React.FC<{
   onNavigate,
   presentation = 'default',
   onSetDisposition,
+  runbookCard = null,
+  canViewCost,
 }) => {
   const isCaseManager = presentation === 'case-manager';
   const trigger = c.trigger_reason as
@@ -953,6 +999,8 @@ export const OverviewPanel: React.FC<{
       data-case-panel={isCaseManager ? 'overview' : undefined}
       data-presentation={isCaseManager ? 'case-manager' : undefined}
     >
+      {runbookCard}
+
       {/* ============================================== 1. DECISION BRIEF */}
       <PanelCard
         data-testid={isCaseManager ? 'case-manager-decision-summary' : undefined}
@@ -1237,31 +1285,20 @@ export const OverviewPanel: React.FC<{
                     <span className={cn('block', FIELD_LABEL)}>
                       Detection rule{ruleIds.length === 1 ? '' : 's'}
                     </span>
-                    <div className="flex min-w-0 flex-wrap gap-1.5">
-                      {/* UNTRUSTED rule ids — plain text nodes, mono. Long rule names
-                          must wrap inside the chip, never force the card wider
-                          (`whitespace-normal` overrides the Badge's default
-                          `whitespace-nowrap` — both are in tailwind-merge's
-                          `whitespace` class group so the override wins). `min-w-0`
-                          must live on the Badge ITSELF — that's the flex item whose
-                          automatic min-width needs zeroing; a space-less/hyphen-less
-                          id (e.g. "demo_rdp_bruteforce" or a long
-                          Trojan_Generic_..._Detected style id) has no soft-wrap
-                          points, so `break-words` (overflow-wrap: break-word) never
-                          reduces min-content and the item keeps overflowing.
-                          `overflow-wrap: anywhere` DOES reduce min-content per spec,
-                          like `break-all`, but it breaks at spaces FIRST and splits a
-                          word only when that word cannot fit on a line of its own —
-                          `break-all` split readable names mid-word ("foll owed"). */}
-                      {ruleIds.map((r, i) => (
-                        <Badge
-                          key={`${r}-${i}`}
-                          variant="outline"
-                          className="min-w-0 max-w-full whitespace-normal font-mono [overflow-wrap:anywhere]"
-                        >
-                          {r}
-                        </Badge>
-                      ))}
+                    <div className="flex min-w-0 flex-wrap gap-x-3 gap-y-1.5">
+                      {/* Round 14 (SPEC §4.6.5): each rule opens the rule sheet. The ids are
+                          UNTRUSTED plain text nodes inside the link (#9) and wrap anywhere so
+                          a long id never forces the card wider. One host keeps one sheet. */}
+                      <RuleSheetHost>
+                        {ruleIds.map((r, i) => (
+                          <RuleLink
+                            key={`${r}-${i}`}
+                            rule={r}
+                            origin={caseLabel(c)}
+                            className="min-w-0 max-w-full whitespace-normal text-left text-xs text-foreground [overflow-wrap:anywhere]"
+                          />
+                        ))}
+                      </RuleSheetHost>
                     </div>
                   </div>
                 ) : null}
@@ -1837,12 +1874,22 @@ export const OverviewPanel: React.FC<{
               ? `Creation build ${buildLabel}`
               : 'Creation build provenance unavailable'}
           </span>
-          {/* UNTRUSTED profile (playbook id / persona) — plain text. */}
-          {c.playbook_id ? <span>Playbook {c.playbook_id}</span> : null}
+          {/* UNTRUSTED profile (runbook id / persona): plain text. A case from before
+              Round 14 keeps its stored id under a Console-authored label. */}
+          {c.runbook_id ? (
+            <span>
+              Investigator runbook {c.runbook_id}
+              {typeof c.runbook_version === 'number' ? ` v${c.runbook_version}` : ''}
+            </span>
+          ) : c.playbook_id ? (
+            <span>Runbook (before Round 14) {c.playbook_id}</span>
+          ) : null}
           {c.agent_persona && c.agent_persona !== 'generalist' ? (
             <span>Profile {humanizeToken(c.agent_persona)}</span>
           ) : null}
-          <span>Investigation cost {fmtMoney(c.token_cost)}</span>
+          {canViewCost && c.token_cost != null ? (
+            <span>Investigation cost {fmtMoney(c.token_cost)}</span>
+          ) : null}
           {c.decision_by ? <span>Decided by {humanizeToken(c.decision_by)}</span> : null}
         </div>
         ) : null}

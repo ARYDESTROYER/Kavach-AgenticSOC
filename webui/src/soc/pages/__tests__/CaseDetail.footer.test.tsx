@@ -49,13 +49,11 @@ vi.mock('@/lib/api', () => {
     setUnauthorizedHandler: vi.fn(),
     api: {
       getCase: ok(openCase),
-      getPlaybooks: ok({ enabled: false, playbooks: [] }),
       getModels: ok({ providers: {} }),
       getSettings: ok({ prefs: {}, configured: {}, read_only: false }),
       caseActionExec,
       cases: {
         threatContext: ok(null),
-        runPlaybook: ok(openCase),
         notify: ok({ sent: [] }),
       },
     },

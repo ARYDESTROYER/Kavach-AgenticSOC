@@ -20,14 +20,14 @@ const {
   demoEnableMock,
   demoDisableMock,
   authMeMock,
-  rolesGetMock,
+  permissionsMock,
   putSettingsMock,
 } = vi.hoisted(() => ({
   demoStatusMock: vi.fn(),
   demoEnableMock: vi.fn(),
   demoDisableMock: vi.fn(),
   authMeMock: vi.fn(),
-  rolesGetMock: vi.fn(),
+  permissionsMock: vi.fn(),
   putSettingsMock: vi.fn(),
 }));
 
@@ -47,7 +47,7 @@ vi.mock('@/lib/api', () => {
       completeSetup: ok({ ok: true }),
       // Auth provider
       auth: { me: authMeMock, logout: ok({ ok: true }) },
-      roles: { get: rolesGetMock },
+      account: { permissions: permissionsMock },
       // Demo provider + the toggle
       demo: {
         status: demoStatusMock,
@@ -91,9 +91,9 @@ describe('Wizard demo toggle (bug #3)', () => {
       authenticated: true,
       user: null,
     });
-    rolesGetMock
+    permissionsMock
       .mockReset()
-      .mockResolvedValue({ roles: [], default_role: 'analyst_tier1', rbac_enabled: false, matrix: {} });
+      .mockResolvedValue({ authenticated: true, role: 'super_admin', custom_roles: [], rbac_enabled: false, permissions: {} });
   });
 
   function deferred<T>() {
@@ -165,12 +165,13 @@ describe('Wizard demo toggle (bug #3)', () => {
       authenticated: true,
       user: { username: 'ana', role: 'analyst_tier1' },
     });
-    // RBAC on, and the analyst role has NO demo:manage grant.
-    rolesGetMock.mockResolvedValue({
-      roles: [],
-      default_role: 'analyst_tier1',
+    // RBAC on, and the analyst's effective grants hold NO demo:manage.
+    permissionsMock.mockResolvedValue({
+      authenticated: true,
+      role: 'analyst_tier1',
+      custom_roles: [],
       rbac_enabled: true,
-      matrix: { analyst_tier1: { cases: ['read'] } },
+      permissions: { cases: ['read'] },
     });
 
     renderWizard();
@@ -188,11 +189,12 @@ describe('Wizard demo toggle (bug #3)', () => {
       authenticated: true,
       user: { username: 'ana', role: 'analyst_tier1' },
     });
-    rolesGetMock.mockResolvedValue({
-      roles: [],
-      default_role: 'analyst_tier1',
+    permissionsMock.mockResolvedValue({
+      authenticated: true,
+      role: 'analyst_tier1',
+      custom_roles: [],
       rbac_enabled: true,
-      matrix: { analyst_tier1: { cases: ['read'] } },
+      permissions: { cases: ['read'] },
     });
 
     renderWizard();

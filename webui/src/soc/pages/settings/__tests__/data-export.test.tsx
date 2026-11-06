@@ -66,13 +66,17 @@ describe('DataExportSection durable jobs', () => {
     fireEvent.click(screen.getByRole('button', { name: /build zip in background/i }));
 
     await waitFor(() => expect(submitMock).toHaveBeenCalledTimes(1));
-    expect(submitMock).toHaveBeenCalledWith({
-      kind: 'data_export_archive',
-      idempotency_key: expect.stringMatching(/^data_export_archive-/),
-      params: {
-        scopes: ['audit', 'automation', 'cases', 'configuration', 'knowledge', 'usage'],
+    expect(submitMock).toHaveBeenCalledWith(
+      {
+        kind: 'data_export_archive',
+        idempotency_key: expect.stringMatching(/^data_export_archive-/),
+        params: {
+          scopes: ['audit', 'automation', 'cases', 'configuration', 'knowledge', 'usage'],
+        },
       },
-    });
+      // The fresh sign-in an export asks for says it is for the export (roles-12).
+      'Sign in again to start this export.',
+    );
     expect(toastMock.success).toHaveBeenCalledWith(
       expect.stringMatching(/running in the background/i),
       expect.objectContaining({ action: expect.objectContaining({ label: 'Open Inbox' }) }),
@@ -89,11 +93,14 @@ describe('DataExportSection durable jobs', () => {
     fireEvent.click(screen.getByRole('button', { name: /build zip in background/i }));
 
     await waitFor(() => expect(submitMock).toHaveBeenCalledTimes(1));
-    expect(submitMock).toHaveBeenCalledWith({
-      kind: 'data_export_segment',
-      idempotency_key: expect.stringMatching(/^data_export_segment-/),
-      params: { scopes: ['cases'], page_size: 1000 },
-    });
+    expect(submitMock).toHaveBeenCalledWith(
+      {
+        kind: 'data_export_segment',
+        idempotency_key: expect.stringMatching(/^data_export_segment-/),
+        params: { scopes: ['cases'], page_size: 1000 },
+      },
+      'Sign in again to start this export.',
+    );
     expect(screen.getByText(/final delivery is still one zip/i)).toBeInTheDocument();
   });
 

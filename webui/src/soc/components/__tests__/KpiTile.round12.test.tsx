@@ -231,7 +231,7 @@ describe('KpiTile — the fit guard (a numeral that does not fit steps down, nev
 
   it('fits a non-hero numeral too (its own size steps)', () => {
     narrowTile(['text-2xl']);
-    render(<KpiTile label="Total" value="1,234,567" variant="strip" density="compact" />);
+    render(<KpiTile label="Total" value="1,234,567" variant="strip" density="compact" chrome="framed" />);
     expect(numeral(screen.getByTestId('kpi-total'))).toHaveClass('text-xl');
   });
 
@@ -286,16 +286,25 @@ describe('KpiTile — the hero corner icons never cover the numeral', () => {
 describe('KpiTile — strip captions are content text (12px)', () => {
   it('renders a strip `sub` caption at 12px sans, never 11px mono', () => {
     const { rerender } = render(
-      <KpiTile label="Pricing" value="12" sub="exact rates" variant="strip" density="compact" />,
+      <KpiTile label="Pricing" value="12" sub="exact rates" variant="strip" density="compact" chrome="framed" />,
     );
     let caption = within(screen.getByTestId('kpi-pricing')).getByText('exact rates');
     expect(caption).toHaveClass('text-xs', 'line-clamp-2');
     expect(caption).not.toHaveClass('text-2xs');
     expect(caption).not.toHaveClass('font-mono');
 
-    rerender(<KpiTile label="Pricing" value="12" sub="exact rates" variant="strip" />);
+    rerender(<KpiTile label="Pricing" value="12" sub="exact rates" variant="strip" chrome="framed" />);
     caption = within(screen.getByTestId('kpi-pricing')).getByText('exact rates');
     expect(caption).toHaveClass('text-xs', 'truncate');
+    expect(caption).not.toHaveClass('font-mono');
+
+    // Round 14: on the strip chrome a state caption is the hero context line, which wraps
+    // (never truncated) and stays 12px sans on a compact tile.
+    rerender(<KpiTile label="Pricing" value="12" sub="exact rates" variant="strip" density="compact" />);
+    caption = within(screen.getByTestId('kpi-pricing')).getByText('exact rates');
+    expect(caption).toHaveAttribute('data-kpi-line', 'state');
+    expect(caption).toHaveClass('text-xs', 'break-words');
+    expect(caption).not.toHaveClass('truncate');
     expect(caption).not.toHaveClass('font-mono');
   });
 
@@ -373,7 +382,7 @@ describe('KpiTile — the comfortable strip density', () => {
     expect(within(tile).getByText('32 of 43 verdicted')).toHaveClass('text-sm');
   });
 
-  it('leaves the compact hero strip exactly as it was (12px label and context)', () => {
+  it('leaves the framed compact hero strip exactly as it was (12px label and context)', () => {
     render(
       <KpiTile
         label="Open cases"
@@ -382,11 +391,23 @@ describe('KpiTile — the comfortable strip density', () => {
         variant="strip"
         density="compact"
         numeral="hero"
+        chrome="framed"
       />,
     );
     const tile = screen.getByTestId('kpi-open-cases');
     expect(tile).toHaveClass('px-3', 'py-2');
     expect(within(tile).getByText('Open cases')).toHaveClass('text-xs');
+    expect(within(tile).getByText('any arrival date')).toHaveClass('text-xs');
+  });
+
+  it('labels a compact strip-chrome tile at 13px (page strips, Round 14), context still 12px', () => {
+    render(
+      <KpiTile label="Open cases" value="20" context="any arrival date" variant="strip" density="compact" />,
+    );
+    const tile = screen.getByTestId('kpi-open-cases');
+    expect(tile).toHaveClass('px-3', 'py-2');
+    expect(within(tile).getByText('Open cases')).toHaveClass('text-sm', 'font-medium');
+    expect(within(tile).getByText('Open cases')).not.toHaveClass('uppercase');
     expect(within(tile).getByText('any arrival date')).toHaveClass('text-xs');
   });
 });

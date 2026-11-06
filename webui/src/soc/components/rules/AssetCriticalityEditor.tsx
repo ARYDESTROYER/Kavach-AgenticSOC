@@ -28,30 +28,30 @@ import { IconButton } from '@/soc/components/IconButton';
 import { EmptyState } from '@/soc/components/EmptyState';
 
 /**
- * A permissive IPv4/IPv6 CIDR sniff — enough to reject an obviously-malformed entry in
+ * A permissive IPv4/IPv6 CIDR sniff: enough to reject an obviously-malformed entry in
  * the UI (the backend Pydantic model is authoritative). Returns an error string or null.
  */
 export function validateCidr(raw: string): string | null {
   const s = raw.trim();
   if (!s) return 'Enter a CIDR range.';
   const slash = s.indexOf('/');
-  if (slash < 0) return 'Include a prefix length, e.g. 10.0.0.0/8.';
+  if (slash < 0) return 'Include a prefix length, for example 10.0.0.0/8.';
   const addr = s.slice(0, slash);
   const prefix = s.slice(slash + 1);
   const prefixNum = Number(prefix);
   if (!/^\d+$/.test(prefix) || Number.isNaN(prefixNum)) return 'Prefix length must be a number.';
   const isV6 = addr.includes(':');
   if (isV6) {
-    if (prefixNum < 0 || prefixNum > 128) return 'IPv6 prefix must be 0–128.';
+    if (prefixNum < 0 || prefixNum > 128) return 'IPv6 prefix must be 0 to 128.';
     if (!/^[0-9a-fA-F:]+$/.test(addr)) return 'Not a valid IPv6 address.';
     return null;
   }
   const octets = addr.split('.');
   if (octets.length !== 4) return 'Not a valid IPv4 address.';
   for (const o of octets) {
-    if (!/^\d+$/.test(o) || Number(o) > 255) return 'Each IPv4 octet must be 0–255.';
+    if (!/^\d+$/.test(o) || Number(o) > 255) return 'Each IPv4 octet must be 0 to 255.';
   }
-  if (prefixNum < 0 || prefixNum > 32) return 'IPv4 prefix must be 0–32.';
+  if (prefixNum < 0 || prefixNum > 32) return 'IPv4 prefix must be 0 to 32.';
   return null;
 }
 
@@ -207,7 +207,7 @@ export function AssetCriticalityEditor({
 }: AssetCriticalityEditorProps) {
   // The exact map is edited as an ordered pair list held in LOCAL state (not derived
   // purely from the `exact` prop), so an in-progress empty row survives long enough to
-  // type into — otherwise "Add asset" is a no-op and clearing an entity to retype it
+  // type into; otherwise "Add asset" is a no-op and clearing an entity to retype it
   // instantly deletes the row (#34). We fold non-empty rows back to the wire map on every
   // edit, and only resync from the prop on an EXTERNAL change (load/reset).
   const [pairs, setPairs] = React.useState<ExactPair[]>(() => toPairs(exact));
@@ -234,9 +234,9 @@ export function AssetCriticalityEditor({
               Asset networks (CIDR)
             </h4>
             <p className="text-xs text-muted-foreground">
-              Every IP inside a range inherits its criticality (0–100); the highest
-              matching range wins. Raises the deterministic risk score only — never
-              auto-closes or escalates a case.
+              Every IP inside a range inherits its criticality (0 to 100), and the highest
+              matching range wins. It raises the deterministic risk score only and never
+              closes or escalates a case.
             </p>
           </div>
           <Button
@@ -266,7 +266,7 @@ export function AssetCriticalityEditor({
             compact
             icon={Server}
             title="No asset networks"
-            description="Add a CIDR range to mark a subnet (e.g. your crown-jewel servers) as high-criticality."
+            description="Add a CIDR range to mark a subnet (for example, your crown-jewel servers) as high-criticality."
           />
         )}
       </section>
@@ -277,15 +277,15 @@ export function AssetCriticalityEditor({
           <div className="space-y-0.5">
             <h4 className="text-sm font-medium text-foreground">Exact assets</h4>
             <p className="text-xs text-muted-foreground">
-              An exact entity value (host, user, or IP) → criticality. Takes precedence
-              over the CIDR-derived value where an exact match exists.
+              Give an exact entity value (a host, user or IP) its own criticality. It takes
+              precedence over the CIDR-derived value where an exact match exists.
             </p>
           </div>
           <Button
             size="sm"
             variant="outline"
             disabled={disabled}
-            // Push a real, renderable empty row (local state) — do NOT fold it away, or the
+            // Push a real, renderable empty row (local state); do NOT fold it away, or the
             // button appears to do nothing (#34). It joins the wire map once an entity is typed.
             onClick={() => setPairs((cur) => [...cur, { entity: '', score: 50 }])}
           >

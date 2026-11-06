@@ -17,6 +17,8 @@ import {
   isHumanClosed,
   isHumanSettled,
   outcomeAgreement,
+  outcomeCellText,
+  pendingDispositionNote,
 } from '../outcome';
 
 const at = '2026-10-09T10:00:00Z';
@@ -196,5 +198,95 @@ describe('outcome helpers', () => {
     expect(isHumanClosed(mk({ status: 'needs_human', decision_by: 'analyst' }))).toBe(false);
     expect(isHumanSettled(caseOutcome(mk({ status: 'closed', decision_by: 'analyst_policy' })))).toBe(true);
     expect(isHumanSettled(caseOutcome(mk()))).toBe(false);
+  });
+});
+
+describe('outcomeCellText: the Cases Outcome column (Round 14, closing QA qa2-01)', () => {
+  // Measured in the Console (Inter, 11px table badge with its glyph): the widest label
+  // below, "Declared benign", is 117px in a 124px cell. "Outcome not recorded" was 163px
+  // in the 12px badge and lost its last letters to the cell clip.
+  const CELL_LABELS = ['Auto-closed', 'Not recorded', 'Declared benign', 'False positive', 'True positive', 'Undetermined'];
+
+  it('gives an undeclared analyst close the short label and the whole sentence', () => {
+    const o = caseOutcome(
+      mk({ status: 'closed', decision_by: 'analyst', history: [{ event: 'analyst_action', action: 'close', analyst: 'a', ts: at }] }),
+    );
+    expect(outcomeCellText(o)).toEqual({ label: 'Not recorded', full: 'Closed by analyst: outcome not recorded' });
+    // The row and header word stays the long one.
+    expect(o.shortLabel).toBe('Outcome not recorded');
+    const resolved = caseOutcome(mk({ status: 'resolved', decision_by: 'analyst' }));
+    expect(outcomeCellText(resolved)?.full).toBe('Resolved by analyst: outcome not recorded');
+  });
+
+  it('says "by an analyst" for a classification, before the lifecycle tail', () => {
+    const closed = caseOutcome(
+      mk({ status: 'closed', decision_by: 'analyst', disposition: 'false_positive', history: [closeEntry('false_positive', 'confirm_fp')] }),
+    );
+    expect(outcomeCellText(closed)).toEqual({ label: 'False positive', full: 'Closed as false positive by an analyst' });
+    const held = caseOutcome(
+      mk({
+        status: 'on_hold',
+        decision_by: 'analyst',
+        disposition: 'suspicious',
+        history: [{ event: 'analyst_action', action: 'set_disposition', analyst: 'a', ts: at }],
+      }),
+    );
+    expect(outcomeCellText(held)?.full).toBe('Classified as suspicious by an analyst: on hold');
+  });
+
+  it('keeps the policy and auto-close sentences, and has nothing for a pending case', () => {
+    expect(outcomeCellText(caseOutcome(mk({ status: 'closed', decision_by: 'analyst_policy' })))).toEqual({
+      label: 'Declared benign',
+      full: 'Closed by analyst policy (declared benign)',
+    });
+    expect(outcomeCellText(caseOutcome(mk({ status: 'closed', verdict: 'TRUE_POSITIVE', decision_by: 'agent' })))).toEqual({
+      label: 'Auto-closed',
+      full: 'Auto-closed as true positive',
+    });
+    expect(outcomeCellText(caseOutcome(mk()))).toBeNull();
+  });
+
+  it('never labels a cell longer than the widest measured label', () => {
+    const longest = Math.max(...CELL_LABELS.map((label) => label.length));
+    const cases = [
+      mk({ status: 'closed', decision_by: 'analyst' }),
+      mk({ status: 'closed', decision_by: 'analyst_policy' }),
+      mk({ status: 'closed', decision_by: 'agent', verdict: 'FALSE_POSITIVE' }),
+      ...['true_positive', 'false_positive', 'benign', 'suspicious', 'duplicate', 'undetermined'].map((d) =>
+        mk({ status: 'closed', decision_by: 'analyst', disposition: d, history: [closeEntry(d)] }),
+      ),
+    ];
+    for (const c of cases) {
+      const text = outcomeCellText(caseOutcome(c));
+      expect(text).not.toBeNull();
+      expect(text!.label.length).toBeLessThanOrEqual(longest);
+    }
+  });
+});
+
+describe('pendingDispositionNote: where an unclassified case’s disposition came from', () => {
+  const tail = '; no analyst has classified this case yet';
+
+  it('claims an AI mapping only for the one value triage maps from the verdict', () => {
+    // case_manager._VERDICT_TO_DISPOSITION: one value per verdict.
+    expect(pendingDispositionNote({ verdict: 'TRUE_POSITIVE', disposition: 'true_positive' })).toBe(`Mapped from the AI verdict${tail}`);
+    expect(pendingDispositionNote({ verdict: 'false positive', disposition: 'false_positive' })).toBe(`Mapped from the AI verdict${tail}`);
+    expect(pendingDispositionNote({ verdict: 'NEEDS_HUMAN', disposition: 'undetermined' })).toBe(`Mapped from the AI verdict${tail}`);
+    // A value the verdict agrees with for grading, but that triage never writes.
+    expect(pendingDispositionNote({ verdict: 'NEEDS_HUMAN', disposition: 'suspicious' })).toBe(`Recorded on the case${tail}`);
+    expect(pendingDispositionNote({ verdict: 'FALSE_POSITIVE', disposition: 'benign' })).toBe(`Recorded on the case${tail}`);
+  });
+
+  it('says nothing was mapped before there is an AI verdict', () => {
+    expect(pendingDispositionNote({ verdict: null, disposition: null })).toBe(`Not yet assessed by the AI${tail}`);
+    expect(pendingDispositionNote({})).toBe(`Not yet assessed by the AI${tail}`);
+    expect(pendingDispositionNote({ verdict: 'NONE', disposition: null })).toBe(`Not yet assessed by the AI${tail}`);
+    // A value set on the case without a verdict is still no AI mapping.
+    expect(pendingDispositionNote({ verdict: null, disposition: 'suspicious' })).toBe(`Not yet assessed by the AI${tail}`);
+  });
+
+  it('says no outcome is recorded for a verdict without a disposition', () => {
+    expect(pendingDispositionNote({ verdict: 'TRUE_POSITIVE', disposition: null })).toBe(`No outcome recorded yet${tail}`);
+    expect(pendingDispositionNote({ verdict: 'TRUE_POSITIVE', disposition: ' None ' })).toBe(`No outcome recorded yet${tail}`);
   });
 });

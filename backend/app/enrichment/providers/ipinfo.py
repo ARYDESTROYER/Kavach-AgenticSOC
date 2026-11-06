@@ -28,7 +28,7 @@ class IPInfoProvider(EnrichmentProvider):
             name=cls.name,
             display_name="IPinfo Lite",
             description=(
-                "Geolocation / ASN / org ownership context. Geo context only — never a "
+                "Geolocation / ASN / org ownership context. Geo context only, never a "
                 "reputation verdict (score is always 0). Keyless on the free tier."
             ),
             indicator_kinds=[IndicatorKind.IP],
@@ -39,7 +39,7 @@ class IPInfoProvider(EnrichmentProvider):
             docs_url="https://ipinfo.io/developers",
             default_enabled=True,
             setup_steps=[
-                "Nothing required — IPinfo's keyless tier works out of the box and "
+                "Nothing required: IPinfo's keyless tier works out of the box and "
                 "this provider ships enabled.",
                 "Optional: create a free ipinfo.io account and set TLSOC_IPINFO_TOKEN "
                 "in .env (compose maps it to IPINFO_TOKEN) to raise the rate limit.",
@@ -47,7 +47,7 @@ class IPInfoProvider(EnrichmentProvider):
             example=(
                 "Instant geo/ASN context on every IP in a case: a login for a "
                 "Mumbai-based employee sourced from a Frankfurt hosting ASN reads "
-                "very differently from one on their home ISP — without the analyst "
+                "very differently from one on their home ISP, without the analyst "
                 "leaving the console."
             ),
         )

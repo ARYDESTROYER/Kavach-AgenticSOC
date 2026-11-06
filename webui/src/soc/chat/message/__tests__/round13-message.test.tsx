@@ -38,7 +38,7 @@ import type { ChatResponse } from '@/lib/types';
 import { TooltipProvider } from '@/ui/tooltip';
 import { FOLLOW_UPS_IGNORED_KEY, resetFollowUpBackoffForTests } from '../follow-up-backoff';
 import { META_COL, READING_COL } from '../lane';
-import { Message, PLACEHOLDER_ROW_PX, type MessageProps } from '../Message';
+import { META_FOLLOWS_WIDE, Message, PLACEHOLDER_ROW_PX, type MessageProps } from '../Message';
 import type { RunLogStep } from '../RunLog';
 import { StepInspector } from '../StepInspector';
 import type { ChatLiveTurn } from '../../useChatEngine';
@@ -114,7 +114,8 @@ describe('block placeholders (T20)', () => {
       expect(box).toHaveClass('rounded-lg', 'bg-muted/40');
       expect(box.className).not.toMatch(/border-dashed|animate-/);
     }
-    await waitFor(() => expect(screen.queryByTestId('blocks-loading')).toBeNull());
+    // The first import of the lazy blocks kit in this file (about 2 s on a loaded runner).
+    await waitFor(() => expect(screen.queryByTestId('blocks-loading')).toBeNull(), { timeout: 8000 });
   });
 });
 
@@ -218,7 +219,8 @@ describe('the narrow meta row (T10, T36)', () => {
 describe('the meta row column (§5.1)', () => {
   it('stays in the reading column next to compact cards, and takes the lane with a wide one', async () => {
     const compact = renderMessage({ item: assistantItem({ response: withBlocks([KPIS, TABLE]) }) });
-    expect(screen.getByTestId('meta-row').parentElement?.className).toBe(`${READING_COL} space-y-1.5`);
+    // Round 14: it widens with a card the person switches to a wide view (round14-meta-follows-wide).
+    expect(screen.getByTestId('meta-row').parentElement?.className).toBe(`${READING_COL} ${META_FOLLOWS_WIDE} space-y-1.5`);
     await screen.findByText('Open cases');
     compact.unmount();
     renderMessage({ item: assistantItem({ response: withBlocks([KPIS, LINE]) }) });

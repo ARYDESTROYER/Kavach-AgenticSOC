@@ -5,6 +5,7 @@ import { humanizeToken } from '@/lib/format';
 import type { BackgroundJob, BackgroundJobKind } from '@/lib/types';
 import type { NavOpts } from '@/soc/nav-types';
 import type { PageId } from '@/soc/nav';
+import { pageHash } from '@/soc/router';
 import {
   hasValidRouteEncoding,
   isSafeCaseId,
@@ -16,6 +17,22 @@ import {
 
 export const JOBS_CHANGED_EVENT = 'agentic-soc:jobs-changed';
 export const JOB_ACCEPTED_EVENT = 'agentic-soc:job-accepted';
+export const JOB_TOAST_RELEASED_EVENT = 'agentic-soc:job-toast-released';
+
+/** What a locally accepted job's event says to the shell's job observer. */
+export interface JobAcceptedDetail {
+  job_id: string;
+  status: BackgroundJob['status'];
+  /** The submitting surface waits for the outcome and reports it itself. */
+  quiet: boolean;
+}
+
+/** What a released quiet job's event says to the shell's job observer. */
+export interface JobToastReleasedDetail {
+  job_id: string;
+  /** The surface told the person the outcome, so the shell stays quiet for good. */
+  reported: boolean;
+}
 
 export const ACTIVE_JOB_STATUSES = new Set(['queued', 'running']);
 export const TERMINAL_JOB_STATUSES = new Set(['succeeded', 'partial', 'failed', 'cancelled']);
@@ -38,15 +55,36 @@ export function announceJobsChanged(): void {
  * Register a locally accepted job before any authoritative list snapshot arrives.
  * This closes the first-snapshot race: a very fast terminal transition is new work,
  * not historical terminal history that the shell should silently suppress.
+ *
+ * `quiet` is for a surface that waits for the job on the page and reports its outcome
+ * itself (a small audit export downloads in its dialog): the shell holds its terminal
+ * toast, so one action never ends in two notices. The surface must then call
+ * {@link releaseJobToast} once it stops waiting, whatever the reason.
  */
-export function announceJobAccepted(job: BackgroundJob): void {
+export function announceJobAccepted(job: BackgroundJob, options: { quiet?: boolean } = {}): void {
   if (typeof window === 'undefined') return;
   window.dispatchEvent(
-    new CustomEvent<Pick<BackgroundJob, 'job_id' | 'status'>>(JOB_ACCEPTED_EVENT, {
-      detail: { job_id: job.job_id, status: job.status },
+    new CustomEvent<JobAcceptedDetail>(JOB_ACCEPTED_EVENT, {
+      detail: { job_id: job.job_id, status: job.status, quiet: options.quiet === true },
     }),
   );
   announceJobsChanged();
+}
+
+/**
+ * End the hold a quiet {@link announceJobAccepted} placed on a job's terminal toast.
+ * `reported: true` when the surface told the person the outcome (the file downloaded, or
+ * the failure shows in the dialog): the shell never toasts it. Otherwise (the person
+ * left the wait, the wait timed out or the page closed) the shell toasts the outcome
+ * as usual, at once when the job has already ended.
+ */
+export function releaseJobToast(jobId: string, options: { reported?: boolean } = {}): void {
+  if (typeof window === 'undefined' || !jobId) return;
+  window.dispatchEvent(
+    new CustomEvent<JobToastReleasedDetail>(JOB_TOAST_RELEASED_EVENT, {
+      detail: { job_id: jobId, reported: options.reported === true },
+    }),
+  );
 }
 
 function randomIntentId(): string {
@@ -115,7 +153,33 @@ const SIMPLE_DESTINATIONS: Readonly<Record<string, PageId>> = {
   knowledge: 'knowledge',
   runbooks: 'runbooks',
   batchjobs: 'batchjobs',
+  audit: 'audit',
 };
+
+/** An export's bounds as its job params hold them: absolute instants, to the second. */
+const AUDIT_EXPORT_INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
+
+/**
+ * The audit log view an `audit_export` destination names (SPEC §4.5.8), or null. Each key
+ * may appear once with a value, and must be one the audit log's hash carries and that
+ * {@link pageHash}, the one writer of that hash, writes back unchanged: so the router's own
+ * grammar decides, and the page receives only opts a typed link could carry. An open
+ * record is never part of an export, and both bounds must be absolute, so the link shows
+ * the exported rows rather than a window that moves with the clock.
+ */
+function auditDestination(query: URLSearchParams): JobDestination | null {
+  const opts: Record<string, string> = {};
+  for (const [key, value] of query) {
+    if (!value || key === 'record' || key in opts) return null;
+    opts[key] = value;
+  }
+  if ((opts.from || opts.to) && !(AUDIT_EXPORT_INSTANT.test(opts.from) && AUDIT_EXPORT_INSTANT.test(opts.to))) {
+    return null;
+  }
+  const written = new URLSearchParams(pageHash('audit', opts).split('?')[1]);
+  for (const key in opts) if (written.get(key) !== opts[key]) return null;
+  return { page: 'audit', opts: Object.keys(opts).length ? opts : undefined };
+}
 
 const SAFE_SETTINGS_SECTIONS = new Set(['data_export', 'danger', 'storage', 'knowledge']);
 
@@ -162,6 +226,11 @@ export function jobDestinationFromUrl(url?: string | null): JobDestination | nul
 
   const page = SIMPLE_DESTINATIONS[route];
   if (!page) return null;
+  if (page === 'audit') {
+    // An audit export opens the audit log in the view the server names (engine/jobs.py
+    // job_url): the exported scope, range and search, and the filters the route carries.
+    return auditDestination(query);
+  }
   const allowed =
     page === 'cases'
       ? new Set(['caseId', 'case_id', 'status', 'assignee', 'tag'])
@@ -189,6 +258,9 @@ export function jobDestinationFromUrl(url?: string | null): JobDestination | nul
 export function jobDestinationForKind(kindValue?: string | null): JobDestination | null {
   const kind = String(kindValue || '').toLowerCase();
   if (kind.includes('case')) return { page: 'cases', opts: { status: 'active' } };
+  // Before the generic export branch: an audit export belongs to the audit log, not
+  // to Settings, Data export (which an auditor cannot use).
+  if (kind === 'audit_export') return { page: 'audit' };
   if (kind.includes('export')) return { page: 'settings', opts: { section: 'data_export' } };
   if (kind.includes('runbook')) return { page: 'runbooks' };
   if (kind.includes('rag') || kind.includes('precedent') || kind.includes('knowledge')) {
@@ -208,10 +280,8 @@ export function jobDestination(job: BackgroundJob): JobDestination {
   return jobDestinationForKind(job.kind) ?? { page: 'batchjobs' };
 }
 
-export function jobActionLabel(
-  job: BackgroundJob,
-  destination: JobDestination = jobDestination(job),
-): string {
+/** The words of a link to a job's result, named by where it goes ("Open audit log"). */
+export function destinationActionLabel(destination: JobDestination): string {
   if (destination.page === 'settings' && destination.opts?.section === 'data_export') {
     return 'Open Data export';
   }
@@ -219,7 +289,15 @@ export function jobActionLabel(
   if (destination.page === 'cases') return 'View matching cases';
   if (destination.page === 'knowledge') return 'Open Knowledge';
   if (destination.page === 'runbooks') return 'Open Runbooks';
+  if (destination.page === 'audit') return 'Open audit log';
   return destination.page === 'inbox' ? 'Open Inbox' : 'View result';
+}
+
+export function jobActionLabel(
+  job: BackgroundJob,
+  destination: JobDestination = jobDestination(job),
+): string {
+  return destinationActionLabel(destination);
 }
 
 /** Truthful plain-text summary when the server did not provide a curated one. */

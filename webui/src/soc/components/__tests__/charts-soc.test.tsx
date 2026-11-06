@@ -155,3 +155,41 @@ describe('MultiSeriesTrend — fill vs a pinned height', () => {
     expect(box).toHaveClass('absolute', 'inset-0', 'rounded-md');
   });
 });
+
+describe('MitreHeatmap on the Round 14 grammar (audit AN3, X4; W8a)', () => {
+  it('positions its own screen-reader table, inside a clipped box, so it never widens the page', () => {
+    const { container } = render(<MitreHeatmap columns={COLUMNS} />);
+    const root = container.firstElementChild as HTMLElement;
+    // The `sr-only` box is absolutely positioned: the heatmap root is its containing block.
+    expect(root).toHaveClass('relative');
+    const table = container.querySelector('table') as HTMLTableElement;
+    const box = table.parentElement as HTMLElement;
+    // A table is never narrower than its content, so the clip is a box around it.
+    expect(box).toHaveClass('sr-only');
+    expect(root).toContainElement(box);
+    // The table keeps the marker the report print stylesheets key on (`table.sr-only`
+    // prints as `display: none` and skips the 100% width rule).
+    expect(table).toHaveClass('sr-only');
+    expect(container.querySelectorAll('table.sr-only')).toHaveLength(1);
+  });
+
+  it('names its tactics as given, never in capitals, and sets counts as tabular figures', () => {
+    const { container, getByText } = render(<MitreHeatmap columns={COLUMNS} />);
+    expect(container.querySelector('.uppercase')).toBeNull();
+    expect(container.querySelector('[class*="tracking-wide"]')).toBeNull();
+    expect(container.querySelector('[class*="font-mono"]')).toBeNull();
+    const header = getByText('Execution', { selector: '[title="Execution"]' });
+    expect(header).toHaveTextContent(/^Execution$/);
+    const count = getByText('7', { selector: 'span' });
+    expect(count).toHaveClass('tabular-nums');
+  });
+});
+
+describe('charts-soc exports (Round 14)', () => {
+  it('no longer ships the burn-down chart, which drew only half of its data', async () => {
+    const mod = (await import('../charts-soc')) as Record<string, unknown>;
+    expect(mod.BurnDownChart).toBeUndefined();
+    expect(mod.MitreHeatmap).toBeDefined();
+    expect(mod.MultiSeriesTrend).toBeDefined();
+  });
+});

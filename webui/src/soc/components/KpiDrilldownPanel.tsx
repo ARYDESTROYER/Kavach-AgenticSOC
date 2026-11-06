@@ -102,6 +102,7 @@ import { ChevronDown, Download, Search, X } from 'lucide-react';
 import type { Case, CasesResponse } from '@/lib/types';
 import { api } from '@/lib/api';
 import { cn } from '@/lib/cn';
+import { csvField } from '@/lib/csv';
 import { downloadText, EXPORT_MIME, exportFileName, UTF8_BOM } from '@/lib/download';
 import { DASH, fmtNumber, humanizeAge, humanizeToken } from '@/lib/format';
 import { Badge } from '@/ui/badge';
@@ -371,7 +372,6 @@ export interface KpiDrilldownMetric {
   value: React.ReactNode;
 }
 
-/** The one place a case's display id is resolved (number first, then id). */
 /**
  * First NON-BLANK candidate, trimmed. Trimming after a `||` chain is the wrong order:
  * a whitespace-only earlier field is truthy, so it wins the chain and then trims away to
@@ -432,6 +432,18 @@ export function mergeTokens(
   return added ? Array.from(seen) : previous;
 }
 
+/**
+ * The panel's population named as cases, for the accessible names and the loading label
+ * ("Filter Total cases", "Filter Awaiting a decision cases"). The heading is the tile's
+ * own label, verbatim, and a label that already ends in the word "cases" ("Total cases",
+ * "Open cases") is used as it is, so a name never reads "Total cases cases".
+ */
+export function casesNoun(title: string): string {
+  const name = title.trim();
+  return /(?:^|\s)cases$/i.test(name) ? name : `${name} cases`;
+}
+
+/** The one place a case's display id is resolved (number first, then id). */
 function displayId(c: Case): string {
   return firstNonBlank(c.case_number, c.case_id) || DASH;
 }
@@ -488,34 +500,21 @@ interface DrilldownStat {
 }
 
 /**
- * One CSV field: RFC-4180 quoted, embedded quotes doubled — and defused for the
- * SPREADSHEET, not merely for the grammar.
- *
- * Quoting alone protects the file's column structure; it does nothing about the program
- * that opens it. Excel and LibreOffice evaluate any cell whose first character is `=`, `+`,
- * `-` or `@` as a formula, quotes included. The fields written here are exactly the ones
- * this codebase classes as UNTRUSTED (#9) — case titles fall back to rule ids, which are
- * source-controlled — so a rule named `=HYPERLINK("http://…",…)` would render in the
- * analyst's spreadsheet as a live link instead of as the rule's name, turning an evidence
- * export into an attacker-authored cell. A leading apostrophe is the standard
- * neutralisation: spreadsheets treat the rest as literal text and do not display it.
- */
-function csvField(value: unknown): string {
-  const raw = String(value ?? '');
-  const defused = /^[=+\-@\t\r]/.test(raw) ? `'${raw}` : raw;
-  return `"${defused.replace(/"/g, '""')}"`;
-}
-
-/**
  * The listed rows as CSV.
  *
- * It exports exactly what the operator is looking at — the filtered, sorted rows the
- * table renders — and nothing more. It is NOT a population export: the panel reads bounded
+ * It exports exactly what the operator is looking at (the filtered, sorted rows the
+ * table renders) and nothing more. It is NOT a population export: the panel reads bounded
  * pages, so a caller must present this as the rows read, which is why the row count
  * travels in the filename and the footer keeps stating the bound.
  *
- * Every field is quoted, so a case title containing a comma, a quote or a newline cannot
- * shift the column layout of the row it sits in.
+ * Fields go through the shared spreadsheet encoder (`lib/csv` `csvField`, the one rule set
+ * of every spreadsheet the product writes, Round 14 SPEC §4.5.6). Every text field is
+ * RFC-4180 quoted, so a case title containing a comma, a quote or a newline cannot shift
+ * the column layout of the row it sits in. It is also defused for the SPREADSHEET, not
+ * merely for the grammar: these fields are ones this codebase classes as UNTRUSTED (#9)
+ * (case titles fall back to rule ids, which are source-controlled), so a text cell that
+ * opens like a formula gets a leading apostrophe and a rule named `=HYPERLINK(…)` lands as
+ * the rule's name, never as a live, attacker-authored link. The risk score stays a number.
  */
 export function drilldownCsv(rows: readonly Case[]): string {
   const header = [
@@ -1387,7 +1386,7 @@ export function KpiDrilldownPanel({
               <>
                 {' '}
                 <span className="text-foreground">
-                  Narrowed here to {activeRangeLabel} — the list below is a slice of that
+                  Narrowed here to {activeRangeLabel}. The list below is a slice of that
                   population, not the whole of it.
                 </span>
               </>
@@ -1405,7 +1404,7 @@ export function KpiDrilldownPanel({
               size="sm"
               onClick={exportCsv}
               data-testid="kpi-drilldown-export"
-              aria-label={`Download the ${fmtNumber(visible.length)} listed ${spec.title} cases as CSV`}
+              aria-label={`Download the ${fmtNumber(visible.length)} listed ${casesNoun(spec.title)} as CSV`}
               className="h-8 px-2.5 text-sm"
             >
               <Download className="h-3.5 w-3.5" aria-hidden />
@@ -1458,7 +1457,7 @@ export function KpiDrilldownPanel({
         {metrics && metrics.length > 1 && onSelectMetric ? (
           <div
             role="group"
-            aria-label="Switch metric — values are the dashboard's own numerals"
+            aria-label="Switch metric. Values are the dashboard's own numerals"
             data-testid="kpi-drilldown-metrics"
             className="flex min-w-0 shrink-0 flex-wrap items-center gap-1 border-b border-border/60 px-5 py-2"
           >
@@ -1524,7 +1523,7 @@ export function KpiDrilldownPanel({
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder="Filter these cases…"
-              aria-label={`Filter ${spec.title} cases`}
+              aria-label={`Filter ${casesNoun(spec.title)}`}
               data-testid="kpi-drilldown-search"
               className="h-8 rounded-md pl-8 text-sm"
             />
@@ -1533,7 +1532,7 @@ export function KpiDrilldownPanel({
           <Select value={band} onValueChange={setBand}>
             <SelectTrigger
               className="h-8 w-auto min-w-36 rounded-md text-sm"
-              aria-label={`Filter ${spec.title} cases by severity`}
+              aria-label={`Filter ${casesNoun(spec.title)} by severity`}
               data-testid="kpi-drilldown-severity"
             >
               <SelectValue placeholder="Severity" />
@@ -1551,7 +1550,7 @@ export function KpiDrilldownPanel({
           <Select value={status} onValueChange={setStatus}>
             <SelectTrigger
               className="h-8 w-auto min-w-36 rounded-md text-sm"
-              aria-label={`Filter ${spec.title} cases by status`}
+              aria-label={`Filter ${casesNoun(spec.title)} by status`}
               data-testid="kpi-drilldown-status"
             >
               <SelectValue placeholder="Status" />
@@ -1574,7 +1573,7 @@ export function KpiDrilldownPanel({
             <Select value={source} onValueChange={setSource}>
               <SelectTrigger
                 className="h-8 w-auto min-w-36 rounded-md text-sm"
-                aria-label={`Filter ${spec.title} cases by detection source`}
+                aria-label={`Filter ${casesNoun(spec.title)} by detection source`}
                 data-testid="kpi-drilldown-source"
               >
                 <SelectValue placeholder="Source" />
@@ -1594,7 +1593,7 @@ export function KpiDrilldownPanel({
             <Select value={sort} onValueChange={(v) => setSort(v as DrilldownSort)}>
               <SelectTrigger
                 className="h-8 w-auto min-w-36 rounded-md text-sm"
-                aria-label={`Sort ${spec.title} cases`}
+                aria-label={`Sort ${casesNoun(spec.title)}`}
                 data-testid="kpi-drilldown-sort"
               >
                 <SelectValue placeholder="Sort" />
@@ -1619,7 +1618,7 @@ export function KpiDrilldownPanel({
             >
               <SelectTrigger
                 className="h-8 w-auto min-w-36 rounded-md text-sm"
-                aria-label={`Time range for ${spec.title} cases`}
+                aria-label={`Time range for ${casesNoun(spec.title)}`}
                 data-testid="kpi-drilldown-range"
               >
                 <SelectValue placeholder="Time range" />
@@ -1657,7 +1656,7 @@ export function KpiDrilldownPanel({
         data-testid="kpi-drilldown-scroll"
         tabIndex={0}
         role="group"
-        aria-label={`${spec.title} cases — scrollable evidence`}
+        aria-label={`${casesNoun(spec.title)}, scrollable evidence`}
         className="min-h-0 min-w-0 flex-1 overflow-auto px-5 pb-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring max-md:flex-none"
       >
       {/* ONE row above the table (Round 12): the trend (60%) beside a column (40%) that
@@ -1767,7 +1766,7 @@ export function KpiDrilldownPanel({
             onRetry={() => void load()}
           />
         ) : loading && rows === null ? (
-          <LoadingState label={`Loading ${spec.title} cases`} layout="inline" />
+          <LoadingState label={`Loading ${casesNoun(spec.title)}`} layout="inline" />
         ) : visible.length === 0 ? (
           <EmptyState
             compact
@@ -1796,7 +1795,7 @@ export function KpiDrilldownPanel({
           >
             <table className="w-full min-w-[44rem] border-collapse text-left">
               <caption className="sr-only">
-                {spec.title} — the cases read for the current filters
+                {spec.title}: the cases read for the current filters
               </caption>
               {/* Sticky against the ONE scroll port above. The opaque fill lives on the CELLS:
                   a background on `<thead>` is not reliably painted, and rows scrolling
@@ -1983,7 +1982,7 @@ export function KpiDrilldownPanel({
                   size="sm"
                   onClick={() => setPage((p) => p + 1)}
                   data-testid="kpi-drilldown-more"
-                  aria-label={`Read the next ${fmtNumber(pageSize)} ${spec.title} cases`}
+                  aria-label={`Read the next ${fmtNumber(pageSize)} ${casesNoun(spec.title)}`}
                   className="h-8 px-2.5 text-sm"
                 >
                   <ChevronDown className="h-3.5 w-3.5" aria-hidden />

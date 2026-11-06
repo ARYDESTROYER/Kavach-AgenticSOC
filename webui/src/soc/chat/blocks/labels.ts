@@ -19,6 +19,9 @@ import type {
   QueryBlock,
   QueryLanguage,
   ReputationVerdict,
+  SeverityLevelData,
+  SeveritySample,
+  SeveritySubject,
   TimelineKind,
 } from './schema';
 import { CASE_STATUS_KEYS, ENTITY_KINDS, SEVERITY_KEYS, VERDICT_KEYS } from './schema';
@@ -142,4 +145,83 @@ export function kpiContext(context: string): string {
 /** A yes/no cell as the table shows it. */
 export function booleanText(value: boolean): string {
   return value ? 'Yes' : 'No';
+}
+
+/* -------------------------------------------------------------------------- */
+/* Round 14 (SPEC §4.7.2, §4.7.3): severity levels in words.                   */
+/* -------------------------------------------------------------------------- */
+
+/** A raw source value as a level names it: "73", "8", "7.5" (no trailing zeros). */
+export function rawValueText(value: number): string {
+  return Number.isInteger(value) ? String(value) : String(Math.round(value * 10) / 10);
+}
+
+/** The distinct raw values a level holds, in the order the server listed them: "73, 8". */
+export function levelRawText(level: Pick<SeverityLevelData, 'raw_values'>): string {
+  const out: string[] = [];
+  for (const raw of level.raw_values) {
+    const text = rawValueText(raw.value);
+    if (!out.includes(text)) out.push(text);
+  }
+  return out.join(', ');
+}
+
+/** "High (73, 8)": the level's name and the raw values it holds; just "High" without any. */
+export function levelLabel(level: Pick<SeverityLevelData, 'level' | 'raw_values'>): string {
+  const name = severityLabel(level.level) ?? level.level;
+  const raws = levelRawText(level);
+  return raws ? `${name} (${raws})` : name;
+}
+
+/**
+ * Each raw value on its source's own scale, for the level's help tip: "73 on a 0 to 100
+ * scale and 8 on a 0 to 10 scale". Empty when the level names no raw value.
+ */
+export function levelScaleText(level: Pick<SeverityLevelData, 'raw_values'>): string {
+  const seen = new Set<string>();
+  const parts: string[] = [];
+  for (const raw of level.raw_values) {
+    const part = `${rawValueText(raw.value)} on a 0 to ${rawValueText(raw.scale_max)} scale`;
+    if (seen.has(part)) continue;
+    seen.add(part);
+    parts.push(part);
+  }
+  if (parts.length <= 1) return parts[0] ?? '';
+  return `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`;
+}
+
+/** A share of the counted events, always one decimal: "0.0%", "80.2%". */
+export function shareText(share: number | null): string {
+  return share === null ? 'Not stated' : `${share.toFixed(1)}%`;
+}
+
+/** "event" / "events", "case" / "cases" for a breakdown's subject. */
+export function subjectNoun(subject: SeveritySubject, count: number): string {
+  const singular = subject === 'cases' ? 'case' : 'event';
+  return count === 1 ? singular : `${singular}s`;
+}
+
+const fmtInt = (n: number) => n.toLocaleString('en-US');
+
+/**
+ * The honest basis of a breakdown when the levels do not cover the stated total (SPEC
+ * §4.7.2, the backend `severity_sample_caption`): "1,000 of 2,500 events sampled, newest
+ * 200 per source", and both kinds when some sources counted exactly and others were
+ * sampled. Null when the levels cover everything.
+ */
+export function sampleSentence(sample: SeveritySample | undefined, subject: SeveritySubject): string | null {
+  if (!sample) return null;
+  const noun = subjectNoun(subject, 2);
+  const { counted, total, per_source_cap: cap, sources_exact: exact, sources_sampled: sampled } = sample;
+  if (sampled <= 0 && total !== null && counted === total) return null;
+  if (sample.exact && sampled <= 0) return null;
+  const of = total !== null ? fmtInt(total) : 'an unknown number of';
+  const capText = cap !== null ? fmtInt(cap) : null;
+  if (exact > 0 && sampled > 0 && capText) {
+    return `${fmtInt(counted)} of ${of} ${noun} counted: ${fmtInt(exact)} ${exact === 1 ? 'source' : 'sources'} exactly, ${fmtInt(sampled)} sampled at the newest ${capText} each`;
+  }
+  if (sampled > 0 && capText) {
+    return `${fmtInt(counted)} of ${of} ${noun} sampled, newest ${capText} ${sampled > 1 ? 'per source' : 'from the source'}`;
+  }
+  return `${fmtInt(counted)} of ${of} ${noun} counted`;
 }

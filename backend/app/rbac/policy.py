@@ -36,7 +36,7 @@ to the prior matrix when no custom role / deny / resource override is configured
 
 from __future__ import annotations
 
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 
 from ..constants import UserRole
 
@@ -54,12 +54,20 @@ RESOURCES: dict[str, list[str]] = {
     "settings": ["read", "manage"],
     "users": ["manage"],
     "proposals": ["read", "approve"],
-    "playbooks": ["read", "run", "manage"],
-    "runbooks": ["read", "manage"],
+    # Round 14 (SPEC §3.7): one runbook feature. ``read`` sees the library and a
+    # case's runs; ``run`` works a case's checklist (steps, decisions, lookups);
+    # ``manage`` authors drafts, duplicates, imports and retires; ``publish`` makes a
+    # version live, the only step that lets runbook text reach the investigator as
+    # trusted guidance (#9). The retired ``playbooks`` resource left this vocabulary in
+    # Round 14 (§3.7 step 3); a stored ``playbooks`` grant or deny is still accepted and
+    # read as its ``runbooks`` equivalent (:data:`LEGACY_RUNBOOK_RESOURCE`).
+    "runbooks": ["read", "run", "manage", "publish"],
     "rag": ["read", "manage"],
     "memory": ["read", "manage"],
     "cost": ["view"],
-    "audit": ["view"],
+    # Round 14 (SPEC §3.7, D5): ``export`` writes a CSV or JSON Lines file of audit
+    # rows. Separate from ``view`` so a role can read the log without bulk extraction.
+    "audit": ["view", "export"],
     "metrics": ["view"],
     # Portable application-state export. Deliberately NOT settings-like: only the
     # two platform-owner roles receive it by default; read-only analysts/auditors do
@@ -93,6 +101,307 @@ RESOURCES: dict[str, list[str]] = {
 }
 
 ALL = "*"  # wildcard action grant
+
+# --------------------------------------------------------------------------- #
+# Round 14 (SPEC §3.7, E8): the one runbook feature replaces the retired procedure
+# vocabulary. Stored grants and denies that name ``playbooks`` keep working: on load
+# and on every write they are mapped onto ``runbooks`` by meaning, in every grant and
+# deny layer, BEFORE ``_clean_actions`` / ``_apply_denies`` (which silently skip a
+# resource they do not know), so a stored deny is never dropped and never turns into
+# a silent privilege gain. In a map stored before Round 14 (``legacy=True``) the two
+# were separate resources, so the mapping UNIONS into any ``runbooks`` entry already
+# in the same map and never replaces it. In the current vocabulary a ``runbooks``
+# entry that is present is authoritative and the alias is mapped only when it is
+# absent: the legacy load already unioned the two and stamped the map, so re-unioning
+# a stale ``playbooks`` key on every later validation would silently undo a narrowing
+# of ``runbooks`` (or keep a lifted deny). The ``playbooks`` key itself is kept
+# verbatim in a stored map (a rollback reads the grant it stored), but it grants
+# nothing: the resource left ``RESOURCES`` in Round 14 (§3.7 step 3), so the
+# resolvers skip it, and only its ``runbooks`` meaning applies.
+#
+# ``runbooks:publish`` is new. A grant layer stored before Round 14 that grants
+# ``runbooks:manage`` also gains ``publish`` once (``legacy=True``), and the stored
+# map is then stamped with ``rbac_grants_version`` = :data:`RBAC_GRANTS_VERSION`, so
+# an administrator who later removes ``publish`` keeps that choice. A stored legacy
+# deny of ``runbooks:manage`` is mapped the same way (deny ``publish`` too).
+# --------------------------------------------------------------------------- #
+#: The current grant-map vocabulary version (``rbac_grants_version`` beside every
+#: stored grant map). Version 2 is the Round 14 runbook vocabulary; a stored map
+#: without the stamp (or with a lower one) was written before it.
+RBAC_GRANTS_VERSION = 2
+#: The retired resource name, accepted as an alias of ``runbooks`` in every grant and
+#: deny layer. It is no longer in :data:`RESOURCES` or the default matrix (§3.7 step 3),
+#: so it never appears in an effective matrix or in what ``/api/account/permissions``
+#: reports. A client that still lists it (an older Console's role editor, an API
+#: script) has its grants and denies read through the alias above, and a permission
+#: question that names it is answered for its ``runbooks`` meaning
+#: (:func:`resolve_runbook_alias`).
+LEGACY_RUNBOOK_RESOURCE = "playbooks"
+_RUNBOOK_RESOURCE = "runbooks"
+#: How each retired action maps onto the runbook vocabulary.
+_LEGACY_RUNBOOK_ACTIONS: dict[str, tuple[str, ...]] = {
+    "read": ("read",),
+    "run": ("run",),
+    "manage": ("manage", "publish"),
+}
+
+
+def resolve_runbook_alias(resource: str, action: str) -> tuple[str, str]:
+    """The current-vocabulary ``(resource, action)`` a permission question names.
+
+    The retired ``playbooks`` resource reads as ``runbooks`` with the action it maps to
+    (``read`` and ``run`` keep their name, ``manage`` reads as ``manage``, its first
+    meaning, and ``*`` stays ``*``), so a spot check such as ``GET /api/roles/simulate``
+    answers a stored alias for the access it really grants. An action the alias never
+    had keeps its name (and is then unknown on ``runbooks``, so it is denied). Every
+    other pair is returned unchanged. Pure."""
+    if resource != LEGACY_RUNBOOK_RESOURCE:
+        return resource, action
+    if action == ALL:
+        return _RUNBOOK_RESOURCE, ALL
+    return _RUNBOOK_RESOURCE, _LEGACY_RUNBOOK_ACTIONS.get(action, (action,))[0]
+
+
+def _union_actions(existing: Any, extra: list[str]) -> Any:
+    """``existing`` with every action of ``extra`` appended once (order kept). A
+    malformed ``existing`` (not a list) is left alone: the lenient resolvers skip it,
+    and replacing it would invent a grant the operator never stored."""
+    if not extra:
+        return existing
+    if existing is None:
+        return list(dict.fromkeys(extra))
+    if not isinstance(existing, list):
+        return existing
+    merged = [str(a) for a in existing]
+    if ALL in merged:
+        return merged
+    for action in extra:
+        if action not in merged:
+            merged.append(action)
+    return merged
+
+
+def _alias_actions(acts: Any) -> list[str]:
+    """The ``runbooks`` actions a stored ``playbooks`` action list stands for."""
+    if not isinstance(acts, list):
+        return []
+    named = {str(a) for a in acts}
+    if ALL in named:
+        return [ALL]
+    out: list[str] = []
+    for legacy in ("read", "run", "manage"):
+        if legacy in named:
+            for action in _LEGACY_RUNBOOK_ACTIONS[legacy]:
+                if action not in out:
+                    out.append(action)
+    return out
+
+
+def _normalise_runbook_map(layer: Any, *, legacy: bool) -> Any:
+    """The alias rule shared by :func:`normalise_grants` and :func:`normalise_denies`
+    (both map the retired actions the same way). Pure; never mutates ``layer``."""
+    if not isinstance(layer, dict):
+        return layer
+    out: dict[Any, Any] = {
+        res: (list(acts) if isinstance(acts, list) else acts) for res, acts in layer.items()
+    }
+    current = out.get(_RUNBOOK_RESOURCE)
+    if not legacy and isinstance(current, list):
+        # Current vocabulary: the ``runbooks`` entry is the operator's word. A
+        # ``playbooks`` key beside it is either the stale copy a legacy load kept (its
+        # meaning is already in ``runbooks``) or a retired-resource row; unioning it
+        # again would undo a later narrowing of ``runbooks``.
+        return out
+    extra = _alias_actions(layer.get(LEGACY_RUNBOOK_RESOURCE))
+    if legacy and isinstance(current, list):
+        named = {str(a) for a in current}
+        if "manage" in named and ALL not in named:
+            extra = [*extra, "publish"]
+    if extra:
+        out[_RUNBOOK_RESOURCE] = _union_actions(current, extra)
+    return out
+
+
+def normalise_grants(grants: Any, *, legacy: bool = False) -> Any:
+    """One stored ``resource -> [action]`` GRANT map with the Round 14 aliases applied
+    (SPEC §3.7). Pure: returns a new dict and never mutates ``grants``.
+
+    * ``playbooks:read`` / ``run`` → ``runbooks:read`` / ``run``;
+      ``playbooks:manage`` → ``runbooks:manage`` and ``runbooks:publish``;
+      ``playbooks:*`` → ``runbooks:*``. The alias is accepted forever.
+    * Current vocabulary (``legacy=False``: a stamped map, a constructed one, a request
+      body): a ``runbooks`` entry that is present is authoritative and the alias is
+      mapped only when ``runbooks`` is absent, so a narrowing of ``runbooks`` sticks
+      even while a ``playbooks`` key stays beside it.
+    * ``legacy=True`` (a map stored before Round 14, see :data:`RBAC_GRANTS_VERSION`):
+      the two were separate resources, so the alias actions are UNIONED into any
+      ``runbooks`` entry already in the map, and a ``runbooks:manage`` grant also gains
+      ``runbooks:publish`` (E8), so no role that could edit runbooks silently loses the
+      ability to make their text trusted.
+
+    A value that is not a mapping is returned unchanged (the resolvers ignore it
+    leniently). Idempotent: applying it twice changes nothing."""
+    return _normalise_runbook_map(grants, legacy=legacy)
+
+
+def normalise_denies(denies: Any, *, legacy: bool = False) -> Any:
+    """One stored ``resource -> [action]`` DENY map with the Round 14 aliases applied
+    (SPEC §3.7). Pure, idempotent, never mutates ``denies``.
+
+    * deny ``playbooks:read`` / ``run`` → deny ``runbooks:read`` / ``run``;
+      deny ``playbooks:manage`` → deny ``runbooks:manage`` and ``runbooks:publish``;
+      deny ``playbooks:*`` → deny ``runbooks:*``.
+    * Current vocabulary (``legacy=False``): a ``runbooks`` deny that is present is
+      authoritative, so an administrator who lifts a ``runbooks`` deny is not
+      overruled by a ``playbooks`` deny kept beside it; the alias is mapped only when
+      ``runbooks`` is absent.
+    * ``legacy=True``: the alias actions are unioned into any ``runbooks`` deny, and a
+      stored deny of ``runbooks:manage`` also denies ``runbooks:publish``, so a role
+      an administrator kept from editing runbooks never silently gains the new
+      ability to publish them."""
+    return _normalise_runbook_map(denies, legacy=legacy)
+
+
+#: The built-in roles' grants of the two procedure resources BEFORE Round 14, frozen
+#: here because the retired resource has left the matrix (§3.7 step 3). A
+#: stored ``roles`` override REPLACES a role's grants per resource, so before Round 14
+#: an override that named only one of the two resources left the other at this
+#: default; :func:`normalise_role_overrides` restores that meaning.
+PRE_ROUND14_PROCEDURE_DEFAULTS: dict[str, dict[str, tuple[str, ...]]] = {
+    "super_admin": {LEGACY_RUNBOOK_RESOURCE: (ALL,), _RUNBOOK_RESOURCE: (ALL,)},
+    "soc_manager": {LEGACY_RUNBOOK_RESOURCE: (ALL,), _RUNBOOK_RESOURCE: (ALL,)},
+    "analyst_tier2": {LEGACY_RUNBOOK_RESOURCE: ("read", "run"), _RUNBOOK_RESOURCE: ("read",)},
+    "analyst_tier1": {LEGACY_RUNBOOK_RESOURCE: ("read",), _RUNBOOK_RESOURCE: ("read",)},
+    "responder": {LEGACY_RUNBOOK_RESOURCE: ("read", "run"), _RUNBOOK_RESOURCE: ("read",)},
+    "auditor": {LEGACY_RUNBOOK_RESOURCE: ("read",), _RUNBOOK_RESOURCE: ("read",)},
+}
+
+
+def normalise_role_overrides(role_map: Any, *, legacy: bool = False) -> Any:
+    """The ``roles`` override layer (``Preferences.rbac.roles``, REPLACE semantics per
+    role and resource) with the Round 14 aliases applied (SPEC §3.7, E8). Pure.
+
+    Before Round 14 ``playbooks`` and ``runbooks`` were two resources: an override
+    naming only one of them replaced that one and left the other at the role's
+    default. The alias now folds both into ``runbooks``, and because the layer
+    REPLACES, folding one alone would narrow the role (an override of ``playbooks``
+    would replace the ``runbooks`` default, or one of ``runbooks`` would drop the
+    ``run`` a role held through ``playbooks``). So for a map stored before Round 14
+    (``legacy=True``), a built-in role whose override names exactly one of the two
+    first gets the other from :data:`PRE_ROUND14_PROCEDURE_DEFAULTS`; then
+    :func:`normalise_grants` unions them, with the once-only ``publish`` rule. The
+    effective ``runbooks`` grants are the union of what the two resources meant, so no
+    role and no custom role inheriting it loses or gains a capability.
+
+    A current map (``legacy=False``) is read in the current vocabulary, where
+    ``playbooks`` is only an alias of ``runbooks`` (mapped when ``runbooks`` is
+    absent): nothing is filled in, and a ``runbooks`` entry that is present wins over
+    a stale ``playbooks`` key beside it, so a later narrowing an administrator writes
+    sticks."""
+    if not isinstance(role_map, dict):
+        return role_map
+    out: dict[Any, Any] = {}
+    for role, res_map in role_map.items():
+        frozen = PRE_ROUND14_PROCEDURE_DEFAULTS.get(str(role)) if legacy else None
+        if frozen is not None and isinstance(res_map, dict):
+            names_legacy = LEGACY_RUNBOOK_RESOURCE in res_map
+            names_runbooks = _RUNBOOK_RESOURCE in res_map
+            if names_legacy != names_runbooks:
+                missing = _RUNBOOK_RESOURCE if names_legacy else LEGACY_RUNBOOK_RESOURCE
+                res_map = {**res_map, missing: list(frozen[missing])}
+        out[role] = normalise_grants(res_map, legacy=legacy)
+    return out
+
+
+def normalise_role_grant_map(role_map: Any, *, legacy: bool = False, deny: bool = False) -> Any:
+    """A ``role -> resource -> [action]`` layer (``Preferences.rbac.roles``,
+    ``resources`` or ``denies``) with :func:`normalise_grants` (or, with
+    ``deny=True``, :func:`normalise_denies`) applied to every role's map. Pure."""
+    if not isinstance(role_map, dict):
+        return role_map
+    fn = normalise_denies if deny else normalise_grants
+    return {role: fn(res_map, legacy=legacy) for role, res_map in role_map.items()}
+
+
+def normalise_custom_role(spec: Any, *, legacy: bool = False) -> Any:
+    """A CustomRole-shaped mapping with its ``grants`` and ``denies`` normalised
+    (:func:`normalise_grants`, :func:`normalise_denies`). Pure; anything that is not
+    a mapping is returned unchanged (a model is normalised by its owner)."""
+    if not isinstance(spec, dict):
+        return spec
+    out = dict(spec)
+    if "grants" in out:
+        out["grants"] = normalise_grants(out["grants"], legacy=legacy)
+    if "denies" in out:
+        out["denies"] = normalise_denies(out["denies"], legacy=legacy)
+    return out
+
+
+def grants_version_is_legacy(value: Any) -> bool:
+    """True when a stored ``rbac_grants_version`` stamp is absent or older than
+    :data:`RBAC_GRANTS_VERSION` (the map was written before Round 14)."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return True
+    return value < RBAC_GRANTS_VERSION
+
+
+#: The actions that exist only from Round 14 on (SPEC §3.7). Before it, ``runbooks``
+#: held only ``read`` and ``manage`` and ``audit`` only ``view``, and no Console or
+#: route offered these names. A stored layer that names one was therefore written in
+#: the current vocabulary even when its ``rbac_grants_version`` stamp is missing: a
+#: build from before Round 14 drops that unknown field on its next save, but keeps
+#: the grant and deny maps verbatim, so a downgrade, a save and a re-upgrade would
+#: otherwise run the once-only ``publish`` rule again and undo a narrowing an
+#: administrator made in Round 14.
+ROUND14_ONLY_ACTIONS: dict[str, frozenset[str]] = {
+    _RUNBOOK_RESOURCE: frozenset({"run", "publish"}),
+    "audit": frozenset({"export"}),
+}
+
+
+def grant_map_names_round14_actions(grants: Any) -> bool:
+    """True when one ``resource -> [action]`` grant or deny map names an action of
+    :data:`ROUND14_ONLY_ACTIONS`. Anything that is not a mapping names none."""
+    if not isinstance(grants, Mapping):
+        return False
+    for resource, actions in ROUND14_ONLY_ACTIONS.items():
+        listed = grants.get(resource)
+        if isinstance(listed, list) and any(str(a) in actions for a in listed):
+            return True
+    return False
+
+
+def role_specs_name_round14_actions(specs: Any) -> bool:
+    """True when any CustomRole-shaped mapping in ``specs`` names a Round 14 action
+    in its ``grants`` or ``denies`` (:func:`grant_map_names_round14_actions`)."""
+    if not isinstance(specs, (list, tuple)):
+        return False
+    for spec in specs:
+        if isinstance(spec, Mapping) and (
+            grant_map_names_round14_actions(spec.get("grants"))
+            or grant_map_names_round14_actions(spec.get("denies"))
+        ):
+            return True
+    return False
+
+
+def rbac_layers_name_round14_actions(data: Any) -> bool:
+    """True when a stored ``RBACConfig`` dump names a Round 14 action in any grant or
+    deny layer: ``roles``, ``resources`` and ``denies`` (``role -> resource ->
+    [action]``) or a custom role's ``grants`` or ``denies``. Such a block was written
+    in the current vocabulary, so the once-only rules never run on it again, stamp or
+    no stamp. A narrowing written only with ``read`` and ``manage`` cannot be told
+    apart from a block written before Round 14 once the stamp is gone (a known limit
+    of a downgrade followed by a save)."""
+    if not isinstance(data, Mapping):
+        return False
+    for layer in ("roles", "resources", "denies"):
+        role_map = data.get(layer)
+        if isinstance(role_map, Mapping) and any(
+            grant_map_names_round14_actions(res_map) for res_map in role_map.values()
+        ):
+            return True
+    return role_specs_name_round14_actions(data.get("custom_roles"))
 
 # The narrow resources split out of ``settings``. Used to derive the default grants
 # (so they MIRROR each role's old ``settings`` access) and to document the migration.
@@ -130,12 +439,11 @@ _SOC_MANAGER: dict[str, list[str]] = {
     "settings": [ALL],
     "users": ["manage"],
     "proposals": [ALL],
-    "playbooks": [ALL],
     "runbooks": [ALL],
     "rag": [ALL],
     "memory": [ALL],
     "cost": ["view"],
-    "audit": ["view"],
+    "audit": ["view", "export"],
     "metrics": ["view"],
     "data_export": ["export"],
     "system_updates": ["read"],
@@ -147,8 +455,7 @@ _ANALYST_TIER2: dict[str, list[str]] = {
     "sources": ["read"],
     "settings": ["read"],
     "proposals": ["read"],
-    "playbooks": ["read", "run"],
-    "runbooks": ["read"],
+    "runbooks": ["read", "run"],
     "rag": ["read"],
     "memory": ["read"],
     "cost": ["view"],
@@ -161,8 +468,9 @@ _ANALYST_TIER1: dict[str, list[str]] = {
     "sources": ["read"],
     "settings": ["read"],
     "proposals": ["read"],
-    "playbooks": ["read"],
-    "runbooks": ["read"],
+    # Round 14 (SPEC E8): working a case's runbook checklist is the analyst's core
+    # task, so every role except the auditor may run it.
+    "runbooks": ["read", "run"],
     "rag": ["read"],
     "memory": ["read"],
     "cost": ["view"],
@@ -171,13 +479,12 @@ _ANALYST_TIER1: dict[str, list[str]] = {
 }
 
 _RESPONDER: dict[str, list[str]] = {
-    # analyst_tier1 + playbooks:run + proposals:approve
+    # analyst_tier1 + proposals:approve
     "cases": ["read", "write", "comment", "assign"],
     "sources": ["read"],
     "settings": ["read"],
     "proposals": ["read", "approve"],
-    "playbooks": ["read", "run"],
-    "runbooks": ["read"],
+    "runbooks": ["read", "run"],
     "rag": ["read"],
     "memory": ["read"],
     "cost": ["view"],
@@ -186,17 +493,19 @@ _RESPONDER: dict[str, list[str]] = {
 }
 
 # Auditor: read/view only across the board — never any write/manage/close/approve.
+# The one extraction it holds is ``audit:export`` (Round 14 D5): a file of the audit
+# rows it can already read, which changes nothing.
 _AUDITOR: dict[str, list[str]] = {
     "cases": ["read"],
     "sources": ["read"],
     "settings": ["read"],
     "proposals": ["read"],
-    "playbooks": ["read"],
     "runbooks": ["read"],
     "rag": ["read"],
     "memory": ["read"],
     "cost": ["view"],
-    "audit": ["view"],
+    # Round 14 (SPEC D5): the auditor exports what it can read.
+    "audit": ["view", "export"],
     "metrics": ["view"],
     **_settings_like(["read"]),
 }
@@ -355,7 +664,9 @@ def _custom_roles_by_name(custom_roles: Any) -> dict[str, dict[str, Any]]:
         nm = str(spec.get("name") or "").strip()
         if not nm or nm in _BASE_ROLE_NAMES:
             continue
-        out[nm] = spec
+        # Round 14 (SPEC §3.7): a custom role's stored ``playbooks`` grants and denies
+        # resolve as their ``runbooks`` equivalents in every entry path.
+        out[nm] = normalise_custom_role(spec)
     return out
 
 
@@ -387,6 +698,14 @@ def effective_matrix(
         role: {res: list(acts) for res, acts in res_map.items()}
         for role, res_map in DEFAULT_MATRIX.items()
     }
+    # Round 14 (SPEC §3.7): every operator layer is read through the ``playbooks`` ->
+    # ``runbooks`` alias BEFORE ``_merge_grants`` / ``_apply_denies`` could skip the
+    # retired resource, so a grant or deny written in the old vocabulary keeps its
+    # meaning whichever path built the config (the load-time normalisation in
+    # ``RBACConfig`` and the custom-role store already applied it; this is idempotent).
+    overrides = normalise_role_grant_map(overrides) if isinstance(overrides, dict) else overrides
+    resources = normalise_role_grant_map(resources) if isinstance(resources, dict) else resources
+    denies = normalise_role_grant_map(denies, deny=True) if isinstance(denies, dict) else denies
     # (2) roles overrides — REPLACE semantics (historical).
     for role, res_map in (overrides or {}).items():
         bucket = merged.setdefault(str(role), {})
@@ -485,9 +804,10 @@ def can_for_roles(
     Standard RBAC: a principal gets the UNION of the grants of every role it holds.
     Each role's row in the effective matrix already has that role's own ``denies``
     baked in (see :func:`effective_matrix` / :func:`_resolve_custom_role`), so unioning
-    the rows is the correct additive combination — and is byte-for-byte the same
-    resolution :func:`app.api.routes_roles._grants_for_roles` reports through
-    ``GET /api/account/permissions``, keeping the server gate consistent with the UI.
+    the rows is the correct additive combination. ``GET /api/account/permissions``
+    (the one map the Console's permission checks read) lists exactly the actions this
+    function allows, because it asks :meth:`app.api.deps.AccessView.allows`, which
+    calls this; the server gate and the Console cannot disagree.
 
     Resolution + fail-safety rules:
 

@@ -4,7 +4,7 @@
  * theme.css turns every material solid under `prefers-reduced-transparency: reduce`.
  * Safari never reports that query, and Firefox only behind a flag, so an operator who
  * turned on "Reduce transparency" in macOS would still get translucent, blurred bars.
- * Settings → Appearance & customization therefore offers "Reduce transparency":
+ * Settings → Appearance therefore offers "Reduce transparency":
  * System (follow the browser's report) or On (always solid). "On" stamps
  * `data-transparency="reduced"` on <html>, which theme.css honours exactly like the
  * media query (`:root[data-transparency='reduced']`).

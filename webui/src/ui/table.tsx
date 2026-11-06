@@ -4,21 +4,27 @@ import { materialBar } from '@/lib/ui-recipes';
 import { useScrollEdgeRef } from '@/design-system/material';
 
 /**
- * `density` on TableHead/TableCell (DESIGN_STANDARD §5.2 / §7): `normal` is the
- * pre-Round-5 look (`h-11 px-4` head / `px-4 py-3` cell); `compact` tightens the
- * vertical rhythm while keeping ≥16px horizontal padding (below that columns
- * visually merge). Default is `normal`, so existing tables are byte-identical.
+ * The table primitives (shadcn shape) and the console's one table grammar (Round 14,
+ * SPEC §4.9.2, operator choice C7 option 1).
  *
- * `Table` gains a no-double-wrap escape hatch: it normally wraps the `<table>` in
- * an `overflow-auto` div; pass `unwrapped` (or `containerClassName={undefined}` +
- * `unwrapped`) when the table already lives inside a scroll container so you don't
- * create a second, clipping scroll context (map §3.9). `containerClassName` lets
- * callers style the wrapper without a second nested div.
- *
- * `TableHeader` gains `sticky` — pins the header row so it parks UNDER the app bar
- * (`sticky top-[var(--header-h)] z-10` + an opaque surface bg so rows don't bleed
- * through). The offset matches the AppShell top bar height so the header never hides
- * behind it (WCAG 2.4.11); a plain `top-0` would tuck it behind the app bar.
+ * - Headers are 12px medium, sentence case, muted (no tracked capitals, no wash): the
+ *   Overview's column labels. A sticky header wears the one material and lifts its labels
+ *   to secondary ink (ui-standard "Materials").
+ * - `density` on `TableHead`/`TableCell`: `normal` (44px header, 12px cell padding) or
+ *   `compact` (36px header, 8px cell padding, rows about 38px). Operational tables use
+ *   `compact` (`DataTable` defaults to it); the horizontal padding stays 16px, below which
+ *   columns visually merge.
+ * - `Table layout="fixed"` sets `table-layout: fixed`, so declared column widths hold
+ *   and a long cell truncates instead of widening its column (the Audit Build column
+ *   defect, F5). `DataTable` turns it on whenever a column declares a width.
+ * - `TableCell numeric` holds a count, score, time or id: tabular figures (so digits line
+ *   up down the column) and no wrapping. Words stay proportional: never set tabular
+ *   figures on a whole table or row (ui-standard "Typography").
+ * - `Table` wraps the `<table>` in an `overflow-auto` div; pass `unwrapped` when the
+ *   table already lives inside a scroll container, so there is no second, clipping
+ *   scroll context. `containerClassName` styles the wrapper.
+ * - `TableHeader sticky` pins the header row under the app bar
+ *   (`top-[var(--header-h)]`, never a bare `top-0`, WCAG 2.4.11).
  */
 type Density = 'normal' | 'compact';
 
@@ -27,12 +33,18 @@ export interface TableProps extends React.HTMLAttributes<HTMLTableElement> {
   unwrapped?: boolean;
   /** Class applied to the built-in wrapper div (ignored when `unwrapped`). */
   containerClassName?: string;
+  /** `fixed` keeps declared column widths (`table-layout: fixed`); `auto` (default) sizes to content. */
+  layout?: 'auto' | 'fixed';
 }
 
 const Table = React.forwardRef<HTMLTableElement, TableProps>(
-  ({ className, unwrapped, containerClassName, ...props }, ref) => {
+  ({ className, unwrapped, containerClassName, layout = 'auto', ...props }, ref) => {
     const table = (
-      <table ref={ref} className={cn('w-full caption-bottom text-sm', className)} {...props} />
+      <table
+        ref={ref}
+        className={cn('w-full caption-bottom text-sm', layout === 'fixed' && 'table-fixed', className)}
+        {...props}
+      />
     );
     if (unwrapped) return table;
     return <div className={cn('relative w-full overflow-auto', containerClassName)}>{table}</div>;
@@ -55,16 +67,13 @@ const TableHeader = React.forwardRef<HTMLTableSectionElement, TableHeaderProps>(
         ref={edgeRef}
         className={cn(
           '[&_tr]:border-b [&_tr]:border-border',
-          // Non-sticky keeps the translucent wash (byte-identical). A pinned header is
-          // floating chrome over scrolled rows, so it wears the ONE material
-          // (`materialBar`: 0.97 fill + blur, solid under reduced transparency or
-          // increased contrast) — and must NOT also carry `bg-surface/50`, which would
-          // win the cascade over the material's fill and let rows bleed through.
-          // Small text ON a material is secondary ink, never muted (ui-standard
-          // "Materials"): the 11px column labels step up from `text-muted-foreground`.
-          sticky
-            ? cn('sticky top-[var(--header-h)] z-10 [&_th]:text-secondary-foreground', materialBar)
-            : 'bg-surface/50',
+          // Round 14 (C7): no header wash. The column labels sit on the surface the table
+          // sits on (a panel or the canvas), like the Overview's tables; a tinted band
+          // would read as a second surface inside the panel. A pinned header is floating
+          // chrome over scrolled rows, so it wears the ONE material (`materialBar`: 0.97
+          // fill + blur, solid under reduced transparency or increased contrast). Small
+          // text ON a material is secondary ink, never muted (ui-standard "Materials").
+          sticky && cn('sticky top-[var(--header-h)] z-10 [&_th]:text-secondary-foreground', materialBar),
           className,
         )}
         {...props}
@@ -126,8 +135,9 @@ const TableHead = React.forwardRef<HTMLTableCellElement, TableHeadProps>(
     <th
       ref={ref}
       className={cn(
-        'px-4 text-left align-middle text-[11px] font-semibold uppercase tracking-wide ' +
-          'text-muted-foreground [&:has([role=checkbox])]:pr-0 [&>[role=checkbox]]:translate-y-[2px]',
+        // 12px medium, sentence case, muted: the Overview's column labels (Round 14, C7).
+        'px-4 text-left align-middle text-xs font-medium text-muted-foreground ' +
+          '[&:has([role=checkbox])]:pr-0 [&>[role=checkbox]]:translate-y-[2px]',
         density === 'compact' ? 'h-9' : 'h-11',
         className,
       )}
@@ -139,15 +149,21 @@ TableHead.displayName = 'TableHead';
 
 export interface TableCellProps extends React.TdHTMLAttributes<HTMLTableCellElement> {
   density?: Density;
+  /**
+   * The cell holds a count, score, time or id: tabular figures and no wrapping, so the
+   * column's digits line up and an id or a time never breaks across lines.
+   */
+  numeric?: boolean;
 }
 
 const TableCell = React.forwardRef<HTMLTableCellElement, TableCellProps>(
-  ({ className, density = 'normal', ...props }, ref) => (
+  ({ className, density = 'normal', numeric = false, ...props }, ref) => (
     <td
       ref={ref}
       className={cn(
         'px-4 align-middle text-foreground [&:has([role=checkbox])]:pr-0 [&>[role=checkbox]]:translate-y-[2px]',
         density === 'compact' ? 'py-2' : 'py-3',
+        numeric && 'whitespace-nowrap tabular-nums',
         className,
       )}
       {...props}

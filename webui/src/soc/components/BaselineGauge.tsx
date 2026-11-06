@@ -1,5 +1,5 @@
 /**
- * BaselineGauge — the anomaly-baseline WARM-UP gauge (Round 4 / Wave 4).
+ * BaselineGauge: the anomaly-baseline WARM-UP gauge (Round 4 / Wave 4).
  *
  * Makes the "improves over time" story AUDITABLE: an operator can see, per cluster
  * signature and per seasonal bucket, how many observations a bucket has (`n`) vs the
@@ -15,7 +15,12 @@
  *      when the case's cluster signature has baseline data, and standalone as the
  *      per-signature drill-in on the Baseline page.
  *   - `BaselineStatsOverview` — the tenant-wide overview (signature/bucket counts,
- *      warm buckets, seasonality, config knobs).
+ *      warm buckets, seasonality, config knobs). Round 14 (BL2, BL4): a `KpiStrip` of
+ *      three counts, then the overall warm-up in a `Panel` (its progress track takes the
+ *      panel's muted step, so an empty track stays visible in dark); seasonality and the
+ *      detector knobs are one line of context text, never a numeral. The standalone
+ *      signature card is a `Panel` (no nested card), and every label is 12px or larger in
+ *      sentence case (F13).
  *
  * SECURITY (#9): a `signature` is source-derived (it can embed rule/entity text). It
  * is rendered ONLY as a plain React text node (never HTML, never a prompt input).
@@ -23,14 +28,15 @@
  * escalates, or mutates a signature.
  */
 import * as React from 'react';
-import { Activity, Gauge, ThermometerSun, Timer } from 'lucide-react';
+import { Gauge, ThermometerSun, Timer } from 'lucide-react';
 import { cn } from '@/lib/cn';
 import { fmtNumber, humanizeToken, DASH } from '@/lib/format';
+import { Panel } from '@/design-system/panel';
 import { Badge } from '@/ui/badge';
 import { Progress } from '@/ui/progress';
-import { Card, CardContent, CardHeader, CardTitle } from '@/ui/card';
 import { Sparkline } from '@/soc/components/charts';
-import { StatCard } from '@/soc/components/StatCard';
+import { KpiStrip } from '@/soc/components/KpiStrip';
+import { KpiTile } from '@/soc/components/KpiTile';
 import { HelpTip } from '@/soc/components/HelpTip';
 import type {
   BaselineBucketRow,
@@ -43,6 +49,13 @@ function pctOf(progress: number): number {
   const p = Number.isFinite(progress) ? progress : 0;
   return Math.max(0, Math.min(100, Math.round(p * 100)));
 }
+
+/** The warm-up help, shared by the embedded and standalone signature views. */
+const SIGNATURE_HELP =
+  'The baseline learns how much event volume each signature sees in each seasonal bucket. ' +
+  'A bucket needs a target number of observations before it is warm and its percentiles ' +
+  'are trusted, so detection improves over time. The baseline is advisory: a warm-up ' +
+  'state never closes or escalates a case.';
 
 /** A short warm-up label the gauge caption reuses. */
 function warmupLabel(n: number, target: number): string {
@@ -168,10 +181,8 @@ function PercentileReadout({ series }: { series: BaselineBucketRow[] }) {
   return (
     <dl className="grid grid-cols-3 gap-2 text-center">
       {(['p50', 'p95', 'p99'] as const).map((k) => (
-        <div key={k} className="rounded-md border border-border bg-surface/40 px-2 py-1.5">
-          <dt className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-            {k}
-          </dt>
+        <div key={k} className="rounded-md bg-muted px-2 py-1.5">
+          <dt className="text-xs font-medium text-muted-foreground">{k}</dt>
           <dd className="mt-0.5 text-sm font-semibold tabular-nums text-foreground">
             {rep ? fmt(rep[k]) : DASH}
           </dd>
@@ -215,8 +226,8 @@ export const BaselineSignatureCard = React.forwardRef<HTMLDivElement, BaselineSi
       <div className="flex flex-col gap-4">
         {!data.found ? (
           <p className="text-xs text-muted-foreground">
-            No baseline recorded for this signature yet — it will begin warming up as
-            matching events arrive.
+            No baseline recorded for this signature yet. It begins warming up as matching
+            events arrive.
           </p>
         ) : (
           <>
@@ -228,32 +239,27 @@ export const BaselineSignatureCard = React.forwardRef<HTMLDivElement, BaselineSi
               label={`${fmtNumber(warm)} of ${fmtNumber(buckets)} buckets warm`}
               unit="buckets warm"
             />
-            <div className="grid grid-cols-2 gap-3 text-xs">
-              <div className="rounded-md border border-border bg-surface/40 px-2.5 py-1.5">
-                <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-                  Observations
-                </div>
-                <div className="mt-0.5 font-semibold tabular-nums text-foreground">
+            <dl className="grid grid-cols-2 gap-3 text-sm">
+              <div className="rounded-md bg-muted px-2.5 py-1.5">
+                <dt className="text-xs font-medium text-muted-foreground">Observations</dt>
+                <dd className="mt-0.5 font-semibold tabular-nums text-foreground">
                   {fmtNumber(totalN)}{' '}
                   <span className="font-normal text-muted-foreground">
-                    / {fmtNumber(aggTarget)}
+                    of {fmtNumber(aggTarget)}
                   </span>
-                </div>
+                </dd>
               </div>
-              <div className="rounded-md border border-border bg-surface/40 px-2.5 py-1.5">
-                <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-                  Seasonality
-                </div>
-                <div className="mt-0.5 font-semibold text-foreground">
+              <div className="rounded-md bg-muted px-2.5 py-1.5">
+                <dt className="text-xs font-medium text-muted-foreground">Seasonality</dt>
+                <dd className="mt-0.5 font-medium text-foreground">
                   {humanizeToken(data.seasonality) || DASH}
-                </div>
+                </dd>
               </div>
-            </div>
+            </dl>
             <div className="flex flex-col gap-1.5">
-              <div className="flex items-center justify-between text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-                <span>{percentile.toUpperCase()} over season</span>
-                <Activity className="h-3.5 w-3.5" aria-hidden />
-              </div>
+              <p className="text-xs font-medium text-muted-foreground">
+                {percentile} over the season
+              </p>
               <BaselinePercentileSparkline series={series} percentile={percentile} />
             </div>
             <PercentileReadout series={series} />
@@ -263,6 +269,7 @@ export const BaselineSignatureCard = React.forwardRef<HTMLDivElement, BaselineSi
     );
 
     if (embedded) {
+      // Embedded in a host panel (CaseDetail Overview): a compact title row, no chrome.
       return (
         <div ref={ref} className={cn('flex flex-col gap-3', className)}>
           <div className="flex items-center gap-2">
@@ -270,7 +277,7 @@ export const BaselineSignatureCard = React.forwardRef<HTMLDivElement, BaselineSi
             <span className="text-sm font-semibold text-foreground">Anomaly baseline</span>
             <HelpTip
               label="What the baseline warm-up means"
-              text="The baseline learns a per-signature, per-seasonal-bucket distribution of event volume. Each bucket must gather a target number of observations before it is WARM and its percentiles are trusted — so detections IMPROVE OVER TIME. This is advisory only: a warm-up state never closes or escalates a case."
+              text={SIGNATURE_HELP}
             />
           </div>
           <p className="break-all font-mono text-[11px] text-muted-foreground">{data.signature}</p>
@@ -280,34 +287,31 @@ export const BaselineSignatureCard = React.forwardRef<HTMLDivElement, BaselineSi
     }
 
     return (
-      <Card ref={ref} className={className}>
-        <CardHeader className="flex flex-row items-start justify-between gap-2 space-y-0">
-          <div className="min-w-0 flex-1">
-            <CardTitle className="flex items-center gap-2 text-sm">
-              <Gauge className="h-4 w-4 shrink-0 text-primary" aria-hidden />
-              Signature baseline
-              <HelpTip
-                label="What the baseline warm-up means"
-                text="The baseline learns a per-signature, per-seasonal-bucket distribution of event volume. Each bucket must gather a target number of observations before it is WARM and its percentiles are trusted — so detections IMPROVE OVER TIME. This is advisory only: a warm-up state never closes or escalates a case."
-              />
-            </CardTitle>
-            {/* #9: signature is source-derived → plain, monospaced text node. */}
-            <p className="mt-1 break-all font-mono text-[11px] text-muted-foreground">
-              {data.signature}
-            </p>
-          </div>
-          {fullyWarm ? (
-            <Badge variant="success" className="shrink-0">
-              Ready
-            </Badge>
-          ) : (
-            <Badge variant="warning" className="shrink-0">
-              Warming
-            </Badge>
-          )}
-        </CardHeader>
-        <CardContent>{body}</CardContent>
-      </Card>
+      <Panel
+        ref={ref}
+        title="Signature baseline"
+        className={className}
+        actions={
+          <span className="flex items-center gap-2">
+            <HelpTip label="What the baseline warm-up means" text={SIGNATURE_HELP} />
+            {fullyWarm ? (
+              <Badge variant="success" className="shrink-0">
+                Ready
+              </Badge>
+            ) : (
+              <Badge variant="warning" className="shrink-0">
+                Warming
+              </Badge>
+            )}
+          </span>
+        }
+      >
+        {/* #9: signature is source-derived → plain, monospaced text node. */}
+        <p className="-mt-1 mb-3 break-all font-mono text-xs text-muted-foreground">
+          {data.signature}
+        </p>
+        {body}
+      </Panel>
     );
   },
 );
@@ -331,58 +335,46 @@ export const BaselineStatsOverview = React.forwardRef<HTMLDivElement, BaselineSt
     const totalBuckets = stats?.total_buckets ?? 0;
     const warmBuckets = stats?.warm_buckets ?? 0;
     const warmPct = totalBuckets > 0 ? Math.round((warmBuckets / totalBuckets) * 100) : 0;
+    const seasonality = humanizeToken(stats.seasonality) || DASH;
     return (
-      <div ref={ref} className={cn('flex flex-col gap-4', className)}>
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-          <StatCard
+      <div ref={ref} className={cn('flex flex-col gap-4 xl:gap-5 3xl:gap-6', className)}>
+        <KpiStrip label="Baseline summary" density="compact" data-testid="baseline-summary">
+          <KpiTile
             label="Signatures"
             value={fmtNumber(stats.signature_count)}
-            sub={stats.enabled ? 'baseline enabled' : 'baseline disabled'}
-            accent={stats.enabled ? 'primary' : 'medium'}
-            icon={Gauge}
+            context={stats.enabled ? 'Baseline on' : 'Baseline off'}
           />
-          <StatCard
+          <KpiTile
             label="Warm buckets"
             value={fmtNumber(warmBuckets)}
-            sub={`of ${fmtNumber(totalBuckets)} (${warmPct}%)`}
-            accent={warmPct >= 60 ? 'success' : warmPct > 0 ? 'medium' : 'high'}
-            icon={ThermometerSun}
+            context={`of ${fmtNumber(totalBuckets)} (${warmPct}%)`}
           />
-          <StatCard
+          <KpiTile
             label="Warm-up target"
             value={fmtNumber(stats.warmup_target)}
-            sub="obs / bucket"
-            accent="info"
-            icon={Timer}
+            context="observations per bucket"
           />
-          <StatCard
-            label="Seasonality"
-            value={humanizeToken(stats.seasonality) || DASH}
-            sub={`z ≥ ${stats.modified_z_threshold}`}
-            accent="primary"
-            icon={Activity}
-          />
-        </div>
-        <div className="flex flex-col gap-1.5">
-          <div className="flex items-center justify-between gap-2">
-            <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-              Overall warm-up
+        </KpiStrip>
+        <Panel
+          title="Overall warm-up"
+          aside={
+            <span className="tabular-nums">
+              {fmtNumber(warmBuckets)} of {fmtNumber(totalBuckets)} buckets warm
             </span>
-            <span className="text-[11px] tabular-nums text-muted-foreground">
-              {fmtNumber(warmBuckets)} / {fmtNumber(totalBuckets)} buckets
-            </span>
-          </div>
+          }
+          data-testid="baseline-warmup"
+        >
           <Progress
             value={warmPct}
             variant={warmPct >= 60 ? 'success' : 'default'}
             aria-label={`Overall warm-up ${warmPct}%`}
             className="h-2"
           />
-        </div>
-        <p className="text-[11px] leading-relaxed text-muted-foreground">
-          Half-life {stats.half_life_days}d · sketch v{stats.sketch_version}. The baseline
-          is advisory — a warm-up state never closes or escalates a case.
-        </p>
+          <p className="mt-3 text-sm text-muted-foreground" data-testid="baseline-context">
+            Seasonality {seasonality} · deviation bar z ≥ {stats.modified_z_threshold} ·
+            half-life {stats.half_life_days} days · sketch version {stats.sketch_version}
+          </p>
+        </Panel>
       </div>
     );
   },

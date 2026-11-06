@@ -73,6 +73,15 @@ def category_for_trigger(trigger: str) -> str:
     return _TRIGGER_CATEGORY.get(trigger or "", NotificationCategory.SYSTEM.value)
 
 
+#: The two details :meth:`InAppChannel.send` returns, with ``ok=True``, for an inbox copy
+#: that went out to no one: the channel has no inbox, or nobody is addressed. The
+#: automation notify wiring (``AppState._automation_notify``) reads them to leave such a
+#: copy out of the channels a notification was sent on.
+INAPP_NO_INBOX_DETAIL = "no inbox wired"
+INAPP_NO_RECIPIENTS_DETAIL = "no recipients"
+INAPP_NOT_DUE_DETAILS = frozenset({INAPP_NO_INBOX_DETAIL, INAPP_NO_RECIPIENTS_DETAIL})
+
+
 @register_channel
 class InAppChannel(NotificationChannel):
     """Fan a rendered notification out into the per-user in-app inbox.
@@ -108,14 +117,14 @@ class InAppChannel(NotificationChannel):
         zero recipients is still a success — nobody needed it); ``ok=False`` only on an
         internal store error (already isolated → a redacted detail)."""
         if self._inbox is None:
-            return SendResult(ok=True, detail="no inbox wired")
+            return SendResult(ok=True, detail=INAPP_NO_INBOX_DETAIL)
         try:
             recipients = await self._recipients(event)
         except Exception as exc:  # noqa: BLE001 — resolver must never break delivery
             logger.debug("in-app recipient resolution failed: %s", exc)
             recipients = []
         if not recipients:
-            return SendResult(ok=True, detail="no recipients")
+            return SendResult(ok=True, detail=INAPP_NO_RECIPIENTS_DETAIL)
 
         category = category_for_trigger(event.trigger)
         meta = event.meta or {}

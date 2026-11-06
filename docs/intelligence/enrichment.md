@@ -10,8 +10,12 @@ and emails. It is advisory and fail-open: one provider's timeout or failure
 must not drop an alert or decide a case.
 
 Open **Settings → Integrations → Enrichment**. Reading the catalog and testing a
-lookup requires `enrichment:read`; changing provider secrets requires
-`enrichment:manage`.
+lookup requires `enrichment:read`; changing the switches, the cache lifetime and
+provider secrets requires `enrichment:manage`. The switches and the cache lifetime save
+as soon as you change them, and cannot be changed while the settings lock is on; the
+provider panel also disables its key fields while the lock is on. Each change is
+recorded in the audit log, and so is each provider key you set or clear (its name only,
+never its value).
 
 ## Built-in providers
 
@@ -37,6 +41,19 @@ is enabled, the configured aggregation policy produces a bounded reputation scor
 The default fusion behavior takes the strongest provider score; weighted fusion is
 an operator opt-in.
 
+## Demo Mode
+
+Demo Mode never queries a provider, whatever the switches say: the synthetic demo makes
+no external lookup, and **Try a lookup** returns an empty result that says why.
+
+While Demo Mode is on, the Enrichment section shows and changes the demo's own copy of
+the enrichment settings, under the note **Demo Mode is on**. A switch or a cache lifetime
+you change there applies to the demo only and is discarded when Demo Mode ends or is
+reset; your real enrichment settings stay as they were, and the change is recorded in the
+demo's audit trail. Provider keys are not part of that copy: a key saved while Demo Mode
+is on is saved for real and stays after Demo Mode ends, and the provider's panel says so
+above its key fields.
+
 ## Configure safely
 
 1. Enable only providers needed for your indicator mix.
@@ -44,7 +61,8 @@ an operator opt-in.
    configured booleans, never secret values.
 3. Test with a non-sensitive indicator.
 4. Confirm provider attribution, cache state, and error handling.
-5. Set a cache lifetime that respects both freshness and provider quota.
+5. Set a cache lifetime that respects both freshness and provider quota. The longest
+   lifetime is 30 days.
 
 Provider terms, data handling, and rate limits remain the operator's responsibility.
 Do not interpret a single provider verdict as a case disposition.

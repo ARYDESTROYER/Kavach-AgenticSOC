@@ -5,7 +5,7 @@
  * This is the datum-inventory check: every fact the earlier layout showed is still here.
  */
 import { describe, expect, it, vi } from 'vitest';
-import { render, screen, within } from '@testing-library/react';
+import { cleanup, render, screen, within } from '@testing-library/react';
 
 import type { Case } from '@/lib/types';
 import { TooltipProvider } from '@/ui/tooltip';
@@ -74,6 +74,7 @@ function renderRail(c: Case = FULL, extra: Partial<React.ComponentProps<typeof F
         fpPolicy={{ enabled: true, min_confidence: 0.9 }}
         users={[{ username: 'aryan' }]}
         canAssign
+        canViewCost
         onCaseChange={vi.fn()}
         onShowRelated={vi.fn()}
         {...extra}
@@ -125,14 +126,16 @@ describe('FactsRail', () => {
     // Related cases jump.
     expect(within(rail).getByTestId('facts-related')).toHaveTextContent('2 related cases');
 
-    // The record: decider, cost, build, profile, playbook, classification + AI history,
-    // notifications.
+    // The record: decider, cost, build, profile, the procedure of a case investigated
+    // before Round 14 (its stored id under a Console-authored label), classification + AI
+    // history, notifications.
     const record = within(rail).getByTestId('facts-record');
     for (const text of [
       'Decided by',
       'Investigation cost',
       'v0.1.13 · abcdef012345',
       'Network specialist',
+      'Runbook (before Round 14)',
       'pb-ssh',
       'Classification history',
       'AI verdict history',
@@ -141,6 +144,23 @@ describe('FactsRail', () => {
     ]) {
       expect(record).toHaveTextContent(text);
     }
+  });
+
+  it('leaves the investigation cost out without cost:view, and when the server withholds it', () => {
+    renderRail(FULL, { canViewCost: false });
+    const record = screen.getByTestId('facts-record');
+    expect(record).toHaveTextContent('Decided by');
+    expect(record).not.toHaveTextContent('Investigation cost');
+    expect(record).not.toHaveTextContent('$0.0123');
+    cleanup();
+
+    // The server answers `token_cost: null` for a viewer without the grant: no "—" row.
+    renderRail({ ...FULL, token_cost: null } as unknown as Case);
+    expect(screen.getByTestId('facts-record')).not.toHaveTextContent('Investigation cost');
+    cleanup();
+
+    renderRail();
+    expect(screen.getByTestId('facts-record')).toHaveTextContent('Investigation cost$0.0123');
   });
 
   it('offers "Set disposition" only when a human close recorded no outcome', () => {

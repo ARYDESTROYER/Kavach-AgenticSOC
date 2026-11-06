@@ -15,9 +15,11 @@ describe('compact icon-control target standard', () => {
       />,
     );
 
+    // Round 14 (W9a): the allowlist is the shared TagInput, so its chips use the same
+    // labelled remove button as every other tag field (24px target, 12px glyph).
     const remove = screen.getByRole('button', { name: 'Remove suspicious-login' });
-    expect(remove).toHaveClass('min-h-6', 'min-w-6');
-    expect(remove.querySelector('svg')).toHaveClass('h-3', 'w-3');
+    expect(remove).toHaveClass('min-h-6', 'min-w-6', '[&_svg]:size-3');
+    expect(remove.querySelector('svg')).not.toBeNull();
     fireEvent.click(remove);
     expect(update).toHaveBeenCalledWith({ auto_forward_allowlist: [] });
   });

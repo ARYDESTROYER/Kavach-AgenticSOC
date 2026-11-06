@@ -1,6 +1,6 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import type { ReactNode } from 'react';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type {
   SystemUpdateJob,
@@ -9,7 +9,8 @@ import type {
 } from '@/lib/types';
 import type { DeploymentUpgradeState } from '@/soc/hooks/useDeploymentUpgrade';
 
-vi.mock('@/soc/hooks/usePrefersReducedMotion', () => ({ usePrefersReducedMotion: () => true }));
+const motion = vi.hoisted(() => ({ reduced: true }));
+vi.mock('@/soc/hooks/usePrefersReducedMotion', () => ({ usePrefersReducedMotion: () => motion.reduced }));
 vi.mock('@/ui/tooltip', () => ({
   Tooltip: ({ children }: { children: ReactNode }) => children,
   TooltipTrigger: ({ children }: { children: ReactNode }) => children,
@@ -396,5 +397,60 @@ describe('SystemUpdateControl', () => {
     fireEvent.click(screen.getByRole('button', { name: /system update status is unavailable/i }));
     expect(unavailable.setProgressOpen).toHaveBeenCalledWith(true);
     expect(screen.queryByText(/one-time setup required/i)).not.toBeInTheDocument();
+  });
+});
+
+describe('SystemUpdateControl spinners (Round 14, SPEC §4.9.2)', () => {
+  beforeEach(() => {
+    motion.reduced = false;
+  });
+  afterEach(() => {
+    motion.reduced = true;
+  });
+
+  /** A refresh glyph turning anywhere outside RefreshButton breaks the console grammar. */
+  const spinningRefreshGlyphs = () => document.querySelectorAll('svg.lucide-refresh-cw.animate-spin');
+
+  it('shows a running update as progress, never a spinning refresh glyph', () => {
+    const state = upgrade({ job, progressOpen: true, connection: 'reconnecting' });
+    render(<SystemUpdateControl upgrade={state} hasUnsavedChanges={false} canRollback />);
+    const trigger = screen.getByTestId('system-update-button');
+    const progress = trigger.querySelector('[data-update-progress]');
+    expect(progress).not.toBeNull();
+    expect(progress).toHaveClass('animate-spin');
+    expect(trigger.querySelector('svg.lucide-refresh-cw')).toBeNull();
+    // The reconnect notice turns a progress ring too.
+    expect(screen.getByText('Reconnecting to the updated services')).toBeVisible();
+    expect(spinningRefreshGlyphs()).toHaveLength(0);
+  });
+
+  it('rests the update glyph when nothing is running', () => {
+    render(<SystemUpdateControl upgrade={upgrade()} hasUnsavedChanges={false} canRollback />);
+    const trigger = screen.getByTestId('system-update-button');
+    expect(trigger.querySelector('[data-update-progress]')).toBeNull();
+    expect(trigger.querySelector('svg.lucide-refresh-cw')).not.toBeNull();
+    expect(spinningRefreshGlyphs()).toHaveLength(0);
+  });
+
+  it('says "Checking" while the release check runs, busy and disabled, with a resting glyph', () => {
+    const checking = upgrade({
+      checking: true,
+      status: {
+        ...status,
+        release_discovery: {
+          state: 'error',
+          branch: 'main',
+          checked_at: '2026-08-03T03:45:00Z',
+          observed_release: null,
+          issue: { code: 'release_discovery_failed', message: 'The check failed.', remediation: null },
+        },
+      },
+      progressOpen: true,
+    });
+    render(<SystemUpdateControl upgrade={checking} hasUnsavedChanges={false} canRollback />);
+    const button = screen.getByRole('button', { name: 'Checking…' });
+    expect(button).toBeDisabled();
+    expect(button).toHaveAttribute('aria-busy', 'true');
+    expect(spinningRefreshGlyphs()).toHaveLength(0);
   });
 });

@@ -219,6 +219,7 @@ def mount_moved_routers(api, *, dependencies=None) -> None:
     Pass ``dependencies`` to mirror the production ``require_auth`` mount when the test
     turns auth on.
     """
+    from app.api.routes_audit import router as audit_router
     from app.api.routes_notifications import router as notifications_router
     from app.api.routes_prefs import router as prefs_router
     from app.api.routes_rag import router as rag_router
@@ -230,6 +231,7 @@ def mount_moved_routers(api, *, dependencies=None) -> None:
         prefs_router,
         rag_router,
         search_router,
+        audit_router,  # Round 14: GET /api/audit moved out of routes_search
         notifications_router,
         runbooks_router,
     ):

@@ -49,7 +49,7 @@ class DShieldProvider(EnrichmentProvider):
             docs_url="https://isc.sans.edu/api/",
             default_enabled=True,
             setup_steps=[
-                "Nothing to set up — the SANS ISC API is keyless and this provider "
+                "Nothing to set up: the SANS ISC API is keyless and this provider "
                 "ships enabled.",
                 "Requires outbound HTTPS to isc.sans.edu.",
             ],

@@ -5,24 +5,28 @@
  *
  *   ┌ MASTHEAD ─── a PLAIN, dense <PageHeader> (no card / no glow — the big title sits
  *   │             flush on the page background, like the Sources page) carrying the
- *   │             <TimeRangePicker> + auto-refresh + a manual refresh pulse in its `meta`
- *   │             slot, i.e. BESIDE the title on the left. The right half is deliberately
- *   │             empty: the page's search lives in the app shell's top bar, one band up.
- *   ├ KPI STRIP ── five borderless, SERVER-FED telemetry cells separated by hairlines:
- *   │             Total Cases · Total Critical · Open Cases · AI-verdict FP rate ·
- *   │             Resolved / Closed · Auto Closed, at `density="comfortable"` with fluid
- *   │             numerals (Round 12). Four are cohort numbers scoped to the
- *   │             selected window; "Open Cases" is a window-EXEMPT stock and says so, so
- *   │             it is never read as a fifth summand. Each cell OPENS its own drill-down
- *   │             modal (see "Drill-down" further down).
- *   ├ BANDS ────── Round 12: flat TITLED bands separated by whitespace (32px between,
- *   │             24px gutters; no cards, no per-cell rules):
- *   │               "Alert flow"          Noise-Reduction flow (8) · Human vs AI (4)
- *   │               "Cases and response"  case state (5) · response time (3) · queue (4)
- *   │             The flow leads because it is the page's widest instrument: it draws its
- *   │             graph only where its measured labels fit the cell (about 600px for
- *   │             typical counts; narrower, it lists the stages instead). At
- *   │             `4xl` (≥2200px) both bands share a main column + a 460px rail.
+ *   │             <TimeRangePicker> + auto-refresh + the shared RefreshButton in its `meta`
+ *   │             slot, i.e. BESIDE the title on the left, and ONE freshness stamp on the
+ *   │             right: the OLDEST of the slices the visible modules read (Round 14).
+ *   │             The page's search lives in the app shell's top bar, one band up.
+ *   ├ KPI STRIP ── six borderless, SERVER-FED telemetry cells separated by hairlines:
+ *   │             Total cases · Total critical · Open cases · AI-verdict FP rate ·
+ *   │             Resolved or closed · Auto-closed, at `density="comfortable"` with fluid
+ *   │             numerals (Round 12). Two columns on a phone (Round 14). Four are cohort
+ *   │             numbers scoped to the selected window; "Open cases" is a window-EXEMPT
+ *   │             stock and says so, so it is never read as a fifth summand. Each cell
+ *   │             OPENS its own drill-down modal (see "Drill-down" further down).
+ *   ├ ROWS ─────── Round 14 (operator choice C3 B): two rows of modules with NO band
+ *   │             titles, every row one panel gutter apart (16px, 20px from 1280px, 24px
+ *   │             from 1920px), the same gap as between the panels inside a row:
+ *   │               flow row    Noise reduction flow (8) · Human vs AI (4)
+ *   │               cases row   case state (5) · response time (3) · latest cases (4)
+ *   │             What the band captions said now sits inside the cards: each module
+ *   │             names its window after its own title, and the flow's footer says when
+ *   │             its cases equal Total cases. The flow leads because it is the page's
+ *   │             widest instrument: it draws its graph only where its measured labels fit
+ *   │             the cell (about 600px for typical counts; narrower, it lists the stages
+ *   │             instead). At `4xl` (≥2200px) both rows share a main column + a 460px rail.
  *   └ DEEPER ───── ONE persisted "Deeper analytics" disclosure (flat inside: a second
  *                  strip — MTTA · MTTR · Dwell · LLM spend — then coverage, volume,
  *                  workload, outcomes, top signatures/entities), with a one-line summary
@@ -45,6 +49,10 @@
  * retains the last usable value, names the unavailable slice, and offers a slice-only
  * Retry. `noiseReduction`/`sourcesCoverage`/`metricsTrends` are typeof-guarded so a
  * minimal test/mock surface can still omit the optional contracts.
+ * Each read is sent only with its grant (Round 14 second acceptance pass, roles-02 and
+ * roles-03): the metrics reads and the posture rollup need `metrics:view`, LLM spend
+ * `cost:view`, Ingest coverage `sources:read`. A panel whose read the role lacks says
+ * "Access restricted" in one sentence, never a load error with a Retry.
  *
  * Drill-down: every strip tile is a DIALOG trigger (`aria-haspopup="dialog"`). Activating
  * one opens a portalled MODAL over the page, carrying that tile's own population with
@@ -104,6 +112,7 @@ import {
   RefreshCw,
   ShieldAlert,
   ShieldCheck,
+  ShieldX,
   Workflow,
   type LucideIcon,
 } from 'lucide-react';
@@ -132,7 +141,7 @@ import { cn } from '@/lib/cn';
 
 import { PageContainer } from '@/soc/components/PageContainer';
 import { PageHeader } from '@/soc/components/PageHeader';
-import { LoadingState } from '@/design-system';
+import { LoadingState, PANEL_GAP, PANEL_PADDING } from '@/design-system';
 import {
   TimeRangePicker,
   DEFAULT_RANGE,
@@ -178,17 +187,21 @@ import {
   severityBandFromNumber,
 } from '@/soc/components/badges';
 import { BarList, type BarListItem } from '@/soc/components/BarList';
+import { RuleLink, RuleSheetHost } from '@/soc/components/RuleLink';
 import { EmptyState } from '@/soc/components/EmptyState';
 import { LoadError } from '@/soc/components/LoadError';
+import { RefreshButton } from '@/soc/components/RefreshButton';
+import { HelpTip } from '@/soc/components/HelpTip';
 import { AutomationNudge } from './AutomationNudge';
 import { CaseDetail } from '@/soc/pages/CaseDetail';
 import { StartDemoButton } from '@/soc/components/StartDemoButton';
-import { usePosture } from '@/soc/hooks/usePosture';
+import { usePosture, type PostureState } from '@/soc/hooks/usePosture';
 import { useMediaQuery } from '@/soc/hooks/useMediaQuery';
 import { caseOutcome } from '@/soc/components/outcome';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/ui/collapsible';
 import { Badge } from '@/ui/badge';
 import { Button } from '@/ui/button';
+import { Popover, PopoverContent, PopoverTrigger } from '@/ui/popover';
 
 import {
   humanizeMinutes as humanizeMins,
@@ -196,6 +209,7 @@ import {
   type LifecycleMetricKey,
 } from './posture.format';
 import type { PostureResponse, StatBlock } from './Metrics.posture.api';
+import { GrantsUnknownNotice, isPermissionRefusal, usePageGrants } from './PageAccess';
 
 /**
  * The Overview hero title — the app's white-screen boot guard anchors on it (the
@@ -267,14 +281,15 @@ const ACTIVE_STATUS_GROUP = 'active';
 const TERMINAL_STATUS_GROUP = 'terminal';
 
 /**
- * ONE containment sentence, used verbatim as the Auto Closed tile's accessible help, its
+ * ONE containment sentence, used verbatim as the Auto-closed tile's accessible help, its
  * drill-down population, and — through both — the thing a reader arrives at from either
  * direction. It is a single constant precisely so the three can never drift into saying
- * different things about the same numeral.
+ * different things about the same numeral. It quotes the neighbouring tile by its label
+ * (Round 14 sentence case).
  */
 const AUTO_CLOSED_POPULATION =
-  'A SUBSET of Resolved / Closed, not a sixth independent total. Counted over the ' +
-  'agent-worked population only — cases an operator closed under a "declared benign" ' +
+  'A subset of Resolved or closed, not a sixth independent total. Counted over the ' +
+  'agent-worked population only: cases an operator closed under a "declared benign" ' +
   'rule policy are excluded, exactly as the automation rate beside it excludes them.';
 
 /**
@@ -554,14 +569,14 @@ function trendWindowLabel(t: MetricsTrends): string {
 }
 
 /**
- * A short, deterministic UTC axis label for one trend bucket. Day-sized buckets read
- * as `MM-DD`, anything finer as `HH:mm` — but ONLY while the window itself fits inside
- * one day. A multi-day window with sub-day buckets (the 7-day preset is 6h buckets, the
- * 72h preset 3h) would otherwise repeat the same four `HH:mm` ticks once per day and
- * leave a hovered spike unlocatable, so those read `MM-DD HH:mm`. An unparseable
- * instant falls back to the raw value so the axis never silently renames a bucket. UTC
- * on purpose — the buckets are UTC-aligned server-side, so a local-time label would
- * misplace them.
+ * The plain-text `x` label of one Human vs AI trend bucket. It is not what the axis
+ * shows: the chart dates its own ticks from each bucket's `start` by the chart kit's one
+ * time-axis rule (CloseAttributionChart `xTickTexts`), and the hover header reads the
+ * bucket's range. The label is only the fallback for a bucket whose start does not
+ * parse, and such a bucket reaches this function with the same unparseable `t`, so it
+ * reads the raw value and the axis never silently renames a bucket. A parseable instant
+ * still yields a short UTC label (`MM-DD` for day-sized buckets, `HH:mm` within one day,
+ * `MM-DD HH:mm` on a longer window) for any other reader of `x`.
  */
 function bucketAxisLabel(
   t: unknown,
@@ -705,6 +720,7 @@ function TrendChip({
  */
 function SnapshotCard({
   title,
+  windowCaption,
   caption,
   total,
   delta,
@@ -721,6 +737,11 @@ function SnapshotCard({
   className,
 }: {
   title: string;
+  /**
+   * The window this snapshot counts ("last 24 hours"), right after the title (Round 14,
+   * SPEC §4.3.2): the band caption that used to say it for the whole row is gone.
+   */
+  windowCaption?: string;
   caption: string;
   total: number;
   delta: { value: number; label: string } | null;
@@ -757,6 +778,9 @@ function SnapshotCard({
   const segments = sevSegments(counts);
   const legend = SEV_ORDER.map((s) => ({ key: s, value: counts[s] })).filter((r) => r.value > 0);
   const legendId = React.useId();
+  // The snapshot is its own module (Round 14, SPEC §3.3 and §4.3.4): a region named by
+  // its visible title, so the landmark list reads "Open cases", then "Cases resolved".
+  const titleId = React.useId();
   const centerClass = cn(
     'font-semibold tabular-nums text-foreground',
     total >= 1000 ? 'text-2xl' : 'text-3xl',
@@ -874,6 +898,7 @@ function SnapshotCard({
    */
   return (
     <section
+      aria-labelledby={titleId}
       className={cn(
         'min-w-0 @[35rem]:row-span-4 @[35rem]:grid @[35rem]:grid-rows-subgrid',
         className,
@@ -882,7 +907,7 @@ function SnapshotCard({
     >
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
-          <h2 className="text-base font-semibold text-foreground">{title}</h2>
+          <ModuleTitle id={titleId} title={title} caption={windowCaption} />
           <p className="text-sm text-muted-foreground">{caption}</p>
         </div>
         <TrendChip delta={delta} goodDirection={goodDirection} />
@@ -988,18 +1013,18 @@ function latestCaseStatus(status: string | null | undefined): {
 
 /**
  * How many latest-case rows the queue shows: at least five (the count it always showed)
- * and at most eight. Between the two it FILLS the band's height — the snapshots and the
+ * and at most eight. Between the two it FILLS the row's height: the snapshots and the
  * timing pair beside it set that height, and the queue grows into it rather than leaving
- * dead space or driving the band taller.
+ * dead space or driving the row taller.
  */
 const LATEST_MIN_ROWS = 5;
 const LATEST_MAX_ROWS = 8;
 /**
  * The floor from 1920px up: EIGHT rows, the spec's count for the widest screens (Round 12
- * review). There the band changes shape so the queue can hold them without leaving blank
+ * review). There the row changes shape so the queue can hold them without leaving blank
  * space beside it: the response-time pair moves UNDER the two snapshots (one row of two
  * stats) and the queue spans both rows on the right — the 4xl rail is the same column.
- * The old six-row floor set the band's height instead, and at 1920 / 2560 left ~160 /
+ * The old six-row floor set the row's height instead, and at 1920 / 2560 left ~160 /
  * ~190px empty under the snapshots and ~120 / ~140px under Response time.
  */
 const LATEST_MIN_ROWS_WIDE = 8;
@@ -1007,7 +1032,7 @@ const LATEST_WIDE_QUERY = '(min-width: 1920px)';
 /** Pre-measurement estimate of one queue row (title 20 + 2 gap + metadata 16 + 2 × 8
  *  padding), rounded up so the in-flow floor never undershoots — in REM (Round 12
  *  review), so a larger browser text size grows the floor with the rows it reserves
- *  (WCAG 1.4.4) instead of letting them overrun the band below. 3.5rem = 56px at 16px. */
+ *  (WCAG 1.4.4) instead of letting them overrun the module below. 3.5rem = 56px at 16px. */
 const LATEST_ROW_ESTIMATE_REM = 3.5;
 /** The space between two latest-case rows (`gap-1`), in rem. */
 const LATEST_ROW_GAP_REM = 0.25;
@@ -1039,10 +1064,10 @@ export function latestFloorCss(rows: number): string {
 }
 
 /**
- * Measure how many queue rows fit the box the band gives the list (see LATEST_*).
+ * Measure how many queue rows fit the box the row gives the list (see LATEST_*).
  *
  * The list is laid out OUT OF FLOW (absolutely, inside a `flex-1` box with a five-row
- * floor), so its own length can never make the band taller — which is what would turn
+ * floor), so its own length can never make the row taller, which is what would turn
  * "fill the height" into a feedback loop. jsdom lays nothing out and keeps the floor.
  */
 function useFittingRows(
@@ -1075,9 +1100,10 @@ function useFittingRows(
   return Math.max(rows, minRows);
 }
 
-/** The real-time work queue: the newest cases, filling the band's height. */
+/** The real-time work queue: the newest cases, filling the row's height. */
 function TopCasesPanel({
   cases,
+  caption,
   navigate,
   navWindow,
   onOpenCase,
@@ -1085,6 +1111,11 @@ function TopCasesPanel({
 }: {
   /** Newest first, at most LATEST_MAX_ROWS; the panel shows as many as fit. */
   cases: Case[];
+  /**
+   * The line under the title, naming the window the queue is drawn from ("Newest of the
+   * last 24 hours"; Round 14, SPEC §4.3.2, replacing "Real-time triage queue").
+   */
+  caption: string;
   navigate?: Navigate;
   navWindow: number;
   /**
@@ -1109,11 +1140,17 @@ function TopCasesPanel({
   // (never more than the floor, so a short queue does not reserve empty rows).
   const floorRows = Math.min(cases.length, minRows);
   return (
-    <section aria-label="Latest cases" className="flex h-full min-w-0 flex-col">
+    <section
+      aria-labelledby={LATEST_CASES_HEADING_ID}
+      className="flex h-full min-w-0 flex-col"
+      data-testid="latest-cases"
+    >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <h2 className="text-base font-semibold text-foreground">Latest cases</h2>
-          <p className="text-sm text-muted-foreground">Real-time triage queue</p>
+          <ModuleTitle id={LATEST_CASES_HEADING_ID} title="Latest cases" />
+          <p className="text-sm text-muted-foreground" data-testid="window-caption">
+            {caption}
+          </p>
         </div>
         {navigate ? (
           <button
@@ -1348,7 +1385,7 @@ function CoverageTile({
           <ShieldAlert className="h-4 w-4 shrink-0" aria-hidden />
           <span className="min-w-0 flex-1">
             {fmtNumber(coverage.sources_silent)} source
-            {coverage.sources_silent === 1 ? '' : 's'} stopped reporting — review coverage
+            {coverage.sources_silent === 1 ? '' : 's'} stopped reporting. Review coverage
           </span>
           {onNavigate ? <ChevronRight className="h-4 w-4 shrink-0" aria-hidden /> : null}
         </button>
@@ -1488,34 +1525,132 @@ function useNow(intervalMs: number): number {
   return now;
 }
 
+/** One independently loaded slice that feeds a visible module, for the page stamp. */
+export interface FreshnessSlice {
+  /** What the slice holds, as the stamp's tooltip names it ("cases", "flow", "response"). */
+  name: string;
+  /** When the slice was generated or last loaded (ISO); absent while it has no data. */
+  at: string | null | undefined;
+}
+
+/** "cases", "cases and flow", "cases, flow and response". */
+function joinNames(names: readonly string[]): string {
+  if (names.length <= 1) return names.join('');
+  return `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
+}
+
 /**
- * A quiet per-section freshness stamp (Round 12, additive; Sentinel shows "the last
- * refresh time at the top of each section"). The slices load independently, so one
- * global stamp would claim a freshness some of them do not have.
+ * The page's ONE freshness stamp (Round 14, SPEC §4.3.3): the OLDEST of the slices that
+ * feed the visible modules, so it never claims a freshness one of them does not have
+ * (the Round 12 honesty rule that once took a stamp per band). A slice with no readable
+ * time is left out; with none left, there is no stamp. Exported for its unit test.
  */
-function Freshness({ at, label = 'Updated' }: { at: string | null | undefined; label?: string }) {
+export function oldestFreshness(
+  slices: readonly FreshnessSlice[],
+): { at: string; names: string[] } | null {
+  const usable = slices.filter(
+    (s): s is FreshnessSlice & { at: string } =>
+      typeof s.at === 'string' && Number.isFinite(Date.parse(s.at)),
+  );
+  if (!usable.length) return null;
+  const oldest = usable.reduce((a, b) => (Date.parse(b.at) < Date.parse(a.at) ? b : a));
+  return { at: oldest.at, names: usable.map((s) => s.name) };
+}
+
+/** "14:02:31 UTC" for the stamp's coverage (the instant is already known to parse). */
+function utcClock(at: string): string {
+  return `${new Date(Date.parse(at)).toISOString().slice(11, 19)} UTC`;
+}
+
+/**
+ * The header's freshness stamp: "Updated 2m ago" as a `<time>`, re-rendered every 15s so
+ * the relative age stays true. What it covers, the slices it speaks for and the absolute
+ * UTC time of the oldest ("Oldest of cases, flow and response data: 14:02:31 UTC"),
+ * reaches every reader, not only a mouse:
+ *   - a screen reader hears it with the stamp, from visually hidden text in the trigger's
+ *     name, so it needs no second step and is never read twice;
+ *   - everyone else opens it as HelpTip's popover form does: the stamp is a quiet text
+ *     button that opens a popover on click, tap, Enter and Space (`aria-expanded`). A
+ *     tooltip would never open on touch, and a native `title` reaches the mouse alone.
+ */
+function Freshness({ slices }: { slices: readonly FreshnessSlice[] }) {
   useNow(15_000);
-  if (!at) return null;
-  const age = humanizeAge(at);
+  const oldest = oldestFreshness(slices);
+  if (!oldest) return null;
+  const age = humanizeAge(oldest.at);
   if (!age || age === DASH) return null;
+  const what = `${joinNames(oldest.names)} data`;
+  const lead =
+    oldest.names.length > 1 ? `Oldest of ${what}` : `${what.charAt(0).toUpperCase()}${what.slice(1)}`;
+  const clock = utcClock(oldest.at);
+  const coverage = `${lead}: ${clock}`;
   return (
-    <span className="whitespace-nowrap tabular-nums" data-testid="freshness">
-      {label} {age}
-    </span>
+    <Popover>
+      {/* A 24px target (`min-h-6`) whose 2px overhang each side is taken back by the
+          negative margin, so the masthead keeps the height of a plain text line. */}
+      <PopoverTrigger
+        type="button"
+        className="-my-0.5 inline-flex min-h-6 items-center whitespace-nowrap rounded-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring data-[state=open]:text-foreground"
+        data-testid="freshness-trigger"
+      >
+        <time
+          dateTime={new Date(Date.parse(oldest.at)).toISOString()}
+          className="tabular-nums"
+          data-testid="freshness"
+        >
+          Updated {age}
+        </time>
+        <span className="sr-only" data-testid="freshness-coverage">
+          . {coverage}
+        </span>
+      </PopoverTrigger>
+      {/* Below the stamp, so it never covers the app bar above the masthead, and never
+          closer than the page's 16px gutter to the screen edge (on a phone the stamp sits
+          at the left). The clock never breaks from its "UTC". */}
+      <PopoverContent
+        side="bottom"
+        align="end"
+        collisionPadding={16}
+        aria-label="Data freshness"
+        className="w-auto max-w-xs px-3 py-2 text-xs leading-relaxed"
+        data-testid="freshness-popover"
+      >
+        <p className="text-muted-foreground">
+          {lead}: <span className="whitespace-nowrap tabular-nums">{clock}</span>
+        </p>
+      </PopoverContent>
+    </Popover>
   );
 }
 
 /**
- * Grouped panels (Round 13, ui-standard "Dashboard bands"). Every module on this page —
- * each instrument, the KPI strip, the Deeper analytics header — sits on its own soft
- * tinted panel: `.surface-panel` in theme.css (the `--panel` fill, a 14px corner, no
- * border, no resting shadow, and the in-panel hover / selected / semantic-text steps).
- * Band titles stay OUTSIDE the panels, on the canvas. The panel padding and the gutters
- * between panels grow with the screen together: 16px, 20px from 1280px, 24px from 1920px.
+ * Grouped panels (Round 13; ui-standard "Modules on grouped panels"). Every module on
+ * this page (each instrument, the KPI strip, the Deeper analytics header) sits on its
+ * own soft tinted panel: `.surface-panel` in theme.css (the `--panel` fill, a 14px
+ * corner, no border, no resting shadow, and the in-panel hover / selected /
+ * semantic-text steps). Every module title is INSIDE its panel; the rows carry no titles
+ * of their own (Round 14). The panel padding, the gutters between panels in a row and
+ * the gap between rows are one value that grows with the screen: 16px, 20px from 1280px,
+ * 24px from 1920px. Both come from the design system (`PANEL_PADDING`, `PANEL_GAP`), the
+ * same values every page's `Panel` uses.
  */
 const PANEL = 'surface-panel';
-const PANEL_PAD = 'p-4 xl:p-5 3xl:p-6';
-const PANEL_GAP = 'gap-4 xl:gap-5 3xl:gap-6';
+
+/** The flow funnel's `h2` id: the flow panel is the region that heading names. */
+const FLOW_HEADING_ID = 'overview-flow-title';
+
+/**
+ * Response time's help (Round 14, SPEC §4.3.2): "server-computed", which used to be the
+ * module's caption, is explained here; the caption now names the window.
+ */
+const RESPONSE_TIME_HELP =
+  'Medians (p50) over the cases that arrived in this window, computed on the server from ' +
+  "each case's own timestamps. A measured figure says how many cases it measured, and " +
+  'its p90 when the server reports one; a figure that is not measured says why.';
+
+/** The Response time and Latest cases `h2` ids: each panel is the region its title names. */
+const RESPONSE_TIME_HEADING_ID = 'overview-response-title';
+const LATEST_CASES_HEADING_ID = 'overview-latest-title';
 
 /**
  * The thin divider between the two severity snapshots that share one panel ("Open cases"
@@ -1535,16 +1670,15 @@ const SNAPSHOT_DIVIDER = cn(
 /**
  * The first tile of each KPI strip row: its trigger's left inset equals the panel padding
  * (16 / 20 / 24px), so the KPI labels share ONE left edge with the module titles under
- * them. The other tiles keep their own inset, so no context line loses width. Rows: one
- * tile per row below `sm`, two to `md`, three to `xl`, then one row of six. The tile's
- * `className` lands on its cell root (the help button sits beside the trigger), so the
- * trigger is reached as its child; `[data-testid]` lifts the rule above the tile's own
- * `xl:max-2xl:[&>button]:px-3` whatever the emission order.
+ * them. The other tiles keep their own inset, so no context line loses width. Rows: two
+ * tiles per row below `md` (Round 14: two columns on a phone), three to `xl`, then one
+ * row of six. The tile's `className` lands on its cell root (the help button sits beside
+ * the trigger), so the trigger is reached as its child; `[data-testid]` lifts the rule
+ * above the tile's own `xl:max-2xl:[&>button]:px-3` whatever the emission order.
  */
 function kpiRowStartInset(index: number): string {
   return cn(
-    'max-sm:[&>button[data-testid]]:pl-4',
-    index % 2 === 0 && 'sm:max-md:[&>button[data-testid]]:pl-4',
+    index % 2 === 0 && 'max-md:[&>button[data-testid]]:pl-4',
     index % 3 === 0 && 'md:max-xl:[&>button[data-testid]]:pl-4',
     index === 0 && 'xl:[&>button[data-testid]]:pl-5 3xl:[&>button[data-testid]]:pl-6',
   );
@@ -1561,55 +1695,52 @@ function kpiRowStartInset(index: number): string {
  * puts a tile that is not a row start back on its own 12px inset; from 1280px the tile's
  * own `xl:px-4 2xl:px-5` come later in the cascade and keep it there by themselves.
  */
-function timingRowStartInset(index: number): string {
+function timingRowStartInset(index: number, count = 4): string {
   if (index === 0) return 'pl-4 xl:pl-5 3xl:pl-6';
+  // Three tiles (spend not readable): one column under 30rem, then one row of three.
+  if (count === 3) return 'pl-4 @[30rem]:pl-3';
   if (index === 2) return 'pl-4 @[40rem]:pl-3 3xl:[@container(max-width:39.98rem)]:pl-6';
   return 'pl-4 @[20rem]:pl-3';
 }
 
 /**
- * One titled dashboard BAND (Round 12, SYNTHESIS-ux §2.3): a section with a 15px
- * sentence-case title, an optional 13px caption, and an optional right-hand aside
- * (freshness, links), all on the canvas. The band itself draws no card and no rule: its
- * modules sit on their own panels (Round 13), and whitespace separates the bands.
+ * A module title with the window it reads (Round 14, SPEC §4.3.2). The band captions that
+ * named the window for a whole row are gone, so each module says it right after its own
+ * title: 13px muted text on the title's baseline, the design system `Panel`'s caption
+ * rule. As a flex item it moves under the title as one unit when the row is too narrow
+ * for both, and wraps its own words only when the panel is narrower than the caption
+ * itself, so a cut window never hides the part a reader needs. The caption sits BESIDE
+ * the `h2`, never inside it, so the heading's accessible name stays the module's name.
+ * `id` names the heading, for the panel that is the region it titles.
  */
-function Band({
-  id,
+function ModuleTitle({
   title,
+  id,
   caption,
-  aside,
-  className,
-  children,
-  'data-testid': testId,
+  help,
 }: {
-  id: string;
   title: string;
-  caption?: React.ReactNode;
-  aside?: React.ReactNode;
-  className?: string;
-  children: React.ReactNode;
-  'data-testid'?: string;
+  /** The `h2`'s id, when the module's panel is a region named by it (`aria-labelledby`). */
+  id?: string;
+  /** "last 24 hours", "p50 · last 24 hours"; nothing when the module has no window. */
+  caption?: string;
+  /** An optional help tip, between the title and its caption. */
+  help?: React.ReactNode;
 }) {
   return (
-    <section aria-labelledby={id} className={cn('min-w-0', className)} data-testid={testId}>
-      <header className="mb-4 flex flex-wrap items-end justify-between gap-x-6 gap-y-1">
-        <div className="min-w-0">
-          <h2
-            id={id}
-            className="text-md font-semibold leading-5 text-foreground"
-          >
-            {title}
-          </h2>
-          {caption ? <p className="mt-0.5 text-sm text-muted-foreground">{caption}</p> : null}
-        </div>
-        {aside ? (
-          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted-foreground">
-            {aside}
-          </div>
-        ) : null}
-      </header>
-      {children}
-    </section>
+    <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5">
+      <div className="flex min-w-0 items-center gap-1.5">
+        <h2 id={id} className="min-w-0 break-words text-base font-semibold text-foreground">
+          {title}
+        </h2>
+        {help}
+      </div>
+      {caption ? (
+        <span className="min-w-0 text-sm text-muted-foreground" data-testid="window-caption">
+          {caption}
+        </span>
+      ) : null}
+    </div>
   );
 }
 
@@ -1664,7 +1795,7 @@ function Instrument({
   return (
     <section
       aria-label={title}
-      className={cn('flex h-full min-w-0 flex-col', PANEL, PANEL_PAD, className)}
+      className={cn('flex h-full min-w-0 flex-col', PANEL, PANEL_PADDING, className)}
       data-scope={scope}
     >
       <div className="mb-3 flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
@@ -1680,6 +1811,125 @@ function Instrument({
       </div>
       {children}
     </section>
+  );
+}
+
+/** One "Top signatures" row: the signature it groups by and the detection rules behind it. */
+export interface SignatureItem extends BarListItem {
+  /** The rules of the row's cases, most frequent first (each opens the rule sheet). */
+  rules: string[];
+}
+
+/** How many rules a signature row names before "+N more". */
+const SIGNATURE_RULES_SHOWN = 2;
+
+/**
+ * The top signatures of the cases on screen (Round 14, SPEC §4.6.5): the same grouping as
+ * before (a case's title, else its cluster signature, else its first rule), now carrying
+ * the detection rules behind each signature so the row can open the rule's picture. Ties
+ * keep the order the cases arrived in.
+ */
+export function topSignatureItems(cases: readonly Case[], max = 8): SignatureItem[] {
+  const groups = new Map<string, { value: number; rules: Map<string, number> }>();
+  for (const k of cases) {
+    const label =
+      (k.title || k.cluster_signature || k.rule_ids?.[0] || 'Uncategorized').trim() || 'Uncategorized';
+    const group = groups.get(label) ?? { value: 0, rules: new Map<string, number>() };
+    group.value += 1;
+    for (const rule of Array.isArray(k.rule_ids) ? k.rule_ids : []) {
+      if (typeof rule === 'string' && rule.trim()) group.rules.set(rule, (group.rules.get(rule) ?? 0) + 1);
+    }
+    groups.set(label, group);
+  }
+  const total = cases.length || 1;
+  return [...groups.entries()]
+    .sort((a, b) => b[1].value - a[1].value)
+    .slice(0, max)
+    .map(([label, group]) => ({
+      label,
+      value: group.value,
+      sub: `${Math.round((group.value / total) * 100)}% of cases`,
+      rules: [...group.rules.entries()].sort((a, b) => b[1] - a[1]).map(([rule]) => rule),
+    }));
+}
+
+/**
+ * The "Top signatures" list: the shared `BarList` look (rank, label, count, bar, share),
+ * with the rules behind each signature on its footer line as `RuleLink`s, so a click opens
+ * the rule's picture over the dashboard's window. The links share one rule sheet that
+ * lives with the list, so a LIVE refresh that re-ranks or drops the row that opened it
+ * never closes the sheet being read. Labels and rules are untrusted case data rendered as
+ * plain text (#9).
+ */
+export function SignatureList({ items, window: range }: { items: SignatureItem[]; window: TimeRange }) {
+  return (
+    <RuleSheetHost>
+      <SignatureRows items={items} window={range} />
+    </RuleSheetHost>
+  );
+}
+
+function SignatureRows({ items, window: range }: { items: SignatureItem[]; window: TimeRange }) {
+  if (items.length === 0) return <BarList items={[]} emptyLabel="No signatures yet" />;
+  const max = items.reduce((m, it) => Math.max(m, it.value || 0), 0) || 1;
+  const ruleWindow = { from: range.from, to: range.to, label: range.label };
+  return (
+    <ul className="flex flex-col gap-3.5" data-testid="signature-list">
+      {items.map((it, i) => {
+        const pct = Math.max(0, Math.min(100, ((it.value || 0) / max) * 100));
+        const shown = it.rules.slice(0, SIGNATURE_RULES_SHOWN);
+        const more = it.rules.length - shown.length;
+        return (
+          <li key={it.label} className="flex items-start gap-3">
+            <span className="mt-1.5 w-6 shrink-0 text-right font-mono text-xs tabular-nums text-muted-foreground">
+              {String(i + 1).padStart(2, '0')}
+            </span>
+            <div className="min-w-0 flex-1">
+              <div className="flex items-baseline justify-between gap-3">
+                <span className="truncate text-sm font-medium text-foreground" title={it.label}>
+                  {it.label}
+                </span>
+                <span className="shrink-0 font-mono text-sm font-semibold tabular-nums text-foreground">
+                  {fmtNumber(it.value)}
+                </span>
+              </div>
+              <div className="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-muted">
+                <div
+                  className="h-full rounded-full bg-accent-bar"
+                  style={{ width: `${pct}%` }}
+                  role="progressbar"
+                  aria-valuenow={Math.round(pct)}
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  aria-label={it.label}
+                />
+              </div>
+              <div className="mt-1 flex items-baseline justify-between gap-3">
+                <span className="min-w-0 text-xs text-muted-foreground">
+                  {shown.length ? (
+                    <>
+                      {shown.length === 1 && more === 0 ? 'Rule ' : 'Rules '}
+                      {shown.map((rule, index) => (
+                        <React.Fragment key={rule}>
+                          {index > 0 ? ', ' : null}
+                          <RuleLink rule={rule} window={ruleWindow} origin="Cyber Defence Center" className="text-foreground" />
+                        </React.Fragment>
+                      ))}
+                      {more > 0 ? ` +${fmtNumber(more)} more` : null}
+                      {' · '}
+                    </>
+                  ) : null}
+                  {it.sub}
+                </span>
+                <span className="shrink-0 font-mono text-xs tabular-nums text-muted-foreground">
+                  {Math.round(pct)}%
+                </span>
+              </div>
+            </div>
+          </li>
+        );
+      })}
+    </ul>
   );
 }
 
@@ -1761,6 +2011,126 @@ function useDeeperOpen(): [boolean, (open: boolean) => void] {
   return [open, change];
 }
 
+/**
+ * Whether `el` shows the keyboard's focus ring: the browser's own answer to "did the
+ * keyboard (or assistive tech) put the focus here?", which a mouse click on a button never
+ * earns. A browser without `:focus-visible` throws on the selector; it counts as no.
+ */
+function matchesFocusVisible(el: Element): boolean {
+  try {
+    return el.matches(':focus-visible');
+  } catch {
+    return false;
+  }
+}
+
+/* ---- Panels the viewer's role cannot read (roles-02, roles-03) ------------------- */
+/**
+ * The page's reads follow the viewer's grants (Round 14 second acceptance pass). The
+ * strip, the flow, Human vs AI, Response time, the timing tiles and Case volume read the
+ * metrics endpoints (`metrics:view`), LLM spend reads `cost:view`, and Ingest coverage and
+ * the automation nudge read the sources (`sources:read`) and tuning (`automation:read`)
+ * endpoints. Without a grant its read is never sent (each refusal would write an Access
+ * denied audit row and a console error), and its panels are left out. One plain line
+ * where the strip was says why the metrics panels are missing, never a load error with a
+ * Retry that can never succeed; spend and coverage are single panels inside Deeper
+ * analytics and are simply not shown. The case snapshots and Latest cases follow
+ * `cases:read`, the page's own grant.
+ */
+const METRICS_RESTRICTED_NOTICE =
+  'You do not have access to metrics, so the summary figures, alert flow and response times are not shown.';
+
+/** A grant the page learned it lacks from a refusal (HTTP 403) on one of its reads. */
+type RefusableGrant = 'metrics' | 'cost' | 'sources';
+const NONE_REFUSED: ReadonlySet<RefusableGrant> = new Set();
+
+/** The one line in the strip's place for a viewer without `metrics:view`. */
+function MetricsRestrictedNotice() {
+  return (
+    <div
+      data-testid="overview-metrics-restricted"
+      className={cn(
+        PANEL,
+        'flex items-start gap-2 px-4 py-3 text-sm text-muted-foreground xl:px-5 3xl:px-6',
+      )}
+    >
+      <ShieldX className="mt-0.5 size-4 shrink-0" aria-hidden />
+      <p className="min-w-0">{METRICS_RESTRICTED_NOTICE}</p>
+    </div>
+  );
+}
+
+/**
+ * "Timing, spend, ingest coverage, volume, workload and outcomes": what the open Deeper
+ * analytics holds for this viewer, naming only the panels their grants show.
+ */
+function deeperContents(show: { metrics: boolean; cost: boolean; sources: boolean }): string {
+  const parts = [
+    show.metrics && 'timing',
+    show.cost && 'spend',
+    show.sources && 'ingest coverage',
+    show.metrics && 'volume',
+    'workload',
+    'outcomes',
+  ].filter((part): part is string => Boolean(part));
+  const sentence = `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`;
+  return sentence.charAt(0).toUpperCase() + sentence.slice(1);
+}
+
+/** The posture state before the first read settles (the hook's own first answer). */
+const POSTURE_PENDING: PostureState = {
+  data: null,
+  loading: true,
+  error: null,
+  stale: false,
+  reload: async () => undefined,
+};
+/** The posture state for a viewer without `metrics:view`: settled, empty, nothing to reload. */
+const POSTURE_RESTRICTED: PostureState = { ...POSTURE_PENDING, loading: false };
+
+/**
+ * Reads the posture rollup and hands its state to the page. It is mounted only with
+ * `metrics:view`, so a viewer without it never sends GET /api/metrics/posture: the shared
+ * hook has no switch of its own, and a component is how a hook is called conditionally.
+ * The state carries the window it was read for, so the page can project it exactly as the
+ * hook does on the render where the window changes (`projectPosture`).
+ */
+function PostureFeed({
+  hours,
+  onState,
+}: {
+  hours: number;
+  onState: (fed: { hours: number; state: PostureState }) => void;
+}) {
+  const { data, loading, error, stale, reload } = usePosture(hours, 'prev');
+  React.useLayoutEffect(() => {
+    onState({ hours, state: { data, loading, error, stale, reload } });
+  }, [hours, data, loading, error, stale, reload, onState]);
+  return null;
+}
+
+/**
+ * The posture state the page renders. A state fed for another window is shown as the hook
+ * shows it while that window's read is in flight: loading, no error, and its data kept as
+ * a stale snapshot, so a range change never blanks the dashboard for a render.
+ */
+export function projectPosture(
+  canRead: boolean,
+  fed: { hours: number; state: PostureState } | null,
+  hours: number,
+): PostureState {
+  if (!canRead) return POSTURE_RESTRICTED;
+  if (!fed) return POSTURE_PENDING;
+  if (fed.hours === hours) return fed.state;
+  return {
+    data: fed.state.data,
+    loading: true,
+    error: null,
+    stale: fed.state.data != null,
+    reload: fed.state.reload,
+  };
+}
+
 export default function Overview({ onNavigate }: OverviewProps) {
   // Navigation seam: an explicit prop (host/test) wins; otherwise resolve from the
   // router context (no-op when rendered provider-less in a unit test).
@@ -1777,7 +2147,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
    * that implies something happened when nothing did.
    */
   const [rollKpis, setRollKpis] = React.useState(true);
-  /** From 1920px the Cases band is two rows and the snapshot rings grow (Round 12 review). */
+  /** From 1920px the cases row is two rows and the snapshot rings grow (Round 12 review). */
   const wideScreen = useMediaQuery(LATEST_WIDE_QUERY);
   const changeRange = React.useCallback((next: TimeRange) => {
     setRollKpis(true);
@@ -1786,6 +2156,37 @@ export default function Overview({ onNavigate }: OverviewProps) {
   const hours = React.useMemo(() => rangeHours(range), [range]);
   /** The `window` (hours) carried on every drill-through so the case list matches. */
   const navWindow = hours;
+
+  // ----- The viewer's grants for the page's reads (roles-02, roles-03) ---- //
+  const grants = usePageGrants();
+  /**
+   * Grants the server refused although the Console believed them held. The Console reads
+   * the grants at sign-in, so a role changed since then is first learned from a 403 on one
+   * of this page's reads. A refused grant counts as not held for the life of the page: its
+   * reads are not sent again (each would write another Access denied audit row) and its
+   * panels are left out like any other missing grant, never shown as "unavailable" with a
+   * Retry that can never succeed. On the first refusal the shell's grants are loaded again
+   * once, so the navigation catches up as well.
+   */
+  const [refused, setRefused] = React.useState<ReadonlySet<RefusableGrant>>(NONE_REFUSED);
+  const grantsReloadedRef = React.useRef(false);
+  const reloadGrants = grants.reload;
+  const noteRefusal = React.useCallback(
+    (grant: RefusableGrant, reason: unknown): boolean => {
+      if (!isPermissionRefusal(reason)) return false;
+      setRefused((prev) => (prev.has(grant) ? prev : new Set(prev).add(grant)));
+      if (!grantsReloadedRef.current) {
+        grantsReloadedRef.current = true;
+        void reloadGrants();
+      }
+      return true;
+    },
+    [reloadGrants],
+  );
+  const canMetrics = grants.can('metrics', 'view') && !refused.has('metrics');
+  const canCost = grants.can('cost', 'view') && !refused.has('cost');
+  const canSources = grants.can('sources', 'read') && !refused.has('sources');
+  const canAutomation = grants.can('automation', 'read');
 
   // ----- Dashboard data loads --------------------------------------------- //
   const [cases, setCases] = React.useState<Case[]>([]);
@@ -1820,9 +2221,22 @@ export default function Overview({ onNavigate }: OverviewProps) {
     error: null,
   }));
   const [loading, setLoading] = React.useState(true);
+  /**
+   * Whether a load has settled since the page mounted. The blocking loader is for the
+   * first load only: what data arrived cannot tell, because a quiet window holds no cases
+   * and a viewer without `metrics:view` never reads the totals, so a data test would blank
+   * the page (masthead and focused controls included) on every LIVE tick.
+   */
+  const [firstLoadSettled, setFirstLoadSettled] = React.useState(false);
   const [error, setError] = React.useState<unknown>(null);
-  /** When the last dashboard batch settled with data (the dashbar's "Updated …"). */
-  const [loadedAt, setLoadedAt] = React.useState<string | null>(null);
+  /**
+   * When the case list and the metric totals were last READ successfully: the two halves of
+   * the stamp's "cases" slice (the snapshots and Latest cases, and the strip). Each advances
+   * only on its own fulfilled read, so a failed read keeps the time of the data the page
+   * still shows and the stamp never claims a freshness those cards do not have.
+   */
+  const [casesLoadedAt, setCasesLoadedAt] = React.useState<string | null>(null);
+  const [metricsLoadedAt, setMetricsLoadedAt] = React.useState<string | null>(null);
 
   // Monotonic batch token: a window change (or manual refresh) supersedes any batch
   // still in flight, so a late-settling previous-window response can never repaint
@@ -1842,28 +2256,31 @@ export default function Overview({ onNavigate }: OverviewProps) {
     setError(null);
     try {
       // The Noise-Reduction funnel is typeof-guarded so a minimal test/mock surface
-      // (no `noiseReduction`) simply resolves null and the funnel band self-omits.
+      // (no `noiseReduction`) simply resolves null and the funnel panel self-omits.
       const noiseP: Promise<NoiseReduction | null> =
-        noiseSupported
+        noiseSupported && canMetrics
           ? api.noiseReduction(hours)
           : Promise.resolve(null);
       // The aggregate coverage rollup (A5.5). typeof-guarded exactly like `noiseReduction`
       // so a minimal test/mock surface simply resolves null and the coverage tile self-omits.
       const coverageP: Promise<SourceCoverage | null> =
-        typeof api.sourcesCoverage === 'function'
+        canSources && typeof api.sourcesCoverage === 'function'
           ? api.sourcesCoverage()
           : Promise.resolve(null);
       // The hover-trend bucket series — typeof-guarded exactly like the two above so a
       // minimal test/mock surface simply resolves null and every hover card degrades to
       // its quiet "No trend data yet." line.
       const trendsP: Promise<MetricsTrends | null> =
-        trendsSupported ? api.metricsTrends(hours, controller.signal) : Promise.resolve(null);
+        trendsSupported && canMetrics
+          ? api.metricsTrends(hours, controller.signal)
+          : Promise.resolve(null);
       const [c, m, u, n, pc, cov, t] = await Promise.allSettled([
         // #37: window the current case sample by created-at so the case-derived widgets
         // honour the range (backend caps at 200 by created-desc).
         api.listCases({ limit: 200, from: `now-${hours}h` }),
-        api.getMetrics(hours),
-        api.usageSummary(hours),
+        // The metric totals and LLM spend are read only with their grants (roles-02).
+        canMetrics ? api.getMetrics(hours) : Promise.resolve(null),
+        canCost ? api.usageSummary(hours) : Promise.resolve(null),
         noiseP,
         // The immediately-preceding equal window — powers the honest open/resolved
         // snapshot trend deltas (omitted gracefully when the fetch fails).
@@ -1873,6 +2290,15 @@ export default function Overview({ onNavigate }: OverviewProps) {
       ]);
       // Superseded by a newer window/refresh — that batch owns the state now.
       if (seq !== loadSeqRef.current) return;
+      // A refusal is the role, not an outage (roles-03): noted, the grant counts as not
+      // held from the next render, so these panels are left out and the next load skips
+      // the reads.
+      for (const slice of [m, n, t]) {
+        if (slice.status === 'rejected') noteRefusal('metrics', slice.reason);
+      }
+      if (u.status === 'rejected') noteRefusal('cost', u.reason);
+      if (cov.status === 'rejected') noteRefusal('sources', cov.reason);
+      const settledAt = new Date().toISOString();
       if (c.status === 'fulfilled') {
         const envelope = c.value as CasesResponse;
         setCases(envelope.cases ?? []);
@@ -1882,8 +2308,13 @@ export default function Overview({ onNavigate }: OverviewProps) {
           // the server did not answer the question that was asked.
           exact: envelope.window_total_exact === true,
         });
+        setCasesLoadedAt(settledAt);
       }
-      if (m.status === 'fulfilled') setMetrics(m.value);
+      if (m.status === 'fulfilled') {
+        setMetrics(m.value);
+        // A read that was not sent is not a freshness the page can claim.
+        setMetricsLoadedAt(m.value ? settledAt : null);
+      }
       if (u.status === 'fulfilled') {
         setUsage(u.value);
         setUsageLoad({ availability: 'available', error: null });
@@ -1894,7 +2325,9 @@ export default function Overview({ onNavigate }: OverviewProps) {
           error: u.reason ?? new Error('Failed to load LLM spend.'),
         });
       }
-      if (!noiseSupported) {
+      if (!noiseSupported || !canMetrics) {
+        // A flow read under a grant since refused is not this viewer's to keep showing.
+        setNoise(null);
         setNoiseLoad({ availability: 'unsupported', error: null });
       } else if (n.status === 'fulfilled') {
         setNoise(n.value ?? null);
@@ -1917,18 +2350,24 @@ export default function Overview({ onNavigate }: OverviewProps) {
           typeof pc.value.total === 'number' &&
           pc.value.total > (pc.value.cases?.length ?? 0),
       );
-      // Only surface a page-level error if the load is wholly empty.
-      if (c.status === 'rejected' && m.status === 'rejected') {
-        setError(c.reason ?? m.reason ?? new Error('Failed to load dashboard data.'));
-      } else {
-        setLoadedAt(new Date().toISOString());
+      // Only surface a page-level error if the load is wholly empty. Without
+      // `metrics:view` the case list is the page's one read, so its failure is.
+      if (c.status === 'rejected' && (m.status === 'rejected' || !canMetrics)) {
+        setError(
+          c.reason ??
+            (m.status === 'rejected' ? m.reason : undefined) ??
+            new Error('Failed to load dashboard data.'),
+        );
       }
     } catch (e) {
       if (seq === loadSeqRef.current) setError(e);
     } finally {
-      if (seq === loadSeqRef.current) setLoading(false);
+      if (seq === loadSeqRef.current) {
+        setLoading(false);
+        setFirstLoadSettled(true);
+      }
     }
-  }, [hours, noiseSupported, trendsSupported]);
+  }, [hours, noiseSupported, trendsSupported, canMetrics, canCost, canSources, noteRefusal]);
 
   React.useEffect(() => {
     void load();
@@ -1940,13 +2379,25 @@ export default function Overview({ onNavigate }: OverviewProps) {
 
   // Server-side posture rollup — the AUTHORITATIVE lifecycle (MTTA/MTTR/dwell/MTTD p50 +
   // SLA + quality rates). `'prev'` also asks for the period-over-period `compare` block.
+  // Read only with `metrics:view` (roles-02): `PostureFeed` holds the hook and is mounted
+  // only with the grant; without it the rollup is settled and empty.
+  const [postureFed, setPostureFed] = React.useState<{ hours: number; state: PostureState } | null>(
+    null,
+  );
   const {
     data: postureResponse,
     loading: postureLoading,
     error: postureError,
     stale: postureStale,
     reload: reloadPosture,
-  } = usePosture(hours, 'prev');
+  } = projectPosture(canMetrics, postureFed, hours);
+  const postureFeed = canMetrics ? <PostureFeed hours={hours} onState={setPostureFed} /> : null;
+  // A refused posture read is a missing grant too (roles-03): the feed unmounts, and the
+  // strip's six tiles are left out instead of each reading "Posture unavailable".
+  const postureFedError = postureFed?.state.error;
+  React.useEffect(() => {
+    if (postureFedError) noteRefusal('metrics', postureFedError);
+  }, [postureFedError, noteRefusal]);
   // Defensive echo check at the rendering boundary. The hook already rejects a
   // mismatched payload; keeping this projection here makes every posture consumer
   // visibly tied to the selected window and prevents a future hook regression from
@@ -1988,37 +2439,88 @@ export default function Overview({ onNavigate }: OverviewProps) {
 
   /** Retry only the LLM spend slice; healthy dashboard siblings never reload or blank. */
   const retryUsage = React.useCallback(async () => {
+    if (!canCost) return;
     try {
       const next = await api.usageSummary(hours);
       setUsage(next);
       setUsageLoad({ availability: 'available', error: null });
     } catch (nextError) {
+      noteRefusal('cost', nextError);
       setUsageLoad({ availability: 'unavailable', error: nextError });
     }
-  }, [hours]);
+  }, [hours, canCost, noteRefusal]);
 
   /** Retry only the Noise Reduction slice; retain any last usable funnel on failure. */
   const retryNoise = React.useCallback(async () => {
-    if (!noiseSupported) return;
+    if (!noiseSupported || !canMetrics) return;
     try {
       const next = await api.noiseReduction(hours);
       setNoise(next ?? null);
       setNoiseLoad({ availability: 'available', error: null });
     } catch (nextError) {
+      noteRefusal('metrics', nextError);
       setNoiseLoad({ availability: 'unavailable', error: nextError });
     }
-  }, [hours, noiseSupported]);
+  }, [hours, noiseSupported, canMetrics, noteRefusal]);
 
   /** One refresh pulse for the whole dashboard (control-bar button + auto-refresh tick). */
-  const refreshAll = React.useCallback(() => {
-    void load();
-    void reloadPosture();
+  const refreshAll = React.useCallback(async (): Promise<void> => {
+    await Promise.allSettled([load(), reloadPosture()]);
   }, [load, reloadPosture]);
   /** A refresh the operator did not just ask for a new window with: numerals do not roll. */
   const refreshQuietly = React.useCallback(() => {
     setRollKpis(false);
-    refreshAll();
+    void refreshAll();
   }, [refreshAll]);
+
+  /**
+   * The header refresh's busy state belongs to a reload the operator ASKED for (Round 14
+   * review; ui-standard "Motion and loading"). A LIVE tick reloads the same data but never
+   * turns the button busy: a busy button cannot be pressed, and a control that disables
+   * itself every five seconds drops the keyboard focus resting on it. The press tracks its
+   * OWN requests, so it ends when they settle even when a LIVE tick supersedes the batch it
+   * started, and a batch slower than the LIVE interval can never leave it spinning.
+   */
+  const [manualRefreshing, setManualRefreshing] = React.useState(false);
+  const manualRefreshRef = React.useRef(false);
+  const refreshButtonRef = React.useRef<HTMLButtonElement>(null);
+  /**
+   * Set when a KEYBOARD press held the focus on the button, so it gets the focus back once
+   * re-enabled. A pointer press is left alone: the focus a mouse click lends the button is
+   * not a place the reader keeps, and handing it back would reopen the button's tooltip
+   * (Radix opens it on any focus that no pointer press caused) after the pointer has left.
+   */
+  const refocusRefreshRef = React.useRef(false);
+  const refreshByHand = React.useCallback((event: React.MouseEvent<HTMLButtonElement>) => {
+    if (manualRefreshRef.current) return;
+    manualRefreshRef.current = true;
+    const button = refreshButtonRef.current;
+    refocusRefreshRef.current =
+      button != null &&
+      document.activeElement === button &&
+      // `detail` 0: Enter or Space (or assistive tech), not a pointer gesture. A pointer
+      // press on a button the keyboard had already focused still counts as the keyboard's.
+      (event.detail === 0 || matchesFocusVisible(button));
+    setManualRefreshing(true);
+    setRollKpis(false);
+    void refreshAll().then(() => {
+      manualRefreshRef.current = false;
+      setManualRefreshing(false);
+    });
+  }, [refreshAll]);
+  // A busy button is disabled, and a browser moves the focus off a control that disables
+  // itself (to the page body). Hand it back once the button is enabled again (this effect
+  // runs after that commit), only when a keyboard press held the focus there and nothing
+  // else has taken it since: a reader who moved on is never pulled back.
+  React.useEffect(() => {
+    if (manualRefreshing || !refocusRefreshRef.current) return;
+    refocusRefreshRef.current = false;
+    const button = refreshButtonRef.current;
+    const active = document.activeElement;
+    if (button && (active == null || active === document.body)) {
+      button.focus({ preventScroll: true });
+    }
+  }, [manualRefreshing]);
 
   // ----- Deeper analytics: one persisted disclosure (Round 12) ------------- //
   const [deeperOpen, onDeeperOpenChange] = useDeeperOpen();
@@ -2046,7 +2548,12 @@ export default function Overview({ onNavigate }: OverviewProps) {
   // ----- Recommended-automation nudge (onboarding-beginner) --------------- //
   const [showNudge, setShowNudge] = React.useState(false);
   React.useEffect(() => {
-    const canFetch = typeof api.listSources === 'function' && typeof api.get === 'function';
+    // It reads the sources and the tuning config, so it needs both grants (roles-02).
+    const canFetch =
+      canSources &&
+      canAutomation &&
+      typeof api.listSources === 'function' &&
+      typeof api.get === 'function';
     if (!canFetch) return undefined;
     try {
       if (localStorage.getItem(NUDGE_KEY) === 'dismissed') return undefined;
@@ -2070,7 +2577,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
     return () => {
       alive = false;
     };
-  }, []);
+  }, [canSources, canAutomation]);
 
   const dismissNudge = React.useCallback(() => {
     try {
@@ -2186,9 +2693,9 @@ export default function Overview({ onNavigate }: OverviewProps) {
 
   /*
    * The newest cases for the live queue — up to LATEST_MAX_ROWS (Round 12). The panel
-   * shows as many as FIT the band's height, never fewer than five: the queue is laid out
+   * shows as many as FIT the row's height, never fewer than five: the queue is laid out
    * out of flow, so it fills the space the snapshots and the timing pair set rather than
-   * driving the band taller (see `useFittingRows`). This adds rows and removes none.
+   * driving the row taller (see `useFittingRows`). This adds rows and removes none.
    */
   const latestCases = React.useMemo(
     () =>
@@ -2203,20 +2710,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
   );
 
   // ----- BarList datasets (Deeper analytics) ------------------------------ //
-  const signatureItems: BarListItem[] = React.useMemo(() => {
-    const counts: Record<string, number> = {};
-    for (const k of cases) {
-      const label =
-        (k.title || k.cluster_signature || k.rule_ids?.[0] || 'Uncategorized').trim() ||
-        'Uncategorized';
-      counts[label] = (counts[label] ?? 0) + 1;
-    }
-    const total = cases.length || 1;
-    return Object.entries(counts)
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 8)
-      .map(([label, value]) => ({ label, value, sub: `${Math.round((value / total) * 100)}% of cases` }));
-  }, [cases]);
+  const signatureItems: SignatureItem[] = React.useMemo(() => topSignatureItems(cases), [cases]);
 
   const entityItems: BarListItem[] = React.useMemo(() => {
     const counts: Record<string, { value: number; type: string }> = {};
@@ -2367,7 +2861,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
   /** Window disclosure when no bucket payload is available (quiet no-data card). */
   const trendFallbackLabel = `last ${trendSpanLabel(hours)}`;
 
-  // ----- Human vs AI — close attribution (the instrument band's first cell) ---- //
+  // ----- Human vs AI: close attribution (the flow row's second cell) ---- //
   /**
    * The server's three-way LAST-WRITER partition of the window's CLOSED cases:
    * agent / analyst / system-or-unattributed residual. Operator "declared benign"
@@ -2721,8 +3215,9 @@ export default function Overview({ onNavigate }: OverviewProps) {
      * previous rollup stays rendered. Captioning those numerals "Loading 24h" said something
      * false about them (they are a measurement, not a placeholder), and now that it is the
      * only caption a tile carries it also made the whole strip grow and shrink by ~18px on
-     * every tick, shoving the lattice below it. The refresh control already shows LIVE and
-     * spins, which is the honest place for "a request is in flight".
+     * every tick, shoving the lattice below it. The LIVE pill already says the page
+     * refreshes itself, and the refresh button spins for a reload the operator pressed:
+     * those are the honest places for "a request is in flight".
      *
      * A real DEGRADATION still takes the face, unconditionally: an error, or a successful
      * read of a store the server could not measure, in the server's own words. Those are
@@ -2830,7 +3325,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
 
     return [
       {
-        label: 'Total Cases',
+        label: 'Total cases',
         // Re-keyed WITH the label. `KpiTile` derives its anchor from `testId` when one
         // is pinned, so renaming only the label would leave `kpi-open-cases` on the
         // tile that now carries the TOTAL — an anchor naming the wrong metric, which
@@ -2866,7 +3361,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
         },
         drilldown: {
           key: 'total-cases',
-          title: 'Total Cases',
+          title: 'Total cases',
           population: 'Every case that arrived in this window, policy-closed included.',
           // The whole cohort — no population predicate at all, so the rows the store
           // returns ARE the population and nothing about it is decided in the browser.
@@ -2893,7 +3388,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
         },
       },
       {
-        label: 'Total Critical',
+        label: 'Total critical',
         testId: 'total-critical',
         value: typeof criticalCount === 'number' ? fmtNumber(criticalCount) : DASH,
         countTo: criticalCount,
@@ -2922,7 +3417,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
         goodDirection: 'down',
         drilldown: {
           key: 'total-critical',
-          title: 'Total Critical',
+          title: 'Total critical',
           population: `Cases in the ${topBandLabel} band of this window's arrivals.`,
           match: (c) => bandOfCase(c) === TOP_SEVERITY_BAND,
           // The band is derived at READ time after paging and is stored, mapped and
@@ -2946,7 +3441,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
         },
       },
       {
-        label: 'Open Cases',
+        label: 'Open cases',
         testId: 'open-cases',
         value: typeof openNowCount === 'number' ? fmtNumber(openNowCount) : DASH,
         countTo: openNowCount,
@@ -2979,8 +3474,8 @@ export default function Overview({ onNavigate }: OverviewProps) {
         goodDirection: 'down',
         drilldown: {
           key: 'open-cases',
-          title: 'Open Cases',
-          population: 'Cases in a non-terminal state right now — not filtered by the window.',
+          title: 'Open cases',
+          population: 'Cases in a non-terminal state right now, not filtered by the window.',
           match: (c) => OPEN_STATUSES.has((c.status || '').toLowerCase()),
           // The SAME lifecycle set, resolved by the store instead of carved out of a
           // mixed page. The predicate above still runs, and now selects nothing the
@@ -3098,7 +3593,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
         },
       },
       {
-        label: 'Resolved / Closed',
+        label: 'Resolved or closed',
         testId: 'resolved-closed',
         value: typeof terminalCases === 'number' ? fmtNumber(terminalCases) : DASH,
         countTo: terminalCases,
@@ -3109,7 +3604,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
         help: scaleAside(
           'Cases from this window that reached a terminal state, including the ones an ' +
           'operator closed under a "declared benign" rule policy. Where the server reports ' +
-          'a reconciling split, this tile’s drill-down names who closed them — the ' +
+          'a reconciling split, this tile’s drill-down names who closed them: the ' +
           'agent, an analyst, system routing, or that policy.' +
           // The RECONCILIATION between this numeral and the Human-vs-AI card below it.
           // This numeral is policy-INCLUSIVE; the card's denominator is `terminal_cases`,
@@ -3135,7 +3630,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
         },
         drilldown: {
           key: 'resolved-closed',
-          title: 'Resolved / Closed',
+          title: 'Resolved or closed',
           population:
             'Cases from this window that reached a terminal state, declared-benign policy closes included.',
           match: (c) => CLOSED_STATUSES.has((c.status || '').toLowerCase()),
@@ -3189,7 +3684,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
        * that is this copy, never a perturbation of the borders.
        */
       {
-        label: 'Auto Closed',
+        label: 'Auto-closed',
         testId: 'auto-closed',
         value: typeof autoClosedCases === 'number' ? fmtNumber(autoClosedCases) : DASH,
         countTo: autoClosedCases,
@@ -3210,7 +3705,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
         goodDirection: 'up',
         drilldown: {
           key: 'auto-closed',
-          title: 'Auto Closed',
+          title: 'Auto-closed',
           population: AUTO_CLOSED_POPULATION,
           match: (c) => isAutoClosedByAI(c.status, c.decision_by),
           statusGroup: TERMINAL_STATUS_GROUP,
@@ -3536,29 +4031,25 @@ export default function Overview({ onNavigate }: OverviewProps) {
         size="sm"
         chrome="command"
       />
-      <Button
-        variant="outline"
-        size="icon"
-        onClick={refreshQuietly}
-        aria-label="Refresh dashboard"
-        title="Refresh"
-        className={cn(
-          // 8px like every other button and select (Round 12 concentric radii).
-          'h-8 w-8 rounded-md border-border/70 bg-transparent text-muted-foreground shadow-none hover:border-border-strong hover:bg-hover hover:text-foreground',
-          refresh === 'live' && 'text-success-text hover:text-success-text',
-        )}
-      >
-        <RefreshCw
-          className={cn('h-4 w-4', (loading || refresh === 'live') && 'animate-spin')}
-          aria-hidden
-        />
-      </Button>
+      {/* The shared RefreshButton (Round 14, SPEC §4.9.2: the one page-level refresh and
+          the one spinner) in its page-header form, `display="icon"`: the quiet 32px icon
+          button whose name stays in the DOM for assistive tech. One neutral colour
+          (operator choice C8): it spins only while a reload the operator pressed is in
+          flight. A LIVE tick never turns it busy, since the auto-refresh pill beside it is
+          what says the page is live. */}
+      <RefreshButton
+        ref={refreshButtonRef}
+        display="icon"
+        label="Refresh dashboard"
+        refreshing={manualRefreshing}
+        onClick={refreshByHand}
+      />
     </>
   );
 
   /**
    * The page's width (Round 12): `wide` — `max-w-[1760px] 2xl:max-w-[1920px]`, centred —
-   * rising to 2400px at `4xl`, where the bands switch to a main column plus a 460px rail.
+   * rising to 2400px at `4xl`, where both rows switch to a main column plus a 460px rail.
    * `PageContainer` has always prescribed `wide` for this page ("widen by COLUMN COUNT on
    * ultrawide, not by stretching rows"); `fluid` stretched a 7.5:1 flow strip across a
    * 2560px screen and left 30% of it empty. The blocking load uses the SAME classes, or
@@ -3567,23 +4058,36 @@ export default function Overview({ onNavigate }: OverviewProps) {
   const containerClass = 'space-y-8 3xl:space-y-10 4xl:max-w-[2400px]';
 
   // ----- Blocking load uses the Console's one centered motion grammar. ---- //
-  if (loading && !cases.length && !metrics) {
+  if (loading && !firstLoadSettled) {
     return (
       <PageContainer variant="wide" className={containerClass}>
+        {postureFeed}
         <LoadingState label="Loading dashboard" layout="page" shape="page" />
       </PageContainer>
     );
   }
 
-  const empty = !loading && !error && cases.length === 0 && !metrics?.total_cases;
+  // The onboarding empty state claims the store holds no cases, which only the store-wide
+  // total can prove: without `metrics:view` a quiet window is not an empty install, so the
+  // page shows its case panels (empty for the window) and the metrics notice instead.
+  const empty = canMetrics && !loading && !error && cases.length === 0 && !metrics?.total_cases;
   const noiseUnavailable = noiseLoad.availability === 'unavailable';
   const noiseCellVisible = Boolean(noise) || noiseUnavailable;
   const usageUnavailable = usageLoad.availability === 'unavailable';
   const usageFailureSub = usage
     ? `Last loaded ${fmtMoney(usage.total_cost, usage.currency)} · Retry spend telemetry`
     : 'Retry spend telemetry';
-  /** "last 24 hours" / "last 7 days" — the ONE window wording on this page. */
+  /** "last 24 hours" / "last 7 days": the ONE window wording on this page. */
   const windowPhrase = `last ${trendSpanLabel(hours)}`;
+  /**
+   * The flow's own window, from the flow it shows (the server echoes `window_hours`). It
+   * equals `windowPhrase` whenever the flow read succeeded; after a range change whose flow
+   * read failed, the last loaded flow stays on screen and its caption keeps its window.
+   */
+  const flowWindowPhrase =
+    noise && Number.isFinite(noise.window_hours) && noise.window_hours > 0
+      ? `last ${trendSpanLabel(noise.window_hours)}`
+      : windowPhrase;
   /**
    * The span of everything tallied over the fetched case page: the window itself when the
    * page is provably the whole window, otherwise the newest rows read out of it.
@@ -3608,22 +4112,61 @@ export default function Overview({ onNavigate }: OverviewProps) {
   /** A change chip between two floors is not a change: withheld when either page is cut. */
   const snapshotDeltaHonest =
     !(caseWindow?.exact === true && caseWindow.total > cases.length) && !prevTruncated;
-  // The most recent of the two independently loaded halves (case/metric batch, posture).
-  const pageFreshness = [loadedAt, posture?.generated_at ?? null]
-    .filter((v): v is string => typeof v === 'string' && Number.isFinite(Date.parse(v)))
-    .sort((a, b) => Date.parse(b) - Date.parse(a))[0] ?? null;
+  /**
+   * The slices behind the page's ONE freshness stamp (Round 14, SPEC §4.3.3), in reading
+   * order: the case list and metric totals (the older of the two last successful reads),
+   * the noise flow while its panel shows it, and the posture rollup that feeds the strip
+   * and Response time. The stamp is the OLDEST of them, so it never claims a freshness a
+   * visible card does not have. A slice whose modules are not on screen is left out: a
+   * hidden flow, and on the empty page (which replaces every module with its empty
+   * state) the flow and the response data both; the case read that found nothing is
+   * still what the page shows.
+   */
+  const freshnessSlices: FreshnessSlice[] = [
+    {
+      name: 'cases',
+      at:
+        oldestFreshness([
+          { name: 'cases', at: casesLoadedAt },
+          { name: 'cases', at: metricsLoadedAt },
+        ])?.at ?? null,
+    },
+    { name: 'flow', at: !empty && noise && !noiseHidden ? noise.generated_at : null },
+    { name: 'response', at: !empty ? posture?.generated_at ?? null : null },
+  ];
+  const pageFreshness = oldestFreshness(freshnessSlices);
   const openNowCount =
     !postureUnmeasured && typeof posture?.open_now?.count === 'number'
       ? posture.open_now.count
       : null;
+  /**
+   * Deeper analytics shows only what the viewer's grants can read (roles-03): the timing
+   * tiles and Case volume need `metrics:view`, LLM spend `cost:view`, Ingest coverage
+   * `sources:read`. The efficiency sub-band is left out when none of them is readable, and
+   * its title and caption name what it holds.
+   */
+  const timingShown = canMetrics ? timing : [];
+  const efficiencyTileCount = timingShown.length + (canCost ? 1 : 0);
+  const efficiencyShown = efficiencyTileCount > 0 || canSources;
+  const efficiencyTitle = canMetrics || canCost ? 'Efficiency and cost' : 'Sources';
+  const efficiencyCaption =
+    canMetrics && canCost
+      ? `Timing and spend over the ${windowPhrase}`
+      : canMetrics
+        ? `Timing over the ${windowPhrase}`
+        : canCost
+          ? `Spend over the ${windowPhrase}`
+          : undefined;
+  const deeperHolds = deeperContents({ metrics: canMetrics, cost: canCost, sources: canSources });
 
   return (
     <PageContainer variant="wide" className={containerClass}>
-      {/* ---- BAND 0 — MASTHEAD + DASHBAR ----------------------------------------------
+      {postureFeed}
+      {/* ---- MASTHEAD + DASHBAR -------------------------------------------------------
           The title, the time-range and refresh controls in the `meta` slot BESIDE it, and
-          the page's freshness on the right. Sticky on the Console's one translucent
+          the page's one freshness stamp on the right. Sticky on the Console's one translucent
           material (Round 12): the controls that scope every number stay in reach while the
-          bands scroll under them, with a scroll-edge fade instead of a hard rule. It is
+          modules scroll under them, with a scroll-edge fade instead of a hard rule. It is
           NOT a card — `page-hero` carries no `bg-card` (the material is floating chrome,
           not a surface for data). At rest, before anything scrolls under it, the bar is
           clear (Round 13): the top of the page then shows two surface levels, canvas and
@@ -3633,14 +4176,14 @@ export default function Overview({ onNavigate }: OverviewProps) {
 
           The title steps up to the 30/36 display step at `2xl` (24/30 below; the type
           scale's nearest step to the 28px the synthesis sketched) — the page's one display
-          size; band titles are 15px and instrument titles 14px under it. */}
+          size; module titles are 15px under it. */}
       <PageHeader
         data-testid="page-hero"
         title={PAGE_TITLE}
         sticky
         // Pinned from `sm` up only (Round 12 review): on a phone the title, three controls
         // and the freshness stamp stack to ~108px, a fifth of a 390×844 screen held by
-        // chrome while every band scrolls. There it scrolls away with the page.
+        // chrome while every module scrolls. There it scrolls away with the page.
         className="py-2 2xl:[&_h1]:text-4xl max-sm:static [&:not([data-scrolled=true])]:bg-transparent"
         meta={
           <div
@@ -3654,7 +4197,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
         actions={
           pageFreshness ? (
             <span className="text-sm text-muted-foreground">
-              <Freshness at={pageFreshness} />
+              <Freshness slices={freshnessSlices} />
             </span>
           ) : undefined
         }
@@ -3687,7 +4230,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
           description="Once sources are connected and cases start flowing, your posture, risk index, and timing metrics will appear here."
           action={
             <>
-              {navigate ? (
+              {canSources && navigate ? (
                 <Button onClick={() => navigate('sources')}>Connect a source</Button>
               ) : null}
               <StartDemoButton onStarted={refreshAll} />
@@ -3695,13 +4238,15 @@ export default function Overview({ onNavigate }: OverviewProps) {
           }
         />
       ) : (
-        // The page's modules as ONE group with its own rhythm (Round 13): 40px from the KPI
-        // strip to the bands and from the bands to Deeper analytics at every width. The
-        // container's own `space-y-*` (32px, 40px from 1920px) spaces the masthead, the
-        // nudge and the load error; this group sets the modules' rhythm itself, so no
-        // child overrides a sibling margin.
-        <div className="min-w-0 space-y-10" data-testid="overview-modules">
-          {/* ---- BAND 1 — THE KPI STRIP ---------------------------------------------
+        // The page's modules as ONE group with its own rhythm (Round 14, operator choice
+        // C3 B): the KPI strip, the flow row, the cases row and the Deeper analytics
+        // header are one panel gutter apart (16px, 20px from 1280px, 24px from 1920px),
+        // the same gap as between the panels inside a row, so the page reads as one grid
+        // of panels. The gap is the flex column's own `gap`, never a sibling margin. The
+        // container's own `space-y-*` (32px, 40px from 1920px) still spaces the masthead,
+        // the nudge and the load error, so the masthead-to-strip gap is unchanged.
+        <div className={cn('flex min-w-0 flex-col', PANEL_GAP)} data-testid="overview-modules">
+          {/* ---- THE KPI STRIP ------------------------------------------------------
               One continuous six-cell strip (no title: the page title introduces it) on its
               own grouped panel (Round 13), with the exact per-breakpoint divider math below
               for its INNER rules. The panel clips the tiles to its rounded corners, so a
@@ -3709,155 +4254,174 @@ export default function Overview({ onNavigate }: OverviewProps) {
               rules stop 12px short of the panel's top and bottom edges
               (`--panel-inset-rule`, drawn as a border image so the tiles keep their exact
               size). */}
-          <div>
-            <Stagger
-              data-testid="kpi-strip"
-              // First load only, and quick: 40ms a tile, ≤200ms in all (Round 12 motion).
-              step={40}
-              maxDelay={200}
-              className={cn(
-                'grid grid-cols-1 overflow-hidden sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-6',
-                PANEL,
-              )}
-              /*
-               * Exact divider math for SIX tiles at 1 / 2 / 3 / 6 columns. A cell may
-               * never draw a hairline into empty space or lose the rule that separates
-               * it from the next row (ui-standard, operational metric surfaces):
-               *   - column rule: on for every cell that HAS a right-hand neighbour;
-               *   - row rule: off for every cell in the final row.
-               *
-               * SIX is easier than five, not harder: 6 % {1,2,3,6} === 0, so every
-               * breakpoint fills whole rows and "last column" coincides with "last child"
-               * at each of them.
-               *
-               * VERIFIED, not reasoned: these classes were compiled with this repo's own
-               * Tailwind and the resulting borders read back from computed styles in a real
-               * browser at 500 / 700 / 900 / 1400px, against the geometric oracle
-               * (`right = i mod cols ≠ 0 and i ≠ n`, `bottom = i ≤ n − cols`).
-               *
-               * ⚠️ Do not "simplify" the `:not()`s away. Tailwind emits arbitrary-variant
-               * rules in ONE trailing block whose internal order is not by breakpoint, so
-               * at `md` the `2n` ON rule beat the `3n` OFF rule on cell 6 only by emission
-               * order, at equal (0,2,0) specificity. `:not()` lifts it to (0,3,0). At `xl`,
-               * `:not(:nth-child(6n))` is strictly required. (jsdom's nwsapi THROWS on
-               * `:not(:nth-child(3n))` — harmless here, but a future test that queries with
-               * that selector will error rather than fail.)
-               */
-              itemClassName={cn(
-                'h-full min-w-0 border-b border-r-0 border-border/70 last:border-b-0 last:border-r-0',
-                'sm:border-r sm:[&:nth-child(2n)]:border-r-0 sm:[&:nth-child(n+5)]:border-b-0',
-                'md:[&:nth-child(2n):not(:nth-child(3n))]:border-r md:[&:nth-child(3n)]:border-r-0 md:[&:nth-child(n+4)]:border-b-0',
-                'xl:border-b-0 xl:[&:nth-child(3n):not(:nth-child(6n))]:border-r',
-                'xl:[border-image:var(--panel-inset-rule)_0_1_0_0]',
-              )}
-            >
-              {kpis.map((kpi, index) => {
-                const tile = (
-                  <KpiTile
-                    ref={tileRef(kpi.testId)}
-                    label={kpi.label}
-                    testId={kpi.testId}
-                    value={kpi.value}
-                    // The scale context rides on its OWN line under the numeral, never
-                    // beside it (flex shrank the numeral first: "72%" read as "7…").
-                    context={kpi.context}
-                    sub={kpi.sub}
-                    bound={kpi.bound}
-                    help={kpi.help}
-                    askTopic={kpiTopic(kpi.testId)}
-                    onHelpOpenChange={onHelpOpenChange(kpi.testId)}
-                    icon={kpi.icon}
-                    accent={kpi.accent}
-                    variant="strip"
-                    // Round 12: the strip that HEADS this page is `comfortable` — between
-                    // compact and default (~120px, 13px label and context lines) — with a
-                    // FLUID numeral that grows with its own tile (24 → 44px). Compact
-                    // squeezed six numerals into 90px cells at every width. Density changes
-                    // padding and type only; the cell COUNT, which the divider math above
-                    // is tuned to, is untouched.
-                    density="comfortable"
-                    size="fluid"
-                    numeral="hero"
-                    // Roll on the first load and on a window change; a refresh (LIVE or
-                    // manual) shows the new value without motion.
-                    roll={rollKpis}
-                    goodDirection={kpi.goodDirection}
-                    countTo={kpi.countTo}
-                    format={kpi.format}
-                    formatCompact={fmtSnapshotCenter}
-                    onClick={() => toggleKpiPanel(kpi.testId)}
-                    // The tile opens a MODAL, so it announces a popup — not an expanded
-                    // state; the dialog is portalled and absent while closed.
-                    ariaHasPopup="dialog"
-                    // `className` lands on the tile's CELL ROOT (the help button sits beside
-                    // the trigger), so the trigger's inset is reached as its child: 12px
-                    // sides between xl and 2xl instead of the density's 16px. At 1280 with
-                    // the navigation pinned a tile is ~165px, and 16px cost the longest
-                    // context ("96% of worked closes") its last word.
-                    //
-                    // `ring-inset` (Round 12 review): the cell root is `overflow-hidden`, so
-                    // the trigger's outset focus ring was clipped away entirely — a keyboard
-                    // user saw no focus on the tile at all.
-                    //
-                    // The first tile of each row starts at the panel padding instead
-                    // (`kpiRowStartInset`), so the labels line up with the module titles.
-                    className={cn(
-                      'press-scale xl:max-2xl:[&>button]:px-3 [&>button:focus-visible]:ring-inset [&>button:focus-visible]:ring-offset-0',
-                      kpiRowStartInset(index),
-                    )}
-                  />
-                );
-                // Hover/focus reveals the metric's honest trend; the tile is itself the
-                // focus stop. Every card is FORCED closed while ANY drill-down or help
-                // popover is open (two stacked explanations of one numeral is worse than
-                // either alone, and the focus return would otherwise pop one back open).
-                return kpi.trend ? (
-                  <MetricHoverTrend
-                    key={kpi.testId}
-                    {...kpi.trend}
-                    preview={{
-                      eyebrow: kpi.label,
-                      population: kpi.drilldown.population,
-                      affordance: 'Select for the full population, filters and paging.',
-                    }}
-                    focusable={false}
-                    forceClosed={openKpi !== null || helpOpenKpi !== null}
-                    // The tile focus was just returned to: a late FOCUS open stays refused,
-                    // but pointing at the tile still shows its trend (Round 12 review).
-                    suppressFocusOpen={returnedKpi === kpi.testId}
-                    side="bottom"
-                  >
-                    {tile}
-                  </MetricHoverTrend>
-                ) : (
-                  <React.Fragment key={kpi.testId}>{tile}</React.Fragment>
-                );
-              })}
-            </Stagger>
+          {canMetrics ? (
+            <div>
+              <Stagger
+                data-testid="kpi-strip"
+                // First load only, and quick: 40ms a tile, ≤200ms in all (Round 12 motion).
+                step={40}
+                maxDelay={200}
+                className={cn(
+                  // Two columns on a phone (Round 14, the shared strip's rule), so the six
+                  // tiles take three short rows instead of six full-width ones.
+                  'grid grid-cols-2 overflow-hidden md:grid-cols-3 xl:grid-cols-6',
+                  PANEL,
+                )}
+                /*
+                 * Exact divider math for SIX tiles at 2 / 3 / 6 columns. A cell may
+                 * never draw a hairline into empty space or lose the rule that separates
+                 * it from the next row (ui-standard, operational metric surfaces):
+                 *   - column rule: on for every cell that HAS a right-hand neighbour;
+                 *   - row rule: off for every cell in the final row.
+                 *
+                 * SIX is easier than five, not harder: 6 % {2,3,6} === 0, so every
+                 * breakpoint fills whole rows and "last column" coincides with "last child"
+                 * at each of them.
+                 *
+                 * VERIFIED, not reasoned: these classes were compiled with this repo's own
+                 * Tailwind and the resulting borders read back from computed styles in a real
+                 * browser at 500 / 700 / 900 / 1400px, against the geometric oracle
+                 * (`right = i mod cols ≠ 0 and i ≠ n`, `bottom = i ≤ n − cols`).
+                 *
+                 * ⚠️ Do not "simplify" the `:not()`s away. Tailwind emits arbitrary-variant
+                 * rules in ONE trailing block whose internal order is not by breakpoint, so
+                 * at `md` the `2n` ON rule beat the `3n` OFF rule on cell 6 only by emission
+                 * order, at equal (0,2,0) specificity. `:not()` lifts it to (0,3,0). At `xl`,
+                 * `:not(:nth-child(6n))` is strictly required. (jsdom's nwsapi THROWS on
+                 * `:not(:nth-child(3n))`; harmless here, but a future test that queries with
+                 * that selector will error rather than fail.)
+                 */
+                itemClassName={cn(
+                  // Two columns (below `md`): a column rule on every odd cell, no row rule
+                  // on the last row (cells 5 and 6).
+                  'h-full min-w-0 border-b border-r border-border/70 [&:nth-child(2n)]:border-r-0 [&:nth-child(n+5)]:border-b-0',
+                  'md:[&:nth-child(2n):not(:nth-child(3n))]:border-r md:[&:nth-child(3n)]:border-r-0 md:[&:nth-child(n+4)]:border-b-0',
+                  'xl:border-b-0 xl:[&:nth-child(3n):not(:nth-child(6n))]:border-r',
+                  'xl:[border-image:var(--panel-inset-rule)_0_1_0_0]',
+                )}
+              >
+                {kpis.map((kpi, index) => {
+                  const tile = (
+                    <KpiTile
+                      ref={tileRef(kpi.testId)}
+                      label={kpi.label}
+                      testId={kpi.testId}
+                      value={kpi.value}
+                      // The scale context rides on its OWN line under the numeral, never
+                      // beside it (flex shrank the numeral first: "72%" read as "7…").
+                      context={kpi.context}
+                      sub={kpi.sub}
+                      bound={kpi.bound}
+                      help={kpi.help}
+                      askTopic={kpiTopic(kpi.testId)}
+                      onHelpOpenChange={onHelpOpenChange(kpi.testId)}
+                      icon={kpi.icon}
+                      accent={kpi.accent}
+                      variant="strip"
+                      // Round 12: the strip that HEADS this page is `comfortable` (between
+                      // compact and default: ~120px, 13px label and context lines), with a
+                      // FLUID numeral that grows with its own tile (24 → 44px). Compact
+                      // squeezed six numerals into 90px cells at every width. Density changes
+                      // padding and type only; the cell COUNT, which the divider math above
+                      // is tuned to, is untouched.
+                      density="comfortable"
+                      size="fluid"
+                      numeral="hero"
+                      // Roll on the first load and on a window change; a refresh (LIVE or
+                      // manual) shows the new value without motion.
+                      roll={rollKpis}
+                      goodDirection={kpi.goodDirection}
+                      countTo={kpi.countTo}
+                      format={kpi.format}
+                      formatCompact={fmtSnapshotCenter}
+                      onClick={() => toggleKpiPanel(kpi.testId)}
+                      // The tile opens a MODAL, so it announces a popup, not an expanded
+                      // state; the dialog is portalled and absent while closed.
+                      ariaHasPopup="dialog"
+                      // `className` lands on the tile's CELL ROOT (the help button sits beside
+                      // the trigger), so the trigger's inset is reached as its child: 12px
+                      // sides between xl and 2xl instead of the density's 16px. At 1280 with
+                      // the navigation pinned a tile is ~165px, and 16px cost the longest
+                      // context ("96% of worked closes") its last word.
+                      //
+                      // `ring-inset` (Round 12 review): the cell root is `overflow-hidden`, so
+                      // the trigger's outset focus ring was clipped away entirely: a keyboard
+                      // user saw no focus on the tile at all.
+                      //
+                      // The first tile of each row starts at the panel padding instead
+                      // (`kpiRowStartInset`), so the labels line up with the module titles.
+                      className={cn(
+                        'press-scale xl:max-2xl:[&>button]:px-3 [&>button:focus-visible]:ring-inset [&>button:focus-visible]:ring-offset-0',
+                        kpiRowStartInset(index),
+                      )}
+                    />
+                  );
+                  // Hover/focus reveals the metric's honest trend; the tile is itself the
+                  // focus stop. Every card is FORCED closed while ANY drill-down or help
+                  // popover is open (two stacked explanations of one numeral is worse than
+                  // either alone, and the focus return would otherwise pop one back open).
+                  return kpi.trend ? (
+                    <MetricHoverTrend
+                      key={kpi.testId}
+                      {...kpi.trend}
+                      preview={{
+                        eyebrow: kpi.label,
+                        population: kpi.drilldown.population,
+                        affordance: 'Select for the full population, filters and paging.',
+                      }}
+                      focusable={false}
+                      forceClosed={openKpi !== null || helpOpenKpi !== null}
+                      // The tile focus was just returned to: a late FOCUS open stays refused,
+                      // but pointing at the tile still shows its trend (Round 12 review).
+                      suppressFocusOpen={returnedKpi === kpi.testId}
+                      side="bottom"
+                    >
+                      {tile}
+                    </MetricHoverTrend>
+                  ) : (
+                    <React.Fragment key={kpi.testId}>{tile}</React.Fragment>
+                  );
+                })}
+              </Stagger>
 
-            {/* The drill-down PORTALS to `document.body` (Radix Dialog), so it is never a
-                child of the strip whose `nth-child` math counts cells. It grows out of the
-                tile that opened it (Round 12). */}
-            {openKpiSpec ? (
-              <KpiDrilldownPanel
-                spec={openKpiSpec}
-                panelId={KPI_PANEL_ID}
-                headingId={KPI_PANEL_HEADING_ID}
-                onClose={closeKpiPanel}
-                metrics={kpiMetrics}
-                onSelectMetric={selectKpiPanel}
-                origin={kpiOrigin}
-                restoreFocusTo={() => (openKpi ? (tileEls.current.get(openKpi) ?? null) : null)}
-              />
-            ) : null}
-          </div>
+              {/* The drill-down PORTALS to `document.body` (Radix Dialog), so it is never a
+                  child of the strip whose `nth-child` math counts cells. It grows out of the
+                  tile that opened it (Round 12). */}
+              {openKpiSpec ? (
+                <KpiDrilldownPanel
+                  spec={openKpiSpec}
+                  panelId={KPI_PANEL_ID}
+                  headingId={KPI_PANEL_HEADING_ID}
+                  onClose={closeKpiPanel}
+                  metrics={kpiMetrics}
+                  onSelectMetric={selectKpiPanel}
+                  origin={kpiOrigin}
+                  restoreFocusTo={() => (openKpi ? (tileEls.current.get(openKpi) ?? null) : null)}
+                />
+              ) : null}
+            </div>
+          ) : grants.unknown ? (
+            // The grants could not be loaded, so the role is unknown, not lacking: a load
+            // failure with a Retry that loads them again (the page re-reads on success).
+            <GrantsUnknownNotice
+              onRetry={grants.reload}
+              fallback="Try again to show the summary figures, alert flow and response times."
+            />
+          ) : (
+            // Without `metrics:view` the strip, the flow, Human vs AI, Response time and
+            // the metric panels in Deeper analytics are not read (roles-03) and are left
+            // out: one plain line where the strip was says why, never a Retry.
+            <MetricsRestrictedNotice />
+          )}
 
-          {/* ---- BANDS 2 + 3 — the instrument bands ---------------------------------
-              Titled sections whose titles sit on the canvas and whose modules each sit on
-              their own grouped panel (Round 13): 40px under the KPI strip, 40px between
-              bands (48px from 1920px), and the gutters between panels match the panel
-              padding (16px, 20px from 1280px, 24px from 1920px). No rules between cells:
-              the panels do the separating.
+          {/* ---- THE FLOW ROW AND THE CASES ROW -------------------------------------
+              Two rows of modules with NO titles of their own (Round 14, operator choice C3
+              B; the "Alert flow" and "Cases and response" band headers are gone). Each
+              module sits on its own grouped panel (Round 13) and names its window after its
+              own title. The rows are one panel gutter apart (16px, 20px from 1280px, 24px
+              from 1920px), the same gap as between the panels inside a row. No rules
+              between cells: the panels do the separating. Each row is a plain `div` with a
+              `data-band` hook for tests and the print rules.
 
               ⚠️ THE FLOW GRID IS `xl:`, NEVER `lg:`. The flow draws its graph only where its
               MEASURED labels fit the cell (Round 12 polish 3: about 600px for typical counts,
@@ -3868,126 +4432,131 @@ export default function Overview({ onNavigate }: OverviewProps) {
               before the panels), which keeps the graph. That is the whole margin: do NOT
               add more padding to the flow panel at `xl`, or widen the gutter there.
 
-              At `4xl` (≥2200px) the page widens to 2400px by COLUMN COUNT: both bands share
+              At `4xl` (≥2200px) the page widens to 2400px by COLUMN COUNT: both rows share
               one track template whose last column is a 460px rail, so Human vs AI stacks
               over Latest cases beside the main column (flow; case state + timing). */}
           <Reveal
             variant="rise"
             delay={40}
             data-testid="hero-row"
-            // 40px under the KPI strip (the modules group's rhythm); between the two bands
-            // 40px, 48px from 1920px.
-            className="min-w-0 space-y-10 3xl:space-y-12"
+            // One panel gutter under the KPI strip (the modules group's gap) and between
+            // the two rows.
+            className={cn('flex min-w-0 flex-col', PANEL_GAP)}
           >
-            <Band
-              id="overview-band-flow"
-              title="Alert flow"
-              caption={
-                crossRefs.flowCases != null
-                  ? `How the ${windowPhrase} of alerts became cases (the ${fmtNumber(crossRefs.flowCases)} in Total Cases above), and who closed them`
-                  : `How the ${windowPhrase} of alerts became cases, and who closed them`
-              }
-              aside={<Freshness at={noise?.generated_at ?? null} />}
-            >
-              <div
-                className={cn(
-                  'grid min-w-0 items-stretch xl:grid-cols-12',
-                  PANEL_GAP,
-                  '4xl:grid-cols-[minmax(0,1fr)_460px]',
-                )}
-              >
-                {noiseCellVisible ? (
-                  <div className={cn('min-w-0 xl:col-span-8 4xl:col-span-1', PANEL, PANEL_PAD)}>
-                    {noiseUnavailable ? (
-                      <EmptyState
-                        data-testid="noise-reduction-unavailable"
-                        icon={Workflow}
-                        variant="error"
-                        compact
-                        title="Noise reduction unavailable"
-                        description={
-                          noise
-                            ? 'Refresh failed. Showing the last loaded flow.'
-                            : "The selected window's noise-reduction flow could not be loaded."
-                        }
-                        action={
-                          <Button size="sm" variant="outline" onClick={() => void retryNoise()}>
-                            <RefreshCw aria-hidden />
-                            Retry noise reduction
-                          </Button>
-                        }
-                        className={cn(
-                          'rounded-md border border-critical/30 bg-transparent',
-                          noise && 'mb-3',
-                        )}
-                      />
-                    ) : null}
-                    {noise ? (
-                      <NoiseFunnel
-                        data={noise}
-                        onStageClick={onStageClick}
-                        openCases={{
-                          count: posture?.aging.queue_depth ?? derived.open,
-                          // `queue_depth` is COHORT-scoped (open cases that arrived in the
-                          // window), so its completeness is the window's (`#103`
-                          // `window_covered`). Without a posture rollup the fallback count is
-                          // the fetched page, whose completeness the store proves via
-                          // `window_total_exact`.
-                          partial: posture
-                            ? !postureCovered
-                            : !(caseWindow?.exact === true && caseWindow.total <= cases.length),
-                        }}
-                        onOpenCasesClick={onOpenCasesClick}
-                        hidden={noiseHidden}
-                        onToggleHidden={toggleNoiseHidden}
-                        expandable
-                        variant="flat"
-                        // The stage numerals follow the strip (Round 12 review): they count
-                        // up on the first load and a window change, never on a LIVE or
-                        // manual refresh. `animate` stays on, because the one-shot ribbon
-                        // sweep is the ONE motion a LIVE refresh replays.
-                        rollNumerals={rollKpis}
-                        className="w-full"
-                      />
-                    ) : null}
-                  </div>
-                ) : null}
-
-                {/* Close attribution. The widen-fallback keys on `noiseSupported` (settled
-                    on the first render), not `noiseCellVisible` (false for the loading
-                    tick), so the card never paints full width and then snaps to four. */}
+            {canMetrics ? (
+              <div className="min-w-0" data-band="flow">
                 <div
                   className={cn(
-                    'min-w-0',
-                    PANEL,
-                    PANEL_PAD,
-                    noiseSupported ? 'xl:col-span-4 4xl:col-span-1' : 'xl:col-span-12 4xl:col-span-2',
+                    'grid min-w-0 items-stretch xl:grid-cols-12',
+                    PANEL_GAP,
+                    '4xl:grid-cols-[minmax(0,1fr)_460px]',
                   )}
                 >
-                  <HumanVsAiCard
-                    totals={humanVsAi.totals}
-                    unavailableReason={humanVsAi.reason}
-                    series={humanVsAi.series}
-                    windowLabel={bucketTrends?.label ?? trendFallbackLabel}
-                    truncated={humanVsAi.truncated}
-                    stale={humanVsAi.stale}
-                    alertsIngested={humanVsAi.alerts}
-                    crossReference={
-                      crossRefs.aiAgent ? 'AI agent is the same count as Auto Closed above.' : undefined
-                    }
-                    className="h-full w-full"
-                  />
+                  {noiseCellVisible ? (
+                    // The flow's labelled region, named by the funnel's own `h2` (Round 14,
+                    // SPEC §4.3.4); before any flow has loaded, by the same name directly.
+                    <section
+                      aria-labelledby={noise ? FLOW_HEADING_ID : undefined}
+                      aria-label={noise ? undefined : 'Noise reduction flow'}
+                      className={cn('min-w-0 xl:col-span-8 4xl:col-span-1', PANEL, PANEL_PADDING)}
+                    >
+                      {noiseUnavailable ? (
+                        <EmptyState
+                          data-testid="noise-reduction-unavailable"
+                          icon={Workflow}
+                          variant="error"
+                          compact
+                          title="Noise reduction unavailable"
+                          description={
+                            noise
+                              ? 'Refresh failed. Showing the last loaded flow.'
+                              : "The selected window's noise-reduction flow could not be loaded."
+                          }
+                          action={
+                            <Button size="sm" variant="outline" onClick={() => void retryNoise()}>
+                              <RefreshCw aria-hidden />
+                              Retry noise reduction
+                            </Button>
+                          }
+                          className={cn(
+                            'rounded-md border border-critical/30 bg-transparent',
+                            noise && 'mb-3',
+                          )}
+                        />
+                      ) : null}
+                      {noise ? (
+                        <NoiseFunnel
+                          data={noise}
+                          onStageClick={onStageClick}
+                          openCases={{
+                            count: posture?.aging.queue_depth ?? derived.open,
+                            // `queue_depth` is COHORT-scoped (open cases that arrived in the
+                            // window), so its completeness is the window's (`#103`
+                            // `window_covered`). Without a posture rollup the fallback count is
+                            // the fetched page, whose completeness the store proves via
+                            // `window_total_exact`.
+                            partial: posture
+                              ? !postureCovered
+                              : !(caseWindow?.exact === true && caseWindow.total <= cases.length),
+                          }}
+                          onOpenCasesClick={onOpenCasesClick}
+                          hidden={noiseHidden}
+                          onToggleHidden={toggleNoiseHidden}
+                          expandable
+                          variant="flat"
+                          // The stage numerals follow the strip (Round 12 review): they count
+                          // up on the first load and a window change, never on a LIVE or
+                          // manual refresh. `animate` stays on, because the one-shot ribbon
+                          // sweep is the ONE motion a LIVE refresh replays.
+                          rollNumerals={rollKpis}
+                          className="w-full"
+                          headingId={FLOW_HEADING_ID}
+                          // The window, after the flow's title: the window the flow on
+                          // screen was READ for (the server echoes it), so a range change
+                          // whose flow read failed keeps naming the last loaded flow's
+                          // window, not the picker's. And the band caption's "(the N in
+                          // Total cases above)" as a quiet footer line, shown only while the
+                          // two numbers on screen are equal.
+                          caption={flowWindowPhrase}
+                          crossReference={
+                            crossRefs.flowCases != null ? 'Same count as Total cases above.' : undefined
+                          }
+                        />
+                      ) : null}
+                    </section>
+                  ) : null}
+
+                  {/* Close attribution. The widen-fallback keys on `noiseSupported` (settled
+                      on the first render), not `noiseCellVisible` (false for the loading
+                      tick), so the card never paints full width and then snaps to four. */}
+                  <div
+                    className={cn(
+                      'min-w-0',
+                      PANEL,
+                      PANEL_PADDING,
+                      noiseSupported ? 'xl:col-span-4 4xl:col-span-1' : 'xl:col-span-12 4xl:col-span-2',
+                    )}
+                  >
+                    <HumanVsAiCard
+                      totals={humanVsAi.totals}
+                      unavailableReason={humanVsAi.reason}
+                      series={humanVsAi.series}
+                      windowLabel={bucketTrends?.label ?? trendFallbackLabel}
+                      truncated={humanVsAi.truncated}
+                      stale={humanVsAi.stale}
+                      alertsIngested={humanVsAi.alerts}
+                      crossReference={
+                        crossRefs.aiAgent ? 'AI agent is the same count as Auto-closed above.' : undefined
+                      }
+                      className="h-full w-full"
+                    />
+                  </div>
                 </div>
               </div>
-            </Band>
+            ) : null}
 
-            <Band
-              id="overview-band-cases"
-              title="Cases and response"
-              caption={`Cases that arrived in the ${windowPhrase} · response timing is p50, computed on the server`}
-              aside={<Freshness at={posture?.generated_at ?? null} />}
-            >
-              {/* Below xl the band splits into two columns by ITS OWN width, not the
+            <div className="min-w-0" data-band="cases">
+              {/* Below xl the row splits into two columns by ITS OWN width, not the
                   viewport's (Round 12 final review): `md:grid-cols-2` split it at 768px even
                   with the navigation pinned, where each half was 228px and the snapshot
                   legends lost every severity name. `@[48rem]` keeps each half at least
@@ -3996,32 +4565,46 @@ export default function Overview({ onNavigate }: OverviewProps) {
                   below the 12-column grid, so the two never compete. */}
               <div className="@container min-w-0" data-testid="cases-band-container">
                 <div
-                  // From 1920px the band is TWO rows (Round 12 review): the snapshots over the
+                  // From 1920px the row is TWO rows (Round 12 review): the snapshots over the
                   // response-time pair on the left, the queue spanning both on the right (the
                   // 460px rail at 4xl). Row 2 is `1fr`, so the queue's eight rows set the
-                  // band's height and any slack lands under the timing pair, not as a void
+                  // row's height and any slack lands under the timing pair, not as a void
                   // beside a short snapshot row. DOM order — and so heading order — is
                   // unchanged: case state, response time, latest cases.
                   className={cn(
                     'grid min-w-0 items-stretch max-xl:@[48rem]:grid-cols-2 xl:grid-cols-12',
                     PANEL_GAP,
-                    '3xl:grid-rows-[auto_1fr] 4xl:grid-cols-[minmax(0,1fr)_460px]',
+                    // Without Response time the snapshots keep a column narrow enough to
+                    // stack (under 35rem), so their height meets the queue's instead of
+                    // leaving a void under two short rings: at 4xl that column is 34rem
+                    // and the queue takes the rest.
+                    canMetrics
+                      ? '3xl:grid-rows-[auto_1fr] 4xl:grid-cols-[minmax(0,1fr)_460px]'
+                      : '4xl:grid-cols-[minmax(0,34rem)_minmax(0,1fr)]',
                   )}
                   data-testid="cases-band-grid"
                 >
-                  {/* Case state: ONE labelled region holding both snapshots, on ONE panel.
+                  {/* Case state: both snapshots on ONE panel. Each snapshot is its own
+                      module, a region named by its title (Open cases, Cases resolved), so
+                      the panel that holds them is a plain container, not a third region.
                       They sit side by side whenever the panel is at least 35rem (560px)
-                      wide and stack below that — a container query, so it follows the
+                      wide and stack below that: a container query, so it follows the
                       panel, not the viewport. */}
-                  <section
-                    aria-label="Resolved and open cases"
+                  <div
                     className={cn(
-                      '@container min-w-0 xl:col-span-5 3xl:col-span-8 3xl:col-start-1 3xl:row-start-1 4xl:col-span-1',
+                      '@container min-w-0 xl:col-span-5 3xl:col-start-1 3xl:row-start-1 4xl:col-span-1',
+                      // Without Response time (no `metrics:view`) the queue takes its
+                      // columns: below 1280px the snapshots take the whole first row, and
+                      // from 1920px they keep four columns over both rows, stacked.
+                      canMetrics
+                        ? '3xl:col-span-8'
+                        : 'max-xl:@[48rem]:col-span-2 3xl:col-span-4 3xl:row-span-2',
                       PANEL,
-                      PANEL_PAD,
+                      PANEL_PADDING,
                     )}
+                    data-testid="case-state"
                   >
-                    {/* `content-start`: the band stretches this cell, and a grid's auto rows
+                    {/* `content-start`: the row stretches this cell, and a grid's auto rows
                         would otherwise share that stretch and push each snapshot's footnote
                         away from its own donut. Below 1280px the snapshots sit 24px apart
                         side by side, not 32px: in a ~300px snapshot inside a padded panel
@@ -4030,7 +4613,8 @@ export default function Overview({ onNavigate }: OverviewProps) {
                     <div className="grid content-start gap-x-6 gap-y-6 @[35rem]:grid-cols-2 @[35rem]:gap-y-0 xl:gap-x-8">
                       <SnapshotCard
                         title="Open cases"
-                        caption={`Arrived in the ${windowPhrase}, still open`}
+                        windowCaption={windowPhrase}
+                        caption="Arrived in this window, still open"
                         total={derived.open}
                         delta={snapshotDeltaHonest ? countDelta(derived.open, prev?.open ?? null) : null}
                         bound={snapshotBound}
@@ -4056,13 +4640,14 @@ export default function Overview({ onNavigate }: OverviewProps) {
                         // the flow's "open cases from this window" action is this same cohort.
                         footnote={
                           openNowCount != null
-                            ? `Part of the ${fmtNumber(openNowCount)} open now, any arrival date (Open Cases above).`
+                            ? `Part of the ${fmtNumber(openNowCount)} open now, any arrival date (Open cases above).`
                             : undefined
                         }
                       />
                       <SnapshotCard
                         title="Cases resolved"
-                        caption={`Arrived in the ${windowPhrase}, now resolved or closed`}
+                        windowCaption={windowPhrase}
+                        caption="Arrived in this window, now resolved or closed"
                         total={derived.resolved}
                         delta={
                           snapshotDeltaHonest ? countDelta(derived.resolved, prev?.resolved ?? null) : null
@@ -4088,7 +4673,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
                         className={SNAPSHOT_DIVIDER}
                         footnote={
                           crossRefs.resolved
-                            ? 'The same cases as Resolved / Closed above, by severity.'
+                            ? 'The same cases as Resolved or closed above, by severity.'
                             : undefined
                         }
                         onClick={
@@ -4099,93 +4684,111 @@ export default function Overview({ onNavigate }: OverviewProps) {
                         }
                       />
                     </div>
-                  </section>
+                  </div>
 
                   {/* Response time: the detect / first-response pair, TOP-aligned with 24px
-                      between them (the old `justify-center` halves left a ~110px void). */}
-                  <section
-                    aria-label="Mean time to detect / respond"
-                    className={cn(
-                      '@container flex min-w-0 flex-col xl:col-span-3 3xl:col-span-8 3xl:col-start-1 3xl:row-start-2 4xl:col-span-1',
-                      PANEL,
-                      PANEL_PAD,
-                    )}
-                  >
-                    <div className="flex items-start justify-between gap-2">
-                      <div className="min-w-0">
-                        <h2 className="text-base font-semibold text-foreground">Response time</h2>
-                        <p className="text-sm text-muted-foreground">p50 · server-computed</p>
+                      between them (the old `justify-center` halves left a ~110px void). It
+                      reads the posture rollup, so it is left out without `metrics:view`. */}
+                  {canMetrics ? (
+                    <section
+                      aria-labelledby={RESPONSE_TIME_HEADING_ID}
+                      className={cn(
+                        '@container flex min-w-0 flex-col xl:col-span-3 3xl:col-span-8 3xl:col-start-1 3xl:row-start-2 4xl:col-span-1',
+                        PANEL,
+                        PANEL_PADDING,
+                      )}
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <ModuleTitle
+                          id={RESPONSE_TIME_HEADING_ID}
+                          title="Response time"
+                          caption={`p50 · ${windowPhrase}`}
+                          help={
+                            // HelpTip's own muted ink: a dimmed glyph fell under the 3:1 a
+                            // control's graphic needs on the panel (WCAG 1.4.11).
+                            <HelpTip
+                              label="About Response time"
+                              text={RESPONSE_TIME_HELP}
+                              className="-my-1 shrink-0"
+                            />
+                          }
+                        />
+                        {navigate ? (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="-mr-2 h-7 shrink-0 px-2 text-sm font-medium text-primary hover:text-primary"
+                            onClick={() => navigate('metrics', { tab: 'posture' })}
+                          >
+                            Detail →
+                          </Button>
+                        ) : null}
                       </div>
-                      {navigate ? (
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          className="-mr-2 h-7 shrink-0 px-2 text-sm font-medium text-primary hover:text-primary"
-                          onClick={() => navigate('metrics', { tab: 'posture' })}
+                      {/* The detect / respond pair sits side by side whenever THIS cell is at
+                          least 30rem wide (a container query, like the row above), so it
+                          follows the cell through every row layout instead of a ladder of
+                          viewport breakpoints that guessed the cell's width. Stacked, Respond
+                          sits 24px under MTTD (Round 14, operator choice C3): the spare height
+                          of a stretched panel falls to its foot (`content-start`) instead of
+                          opening a gap of up to 180px between the two figures. */}
+                      <div className="mt-4 grid content-start gap-6 @[30rem]:grid-cols-2 3xl:gap-x-8">
+                        <MetricHoverTrend
+                          metric="MTTD · daily mean"
+                          points={timingTrends?.mttd}
+                          windowLabel={timingTrends?.label ?? trendFallbackLabel}
+                          format={humanizeMins}
+                          colorToken="info"
+                          side="top"
+                          className="h-auto"
                         >
-                          Detail →
-                        </Button>
-                      ) : null}
-                    </div>
-                    {/* The detect / respond pair sits side by side whenever THIS cell is at
-                        least 30rem wide (a container query, like the band above), so it
-                        follows the cell through every band layout instead of a ladder of
-                        viewport breakpoints that guessed the cell's width. The panel
-                        stretches to its row, so the pair takes the spare height and spreads
-                        it BETWEEN the detect and respond figures (`flex-auto content-between`)
-                        instead of pooling it as an empty block under them. */}
-                    <div className="mt-4 grid flex-auto content-between gap-6 @[30rem]:grid-cols-2 3xl:gap-x-8">
-                      <MetricHoverTrend
-                        metric="MTTD · daily mean"
-                        points={timingTrends?.mttd}
-                        windowLabel={timingTrends?.label ?? trendFallbackLabel}
-                        format={humanizeMins}
-                        colorToken="info"
-                        side="top"
-                        className="h-auto"
-                      >
-                        <TimingStat
-                          label="MTTD"
-                          sub="Detect · log arrival → case"
-                          block={mttdBlock}
-                          dotClass="bg-info"
-                          help="Mean time to detect: the cluster's first event → case-open. Shown as an honest n/a when no case carries a first-event instant."
-                        />
-                      </MetricHoverTrend>
-                      <MetricHoverTrend
-                        metric="Respond · daily mean"
-                        points={timingTrends?.respond}
-                        windowLabel={timingTrends?.label ?? trendFallbackLabel}
-                        format={humanizeMins}
-                        colorToken="success"
-                        side="top"
-                        className="h-auto"
-                      >
-                        {/* "Respond" is the ACK clock (`mtta_minutes`), NOT `mttr_minutes`:
-                            calling it MTTR would present time-to-first-human-action as
-                            time-to-resolve. True MTTR is in Deeper analytics, and the MTTA
-                            there reads this same clock — said so here, so the two equal
-                            figures read as one measurement shown twice, not a coincidence. */}
-                        <TimingStat
-                          label="Respond"
-                          sub="First human action, e.g. assignment or acknowledgement · same clock as MTTA"
-                          block={respondBlock}
-                          dotClass="bg-success"
-                          help="Mean time to respond: the first active human response (investigating / escalated / assignment / ack)."
-                        />
-                      </MetricHoverTrend>
-                    </div>
-                  </section>
+                          <TimingStat
+                            label="MTTD"
+                            sub="Detect · log arrival → case"
+                            block={mttdBlock}
+                            dotClass="bg-info"
+                            help="Mean time to detect: the cluster's first event → case-open. Shown as an honest n/a when no case carries a first-event instant."
+                          />
+                        </MetricHoverTrend>
+                        <MetricHoverTrend
+                          metric="Respond · daily mean"
+                          points={timingTrends?.respond}
+                          windowLabel={timingTrends?.label ?? trendFallbackLabel}
+                          format={humanizeMins}
+                          colorToken="success"
+                          side="top"
+                          className="h-auto"
+                        >
+                          {/* "Respond" is the ACK clock (`mtta_minutes`), NOT `mttr_minutes`:
+                              calling it MTTR would present time-to-first-human-action as
+                              time-to-resolve. True MTTR is in Deeper analytics, and the MTTA
+                              there reads this same clock (said so here), so the two equal
+                              figures read as one measurement shown twice, not a coincidence. */}
+                          <TimingStat
+                            label="Respond"
+                            sub="First human action, e.g. assignment or acknowledgement · same clock as MTTA"
+                            block={respondBlock}
+                            dotClass="bg-success"
+                            help="Mean time to respond: the first active human response (investigating / escalated / assignment / ack)."
+                          />
+                        </MetricHoverTrend>
+                      </div>
+                    </section>
+                  ) : null}
 
                   <div
                     className={cn(
-                      'min-w-0 max-xl:@[48rem]:col-span-2 xl:col-span-4 3xl:col-start-9 3xl:row-span-2 3xl:row-start-1 4xl:col-span-1 4xl:col-start-2',
+                      'min-w-0 max-xl:@[48rem]:col-span-2 3xl:row-span-2 3xl:row-start-1 4xl:col-span-1 4xl:col-start-2',
+                      canMetrics
+                        ? 'xl:col-span-4 3xl:col-start-9'
+                        : 'xl:col-span-7 3xl:col-span-8 3xl:col-start-5',
                       PANEL,
-                      PANEL_PAD,
+                      PANEL_PADDING,
                     )}
+                    data-testid="latest-cases-cell"
                   >
                     <TopCasesPanel
                       cases={latestCases}
+                      caption={`Newest of the ${windowPhrase}`}
                       navigate={navigate}
                       navWindow={navWindow}
                       onOpenCase={setOpenCaseId}
@@ -4194,16 +4797,16 @@ export default function Overview({ onNavigate }: OverviewProps) {
                   </div>
                 </div>
               </div>
-            </Band>
+            </div>
           </Reveal>
 
           {/* ---- BAND 4 — DEEPER ANALYTICS -------------------------------------------
               ONE disclosure (Round 12): no accent bars, no nested collapsibles, no panel
               inside a panel. Collapsed on a first visit; the operator's choice is
               remembered. While closed, its header states what is inside in one line. The
-              header is itself a grouped panel (Round 13), 40px under the bands at every
-              width; open, its sub-band titles sit on the canvas and each instrument and
-              the timing strip get their own panel, like the bands above. */}
+              header is itself a grouped panel (Round 13), one panel gutter under the cases
+              row (Round 14); open, its sub-band titles sit on the canvas and each
+              instrument and the timing strip get their own panel, like the rows above. */}
           <Collapsible open={deeperOpen} onOpenChange={onDeeperOpenChange} asChild>
             <section aria-label="Deeper analytics" className="min-w-0">
               <h2 className="m-0">
@@ -4234,9 +4837,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
                       data-testid="deeper-summary"
                       title={!deeperOpen && deeperSummary.full ? deeperSummary.full : undefined}
                     >
-                      {deeperOpen || !deeperSummary.text
-                        ? 'Timing, spend, ingest coverage, volume, workload and outcomes'
-                        : deeperSummary.text}
+                      {deeperOpen || !deeperSummary.text ? deeperHolds : deeperSummary.text}
                     </span>
                   </button>
                 </CollapsibleTrigger>
@@ -4252,179 +4853,201 @@ export default function Overview({ onNavigate }: OverviewProps) {
                 <div
                   className={cn(
                     'grid min-w-0 items-stretch gap-x-6 gap-y-10 3xl:gap-x-10',
-                    '3xl:grid-cols-[minmax(0,38rem)_minmax(0,1fr)]',
+                    efficiencyShown && '3xl:grid-cols-[minmax(0,38rem)_minmax(0,1fr)]',
                   )}
                 >
                   {/* -- Sub-band: Efficiency and cost -------------------------------- */}
-                  <section aria-labelledby="overview-deeper-efficiency" className="flex min-w-0 flex-col">
-                    <SubBandTitle
-                      id="overview-deeper-efficiency"
-                      caption={`Timing and spend over the ${windowPhrase}`}
-                    >
-                      Efficiency and cost
-                    </SubBandTitle>
-                    {/* A second continuous strip — the same KpiTile strip grammar as the
-                        page's strip, four cells, its own dividers (KpiTileGrid draws one
-                        hairline grammar at every column count, with no empty tracks) — on
-                        its own grouped panel, which clips the tiles to its corners. */}
-                    <KpiTileGrid
-                      count={4}
-                      framed={false}
-                      containerClassName={cn('overflow-hidden', PANEL)}
-                      data-testid="deeper-timing-strip"
-                    >
-                      {timing.map((s, index) => {
-                        // Honest per-metric series: MTTA reuses the ACK-based `respond`
-                        // daily series, MTTR the `resolve` series. Dwell has NO server
-                        // series, so its tile carries no trend affordance.
-                        const timingSeries =
-                          s.key === 'mtta'
-                            ? timingTrends?.respond
-                            : s.key === 'mttr'
-                              ? timingTrends?.resolve
-                              : undefined;
-                        const measured = s.value !== DASH;
-                        const tile = (
-                          <KpiTile
-                            variant="strip"
-                            density="comfortable"
-                            numeral="hero"
-                            size="fluid"
-                            label={s.label}
-                            value={s.value}
-                            context={measured ? s.sub : undefined}
-                            sub={measured ? undefined : s.sub}
-                            accent={s.accent}
-                            icon={Clock3}
-                            goodDirection="down"
-                            help={
+                  {/* Each panel here follows its own grant (roles-03): the timing tiles and
+                      Case volume `metrics:view`, LLM spend `cost:view`, Ingest coverage
+                      `sources:read`. A panel the role cannot read is left out, and the
+                      sub-band with it when nothing in it is readable. */}
+                  {efficiencyShown ? (
+                    <section aria-labelledby="overview-deeper-efficiency" className="flex min-w-0 flex-col">
+                      <SubBandTitle id="overview-deeper-efficiency" caption={efficiencyCaption}>
+                        {efficiencyTitle}
+                      </SubBandTitle>
+                      {/* A second continuous strip in the page strip's KpiTile grammar: up to
+                          four cells with their own dividers (KpiTileGrid draws one hairline
+                          grammar at every column count, with no empty tracks), on its own
+                          grouped panel, which clips the tiles to its corners. */}
+                      {efficiencyTileCount > 0 ? (
+                        <KpiTileGrid
+                          count={efficiencyTileCount}
+                          framed={false}
+                          containerClassName={cn('overflow-hidden', PANEL)}
+                          data-testid="deeper-timing-strip"
+                        >
+                          {timingShown.map((s, index) => {
+                            // Honest per-metric series: MTTA reuses the ACK-based `respond`
+                            // daily series, MTTR the `resolve` series. Dwell has NO server
+                            // series, so its tile carries no trend affordance.
+                            const timingSeries =
                               s.key === 'mtta'
-                                ? `${s.help} The Respond figure under Cases and response reads this same clock.`
-                                : s.help
+                                ? timingTrends?.respond
+                                : s.key === 'mttr'
+                                  ? timingTrends?.resolve
+                                  : undefined;
+                            const measured = s.value !== DASH;
+                            const tile = (
+                              <KpiTile
+                                variant="strip"
+                                density="comfortable"
+                                numeral="hero"
+                                size="fluid"
+                                label={s.label}
+                                value={s.value}
+                                context={measured ? s.sub : undefined}
+                                sub={measured ? undefined : s.sub}
+                                accent={s.accent}
+                                icon={Clock3}
+                                goodDirection="down"
+                                help={
+                                  s.key === 'mtta'
+                                    ? `${s.help} The Respond figure under Response time reads this same clock.`
+                                    : s.help
+                                }
+                                askTopic={kpiTopic(s.key)}
+                                // The context/state line wraps in its two-line slot (KpiTile,
+                                // every hero strip since the final review): at 1280 with the
+                                // navigation pinned these tiles are ~215px, and a server reason
+                                // such as "no case has been acknowledged yet" takes two lines.
+                                className={timingRowStartInset(index, efficiencyTileCount)}
+                              />
+                            );
+                            if (s.key === 'dwell') {
+                              return <React.Fragment key={s.label}>{tile}</React.Fragment>;
                             }
-                            askTopic={kpiTopic(s.key)}
-                            // The context/state line wraps in its two-line slot (KpiTile,
-                            // every hero strip since the final review): at 1280 with the
-                            // navigation pinned these tiles are ~215px, and a server reason
-                            // such as "no case has been acknowledged yet" takes two lines.
-                            className={timingRowStartInset(index)}
-                          />
-                        );
-                        if (s.key === 'dwell') {
-                          return <React.Fragment key={s.label}>{tile}</React.Fragment>;
-                        }
-                        return (
-                          <MetricHoverTrend
-                            key={s.label}
-                            metric={`${s.label} · daily mean`}
-                            points={timingSeries}
-                            windowLabel={timingTrends?.label ?? trendFallbackLabel}
-                            format={humanizeMins}
-                            colorToken={s.accent}
-                            side="top"
-                            // The tile's HelpTip (?) is already a tab stop and focus bubbles
-                            // to the trigger, so the wrapper adds no second stop; the tile is
-                            // not clickable, so a press toggles the card (touch).
-                            focusable={false}
-                            toggleOnClick={true}
-                          >
-                            {tile}
-                          </MetricHoverTrend>
-                        );
-                      })}
-                      <MetricHoverTrend
-                        metric="LLM spend"
-                        points={spendTrend}
-                        windowLabel={trendFallbackLabel}
-                        format={(n) => fmtMoney(n, usage?.currency)}
-                        colorToken="primary"
-                        // The tile is itself a button (retry / drill-through) whenever an
-                        // action exists; only a nav-less static tile needs the wrapper stop.
-                        focusable={!(usageUnavailable || Boolean(navigate))}
-                        // Both focus rings are INSET: the strip's frame and its panel clip
-                        // everything outside the tile, so an outset ring showed only as a
-                        // 2px line on its left edge, like one of the strip's column rules.
-                        className="focus-visible:ring-inset"
-                        side="top"
-                      >
-                        <KpiTile
-                          variant="strip"
-                          density="comfortable"
-                          numeral="hero"
-                          size="fluid"
-                          testId="llm-spend-detail"
-                          label="LLM spend"
-                          value={
-                            usageUnavailable ? 'Unavailable' : fmtMoney(usage?.total_cost, usage?.currency)
-                          }
-                          sub={usageUnavailable ? usageFailureSub : undefined}
-                          context={
-                            usageUnavailable
-                              ? undefined
-                              : typeof usage?.total_tokens === 'number'
-                                ? `${fmtTokens(usage.total_tokens)} tokens · ${fmtNumber(usage.call_count)} calls`
-                                : 'No spend recorded'
-                          }
-                          icon={CircleDollarSign}
-                          accent={usageUnavailable ? 'critical' : 'primary'}
-                          goodDirection="down"
-                          onClick={
-                            usageUnavailable
-                              ? () => void retryUsage()
-                              : navigate
-                                ? () => navigate('metrics', { tab: 'cost' })
-                                : undefined
-                          }
-                          className={cn(
-                            'focus-visible:ring-inset focus-visible:ring-offset-0',
-                            timingRowStartInset(timing.length),
-                          )}
-                        />
-                      </MetricHoverTrend>
-                    </KpiTileGrid>
+                            return (
+                              <MetricHoverTrend
+                                key={s.label}
+                                metric={`${s.label} · daily mean`}
+                                points={timingSeries}
+                                windowLabel={timingTrends?.label ?? trendFallbackLabel}
+                                format={humanizeMins}
+                                colorToken={s.accent}
+                                side="top"
+                                // The tile's HelpTip (?) is already a tab stop and focus bubbles
+                                // to the trigger, so the wrapper adds no second stop; the tile is
+                                // not clickable, so a press toggles the card (touch).
+                                focusable={false}
+                                toggleOnClick={true}
+                              >
+                                {tile}
+                              </MetricHoverTrend>
+                            );
+                          })}
+                          {canCost ? (
+                            <MetricHoverTrend
+                              metric="LLM spend"
+                              points={spendTrend}
+                              windowLabel={trendFallbackLabel}
+                              format={(n) => fmtMoney(n, usage?.currency)}
+                              colorToken="primary"
+                              // The tile is itself a button (retry / drill-through) whenever an
+                              // action exists; only a nav-less static tile needs the wrapper stop.
+                              focusable={!(usageUnavailable || Boolean(navigate))}
+                              // Both focus rings are INSET: the strip's frame and its panel clip
+                              // everything outside the tile, so an outset ring showed only as a
+                              // 2px line on its left edge, like one of the strip's column rules.
+                              className="focus-visible:ring-inset"
+                              side="top"
+                            >
+                              <KpiTile
+                                variant="strip"
+                                density="comfortable"
+                                numeral="hero"
+                                size="fluid"
+                                testId="llm-spend-detail"
+                                label="LLM spend"
+                                value={
+                                  usageUnavailable ? 'Unavailable' : fmtMoney(usage?.total_cost, usage?.currency)
+                                }
+                                sub={usageUnavailable ? usageFailureSub : undefined}
+                                context={
+                                  usageUnavailable
+                                    ? undefined
+                                    : typeof usage?.total_tokens === 'number'
+                                      ? `${fmtTokens(usage.total_tokens)} tokens · ${fmtNumber(usage.call_count)} calls`
+                                      : 'No spend recorded'
+                                }
+                                icon={CircleDollarSign}
+                                accent={usageUnavailable ? 'critical' : 'primary'}
+                                goodDirection="down"
+                                onClick={
+                                  usageUnavailable
+                                    ? () => void retryUsage()
+                                    : navigate
+                                      ? () => navigate('cost')
+                                      : undefined
+                                }
+                                className={cn(
+                                  'focus-visible:ring-inset focus-visible:ring-offset-0',
+                                  timingRowStartInset(timingShown.length, efficiencyTileCount),
+                                )}
+                              />
+                            </MetricHoverTrend>
+                          ) : null}
+                        </KpiTileGrid>
+                      ) : null}
 
-                    {/* Stacked in the narrow column from 1920px, coverage keeps its own
-                        height and the volume chart takes whatever the taller neighbouring
-                        sub-band leaves (no dead space inside the coverage block). */}
-                    <div
-                      className={cn(
-                        'mt-8 grid flex-1 items-stretch xl:grid-cols-12 3xl:grid-cols-1 3xl:grid-rows-[auto_minmax(0,1fr)]',
-                        PANEL_GAP,
-                      )}
-                    >
-                      <Instrument
-                        title="Ingest coverage"
-                        caption="Right now · am I seeing everything?"
-                        className="xl:col-span-5 2xl:col-span-4 3xl:col-span-1"
-                        data-scope="live"
-                      >
-                        {coverage ? (
-                          <CoverageTile coverage={coverage} onNavigate={navigate} roll={rollKpis} />
-                        ) : (
-                          <EmptyState
-                            compact
-                            icon={Plug}
-                            title="Coverage not yet reported"
-                            description="Per-source ingest coverage appears once the poller reports its first tick."
-                          />
-                        )}
-                      </Instrument>
-                      <Instrument
-                        title="Case volume"
-                        caption={
-                          metrics?.truncated === true &&
-                          typeof metrics.fetched === 'number' &&
-                          typeof metrics.store_total === 'number'
-                            ? `Cases opened per UTC day · newest ${fmtNumber(metrics.fetched)} of ${fmtNumber(metrics.store_total)} cases`
-                            : 'Cases opened per UTC day · all time'
-                        }
-                        className="xl:col-span-7 2xl:col-span-8 3xl:col-span-1"
-                        data-scope="all"
-                      >
-                        <VolumeColumns data={caseVolume} />
-                      </Instrument>
-                    </div>
-                  </section>
+                      {/* Stacked in the narrow column from 1920px, coverage keeps its own
+                          height and the volume chart takes whatever the taller neighbouring
+                          sub-band leaves (no dead space inside the coverage block). Alone,
+                          either one takes the whole row. */}
+                      {canSources || canMetrics ? (
+                        <div
+                          className={cn(
+                            'grid flex-1 items-stretch xl:grid-cols-12 3xl:grid-cols-1',
+                            efficiencyTileCount > 0 && 'mt-8',
+                            canSources && canMetrics && '3xl:grid-rows-[auto_minmax(0,1fr)]',
+                            PANEL_GAP,
+                          )}
+                        >
+                          {canSources ? (
+                            <Instrument
+                              title="Ingest coverage"
+                              caption="Right now · am I seeing everything?"
+                              className={cn(
+                                '3xl:col-span-1',
+                                canMetrics ? 'xl:col-span-5 2xl:col-span-4' : 'xl:col-span-12',
+                              )}
+                              data-scope="live"
+                            >
+                              {coverage ? (
+                                <CoverageTile coverage={coverage} onNavigate={navigate} roll={rollKpis} />
+                              ) : (
+                                <EmptyState
+                                  compact
+                                  icon={Plug}
+                                  title="Coverage not yet reported"
+                                  description="Per-source ingest coverage appears once the poller reports its first tick."
+                                />
+                              )}
+                            </Instrument>
+                          ) : null}
+                          {canMetrics ? (
+                            <Instrument
+                              title="Case volume"
+                              caption={
+                                metrics?.truncated === true &&
+                                typeof metrics.fetched === 'number' &&
+                                typeof metrics.store_total === 'number'
+                                  ? `Cases opened per UTC day · newest ${fmtNumber(metrics.fetched)} of ${fmtNumber(metrics.store_total)} cases`
+                                  : 'Cases opened per UTC day · all time'
+                              }
+                              className={cn(
+                                '3xl:col-span-1',
+                                canSources ? 'xl:col-span-7 2xl:col-span-8' : 'xl:col-span-12',
+                              )}
+                              data-scope="all"
+                            >
+                              <VolumeColumns data={caseVolume} />
+                            </Instrument>
+                          ) : null}
+                        </div>
+                      ) : null}
+                    </section>
+                  ) : null}
 
                   {/* -- Sub-band: What's driving volume ------------------------------ */}
                   <section aria-labelledby="overview-deeper-volume" className="flex min-w-0 flex-col">
@@ -4611,7 +5234,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
                         caption={`Most frequent detections · ${caseSampleScope}`}
                         data-scope={casePageComplete ? 'window' : 'sample'}
                       >
-                        <BarList items={signatureItems} showRank showPercent emptyLabel="No signatures yet" />
+                        <SignatureList items={signatureItems} window={range} />
                       </Instrument>
 
                       <Instrument
@@ -4645,7 +5268,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
           onClose={() => {
             setOpenCaseId(null);
             // A lifecycle action inside the sheet (close, escalate, assign) changes the
-            // very numerals the strip and the bands are showing behind it.
+            // very numerals the strip and the rows are showing behind it.
             refreshAll();
           }}
           onNavigate={navigate}

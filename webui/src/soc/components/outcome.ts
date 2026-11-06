@@ -317,6 +317,78 @@ export function caseOutcome(c: Case): CaseOutcome {
   };
 }
 
+/** How a settled outcome reads in a narrow table cell: what it shows and what it says. */
+export interface OutcomeCellText {
+  /** The short visible word, sized for the Cases Outcome column ("Not recorded"). */
+  label: string;
+  /** The whole outcome, for the tooltip and assistive technology. */
+  full: string;
+}
+
+/**
+ * The outcome of record as a table cell gives it (Round 14, closing QA qa2-01): a short
+ * label that fits the Cases Outcome column with the whole sentence beside it, never a
+ * clipped badge. Null while the outcome is pending: an open case shows the disposition
+ * triage mapped from the AI verdict instead. A human outcome says "by an analyst" in
+ * its sentence, because the cell's glyph is the only visible mark of it.
+ */
+export function outcomeCellText(outcome: CaseOutcome): OutcomeCellText | null {
+  switch (outcome.source) {
+    case 'analyst': {
+      const { headline } = outcome;
+      // Before the lifecycle tail: "Classified as benign by an analyst: escalated".
+      const at = headline.indexOf(':');
+      const full = /analyst/i.test(headline)
+        ? headline
+        : at < 0
+          ? `${headline} by an analyst`
+          : `${headline.slice(0, at)} by an analyst${headline.slice(at)}`;
+      return { label: outcome.shortLabel, full };
+    }
+    case 'analyst_policy':
+    case 'agent_auto':
+      return { label: outcome.shortLabel, full: outcome.headline };
+    case 'analyst_unrecorded':
+      // "Outcome not recorded" is the row and header word; the column says less.
+      return { label: 'Not recorded', full: outcome.headline };
+    default:
+      return null;
+  }
+}
+
+/**
+ * The disposition triage records from each AI verdict when nobody has set one: the
+ * mirror of `backend/app/engine/case_manager.py` `_VERDICT_TO_DISPOSITION`, which maps
+ * only once there is a verdict. Unlike {@link VERDICT_MATCH} (which values AGREE with a
+ * verdict, for grading), this is the one value the mapping writes.
+ */
+const TRIAGE_DISPOSITION: Record<string, string> = {
+  TRUE_POSITIVE: 'true_positive',
+  FALSE_POSITIVE: 'false_positive',
+  NEEDS_HUMAN: 'undetermined',
+};
+
+/**
+ * The note on a case no analyst has classified yet, for the tooltip and read text of
+ * the disposition shown in its place (Round 14). It says where that value came from, by
+ * the case's state, and claims an AI mapping only when there was one:
+ *   - no AI verdict yet: nothing was mapped (the badge reads "Undetermined", or a value
+ *     set on the case without one);
+ *   - a verdict but no recorded disposition (a case from before triage mapped one);
+ *   - the disposition triage maps from that verdict;
+ *   - any other recorded value (set on the case, not mapped from the verdict).
+ */
+// The wire sends null for a missing verdict, which `Case` writes as absent.
+export function pendingDispositionNote(c: { verdict?: string | null; disposition?: Disposition | null }): string {
+  const tail = 'no analyst has classified this case yet';
+  const verdict = canonicalVerdict(c.verdict);
+  const disposition = lower(c.disposition);
+  if (!verdict) return `Not yet assessed by the AI; ${tail}`;
+  if (!disposition || disposition === 'none') return `No outcome recorded yet; ${tail}`;
+  if (TRIAGE_DISPOSITION[verdict] === disposition) return `Mapped from the AI verdict; ${tail}`;
+  return `Recorded on the case; ${tail}`;
+}
+
 /** True when a human has settled the outcome (analyst classification or policy). */
 export function isHumanSettled(outcome: CaseOutcome): boolean {
   return outcome.source === 'analyst' || outcome.source === 'analyst_policy';

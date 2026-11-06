@@ -1395,6 +1395,7 @@ async def _audit_inert_correlation(audit: Any, rows: list[dict[str, Any]]) -> No
     try:
         await audit.record(
             action_type=ActionType.TUNING, surface="tuner", actor="tuner",
+            actor_type="system", outcome="success",
             result_summary=summary,
         )
     except Exception as exc:  # noqa: BLE001 — audit is best-effort
@@ -1642,6 +1643,7 @@ async def _open_proposal(
         try:
             await audit.record(
                 action_type=ActionType.PROPOSAL, surface="tuner", actor="tuner",
+                actor_type="system", outcome="success",
                 result_summary=(
                     f"tuner drafted review proposal {stored.id} for rule "
                     f"{rid} ({prop.kind} {prop.before}->{prop.after}, {reason})"
@@ -1766,6 +1768,8 @@ async def _queue_historical_reviews(
                     action_type=ActionType.PROPOSAL,
                     surface="tuner",
                     actor="tuner",
+                    actor_type="system",
+                    outcome="success",
                     result_summary=(
                         f"tuner drafted historical review proposal {stored.id} "
                         f"for tuning record {record.id}"
@@ -2067,6 +2071,7 @@ async def _audit_tuning(audit: Any, prop: TuningProposal, record: TuningRecord) 
     try:
         await audit.record(
             action_type=ActionType.TUNING, surface="tuner", actor="tuner",
+            actor_type="system", outcome="success",
             result_summary=(
                 f"auto-applied {prop.kind} for rule {prop.rule_id}: "
                 f"{prop.before}->{prop.after} (record={record.id}, "
@@ -2162,6 +2167,7 @@ async def rollback(
             try:
                 await audit.record(
                     action_type=ActionType.TUNING, surface="tuner", actor="tuner",
+                    actor_type="system", outcome="success",
                     result_summary=(
                         f"rolled back {record.target} for {record.rule_id}: "
                         f"{record.after}->{record.before} (record={record.id})"

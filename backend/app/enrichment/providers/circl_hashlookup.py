@@ -36,7 +36,7 @@ class CirclHashlookupProvider(EnrichmentProvider):
             display_name="CIRCL hashlookup",
             description=(
                 "Known-GOOD file-hash lookup (NSRL and other curated datasets) from "
-                "CIRCL. A hit means a well-known catalogued binary — benign context, "
+                "CIRCL. A hit means a well-known catalogued binary: benign context, "
                 "never a verdict."
             ),
             indicator_kinds=[IndicatorKind.FILE_HASH],
@@ -47,7 +47,7 @@ class CirclHashlookupProvider(EnrichmentProvider):
             docs_url="https://www.circl.lu/services/hashlookup/",
             default_enabled=True,
             setup_steps=[
-                "Nothing to set up — CIRCL hashlookup is keyless and this provider "
+                "Nothing to set up: CIRCL hashlookup is keyless and this provider "
                 "ships enabled.",
                 "Requires outbound HTTPS to hashlookup.circl.lu.",
             ],

@@ -12,16 +12,20 @@
  *   text ink, `null` rows hatched across the plot, one tab stop with ↑/↓ rows (←/→
  *   series when grouped), and the whole row as the hit target. A reference line carries
  *   its plain-text label in a strip above the rows, so it never collides with a bar.
+ * - Round 14 (SPEC §4.6.3, §4.6.5): a row with a rule ref opens that rule's sheet on click
+ *   and Enter (the card's provider, `rule-drill.tsx`) and stays marked while its sheet is
+ *   open; focus returns to the chart when the sheet closes. A row with a route navigates.
  */
 import * as React from 'react';
 
 import { cn } from '@/lib/cn';
 import { token } from '@/soc/components/palette';
-import { navLabel } from '@/soc/nav';
 
-import { useBlocks } from '../context';
+import { drillLabel, useBlocks } from '../context';
+import { useRuleDrill } from '../rule-drill';
 import { clipText, formatTick, formatValue, unitLabel, xAxisHeader, xPositionLabel } from '../format';
 import type { ChartBlock, SemanticKey } from '../schema';
+import { isRuleRef } from '../schema';
 import { HatchPattern, MARK_FORCED, ChartShell, useSvgId } from './ChartShell';
 import { usePublishChartView } from './export-context';
 import type { AnchorRect } from './ChartTooltipPortal';
@@ -145,6 +149,7 @@ function BarListView({ block, title, staticMode }: { block: ChartBlock; title: s
 
 function HBarSvg({ block, title, staticMode }: { block: ChartBlock; title: string; staticMode: boolean }) {
   const { navigate } = useBlocks();
+  const ruleHost = useRuleDrill();
   const boxRef = React.useRef<HTMLDivElement>(null);
   const width = useChartSize(boxRef, { staticMode });
   const hatchId = useSvgId('hatch');
@@ -175,6 +180,9 @@ function HBarSvg({ block, title, staticMode }: { block: ChartBlock; title: strin
   const labelChars = Math.max(4, Math.floor(labelW / CHAR_W));
   const fullX = (i: number) => xPositionLabel(block.x, i);
   const drillAt = (i: number) => block.drill?.[i] ?? null;
+  // The row whose rule sheet this card has open stays marked (the RuleLink's opened tint).
+  const openRule = ruleHost?.isOpen ? ruleHost.openRule : null;
+  const openedRow = openRule === null ? -1 : (block.drill ?? []).findIndex((d) => isRuleRef(d) && d.opts.rule === openRule);
 
   const summarize = React.useCallback(
     (c: ChartCursor) => {
@@ -194,12 +202,14 @@ function HBarSvg({ block, title, staticMode }: { block: ChartBlock; title: strin
     orientation: 'vertical',
     summarize,
     initial: { i: 0, j: -1 },
-    onActivate: (c) => {
-      const ref = drillAt(c.i);
-      if (ref) navigate(ref);
-    },
+    onActivate: (c) => activate(c.i),
     disabled: staticMode,
   });
+  // A rule row opens its sheet (focus comes back to the plot); a route navigates.
+  function activate(i: number) {
+    const ref = drillAt(i);
+    if (ref) navigate(ref, nav.plotRef.current);
+  }
   const active = nav.cursor;
   const anchorFor = React.useCallback(
     (plot: DOMRect): AnchorRect | null =>
@@ -226,7 +236,7 @@ function HBarSvg({ block, title, staticMode }: { block: ChartBlock; title: strin
       <TooltipBody
         heading={<span className={block.untrusted ? 'font-mono' : undefined}>{fullX(active.i)}</span>}
         rows={rows}
-        notes={ref ? [`Open in ${navLabel(ref.page)} ›`] : []}
+        notes={ref ? [`${drillLabel(ref)} ›`] : []}
       />
     );
   }
@@ -295,14 +305,14 @@ function HBarSvg({ block, title, staticMode }: { block: ChartBlock; title: strin
       <ChartShell
         nav={nav}
         ariaLabel={ariaLabel}
-        instructions={`Use the up and down arrow keys to read each row${visibleIdx.length > 1 ? ', left and right to pick a series' : ''}; Home and End jump to the first and last. ${block.drill ? 'Enter opens the linked page. ' : ''}A data table follows the chart.`}
+        instructions={`Use the up and down arrow keys to read each row${visibleIdx.length > 1 ? ', left and right to pick a series' : ''}; Home and End jump to the first and last. ${block.drill ? (block.drill.some(isRuleRef) ? "Enter opens the rule's alerts and cases. " : 'Enter opens the linked page. ') : ''}A data table follows the chart.`}
         height={height}
         onPointerAt={(_x, y) => {
           const i = Math.floor((y - padTop) / rowH);
           nav.hover(i >= 0 && i < n ? { i, j: -1 } : null);
         }}
         onClick={() => {
-          if (active && drillAt(active.i)) navigate(drillAt(active.i)!);
+          if (active) activate(active.i);
         }}
         clickable={Boolean(block.drill)}
         tooltip={tooltip}
@@ -339,6 +349,10 @@ function HBarSvg({ block, title, staticMode }: { block: ChartBlock; title: strin
             </text>
           ) : null}
           <g transform={padTop ? `translate(0,${padTop})` : undefined}>
+            {openedRow >= 0 && openedRow < n ? (
+              // The row whose rule sheet is open stays marked (the RuleLink's opened tint).
+              <rect x={0} y={openedRow * rowH} width={width} height={rowH} fill={token('primary', 0.1)} data-testid="chart-opened-row" />
+            ) : null}
             {nav.open && active ? (
               <rect x={0} y={active.i * rowH} width={width} height={rowH} fill={token('muted-foreground', 0.1)} />
             ) : null}

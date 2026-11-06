@@ -240,7 +240,10 @@ describe('Group by (client-side re-bin)', () => {
     await user.click(within(await openMenu(user)).getByRole('menuitem', { name: 'Copy data' }));
     expect(copyText.mock.calls[0][0].split('\n').slice(0, 2)).toEqual(['Period (Asia/Kolkata)\tCases', 'Aug 2026\t809']);
     await user.click(within(group).getByRole('radio', { name: 'Week' }));
-    expect(within(screen.getByTestId('chart-data-table')).getAllByRole('rowheader')[0]).toHaveTextContent('W31 2026 (from 1 Aug)');
+    // A week names the day it starts, its ISO week and the window's cut, in one day format (Round 14 review).
+    expect(within(screen.getByTestId('chart-data-table')).getAllByRole('rowheader')[0]).toHaveTextContent(
+      'Week of Jul 27 (W31 2026) (from Aug 1)',
+    );
     await user.click(within(group).getByRole('radio', { name: 'Day' }));
     expect(within(screen.getByTestId('chart-data-table')).getAllByRole('rowheader')).toHaveLength(70);
   });

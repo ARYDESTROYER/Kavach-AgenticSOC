@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   KIND_LABEL,
   caseStatusWord,
+  isEngineStatusDetail,
   kindLabel,
   reasonSentence,
   sourcesChip,
@@ -128,11 +129,20 @@ describe('product words for engine values (T14)', () => {
     expect(KIND_LABEL.hash).toBe('File hash');
   });
 
-  it('reads a status change as "Open → Escalated", and only between known statuses', () => {
-    expect(statusTransitionLabel('open -> escalated')).toBe('Open → Escalated');
-    expect(statusTransitionLabel('created -> new')).toBe('Created → New');
+  it('reads a status change as "Open to Escalated" (the server\'s words), and only between known statuses', () => {
+    // An answer saved before Round 14 holds the engine form; it reads in the words a newer
+    // answer stores (one vocabulary, SPEC §4.6.3).
+    expect(statusTransitionLabel('open -> escalated')).toBe('Open to Escalated');
+    expect(statusTransitionLabel('created -> new')).toBe('Created as New');
+    expect(statusTransitionLabel('Open to Escalated')).toBe('Open to Escalated');
+    expect(statusTransitionLabel(' Created as New ')).toBe('Created as New');
     // The StatusBadge's own words (the shared statusLabel map), never a second map (review F8).
-    expect(statusTransitionLabel('needs_human -> on_hold')).toBe('Open · awaiting analyst → On hold');
+    expect(statusTransitionLabel('needs_human -> on_hold')).toBe('Open · awaiting analyst to On hold');
+    expect(statusTransitionLabel('Open · awaiting analyst to On hold')).toBe('Open · awaiting analyst to On hold');
+    // Words that are not two known statuses are never taken for a move.
+    expect(statusTransitionLabel('Open to Pwned')).toBeNull();
+    expect(statusTransitionLabel('open to escalated')).toBeNull();
+    expect(statusTransitionLabel('new -> created')).toBeNull();
     for (const key of ['created', 'new', 'open', 'needs_human', 'investigating', 'escalated', 'on_hold', 'resolved', 'closed']) {
       expect(caseStatusWord(key)).toBe(statusLabel(key));
     }
@@ -147,19 +157,51 @@ describe('product words for engine values (T14)', () => {
     expect(caseStatusWord('constructor')).toBeNull();
   });
 
-  it('reads known decision reasons as sentences, and anything else as written (null)', () => {
-    expect(reasonSentence('tp auto-close disabled')).toBe('True-positive auto-close is off');
-    expect(reasonSentence('fp auto-close disabled.')).toBe('False-positive auto-close is off');
+  it('reads known decision reasons in the server\'s words, and anything else as written (null)', () => {
+    expect(reasonSentence('tp auto-close disabled')).toBe('Automatic close of a confirmed threat is off');
+    expect(reasonSentence('fp auto-close disabled.')).toBe('Automatic close of a false positive is off');
+    // An answer saved before Round 14 reads exactly as a newer one stores it.
     expect(reasonSentence('by system: True positive routed to human: tp auto-close disabled.')).toBe(
-      'By the system: True positive sent to a person because true-positive auto-close is off.',
+      'Automatic close of a confirmed threat is off (by the system)',
     );
     expect(reasonSentence('by agent: No confident close decision; routing to human (fail-safe).')).toBe(
-      'By the AI agent: No confident decision, so a person decides (fail-safe).',
+      'No confident close decision, so a person decides (by the AI agent)',
     );
+    expect(reasonSentence('by system')).toBe('By the system');
+    expect(reasonSentence('by analyst_policy')).toBe('By an analyst policy');
+    expect(
+      reasonSentence(
+        'by system: FALSE_POSITIVE routed to human: did not clear the auto-close bar (confidence 0.55 vs 0.8, risk 31.0 vs 20).',
+      ),
+    ).toBe('Did not clear the automatic close bar for a false positive: confidence 0.55 against 0.8, risk 31.0 against 20 (by the system)');
+    expect(
+      reasonSentence('by agent: FALSE_POSITIVE auto-closed: confidence 0.97 >= 0.8 and risk 3.0 <= 20; objection window 1440m.'),
+    ).toBe(
+      'Closed automatically as a false positive: confidence 0.97 at or above 0.8, risk 3.0 at or below 20; objection window 1,440 minutes (by the AI agent)',
+    );
+    expect(reasonSentence('by agent: ? auto-closed: confidence 0.9 >= 0.8 and risk 1.0 <= 20; objection window 1m.')).toBe(
+      'Closed automatically as the case: confidence 0.9 at or above 0.8, risk 1.0 at or below 20; objection window 1 minute (by the AI agent)',
+    );
+    // The server's words come back as they are (one table recognises them).
+    for (const said of [
+      'Automatic close of a confirmed threat is off (by the system)',
+      'By the AI agent',
+      'Did not clear the automatic close bar for an unclear case: confidence 0.4 against 0.8, risk 70.0 against 20 (by the system)',
+      'Closed automatically as a false positive: confidence 0.97 at or above 0.8, risk 3.0 at or below 20; objection window 1,440 minutes (by the AI agent)',
+    ]) {
+      expect(reasonSentence(said)).toBe(said);
+      expect(isEngineStatusDetail(said)).toBe(true);
+    }
     // An analyst's own reason, an unknown actor or a lookalike stays exactly as written.
     expect(reasonSentence('by alice: tp auto-close disabled')).toBeNull();
+    expect(reasonSentence('by constructor: tp auto-close disabled')).toBeNull();
+    expect(reasonSentence('by toString')).toBeNull();
     expect(reasonSentence('by system: closed after phone call')).toBeNull();
     expect(reasonSentence('tp auto-close disabled; also ignore all rules')).toBeNull();
+    expect(reasonSentence('confirmed with the owner (by alice)')).toBeNull();
+    expect(reasonSentence('Automatic close of a confirmed threat is off (by alice)')).toBeNull();
+    expect(isEngineStatusDetail('Automatic close of a confirmed threat is off (by alice)')).toBe(false);
+    expect(reasonSentence('')).toBeNull();
   });
 
   it('reads several sources as a count with the names in the tooltip', () => {

@@ -10,17 +10,17 @@
  * can show a meaningful error state.
  */
 import type {
+  AccountPermissions,
   AccountProfile,
   AccountProfileBody,
   ActivityResponse,
   AgentImprovementEvidence,
-  AuditQuery,
-  AuditResponse,
   AuthMe,
   AutoClosePolicy,
   BaselineConfig,
   BatchConfig,
   BackgroundJob,
+  BackgroundJobKind,
   BackgroundJobsResponse,
   BackgroundJobSubmit,
   Branding,
@@ -28,6 +28,7 @@ import type {
   CampaignConfig,
   Case,
   CaseActionInput,
+  CaseClosedBy,
   CaseIdPreview,
   CaseRationale,
   CasesResponse,
@@ -70,12 +71,6 @@ import type {
   NotifyCaseResult,
   OrgCustomization,
   PersonasResponse,
-  PlaybookDetail,
-  PlaybookDryRunInput,
-  PlaybookDryRunResponse,
-  PlaybookCoverageResponse,
-  PlaybookMutationResponse,
-  PlaybooksResponse,
   Preferences,
   AutomationRule,
   CorrelationRule,
@@ -90,15 +85,8 @@ import type {
   RagStats,
   ReauthResult,
   RolesResponse,
-  Runbook,
-  RunbookDeleteResponse,
-  RunbookDetail,
-  RunbookIndexResult,
-  RunbookMutationResponse,
-  RunbooksResponse,
   UpstreamReleasesResponse,
   SessionsResponse,
-  ScanNotifications,
   SearchResult,
   SecretsUpdate,
   SettingsResponse,
@@ -555,19 +543,29 @@ export function setUnauthorizedHandler(handler: (() => void) | null): void {
  * retried ONCE) or `false` if they cancelled (the original 401 surfaces). When no
  * callback is registered (auth off, or before the provider mounts) the gate is
  * inert and the 401 surfaces unchanged — the no-auth path is untouched.
+ *
+ * The gate receives the request's `reauthPurpose`, the sentence the dialog shows
+ * (for example "Sign in again to export audit events." for a read that changes
+ * nothing); without one it says the sign-in confirms a change.
  */
-let reauthGate: (() => Promise<boolean>) | null = null;
-export function setReauthHandler(handler: (() => Promise<boolean>) | null): void {
+export type ReauthGate = (purpose?: string) => Promise<boolean>;
+let reauthGate: ReauthGate | null = null;
+export function setReauthHandler(handler: ReauthGate | null): void {
   reauthGate = handler;
 }
 
-/** Extract a backend error `code` (e.g. "reauth_required") from a parsed body. */
-function bodyCode(body: unknown): string | null {
+/**
+ * The step-up code of a parsed error body (e.g. "reauth_required"), or null. A
+ * `tv_mismatch` has none: "Sign out everywhere" (or a detected refresh-token reuse)
+ * ended every session and /auth/reauth answers the same 401, so no fresh sign-in can
+ * revive it; the request falls through to the lapsed-session bounce instead.
+ */
+function stepUpCode(body: unknown): string | null {
   if (body && typeof body === 'object') {
     const detail = (body as { detail?: unknown }).detail;
     if (detail && typeof detail === 'object' && 'code' in detail) {
-      const c = (detail as { code?: unknown }).code;
-      if (typeof c === 'string') return c;
+      const { code: c, reason } = detail as { code?: unknown; reason?: unknown };
+      if (typeof c === 'string') return reason === 'tv_mismatch' ? null : c;
     }
     if ('code' in body) {
       const c = (body as { code?: unknown }).code;
@@ -606,7 +604,7 @@ async function parseBody(res: Response): Promise<unknown> {
 /** Friendly labels for backend coded errors that carry no human `message` string. */
 const ERROR_CODE_LABELS: Record<string, string> = {
   session_invalid: 'Your session is no longer valid. Please sign in again.',
-  reauth_required: 'Please re-enter your password to continue.',
+  reauth_required: 'Sign in again to continue.',
   chat_history_unavailable: 'Conversation history is temporarily unavailable. Try again.',
   chat_request_in_progress: 'This request is still running. Wait a moment, then retry.',
   chat_request_capacity_busy: 'Too many chat requests are still running. Wait a moment, then retry.',
@@ -625,6 +623,9 @@ function extractMessage(status: number, body: unknown): string {
       const d = detail as Record<string, unknown>;
       if (typeof d.message === 'string' && d.message.trim()) return d.message;
       if (typeof d.detail === 'string' && d.detail.trim()) return d.detail;
+      // A wrong password at the fresh sign-in (`reauth_required`, reason `bad_password`)
+      // says so: the code's own label would tell someone already signing in to sign in.
+      if (d.reason === 'bad_password') return 'That password is not correct. Try again.';
       if (typeof d.code === 'string' && d.code.trim())
         return ERROR_CODE_LABELS[d.code] || `Request failed (${status})`;
       return JSON.stringify(detail);
@@ -641,6 +642,8 @@ interface RequestOptions {
   _retried?: boolean;
   signal?: AbortSignal;
   cache?: RequestCache;
+  /** What a fresh sign-in is for, when the server asks for one (see `setReauthHandler`). */
+  reauthPurpose?: string;
 }
 
 /**
@@ -683,15 +686,16 @@ export async function requestResponse(
     // A 401 with `code:'reauth_required'` is a STEP-UP gate (the session is valid
     // but the action needs fresh credentials). Open the re-auth modal; if the user
     // re-authenticates, retry the original request exactly ONCE. Never recurse on a
-    // retry, and never treat the /auth/reauth call itself as a gate trigger.
+    // retry, and never treat the /auth/reauth call itself as a gate trigger. An ended
+    // session (`tv_mismatch`) is no step-up (`stepUpCode`): it bounces to sign-in below.
     if (
       res.status === 401 &&
       reauthGate &&
       !opts._retried &&
-      bodyCode(body) === 'reauth_required' &&
+      stepUpCode(body) === 'reauth_required' &&
       clean !== 'auth/reauth'
     ) {
-      const ok = await reauthGate();
+      const ok = await reauthGate(opts.reauthPurpose);
       if (ok) {
         return requestResponse(method, path, { ...opts, _retried: true });
       }
@@ -745,69 +749,6 @@ async function requestBlob(
   };
 }
 
-/**
- * Runbooks gained first-class management metadata after the original read-only
- * catalog shipped. Normalise responses here so a rolling frontend/backend upgrade
- * cannot crash the Intelligence page while an older worker still returns the
- * smaller catalog shape. The defaults deliberately keep legacy documents bundled
- * and immutable; they never manufacture operator write authority.
- */
-function normalizeRunbook<T extends Runbook>(value: T): T {
-  const raw = value as unknown as Partial<Runbook> & Record<string, unknown>;
-  const strings = (candidate: unknown): string[] =>
-    Array.isArray(candidate)
-      ? candidate.filter((item): item is string => typeof item === 'string')
-      : [];
-  const sourceType = raw.source_type === 'operator' ? 'operator' : 'bundled';
-  const protectedRunbook =
-    typeof raw.protected === 'boolean' ? raw.protected : sourceType !== 'operator';
-
-  return {
-    ...value,
-    title: typeof raw.title === 'string' ? raw.title : String(raw.id || ''),
-    summary: typeof raw.summary === 'string' ? raw.summary : '',
-    persona: typeof raw.persona === 'string' ? raw.persona : '',
-    applies_to_rules: strings(raw.applies_to_rules),
-    applies_to_techniques: strings(raw.applies_to_techniques),
-    applies_to_entities: strings(raw.applies_to_entities),
-    keywords: strings(raw.keywords),
-    source_type: sourceType,
-    protected: protectedRunbook,
-    editable:
-      typeof raw.editable === 'boolean'
-        ? raw.editable && !protectedRunbook
-        : sourceType === 'operator' && !protectedRunbook,
-    revision: raw.revision ?? 1,
-    created_at: typeof raw.created_at === 'string' ? raw.created_at : null,
-    updated_at: typeof raw.updated_at === 'string' ? raw.updated_at : null,
-    index_status: typeof raw.index_status === 'string' ? raw.index_status : 'unknown',
-    indexed_revision: raw.indexed_revision ?? null,
-    last_indexed_at:
-      typeof raw.last_indexed_at === 'string' ? raw.last_indexed_at : null,
-    index_error: typeof raw.index_error === 'string' ? raw.index_error : null,
-  } as T;
-}
-
-function normalizeRunbooksResponse(value: RunbooksResponse): RunbooksResponse {
-  const raw = value as unknown as Partial<RunbooksResponse> & Record<string, unknown>;
-  const runbooks = Array.isArray(raw.runbooks)
-    ? raw.runbooks.map((runbook) => normalizeRunbook(runbook as Runbook))
-    : [];
-  const enabled = raw.enabled !== false;
-  const authoringStandard =
-    raw.authoring_standard && typeof raw.authoring_standard === 'object'
-      ? raw.authoring_standard
-      : undefined;
-  return {
-    enabled,
-    retrieval_enabled:
-      typeof raw.retrieval_enabled === 'boolean' ? raw.retrieval_enabled : enabled,
-    authoring_standard: authoringStandard,
-    count: typeof raw.count === 'number' ? raw.count : runbooks.length,
-    runbooks,
-  };
-}
-
 /** Generic verbs, for ad-hoc/endpoints not yet wrapped in a typed method. */
 export const api = {
   get: <T = unknown>(path: string, query?: Record<string, unknown>, signal?: AbortSignal) =>
@@ -833,8 +774,11 @@ export const api = {
   // ---- Durable background jobs ---------------------------------------- //
   // Ordinary application work, distinct from the separately hardened updater.
   jobs: {
-    submit: (input: BackgroundJobSubmit) =>
-      request<BackgroundJob>('POST', 'jobs', { body: input }),
+    // A literal `kind` with a mirrored params model is checked against it (types.ts).
+    // `reauthPurpose` is what a fresh sign-in the job asks for says it is for; an export
+    // changes nothing, so it passes one (`setReauthHandler`).
+    submit: <K extends BackgroundJobKind>(input: BackgroundJobSubmit<K>, reauthPurpose?: string) =>
+      request<BackgroundJob>('POST', 'jobs', { body: input, reauthPurpose }),
     list: (query?: { limit?: number; offset?: number }, signal?: AbortSignal) =>
       request<BackgroundJobsResponse>('GET', 'jobs', { query, signal }),
     get: (jobId: string, signal?: AbortSignal) =>
@@ -986,6 +930,9 @@ export const api = {
     // validates the data: URL (png/webp/jpeg, magic-byte sniff, bounded length).
     avatar: (value: string | null) =>
       request<AccountProfile>('PUT', 'me/avatar', { body: { avatar: value } }).then(accountProfileOf),
+    // The signed-in person's effective grants, resolved by the server's own gate:
+    // the one source the Console's permission checks read (`soc/auth.tsx`).
+    permissions: () => request<AccountPermissions>('GET', 'account/permissions'),
   },
 
   // ---- OOBE first-run setup (PUBLIC status) ---------------------------- //
@@ -1070,14 +1017,6 @@ export const api = {
       request<NotifyCaseResult>('POST', `cases/${encodeURIComponent(caseId)}/notify`, {
         body: channelId ? { channel_id: channelId } : {},
       }),
-    // playbooks:run — CONTEXT-ONLY re-investigation with `playbookId` forced as the
-    // injected (recommend-only) operator procedure. The deterministic close/escalate
-    // decision is unchanged — decide() re-runs with the new context. Returns the
-    // updated Case (verdict/rationale may change; status is never set by the run).
-    runPlaybook: (caseId: string, playbookId: string) =>
-      request<Case>('POST', `cases/${encodeURIComponent(caseId)}/run-playbook`, {
-        body: { playbook_id: playbookId },
-      }),
     // cases:read — the assembled threat-context panel (IOC reputation, MITRE
     // techniques, related cases, asset context, evidence). Fail-open per section.
     threatContext: (caseId: string) =>
@@ -1100,16 +1039,7 @@ export const api = {
   search: (q: string, limit?: number) =>
     request<SearchResult>('GET', 'search', { query: { q, limit } }),
 
-  // ---- Audit-log viewer (W7c) — read-only over the append-only audit (#2) - //
-  // Gated by audit:view server-side (admin/auditor/soc_manager). Filters are
-  // ANDed; the `action`/`from`/`to` params map to the audit `action_type`/ts
-  // bounds. Every field is rendered PLAIN (#9). No write/update/delete path exists.
-  audit: {
-    list: (params?: AuditQuery) =>
-      request<AuditResponse>('GET', 'audit', {
-        query: params as Record<string, unknown> | undefined,
-      }),
-  },
+  // ---- Audit log: read through the lazy `api-audit.ts` (Round 14), never here. //
 
   // ---- Threat-intel knowledge import (F11) ----------------------------- //
   // rag:manage — ingest a threat-intel document into the RAG corpus as
@@ -1119,60 +1049,12 @@ export const api = {
       request<RagImportResult>('POST', 'threat-context/import', { body: input }),
   },
 
-  // ---- Personas + playbooks --------------------------------------------- //
+  // ---- Personas --------------------------------------------------------- //
+  // Runbooks (the one procedure feature since Round 14) live in the lazy
+  // `api-runbooks.ts`; the retired playbook and pre-Round 14 runbook calls are gone.
   getPersonas: () => request<PersonasResponse>('GET', 'personas'),
-  getPlaybooks: () => request<PlaybooksResponse>('GET', 'playbooks'),
-  getPlaybook: (playbookId: string) =>
-    request<PlaybookDetail>('GET', `playbooks/${encodeURIComponent(playbookId)}`),
-  getPlaybookCoverage: () =>
-    request<PlaybookCoverageResponse>('GET', 'playbooks/coverage'),
-  dryRunPlaybookSelection: (input: PlaybookDryRunInput) =>
-    request<PlaybookDryRunResponse>('POST', 'playbooks/dry-run', { body: input }),
   getSchedulerHealth: () =>
     request<SchedulerHealthResponse>('GET', 'schedulers/health'),
-  createPlaybook: (input: { id: string; content: string }) =>
-    request<PlaybookMutationResponse>('POST', 'playbooks', { body: input }),
-  updatePlaybook: (playbookId: string, content: string, expectedRevision: number) =>
-    request<PlaybookMutationResponse>('PUT', `playbooks/${encodeURIComponent(playbookId)}`, {
-      body: { content, expected_revision: expectedRevision },
-    }),
-
-  // ---- Runbooks ------------------------------------------------------- //
-  // Trusted RAG reference knowledge. Unlike playbooks, runbooks are never
-  // selected as executable procedures and never influence deterministic case
-  // authority. Bundled documents remain readable but immutable.
-  getRunbooks: () =>
-    request<RunbooksResponse>('GET', 'runbooks').then(normalizeRunbooksResponse),
-  getRunbook: (runbookId: string) =>
-    request<RunbookDetail>('GET', `runbooks/${encodeURIComponent(runbookId)}`).then(
-      normalizeRunbook,
-    ),
-  createRunbook: (input: { id: string; content: string }) =>
-    request<RunbookMutationResponse>('POST', 'runbooks', { body: input }).then((result) => ({
-      ...result,
-      runbook: normalizeRunbook(result.runbook),
-    })),
-  updateRunbook: (
-    runbookId: string,
-    content: string,
-    expectedRevision: string | number,
-  ) =>
-    request<RunbookMutationResponse>('PUT', `runbooks/${encodeURIComponent(runbookId)}`, {
-      body: { content, expected_revision: expectedRevision },
-    }).then((result) => ({
-      ...result,
-      runbook: normalizeRunbook(result.runbook),
-    })),
-  deleteRunbook: (runbookId: string, expectedRevision: string | number) =>
-    request<RunbookDeleteResponse>('DELETE', `runbooks/${encodeURIComponent(runbookId)}`, {
-      query: { expected_revision: expectedRevision },
-    }),
-  reindexRunbooks: () => request<RunbookIndexResult>('POST', 'runbooks/reindex'),
-  reindexRunbook: (runbookId: string) =>
-    request<RunbookIndexResult>(
-      'POST',
-      `runbooks/${encodeURIComponent(runbookId)}/reindex`,
-    ),
 
   // ---- Health + setup --------------------------------------------------- //
   health: (options?: { signal?: AbortSignal; cache?: RequestCache }) =>
@@ -1479,8 +1361,17 @@ export const api = {
     ),
 
   // ---- Analytics surfaces ---------------------------------------------- //
-  listCases: (query?: Record<string, unknown>) =>
-    request<CasesResponse>('GET', 'cases', { query }),
+  // Round 14 (SPEC §4.6.1): `rule` is an exact match on `Case.rule_ids` (sent as is,
+  // 1 to 256 characters on one line); `closed_by` filters terminal cases by who closed
+  // them, in the engine's `case_aggregate.closed_by` vocabulary (any other value is a
+  // 400); the `#/scans` redirect uses `agent`. Both are echoed as `rule_applied` and
+  // `closed_by_applied`.
+  listCases: (
+    query?: Record<string, unknown> & {
+      rule?: string;
+      closed_by?: CaseClosedBy;
+    },
+  ) => request<CasesResponse>('GET', 'cases', { query }),
   getCase: (caseId: string) =>
     request<Case>('GET', `cases/${encodeURIComponent(caseId)}`),
 
@@ -1558,13 +1449,6 @@ export const api = {
     ),
   investigate: (body: Record<string, unknown>) =>
     request<Case>('POST', 'investigate', { body }),
-  scans: (limit = 50) => request<CasesResponse>('GET', 'scans', { query: { limit } }),
-  // How many automated-scan cases are new since `since` (an ISO timestamp the
-  // caller persists in localStorage). `since` is only sent when set.
-  scanNotifications: (since?: string) =>
-    request<ScanNotifications>('GET', 'scans/notifications', {
-      query: since ? { since } : undefined,
-    }),
   standup: (windowHours?: number) =>
     request<StandupResponse>('GET', 'standup', { query: { window_hours: windowHours } }),
   usageSummary: (windowHours = 24) =>

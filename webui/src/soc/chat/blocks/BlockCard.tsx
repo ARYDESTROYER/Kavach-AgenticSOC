@@ -43,6 +43,16 @@
  *     (`renderers/full-bleed.ts`), offered only inside a chat lane with room to gain;
  *   - a comparison's tile view reads absolute and relative change per metric
  *     (`renderers/ComparisonView.tsx`).
+ *
+ * Round 14 (SPEC §4.6.3, §4.6.5, §4.7.3, F6):
+ *   - every card (but print) is one rule sheet host (`rule-drill.tsx`): a rule bar or a
+ *     rule row opens that rule's sheet over the answer, "From your answer"; any other
+ *     drill remembers the answer, so the page it opens can offer "Back to answer";
+ *   - a severity breakdown table renders as `SeverityBreakdownView`, with "Split by" in
+ *     the header when the server returned more than one split, and a rules-by-level
+ *     matrix in "Show as" when a rule spans two or more levels (it takes the wide lane);
+ *   - the title is as wide as its text, and carries a native tooltip only while it is
+ *     cut off (F6: no stray tooltip over the whole header row).
  */
 import * as React from 'react';
 import {
@@ -92,6 +102,7 @@ import { RebinControl } from './charts/RebinControl';
 import { rebinChart, rebinChoices } from './charts/rebin';
 import { CARTESIAN_KINDS } from './charts/kinds';
 import { BlocksContext, leafAnchorKey, useBlocks } from './context';
+import { DrillNavigation, RuleDrillScope } from './rule-drill';
 import { blockTabular, downloadText, toCSV, toJSON, toTSV } from './export-helpers';
 import { captionStatesCount, fileStamp, formatUtc, slug, truncationNote } from './format';
 import { CAPTION_SEPARATOR, ownCaptionParts, type BlockWidth, type SharedScope } from './layout';
@@ -103,10 +114,22 @@ import { KpiGroupView } from './renderers/KpiGroupView';
 import { MitreView } from './renderers/MitreView';
 import { ReportView, briefHeading, reportLeafScope, reportScopeLine } from './renderers/ReportView';
 import { CalloutView, CitationsView, GuideView, MarkdownView, QueryView } from './renderers/SimpleViews';
+import {
+  SeverityBreakdownView,
+  SeveritySplitHeader,
+  SeveritySplitMenuGroup,
+  availableSplits,
+  defaultSplit,
+  matrixOffered,
+  splitAnnouncement,
+  splitMenuShown,
+  type SeveritySplitChoice,
+  type SeverityViewChoice,
+} from './renderers/SeverityBreakdownView';
 import { TableView } from './renderers/TableView';
 import { TimelineView } from './renderers/TimelineView';
 import { useFullBleed } from './renderers/full-bleed';
-import type { AnswerBlock, BlockView, InternalRef, LeafBlock, TimeBucket } from './schema';
+import type { AnswerBlock, BlockView, InternalRef, LeafBlock, TableBlock, TimeBucket } from './schema';
 import { AI_AUTHORED_TYPES, blockView } from './schema';
 import { VIEW_LABEL, canShowTable, honestBlock, honestChart, switchableViews, tableBlockOf, viewAs } from './views';
 
@@ -179,6 +202,19 @@ export function shownCount(block: AnswerBlock): number {
   }
 }
 
+/**
+ * A chart's rows drawn as a table keep each row's destination (Round 14, SPEC §4.6.3): a
+ * rule bar's sheet is the same rule row's sheet in "Show table" or Show as Table. Kept only
+ * when the table's rows are exactly the chart's categories, in order (anything regrouped
+ * keeps none rather than a misaligned link).
+ */
+export function withChartDrill(source: AnswerBlock, table: TableBlock): TableBlock {
+  if (source.type !== 'chart' || !source.drill || table.drill) return table;
+  const labels = source.x.values;
+  if (table.rows.length !== labels.length || !table.rows.every((row, i) => row[0] === labels[i])) return table;
+  return { ...table, drill: source.drill };
+}
+
 /** Blocks that carry DATA (G5 applies); prose and notes do not. */
 function isDataBlock(block: AnswerBlock): boolean {
   return !AI_AUTHORED_TYPES.includes(block.type) && block.type !== 'guide' && block.type !== 'citations';
@@ -237,6 +273,10 @@ export interface BlockBodyProps {
   bare?: boolean;
   /** `"<section>-<leaf>"` for a report leaf (see `leafAnchorKey`). */
   leafKey?: string;
+  /** A severity breakdown's Top column (the card's "Split by"); its default otherwise. */
+  severitySplit?: SeveritySplitChoice;
+  /** A severity breakdown's view (the card's "Show as"). */
+  severityView?: SeverityViewChoice;
 }
 
 export function BlockBody({
@@ -249,6 +289,8 @@ export function BlockBody({
   nested = false,
   bare = false,
   leafKey,
+  severitySplit,
+  severityView,
 }: BlockBodyProps) {
   const { compact, citationOwner } = useBlocks();
   // The body sits inside the card's own frame (border + 0.75rem padding) only in a
@@ -256,7 +298,8 @@ export function BlockBody({
   // around the body, so KPI tiles draw their own closed frame there (KpiGroupView).
   const inCardFrame = !nested && !bare && !expanded;
   if (showTable) {
-    const t = tableBlockOf(block);
+    const derived = tableBlockOf(block);
+    const t = derived ? withChartDrill(block, derived) : null;
     // A case list's table names each case by number and links by its id (`caseRefs`).
     if (t) {
       return (
@@ -285,6 +328,18 @@ export function BlockBody({
     case 'heatmap':
       return <HeatmapView block={block} title={title} staticMode={staticMode} />;
     case 'table':
+      // A severity breakdown reads as its levels (SPEC §4.7.3); print, reports and exports
+      // keep the plain table form of the same rows.
+      if (block.severity && !staticMode) {
+        return (
+          <SeverityBreakdownView
+            block={{ ...block, severity: block.severity }}
+            title={title}
+            split={severitySplit ?? defaultSplit(block.severity)}
+            view={severityView}
+          />
+        );
+      }
       return <TableView block={block} title={title} paged={expanded} staticMode={staticMode} />;
     case 'case_list':
       return <CaseListView block={block} />;
@@ -462,7 +517,45 @@ function BlockReportToggle({
 const REVEAL_ON_CARD =
   'pointer-events-none opacity-0 transition-opacity motion-reduce:transition-none group-hover/block:pointer-events-auto group-hover/block:opacity-100 group-focus-within/block:pointer-events-auto group-focus-within/block:opacity-100';
 
-export function BlockCard({
+/**
+ * The card. Every card but print and prose is ONE rule sheet host with a `navigate` that
+ * opens rule refs as that sheet (`RuleDrillScope` + `DrillNavigation`); a Brief's leaves
+ * share their Brief's host.
+ */
+export function BlockCard(props: BlockCardProps) {
+  if (props.staticMode || props.block.type === 'markdown' || props.block.type === 'callout') return <BlockCardBody {...props} />;
+  return (
+    <RuleDrillScope>
+      <DrillNavigation>
+        <BlockCardBody {...props} />
+      </DrillNavigation>
+    </RuleDrillScope>
+  );
+}
+
+/**
+ * F6: a native tooltip on the title only while the title is cut off (re-measured when its
+ * box resizes), so hovering a fully shown title shows nothing.
+ */
+function useTruncatedTitle(ref: React.RefObject<HTMLElement>, text: string, enabled: boolean): boolean {
+  const [truncated, setTruncated] = React.useState(false);
+  React.useLayoutEffect(() => {
+    const el = ref.current;
+    if (!enabled || !el) {
+      setTruncated(false);
+      return undefined;
+    }
+    const measure = () => setTruncated(el.scrollWidth > el.clientWidth);
+    measure();
+    if (typeof ResizeObserver === 'undefined') return undefined;
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [ref, text, enabled]);
+  return truncated;
+}
+
+function BlockCardBody({
   block,
   index,
   headingLevel = 4,
@@ -496,13 +589,23 @@ export function BlockCard({
   const [seriesMenu, setSeriesMenu] = React.useState<ChartSeriesMenu | null>(null);
   const publishSeries = React.useCallback((menu: ChartSeriesMenu | null) => setSeriesMenu(menu), []);
   const figureRef = React.useRef<HTMLElement>(null);
+  const headingRef = React.useRef<HTMLHeadingElement>(null);
   const chartView = React.useRef<ChartView | null>(null);
+  // Round 14 (SPEC §4.7.3): a severity breakdown's "Split by" and its view (levels or the
+  // rules-by-level matrix). Display only: the block's data never changes.
+  const [severitySplit, setSeveritySplit] = React.useState<SeveritySplitChoice | null>(null);
+  const [severityView, setSeverityView] = React.useState<SeverityViewChoice>('table');
   const bleed = useFullBleed(figureRef, !nested && !staticMode && !bare && !ctx.compact && BLEED_TYPES.includes(block.type));
   const rebinOptions = React.useMemo(() => (block.type === 'chart' && !staticMode ? rebinChoices(block) : []), [block, staticMode]);
   const grouped = React.useMemo(
     () => (block.type === 'chart' && rebin && rebinOptions.includes(rebin) ? rebinChart(block, rebin) : block),
     [block, rebin, rebinOptions],
   );
+
+  // F6: the title's text (as `shownTitle` below), measured before the prose branch so the
+  // hook order never changes.
+  const titleText = block.type === 'report' ? briefHeading(block) : blockTitle(block);
+  const titleCut = useTruncatedTitle(headingRef, titleText, !staticMode && block.type !== 'markdown' && block.type !== 'callout');
 
   // Bare blocks: prose and notes carry no chrome of their own. Inside a Brief (a wide
   // block) they keep the measures the answer's own prose keeps (`lane.ts`): 38rem for
@@ -525,7 +628,8 @@ export function BlockCard({
   }
 
   // Charts are always drawn in a kind their data can honestly support (views.ts).
-  const displayed = view ? viewAs(grouped, view) : honestBlock(grouped);
+  const viewed = view ? viewAs(grouped, view) : honestBlock(grouped);
+  const displayed = viewed.type === 'table' ? withChartDrill(grouped, viewed) : viewed;
   const title = blockTitle(block);
   const isBrief = block.type === 'report';
   // SPEC §10.6 vocabulary: an in-chat report is a "Brief", and its title says so (T29;
@@ -543,6 +647,27 @@ export function BlockCard({
   // image subtitle and the file names (the server's title still names its own bucket).
   const groupedBy = block.type === 'chart' && rebin && rebin !== rebinOptions[0] && rebinOptions.includes(rebin) ? BUCKET_NAME[rebin] ?? null : null;
   const stamp = (grouping: string | null = null) => `agentic-soc-${slug(title)}${grouping ? `-by-${slug(grouping)}` : ''}-${fileStamp()}Z`;
+
+  // A severity breakdown (Round 14): its Split by choices and its views. The matrix is one
+  // more "Show as" choice, offered only when a rule spans two or more levels.
+  const blockSeverity = !staticMode && block.type === 'table' && block.severity ? block.severity : null;
+  const severity = displayed.type === 'table' && blockSeverity ? blockSeverity : null;
+  const splitChoices = severity ? availableSplits(severity) : [];
+  const split: SeveritySplitChoice | undefined = severity ? severitySplit ?? defaultSplit(severity) : undefined;
+  const matrixView = Boolean(blockSeverity && matrixOffered(blockSeverity));
+  const shownSeverityView: SeverityViewChoice = matrixView && severity ? severityView : 'table';
+  const showAsValue = shownSeverityView === 'matrix' ? 'matrix' : currentView;
+  // "Split by" changes the levels table only, so the matrix (rules by level) never offers
+  // it. A wide card puts it in its header; a phone or a narrow column (Case Manager) keeps
+  // the header for the title and offers it in the ⋯ menu instead (SeveritySplitHeader /
+  // SeveritySplitMenuGroup, which alone watch the screen width).
+  const splitShown = Boolean(
+    severity && shownSeverityView !== 'matrix' && splitMenuShown(severity) && splitChoices.length > 1,
+  );
+  const chooseSplit = (next: SeveritySplitChoice) => {
+    setSeveritySplit(next);
+    announce(splitAnnouncement(next));
+  };
 
   // "Showing top 5 of 20" under the body, unless the caption above already says it.
   const shown = block.truncated ? shownCount(block) : 0;
@@ -683,25 +808,38 @@ export function BlockCard({
             Full width
           </DropdownMenuCheckboxItem>
         ) : null}
-        {views.length >= 2 ? (
+        {views.length >= 2 || matrixView ? (
           <>
             <DropdownMenuSeparator />
             <DropdownMenuLabel className="text-2xs uppercase tracking-wide text-muted-foreground">Show as</DropdownMenuLabel>
             <DropdownMenuRadioGroup
-              value={currentView}
+              value={showAsValue}
               onValueChange={(v) => {
+                // A severity breakdown's matrix is its table drawn as rules by level.
+                if (v === 'matrix') {
+                  setView('table');
+                  setSeverityView('matrix');
+                  setShowTable(false);
+                  announce('Showing rules by level');
+                  return;
+                }
                 setView(v as BlockView);
+                setSeverityView('table');
                 setShowTable(false);
-                announce(`Showing as ${VIEW_LABEL[v as BlockView]}`);
+                announce(`Showing as ${blockSeverity && v === 'table' ? 'levels table' : VIEW_LABEL[v as BlockView]}`);
               }}
             >
-              {views.map((v) => (
+              {(views.length ? views : (['table'] as BlockView[])).map((v) => (
                 <DropdownMenuRadioItem key={v} value={v}>
-                  {VIEW_LABEL[v]}
+                  {blockSeverity && v === 'table' ? 'Levels table' : VIEW_LABEL[v]}
                 </DropdownMenuRadioItem>
               ))}
+              {matrixView ? <DropdownMenuRadioItem value="matrix">Rules by level</DropdownMenuRadioItem> : null}
             </DropdownMenuRadioGroup>
           </>
+        ) : null}
+        {splitShown && split ? (
+          <SeveritySplitMenuGroup compact={ctx.compact} value={split} choices={splitChoices} onChange={chooseSplit} />
         ) : null}
         {series ? (
           <>
@@ -808,7 +946,8 @@ export function BlockCard({
       ref={figureRef}
       aria-labelledby={titleId}
       data-block-type={block.type}
-      data-block-width={width}
+      // The rules-by-level matrix needs the wide lane (SPEC §4.7.3).
+      data-block-width={shownSeverityView === 'matrix' ? 'wide' : width}
       data-full-bleed={bleed.on || undefined}
       style={bleed.style}
       className={cn(
@@ -821,10 +960,13 @@ export function BlockCard({
         <div className="min-w-0 flex-1">
           {/* Title and caption are prose: proportional numerals, so Inter's tabular hyphen
               does not read "Highest - risk" under the answer (re-shoot PW3-3). */}
+          {/* F6: as wide as its text (so the hover area is the text), with a native
+              tooltip only while the text is cut off. */}
           <Heading
+            ref={headingRef}
             id={titleId}
-            className={cn('text-sm font-semibold text-foreground proportional-nums', staticMode ? 'break-words' : 'truncate')}
-            title={staticMode ? undefined : shownTitle}
+            className={cn('max-w-full text-sm font-semibold text-foreground proportional-nums', staticMode ? 'break-words' : 'w-fit truncate')}
+            title={!staticMode && titleCut ? shownTitle : undefined}
             data-brief={isBrief || undefined}
           >
             {isBrief ? shownTitle : titleNode(block, title)}
@@ -850,6 +992,9 @@ export function BlockCard({
         </div>
         {staticMode ? null : (
           <div className="flex shrink-0 items-center gap-0.5" data-print-hide>
+            {splitShown && split ? (
+              <SeveritySplitHeader compact={ctx.compact} value={split} choices={splitChoices} onChange={chooseSplit} />
+            ) : null}
             {showAddToReport && onAddToReport ? (
               <div
                 className={cn('flex', !inReport && REVEAL_ON_CARD)}
@@ -883,6 +1028,8 @@ export function BlockCard({
             bare={bare}
             leafKey={leafKey}
             staticMode={staticMode}
+            severitySplit={split}
+            severityView={shownSeverityView}
           />
         </ChartControlsContext.Provider>
       </ChartViewContext.Provider>
@@ -906,7 +1053,20 @@ export function BlockCard({
               {/* The sheet's copy of the chart owns its own legend and controls. */}
               <ChartControlsContext.Provider value={null}>
                 <BlocksContext.Provider value={expandedCtx}>
-                  <BlockBody block={displayed} title={title} index={index} showTable={showTable} expanded />
+                  {/* The sheet is a modal layer: a rule opened in it opens over it. */}
+                  <RuleDrillScope layer>
+                    <DrillNavigation>
+                      <BlockBody
+                        block={displayed}
+                        title={title}
+                        index={index}
+                        showTable={showTable}
+                        expanded
+                        severitySplit={split}
+                        severityView={shownSeverityView}
+                      />
+                    </DrillNavigation>
+                  </RuleDrillScope>
                 </BlocksContext.Provider>
               </ChartControlsContext.Provider>
             </div>

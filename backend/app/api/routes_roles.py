@@ -22,7 +22,12 @@ Endpoints
 
 Non-negotiables upheld
 ----------------------
-* **#2** — every RBAC mutation is appended to the append-only audit log.
+* **#2**: every RBAC mutation is appended to the append-only audit log, BEFORE it
+  becomes visible (Round 14 SPEC §3.6): ``role.created`` / ``role.updated`` /
+  ``role.deleted`` and ``user.role_changed`` rows carry the target, what changed
+  (grant by grant) and the request's client, session and request id. If the row
+  cannot be appended the request answers ``503 audit_unavailable`` and nothing
+  changes.
 * **#3** — RBAC gates WHO may *call* a close/escalate endpoint; it never touches the
   deterministic ``case_manager.decide()`` decision. Nothing here feeds that path.
 * **#9** — role names / descriptions / grant maps are operator-influenceable but are
@@ -43,22 +48,29 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from ..audit.changes import diff_changes
+from ..audit.context import audit_context
+from ..audit.write import audited_write
 from ..constants import ActionType, UserRole
 from ..models import CustomRole
 from ..rbac.policy import (
-    DEFAULT_ROLE,
     RESOURCES,
     can,
+    normalise_denies,
+    normalise_grants,
     resolve_matrix,
+    resolve_runbook_alias,
 )
 from ..state import AppState
+from ..stores.custom_roles import CustomRoleExists, CustomRoleMissing
 from .deps import (
+    AccessView,
     _rbac_config_with_custom_roles,
-    current_user,
     current_username,
     get_state,
     require_fresh_auth,
     require_permission,
+    resolve_access,
 )
 
 logger = logging.getLogger("tlsoc.api.routes_roles")
@@ -109,7 +121,17 @@ def _validate_custom_role(body: CustomRoleBody | RolePreviewBody) -> CustomRole:
     """Validate a submitted role into a :class:`CustomRole`, rejecting an empty name
     or a name that collides with a built-in role (400). The store + the matrix
     resolver also clean the grant/deny maps, so an unknown resource/action is dropped
-    leniently rather than erroring."""
+    leniently rather than erroring.
+
+    Round 14 (SPEC §3.7): every body this router accepts (create, update, preview) is
+    read through the ``playbooks`` -> ``runbooks`` alias here, BEFORE anything could
+    clean the retired resource away, so a grant or deny an older client sends is never
+    dropped silently: ``playbooks:manage`` becomes ``runbooks:manage`` and
+    ``runbooks:publish``, a deny of it denies both. A body is current vocabulary, so a
+    ``runbooks:manage`` grant here does NOT imply ``publish`` (that once-only rule is
+    for maps stored before Round 14), and a ``runbooks`` entry in the body is
+    authoritative: a ``playbooks`` key echoed beside it (an older client's body) never
+    widens it back, so a narrowing sticks."""
     name = (body.name or "").strip()
     if not name:
         raise HTTPException(status_code=400, detail="custom role name is required")
@@ -124,26 +146,80 @@ def _validate_custom_role(body: CustomRoleBody | RolePreviewBody) -> CustomRole:
                 "name": name,
                 "description": body.description or "",
                 "inherits": list(body.inherits or []),
-                "grants": dict(body.grants or {}),
-                "denies": dict(body.denies or {}),
+                "grants": normalise_grants(dict(body.grants or {})),
+                "denies": normalise_denies(dict(body.denies or {})),
             }
         )
     except Exception as exc:  # noqa: BLE001 — surface a clean 400 on a malformed body
         raise HTTPException(status_code=400, detail=f"invalid custom role: {exc}") from exc
 
 
-async def _audit_rbac(state: AppState, actor: str, summary: str) -> None:
-    """Append-only audit of an RBAC change (#2). Best-effort — never blocks the
-    request on an audit-store glitch."""
+def _role_doc(role: CustomRole | None) -> dict[str, Any]:
+    """A custom role as the audit diff compares it: description, inherited roles and
+    the grant and deny maps (actions sorted, so a reorder is not a change)."""
+    if role is None:
+        return {}
+    data = role.model_dump(mode="json")
+    return {
+        "description": data.get("description") or "",
+        "inherits": sorted(str(x) for x in (data.get("inherits") or [])),
+        "grants": {k: sorted(v) for k, v in sorted((data.get("grants") or {}).items())},
+        "denies": {k: sorted(v) for k, v in sorted((data.get("denies") or {}).items())},
+    }
+
+
+def _role_target(name: str) -> dict[str, str]:
+    return {"type": "role", "id": name, "label": name}
+
+
+async def _audited_rbac_write(
+    state: AppState,
+    request: Request,
+    *,
+    action: str,
+    target: dict[str, str],
+    changes: list[Any],
+    summary: str,
+    write: Any,
+    store_unavailable: dict[str, str] | None = None,
+) -> Any:
+    """An RBAC change, audit-first (SPEC §3.6): the row (real audit log, never the
+    Demo one) is appended before ``write`` runs; a failed append is ``503
+    audit_unavailable`` and nothing changes.
+
+    ``store_unavailable`` (``{"code", "message"}``) is the answer when the store write
+    itself fails with anything but a domain refusal (an ``HTTPException``): a storage
+    outage or an exhausted compare-and-set is then a structured ``503`` instead of a
+    bare ``500``, after the failure row has recorded the store's own error."""
     try:
-        await state.control_audit.record(
+        return await audited_write(
+            state,
+            sink="control",
+            action=action,
+            target=target,
+            expected_revision=None,
+            changes=changes,
+            write=write,
             action_type=ActionType.USER_MGMT,
+            actor=current_username(request) or "",
             surface="rbac",
-            actor=actor or "",
+            context=audit_context(request),
             result_summary=summary,
         )
-    except Exception:  # noqa: BLE001
-        logger.warning("RBAC audit write soft-failed: %s", summary)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        if store_unavailable is None:
+            raise
+        logger.warning("RBAC write %s failed in the store: %s", action, exc)
+        raise HTTPException(status_code=503, detail=dict(store_unavailable)) from exc
+
+
+#: The answer when the custom role store cannot save a change (SPEC §3.6 step 3).
+_ROLE_STORE_UNAVAILABLE: dict[str, str] = {
+    "code": "role_store_unavailable",
+    "message": "The role could not be saved. Try again.",
+}
 
 
 def _draft_rbac_config(rbac: Any, draft: CustomRole):
@@ -222,8 +298,25 @@ async def create_role(
         raise HTTPException(status_code=503, detail="custom-role store unavailable")
     if await store.get(role.name) is not None:
         raise HTTPException(status_code=409, detail=f"custom role '{role.name}' already exists")
-    stored = await store.put(role)
-    await _audit_rbac(state, current_username(request), f"created custom role '{stored.name}'")
+
+    async def _create() -> CustomRole:
+        # Created by another request while the row was appended: refused inside the
+        # store's compare-and-set, so the failure row is written instead of a
+        # creation that silently replaced it (and a storage failure raises).
+        try:
+            return await store.create_if_absent(role)
+        except CustomRoleExists as exc:
+            raise HTTPException(
+                status_code=409, detail=f"custom role '{role.name}' already exists"
+            ) from exc
+
+    stored = await _audited_rbac_write(
+        state, request, action="role.created", target=_role_target(role.name),
+        changes=diff_changes({}, _role_doc(role)),
+        summary=f"created custom role '{role.name}'",
+        write=_create,
+        store_unavailable=_ROLE_STORE_UNAVAILABLE,
+    )
     return {"ok": True, "role": stored.model_dump(mode="json")}
 
 
@@ -241,10 +334,30 @@ async def update_role(
     store = getattr(state, "custom_roles", None)
     if store is None:
         raise HTTPException(status_code=503, detail="custom-role store unavailable")
-    if await store.get(role.name) is None:
+    existing = await store.get(role.name)
+    if existing is None:
         raise HTTPException(status_code=404, detail=f"custom role '{role.name}' not found")
-    stored = await store.put(role)
-    await _audit_rbac(state, current_username(request), f"updated custom role '{stored.name}'")
+
+    async def _update() -> CustomRole:
+        # Deleted while the row was appended: answered 404 with its failure row. The
+        # existence check is decided inside the store's compare-and-set, so a
+        # concurrent delete is never undone (an upsert would bring the role back, and
+        # with it the grants of every account still holding its name, under a row
+        # that says it was only updated).
+        try:
+            return await store.update_existing(role)
+        except CustomRoleMissing as exc:
+            raise HTTPException(
+                status_code=404, detail=f"custom role '{role.name}' not found"
+            ) from exc
+
+    stored = await _audited_rbac_write(
+        state, request, action="role.updated", target=_role_target(existing.name),
+        changes=diff_changes(_role_doc(existing), _role_doc(role)),
+        summary=f"updated custom role '{role.name}'",
+        write=_update,
+        store_unavailable=_ROLE_STORE_UNAVAILABLE,
+    )
     return {"ok": True, "role": stored.model_dump(mode="json")}
 
 
@@ -265,10 +378,25 @@ async def delete_role(
     store = getattr(state, "custom_roles", None)
     if store is None:
         raise HTTPException(status_code=503, detail="custom-role store unavailable")
-    removed = await store.delete(nm)
-    if not removed:
+    existing = await store.get(nm)
+    if existing is None:
         raise HTTPException(status_code=404, detail=f"custom role '{nm}' not found")
-    await _audit_rbac(state, current_username(request), f"deleted custom role '{nm}'")
+
+    async def _delete() -> bool:
+        try:
+            await store.delete_strict(nm)
+        except CustomRoleMissing as exc:
+            # Gone between the read and the delete: the failure row says so.
+            raise HTTPException(status_code=404, detail=f"custom role '{nm}' not found") from exc
+        return True
+
+    await _audited_rbac_write(
+        state, request, action="role.deleted", target=_role_target(existing.name),
+        changes=diff_changes(_role_doc(existing), {}),
+        summary=f"deleted custom role '{nm}'",
+        write=_delete,
+        store_unavailable=_ROLE_STORE_UNAVAILABLE,
+    )
     return {"ok": True}
 
 
@@ -322,12 +450,18 @@ async def simulate_permission(
     """The ``can()`` outcome for a ``role`` × ``resource`` × ``action`` against the
     current effective matrix (built-ins + operator overrides + stored custom roles).
     Returns ``allowed`` plus the role's resolved actions on that resource so the UI can
-    explain WHY."""
+    explain WHY.
+
+    Round 14 (SPEC §3.7): the retired ``playbooks`` resource is still an accepted
+    alias of ``runbooks`` in every grant layer, so a question about it is answered for
+    its ``runbooks`` meaning (``alias_of`` names the resource that was evaluated), never
+    a silent "denied" for a resource the server no longer lists."""
     rbac = await _rbac_config_with_custom_roles(state)
     matrix = resolve_matrix(rbac)
-    allowed = can(role, resource, action, matrix=matrix)
-    actions = (matrix.get(str(role), {}) or {}).get(resource, [])
-    known_resource = resource in RESOURCES
+    evaluated_resource, evaluated_action = resolve_runbook_alias(resource, action)
+    allowed = can(role, evaluated_resource, evaluated_action, matrix=matrix)
+    actions = (matrix.get(str(role), {}) or {}).get(evaluated_resource, [])
+    known_resource = evaluated_resource in RESOURCES
     return {
         "role": role,
         "resource": resource,
@@ -335,6 +469,7 @@ async def simulate_permission(
         "allowed": bool(allowed),
         "actions": list(actions),
         "known_resource": known_resource,
+        "alias_of": evaluated_resource if evaluated_resource != resource else None,
         "role_exists": str(role) in matrix or str(role) == UserRole.SUPER_ADMIN.value,
     }
 
@@ -346,63 +481,61 @@ async def simulate_permission(
 async def account_permissions(
     request: Request, state: AppState = Depends(get_state)
 ) -> dict[str, Any]:
-    """The CURRENT caller's resolved ``resource -> [actions]`` grants — the data the
-    webui ``<Can>`` guard checks against.
+    """The CURRENT caller's effective ``resource -> [actions]`` grants: the one map the
+    Console's permission checks (``hasPermission``, ``<Can>``, ``ProtectedRoute``)
+    read, so the Console shows exactly what the API allows (Round 14 FX7e, roles-01).
 
-    Three back-compat modes mirror the server gates:
-      * auth DISABLED          → super_admin (full wildcard) so every surface unlocks.
+    It is answered by the server's own resolver, never a second copy of it: the
+    caller's view comes from :func:`app.api.deps.resolve_access` (the core of every
+    ``require_permission`` gate) and each declared ``resource:action`` is listed only
+    when :meth:`AccessView.allows` grants it. The base role is UNIONed with the
+    custom roles assigned to the user, each role row already carrying its own denies
+    and the operator's global per-role denies, so a custom role that grants
+    ``runbooks:publish`` lists it and one whose deny removes ``runbooks:run`` does
+    not. Writes nothing (a missing grant is not an access denial).
+
+    Three modes mirror the server gates:
+      * auth DISABLED          → super_admin (every action) so every surface unlocks.
       * auth ON, rbac OFF      → super_admin (authenticated == super_admin).
-      * auth ON, rbac ON       → the principal's base role UNIONed with any custom
-                                 roles assigned to the user (resolved against the live
-                                 matrix). An env single-admin (no persisted record)
-                                 resolves to its synced role.
+      * auth ON, rbac ON       → the effective grants above. An env single-admin (no
+                                 persisted record) resolves to its synced role.
 
-    Wildcards are exploded into concrete actions so the guard can match a literal
-    ``resource:action`` without re-implementing the wildcard rule. Auth-gated only
-    (any authenticated principal may read its OWN permissions)."""
-    auth = getattr(state, "auth", None)
-    rbac = getattr(state.prefs, "rbac", None)
-    rbac_enabled = bool(getattr(rbac, "enabled", False))
-    full = {res: ["*"] for res in RESOURCES}
-
-    # auth off OR rbac off → super_admin everywhere.
-    if auth is None or not auth.is_enabled or not rbac_enabled:
+    Every action is concrete (a wildcard is never sent), and a resource the caller
+    holds no action on is left out. Auth-gated only (any authenticated principal may
+    read its OWN permissions; an unauthenticated caller gets 401 when auth is on)."""
+    view = await resolve_access(request)
+    if view.unrestricted:
+        auth = getattr(state, "auth", None)
+        rbac = getattr(state.prefs, "rbac", None)
         return {
             "authenticated": auth is not None and auth.is_enabled,
             "role": UserRole.SUPER_ADMIN.value,
             "custom_roles": [],
-            "rbac_enabled": rbac_enabled,
-            "permissions": _explode_grants(full),
+            "rbac_enabled": bool(getattr(rbac, "enabled", False)),
+            "permissions": _effective_permissions(view),
         }
-
-    principal = current_user(request)
-    if principal is None:
-        raise HTTPException(status_code=401, detail="authentication required")
-
-    rbac_cfg = await _rbac_config_with_custom_roles(state)
-    matrix = resolve_matrix(rbac_cfg)
-    base_role = getattr(principal, "role", "") or DEFAULT_ROLE
-    # Per-user assigned custom roles ride in the user's prefs bag (User has no
-    # first-class field this wave). The env single-admin has no persisted record →
-    # no custom roles → base role only.
-    assigned: list[str] = []
-    try:
-        user = await state.users.get(principal.username)
-    except Exception:  # noqa: BLE001
-        user = None
-    if user is not None:
-        raw = (user.prefs or {}).get("custom_roles")
-        if isinstance(raw, list):
-            assigned = [str(x) for x in raw if str(x) in matrix and str(x) not in _BASE_ROLE_NAMES]
-
-    grants = _grants_for_roles(matrix, str(base_role), assigned)
+    matrix = view.matrix or {}
+    # The assigned names that take part in the decision (``can_for_roles`` drops a
+    # blank, a built-in name and an unknown or deleted role the same way).
+    assigned = [nm for nm in view.assigned if nm in matrix and nm not in _BASE_ROLE_NAMES]
     return {
         "authenticated": True,
-        "role": str(base_role),
+        "role": view.role,
         "custom_roles": assigned,
         "rbac_enabled": True,
-        "permissions": _explode_grants(grants),
+        "permissions": _effective_permissions(view),
     }
+
+
+def _effective_permissions(view: AccessView) -> dict[str, list[str]]:
+    """Every declared ``resource:action`` the caller's ``view`` allows, by resource,
+    in the vocabulary's order. A resource with no allowed action is left out."""
+    out: dict[str, list[str]] = {}
+    for resource, actions in RESOURCES.items():
+        allowed = [action for action in actions if view.allows(resource, action)]
+        if allowed:
+            out[resource] = allowed
+    return out
 
 
 # --------------------------------------------------------------------------- #
@@ -532,16 +665,41 @@ async def assign_user_roles(
                 detail="cannot remove the last user who can manage users (users:manage)",
             )
 
-    updated = await state.users.update(username, **patch)
+    async def _write() -> Any:
+        # Only the store write is the audited unit: the synced view is refreshed
+        # after it, so a refresh error never pairs a saved change with a
+        # "not applied" row. An account deleted while the row was appended answers
+        # 404, so its failure row is written instead of a success that never happened.
+        fields = dict(patch)
+        if "prefs" in fields:
+            # Only the custom-role assignment is this route's: the rest of the
+            # preference bag is read now, so a personal preference the account saved
+            # while the row was appended is kept, not reverted.
+            fresh = await state.users.get(username)
+            if fresh is None:
+                raise HTTPException(status_code=404, detail="user not found")
+            fields["prefs"] = {**(fresh.prefs or {}), "custom_roles": list(new_custom)}
+        updated = await state.users.update(username, **fields)
+        if updated is None:
+            raise HTTPException(status_code=404, detail="user not found")
+        return updated
+
+    old_role = target.role.value if isinstance(target.role, UserRole) else str(target.role)
+    updated = await _audited_rbac_write(
+        state, request, action="user.role_changed",
+        target={"type": "user", "id": target.username,
+                "label": getattr(target, "display_name", "") or target.username},
+        changes=diff_changes(
+            {"role": old_role, "custom_roles": list(existing_custom)},
+            {"role": new_role, "custom_roles": list(new_custom)},
+        ),
+        summary=f"assigned roles to '{username}': role={new_role} custom={new_custom}",
+        write=_write,
+    )
     await state.refresh_users()
     # Round 12 final review (L1): a running chat answer that relied on a grant this
     # change removed stops now (one that only gained grants keeps running).
     from .routes_chat import recheck_chat_turns_for
 
     await recheck_chat_turns_for(state, username)
-    await _audit_rbac(
-        state,
-        current_username(request),
-        f"assigned roles to '{username}': role={new_role} custom={new_custom}",
-    )
     return {"ok": True, "user": (updated or target).public(), "custom_roles": new_custom}

@@ -295,7 +295,7 @@ diagnosable quality checks plus one fail-closed aggregate:
 | Help Center & docs | Public structure/links, bundle/theme contracts, and the version-matched strict documentation build pass. |
 | Web UI production build | The release-stamped Console and installed Help Center compile into an inspectable production artifact. |
 | Workflow & shell contracts | Every workflow passes pinned actionlint with a checksum-verified ShellCheck binary, CI policy regression tests pass, and every tracked shell script parses. |
-| Bootstrap portability (macOS Bash 3.2) | A native `macos-14` runner proves the one-time supervisor bootstrap parses and forwards both zero-argument and replacement Compose invocations under Apple Bash 3.2. |
+| Bootstrap portability (macOS Bash 3.2) | A native `macos-15` runner (Apple still ships Bash 3.2 as `/bin/bash`) proves the one-time supervisor bootstrap parses and forwards both zero-argument and replacement Compose invocations under Apple Bash 3.2. |
 | Deploy & updater contracts | The reference five-service Compose topology resolves, invalid startup modes fail closed, and updater wire, plan, lifecycle-wrapper, backup, and rollback contracts pass. |
 | Python static correctness | Ruff's fatal correctness rules reject syntax faults, invalid control flow, and undefined names without turning legacy style debt into a release bypass. |
 | Release image build (backend) | The complete backend image builds from the shipping Dockerfile and its OCI identity, healthcheck, port, and non-root runtime contract match the candidate. |

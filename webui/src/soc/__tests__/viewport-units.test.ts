@@ -19,7 +19,13 @@ const SOURCES = [
 
 describe('dynamic viewport shell contract', () => {
   it.each(SOURCES)('%s avoids fixed screen/100vh sizing', (...segments) => {
-    const source = readFileSync(path.resolve(__dirname, '..', ...segments), 'utf8');
+    let source = readFileSync(path.resolve(__dirname, '..', ...segments), 'utf8');
+    // The collapsed rail's flyout (its `max-h-[calc(100dvh-1rem)]`) lives in the rail's
+    // lazy interaction layer (Round 14, SPEC §3.4). Read it with NavSidebar, so the
+    // contract follows the classes, not the file.
+    if (segments.at(-1) === 'NavSidebar.tsx') {
+      source += `\n${readFileSync(path.resolve(__dirname, '..', 'components', 'nav-rail-interactions.tsx'), 'utf8')}`;
+    }
 
     expect(source).toContain('dvh');
     expect(source).not.toMatch(/\b(?:h|min-h|max-h)-screen\b/);

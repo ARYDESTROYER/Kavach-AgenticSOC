@@ -8,9 +8,10 @@
  * table projection and the TSV / CSV / JSON encoders built on those primitives.
  *
  * Rules (enforced by the lib modules):
- *   - STRING cells are formula-defused (a leading `= + - @ TAB CR` gets a `'` prefix,
- *     also when only spaces precede it); TSV also defuses a leading `"`. NUMERIC cells
- *     stay numeric — a negative count is a number, not a formula.
+ *   - STRING cells are formula-defused by the shared rule set
+ *     (`lib/csv-formula.contract.json`: a leading `= + - @`, TAB, CR, LF or full-width
+ *     `＝ ＋ － ＠`, also after spaces, gets a `'` prefix); TSV also defuses a leading `"`.
+ *     NUMERIC cells stay numeric: a negative count is a number, not a formula.
  *   - `null` is an empty field (G3: not measured is not 0).
  *   - IOCs are defanged by default for the clipboard (`hxxp`, `[.]`, `[@]`); never in the
  *     live UI and never in JSON.
@@ -114,8 +115,8 @@ function tableTable(block: TableBlock): Tabular {
 }
 
 /**
- * A KPI group as a table: Metric, Value (numeric), Unit, Context, then — only when a
- * figure carries one — Bound ("at least": a scan-bounded lower bound is never read as an
+ * A KPI group as a table: Metric, Value (numeric), Unit, Context, then, only when a
+ * figure carries one, Bound ("at least": a scan-bounded lower bound is never read as an
  * exact count) and the change the tile's delta chip shows, as a signed number plus its
  * period (Round 12 WP-REP: the CSV says what the screen, the PDF and Word say). Appended
  * columns keep the first four where every consumer expects them.

@@ -99,6 +99,9 @@ export const STREAM_CHANNELS = [
   // Round 12 (WP-CM): a case was saved (created or updated), topic `cases` — the live
   // Case Manager queue nudge. Ids, status and timestamps only; the queue refetches.
   'case.changed',
+  // Round 14 (SPEC §4.10.15): a case's runbook run changed, topic `runbooks` (served
+  // only with runbooks:read and cases:read). Ids, progress counts and the revision only.
+  'case.runbook',
   'overflow',
 ] as const;
 

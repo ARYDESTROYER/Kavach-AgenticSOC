@@ -60,6 +60,15 @@ describe('isFullAccess', () => {
     expect(isFullAccess(summarizeRoleGrants(MATRIX, 'analyst_tier1'))).toBe(false);
     expect(isFullAccess([])).toBe(false);
   });
+
+  it('reads the server super admin row as full access once the retired playbooks row is gone', () => {
+    // SPEC §3.7: the server's matrix has no `playbooks` resource, so a mirror that
+    // still listed it kept the Super admin row from ever reading as full access.
+    const serverRow = Object.fromEntries(
+      Object.keys(RESOURCE_ACTIONS).filter((r) => r !== 'playbooks').map((r) => [r, ['*']]),
+    );
+    expect(isFullAccess(summarizeRoleGrants({ super_admin: serverRow }, 'super_admin'))).toBe(true);
+  });
 });
 
 describe('RolePermissionSummary render', () => {

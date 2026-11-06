@@ -28,13 +28,15 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field
 
 from ..config import AutoClosePolicy
 from ..constants import ActionType, CaseStatus, DecisionBy, Verdict
 from ..engine.case_manager import decide
+from ..engine.case_rationale import LEGACY_SELECTOR_ACTOR, is_selection_row
 from ..engine.priority import advisory_bands, band_of_case, derive_triage
+from ..engine.runbook_model import builtin_runbook, resolve_legacy_runbook_id
 from ..models import (
     StageRiskCalculation,
     StageRiskFactor,
@@ -44,7 +46,7 @@ from ..models import (
     TimelineStagesResponse,
     TraceSpan,
 )
-from .deps import get_state, require_permission
+from .deps import get_state, has_permission, require_permission
 
 router = APIRouter(prefix="/api")
 
@@ -179,6 +181,7 @@ def _empty_chips() -> dict[str, Any]:
 @router.get("/cases/{case_id}/timeline")
 async def case_timeline(
     case_id: str,
+    request: Request,
     state: "Any" = Depends(get_state),
     _=Depends(require_permission("cases", "read")),
 ) -> dict[str, Any]:
@@ -190,18 +193,28 @@ async def case_timeline(
     ``latency`` / ``cost`` / ``tokens`` / ``trusted``. The ``case_manager`` DECISION
     is rendered as a distinct TERMINAL ``decision`` span whose summary shows the exact
     ``(verdict, confidence, risk_score, policy clause)`` the deterministic ``decide()``
-    produced — re-derived at read time, mutating nothing (#3 made visible).
+    produced, re-derived at read time and mutating nothing (#3 made visible).
 
     TRUSTED agent prose (router/investigator/formatter/decision) vs UNTRUSTED tool/log
     payloads (es_query / tool output) are separated by the per-span ``trusted`` flag
-    (#9). NEVER 404s — an unknown / not-yet-investigated case returns empty spans.
+    (#9). NEVER 404s: an unknown or not-yet-investigated case returns empty spans.
     ``prompt_excerpt`` text is dropped from a span summary when
-    ``prefs.trace.include_prompts`` is false (the untrusted-prompt toggle)."""
+    ``prefs.trace.include_prompts`` is false (the untrusted-prompt toggle).
+
+    The cost and tokens come from the usage ledger, which ``cost:view`` governs (the
+    grant ``GET /api/usage/summary?case_id=`` needs): for a caller without it the
+    ledger is not read, every span's ``cost`` and ``tokens`` are ``null`` and so are
+    ``totals.cost`` and ``totals.tokens``."""
     rows = await state.audit.records_for_case(case_id)
     include_prompts = getattr(state.prefs.trace, "include_prompts", True)
 
     # Per-role cost/token attribution from the usage ledger (aggregate → per-span).
-    cost_by_role, tokens_by_role = await _usage_attribution(state, case_id)
+    # Round 14 roles-11: one rule for AI spend, so only a cost:view holder reads it.
+    show_usage = await has_permission(request, "cost", "view")
+    if show_usage:
+        cost_by_role, tokens_by_role = await _usage_attribution(state, case_id)
+    else:
+        cost_by_role, tokens_by_role = {}, {}
 
     # Count the audit LLM rows (PROMPT + VERDICT) per role from the SAME rows the spans
     # are built from. The role's ledger TOTAL is split across exactly the spans that
@@ -235,8 +248,8 @@ async def case_timeline(
         "spans": [s.model_dump(mode="json") for s in spans],
         "total": len(spans),
         "totals": {
-            "cost": round(sum(s.cost or 0.0 for s in spans), 6),
-            "tokens": sum(s.tokens or 0 for s in spans),
+            "cost": round(sum(s.cost or 0.0 for s in spans), 6) if show_usage else None,
+            "tokens": sum(s.tokens or 0 for s in spans) if show_usage else None,
         },
     }
 
@@ -588,6 +601,53 @@ def _risk_calculation(case: Any, prefs: Any) -> StageRiskCalculation:
     )
 
 
+def _runbook_steps(case: Any, selection_row: Any) -> list[StageStep]:
+    """The Triage stage's runbook notes (Round 14 SPEC §4.10.9): which Published
+    runbook guided the investigation (``Case.runbook_id``/``runbook_version``) and why
+    the matcher chose it. A case investigated before Round 14 shows its stored
+    ``playbook_id`` verbatim with the built-in that now covers it, if any. The title
+    and version are our own reviewed text (trusted); the reason quotes matched rule
+    values, which are log-derived, so it is untrusted plain text (#9)."""
+    steps: list[StageStep] = []
+    selection: dict[str, Any] = {}
+    reason = ""
+    legacy_row = selection_row is not None and _get(selection_row, "actor") == LEGACY_SELECTOR_ACTOR
+    if selection_row is not None and not legacy_row:
+        ti = _get(selection_row, "tool_input") or {}
+        if isinstance(ti, dict):
+            raw = ti.get("runbook_selection")
+            selection = raw if isinstance(raw, dict) else {}
+            reason = str(selection.get("reason") or ti.get("runbook_reason") or "")
+    runbook_id = str(getattr(case, "runbook_id", None) or "")
+    if runbook_id:
+        version = getattr(case, "runbook_version", None)
+        title = ""
+        if str(selection.get("id") or "") == runbook_id:
+            title = str(selection.get("title") or "")
+        if not title:
+            builtin = builtin_runbook(runbook_id)
+            title = builtin.title if builtin is not None else runbook_id
+        steps.append(StageStep(
+            kind="note", label="runbook",
+            body=f"{title} (version {version})" if version else title,
+            trusted=True))
+        if reason and str(selection.get("id") or "") == runbook_id:
+            steps.append(StageStep(kind="note", label="why this runbook", body=reason, trusted=False))
+        return steps
+    legacy_id = str(getattr(case, "playbook_id", "") or "")
+    if legacy_id:
+        successor = resolve_legacy_runbook_id(legacy_id)
+        builtin = builtin_runbook(successor) if successor else None
+        body = legacy_id + (f". Now covered by the {builtin.title} runbook." if builtin else "")
+        steps.append(StageStep(kind="note", label="runbook (before Round 14)", body=body, trusted=False))
+        if legacy_row:
+            legacy_reason = str(_get(selection_row, "result_summary", "") or "")
+            if legacy_reason:
+                steps.append(StageStep(kind="note", label="why this runbook", body=legacy_reason,
+                                       trusted=False))
+    return steps
+
+
 def _build_stages(case_id: str, case: Any, rows: Any, state: Any) -> list[TimelineStage]:
     """Project a case + its audit rows into the six ordered narrative stages. Pure /
     read-time / mutates nothing (#3); untrusted source/log text is fenced in steps (#9)."""
@@ -649,18 +709,20 @@ def _build_stages(case_id: str, case: Any, rows: Any, state: Any) -> list[Timeli
     # Extract the "why" pieces from the SAME audit rows the rationale endpoint reads:
     # CONTEXT.tool_input → knowledge/memory/enrichment (the basis given); TOOL_CALL/
     # ES_QUERY → commands run; VERDICT "reasoning=" → the reasoning excerpt; the
-    # playbook_selector DECISION → why that playbook. Self-contained; pure/defensive.
+    # latest selection DECISION → why that runbook (``runbook_selector``; the
+    # ``playbook_selector`` row of an investigation before Round 14). Self-contained;
+    # pure/defensive.
     knowledge: list[dict[str, str]] = []
     memory_facts: list[str] = []
     enrichment: dict[str, Any] | None = None
     tool_rows: list[Any] = []
     reasoning = ""
-    playbook_reason = ""
+    selection_row: Any = None
     context_seen = False
     for row in rows:
         at = str(_get(row, "action_type", "") or "")
-        if _get(row, "actor") == "playbook_selector" and not playbook_reason:
-            playbook_reason = str(_get(row, "result_summary", "") or "")
+        if is_selection_row(row):
+            selection_row = row
         if at == ActionType.CONTEXT.value and not context_seen:
             context_seen = True
             ti = _get(row, "tool_input") or {}
@@ -685,18 +747,12 @@ def _build_stages(case_id: str, case: Any, rows: Any, state: Any) -> list[Timeli
                 if "reasoning=" in rs:
                     reasoning = rs.split("reasoning=", 1)[1].strip()
 
-    # 4 — triage (specialist routing + the basis given: playbook + operator memory)
+    # 4: triage (specialist routing and the basis given: runbook and operator memory)
     persona = case.agent_persona or ""
-    playbook_id = getattr(case, "playbook_id", "") or ""
-    triage_steps: list[StageStep] = []
-    if playbook_id:
-        triage_steps.append(StageStep(
-            kind="note", label="playbook",
-            body=(f"{playbook_id} — {playbook_reason}" if playbook_reason else str(playbook_id)),
-            trusted=True))
+    triage_steps = _runbook_steps(case, selection_row)
     triage_steps.extend(StageStep(kind="memory", label="memory", body=m, trusted=True)
                         for m in memory_facts)
-    triage_done = bool(persona or playbook_id or memory_facts)
+    triage_done = bool(persona or triage_steps)
     triage_stage = TimelineStage(
         id="triage", kind="triage", label="Triage", status=("done" if triage_done else "skipped"),
         deterministic=False, ts=case.created_at or None,

@@ -23,7 +23,7 @@ def _job() -> dict[str, object]:
 
 def _ci_workflow() -> dict[str, object]:
     bootstrap_bash32 = _job()
-    bootstrap_bash32["runs-on"] = "macos-14"
+    bootstrap_bash32["runs-on"] = "macos-15"
     bootstrap_bash32["steps"] = [
         {"uses": PINNED_CHECKOUT},
         {
@@ -196,10 +196,10 @@ class WorkflowPolicyTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Bash 3.2 bootstrap gate is missing"):
             policy._assert_ci(Path("ci.yml"), workflow)
 
-    def test_bootstrap_bash32_job_must_use_macos14(self) -> None:
+    def test_bootstrap_bash32_job_must_use_macos15(self) -> None:
         workflow = _ci_workflow()
         workflow["jobs"]["bootstrap-bash32"]["runs-on"] = "ubuntu-latest"  # type: ignore[index]
-        with self.assertRaisesRegex(ValueError, "must run on macos-14"):
+        with self.assertRaisesRegex(ValueError, "must run on macos-15"):
             policy._assert_ci(Path("ci.yml"), workflow)
 
     def test_bootstrap_bash32_job_must_execute_shipping_harness(self) -> None:

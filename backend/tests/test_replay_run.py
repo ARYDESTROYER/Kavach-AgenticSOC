@@ -27,6 +27,7 @@ from tests.replay_support import (
     report_of,
     run_replay,
     seed_corpus,
+    settle_corpus,
 )
 
 
@@ -460,6 +461,7 @@ async def test_a_partial_run_still_reports_its_symmetric_pairs(app_state, tmp_pa
 async def test_an_empty_corpus_is_refused_before_anything_is_spent(app_state, tmp_path):
     app_state.secrets.jobs_artifact_dir = str(tmp_path)
     await quiet(app_state)
+    await settle_corpus(app_state)  # Round 14: startup projects the runbook corpus
     fixture_id = await capture(app_state, ip="203.0.113.60")
     before = _usage_count(app_state.es)
     job = await run_replay(
@@ -510,6 +512,50 @@ async def test_memory_enabled_is_an_arm_knob_that_actually_varies_the_prompt(
     report = report_of(app_state, job)
     knobs = {arm["arm_id"]: arm["knobs"] for arm in report["arms"]}
     assert knobs == {"on": {"memory_enabled": True}, "off": {"memory_enabled": False}}
+
+
+@pytest.mark.asyncio
+async def test_playbooks_enabled_is_an_arm_knob_that_switches_runbook_guidance(
+    app_state, mock_provider, tmp_path
+):
+    """Round 14: the investigator reads ``runbooks.investigator_guidance`` and
+    ``playbooks.enabled`` is only its mirror, so an arm that turns guidance off must
+    reach the investigator without a runbook block (asserted on the prompts the
+    provider received, as for the memory knob)."""
+    from app.agents.prompts import RUNBOOK_HEADING
+    from app.engine.replay.stack import replay_prefs
+
+    arm_off = type("Arm", (), {"arm_id": "off", "playbooks_enabled": False})()
+    pinned = type("Fixture", (), {
+        "mapping_overrides": {}, "evidence_fields": [], "evidence_max_chars": 2000,
+    })()
+    effective = replay_prefs(app_state.prefs, pinned, arm_off)
+    assert effective.runbooks.investigator_guidance is False
+    assert effective.playbooks.enabled is False
+
+    app_state.secrets.jobs_artifact_dir = str(tmp_path)
+    await quiet(app_state)
+    await seed_corpus(app_state)
+    fixture_id = await capture(app_state, ip="203.0.113.91")
+    mock_provider.calls.clear()
+
+    job = await run_replay(
+        app_state,
+        replay_params(
+            [fixture_id], repeats=1,
+            arms=[{"arm_id": "on", "playbooks_enabled": True},
+                  {"arm_id": "off", "playbooks_enabled": False}],
+        ),
+    )
+    assert job.status.value == "succeeded"
+
+    investigator_calls = [c for c in mock_provider.calls if c["role"] == "investigator"]
+    assert len(investigator_calls) == 2, investigator_calls
+    guided = {
+        arm_id: RUNBOOK_HEADING in json.dumps(call["messages"])
+        for arm_id, call in zip(["on", "off"], investigator_calls)
+    }
+    assert guided == {"on": True, "off": False}
 
 
 @pytest.mark.asyncio
@@ -667,3 +713,73 @@ async def test_the_bound_can_never_be_exceeded_by_a_whole_call(app_state):
     assert accrued > limiter.bound_usd, "the residual is real, not hypothetical"
     # But never by a WHOLE call: the overrun is strictly less than one call's cost.
     assert accrued - limiter.bound_usd < actual
+
+
+@pytest.mark.asyncio
+async def test_the_runbook_catalog_is_frozen_at_job_start(app_state, mock_provider, tmp_path, monkeypatch):
+    """Round 14 (SPEC §4.10.18, F18): every cell matches the Published catalog as it
+    was when the job started. A library that becomes unreadable after the first cell
+    changes nothing: the second cell still receives the same runbook guidance, and the
+    report names the frozen catalog."""
+    from app.agents.prompts import RUNBOOK_HEADING
+    from app.engine import runbook_runs
+    from app.engine.replay import job as replay_job
+    from app.engine.replay.job import runbook_fingerprint
+
+    app_state.secrets.jobs_artifact_dir = str(tmp_path)
+    await quiet(app_state)
+    await seed_corpus(app_state)
+    fixture_id = await capture(app_state, ip="203.0.113.93")
+    live = await runbook_runs.load_catalog(app_state)
+    expected = runbook_fingerprint(tuple(live.matchable))
+    assert expected and len(expected) == 16
+
+    original = replay_job._run_cell
+
+    async def cell_then_lose_the_library(run, fixture, arm, repeat):
+        record = await original(run, fixture, arm, repeat)
+
+        async def _unreadable(_state):
+            raise RuntimeError("the library went away")
+
+        monkeypatch.setattr(runbook_runs, "load_catalog", _unreadable)
+        return record
+
+    replay_job._run_cell = cell_then_lose_the_library
+    mock_provider.calls.clear()
+    try:
+        job = await run_replay(
+            app_state, replay_params([fixture_id], arms=[{"arm_id": "a"}], repeats=2)
+        )
+    finally:
+        replay_job._run_cell = original
+    assert job.status.value == "succeeded"
+    report = report_of(app_state, job)
+    assert report["runbooks"] == {"fingerprint": expected, "count": len(live.matchable)}
+    investigator = [c for c in mock_provider.calls if c["role"] == "investigator"]
+    assert len(investigator) == 2
+    assert all(RUNBOOK_HEADING in json.dumps(c["messages"]) for c in investigator)
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_runbook_library_refuses_the_run_before_anything_is_spent(
+    app_state, tmp_path, monkeypatch
+):
+    from app.engine import runbook_runs
+
+    app_state.secrets.jobs_artifact_dir = str(tmp_path)
+    await quiet(app_state)
+    await seed_corpus(app_state)
+    fixture_id = await capture(app_state, ip="203.0.113.94")
+
+    async def _unreadable(_state):
+        raise RuntimeError("kv down")
+
+    monkeypatch.setattr(runbook_runs, "load_catalog", _unreadable)
+    before = _usage_count(app_state.es)
+    job = await run_replay(
+        app_state, replay_params([fixture_id], arms=[{"arm_id": "a"}], repeats=1)
+    )
+    assert job.status.value == "failed"
+    assert any("runbook library could not be read" in failure.reason for failure in job.failures)
+    assert _usage_count(app_state.es) == before

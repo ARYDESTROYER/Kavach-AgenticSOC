@@ -24,9 +24,10 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
+from types import SimpleNamespace
 
 import pytest
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.testclient import TestClient
 
 from app.api.deps import require_auth
@@ -288,6 +289,14 @@ async def test_store_create_if_absent_is_serialized_under_concurrency() -> None:
     assert sum(1 for u in results if u is None) == 1
 
 
+def _route_request(state: AppState) -> Request:
+    """A minimal request for driving the route coroutine directly: the route reads it
+    only for its audit context (Round 14 SPEC §4.5.4), never for a credential."""
+    app = SimpleNamespace(state=SimpleNamespace(tlsoc=state))
+    return Request({"type": "http", "method": "POST", "path": "/api/setup/account",
+                    "headers": [], "client": ("203.0.113.5", 41000), "app": app})
+
+
 @pytest.mark.asyncio
 async def test_two_concurrent_setup_account_calls_create_one_admin() -> None:
     # Drive the setup_account coroutine directly (bypassing the sync TestClient portal
@@ -297,8 +306,8 @@ async def test_two_concurrent_setup_account_calls_create_one_admin() -> None:
         body_a = SetupAccountBody(username="alpha", password=_STRONG)
         body_b = SetupAccountBody(username="beta", password=_STRONG)
         results = await asyncio.gather(
-            setup_account(body_a, state=state),
-            setup_account(body_b, state=state),
+            setup_account(body_a, _route_request(state), state=state),
+            setup_account(body_b, _route_request(state), state=state),
             return_exceptions=True,
         )
         oks = [r for r in results if isinstance(r, dict) and r.get("ok")]
@@ -306,6 +315,14 @@ async def test_two_concurrent_setup_account_calls_create_one_admin() -> None:
         assert len(oks) == 1, results          # exactly ONE admin created
         assert len(conflicts) == 1, results    # the other lost the race → 409
         assert await state.users.count() == 1  # store holds a single admin
+        # Audit before visible (Round 14 SPEC §3.6): both attempts were recorded before
+        # the store write; the one that lost the race is paired with its failure row.
+        rows = await state.control_audit.records(limit=50)
+        created = [r for r in rows if r.get("action") == "user.created"]
+        failed = [r for r in rows if r.get("action") == "user.create_failed"]
+        assert len(created) == 2 and len(failed) == 1
+        assert failed[0]["outcome"] == "failure"
+        assert failed[0]["request_id"] in {r["request_id"] for r in created}
 
 
 # --------------------------------------------------------------------------- #
@@ -323,7 +340,7 @@ async def test_account_fails_safe_on_store_read_glitch() -> None:
         state.users.has_any = _boom  # type: ignore[method-assign]
         body = SetupAccountBody(username="root", password=_STRONG)
         with pytest.raises(HTTPException) as ei:
-            await setup_account(body, state=state)
+            await setup_account(body, _route_request(state), state=state)
         assert ei.value.status_code == 503
         # No user was created — the glitch blocked the bootstrap (fail-safe).
         assert await state.users.count() == 0

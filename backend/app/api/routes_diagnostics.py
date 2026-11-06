@@ -1485,8 +1485,9 @@ def _build_alerts(
     # The corpus reached ZERO. The loudest signal this module can produce.
     # ------------------------------------------------------------------ #
     # A knowledge corpus at zero is not "a small corpus": every investigation runs
-    # with no runbook, no ATT&CK context and no precedent, so auto-close stops
-    # entirely. It is reported ahead of the precedent-specific signals because it
+    # with no retrieved runbook passages, no ATT&CK context and no precedent, so
+    # auto-close stops entirely. (Since Round 14 the matched runbook's guidance reaches
+    # the investigator from the runbook library itself, not through retrieval.) It is reported ahead of the precedent-specific signals because it
     # subsumes them — precedent starvation is a symptom when the whole corpus is gone.
     if precedent.get("available") and precedent.get("rag_enabled"):
         # ``corpus_degraded`` carries the cold-start distinction: an empty corpus on a
@@ -1498,8 +1499,9 @@ def _build_alerts(
                     "critical", "rag_corpus_empty",
                     "The knowledge corpus is EMPTY",
                     "Retrieval is enabled but the corpus holds 0 chunks, so every "
-                    "investigation runs with no runbook, ATT&CK or precedent context "
-                    "and auto-close cannot fire.",
+                    "investigation runs with no retrieved runbook passages, ATT&CK or "
+                    "precedent context and auto-close cannot fire. The matched "
+                    "runbook's guidance still reaches the investigator.",
                     "Rebuild the corpus (Jobs -> rebuild knowledge corpus). If the "
                     "rebuild is refused, check the embedding provider credentials "
                     "first — a projection is refused rather than allowed to replace a "

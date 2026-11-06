@@ -742,8 +742,22 @@ def resolve_window(
 _NAV_ID_RE = re.compile(NAV_ID_PATTERN)
 _NAV_TIME_RE = re.compile(NAV_TIME_PATTERN)
 # Filters the Logs page has no field for: a call that used any of them gets "Copy
-# query" only, never a Logs view that would silently show a WIDER result.
-LOGS_UNEXPRESSIBLE_FILTERS: tuple[str, ...] = ("ip", "user", "host", "rule", "severity_gte", "ids")
+# query" only, never a Logs view that would silently show a WIDER result. Round 14
+# (SPEC §4.6.1, §4.6.6): the Logs page has an exact "Rule is" filter, and the log tools
+# match a rule the way it does (any rule identity of an event, never a substring), so
+# ``rule`` is expressible. The chat ``severity_gte`` is a raw number, not the page's
+# named level, so it stays out.
+LOGS_UNEXPRESSIBLE_FILTERS: tuple[str, ...] = ("ip", "user", "host", "severity_gte", "ids")
+#: The longest rule value a drill ref or the Logs "Rule is" filter takes (the router's
+#: ``rule`` deep link and ``blocks.NavRefOpts.rule``).
+RULE_REF_MAX_CHARS = 256
+
+
+def valid_rule_ref(value: Any) -> bool:
+    """A rule value a ref may carry: 1 to 256 code points on one line with no control,
+    format or separator character, exactly as typed (never trimmed). A rule that fails
+    (an invisible character, a line break) simply gets no link (SPEC §4.6.3)."""
+    return isinstance(value, str) and len(value) <= RULE_REF_MAX_CHARS and is_safe_log_query(value)
 
 
 def _to_millis(moment: datetime, *, round_up: bool) -> datetime:
@@ -783,14 +797,22 @@ def _searched_every_source(observation: dict[str, Any]) -> bool | None:
     return all(isinstance(s, dict) and s.get("mode") == "search" for s in sources)
 
 
+def _only_known_modes(observation: dict[str, Any]) -> bool:
+    """Every listed source says what it was: a search, or a live-tail ring."""
+    sources = observation.get("sources")
+    return (isinstance(sources, list) and bool(sources)
+            and all(isinstance(s, dict) and s.get("mode") in ("search", "buffer") for s in sources))
+
+
 def logs_console_view(
     ctx: ChatToolContext, args: Any, observation: Any = None, *, now: datetime | None = None,
 ) -> dict[str, Any] | None:
-    """``{"page": "logs", "opts": {logQuery?, from, to, sourceId?}}`` for a log tool
-    call whose filter the Logs page can express EXACTLY, else ``None``.
+    """``{"page": "logs", "opts": {logQuery?, rule?, from, to, sourceId?}}`` for a log
+    tool call whose filter the Logs page can express EXACTLY, else ``None``.
 
-    The Logs page (``GET /api/logs``) filters by free text (``contains``), a time
-    window and one optional source, so the view is exact only when:
+    The Logs page (``GET /api/logs``) filters by free text (``contains``), an exact
+    rule ("Rule is", Round 14), a time window and one optional source, so the view is
+    exact only when:
 
     * the call used no other filter (:data:`LOGS_UNEXPRESSIBLE_FILTERS`);
     * its free text is router-safe (single line, no control/format characters) and
@@ -822,7 +844,12 @@ def logs_console_view(
     if not isinstance(observation, dict):
         return None  # nothing says what ran, so nothing says the view is exact
     searched = _searched_every_source(observation)
-    if searched is False:
+    if searched is False and not (getattr(args, "rule", None) is not None and getattr(args, "contains", None) is None
+                                  and _only_known_modes(observation)):
+        # A live-tail ring ignores free text, so a Logs view of a call that used one
+        # would show the whole ring. A "Rule is" filter is applied to ring rows by the
+        # Logs page itself (Round 14 SPEC §4.6.1), within the window, so a rule-only call
+        # that read rings keeps its view.
         return None
     window = resolve_window(
         ctx, window=getattr(args, "window", None), time_from=getattr(args, "time_from", None),
@@ -851,6 +878,13 @@ def logs_console_view(
         if not isinstance(contains, str) or contains != contains.strip() or not is_safe_log_query(contains):
             return None
         opts["logQuery"] = contains
+    rule = getattr(args, "rule", None)
+    if rule is not None:
+        # The page's exact "Rule is" filter, byte for byte (never trimmed): a value it
+        # could not carry means no view rather than a wider one.
+        if not valid_rule_ref(rule):
+            return None
+        opts["rule"] = rule
     opts["from"], opts["to"] = start, end
     source = getattr(ctx, "source_id", None) or getattr(args, "source_id", None)
     if source:
@@ -862,6 +896,338 @@ def logs_console_view(
     elif searched is None:
         return None  # the implicit primary source: its id is not known here
     return {"page": "logs", "opts": opts}
+
+
+# --------------------------------------------------------------------------- #
+# Drill targets (Round 14 SPEC §4.6.3): the in-app destination of one value of an
+# answer, built by code from a validated ref, never by a model or the client.
+# --------------------------------------------------------------------------- #
+def drill_window(window: Window, *, logs: bool) -> dict[str, str] | None:
+    """``{"from", "to"}``: the window a count covered, as absolute UTC instants
+    (:func:`nav_instant`, rounded into the window), so a stored answer opens the
+    window its data came from. All time has no bounds: ``{}`` for the rule sheet (it
+    opens on its own window). ``logs``: the Logs page reads at most 90 days, so a
+    longer window (or all time) has no exact Logs view and gets ``None``."""
+    if window.all_time:
+        return None if logs else {}
+    if logs and window.end - window.start > timedelta(days=LOGS_PAGE_MAX_DAYS):
+        return None
+    if _to_millis(window.start, round_up=True) >= _to_millis(window.end, round_up=False):
+        return None
+    start, end = nav_instant(window.start, round_up=True), nav_instant(window.end, round_up=False)
+    if not (_NAV_TIME_RE.fullmatch(start) and _NAV_TIME_RE.fullmatch(end)):
+        return None
+    return {"from": start, "to": end}
+
+
+def _drill_source(source_id: Any) -> dict[str, str]:
+    return {"sourceId": source_id} if isinstance(source_id, str) and _NAV_ID_RE.fullmatch(source_id) else {}
+
+
+def rule_drill(rule: Any, window: Window, source_id: str | None = None) -> dict[str, Any] | None:
+    """The rule sheet of ``rule`` over ``window`` (``{"page": "rule", ...}``, a page
+    the client resolves to the sheet, never a route), or ``None`` when the value
+    cannot be carried exactly."""
+    if not valid_rule_ref(rule):
+        return None
+    bounds = drill_window(window, logs=False)
+    if bounds is None:
+        return None
+    return {"page": "rule", "opts": {"rule": rule, **bounds, **_drill_source(source_id)}}
+
+
+def severity_drill(
+    level: str, window: Window, source_id: str | None = None, *, rule: str | None = None,
+    log_query: str | None = None,
+) -> dict[str, Any] | None:
+    """The Logs page filtered to one named level over ``window`` ("Severity is High"),
+    plus the call's own rule and free text when it had them (so the view is the same
+    population the level counted), or ``None`` when the window or a filter has no exact
+    Logs view."""
+    if level not in SEVERITY_LEVELS:
+        return None
+    bounds = drill_window(window, logs=True)
+    if bounds is None:
+        return None
+    opts: dict[str, Any] = {"severity": level}
+    if rule is not None:
+        if not valid_rule_ref(rule):
+            return None
+        opts["rule"] = rule
+    if log_query is not None:
+        if log_query != log_query.strip() or not is_safe_log_query(log_query):
+            return None
+        opts["logQuery"] = log_query
+    return {"page": "logs", "opts": {**opts, **bounds, **_drill_source(source_id)}}
+
+
+#: The trailing windows (hours) the Cases list shows (``Cases.tsx``
+#: ``timeRangeFromWindowHours``: 1 hour, 24 hours, 7 days, 30 days). Any other ``window``
+#: is ignored there and the list falls back to all time, so a drill never carries one.
+CASES_LIST_WINDOW_HOURS: tuple[int, ...] = (1, 24, 168, 720)
+
+
+def case_severity_drill(level: str, window: Window, filters: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    """The Cases list filtered to one level, only when the list shows exactly the cases
+    the level counted: all time, or a trailing window the list itself offers
+    (:data:`CASES_LIST_WINDOW_HOURS`), and no case filter but the level itself. A
+    calendar period, any other span, or a count narrowed by a filter the drill does not
+    carry (a status, a verdict, an assignee, a rule, text, ...) gets ``None``: never a
+    list wider than the figure it opens from."""
+    if level not in SEVERITY_LEVELS:
+        return None
+    for key, value in (filters or {}).items():
+        if value in (None, "", [], ()):
+            continue
+        if key == "severity" and str(value).strip().lower() == level:
+            continue  # the level IS the filter: the list's own severity facet
+        return None
+    if window.all_time:
+        return {"page": "cases", "opts": {"severity": level}}
+    span = window.end - window.start
+    hours = span.total_seconds() / 3600
+    trailing = bool(getattr(window, "trailing", False)) or window.time_to.strip().lower() == "now"
+    if not trailing or window.aligned_to is not None or not float(hours).is_integer():
+        return None
+    if int(hours) not in CASES_LIST_WINDOW_HOURS:
+        return None
+    return {"page": "cases", "opts": {"severity": level, "window": int(hours)}}
+
+
+# --------------------------------------------------------------------------- #
+# Severity breakdowns (Round 14 SPEC §4.7.2, ask 7): the five named levels in fixed
+# order, each with its share, trend, rules and drill target, plus the splits the
+# server computed. One builder for log events (``log_stats``) and cases
+# (``case_stats``, ``soc_metrics``), so every breakdown reads the same way.
+# --------------------------------------------------------------------------- #
+SEVERITY_LEVELS: tuple[str, ...] = ("critical", "high", "medium", "low", "info")
+_SEVERITY_NAMES = {"critical": "Critical", "high": "High", "medium": "Medium", "low": "Low", "info": "Info"}
+#: Limits mirrored from :mod:`app.agents.blocks` (the block validates them again).
+SEVERITY_MAX_RULES = 20
+SEVERITY_SPLIT_TOP = 5
+SEVERITY_TREND_POINTS = 24
+
+
+@dataclass
+class SeverityLevelCounts:
+    """One level's counted facts, from whatever counted them (a store's exact
+    aggregation, a connector's composite, a bounded sample)."""
+
+    count: int = 0
+    raw_values: list[dict[str, Any]] | None = None
+    rules: dict[str, int] | None = None
+    sources: dict[str, int] | None = None
+    trend: list[int] | None = None
+
+
+def coarsen_counts(values: list[Any], max_points: int = SEVERITY_TREND_POINTS) -> list[int]:
+    """Counts per bucket summed into at most ``max_points`` groups of consecutive
+    buckets (a sparkline; counts add up, so nothing is invented). Groups are cut from
+    the newest end, so the newest point is always a whole group."""
+    counts = [int(finite(v) or 0) for v in values]
+    if len(counts) <= max_points:
+        return counts
+    size = math.ceil(len(counts) / max_points)
+    out: list[int] = []
+    end = len(counts)
+    while end > 0:
+        out.append(sum(counts[max(0, end - size):end]))
+        end -= size
+    return list(reversed(out))
+
+
+def shares_one_decimal(counts: list[int]) -> list[float]:
+    """Each count's share of their sum, one decimal (``0.0`` for every one when the sum
+    is zero). Rounded independently, so the shares add up to 100.0 within rounding."""
+    total = sum(counts)
+    if total <= 0:
+        return [0.0 for _ in counts]
+    return [round(c * 100.0 / total, 1) for c in counts]
+
+
+def _ranked(counter: dict[str, int] | None) -> list[tuple[str, int]]:
+    return sorted(((str(k), int(v)) for k, v in (counter or {}).items() if int(v) > 0), key=lambda kv: (-kv[1], kv[0]))
+
+
+def severity_categories(
+    levels: dict[str, SeverityLevelCounts], *, subject: Literal["events", "cases"],
+    level_drill: Any = None, rule_drill_of: Any = None, source_drill_of: Any = None,
+    source_label_of: Any = None,
+    sample: dict[str, Any] | None = None, basis_caption: str | None = None,
+    splits: tuple[str, ...] = ("rule", "source"),
+) -> dict[str, Any]:
+    """The ``categories`` payload of a severity breakdown (``kind: "severity"``): the
+    plain ``labels``/``values`` every older renderer shows (the five level names in
+    fixed order, zeros included), and ``levels``/``splits``/``sample`` the breakdown
+    view reads. Rule and source keys are source-derived (untrusted, shown with their
+    invisible characters made visible); each drill is built by the given callable from
+    the RAW value and is ``None`` when the value cannot be carried exactly:
+    ``level_drill(level)``, ``rule_drill_of(rule)`` and ``source_drill_of(level, source)``.
+    ``source_label_of(source)`` names a source key for display (keys are then ids, so
+    two sources that share a name never merge into one row); the key itself by default."""
+    counts = [int((levels.get(level) or SeverityLevelCounts()).count) for level in SEVERITY_LEVELS]
+    shares = shares_one_decimal(counts)
+    out_levels: list[dict[str, Any]] = []
+    seen_in: dict[str, int] = {}
+    split_data: dict[str, dict[str, Any]] = {name: {} for name in splits}
+    for index, level in enumerate(SEVERITY_LEVELS):
+        facts = levels.get(level) or SeverityLevelCounts()
+        rules = _ranked(facts.rules)
+        for rule, _count in rules:
+            seen_in[rule] = seen_in.get(rule, 0) + 1
+        entry: dict[str, Any] = {
+            "level": level, "count": counts[index], "share": shares[index],
+            "raw_values": list(facts.raw_values or [])[:5],
+            "rules": [{"key": visible_text(rule, 200), "count": n,
+                       "drill": rule_drill_of(rule) if callable(rule_drill_of) else None}
+                      for rule, n in rules[:SEVERITY_MAX_RULES]],
+            "rules_total": len(rules),
+            "drill": level_drill(level) if callable(level_drill) else None,
+        }
+        if facts.trend is not None:
+            entry["trend"] = coarsen_counts(facts.trend)
+        out_levels.append(entry)
+        for name, counter in (("rule", facts.rules), ("source", facts.sources)):
+            if name not in split_data:
+                continue
+            ranked = _ranked(counter)
+            if not ranked:
+                continue
+
+            def split_drill(key: str, name: str = name, level: str = level) -> Any:
+                if name == "rule":
+                    return rule_drill_of(key) if callable(rule_drill_of) else None
+                return source_drill_of(level, key) if callable(source_drill_of) else None
+
+            def split_label(key: str, name: str = name) -> str:
+                if name == "source" and callable(source_label_of):
+                    return str(source_label_of(key))
+                return key
+
+            split_data[name][level] = {
+                "top": [{"key": visible_text(split_label(key), 200), "count": n, "drill": split_drill(key)}
+                        for key, n in ranked[:SEVERITY_SPLIT_TOP]],
+                "other": sum(n for _key, n in ranked[SEVERITY_SPLIT_TOP:]),
+            }
+    data: dict[str, Any] = {
+        "labels": [_SEVERITY_NAMES[level] for level in SEVERITY_LEVELS],
+        "values": counts, "unit": "count", "dimension": "Severity", "ordered": True,
+        "kind": "severity", "subject": subject, "levels": out_levels,
+        "splits": {name: per for name, per in split_data.items() if per},
+        "multi_level_rules": sum(1 for n in seen_in.values() if n >= 2),
+        "drill": [lv["drill"] for lv in out_levels],
+    }
+    if sample is not None:
+        data["sample"] = sample
+    if basis_caption:
+        data["basis_caption"] = basis_caption
+    return data
+
+
+def severity_sample_caption(counted: int, total: int | None, *, cap: int, sampled_sources: int,
+                            exact_sources: int, total_bound: bool = False, noun: str = "events") -> str | None:
+    """The honest basis of a severity breakdown (SPEC §4.7.2): ``None`` when the levels
+    cover the stated total exactly; otherwise "1,000 of 2,500 events sampled, newest 200
+    per source", and, when some sources counted exactly and others were sampled, both
+    ("1,400 of 2,900 events counted: 2 sources exactly, 3 sampled at the newest 200
+    each")."""
+    if sampled_sources <= 0 and total is not None and counted == total and not total_bound:
+        return None
+    of = (f"at least {fmt_int(total)}" if total_bound else fmt_int(total)) if total is not None else "an unknown number of"
+    if exact_sources > 0 and sampled_sources > 0:
+        return (f"{fmt_int(counted)} of {of} {noun} counted: {fmt_int(exact_sources)} "
+                f"{'source' if exact_sources == 1 else 'sources'} exactly, {fmt_int(sampled_sources)} sampled at the "
+                f"newest {fmt_int(cap)} each")
+    if sampled_sources > 0:
+        per = "per source" if sampled_sources > 1 else "from the source"
+        return f"{fmt_int(counted)} of {of} {noun} sampled, newest {fmt_int(cap)} {per}"
+    return f"{fmt_int(counted)} of {of} {noun} counted"
+
+
+# --------------------------------------------------------------------------- #
+# Case status words (Round 14 F7): a status move and its reason in plain words, so
+# an answer never shows "open -> escalated" or "tp auto-close disabled".
+# --------------------------------------------------------------------------- #
+#: The ONE table of case status names in chat answers (D25: one name per thing): the
+#: entity card's Status fact, its Status history moves and every status breakdown read
+#: it, and it matches the Console's status badge (``semantic-labels.ts`` ``statusLabel``:
+#: the legacy ``needs_human`` status is "Open · awaiting analyst").
+CASE_STATUS_WORDS: dict[str, str] = {
+    "new": "New", "open": "Open", "needs_human": "Open · awaiting analyst", "investigating": "Investigating",
+    "escalated": "Escalated", "on_hold": "On hold", "resolved": "Resolved", "closed": "Closed",
+}
+_ACTOR_WORDS: dict[str, str] = {
+    "agent": "the AI agent", "system": "the system", "analyst": "an analyst", "analyst_policy": "an analyst policy",
+}
+_VERDICT_WORDS: dict[str, str] = {
+    "TRUE_POSITIVE": "a confirmed threat", "FALSE_POSITIVE": "a false positive", "NEEDS_HUMAN": "an unclear case",
+}
+_REASON_TP_OFF = re.compile(r"^True positive routed to human: tp auto-close disabled\.?$")
+_REASON_FP_OFF = re.compile(r"^False positive routed to human: fp auto-close disabled\.?$")
+_REASON_FAILSAFE = re.compile(r"^No confident close decision; routing to human \(fail-safe\)\.?$")
+_NUM = r"(-?[0-9]+(?:\.[0-9]+)?)"
+_REASON_BAR = re.compile(
+    r"^(TRUE_POSITIVE|FALSE_POSITIVE|NEEDS_HUMAN|\?) routed to human: did not clear the auto-close bar "
+    rf"\(confidence {_NUM} vs {_NUM}, risk {_NUM} vs {_NUM}\)\.?$")
+_REASON_AUTO = re.compile(
+    rf"^(TRUE_POSITIVE|FALSE_POSITIVE|NEEDS_HUMAN|\?) auto-closed: confidence {_NUM} >= {_NUM} and risk {_NUM} "
+    rf"<= {_NUM}; objection window ([0-9]+)m\.?$")
+
+
+def status_word(status: Any) -> str:
+    """A case status in the Console's words ("needs_human" is "Open · awaiting analyst")."""
+    key = enum_value(status) or ""
+    return CASE_STATUS_WORDS.get(key.lower(), key.replace("_", " ").capitalize() or "Unknown")
+
+
+def status_change_label(from_status: Any, to_status: Any) -> str:
+    """"Open to Escalated"; a first status reads "Created as New"."""
+    if not (enum_value(from_status) or ""):
+        return f"Created as {status_word(to_status)}"
+    return f"{status_word(from_status)} to {status_word(to_status)}"
+
+
+def status_reason_text(reason: Any) -> str | None:
+    """The deterministic decision's reason in plain words ("automatic close of a
+    confirmed threat is off"). A reason the engine did not write from one of its fixed
+    templates (an analyst's note, a policy's reason) is stored data: returned as it is
+    (bounded), never reworded. ``None`` when there is none."""
+    raw = " ".join(str(reason or "").split())
+    if not raw:
+        return None
+    if _REASON_TP_OFF.match(raw):
+        return "Automatic close of a confirmed threat is off"
+    if _REASON_FP_OFF.match(raw):
+        return "Automatic close of a false positive is off"
+    if _REASON_FAILSAFE.match(raw):
+        return "No confident close decision, so a person decides"
+    bar = _REASON_BAR.match(raw)
+    if bar:
+        verdict = _VERDICT_WORDS.get(bar.group(1), "the case")
+        return (f"Did not clear the automatic close bar for {verdict}: confidence {bar.group(2)} "
+                f"against {bar.group(3)}, risk {bar.group(4)} against {bar.group(5)}")
+    auto = _REASON_AUTO.match(raw)
+    if auto:
+        verdict = _VERDICT_WORDS.get(auto.group(1), "the case")
+        minutes = int(auto.group(6))
+        return (f"Closed automatically as {verdict}: confidence {auto.group(2)} at or above {auto.group(3)}, "
+                f"risk {auto.group(4)} at or below {auto.group(5)}; objection window "
+                f"{fmt_int(minutes)} {'minute' if minutes == 1 else 'minutes'}")
+    return raw[:400]
+
+
+def status_actor_text(by: Any) -> str:
+    """Who moved a case, in words: an engine actor by role ("the system"), a person by
+    the name stored (untrusted, kept as it is)."""
+    key = str(by or "").strip()
+    return _ACTOR_WORDS.get(key.lower(), key or "someone")
+
+
+def status_change_detail(by: Any, reason: Any) -> str:
+    """"Automatic close of a confirmed threat is off (by the system)"."""
+    words = status_reason_text(reason)
+    actor = status_actor_text(by)
+    return f"{words} (by {actor})" if words else f"By {actor}"
 
 
 # --------------------------------------------------------------------------- #
@@ -1227,4 +1593,25 @@ __all__ = [
     "verdict_semantic",
     "visible_text",
     "window_label",
+    # Round 14 (SPEC §4.6.3, §4.7.2, F7).
+    "CASES_LIST_WINDOW_HOURS",
+    "CASE_STATUS_WORDS",
+    "LOGS_UNEXPRESSIBLE_FILTERS",
+    "RULE_REF_MAX_CHARS",
+    "SEVERITY_LEVELS",
+    "SeverityLevelCounts",
+    "case_severity_drill",
+    "coarsen_counts",
+    "drill_window",
+    "rule_drill",
+    "severity_categories",
+    "severity_drill",
+    "severity_sample_caption",
+    "shares_one_decimal",
+    "status_actor_text",
+    "status_change_detail",
+    "status_change_label",
+    "status_reason_text",
+    "status_word",
+    "valid_rule_ref",
 ]

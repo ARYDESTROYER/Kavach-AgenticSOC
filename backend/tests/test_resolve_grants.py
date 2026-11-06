@@ -131,27 +131,38 @@ def _relogin(c: TestClient, username: str, password: str) -> None:
 
 
 class _AuditSpy:
-    """Wraps an audit logger's ``record`` so a test can count every write."""
+    """Wraps an audit logger's two entry points, ``record`` and ``record_strict``, so
+    a test counts every write whichever one a writer uses (a refused read's Access
+    denied row is written strictly, so its coalescing knows whether it landed)."""
 
-    def __init__(self, inner):
-        self.inner = inner
+    def __init__(self, logger):
         self.calls: list[dict] = []
+        self._record = logger.record
+        self._record_strict = logger.record_strict
 
-    async def __call__(self, **kwargs):
+    async def record(self, **kwargs):
         self.calls.append(kwargs)
-        return await self.inner(**kwargs)
+        return await self._record(**kwargs)
+
+    async def record_strict(self, **kwargs):
+        self.calls.append(kwargs)
+        return await self._record_strict(**kwargs)
+
+
+def _spy_on(logger, monkeypatch: pytest.MonkeyPatch) -> _AuditSpy:
+    spy = _AuditSpy(logger)
+    monkeypatch.setattr(logger, "record", spy.record)
+    monkeypatch.setattr(logger, "record_strict", spy.record_strict)
+    return spy
 
 
 def _spy_audits(c: TestClient, monkeypatch: pytest.MonkeyPatch) -> tuple[_AuditSpy, _AuditSpy]:
     state: AppState = c.app.state.tlsoc
-    control = _AuditSpy(state.control_audit.record)
-    monkeypatch.setattr(state.control_audit, "record", control)
+    control = _spy_on(state.control_audit, monkeypatch)
     execution = state.execution_audit
     if execution is state.control_audit:
         return control, control
-    exec_spy = _AuditSpy(execution.record)
-    monkeypatch.setattr(execution, "record", exec_spy)
-    return control, exec_spy
+    return control, _spy_on(execution, monkeypatch)
 
 
 def _setup_restricted_users(c: TestClient) -> None:

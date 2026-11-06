@@ -3,14 +3,20 @@
  * and the Entity cell about its value (kind from the entity type), each opening a NEW
  * Workspace chat with a TYPED reference (never free text), never opening the case row;
  * the entity value stays on one line, and the hidden chips are icons, not labels, so the
- * columns do not grow by a label's width. Real router + auth (auth disabled: every grant
- * allowed).
+ * columns do not grow by a label's width. Round 14 (C7): the Case ID chip shows OVER the end
+ * of the id on hover or focus, and the Entity column is hidden until the person shows it
+ * (Columns), so the entity cases show every column. Real router + auth (auth disabled:
+ * every grant allowed).
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
-const { listCasesMock } = vi.hoisted(() => ({ listCasesMock: vi.fn() }));
+const { listCasesMock, prefsTables } = vi.hoisted(() => ({
+  listCasesMock: vi.fn(),
+  /** The stored per-table column state the prefs read returns (mutable per test). */
+  prefsTables: { value: {} as Record<string, unknown> },
+}));
 
 vi.mock('@/lib/api', () => {
   const ok = (value: unknown) => vi.fn().mockResolvedValue(value);
@@ -25,11 +31,11 @@ vi.mock('@/lib/api', () => {
         accent_color: '', accent_color2: '', theme: '', login_subtitle: '',
       }),
       prefs: {
-        effective: ok({
+        effective: vi.fn(async () => ({
           terminology: {}, theme_mode: 'dark', saved_views: [], pinned_view_ids: [],
-          tables: {}, last_list_state: {}, misc: {},
+          tables: prefsTables.value, last_list_state: {}, misc: {},
           org: { terminology: {}, default_theme: 'dark', default_saved_views: [], default_pinned_view_ids: [] },
-        }),
+        })),
         putUser: ok({}),
       },
       views: { list: ok({ views: [], count: 0 }) },
@@ -103,6 +109,8 @@ function renderCases() {
 describe('Ask AI in the Cases list', () => {
   beforeEach(() => {
     listCasesMock.mockReset().mockResolvedValue({ cases: CASES, total: CASES.length });
+    // Every column shown (the Entity column is hidden by default since Round 14).
+    prefsTables.value = { cases: { hidden: [] } };
     window.localStorage.clear();
     window.location.hash = '#/cases';
   });
@@ -173,6 +181,23 @@ describe('Ask AI in the Cases list', () => {
       expect(chip.className).toContain('select-none');
       expect(chip.className).toContain('opacity-0');
     }
+  });
+
+  it('shows the Case ID chip at the end of the id, clear of it, with the default columns', async () => {
+    prefsTables.value = {};
+    renderCases();
+    await waitFor(() => expect(screen.getByText('Alpha')).toBeInTheDocument());
+    const row = screen.getByText('Alpha').closest('tr')!;
+    const chip = await within(row).findByRole('button', { name: 'Ask AI about case TLSOC-001' });
+    // In the cell's trailing padding (no reserved width in every row), never over the
+    // id: a click on the case number opens the case, it never starts a chat.
+    expect(chip.className).toContain('absolute');
+    expect(chip.className).toMatch(/(^|\s)-right-4(\s|$)/);
+    const id = within(row).getByRole('button', { name: 'TLSOC-001' });
+    expect(chip.closest('.group\\/ask')).toContainElement(id);
+    expect(id.contains(chip)).toBe(false);
+    // The Entity column (and its chip) waits behind Columns by default.
+    expect(within(row).queryByRole('button', { name: 'Ask AI about 203.0.113.77' })).toBeNull();
   });
 
   it('offers no entity chip for a kind it cannot name, and keeps the value on one line', async () => {
