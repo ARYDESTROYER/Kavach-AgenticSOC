@@ -29,7 +29,7 @@ Inputs (the evidence base; read the parts your package cites):
   real components and never cherry-pick prototype commits.
 - The operator's decision screenshot for C2: `SP/r14/operator/c2-decision-dashboards-library.png`.
 
-`SP` is `/tmp/claude-0/-home-user-Kavach-AgenticSOC/2fc24c44-3228-5bc2-8fb3-56e1bc548beb/scratchpad`.
+`SP` is the build session's local scratchpad directory; it is not part of the repository.
 Third-party screenshots under `SP/r14/notes/rbshots/` are internal references and are never
 committed.
 
