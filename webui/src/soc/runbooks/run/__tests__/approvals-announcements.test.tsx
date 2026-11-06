@@ -357,6 +357,30 @@ describe('roles by their labels (wrb-10)', () => {
     // No labels on either side: the shape stays as it was.
     expect('role_labels' in mergeRun(makeData([makeRun()]), makeRun(), null, 3)).toBe(false);
   });
+
+  it('keeps a newer run a read already shows when an older write answer arrives late', () => {
+    // A frame-triggered read showed run revision 9 (someone else's write or a lookup)
+    // before this viewer's own write answer (run revision 8) came back.
+    const newer = makeRun({ revision: 9 }, { owner: { status: 'done', completed_by: 'ben', revision: 3 } });
+    const shownProgress = { done: 2, total: 5 } as unknown as RunbookRunUpdate['progress'];
+    const data = { ...makeData([newer]), revision: 12, progress: { 'run-1': shownProgress } };
+    const staleRun = makeRun({ revision: 8 }, { owner: { status: 'in_progress', revision: 2 } });
+    const staleProgress = { done: 1, total: 5 } as unknown as RunbookRunUpdate['progress'];
+
+    const merged = mergeRun(data, staleRun, staleProgress, 11, { soc_manager: 'SOC manager' });
+    expect(merged.runs[0]).toBe(newer);
+    expect(merged.progress['run-1']).toBe(shownProgress);
+    expect(merged.revision).toBe(12);
+    // The late answer's role labels still count.
+    expect(roleLabelsFrom(merged)).toEqual({ soc_manager: 'SOC manager' });
+
+    // An answer at the same or a newer run revision replaces the run as before.
+    const current = makeRun({ revision: 10 });
+    const replaced = mergeRun(data, current, staleProgress, 13);
+    expect(replaced.runs[0]).toBe(current);
+    expect(replaced.progress['run-1']).toBe(staleProgress);
+    expect(replaced.revision).toBe(13);
+  });
 });
 
 describe('Approve leaves focus on the step (wrb-07)', () => {

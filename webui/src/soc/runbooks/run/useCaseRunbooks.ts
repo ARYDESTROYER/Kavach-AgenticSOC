@@ -70,6 +70,11 @@ export function awaitingLookups(data: CaseRunbooks | null, now: number = Date.no
  * `data` with `run` (from a write's answer) in place of the run of the same id. The
  * answer's `role_labels` (the run's roles by their labels: a version switch may name a new
  * one) are added to the case's, so every approval keeps naming its role by its label.
+ *
+ * A write's answer can arrive after a read that already shows a newer state of the same
+ * run (another person's write or a background lookup, read on its `case.runbook` frame).
+ * An answer whose run revision is older than the run shown is dropped, so the newer steps,
+ * approvals, evidence and progress stay; only its role labels are kept.
  */
 export function mergeRun(
   data: CaseRunbooks,
@@ -78,13 +83,18 @@ export function mergeRun(
   revision: number,
   roleLabels: RoleLabels = {},
 ): CaseRunbooks {
-  const exists = data.runs.some((r) => r.run_id === run.run_id);
-  const runs = exists ? data.runs.map((r) => (r.run_id === run.run_id ? run : r)) : [...data.runs, run];
+  const current = data.runs.find((r) => r.run_id === run.run_id);
+  const stale = current !== undefined && (current.revision ?? 0) > (run.revision ?? 0);
+  const runs = stale
+    ? data.runs
+    : current
+      ? data.runs.map((r) => (r.run_id === run.run_id ? run : r))
+      : [...data.runs, run];
   const known = roleLabelsFrom(data);
   const merged: CaseRunbooks = {
     ...data,
     runs,
-    progress: progress ? { ...data.progress, [run.run_id]: progress } : data.progress,
+    progress: progress && !stale ? { ...data.progress, [run.run_id]: progress } : data.progress,
     revision: Math.max(data.revision ?? 0, revision ?? 0),
   };
   if (Object.keys(roleLabels).length || Object.keys(known).length) merged.role_labels = { ...known, ...roleLabels };
