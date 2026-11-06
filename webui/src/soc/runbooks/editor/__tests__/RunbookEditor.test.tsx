@@ -6,6 +6,7 @@
  * Source view; built-ins, Demo Mode and viewers without `runbooks:manage` read only; the
  * outline is a keyboard tree; the match preview says when cases cannot be shown.
  */
+import * as React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 
@@ -81,22 +82,31 @@ vi.mock('@/soc/hooks/useMediaQuery', () => ({
 }));
 
 import { ApiError } from '@/lib/api';
-import type { RunbookDefinition } from '@/lib/types-runbooks';
+import type { RunbookDefinition, RunbookDetail } from '@/lib/types-runbooks';
 import { RouterProvider } from '@/soc/router';
 import { Toaster } from '@/ui/sonner';
 import { TooltipProvider } from '@/ui/tooltip';
 
+import { HistorySheet } from '../HistorySheet';
 import { DETAILS_ID } from '../Outline';
 import { RunbookEditor } from '../RunbookEditor';
 import { makeBuiltinDetail, makeDefinition, makeDetail, makeSummary, makeVersion } from './fixtures';
 
 const DEFAULT_GRANTS = ['runbooks:read', 'runbooks:manage', 'runbooks:publish', 'cases:read', 'sources:read'];
 
-function renderEditor(props: Partial<React.ComponentProps<typeof RunbookEditor>> = {}) {
+interface RenderOptions {
+  /** Render under React.StrictMode, as the development Console does (main.tsx). */
+  strict?: boolean;
+  /** Mount the toast region, so a toast's text is on the page. */
+  toaster?: boolean;
+}
+
+function renderEditor(props: Partial<React.ComponentProps<typeof RunbookEditor>> = {}, options: RenderOptions = {}) {
   const onOpenRunbook = vi.fn();
   const onBackToLibrary = vi.fn();
-  const view = render(
+  const tree = (
     <TooltipProvider>
+      {options.toaster ? <Toaster /> : null}
       <RunbookEditor
         runbookId="my-runbook"
         library={[]}
@@ -104,9 +114,27 @@ function renderEditor(props: Partial<React.ComponentProps<typeof RunbookEditor>>
         onBackToLibrary={onBackToLibrary}
         {...props}
       />
-    </TooltipProvider>,
+    </TooltipProvider>
   );
+  const view = render(options.strict ? <React.StrictMode>{tree}</React.StrictMode> : tree);
   return { ...view, onOpenRunbook, onBackToLibrary };
+}
+
+/** The page's own live region (not the toast region). */
+function pageAnnouncements(): string {
+  return Array.from(document.querySelectorAll('[data-testid="live-announcer"]'))
+    .map((el) => el.textContent ?? '')
+    .join(' ');
+}
+
+/**
+ * Let the page announcer's deferred write land: it clears its region and sets the text on a
+ * 60 ms timer, so a check that something was NOT announced must wait past it to mean anything.
+ */
+async function letAnnouncerSpeak() {
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 120));
+  });
 }
 
 beforeEach(() => {
@@ -196,6 +224,10 @@ describe('saving and publishing', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Reload' }));
     await waitFor(() => expect(screen.queryByText('Someone else changed this draft.')).toBeNull());
     expect(screen.getByRole('heading', { level: 1, name: 'Password spray response' })).toBeInTheDocument();
+    // Reload replaced the working copy with the other person's version, not only the heading.
+    fireEvent.click(screen.getByRole('treeitem', { name: /Runbook details/ }));
+    expect((screen.getByLabelText(/^Title/) as HTMLInputElement).value).toBe('Changed elsewhere');
+    expect(screen.queryByText('Unsaved changes')).toBeNull();
   });
 
   it('treats an unchanged revision after Save as success', async () => {
@@ -304,7 +336,7 @@ describe('a new runbook (F17)', () => {
             );
         }),
     );
-    const { onOpenRunbook } = renderEditor({ runbookId: 'new', initialDetail: null });
+    const { onOpenRunbook } = renderEditor({ runbookId: 'new', initialDetail: null }, { toaster: true });
     fireEvent.change(screen.getByLabelText(/^Title/), { target: { value: 'Phishing triage' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save draft' }));
     await waitFor(() => expect(mocks.createRunbook).toHaveBeenCalledTimes(1));
@@ -325,6 +357,9 @@ describe('a new runbook (F17)', () => {
       definition: { id: 'phishing-triage', title: 'Phishing triage and reply', summary: 'Typed while creating' },
     });
     expect(await screen.findByText('Draft saved. What you typed while it saved is kept as unsaved changes.')).toBeInTheDocument();
+    // The toast says it; the page's own live region does not say it a second time.
+    await letAnnouncerSpeak();
+    expect(pageAnnouncements()).not.toContain('Draft saved.');
   });
 
   it('opens a runbook handed edits from its create with them unsaved, where they were made, and saves them', async () => {
@@ -898,5 +933,563 @@ describe('what a step sets aside when its kind changes', () => {
     fireEvent.click(reloaded.querySelector('[data-outline-step="first-check"]') as HTMLElement);
     fireEvent.click(screen.getByRole('radio', { name: 'Lookup' }));
     expect(screen.queryByLabelText('Filter 1 field')).toBeNull();
+  });
+});
+
+// --------------------------------------------------------------------------------------- //
+// Second acceptance pass (FX7a): wrb-01, wrb-02, wrb-04, wrb-06, roles-08.
+// --------------------------------------------------------------------------------------- //
+
+/** A retired runbook: its v1 was published, then retired; nothing else is left. */
+function retiredDetail(over: Partial<RunbookDetail> = {}): RunbookDetail {
+  const retired = makeVersion(1, 'retired', makeDefinition(), {
+    published_by: 'priya',
+    published_at: '2026-10-21T10:00:00Z',
+    retired_by: 'asha',
+    retired_at: '2026-11-01T10:00:00Z',
+  });
+  return makeDetail({
+    summary: makeSummary({ state: 'retired', retired: true, live_version: null, draft_version: null }),
+    live: null,
+    draft: null,
+    in_review: null,
+    retired,
+    versions: [{ version: 1, state: 'retired', published_by: 'priya', published_at: '2026-10-21T10:00:00Z' }],
+    open_runs_by_version: { '1': 2 },
+    revision: 11,
+    ...over,
+  });
+}
+
+function conflictError(latest: RunbookDetail | null) {
+  const message = 'Someone else changed this draft. Reload it to see their changes.';
+  return new ApiError(409, message, { detail: { code: 'runbook_conflict', message, ...(latest ? { latest } : {}) } });
+}
+
+async function editTitle(value: string) {
+  await screen.findByRole('heading', { level: 1 });
+  fireEvent.click(screen.getByRole('treeitem', { name: /Runbook details/ }));
+  fireEvent.change(screen.getByLabelText(/^Title/), { target: { value } });
+}
+
+function titleValue(): string {
+  fireEvent.click(screen.getByRole('treeitem', { name: /Runbook details/ }));
+  return (screen.getByLabelText(/^Title/) as HTMLInputElement).value;
+}
+
+/** The summary of the version a read-only page shows, from its Details. */
+function shownSummary(): string {
+  fireEvent.click(screen.getByRole('treeitem', { name: /Runbook details/ }));
+  const details = screen.getByRole('region', { name: 'Runbook details' });
+  return within(details).getByText('Summary').nextElementSibling?.textContent ?? '';
+}
+
+describe('a retired runbook (wrb-02)', () => {
+  it('opens read only on its retired version, says it is retired by whom, and a publisher can restore it', async () => {
+    mocks.getRunbookDetail.mockResolvedValue(retiredDetail());
+    mocks.restoreRunbook.mockResolvedValue(publishedOnly().detail);
+    renderEditor();
+    expect(await screen.findByRole('heading', { level: 1, name: 'Password spray response' })).toBeInTheDocument();
+    expect(screen.queryByText('Could not load this runbook')).toBeNull();
+    const strip = screen.getByRole('region', { name: 'Governance' });
+    const lifecycle = within(strip).getByRole('list', { name: 'Lifecycle' });
+    const current = within(lifecycle).getByText('Retired').closest('[aria-current]') as HTMLElement;
+    expect(current).toHaveAttribute('aria-current', 'step');
+    expect(within(current).getByText('read only')).toBeInTheDocument();
+    expect(within(strip).getByText('v1, retired by asha on Nov 1, 2026')).toBeInTheDocument();
+    expect(within(strip).getByText('2 open cases still run v1')).toBeInTheDocument();
+    expect(screen.getByText('Retired runbooks are read only. Restore it to make it match new cases again.')).toBeInTheDocument();
+    expect(document.querySelector('[data-runbook-editor="read-only"]')).not.toBeNull();
+    expect(screen.queryByRole('button', { name: 'Save draft' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Add condition' })).toBeNull();
+    // The retired text is readable: its steps are in the outline.
+    expect(screen.getByRole('tree', { name: 'Phases and steps' })).toHaveTextContent('Sign-in attempts from the source address');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Restore' }));
+    await waitFor(() => expect(mocks.restoreRunbook).toHaveBeenCalledWith('my-runbook', { expected_revision: 11 }));
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Restore' })).toBeNull());
+    expect(screen.getByRole('region', { name: 'Governance' })).toHaveTextContent('v2 is live');
+    await waitFor(() => expect(document.activeElement?.tagName).toBe('H1'));
+  });
+
+  it('offers no Restore without runbooks:publish, and says who can restore it', async () => {
+    mocks.grants = new Set(['runbooks:read', 'runbooks:manage', 'cases:read']);
+    mocks.getRunbookDetail.mockResolvedValue(retiredDetail());
+    renderEditor();
+    await screen.findByRole('heading', { level: 1, name: 'Password spray response' });
+    expect(screen.queryByRole('button', { name: 'Restore' })).toBeNull();
+    expect(screen.getByText('Retired runbooks are read only. Someone with permission to publish can restore it.')).toBeInTheDocument();
+  });
+
+  it('asks for the retired version when the detail does not carry it', async () => {
+    const full = retiredDetail();
+    const { retired, ...withoutRetired } = full;
+    mocks.getRunbookDetail.mockResolvedValue(withoutRetired);
+    mocks.getRunbookVersion.mockResolvedValue(retired);
+    renderEditor();
+    expect(await screen.findByRole('heading', { level: 1, name: 'Password spray response' })).toBeInTheDocument();
+    expect(mocks.getRunbookVersion).toHaveBeenCalledWith('my-runbook', 1, expect.anything());
+    expect(screen.getByRole('region', { name: 'Governance' })).toHaveTextContent('v1, retired by asha on Nov 1, 2026');
+    expect(screen.getByRole('button', { name: 'Restore' })).toBeInTheDocument();
+  });
+
+  it('shows the retired page after Retire, with focus kept on a control rather than the page body', async () => {
+    mocks.getRunbookDetail.mockResolvedValue(publishedOnly().detail);
+    mocks.retireRunbook.mockResolvedValue(retiredDetail());
+    renderEditor({}, { toaster: true });
+    await screen.findByRole('heading', { level: 1 });
+    const more = screen.getByRole('button', { name: 'More actions' });
+    act(() => more.focus());
+    fireEvent.keyDown(more, { key: 'Enter' });
+    fireEvent.click(within(await screen.findByRole('menu')).getByRole('menuitem', { name: 'Retire' }));
+    await waitFor(() => expect(mocks.retireRunbook).toHaveBeenCalledWith('my-runbook', { expected_revision: 7 }));
+    expect(await screen.findByRole('button', { name: 'Restore' })).toBeInTheDocument();
+    expect(screen.queryByText('Could not load this runbook')).toBeNull();
+    expect(await screen.findByText('Retired. It no longer matches new cases.')).toBeInTheDocument();
+    await waitFor(() => expect(document.activeElement).not.toBe(document.body));
+    expect(document.activeElement?.isConnected).toBe(true);
+  });
+
+  it('reports a retire that worked as done even when reading the retired version fails, and Retry reads it again', async () => {
+    const full = retiredDetail();
+    const { retired, ...withoutRetired } = full;
+    mocks.getRunbookDetail.mockResolvedValueOnce(publishedOnly().detail);
+    mocks.retireRunbook.mockResolvedValue(withoutRetired);
+    mocks.getRunbookVersion.mockRejectedValueOnce(new ApiError(503, 'Unavailable.', {}));
+    renderEditor({}, { toaster: true });
+    await screen.findByRole('heading', { level: 1 });
+    fireEvent.keyDown(screen.getByRole('button', { name: 'More actions' }), { key: 'Enter' });
+    fireEvent.click(within(await screen.findByRole('menu')).getByRole('menuitem', { name: 'Retire' }));
+    expect(await screen.findByText('Retired. It no longer matches new cases.')).toBeInTheDocument();
+    expect(screen.queryByText('Could not retire this runbook.')).toBeNull();
+    const retry = await screen.findByRole('button', { name: 'Retry' });
+    mocks.getRunbookDetail.mockResolvedValue(withoutRetired);
+    mocks.getRunbookVersion.mockResolvedValue(retired);
+    fireEvent.click(retry);
+    expect(await screen.findByRole('button', { name: 'Restore' })).toBeInTheDocument();
+  });
+
+  it('offers Restore as draft in History on a retired runbook, and the new draft waits beside the retired version', async () => {
+    // runbooks:manage only: restoring an old version as a draft is the author's way to start a
+    // new version of a retired runbook (SPEC §4.10.5).
+    mocks.grants = new Set(['runbooks:read', 'runbooks:manage', 'cases:read']);
+    mocks.getRunbookDetail.mockResolvedValue(retiredDetail());
+    mocks.getRunbookVersion.mockResolvedValue(retiredDetail().retired);
+    const draft = makeVersion(2, 'draft', makeDefinition({ summary: 'The draft summary.' }));
+    mocks.restoreRunbookVersionAsDraft.mockResolvedValue(
+      retiredDetail({
+        draft,
+        revision: 12,
+        versions: [
+          { version: 2, state: 'draft', published_by: null, published_at: null },
+          { version: 1, state: 'retired', published_by: 'priya', published_at: '2026-10-21T10:00:00Z' },
+        ],
+      }),
+    );
+    renderEditor({}, { toaster: true });
+    fireEvent.click(await screen.findByRole('button', { name: 'History' }));
+    const sheet = await screen.findByRole('dialog');
+    expect(sheet).toHaveTextContent('the runbook stays retired until someone with permission to publish restores it.');
+    expect(sheet).not.toHaveTextContent('the live version does not change');
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Restore v1 as draft' }));
+    await waitFor(() => expect(mocks.restoreRunbookVersionAsDraft).toHaveBeenCalledWith('my-runbook', 1, { expected_revision: 11 }));
+    expect(await screen.findByText('Version 1 restored as a draft. It waits while the runbook is retired.')).toBeInTheDocument();
+    // The page still shows the retired version, and names the draft that waits.
+    const strip = screen.getByRole('region', { name: 'Governance' });
+    expect(within(strip).getByText('Waiting')).toBeInTheDocument();
+    expect(strip).toHaveTextContent('v2 draft by asha, kept while the runbook is retired');
+    expect(shownSummary()).toBe('Many failed sign-ins.');
+  });
+
+  it('names a draft a retired runbook still holds, with its review notes, and says which version Discard deletes', async () => {
+    const draft = makeVersion(2, 'draft', makeDefinition({ summary: 'The draft summary.' }), {
+      review_notes: [{ by: 'mira', at: '2026-11-02T10:00:00Z', text: 'Fix the owner step.' }],
+    });
+    mocks.getRunbookDetail.mockResolvedValue(
+      retiredDetail({
+        draft,
+        versions: [
+          { version: 2, state: 'draft', published_by: null, published_at: null },
+          { version: 1, state: 'retired', published_by: 'priya', published_at: '2026-10-21T10:00:00Z' },
+        ],
+      }),
+    );
+    renderEditor();
+    await screen.findByRole('heading', { level: 1, name: 'Password spray response' });
+    const strip = screen.getByRole('region', { name: 'Governance' });
+    // The page shows the retired version; the draft is named, not hidden.
+    expect(strip).toHaveTextContent('v2 draft by asha, kept while the runbook is retired');
+    const notes = within(strip).getByRole('region', { name: 'Review notes' });
+    expect(within(notes).getByText('Sent back by mira on Nov 2, 2026')).toBeInTheDocument();
+    expect(within(notes).getByText('Fix the owner step.')).toBeInTheDocument();
+    expect(shownSummary()).toBe('Many failed sign-ins.');
+    fireEvent.keyDown(screen.getByRole('button', { name: 'More actions' }), { key: 'Enter' });
+    fireEvent.click(within(await screen.findByRole('menu')).getByRole('menuitem', { name: 'Discard draft' }));
+    expect(await screen.findByRole('alertdialog')).toHaveTextContent('Draft v2 is deleted. The retired v1 stays as it is.');
+  });
+
+  it('names a version in review a retired runbook still holds, and History says why Restore waits', async () => {
+    const inReview = makeVersion(2, 'in_review', makeDefinition(), {
+      review_notes: [{ by: 'mira', at: '2026-11-02T10:00:00Z', text: 'Name the owner.' }],
+    });
+    mocks.getRunbookDetail.mockResolvedValue(
+      retiredDetail({
+        in_review: inReview,
+        versions: [
+          { version: 2, state: 'in_review', published_by: null, published_at: null },
+          { version: 1, state: 'retired', published_by: 'priya', published_at: '2026-10-21T10:00:00Z' },
+        ],
+      }),
+    );
+    mocks.getRunbookVersion.mockImplementation(async (_id: string, n: number) => (n === 2 ? inReview : retiredDetail().retired));
+    renderEditor();
+    await screen.findByRole('heading', { level: 1, name: 'Password spray response' });
+    const strip = screen.getByRole('region', { name: 'Governance' });
+    expect(strip).toHaveTextContent('v2 in review by asha, kept while the runbook is retired');
+    expect(within(strip).getByText('Name the owner.')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'History' }));
+    const sheet = await screen.findByRole('dialog');
+    const restore = within(sheet).getByRole('button', { name: 'Restore v1 as draft' });
+    expect(restore).toBeDisabled();
+    expect(within(sheet).getByText('Version 2 is still in review. Discard it, or restore the runbook and publish it, first.')).toBeInTheDocument();
+  });
+});
+
+describe('History', () => {
+  const v1Note = { by: 'mira', at: '2026-10-25T09:00:00Z', text: 'Name the asset owner first.' };
+
+  function threeVersions(): RunbookDetail {
+    return makeDetail({
+      summary: makeSummary({ live_version: 2, draft_version: 3 }),
+      live: makeVersion(2, 'published'),
+      draft: makeVersion(3, 'draft'),
+      versions: [
+        { version: 3, state: 'draft', published_by: null, published_at: null },
+        { version: 2, state: 'published', published_by: 'priya', published_at: '2026-10-28T10:00:00Z' },
+        { version: 1, state: 'superseded', published_by: 'priya', published_at: '2026-10-21T10:00:00Z', review_notes: [v1Note] },
+      ],
+    });
+  }
+
+  it('shows a superseded version’s review notes from the version list, without reading that version', async () => {
+    mocks.getRunbookDetail.mockResolvedValue(threeVersions());
+    mocks.getRunbookVersion.mockImplementation(async (_id: string, n: number) => makeVersion(n, n === 3 ? 'draft' : n === 2 ? 'published' : 'superseded'));
+    renderEditor();
+    fireEvent.click(await screen.findByRole('button', { name: 'History' }));
+    const sheet = await screen.findByRole('dialog');
+    const list = within(sheet).getByRole('list', { name: 'Review notes on v1' });
+    expect(list).toHaveTextContent('Sent back by mira on Oct 25, 2026: Name the asset owner first.');
+    // The comparison reads v3 and v2 only.
+    await waitFor(() => expect(mocks.getRunbookVersion).toHaveBeenCalledWith('my-runbook', 3));
+    expect(mocks.getRunbookVersion).not.toHaveBeenCalledWith('my-runbook', 1);
+  });
+
+  it('words and orders notes as the governance strip does: newest first, the signed-in person as you', async () => {
+    const notes = [
+      { by: 'priya', at: '2026-10-30T09:00:00Z', text: 'Name the asset owner first.' },
+      { by: 'asha', at: '2026-11-04T09:00:00Z', text: 'Add the host owner step before isolation.' },
+    ];
+    const detail = makeDetail({
+      draft: makeVersion(2, 'draft', makeDefinition(), { review_notes: notes }),
+      versions: [
+        { version: 2, state: 'draft', published_by: null, published_at: null, review_notes: notes },
+        { version: 1, state: 'published', published_by: 'asha', published_at: '2026-10-21T10:00:00Z' },
+      ],
+    });
+    mocks.getRunbookVersion.mockImplementation(async (_id: string, n: number) => makeVersion(n, n === 2 ? 'draft' : 'published'));
+    render(
+      <TooltipProvider>
+        <HistorySheet open onOpenChange={() => undefined} detail={detail} username="asha" canRestore={false} onRestore={async () => undefined} />
+      </TooltipProvider>,
+    );
+    const sheet = screen.getByRole('dialog');
+    const items = within(within(sheet).getByRole('list', { name: 'Review notes on v2' })).getAllByRole('listitem');
+    expect(items.map((li) => li.textContent)).toEqual([
+      'Sent back by you on Nov 4, 2026: Add the host owner step before isolation.',
+      'Sent back by priya on Oct 30, 2026: Name the asset owner first.',
+    ]);
+    expect(within(sheet).getByText('Published by you on Oct 21, 2026')).toBeInTheDocument();
+    // The comparison names the writers the same way, once both versions are read.
+    expect(await within(sheet).findByText('v2 written by you.')).toBeInTheDocument();
+    expect(within(sheet).getByText('v1 written by you, published by priya.')).toBeInTheDocument();
+  });
+});
+
+describe('page layout and focus after a write', () => {
+  it('starts the editor column with the page header, as the loading page does, so the header does not jump', async () => {
+    let resolve: (d: RunbookDetail) => void = () => undefined;
+    mocks.getRunbookDetail.mockImplementation(() => new Promise<RunbookDetail>((r) => (resolve = r)));
+    renderEditor();
+    const loading = document.querySelector('[data-runbook-editor="loading"]') as HTMLElement;
+    expect(loading.firstElementChild).toHaveAttribute('data-page-header', 'page');
+    await act(async () => resolve(makeDetail()));
+    await screen.findByRole('heading', { level: 1, name: 'Password spray response' });
+    const root = document.querySelector('[data-runbook-editor="edit"]') as HTMLElement;
+    expect(root.firstElementChild).toHaveAttribute('data-page-header', 'page');
+    // The live region is still on the page, outside the spaced column.
+    expect(root.querySelector('[data-testid="live-announcer"]')).toBeNull();
+    expect(document.querySelectorAll('[data-testid="live-announcer"]')).toHaveLength(1);
+  });
+
+  it('gives focus back to More actions after a More action, without stopping on the heading first', async () => {
+    mocks.getRunbookDetail.mockResolvedValue(publishedOnly().detail);
+    mocks.retireRunbook.mockResolvedValue(retiredDetail());
+    mocks.markRunbookReviewed.mockResolvedValue(publishedOnly().detail);
+    renderEditor({}, { toaster: true });
+    await screen.findByRole('heading', { level: 1 });
+    const landed: string[] = [];
+    const onFocus = (event: FocusEvent) => landed.push((event.target as HTMLElement).tagName);
+    document.addEventListener('focusin', onFocus);
+    try {
+      for (const [item, done] of [
+        ['Mark reviewed', 'Marked as reviewed.'],
+        ['Retire', 'Retired. It no longer matches new cases.'],
+      ] as const) {
+        const more = screen.getByRole('button', { name: 'More actions' });
+        act(() => more.focus());
+        fireEvent.keyDown(more, { key: 'Enter' });
+        fireEvent.click(within(await screen.findByRole('menu')).getByRole('menuitem', { name: item }));
+        expect(await screen.findByText(done)).toBeInTheDocument();
+        await act(async () => {
+          await new Promise((r) => setTimeout(r, 50));
+        });
+        expect(document.activeElement).toBe(screen.getByRole('button', { name: 'More actions' }));
+      }
+    } finally {
+      document.removeEventListener('focusin', onFocus);
+    }
+    expect(landed).not.toContain('H1');
+  });
+
+  it('sends a version back with the reason, and keeps focus in the dialog when the send back is refused', async () => {
+    const inReview = makeDetail({ draft: null, in_review: makeVersion(2, 'in_review') });
+    mocks.getRunbookDetail.mockResolvedValue(inReview);
+    mocks.rejectRunbook.mockRejectedValueOnce(new ApiError(503, 'The runbook store is unavailable.', {}));
+    renderEditor({}, { toaster: true });
+    await screen.findByRole('heading', { level: 1 });
+    const more = screen.getByRole('button', { name: 'More actions' });
+    act(() => more.focus());
+    fireEvent.keyDown(more, { key: 'Enter' });
+    fireEvent.click(within(await screen.findByRole('menu')).getByRole('menuitem', { name: 'Send back to draft' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Send back to draft' });
+    fireEvent.change(within(dialog).getByLabelText('Reason'), { target: { value: 'Name the owner.' } });
+    const send = within(dialog).getByRole('button', { name: 'Send back' });
+    act(() => send.focus());
+    fireEvent.click(send);
+    await waitFor(() => expect(mocks.rejectRunbook).toHaveBeenCalledWith('my-runbook', { version: 2, reason: 'Name the owner.', expected_revision: 7 }));
+    expect(await screen.findByText('The runbook store is unavailable.')).toBeInTheDocument();
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 50));
+    });
+    // Refused: the dialog stays open, with focus still in it, to try again.
+    expect(screen.getByRole('dialog', { name: 'Send back to draft' })).toContainElement(document.activeElement as HTMLElement);
+  });
+});
+
+describe('the reason a version was sent back (wrb-04)', () => {
+  const notes = [
+    { by: 'priya', at: '2026-10-30T09:00:00Z', text: 'Name the asset owner first.' },
+    { by: 'mira', at: '2026-11-04T09:00:00Z', text: 'Add the host owner step before isolation.' },
+  ];
+
+  it('shows the latest reason on the draft with who sent it back and when, and the earlier ones on request', async () => {
+    mocks.getRunbookDetail.mockResolvedValue(
+      makeDetail({ draft: makeVersion(2, 'draft', makeDefinition(), { review_notes: notes }) }),
+    );
+    renderEditor();
+    const strip = await screen.findByRole('region', { name: 'Governance' });
+    const box = within(strip).getByRole('region', { name: 'Review notes' });
+    expect(within(box).getByText('Sent back by mira on Nov 4, 2026')).toBeInTheDocument();
+    expect(within(box).getByText('Add the host owner step before isolation.')).toBeInTheDocument();
+    expect(within(box).queryByText('Name the asset owner first.')).toBeNull();
+    const toggle = within(box).getByRole('button', { name: 'Show all 2 notes' });
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    fireEvent.click(toggle);
+    expect(within(box).getByText('Name the asset owner first.')).toBeInTheDocument();
+    expect(within(box).getByRole('button', { name: 'Show the latest only' })).toHaveAttribute('aria-expanded', 'true');
+  });
+
+  it('lists the reasons on the version in History', async () => {
+    mocks.getRunbookDetail.mockResolvedValue(
+      makeDetail({ draft: makeVersion(2, 'draft', makeDefinition(), { review_notes: [notes[1]] }) }),
+    );
+    mocks.getRunbookVersion.mockImplementation(async (_id: string, n: number) => makeVersion(n, n === 2 ? 'draft' : 'published'));
+    renderEditor();
+    fireEvent.click(await screen.findByRole('button', { name: 'History' }));
+    const sheet = await screen.findByRole('dialog');
+    const list = within(sheet).getByRole('list', { name: 'Review notes on v2' });
+    expect(list).toHaveTextContent('Sent back by mira on Nov 4, 2026: Add the host owner step before isolation.');
+    expect(within(sheet).queryByRole('list', { name: 'Review notes on v1' })).toBeNull();
+  });
+
+  it('renders a reason as plain text (#9)', async () => {
+    const text = '<img src=x onerror=alert(1)> check the owner';
+    mocks.getRunbookDetail.mockResolvedValue(
+      makeDetail({ draft: makeVersion(2, 'draft', makeDefinition(), { review_notes: [{ by: 'mira', at: '2026-11-04T09:00:00Z', text }] }) }),
+    );
+    renderEditor();
+    expect(await screen.findByText(text)).toBeInTheDocument();
+    expect(document.querySelector('[data-review-notes] img')).toBeNull();
+  });
+});
+
+describe('replacing the working copy under StrictMode (wrb-01)', () => {
+  it('Reload after a conflict loads the other person’s version, keeps mine as a labelled copy, and the next save is on top of theirs', async () => {
+    const latest = makeDetail({ revision: 12, draft: makeVersion(2, 'draft', makeDefinition({ title: 'Changed elsewhere' })) });
+    mocks.saveRunbookDraft.mockRejectedValueOnce(conflictError(latest));
+    renderEditor({}, { strict: true });
+    await editTitle('My local edit');
+    fireEvent.click(screen.getByRole('button', { name: 'Save draft' }));
+    const reload = await screen.findByRole('button', { name: 'Reload' });
+    // The conflict is said once, assertively, by the announcer, and focus is on Reload; its
+    // callout is a note, and says where the edit is kept.
+    const box = reload.closest('[data-conflict]') as HTMLElement;
+    expect(box).toHaveAttribute('role', 'note');
+    expect(box).toHaveTextContent('Your edit stays in the Source view until you reload');
+    expect(screen.getByRole('region', { name: 'Markdown source' })).toBeInTheDocument();
+    await waitFor(() => expect(pageAnnouncements()).toContain('Someone else changed this draft. Reload it to see their changes.'));
+    await waitFor(() => expect(document.activeElement).toBe(reload));
+    fireEvent.click(reload);
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Reload' })).toBeNull());
+    expect(titleValue()).toBe('Changed elsewhere');
+    expect(screen.queryByText('Unsaved changes')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Save draft' })).toBeNull();
+    // My version is kept as a labelled copy, and focus is on the control that copies it.
+    const kept = screen.getByLabelText('Your version, not saved') as HTMLTextAreaElement;
+    expect(kept.value).toContain('My local edit');
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Copy your version' })));
+    await waitFor(() => expect(pageAnnouncements()).toContain('Their version is loaded. Your edits were not saved.'));
+    // Said once, by the announcer: the copy's callout is a note, not a live region that would
+    // say it again and read its buttons and Markdown with it.
+    expect(kept.closest('[data-set-aside]')).toHaveAttribute('role', 'note');
+    expect(kept.closest('[role="status"], [role="alert"]')).toBeNull();
+    // A later edit saves against their revision, never over it unseen.
+    mocks.saveRunbookDraft.mockResolvedValue(makeDetail({ revision: 13 }));
+    fireEvent.change(screen.getByLabelText(/^Title/), { target: { value: 'Changed elsewhere, then by me' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save draft' }));
+    await waitFor(() => expect(mocks.saveRunbookDraft).toHaveBeenCalledTimes(2));
+    expect(mocks.saveRunbookDraft.mock.calls[1][1].expected_revision).toBe(12);
+    // Dismiss puts the copy away and focus on the heading.
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }));
+    expect(screen.queryByLabelText('Your version, not saved')).toBeNull();
+    await waitFor(() => expect(document.activeElement?.tagName).toBe('H1'));
+  });
+
+  it('Reload reads the runbook again when the conflict carried no version, and replaces the working copy', async () => {
+    mocks.saveRunbookDraft.mockRejectedValueOnce(conflictError(null));
+    renderEditor({}, { strict: true });
+    await editTitle('My local edit');
+    fireEvent.click(screen.getByRole('button', { name: 'Save draft' }));
+    const reload = await screen.findByRole('button', { name: 'Reload' });
+    mocks.getRunbookDetail.mockResolvedValue(
+      makeDetail({ revision: 14, draft: makeVersion(2, 'draft', makeDefinition({ title: 'Read again' })) }),
+    );
+    const reads = mocks.getRunbookDetail.mock.calls.length;
+    fireEvent.click(reload);
+    await waitFor(() => expect(mocks.getRunbookDetail.mock.calls.length).toBeGreaterThan(reads));
+    await waitFor(() => expect(titleValue()).toBe('Read again'));
+    expect(screen.queryByText('Unsaved changes')).toBeNull();
+  });
+
+  it('Discard replaces unsaved edits with what is left', async () => {
+    mocks.discardRunbookDraft.mockResolvedValue({
+      id: 'my-runbook',
+      removed: false,
+      detail: makeDetail({ draft: null, revision: 8, live: makeVersion(1, 'published', makeDefinition({ title: 'The live title' })) }),
+    });
+    renderEditor({}, { strict: true });
+    await editTitle('An unsaved title');
+    fireEvent.keyDown(screen.getByRole('button', { name: 'More actions' }), { key: 'Enter' });
+    fireEvent.click(within(await screen.findByRole('menu')).getByRole('menuitem', { name: 'Discard draft' }));
+    fireEvent.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Discard draft' }));
+    await waitFor(() => expect(mocks.discardRunbookDraft).toHaveBeenCalled());
+    await waitFor(() => expect(titleValue()).toBe('The live title'));
+    expect(screen.queryByText('Unsaved changes')).toBeNull();
+  });
+
+  it('keeps no copy when my version already equals theirs', async () => {
+    const latest = makeDetail({ revision: 12, draft: makeVersion(2, 'draft', makeDefinition({ title: 'Same change' })) });
+    mocks.saveRunbookDraft.mockRejectedValueOnce(conflictError(latest));
+    renderEditor({}, { strict: true });
+    await editTitle('Same change');
+    fireEvent.click(screen.getByRole('button', { name: 'Save draft' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Reload' }));
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Reload' })).toBeNull());
+    expect(titleValue()).toBe('Same change');
+    expect(screen.queryByText('Unsaved changes')).toBeNull();
+    expect(screen.queryByLabelText('Your version, not saved')).toBeNull();
+    await waitFor(() => expect(document.activeElement).not.toBe(document.body));
+  });
+
+  it('keeps no copy after a conflict on a write made with nothing unsaved: there is nothing of mine to keep', async () => {
+    const latest = makeDetail({ revision: 12, draft: makeVersion(2, 'draft', makeDefinition({ title: 'Changed elsewhere' })) });
+    mocks.publishRunbook.mockRejectedValueOnce(conflictError(latest));
+    renderEditor({}, { strict: true });
+    const publish = await screen.findByRole('button', { name: 'Publish' });
+    await waitFor(() => expect(mocks.validateRunbook).toHaveBeenCalled());
+    fireEvent.click(publish);
+    const reload = await screen.findByRole('button', { name: 'Reload' });
+    const box = reload.closest('[data-conflict]') as HTMLElement;
+    expect(box).toHaveTextContent('You had no unsaved edits, so nothing of yours is lost.');
+    expect(box).not.toHaveTextContent('Source view');
+    // No edit to keep, so the view does not switch to the Markdown.
+    expect(screen.queryByRole('region', { name: 'Markdown source' })).toBeNull();
+    fireEvent.click(reload);
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Reload' })).toBeNull());
+    await waitFor(() => expect(document.activeElement?.tagName).toBe('H1'));
+    expect(screen.queryByLabelText('Your version, not saved')).toBeNull();
+    expect(screen.queryByText('Their version is loaded. Your edits were not saved.')).toBeNull();
+    await letAnnouncerSpeak();
+    expect(pageAnnouncements()).not.toContain('Their version is loaded. Your edits were not saved.');
+    expect(titleValue()).toBe('Changed elsewhere');
+    expect(screen.queryByText('Unsaved changes')).toBeNull();
+  });
+
+  it('keeps a copy of an edit made after such a conflict, before Reload', async () => {
+    const latest = makeDetail({ revision: 12, draft: makeVersion(2, 'draft', makeDefinition({ title: 'Changed elsewhere' })) });
+    mocks.publishRunbook.mockRejectedValueOnce(conflictError(latest));
+    renderEditor({}, { strict: true });
+    const publish = await screen.findByRole('button', { name: 'Publish' });
+    await waitFor(() => expect(mocks.validateRunbook).toHaveBeenCalled());
+    fireEvent.click(publish);
+    const reload = await screen.findByRole('button', { name: 'Reload' });
+    fireEvent.click(screen.getByRole('treeitem', { name: /Runbook details/ }));
+    fireEvent.change(screen.getByLabelText(/^Title/), { target: { value: 'Typed after the conflict' } });
+    expect(reload.closest('[data-conflict]')).toHaveTextContent('What you changed since is kept as a copy');
+    fireEvent.click(reload);
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Reload' })).toBeNull());
+    const kept = screen.getByLabelText('Your version, not saved') as HTMLTextAreaElement;
+    expect(kept.value).toContain('Typed after the conflict');
+    expect(titleValue()).toBe('Changed elsewhere');
+  });
+});
+
+describe('one announcement per outcome (wrb-06)', () => {
+  it('lets the toast say Draft saved, and the page live region stays quiet', async () => {
+    mocks.saveRunbookDraft.mockResolvedValue(makeDetail({ revision: 8 }));
+    renderEditor({}, { toaster: true });
+    await editTitle('A new title');
+    fireEvent.click(screen.getByRole('button', { name: 'Save draft' }));
+    expect(await screen.findByText('Draft saved.')).toBeInTheDocument();
+    await letAnnouncerSpeak();
+    expect(pageAnnouncements()).not.toContain('Draft saved.');
+  });
+});
+
+describe('a new runbook without runbooks:manage (roles-08)', () => {
+  it('refuses plainly instead of opening an empty draft, and reads nothing', async () => {
+    mocks.grants = new Set(['runbooks:read', 'cases:read', 'sources:read']);
+    renderEditor({ runbookId: 'new', initialDetail: null });
+    expect(screen.getByRole('heading', { level: 1, name: 'New runbook' })).toBeInTheDocument();
+    expect(screen.getByText('You cannot create runbooks. Ask an administrator for permission to manage runbooks.')).toBeInTheDocument();
+    expect(screen.queryByText('Draft · not saved yet')).toBeNull();
+    expect(screen.queryByRole('tree')).toBeNull();
+    expect(screen.queryByText('You can view this runbook but not change it.')).toBeNull();
+    expect(screen.getByRole('link', { name: /All runbooks/ })).toHaveAttribute('href', '#/runbooks');
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+    });
+    expect(mocks.previewRunbookMatch).not.toHaveBeenCalled();
+    expect(mocks.validateRunbook).not.toHaveBeenCalled();
   });
 });

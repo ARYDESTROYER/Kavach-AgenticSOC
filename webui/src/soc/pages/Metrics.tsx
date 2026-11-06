@@ -92,6 +92,7 @@ import {
   windowCaption,
   type RankSort,
 } from './analytics-shared';
+import { PageAccess, usePermission } from './PageAccess';
 
 // --------------------------------------------------------------------------- //
 // Constants + helpers
@@ -324,8 +325,28 @@ export interface MetricsProps {
   onTabChange?: (tab: MetricsTab) => void;
 }
 
-export default function MetricsPage({ onNavigate, tab: tabProp, onTabChange }: MetricsProps) {
+/**
+ * Every Metrics read needs `metrics:view` (GET /api/metrics, posture, MITRE coverage and
+ * the open-by-verdict breakdown); without it a typed or shared link shows the page's
+ * title and one refusal, and sends none of them (roles-04).
+ */
+export default function MetricsPage(props: MetricsProps) {
+  return (
+    <PageAccess resource="metrics" action="view" title={PAGE_TITLE} message="You do not have access to metrics.">
+      <MetricsView {...props} />
+    </PageAccess>
+  );
+}
+
+function MetricsView({ onNavigate, tab: tabProp, onTabChange }: MetricsProps) {
   const [hours, setHours] = useAnalyticsWindow();
+  // The knowledge strip's two reads have grants of their own; one the role lacks is not
+  // sent (each refusal would write an Access denied audit row), and its half of the strip
+  // says the role has no access to it, in the wording a missing grant gets everywhere,
+  // never the "not available" a failed read gets.
+  const can = usePermission();
+  const canReadRag = can('rag', 'read');
+  const canReadMemory = can('memory', 'read');
   // The tab is route-driven when the host supplies `tabProp`; otherwise a local value keeps
   // the tabs working on their own.
   const [localTab, setLocalTab] = React.useState<MetricsTab>(() => coerceTab(tabProp));
@@ -355,8 +376,8 @@ export default function MetricsPage({ onNavigate, tab: tabProp, onTabChange }: M
     try {
       const [m, ragStats, mem, post, mit, verdicts] = await Promise.all([
         api.getMetrics(hours),
-        api.ragStats().catch(() => null),
-        api.getMemory().catch(() => null),
+        canReadRag ? api.ragStats().catch(() => null) : Promise.resolve(null),
+        canReadMemory ? api.getMemory().catch(() => null) : Promise.resolve(null),
         fetchPosture(hours, 'prev').catch(() => null),
         // MITRE coverage spans ALL cases (window_hours=0) so the heatmap reflects the
         // whole observed technique footprint, independent of the selected range.
@@ -381,7 +402,7 @@ export default function MetricsPage({ onNavigate, tab: tabProp, onTabChange }: M
     } finally {
       if (request === requestRef.current) setLoading(false);
     }
-  }, [hours]);
+  }, [hours, canReadRag, canReadMemory]);
 
   React.useEffect(() => {
     void load();
@@ -499,6 +520,13 @@ interface OperationalTabProps {
 }
 
 function OperationalTab({ data, rag, memory, openByVerdict, loading, failed, hours, onNavigate }: OperationalTabProps) {
+  // GET /api/metrics leaves its `cost` part empty without `cost:view` (Round 14 roles-11),
+  // so the LLM spend card says why instead of showing dashes, and links to Cost only for a
+  // role that may open it. The knowledge strip's halves follow `rag:read` and `memory:read`.
+  const can = usePermission();
+  const canViewCost = can('cost', 'view');
+  const canReadRag = can('rag', 'read');
+  const canReadMemory = can('memory', 'read');
   const [personaSort, setPersonaSort] = React.useState<RankSort>('count');
   const [runbookSort, setRunbookSort] = React.useState<RankSort>('count');
   const runbookTitles = useRunbookTitles(data?.runbook_usage);
@@ -509,7 +537,9 @@ function OperationalTab({ data, rag, memory, openByVerdict, loading, failed, hou
   // A load failure already renders the error above; an empty state would contradict it.
   if (failed || !data) return null;
 
-  const knowledge = <KnowledgeSection rag={rag} memory={memory} />;
+  const knowledge = (
+    <KnowledgeSection rag={rag} memory={memory} canReadRag={canReadRag} canReadMemory={canReadMemory} />
+  );
 
   if (!(data.total_cases > 0)) {
     return (
@@ -642,34 +672,44 @@ function OperationalTab({ data, rag, memory, openByVerdict, loading, failed, hou
           title="LLM spend"
           caption={windowCaption(hours)}
           action={
-            <RouteTextLink page="cost" onNavigate={onNavigate} className="text-sm">
-              Open Cost
-            </RouteTextLink>
+            canViewCost ? (
+              <RouteTextLink page="cost" onNavigate={onNavigate} className="text-sm">
+                Open Cost
+              </RouteTextLink>
+            ) : undefined
           }
         >
-          <dl className="grid grid-cols-2 gap-x-6 gap-y-4" data-testid="analytics-spend">
-            <div className="col-span-2">
-              <dt className="text-sm text-muted-foreground">Total cost</dt>
-              <dd className="mt-1 text-2xl font-semibold tabular-nums text-foreground">
-                {fmtMoney(cost?.total_cost as number | undefined, currency)}
-              </dd>
-            </div>
-            <div>
-              <dt className="text-sm text-muted-foreground">Tokens</dt>
-              <dd className="mt-1 text-lg font-semibold tabular-nums text-foreground">
-                {fmtTokens(cost?.total_tokens as number | undefined)}
-              </dd>
-            </div>
-            <div>
-              <dt className="text-sm text-muted-foreground">LLM calls</dt>
-              <dd className="mt-1 text-lg font-semibold tabular-nums text-foreground">
-                {fmtNumber(cost?.call_count as number | undefined)}
-              </dd>
-            </div>
-          </dl>
-          <p className="mt-4 text-sm text-muted-foreground">
-            The spend ledger, by model, role and surface, is on the Cost page.
-          </p>
+          {canViewCost ? (
+            <>
+              <dl className="grid grid-cols-2 gap-x-6 gap-y-4" data-testid="analytics-spend">
+                <div className="col-span-2">
+                  <dt className="text-sm text-muted-foreground">Total cost</dt>
+                  <dd className="mt-1 text-2xl font-semibold tabular-nums text-foreground">
+                    {fmtMoney(cost?.total_cost as number | undefined, currency)}
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-sm text-muted-foreground">Tokens</dt>
+                  <dd className="mt-1 text-lg font-semibold tabular-nums text-foreground">
+                    {fmtTokens(cost?.total_tokens as number | undefined)}
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-sm text-muted-foreground">LLM calls</dt>
+                  <dd className="mt-1 text-lg font-semibold tabular-nums text-foreground">
+                    {fmtNumber(cost?.call_count as number | undefined)}
+                  </dd>
+                </div>
+              </dl>
+              <p className="mt-4 text-sm text-muted-foreground">
+                The spend ledger, by model, role and surface, is on the Cost page.
+              </p>
+            </>
+          ) : (
+            <p className="text-sm text-muted-foreground" data-testid="analytics-spend-restricted">
+              You do not have access to LLM spend.
+            </p>
+          )}
         </ChartCard>
       </div>
 
@@ -932,8 +972,25 @@ function FeedbackQuality({ feedback: fb }: { feedback: Metrics['feedback'] | und
   );
 }
 
-/** The knowledge base and the operator memory the agents draw on, as they are now. */
-function KnowledgeSection({ rag, memory }: { rag: RagStats | null; memory: MemoryResponse | null }) {
+/** A knowledge tile's state line when the role lacks the grant its read needs. */
+const KNOWLEDGE_RESTRICTED = 'Access restricted';
+
+/**
+ * The knowledge base and the operator memory the agents draw on, as they are now. Each half
+ * has its own grant (`rag:read`, `memory:read`): a half the role lacks says so, and a half
+ * whose read failed says its figures are not available.
+ */
+function KnowledgeSection({
+  rag,
+  memory,
+  canReadRag = true,
+  canReadMemory = true,
+}: {
+  rag: RagStats | null;
+  memory: MemoryResponse | null;
+  canReadRag?: boolean;
+  canReadMemory?: boolean;
+}) {
   const [corpusSort, setCorpusSort] = React.useState<RankSort>('count');
   if (rag === null && memory === null) return null;
   const entries = memory?.entries ?? [];
@@ -962,33 +1019,62 @@ function KnowledgeSection({ rag, memory }: { rag: RagStats | null; memory: Memor
         caption="now"
         data-testid="analytics-knowledge-strip"
       >
-        <KpiTile label="Documents" value={fmtNumber(rag?.document_count)} context="in the corpus" />
-        <KpiTile label="Chunks" value={fmtNumber(rag?.total_chunks)} context="searchable passages" />
-        <KpiTile
-          label="Embedding dimensions"
-          value={typeof rag?.dim === 'number' ? fmtNumber(rag.dim) : DASH}
-          // The model id is an identifier, not a numeral: it is the context line, never a
-          // value that breaks mid-word in the numeral slot (AN8).
-          context={rag?.embedding_model ? rag.embedding_model : 'model not reported'}
-          testId="embedding-model"
-        />
-        <KpiTile label="Memory facts" value={fmtNumber(memory?.count)} context="approved and pending" />
-        <KpiTile
-          label="Active memory"
-          value={memory ? fmtNumber(active) : DASH}
-          context={memory ? `of ${fmtNumber(memory.count)} facts` : 'not reported'}
-        />
+        {canReadRag ? (
+          <>
+            <KpiTile label="Documents" value={fmtNumber(rag?.document_count)} context="in the corpus" />
+            <KpiTile label="Chunks" value={fmtNumber(rag?.total_chunks)} context="searchable passages" />
+            <KpiTile
+              label="Embedding dimensions"
+              value={typeof rag?.dim === 'number' ? fmtNumber(rag.dim) : DASH}
+              // The model id is an identifier, not a numeral: it is the context line, never
+              // a value that breaks mid-word in the numeral slot (AN8).
+              context={rag?.embedding_model ? rag.embedding_model : 'model not reported'}
+              testId="embedding-model"
+            />
+          </>
+        ) : (
+          <>
+            <KpiTile label="Documents" value={DASH} sub={KNOWLEDGE_RESTRICTED} />
+            <KpiTile label="Chunks" value={DASH} sub={KNOWLEDGE_RESTRICTED} />
+            <KpiTile label="Embedding dimensions" value={DASH} sub={KNOWLEDGE_RESTRICTED} testId="embedding-model" />
+          </>
+        )}
+        {canReadMemory ? (
+          <>
+            <KpiTile label="Memory facts" value={fmtNumber(memory?.count)} context="approved and pending" />
+            <KpiTile
+              label="Active memory"
+              value={memory ? fmtNumber(active) : DASH}
+              context={memory ? `of ${fmtNumber(memory.count)} facts` : 'not reported'}
+            />
+          </>
+        ) : (
+          <>
+            <KpiTile label="Memory facts" value={DASH} sub={KNOWLEDGE_RESTRICTED} />
+            <KpiTile label="Active memory" value={DASH} sub={KNOWLEDGE_RESTRICTED} />
+          </>
+        )}
       </StripPanel>
       <div className={cn('grid grid-cols-1 items-stretch lg:grid-cols-2', PANEL_GAP)}>
         <ChartCard
           title="Corpus by source"
           caption="now"
-          action={<SortToggle label="Sort corpus by source" value={corpusSort} onChange={setCorpusSort} />}
+          action={
+            canReadRag ? (
+              <SortToggle label="Sort corpus by source" value={corpusSort} onChange={setCorpusSort} />
+            ) : undefined
+          }
         >
           {corpus.length ? (
             <BarList items={corpus} format={(n) => fmtNumber(n)} />
           ) : (
-            <ChartEmpty>{rag ? 'No documents indexed yet.' : 'Corpus figures are not available.'}</ChartEmpty>
+            <ChartEmpty>
+              {!canReadRag
+                ? 'You do not have access to the knowledge corpus.'
+                : rag
+                  ? 'No documents indexed yet.'
+                  : 'Corpus figures are not available.'}
+            </ChartEmpty>
           )}
         </ChartCard>
         <ChartCard title="Memory by author" caption="now">
@@ -1005,7 +1091,13 @@ function KnowledgeSection({ rag, memory }: { rag: RagStats | null; memory: Memor
               }
             />
           ) : (
-            <ChartEmpty>{memory ? 'No memory facts recorded yet.' : 'Memory figures are not available.'}</ChartEmpty>
+            <ChartEmpty>
+              {!canReadMemory
+                ? 'You do not have access to operator memory.'
+                : memory
+                  ? 'No memory facts recorded yet.'
+                  : 'Memory figures are not available.'}
+            </ChartEmpty>
           )}
         </ChartCard>
       </div>

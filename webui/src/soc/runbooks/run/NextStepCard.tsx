@@ -278,7 +278,14 @@ function PinnedStep({ item, total, compact }: { item: NumberedStep; total: numbe
         ) : null}
         {isAction && state.action_record ? <ActionRecordBlock step={step} state={state} /> : null}
         {isAction && (!state.action_record || rejected) && editable ? (
-          <ActionRecordForm step={step} draft={editor.action} onChange={editor.setAction} disabled={busy} idBase={idBase} />
+          <ActionRecordForm
+            step={step}
+            draft={editor.action}
+            onChange={editor.setAction}
+            disabled={busy}
+            idBase={idBase}
+            roleLabels={ctx.roleLabels}
+          />
         ) : null}
         {editable && !draftPending && step.kind !== 'decision' && step.evidence !== 'none' ? (
           <NoteField

@@ -43,14 +43,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import re
 from typing import Any, Callable
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 
 from ..audit.context import audit_context
 from ..engine import runbook_runs as runs_engine
-from ..engine.runbook_runs import LOOKUP_TOOL_GRANTS, RunbookRunError
+from ..engine.runbook_runs import LOOKUP_TOOL_GRANTS, RunbookRunError, role_key
 from ..models import (
     CaseRunbooks,
     LookupResult,
@@ -104,10 +103,6 @@ async def _require_tool_grant(request: Request, tool: str) -> None:
     await _enforce(request, resource, action)
 
 
-def _role_key(value: Any) -> str:
-    return re.sub(r"[\s-]+", "_", str(value or "").strip()).casefold()
-
-
 def holds_approval_role(view: AccessView, role: str | None) -> bool:
     """True when the caller may approve a step whose ``approval_role`` is ``role``:
     auth or RBAC off (unrestricted), the super admin, the base role itself or one of
@@ -116,9 +111,9 @@ def holds_approval_role(view: AccessView, role: str | None) -> bool:
         return True
     if view.unrestricted:
         return True
-    wanted = _role_key(role)
-    held = {_role_key(view.role), *(_role_key(r) for r in view.assigned)}
-    return wanted in held or _role_key(view.role) == "super_admin"
+    wanted = role_key(role)
+    held = {role_key(view.role), *(role_key(r) for r in view.assigned)}
+    return wanted in held or role_key(view.role) == "super_admin"
 
 
 async def _conflict_with_latest(
@@ -328,7 +323,7 @@ async def decide_runbook_approval(
     view = await _view(request)
     if not holds_approval_role(view, step.approval_role):
         raise RunbookRunError(403, "runbook_approval_role",
-                              f"Only a {step.approval_role} can approve this step.")
+                              f"Only {runs_engine.role_phrase(step.approval_role)} can approve this step.")
     return await _run_write(state, case_id, run_id, view.allows, runs_engine.decide_approval(
         state, case, run_id, step_id, decision=body.decision, reason=body.reason,
         actor=_actor(request), context=audit_context(request), allows=view.allows,

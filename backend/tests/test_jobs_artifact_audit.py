@@ -7,7 +7,7 @@ export's download is ``audit.export_downloaded``; every other kind's is
 ``job.artifact_downloaded``. The row names the target every other row of the job
 names (an ``export`` target whose id is the job), so a download reads as part of its
 job. A failed append refuses the download with ``503 audit_unavailable``; a refused
-download (gone, corrupt, grant lost) writes no row.
+download (gone, corrupt, grant lost, grants that could not be confirmed) writes no row.
 Two kinds are exercised end to end: ``audit_export`` and ``data_export_archive``.
 Offline: fake Elasticsearch, SQLite, mock LLM.
 """
@@ -219,7 +219,13 @@ def test_a_corrupt_artifact_is_refused_without_a_download_row(api):
     assert _download_rows(api) == []
 
 
-def test_a_lost_grant_is_refused_without_a_download_row(api, monkeypatch):
+def test_unconfirmed_grants_are_refused_without_a_download_row(api, monkeypatch):
+    """The strict live grant check refuses while the caller holds every grant (sign-in
+    is off here, so the caller holds all of them): the grants could not be confirmed,
+    which is no permission refusal. The download is refused with the retryable
+    ``503 job_permission_unverifiable``, and neither a download row nor an Access
+    denied row is written. A grant that is really gone is a ``403``
+    (``tests/test_job_artifact_permission.py``)."""
     _seed(api)
     job = _finished_job(api, "audit_export")
     state = _state(api)
@@ -229,8 +235,12 @@ def test_a_lost_grant_is_refused_without_a_download_row(api, monkeypatch):
 
     monkeypatch.setattr(state.job_runner, "permission_alive", gone)
     refused = api.get(f"/api/jobs/{job['job_id']}/artifact")
-    assert refused.status_code == 403
+    assert refused.status_code == 503
+    assert refused.json()["detail"]["code"] == "job_permission_unverifiable"
+    assert "content-disposition" not in refused.headers
     assert _download_rows(api) == []
+    denials = api.portal.call(lambda: state.control_audit.records(action_type="access_denied", limit=10))
+    assert denials == []
 
 
 def test_downloads_are_audited_in_the_control_store_in_demo_mode(api):

@@ -11,8 +11,11 @@
  * fields and in a summary under the outline (a new runbook shows an issue only once its
  * field was left or a save was tried, and its summary only after a save was tried, F17); an
  * issue found on text that has since changed is not shown. A save conflict keeps the local
- * edit in the Source view until the person reloads. Built-ins, Demo Mode and viewers without
- * `runbooks:manage` read only.
+ * edit in the Source view until the person reloads; Reload then loads the other person's
+ * version and keeps the person's own as a labelled copy to take back what they still need.
+ * Built-ins, retired runbooks, Demo Mode and viewers without `runbooks:manage` read only; a
+ * retired runbook shows its retired version with Restore for a publisher, and a viewer who
+ * cannot create runbooks gets a plain refusal at `?id=new`.
  *
  * Edits never get lost under a write: a response replaces the working copy only when the
  * person did not change it while the request ran, and the actions that would replace unsaved
@@ -29,12 +32,14 @@ import { Copy, Download, History as HistoryIcon, MoreHorizontal, RotateCcw, Send
 
 import { Callout } from '@/design-system/callout';
 import { api } from '@/lib/api';
+import { copyText } from '@/lib/clipboard';
 import {
   createRunbook,
   discardRunbookDraft,
   duplicateRunbook,
   exportRunbookMarkdown,
   getRunbookDetail,
+  getRunbookVersion,
   markRunbookReviewed,
   previewRunbookMatch,
   publishRunbook,
@@ -61,7 +66,7 @@ import type {
   StepKind,
 } from '@/lib/types-runbooks';
 import { useOptionalAuth } from '@/soc/auth';
-import { useCan } from '@/soc/components/Can';
+import { Unauthorized, useCan } from '@/soc/components/Can';
 import { cn } from '@/lib/cn';
 import { ConfirmDialog } from '@/soc/components/ConfirmDialog';
 import { EmptyState } from '@/soc/components/EmptyState';
@@ -158,10 +163,16 @@ export interface RunbookEditorProps {
 const DEMO_READ_ONLY = 'Runbooks cannot be edited in Demo Mode.';
 const CONFLICT_TEXT = 'Someone else changed this draft. Reload it to see their changes.';
 const SAVE_FIRST = 'Save or discard your changes to use these.';
+const SET_ASIDE_TITLE = 'Their version is loaded. Your edits were not saved.';
+const NO_CREATE = 'You cannot create runbooks. Ask an administrator for permission to manage runbooks.';
 const READ_ONLY_NOTE_ID = 'runbook-read-only-note';
 
-/** Where focus goes once a write settles (see the effect that fulfils it). */
-type FocusAfter = 'issues' | 'conflict' | 'settled';
+/**
+ * Where focus goes once a write settles (see the effect that fulfils it). 'more' is a write
+ * started from the More actions menu or one of its dialogs: focus goes back to the menu's
+ * trigger, where the menu itself returns it once it has closed, so it moves only once.
+ */
+type FocusAfter = 'issues' | 'conflict' | 'set-aside' | 'more' | 'settled';
 
 /** A soft-disabled control: it keeps focus while a request runs (WCAG 2.4.3), and says so. */
 function softDisabled(off: boolean, className?: string): { 'aria-disabled'?: true; className?: string } {
@@ -193,10 +204,34 @@ export function takenIdMessage(id: string): string {
 const VALIDATE_DELAY_MS = 450;
 const MATCH_DELAY_MS = 900;
 
-/** The version the editor shows: the draft, else the one in review, else the live one. */
+/**
+ * The version the editor shows: the draft, else the one in review, else the live one. A
+ * retired runbook shows its retired version (the last published text, which Restore makes
+ * live again), read only, whatever else it holds.
+ */
 export function workingVersion(detail: RunbookDetail | null): RunbookVersionDoc | null {
   if (!detail) return null;
+  if (detail.summary.retired) return detail.retired ?? null;
   return detail.draft ?? detail.in_review ?? detail.live ?? null;
+}
+
+/** The newest retired version listed in a detail's history, or null. */
+function newestRetired(detail: RunbookDetail): number | null {
+  const retired = detail.versions.filter((v) => v.state === 'retired').map((v) => v.version);
+  return retired.length ? Math.max(...retired) : null;
+}
+
+/**
+ * A detail the editor can show. A retired runbook's detail carries its retired version; a
+ * server that does not send it is asked for that version, so the page never falls back to
+ * a load error for a runbook that is only retired.
+ */
+export async function withRetiredVersion(detail: RunbookDetail, signal?: AbortSignal): Promise<RunbookDetail> {
+  if (!detail.summary.retired || detail.retired) return detail;
+  const number = newestRetired(detail);
+  if (number === null) return detail;
+  const retired = await getRunbookVersion(detail.summary.id, number, signal);
+  return { ...detail, retired };
 }
 
 /** The case values a preview fills, read from one case (its primary entity, rule and source). */
@@ -244,6 +279,8 @@ export function RunbookEditor({
   const canCases = useCan('cases', 'read');
   const canSources = useCan('sources', 'read');
   const demo = useDemo().active;
+  /** `?id=new` for a viewer who cannot create runbooks: a refusal, not an empty draft. */
+  const refused = isNew && !canManage;
   const isPhone = useMediaQuery('(max-width: 767px)');
   const isWide = useMediaQuery('(min-width: 1680px)');
   const { announce, LiveRegion } = useLiveAnnouncer();
@@ -292,7 +329,24 @@ export function RunbookEditor({
   const [historyOpen, setHistoryOpen] = React.useState(false);
   const [stepSheetOpen, setStepSheetOpen] = React.useState(false);
   const [busy, setBusy] = React.useState<string | null>(null);
-  const [conflict, setConflict] = React.useState<{ latest: RunbookDetail | null } | null>(null);
+  /**
+   * A write refused because someone else changed the runbook first. `hadEdits` says whether
+   * the person had unsaved edits when it came back, and `exported` is that version of theirs
+   * as Markdown (null without edits). Only an edit is worth keeping: after a write made with
+   * nothing unsaved (Publish, Send for review, Retire), the text on screen is just the stale
+   * version the other person has since changed, and handing it back would invite pasting it
+   * over their change.
+   */
+  const [conflict, setConflict] = React.useState<{
+    latest: RunbookDetail | null;
+    hadEdits: boolean;
+    exported: string | null;
+  } | null>(null);
+  /**
+   * The person's own version (Markdown), kept after they reloaded someone else's over it, so
+   * they can take back what they still need. Shown until they dismiss it or leave the page.
+   */
+  const [setAside, setSetAside] = React.useState<string | null>(null);
   const [discardOpen, setDiscardOpen] = React.useState(false);
   const [rejectOpen, setRejectOpen] = React.useState(false);
   const [rejectReason, setRejectReason] = React.useState('');
@@ -317,17 +371,22 @@ export function RunbookEditor({
    */
   const kindAside = React.useRef(new Map<string, KindFields>());
   /** What the person sees now, for a response that must tell what changed while it ran. */
-  const live = React.useRef({ working, view, sourceEdited, sourceText, selected });
+  const live = React.useRef({ working, view, sourceEdited, sourceText, sourceStale, selected });
   React.useLayoutEffect(() => {
-    live.current = { working, view, sourceEdited, sourceText, selected };
+    live.current = { working, view, sourceEdited, sourceText, sourceStale, selected };
   });
   /**
    * The definition a write sent, keyed to the detail its response produced: the baseline
    * sync below replaces the working copy only when it still equals what was sent ('force'
    * when the person chose to replace it: Reload, Discard). A null detail means the next one
-   * to arrive (a Reload that reads it again).
+   * to arrive (a Reload that reads it again). It is state, not a ref, so the render that
+   * uses it is pure: a render React throws away (StrictMode renders twice in development)
+   * takes nothing with it, and the render React keeps sees the same marker (wrb-01).
    */
-  const syncRef = React.useRef<{ detail: RunbookDetail | null; sent: RunbookDefinition | 'force' } | null>(null);
+  const [pendingSync, setPendingSync] = React.useState<{
+    detail: RunbookDetail | null;
+    sent: RunbookDefinition | 'force';
+  } | null>(null);
   const focusAfter = React.useRef<FocusAfter | null>(null);
   /** A field to focus when the phone step sheet opens (instead of its first control). */
   const sheetFocus = React.useRef<{ stepId: string | null; field: string } | null>(null);
@@ -338,6 +397,7 @@ export function RunbookEditor({
   const matchButtonRef = React.useRef<HTMLButtonElement>(null);
   const moreTriggerRef = React.useRef<HTMLButtonElement>(null);
   const reloadButtonRef = React.useRef<HTMLButtonElement>(null);
+  const copyMineRef = React.useRef<HTMLButtonElement>(null);
   const leaveSourceReturn = React.useRef<HTMLElement | null>(null);
 
   // ---- load --------------------------------------------------------------------------- //
@@ -346,7 +406,9 @@ export function RunbookEditor({
     const ctrl = new AbortController();
     setLoadState((s) => (s === 'ready' && detail ? s : 'loading'));
     getRunbookDetail(runbookId, ctrl.signal)
+      .then((d) => withRetiredVersion(d, ctrl.signal))
       .then((d) => {
+        if (ctrl.signal.aborted) return;
         setDetail(d);
         setLoadState('ready');
       })
@@ -370,9 +432,9 @@ export function RunbookEditor({
   // request ran is kept, and then reads as unsaved against the new baseline.
   const [syncedBaseline, setSyncedBaseline] = React.useState(baseline);
   if (baseline !== syncedBaseline) {
-    const held = syncRef.current;
+    const held = pendingSync;
     const pending = held && (held.detail === null || held.detail === detail) ? held.sent : null;
-    syncRef.current = null;
+    if (held) setPendingSync(null);
     const reference = pending === 'force' ? null : pending ?? syncedBaseline;
     const keepLocal = pending !== 'force' && !!working && !!reference && !sameDefinition(working, reference);
     setSyncedBaseline(baseline);
@@ -409,6 +471,7 @@ export function RunbookEditor({
 
   // Criteria suggestions: the rule catalogue, recent rules, techniques and sources (fail-soft).
   React.useEffect(() => {
+    if (refused) return;
     let alive = true;
     const libRules = library.flatMap((r) => r.applies_to.rule_ids);
     const libTechniques = library.flatMap((r) => r.applies_to.mitre);
@@ -451,7 +514,9 @@ export function RunbookEditor({
       : !canManage
         ? 'You can view this runbook but not change it.'
         : retired
-          ? 'Retired runbooks are read only. Restore it to publish it again.'
+          ? canPublish
+            ? 'Retired runbooks are read only. Restore it to make it match new cases again.'
+            : 'Retired runbooks are read only. Someone with permission to publish can restore it.'
           : null;
   const readOnly = demo || builtin || !canManage || retired;
   // Markdown that does not read is an unsaved change wherever the person is.
@@ -461,6 +526,8 @@ export function RunbookEditor({
   const hasDraft = !!detail?.draft;
   const inReview = !!detail?.in_review && !detail?.draft;
   const publishable = detail?.draft ?? detail?.in_review ?? null;
+  /** The version number the Markdown names: the one being written, or the retired one shown. */
+  const sourceVersion = retired ? version?.version ?? null : publishable?.version ?? null;
 
   useUnsavedChanges(dirty && !readOnly);
   useNavigationBlocker(dirty && !readOnly, {
@@ -511,7 +578,8 @@ export function RunbookEditor({
   }, [validateKey]);
 
   // ---- match preview (debounced on the matching inputs only) ---------------------------- //
-  const matchKey = working ? JSON.stringify([working.id, working.applies_when, working.priority, matchTick]) : null;
+  const matchKey =
+    working && !refused ? JSON.stringify([working.id, working.applies_when, working.priority, matchTick]) : null;
   React.useEffect(() => {
     if (!matchKey || !working) return;
     if (!canCases) {
@@ -611,6 +679,25 @@ export function RunbookEditor({
     if (target === 'conflict' && reloadButtonRef.current) {
       reloadButtonRef.current.focus();
       return;
+    }
+    if (target === 'set-aside' && copyMineRef.current) {
+      copyMineRef.current.focus();
+      return;
+    }
+    // A create or a copy hands over to the new runbook's page, which takes focus itself.
+    if (pendingOpen) return;
+    if (target === 'more') {
+      // A dialog still holding focus stays with it: one left open by a refusal (Send back
+      // with a problem to fix), or one closing, which gives focus to the trigger itself.
+      const active = document.activeElement;
+      if (active instanceof HTMLElement && active.isConnected && active.closest('[role="dialog"], [role="alertdialog"]')) return;
+      // The menu may still be closing: its item is gone already, and the menu then gives
+      // focus to its trigger. Going there now means one move, not a stop on the heading first.
+      const trigger = moreTriggerRef.current;
+      if (trigger?.isConnected) {
+        if (document.activeElement !== trigger) trigger.focus();
+        return;
+      }
     }
     const active = document.activeElement;
     if (!active || active === document.body || !active.isConnected) focusHeading(rootRef.current);
@@ -728,7 +815,7 @@ export function RunbookEditor({
   const showView = (next: EditorView) => {
     if (!working) return;
     if (next === 'source') {
-      setSourceText(exportMarkdown(working, publishable?.version ?? null));
+      setSourceText(exportMarkdown(working, sourceVersion));
       setSourceEdited(false);
       setSourceStale(false);
       setSourceIssues([]);
@@ -772,15 +859,13 @@ export function RunbookEditor({
    * it holds (Reload, Discard): see the baseline sync above.
    */
   const applyDetail = (next: RunbookDetail, message?: string, sent: RunbookDefinition | 'force' | null = working) => {
-    if (sent) syncRef.current = { detail: next, sent };
+    if (sent) setPendingSync({ detail: next, sent });
     setDetail(next);
     setConflict(null);
     setAttempted(false);
     setTouched(new Set());
-    if (message) {
-      toast.success(message);
-      announce(message);
-    }
+    // The toast's own live region says it: one announcement per outcome (wrb-06).
+    if (message) toast.success(message);
   };
 
   const failed = (err: unknown, fallback: string): RunbookApiFailure => {
@@ -795,9 +880,19 @@ export function RunbookEditor({
       return failure;
     }
     if (failure.code === 'runbook_conflict') {
-      setConflict({ latest: failure.latest });
-      if (working) {
-        setSourceText(exportMarkdown(working, publishable?.version ?? null));
+      // What the person sees now (fields stay editable while a write runs), not what the
+      // render that started the write held.
+      const now = live.current;
+      const current = now.working ?? working;
+      const inSource = now.view === 'source' && now.sourceEdited;
+      const hadEdits =
+        !!current && !!baseline && (!sameDefinition(current, baseline) || (inSource && now.sourceStale));
+      const exported = !hadEdits || !current ? null : inSource ? now.sourceText : exportMarkdown(current, sourceVersion);
+      setConflict({ latest: failure.latest, hadEdits, exported });
+      // An edit stays in the Source view until the person reloads, so they can copy it; Markdown
+      // they were typing there stays exactly as typed.
+      if (hadEdits && exported !== null && !inSource) {
+        setSourceText(exported);
         setSourceEdited(true);
         setSourceStale(false);
         setView('source');
@@ -825,13 +920,14 @@ export function RunbookEditor({
     return failure;
   };
 
-  const run = async (label: string, action: () => Promise<void>) => {
+  /** Run one write at a time; `settleTo` is where focus goes when it settles without a problem to show. */
+  const run = async (label: string, action: () => Promise<void>, settleTo: FocusAfter = 'settled') => {
     if (busy) return;
     setBusy(label);
     try {
       await action();
     } finally {
-      focusAfter.current = focusAfter.current ?? 'settled';
+      focusAfter.current = focusAfter.current ?? settleTo;
       setBusy(null);
     }
   };
@@ -867,7 +963,6 @@ export function RunbookEditor({
           setPendingOpen({ id: created.summary.id, detail: created, edits: edits ?? undefined });
           const message = edits ? 'Draft saved. What you typed while it saved is kept as unsaved changes.' : 'Draft saved.';
           toast.success(message);
-          announce(message);
           return;
         }
         if (!detail) return;
@@ -927,34 +1022,63 @@ export function RunbookEditor({
       } catch (err) {
         failed(err, 'Could not send it back.');
       }
-    });
+    }, 'more');
 
-  const simple = (label: string, call: () => Promise<RunbookDetail>, message: string, fallback: string) =>
-    run(label, async () => {
-      try {
-        applyDetail(await call(), message);
-      } catch (err) {
-        failed(err, fallback);
-      }
-    });
+  /**
+   * A detail a write returned, with a retired runbook's version filled in. The write itself
+   * succeeded: when only that extra read fails, the detail is shown as it came (the page then
+   * offers Retry, which reads it again) rather than reporting the write as failed.
+   */
+  const showable = async (next: RunbookDetail): Promise<RunbookDetail> => {
+    try {
+      return await withRetiredVersion(next);
+    } catch {
+      return next;
+    }
+  };
 
+  const simple = (
+    label: string,
+    call: () => Promise<RunbookDetail>,
+    message: string,
+    fallback: string,
+    settleTo: FocusAfter = 'settled',
+  ) =>
+    run(
+      label,
+      async () => {
+        try {
+          // A retire answers with a retired runbook: show its retired version in the same step.
+          applyDetail(await showable(await call()), message);
+        } catch (err) {
+          failed(err, fallback);
+        }
+      },
+      settleTo,
+    );
+
+  // Retire and Mark reviewed are More actions; Restore is a header button.
   const retire = () =>
-    simple('retire', () => retireRunbook(runbookId, { expected_revision: detail?.revision }), 'Retired. It no longer matches new cases.', 'Could not retire this runbook.');
+    simple('retire', () => retireRunbook(runbookId, { expected_revision: detail?.revision }), 'Retired. It no longer matches new cases.', 'Could not retire this runbook.', 'more');
   const restore = () =>
     simple('restore', () => restoreRunbook(runbookId, { expected_revision: detail?.revision }), 'Restored. It matches new cases again.', 'Could not restore this runbook.');
   const markReviewed = () =>
-    simple('reviewed', () => markRunbookReviewed(runbookId, { expected_revision: detail?.revision }), 'Marked as reviewed.', 'Could not mark it as reviewed.');
+    simple('reviewed', () => markRunbookReviewed(runbookId, { expected_revision: detail?.revision }), 'Marked as reviewed.', 'Could not mark it as reviewed.', 'more');
 
-  const duplicate = () =>
-    run('duplicate', async () => {
-      try {
-        const copy = await duplicateRunbook(runbookId, { expected_revision: detail?.revision });
-        toast.success('Copied. Your copy starts as a draft.');
-        setPendingOpen({ id: copy.summary.id, detail: copy });
-      } catch (err) {
-        failed(err, 'Could not copy this runbook.');
-      }
-    });
+  const duplicate = (settleTo: FocusAfter = 'settled') =>
+    run(
+      'duplicate',
+      async () => {
+        try {
+          const copy = await duplicateRunbook(runbookId, { expected_revision: detail?.revision });
+          toast.success('Copied. Your copy starts as a draft.');
+          setPendingOpen({ id: copy.summary.id, detail: copy });
+        } catch (err) {
+          failed(err, 'Could not copy this runbook.');
+        }
+      },
+      settleTo,
+    );
 
   const discard = () =>
     run('discard', async () => {
@@ -969,46 +1093,92 @@ export function RunbookEditor({
           onBackToLibrary();
           return;
         }
-        applyDetail(result.detail, 'Draft discarded.', 'force');
+        applyDetail(await showable(result.detail), 'Draft discarded.', 'force');
       } catch (err) {
         setDiscardOpen(false);
         failed(err, 'Could not discard the draft.');
       }
-    });
+    }, 'more');
 
   const restoreVersion = async (n: number) => {
     if (changed) return;
     try {
-      const next = await restoreRunbookVersionAsDraft(runbookId, n, { expected_revision: detail?.revision });
+      // A retired runbook stays retired: its page keeps showing the retired version, and the
+      // new draft waits beside it (the governance strip names it).
+      const next = await showable(
+        await restoreRunbookVersionAsDraft(runbookId, n, { expected_revision: detail?.revision }),
+      );
       setHistoryOpen(false);
-      applyDetail(next, `Version ${n.toLocaleString()} restored as a draft.`);
+      applyDetail(
+        next,
+        next.summary.retired
+          ? `Version ${n.toLocaleString()} restored as a draft. It waits while the runbook is retired.`
+          : `Version ${n.toLocaleString()} restored as a draft.`,
+      );
     } catch (err) {
       failed(err, 'Could not restore that version.');
     }
   };
 
   const exportMd = () =>
-    run('export', async () => {
-      try {
-        const file = await exportRunbookMarkdown(runbookId);
-        if (!downloadBlob(`${runbookId}.md`, file.blob)) toast.error('This browser could not start the download.');
-      } catch (err) {
-        toast.error(runbookFailure(err, 'Could not export this runbook.').message);
-      }
-    });
+    run(
+      'export',
+      async () => {
+        try {
+          const file = await exportRunbookMarkdown(runbookId);
+          if (!downloadBlob(`${runbookId}.md`, file.blob)) toast.error('This browser could not start the download.');
+        } catch (err) {
+          toast.error(runbookFailure(err, 'Could not export this runbook.').message);
+        }
+      },
+      'more',
+    );
 
+  /**
+   * Reload after a conflict: the other person's version replaces the working copy and the
+   * revision, so the next save is made on top of their change, never over it unseen. The
+   * person's own version stays on the page as a labelled copy (Markdown) to take back what
+   * they still need, unless it is the same runbook as theirs. A copy is kept only of an edit:
+   * one they had when the write was refused, or one made since. Without one there is nothing
+   * of theirs to keep, and the stale text on screen is not offered back.
+   */
   const reload = () => {
     const latest = conflict?.latest;
+    const edited = !!conflict?.hadEdits || changed;
+    const mine = !edited ? null : sourceEdited ? sourceText : working ? exportMarkdown(working, sourceVersion) : null;
+    const theirs = latest ? workingVersion(latest) : null;
+    const same = !!theirs && !!working && sameDefinition(theirs.definition, working) && !(sourceEdited && sourceStale);
     setConflict(null);
     setView('edit');
     setSourceEdited(false);
     setSourceStale(false);
-    if (latest) applyDetail(latest, undefined, 'force');
+    setSourceIssues([]);
+    if (mine !== null && !same) {
+      setSetAside(mine);
+      focusAfter.current = 'set-aside';
+      announce(SET_ASIDE_TITLE);
+    } else {
+      setSetAside(null);
+      // Reload is gone with the conflict: focus lands on the heading, not the page body.
+      focusAfter.current = 'settled';
+    }
+    if (latest && theirs) applyDetail(latest, undefined, 'force');
     else {
       // The read that follows replaces the working copy: the person chose to reload.
-      syncRef.current = { detail: null, sent: 'force' };
+      setPendingSync({ detail: null, sent: 'force' });
       setReloadTick((t) => t + 1);
     }
+  };
+
+  const copyMine = async () => {
+    if (setAside === null) return;
+    if (await copyText(setAside)) toast.success('Copied your version.');
+    else toast.error('This browser could not copy. Select the text under Show your version instead.');
+  };
+
+  const dismissSetAside = () => {
+    setSetAside(null);
+    window.setTimeout(() => focusHeading(rootRef.current), 0);
   };
 
   const loadCaseValues = async (caseId: string): Promise<CaseValues> => {
@@ -1020,6 +1190,14 @@ export function RunbookEditor({
   };
 
   // ---- render ------------------------------------------------------------------------- //
+  if (refused) {
+    return (
+      <div className="space-y-4" data-runbook-editor="refused">
+        <PageHeader title="New runbook" back={{ label: 'All runbooks', href: '#/runbooks' }} />
+        <Unauthorized message={NO_CREATE} />
+      </div>
+    );
+  }
   if (loadState === 'loading' || (!isNew && loadState === 'ready' && !detail)) {
     return (
       <div className="space-y-4" aria-busy="true" data-runbook-editor="loading">
@@ -1079,7 +1257,7 @@ export function RunbookEditor({
       : null;
   const savedStamp = dirty
     ? 'Unsaved changes'
-    : hasDraft && summary?.updated_at && !Number.isNaN(Date.parse(summary.updated_at))
+    : hasDraft && !retired && summary?.updated_at && !Number.isNaN(Date.parse(summary.updated_at))
       ? `Draft saved ${humanizeAge(summary.updated_at)}`
       : null;
   const publishBlocked = issueCount > 0;
@@ -1198,7 +1376,7 @@ export function RunbookEditor({
     if (!builtin && canManage && !demo) {
       heldBack ||= changed;
       moreItems.push(
-        <DropdownMenuItem key="duplicate" disabled={changed} onSelect={() => void duplicate()}>
+        <DropdownMenuItem key="duplicate" disabled={changed} onSelect={() => void duplicate('more')}>
           <Copy aria-hidden />
           Duplicate
         </DropdownMenuItem>,
@@ -1319,208 +1497,269 @@ export function RunbookEditor({
     target.focus();
   };
 
+  // The conflict callout says what happens to the person's work: an edit they had stays in the
+  // Source view, one made since is kept as a copy, and with none nothing of theirs is at stake.
+  const conflictBody = !conflict
+    ? null
+    : conflict.hadEdits
+      ? 'Reload it to see their changes. Your edit stays in the Source view until you reload, then as a copy to take back what you still need.'
+      : changed
+        ? 'Reload it to see their changes. What you changed since is kept as a copy to take back what you still need.'
+        : 'Reload it to see their changes. You had no unsaved edits, so nothing of yours is lost.';
+
+  // The live region comes after the editor's column, outside it: as the column's first child
+  // (or a sibling before it in the page's own rhythm) it would push the page header down by
+  // one gap, so the header would jump when the editor finishes loading.
   return (
-    <div ref={rootRef} className="space-y-4" data-runbook-editor={readOnly ? 'read-only' : 'edit'}>
-      <LiveRegion />
-      <PageHeader title={title} back={{ label: 'All runbooks', href: '#/runbooks' }} actions={actions} />
-      {summary?.summary && !isNew ? <p className="-mt-2 text-sm text-muted-foreground [overflow-wrap:anywhere]">{summary.summary}</p> : null}
+    <>
+      <div ref={rootRef} className="space-y-4" data-runbook-editor={readOnly ? 'read-only' : 'edit'}>
+        <PageHeader title={title} back={{ label: 'All runbooks', href: '#/runbooks' }} actions={actions} />
+        {summary?.summary && !isNew ? <p className="-mt-2 text-sm text-muted-foreground [overflow-wrap:anywhere]">{summary.summary}</p> : null}
 
-      {conflict ? (
-        <Callout
-          intent="warning"
-          title="Someone else changed this draft."
-          action={
-            <Button ref={reloadButtonRef} type="button" variant="outline" size="sm" onClick={reload}>
-              Reload
-            </Button>
-          }
-        >
-          Reload it to see their changes. Your edit stays in the Source view until you reload.
-        </Callout>
-      ) : null}
-
-      <GovernanceStrip detail={detail} username={username} isNew={isNew} dirty={dirty} canDuplicate={builtin && canManage && !demo} />
-
-      {readOnlyReason ? <ReadOnlyNote id={READ_ONLY_NOTE_ID}>{readOnlyReason}</ReadOnlyNote> : null}
-
-      <AppliesWhenEditor
-        value={working.applies_when}
-        onChange={readOnly ? undefined : (applies_when) => change({ ...working, applies_when })}
-        readOnly={readOnly}
-        suggestions={suggestions}
-        issues={appliesIssues}
-      />
-
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-        <SegmentedControl<EditorView>
-          aria-label="View"
-          size="sm"
-          value={view}
-          onValueChange={switchView}
-          options={[
-            { value: 'edit', label: readOnly ? 'Steps' : 'Edit' },
-            { value: 'preview', label: 'Preview as analyst' },
-            { value: 'source', label: 'Source' },
-          ]}
-        />
-        {!isWide ? (
-          <MatchSummaryButton buttonRef={matchButtonRef} state={match.state} preview={match.preview} onOpen={() => setMatchOpen(true)} />
-        ) : null}
-        {savedStamp ? (
-          <span className="ml-auto text-sm text-muted-foreground" data-saved-stamp="">
-            {savedStamp}
-          </span>
-        ) : null}
-      </div>
-
-      <div
-        className="grid min-w-0 items-start gap-4 md:grid-cols-[minmax(15rem,18rem)_minmax(0,1fr)] min-[1680px]:grid-cols-[18rem_minmax(0,1fr)_22rem]"
-        data-editor-layout={isWide ? 'three' : isPhone ? 'phone' : 'two'}
-      >
-        {/* The outline, and under it the problems: a list that grows or shrinks while someone
-            types never moves the field they are typing in. */}
-        <div className="min-w-0 space-y-4" data-editor-side="">
-          {view === 'edit' || !isPhone ? (
-            <Outline
-              defn={working}
-              selected={selected}
-              onSelect={selectStep}
-              readOnly={readOnly}
-              problems={problemSteps}
-              onAddStep={readOnly ? undefined : onAddStep}
-              onAddPhase={readOnly ? undefined : onAddPhase}
-              onMove={readOnly ? undefined : onMove}
-              onDrop={readOnly ? undefined : onDrop}
-              onAddedMenuClosed={focusNewStep}
-            />
-          ) : null}
-          <IssuesSummary issues={summaryIssues} defn={working} onGoTo={goTo} total={summaryIssues.length} />
-        </div>
-        {mainPane ? <div className="min-w-0">{mainPane}</div> : null}
-        {isWide ? <MatchColumn {...matchProps} /> : null}
-      </div>
-
-      {isPhone ? (
-        <Sheet open={stepSheetOpen && view === 'edit'} onOpenChange={setStepSheetOpen}>
-          {/* `pt-12` keeps the sheet's close button above the step panel, clear of its
-              "Read only" note and header actions. */}
-          <SheetContent
-            side="right"
-            size="full"
-            className="overflow-y-auto p-3 pt-12"
-            data-step-sheet=""
-            onOpenAutoFocus={(event) => {
-              const target = sheetFocus.current;
-              sheetFocus.current = null;
-              if (!target) return;
-              event.preventDefault();
-              window.setTimeout(() => focusField(target.stepId, target.field), 0);
-            }}
-            onCloseAutoFocus={(event) => {
-              const item = outlineItem(rootRef.current, selected);
-              if (!item) return;
-              event.preventDefault();
-              item.focus();
-            }}
+        {/* Each outcome is spoken once, through the page announcer, while focus moves to the
+            callout's action; the callouts are notes, not live regions that would say it again
+            and read their buttons and Markdown with it. */}
+        {conflict ? (
+          <Callout
+            intent="warning"
+            role="note"
+            title="Someone else changed this draft."
+            data-conflict=""
+            action={
+              <Button ref={reloadButtonRef} type="button" variant="outline" size="sm" onClick={reload}>
+                Reload
+              </Button>
+            }
           >
-            <SheetHeader className="sr-only">
-              <SheetTitle>{selected === DETAILS_ID ? 'Edit the runbook details' : `Edit step ${stepNumber(working, selected).toLocaleString()}`}</SheetTitle>
-              <SheetDescription>Edit the selected part of the runbook.</SheetDescription>
-            </SheetHeader>
-            {stepPane}
-          </SheetContent>
-        </Sheet>
-      ) : null}
+            {conflictBody}
+          </Callout>
+        ) : null}
 
-      {!isWide ? (
-        <Sheet open={matchOpen} onOpenChange={setMatchOpen}>
-          <SheetContent side="right" size="default" className="overflow-y-auto" data-match-sheet="" onCloseAutoFocus={returnTo(matchButtonRef)}>
-            <SheetHeader>
-              <SheetTitle>Which cases would this match?</SheetTitle>
-              <SheetDescription>This version tested against recent cases.</SheetDescription>
-            </SheetHeader>
-            <MatchResults {...matchProps} className="p-6" />
-          </SheetContent>
-        </Sheet>
-      ) : null}
+        {setAside !== null && !conflict ? (
+          <Callout
+            intent="warning"
+            role="note"
+            title={SET_ASIDE_TITLE}
+            data-set-aside=""
+            action={
+              <div className="flex flex-wrap items-center gap-2">
+                <Button ref={copyMineRef} type="button" variant="outline" size="sm" onClick={() => void copyMine()}>
+                  <Copy aria-hidden />
+                  Copy your version
+                </Button>
+                <Button type="button" variant="ghost" size="sm" onClick={dismissSetAside}>
+                  Dismiss
+                </Button>
+              </div>
+            }
+          >
+            <p>Your version stays here until you leave this page, so you can take back what you still need and save again.</p>
+            <details className="mt-2">
+              <summary className="cursor-pointer rounded-sm text-sm font-medium text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                Show your version
+              </summary>
+              <Textarea
+                readOnly
+                aria-label="Your version, not saved"
+                value={setAside}
+                rows={10}
+                spellCheck={false}
+                className="mt-2 font-mono text-xs"
+              />
+            </details>
+          </Callout>
+        ) : null}
 
-      {detail && !isNew ? (
-        <HistorySheet
-          open={historyOpen}
-          onOpenChange={setHistoryOpen}
-          detail={detail}
-          canRestore={canManage && !demo && !builtin}
-          restoreBlocked={changed ? 'Save or discard your changes first, so restoring a version does not replace them.' : null}
-          onRestore={restoreVersion}
-          returnFocusRef={historyButtonRef}
+        <GovernanceStrip detail={detail} username={username} isNew={isNew} dirty={dirty} canDuplicate={builtin && canManage && !demo} />
+
+        {readOnlyReason ? <ReadOnlyNote id={READ_ONLY_NOTE_ID}>{readOnlyReason}</ReadOnlyNote> : null}
+
+        <AppliesWhenEditor
+          value={working.applies_when}
+          onChange={readOnly ? undefined : (applies_when) => change({ ...working, applies_when })}
+          readOnly={readOnly}
+          suggestions={suggestions}
+          issues={appliesIssues}
         />
-      ) : null}
 
-      <ConfirmDialog
-        open={discardOpen}
-        onOpenChange={setDiscardOpen}
-        title="Discard this draft?"
-        description={
-          detail?.live
-            ? 'The draft is deleted. The live version stays as it is.'
-            : 'This runbook was never published, so discarding the draft removes it.'
-        }
-        confirmLabel="Discard draft"
-        destructive
-        returnFocusRef={moreTriggerRef}
-        onConfirm={() => void discard()}
-      />
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+          <SegmentedControl<EditorView>
+            aria-label="View"
+            size="sm"
+            value={view}
+            onValueChange={switchView}
+            options={[
+              { value: 'edit', label: readOnly ? 'Steps' : 'Edit' },
+              { value: 'preview', label: 'Preview as analyst' },
+              { value: 'source', label: 'Source' },
+            ]}
+          />
+          {!isWide ? (
+            <MatchSummaryButton buttonRef={matchButtonRef} state={match.state} preview={match.preview} onOpen={() => setMatchOpen(true)} />
+          ) : null}
+          {savedStamp ? (
+            <span className="ml-auto text-sm text-muted-foreground" data-saved-stamp="">
+              {savedStamp}
+            </span>
+          ) : null}
+        </div>
 
-      <ConfirmDialog
-        open={leaveSourceTo !== null}
-        onOpenChange={(open) => {
-          if (!open) setLeaveSourceTo(null);
-        }}
-        title="Leave the Markdown with problems?"
-        description="The Markdown does not read as a runbook, so your last changes there are not kept. The outline keeps the last version that read correctly."
-        confirmLabel="Leave and lose those changes"
-        cancelLabel="Keep editing the Markdown"
-        returnFocusRef={leaveSourceReturn}
-        onConfirm={() => {
-          const next = leaveSourceTo;
-          setLeaveSourceTo(null);
-          if (next) showView(next);
-        }}
-      />
-
-      <Dialog open={rejectOpen} onOpenChange={setRejectOpen}>
-        <DialogContent onCloseAutoFocus={returnTo(moreTriggerRef)}>
-          <DialogHeader>
-            <DialogTitle>Send back to draft</DialogTitle>
-            <DialogDescription>The author sees your reason on the draft. Nothing is published.</DialogDescription>
-          </DialogHeader>
-          <div className="space-y-1.5">
-            <Label htmlFor="runbook-reject-reason">Reason</Label>
-            <Textarea
-              id="runbook-reject-reason"
-              rows={3}
-              maxLength={500}
-              value={rejectReason}
-              onChange={(e) => setRejectReason(e.target.value)}
-            />
+        <div
+          className="grid min-w-0 items-start gap-4 md:grid-cols-[minmax(15rem,18rem)_minmax(0,1fr)] min-[1680px]:grid-cols-[18rem_minmax(0,1fr)_22rem]"
+          data-editor-layout={isWide ? 'three' : isPhone ? 'phone' : 'two'}
+        >
+          {/* The outline, and under it the problems: a list that grows or shrinks while someone
+              types never moves the field they are typing in. */}
+          <div className="min-w-0 space-y-4" data-editor-side="">
+            {view === 'edit' || !isPhone ? (
+              <Outline
+                defn={working}
+                selected={selected}
+                onSelect={selectStep}
+                readOnly={readOnly}
+                problems={problemSteps}
+                onAddStep={readOnly ? undefined : onAddStep}
+                onAddPhase={readOnly ? undefined : onAddPhase}
+                onMove={readOnly ? undefined : onMove}
+                onDrop={readOnly ? undefined : onDrop}
+                onAddedMenuClosed={focusNewStep}
+              />
+            ) : null}
+            <IssuesSummary issues={summaryIssues} defn={working} onGoTo={goTo} total={summaryIssues.length} />
           </div>
-          <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => setRejectOpen(false)}>
-              Cancel
-            </Button>
-            <Button
-              type="button"
-              onClick={() => void reject()}
-              disabled={!rejectReason.trim()}
-              aria-busy={busy === 'reject' || undefined}
-              {...softDisabled(writeBusy)}
+          {mainPane ? <div className="min-w-0">{mainPane}</div> : null}
+          {isWide ? <MatchColumn {...matchProps} /> : null}
+        </div>
+
+        {isPhone ? (
+          <Sheet open={stepSheetOpen && view === 'edit'} onOpenChange={setStepSheetOpen}>
+            {/* `pt-12` keeps the sheet's close button above the step panel, clear of its
+                "Read only" note and header actions. */}
+            <SheetContent
+              side="right"
+              size="full"
+              className="overflow-y-auto p-3 pt-12"
+              data-step-sheet=""
+              onOpenAutoFocus={(event) => {
+                const target = sheetFocus.current;
+                sheetFocus.current = null;
+                if (!target) return;
+                event.preventDefault();
+                window.setTimeout(() => focusField(target.stepId, target.field), 0);
+              }}
+              onCloseAutoFocus={(event) => {
+                const item = outlineItem(rootRef.current, selected);
+                if (!item) return;
+                event.preventDefault();
+                item.focus();
+              }}
             >
-              Send back
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-    </div>
+              <SheetHeader className="sr-only">
+                <SheetTitle>{selected === DETAILS_ID ? 'Edit the runbook details' : `Edit step ${stepNumber(working, selected).toLocaleString()}`}</SheetTitle>
+                <SheetDescription>Edit the selected part of the runbook.</SheetDescription>
+              </SheetHeader>
+              {stepPane}
+            </SheetContent>
+          </Sheet>
+        ) : null}
+
+        {!isWide ? (
+          <Sheet open={matchOpen} onOpenChange={setMatchOpen}>
+            <SheetContent side="right" size="default" className="overflow-y-auto" data-match-sheet="" onCloseAutoFocus={returnTo(matchButtonRef)}>
+              <SheetHeader>
+                <SheetTitle>Which cases would this match?</SheetTitle>
+                <SheetDescription>This version tested against recent cases.</SheetDescription>
+              </SheetHeader>
+              <MatchResults {...matchProps} className="p-6" />
+            </SheetContent>
+          </Sheet>
+        ) : null}
+
+        {detail && !isNew ? (
+          <HistorySheet
+            open={historyOpen}
+            onOpenChange={setHistoryOpen}
+            detail={detail}
+            username={username}
+            // Restore as draft also starts a new version of a retired runbook: the draft waits
+            // beside the retired version until a publisher restores the runbook.
+            canRestore={canManage && !demo && !builtin}
+            restoreBlocked={changed ? 'Save or discard your changes first, so restoring a version does not replace them.' : null}
+            onRestore={restoreVersion}
+            returnFocusRef={historyButtonRef}
+          />
+        ) : null}
+
+        <ConfirmDialog
+          open={discardOpen}
+          onOpenChange={setDiscardOpen}
+          title="Discard this draft?"
+          description={
+            detail?.live
+              ? 'The draft is deleted. The live version stays as it is.'
+              : retired
+                ? // This page shows the retired version, not the draft, so the draft is named.
+                  `Draft v${(detail?.draft?.version ?? 0).toLocaleString()} is deleted. The retired v${(version?.version ?? 0).toLocaleString()} stays as it is.`
+                : 'This runbook was never published, so discarding the draft removes it.'
+          }
+          confirmLabel="Discard draft"
+          destructive
+          returnFocusRef={moreTriggerRef}
+          onConfirm={() => void discard()}
+        />
+
+        <ConfirmDialog
+          open={leaveSourceTo !== null}
+          onOpenChange={(open) => {
+            if (!open) setLeaveSourceTo(null);
+          }}
+          title="Leave the Markdown with problems?"
+          description="The Markdown does not read as a runbook, so your last changes there are not kept. The outline keeps the last version that read correctly."
+          confirmLabel="Leave and lose those changes"
+          cancelLabel="Keep editing the Markdown"
+          returnFocusRef={leaveSourceReturn}
+          onConfirm={() => {
+            const next = leaveSourceTo;
+            setLeaveSourceTo(null);
+            if (next) showView(next);
+          }}
+        />
+
+        <Dialog open={rejectOpen} onOpenChange={setRejectOpen}>
+          <DialogContent onCloseAutoFocus={returnTo(moreTriggerRef)}>
+            <DialogHeader>
+              <DialogTitle>Send back to draft</DialogTitle>
+              <DialogDescription>The author sees your reason on the draft. Nothing is published.</DialogDescription>
+            </DialogHeader>
+            <div className="space-y-1.5">
+              <Label htmlFor="runbook-reject-reason">Reason</Label>
+              <Textarea
+                id="runbook-reject-reason"
+                rows={3}
+                maxLength={500}
+                value={rejectReason}
+                onChange={(e) => setRejectReason(e.target.value)}
+              />
+            </div>
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => setRejectOpen(false)}>
+                Cancel
+              </Button>
+              <Button
+                type="button"
+                onClick={() => void reject()}
+                disabled={!rejectReason.trim()}
+                aria-busy={busy === 'reject' || undefined}
+                {...softDisabled(writeBusy)}
+              >
+                Send back
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      </div>
+      <LiveRegion />
+    </>
   );
 }
 

@@ -321,12 +321,40 @@ export function actorName(actor: string | null | undefined, nameOf: NameOf = pla
   return nameOf(value) || value;
 }
 
-/** A role name compared the server's way: no case, spaces or hyphens ("Incident lead" is `incident_lead`). */
+/**
+ * The whitespace of the server's `role_key` (Python's `str.strip` and the `\s` of its `re`):
+ * JavaScript's `\s` without the byte order mark, with the four information separators and
+ * the next-line control, so "soc\x1cmanager" is one role on both sides.
+ */
+const SERVER_SPACE = '\\t-\\r\\x1c-\\x20\\x85\\xa0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000';
+const SERVER_EDGE_SPACE = new RegExp(`^[${SERVER_SPACE}]+|[${SERVER_SPACE}]+$`, 'g');
+const SERVER_SEPARATORS = new RegExp(`[${SERVER_SPACE}-]+`, 'g');
+/** Cherokee letters, which Unicode case folding maps to their capital forms. */
+const CHEROKEE = /[Ꭰ-Ᏽᏸ-ᏽꭰ-ꮿ]/;
+
+/**
+ * Text without case, as Python's `str.casefold` reads it (the server's role comparisons):
+ * "Großteam" and "GROSSTEAM" are one role, as are "ſoc_manager" and "soc_manager".
+ * Upper then lower case is the full case folding for every character but three groups:
+ * dotless i stays itself, capital sharp s folds to "ss" and Cherokee folds to capitals.
+ */
+function caseFold(text: string): string {
+  let out = '';
+  for (const ch of text) {
+    if (ch === 'ı') out += ch;
+    else if (ch === 'ẞ') out += 'ss';
+    else if (CHEROKEE.test(ch)) out += ch.toUpperCase();
+    else out += ch.toUpperCase().toLowerCase();
+  }
+  return out;
+}
+
+/**
+ * A role name compared the server's way (`runbook_runs.role_key`): no case, spaces or
+ * hyphens ("Incident lead" is `incident_lead`), by Python's whitespace and case folding.
+ */
 export function roleKey(value: string | null | undefined): string {
-  return String(value ?? '')
-    .trim()
-    .replace(/[\s-]+/g, '_')
-    .toLowerCase();
+  return caseFold(String(value ?? '').replace(SERVER_EDGE_SPACE, '').replace(SERVER_SEPARATORS, '_'));
 }
 
 /** What the Console knows about the viewer's roles, for the approval hint. */
@@ -520,9 +548,12 @@ export function needsNoteBeforeDone(step: RunbookStep, state: StepState): boolea
   return false;
 }
 
-/** The live-region sentence after a step finishes: "Step 5 done. Next, step 6: <title>." */
+/**
+ * The live-region sentence after a step finishes: "Step 5 done. Next, step 6: <title>.";
+ * after its action is approved, "Step 5 approved. ...".
+ */
 export function advanceSentence(
-  finished: { number: number; verb: 'done' | 'not applicable' | 'recorded' },
+  finished: { number: number; verb: 'done' | 'not applicable' | 'recorded' | 'approved' },
   next: NumberedStep | null,
   requiredClear: boolean,
 ): string {

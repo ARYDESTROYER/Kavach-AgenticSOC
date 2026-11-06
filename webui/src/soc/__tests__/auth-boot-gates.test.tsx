@@ -6,18 +6,19 @@
  *    reload / deep-link) is held on the Login screen and NOT dropped into the console.
  *  - finding 1: a FAILED GET /api/auth/me shows a "can't reach the backend" retry gate
  *    instead of failing OPEN into a broken console.
- *  - finding 8: a FAILED GET /api/roles for an authenticated principal is deny-by-default
- *    (super_admin excepted), not allow-all.
+ *  - finding 8: a FAILED read of the effective grants (GET /api/account/permissions,
+ *    the one source since Round 14 FX7e) for an authenticated principal is
+ *    deny-by-default (super_admin excepted), not allow-all.
  */
 import * as React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
-const { loginMock, meMock, rolesMock, ssoMock, setupPublicStatusMock, setupStatusMock } = vi.hoisted(() => ({
+const { loginMock, meMock, permissionsMock, ssoMock, setupPublicStatusMock, setupStatusMock } = vi.hoisted(() => ({
   loginMock: vi.fn(),
   meMock: vi.fn(),
-  rolesMock: vi.fn(),
+  permissionsMock: vi.fn(),
   ssoMock: vi.fn(),
   setupPublicStatusMock: vi.fn(),
   setupStatusMock: vi.fn(),
@@ -60,7 +61,7 @@ vi.mock('@/lib/api', () => {
         sso: { providers: () => ssoMock(), authorize: ok({ auth_url: 'https://idp/' }) },
         mfa: { setup: ok({}), confirm: ok({}), verify: ok({}), disable: ok({}) },
       },
-      roles: { get: () => rolesMock() },
+      account: { permissions: () => permissionsMock() },
       setup: { status: () => setupPublicStatusMock() },
     },
   };
@@ -82,14 +83,16 @@ function deferred<T>() {
 beforeEach(() => {
   loginMock.mockReset();
   meMock.mockReset();
-  rolesMock.mockReset();
+  permissionsMock.mockReset();
   ssoMock.mockReset();
   setupPublicStatusMock.mockReset();
   setupStatusMock.mockReset();
   ssoMock.mockResolvedValue({ providers: [] });
   setupPublicStatusMock.mockResolvedValue({ setup_complete: true, needs_user: false });
   setupStatusMock.mockResolvedValue({ setup_complete: true, seeded_default: false });
-  rolesMock.mockResolvedValue({ roles: [], default_role: 'analyst_tier1', rbac_enabled: false, matrix: {} });
+  permissionsMock.mockResolvedValue({
+    authenticated: true, role: 'super_admin', custom_roles: [], rbac_enabled: false, permissions: {},
+  });
 });
 
 describe('Boot gate — must-change-password on reload (finding 0)', () => {
@@ -201,36 +204,38 @@ function renderProbe() {
   );
 }
 
-describe('RBAC provider — failed /api/roles (finding 8)', () => {
-  it('denies-by-default for a lesser role when /roles fails to load', async () => {
+describe('RBAC provider: a failed read of the effective grants (finding 8)', () => {
+  it('denies-by-default for a lesser role when the grants fail to load', async () => {
     meMock.mockResolvedValue({
       auth_enabled: true,
       authenticated: true,
       user: { username: 'lee', role: 'analyst_tier1' },
     });
-    rolesMock.mockRejectedValue(new Error('roles 500'));
+    permissionsMock.mockRejectedValue(new Error('permissions 500'));
     renderProbe();
     await waitFor(() => expect(screen.getByTestId('perm')).toHaveTextContent('deny'));
   });
 
-  it('still allows super_admin even when /roles fails', async () => {
+  it('still allows super_admin even when the grants fail to load', async () => {
     meMock.mockResolvedValue({
       auth_enabled: true,
       authenticated: true,
       user: { username: 'root', role: 'super_admin' },
     });
-    rolesMock.mockRejectedValue(new Error('roles 500'));
+    permissionsMock.mockRejectedValue(new Error('permissions 500'));
     renderProbe();
     await waitFor(() => expect(screen.getByTestId('perm')).toHaveTextContent('allow'));
   });
 
-  it('preserves allow-all when RBAC is GENUINELY off (a clean /roles response)', async () => {
+  it('preserves allow-all when RBAC is GENUINELY off (a clean response)', async () => {
     meMock.mockResolvedValue({
       auth_enabled: true,
       authenticated: true,
       user: { username: 'lee', role: 'analyst_tier1' },
     });
-    rolesMock.mockResolvedValue({ roles: [], default_role: 'analyst_tier1', rbac_enabled: false, matrix: {} });
+    permissionsMock.mockResolvedValue({
+      authenticated: true, role: 'super_admin', custom_roles: [], rbac_enabled: false, permissions: {},
+    });
     renderProbe();
     await waitFor(() => expect(screen.getByTestId('perm')).toHaveTextContent('allow'));
   });

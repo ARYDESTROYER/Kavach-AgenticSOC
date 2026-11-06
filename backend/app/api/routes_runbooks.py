@@ -1043,8 +1043,18 @@ async def save_runbook_draft(
     after = catalog.working_version(planned)
     assert after is not None  # the transition always leaves a draft
     _check_document(planned)
-    changes = catalog.state_changes(record.runbook, planned) + catalog.definition_changes(
-        before.definition if before is not None else None, after.definition)
+    # A draft save overwrites the working draft in place, so the row records every
+    # field that moved with its before and after (the text it replaced is kept nowhere
+    # else); a change list cut at its cap says how many fields changed and how many it
+    # kept, the content hash (not a field) always kept beside them.
+    base = before.definition if before is not None else None
+    edits = catalog.definition_changes(base, after.definition)
+    changes = catalog.state_changes(record.runbook, planned) + edits
+    total = catalog.count_definition_changes(base, after.definition)
+    kept = catalog.recorded_field_count(edits)
+    summary = f"Saved the draft of version {after.version:,}"
+    if total > kept:
+        summary += f" ({total:,} fields changed; the first {kept:,} are recorded with the content hash)"
 
     async def write() -> StoredRunbookRecord:
         return await state.runbook_library.update(
@@ -1055,7 +1065,7 @@ async def save_runbook_draft(
     updated = await _audited(
         state, request, viewer, runbook_id=runbook_id, label=after.definition.title,
         action="runbook.draft_updated", expected_revision=record.revision, changes=changes, write=write,
-        result_summary=f"Saved the draft of version {after.version:,}.",
+        result_summary=f"{summary}.",
         tool_input={"version": after.version, "content_hash": after.content_hash},
     )
     return await _detail(state, viewer, runbook_id, updated)

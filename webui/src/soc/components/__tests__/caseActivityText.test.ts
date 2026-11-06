@@ -313,6 +313,33 @@ describe('runbook lookups and steps (runbook_runs.py)', () => {
     const out = activityText(row('Runbook step user-confirms updated.', 'runbook', 'dsingh'));
     expect(out.text).toBe('Runbook step "User confirms" updated.');
     expect(out.recorded).toBe('Runbook step user-confirms updated.');
+    // An operator runbook's generated id, as rows stored before the server named titles hold it.
+    expect(activityText(row('Runbook step check-2 updated.', 'runbook', 'mira')).text).toBe('Runbook step "Check 2" updated.');
+  });
+
+  /**
+   * The server names the step by its title in the run's pinned version now
+   * (`runbook_runs._step_update_summary`, second acceptance pass, wrb-11): the row is
+   * already plain words and is shown exactly as written, a one-word title too.
+   */
+  it.each([
+    'Runbook step "Isolate the host" marked done (note updated).',
+    'Runbook step "Contain" updated.',
+    'Runbook step "Check" marked not applicable.',
+    'Decision recorded on runbook step "Is this lateral movement?": Benign (2 later steps marked not applicable).',
+    'Action recorded on runbook step "Isolate the host" (it waits for approval).',
+    'Action on runbook step "Isolate the host" waits for approval from a SOC manager.',
+    'Action on runbook step "Isolate the host" approved.',
+    'Log statistics lookup on runbook step "Accounts tried" collected evidence.',
+    'The AI drafted a note for runbook step "Check the sign-in".',
+  ])('shows the step-titled row %s as written', (summary) => {
+    expect(activityText(row(summary, 'runbook', 'mira'))).toEqual({ text: summary, recorded: null });
+  });
+
+  it('reads only an id as an id: a title-like word is never rewritten', () => {
+    for (const summary of ['Runbook step Contain updated.', 'Runbook step check_two! updated.']) {
+      expect(activityText(row(summary, 'runbook', 'mira'))).toEqual({ text: summary, recorded: null });
+    }
   });
 });
 

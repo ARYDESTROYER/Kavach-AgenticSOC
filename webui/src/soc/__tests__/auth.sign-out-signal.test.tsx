@@ -16,7 +16,11 @@ vi.mock('@/lib/api', () => ({
   setReauthHandler: vi.fn(),
   api: {
     auth: { me: () => meMock(), logout: () => logoutMock() },
-    roles: { get: vi.fn().mockResolvedValue({ roles: [], default_role: '', rbac_enabled: false, matrix: {} }) },
+    account: {
+      permissions: vi.fn().mockResolvedValue({
+        authenticated: true, role: 'analyst', custom_roles: [], rbac_enabled: false, permissions: {},
+      }),
+    },
   },
 }));
 

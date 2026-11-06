@@ -449,12 +449,20 @@ export interface RunbookVersionListItem {
   state: RunbookVersionState;
   published_by: string | null;
   published_at: string | null;
+  /**
+   * The reasons a reviewer gave when sending this version back to draft, oldest first (the
+   * same notes its version document carries), so History shows them on every entry. Absent
+   * from an older server.
+   */
+  review_notes?: RunbookReviewNote[];
 }
 
 /**
  * `GET /api/runbooks/{id}`. `draft` and `in_review` are present only to a holder of
- * `runbooks:manage` or `runbooks:publish`. `revision` is sent back as
- * `expected_revision`. JSON object keys are strings, so `open_runs_by_version` is
+ * `runbooks:manage` or `runbooks:publish`. `retired` is the retired version of a retired
+ * runbook (its last published text, with `retired_by` and `retired_at`), which the editor
+ * shows read only and Restore makes live again; it is null otherwise. `revision` is sent
+ * back as `expected_revision`. JSON object keys are strings, so `open_runs_by_version` is
  * keyed by the version number written as text.
  */
 export interface RunbookDetail {
@@ -462,6 +470,7 @@ export interface RunbookDetail {
   live: RunbookVersionDoc | null;
   draft: RunbookVersionDoc | null;
   in_review: RunbookVersionDoc | null;
+  retired?: RunbookVersionDoc | null;
   versions: RunbookVersionListItem[];
   open_runs_by_version: Record<string, number>;
   revision: number;
@@ -628,6 +637,13 @@ export interface CaseRunbooks {
   newer_versions: Record<string, number>;
   other_tasks: CaseTask[];
   revision: number;
+  /**
+   * Every role the runs' steps name (`approval_role`, `owner_role` and a pending
+   * approval's `required_role`) by the label a person knows it by ("soc_manager" is
+   * "SOC manager"), for the approval wording. Plain text, read through `roleLabelsFrom`.
+   * Absent from an older server.
+   */
+  role_labels?: Record<string, string>;
 }
 
 /** One entry of the Start runbook picker. */
@@ -669,6 +685,8 @@ export interface RunbookRunUpdate {
   run: RunbookRun;
   progress: RunbookProgress;
   revision: number;
+  /** The run's roles by their labels, as on {@link CaseRunbooks}. Absent from an older server. */
+  role_labels?: Record<string, string>;
 }
 
 /** The dry-run estimate of one AI call (the report summary estimate shape). */

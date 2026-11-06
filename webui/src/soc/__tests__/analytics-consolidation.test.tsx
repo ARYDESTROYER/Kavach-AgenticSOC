@@ -59,13 +59,15 @@ vi.mock('@/soc/components/HealthDiagnostics', () => ({
   ),
 }));
 
-vi.mock('@/soc/auth', () => ({
-  useAuth: () => ({
+vi.mock('@/soc/auth', () => {
+  const auth = () => ({
     authEnabled: false,
     hasPermission: (resource: string, action: string) =>
       resource === 'runbooks' && action === 'read' ? authState.canReadRunbooks : true,
-  }),
-}));
+  });
+  // The page guards read the optional context (Round 14 FX7g); both answer alike here.
+  return { useAuth: auth, useOptionalAuth: auth };
+});
 
 vi.mock('@/lib/api-runbooks', async () => {
   const actual = await vi.importActual<typeof import('@/lib/api-runbooks')>('@/lib/api-runbooks');

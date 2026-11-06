@@ -6,6 +6,8 @@ so a lookup that failed, found nothing or did not apply "collected evidence" in 
 audit log. The summary is now one plain sentence per status, written at the source
 (``runbook_runs.lookup_evidence_summary``) by the live engine and the Demo seed
 alike; the action name and the machine-readable ``tool_input`` are unchanged.
+The live engine names the step the lookup belongs to by its title, so two lookups of
+one tool in a runbook read apart (second acceptance pass, wrb-11 review).
 Offline.
 """
 
@@ -19,11 +21,18 @@ from app.constants import CaseStatus, EntityType, SourceSurface
 from app.engine import runbook_runs as R
 from app.engine.demo_generator import demo_evidence_audit_row
 from app.engine.runbook_runs import lookup_evidence_summary
-from app.models import RUNBOOK_SYSTEM_RUNNER, Case, Entity, LookupResult
+from app.engine.runbook_model import load_builtin_runbooks
+from app.models import RUNBOOK_SYSTEM_RUNNER, Case, Entity, LookupResult, RunbookStep
 from app.state import AppState
 
 BRUTE = "brute-force-password-spray"
 STEP = "accounts-tried"
+STEP_TITLE = "How many accounts were tried?"
+
+
+def _brute_step(step_id: str) -> RunbookStep:
+    (entry,) = [e for e in load_builtin_runbooks() if e.id == BRUTE]
+    return next(s for s in entry.definition.steps if s.id == step_id)
 
 
 def _result(status: str, tool: str = "log_stats", reason: str | None = None, **kw: Any) -> LookupResult:
@@ -89,6 +98,31 @@ def test_a_reason_is_one_bounded_sentence() -> None:
     assert len(long) < 400 and long.endswith("...")
 
 
+def test_a_lookup_is_named_on_its_step_by_the_step_title() -> None:
+    step = _brute_step(STEP)
+    assert lookup_evidence_summary(_result("ok"), step) == (
+        f'Log statistics lookup on runbook step "{STEP_TITLE}" collected evidence.')
+    assert lookup_evidence_summary(_result("not_applicable", reason="This case has no source IP."), step) == (
+        f'Log statistics lookup on runbook step "{STEP_TITLE}" was not applicable. This case has no source IP.')
+    # The title is quoted as one line of plain text, as every step summary quotes it.
+    odd = step.model_copy(update={"title": 'Tried "accounts"\nhere\u202e'})
+    assert lookup_evidence_summary(_result("empty"), odd) == (
+        "Log statistics lookup on runbook step \"Tried 'accounts' here\" found no matching records.")
+
+
+def test_two_lookups_of_one_tool_in_a_runbook_read_apart() -> None:
+    """Brute force has two Log statistics lookups: their rows used to read the same
+    ("Log statistics lookup collected evidence.") with nothing to tell them apart in the
+    case activity feed."""
+    (entry,) = [e for e in load_builtin_runbooks() if e.id == BRUTE]
+    stats = [s for s in entry.definition.steps if s.lookup is not None and s.lookup.tool == "log_stats"]
+    assert len(stats) == 2
+    summaries = {lookup_evidence_summary(_result("ok"), s) for s in stats}
+    assert len(summaries) == 2
+    for s in stats:
+        assert f'"{s.title}"' in lookup_evidence_summary(_result("ok"), s)
+
+
 def test_an_unknown_tool_keeps_its_token() -> None:
     result = _result("ok").model_copy(update={"tool": "future_tool"})
     assert lookup_evidence_summary(result) == "Lookup future_tool collected evidence."
@@ -125,13 +159,15 @@ def _case(case_id: str) -> Case:
                 status=CaseStatus.NEEDS_HUMAN, case_number=f"CASE-{case_id[-3:]}")
 
 
+_ON_STEP = f'Log statistics lookup on runbook step "{STEP_TITLE}"'
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("status, reason, expected", [
-    ("ok", None, "Log statistics lookup collected evidence."),
-    ("empty", None, "Log statistics lookup found no matching records."),
-    ("not_applicable", "This case has no source IP.",
-     "Log statistics lookup was not applicable. This case has no source IP."),
-    ("error", "No log source answered.", "Log statistics lookup could not run. No log source answered."),
+    ("ok", None, f"{_ON_STEP} collected evidence."),
+    ("empty", None, f"{_ON_STEP} found no matching records."),
+    ("not_applicable", "This case has no source IP.", f"{_ON_STEP} was not applicable. This case has no source IP."),
+    ("error", "No log source answered.", f"{_ON_STEP} could not run. No log source answered."),
 ])
 async def test_running_a_lookup_audits_the_per_status_summary(
         app_state: AppState, monkeypatch, status: str, reason: str | None, expected: str) -> None:
@@ -163,6 +199,10 @@ async def test_running_a_lookup_audits_the_per_status_summary(
     for row in rows:
         assert row["tool_input"]["status"] == status
         tool = row["tool_input"]["tool"]
-        assert row["result_summary"] == lookup_evidence_summary(_result(status, tool, reason))
+        step = _brute_step(row["tool_input"]["step_id"])
+        assert row["result_summary"] == lookup_evidence_summary(_result(status, tool, reason), step)
     step_rows = [r for r in rows if r["tool_input"]["step_id"] == STEP]
     assert step_rows and all(r["result_summary"] == expected for r in step_rows)
+    # Every automatic lookup row names its own step, so no two read the same.
+    automatic = [r for r in rows if r.get("actor_type") == "system"]
+    assert len({r["result_summary"] for r in automatic}) == len({r["tool_input"]["step_id"] for r in automatic})

@@ -114,9 +114,15 @@ export interface RunbookStripProps {
   /** False when no new runbook can start (runbooks are turned off); defaults to `canRun`. */
   canAdd?: boolean;
   nameOf?: NameOf;
-  onAdd: () => void;
+  /**
+   * Open Start runbook. From the narrow strip's menu it names the menu button, the stand-in
+   * for the menu item that opened it, so Esc can bring focus back there (SPEC §3.3).
+   */
+  onAdd: (returnFocusTo?: HTMLElement | null) => void;
   onSwitchVersion: (version: number) => Promise<boolean>;
   onAbandon: (reason: string) => Promise<boolean>;
+  /** The Abandon dialog closed: forget its refusal, so opening it again starts clean. */
+  onAbandonClosed?: () => void;
   onExport: () => void;
   /** Open this runbook in the library (#/runbooks?id=...). */
   libraryHref?: string | null;
@@ -136,6 +142,7 @@ export function RunbookStrip({
   onAdd,
   onSwitchVersion,
   onAbandon,
+  onAbandonClosed,
   onExport,
   libraryHref = null,
   abandonError = null,
@@ -144,6 +151,15 @@ export function RunbookStrip({
   const [abandonOpen, setAbandonOpen] = React.useState(false);
   const [switchOpen, setSwitchOpen] = React.useState(false);
   const menuRef = React.useRef<HTMLButtonElement | null>(null);
+  // A dialog opened from the menu takes focus itself: the menu must not hand focus back to
+  // its button as it closes, which would pull it out of the dialog's field for a moment
+  // (read out as the button, and a blur of the field the dialog had just focused). Every
+  // menu item that opens a dialog (Add runbook, Switch version, Abandon run) says so.
+  const dialogFromMenu = React.useRef(false);
+  const openFromMenu = (open: (value: boolean) => void) => () => {
+    dialogFromMenu.current = true;
+    open(true);
+  };
   const active = run.status === 'active';
   // A completed run can still move to a newer version (the server allows it); only an
   // active run can be abandoned.
@@ -159,16 +175,30 @@ export function RunbookStrip({
           <MoreHorizontal aria-hidden />
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="w-60">
+      <DropdownMenuContent
+        align="end"
+        className="w-60"
+        onCloseAutoFocus={(event) => {
+          if (!dialogFromMenu.current) return;
+          dialogFromMenu.current = false;
+          event.preventDefault();
+        }}
+      >
         <DropdownMenuLabel>Runbook</DropdownMenuLabel>
         {narrow && canRun && canAdd ? (
-          <DropdownMenuItem disabled={atLimit} onSelect={onAdd}>
+          <DropdownMenuItem
+            disabled={atLimit}
+            onSelect={() => {
+              dialogFromMenu.current = true;
+              onAdd(menuRef.current);
+            }}
+          >
             <Plus className="h-4 w-4" />
             Add runbook
           </DropdownMenuItem>
         ) : null}
         {newerVersion && canRun && workable ? (
-          <DropdownMenuItem onSelect={() => setSwitchOpen(true)}>
+          <DropdownMenuItem onSelect={openFromMenu(setSwitchOpen)}>
             <Repeat2 className="h-4 w-4" />
             Switch to version {n(newerVersion)}
           </DropdownMenuItem>
@@ -188,7 +218,7 @@ export function RunbookStrip({
         {canRun && active ? (
           <>
             <DropdownMenuSeparator />
-            <DropdownMenuItem onSelect={() => setAbandonOpen(true)}>
+            <DropdownMenuItem onSelect={openFromMenu(setAbandonOpen)}>
               <XCircle className="h-4 w-4" />
               Abandon run
             </DropdownMenuItem>
@@ -271,7 +301,7 @@ export function RunbookStrip({
                 variant="outline"
                 size="sm"
                 className={cn('h-8', ARIA_DISABLED_LOOK)}
-                onClick={atLimit ? undefined : onAdd}
+                onClick={atLimit ? undefined : () => onAdd()}
                 aria-disabled={atLimit || undefined}
                 aria-describedby={atLimit ? limitId : undefined}
               >
@@ -309,7 +339,10 @@ export function RunbookStrip({
       />
       <ReasonDialog
         open={abandonOpen}
-        onOpenChange={setAbandonOpen}
+        onOpenChange={(open) => {
+          setAbandonOpen(open);
+          if (!open) onAbandonClosed?.();
+        }}
         title="Abandon this runbook?"
         description="The run stays on the case, read only, and its steps keep what was recorded. Abandoning never changes the case."
         label="Why are you abandoning it?"

@@ -10,10 +10,15 @@
  * Back-compat: the gate is only registered when `active` (auth enabled). When auth
  * is off, no handler is registered, so the api client never calls it — the no-auth
  * path is untouched. A queue dedupes concurrent gated requests onto ONE prompt.
+ *
+ * The dialog says what the sign-in is for: the gated request's `reauthPurpose` (an
+ * export, which changes nothing, says so: "Sign in again to export audit events."),
+ * else that it confirms a change. The first gated request names it; requests that
+ * ride along on the open prompt do not change it.
  */
 import * as React from 'react';
 import { Lock, Eye, EyeOff, Loader2 } from 'lucide-react';
-import { api, ApiError, setReauthHandler } from '@/lib/api';
+import { api, ApiError, setReauthHandler, type ReauthGate } from '@/lib/api';
 import { Button } from '@/ui/button';
 import { Input } from '@/ui/input';
 import { Label } from '@/ui/label';
@@ -42,6 +47,8 @@ export function ReauthDialog({ active }: ReauthDialogProps) {
   const [reveal, setReveal] = React.useState(false);
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
+  // What this sign-in is for (the first gated request's purpose); none: a change.
+  const [purpose, setPurpose] = React.useState<string | undefined>();
   // Every concurrently-gated request parks its resolver here; the first one opens
   // the modal, the rest ride along and are all settled together on close.
   const waitersRef = React.useRef<Resolver[]>([]);
@@ -63,8 +70,9 @@ export function ReauthDialog({ active }: ReauthDialogProps) {
       setReauthHandler(null);
       return undefined;
     }
-    const gate = () =>
+    const gate: ReauthGate = (why) =>
       new Promise<boolean>((resolve) => {
+        if (!waitersRef.current.length) setPurpose(why);
         waitersRef.current.push(resolve);
         setOpen(true);
       });
@@ -81,7 +89,9 @@ export function ReauthDialog({ active }: ReauthDialogProps) {
       settle(true);
     } catch (e) {
       setBusy(false);
-      setError(e instanceof ApiError && e.message ? e.message : 'Re-authentication failed.');
+      // The api client words a wrong password ("That password is not correct. Try
+      // again.", reason `bad_password`); any other failure keeps the server's sentence.
+      setError(e instanceof ApiError && e.message ? e.message : 'Sign-in failed.');
     }
   };
 
@@ -114,11 +124,9 @@ export function ReauthDialog({ active }: ReauthDialogProps) {
             >
               <Lock className="h-4 w-4" />
             </span>
-            Fresh authentication required
+            Confirm your identity
           </DialogTitle>
-          <DialogDescription>
-            For your security, please re-authenticate to confirm this sensitive change.
-          </DialogDescription>
+          <DialogDescription>{purpose || 'Sign in again to confirm this change.'}</DialogDescription>
         </DialogHeader>
 
         <form
@@ -183,7 +191,7 @@ export function ReauthDialog({ active }: ReauthDialogProps) {
               disabled={busy || !password}
             >
               {busy ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : null}
-              Authenticate
+              Sign in
             </Button>
           </DialogFooter>
         </form>

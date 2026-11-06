@@ -61,10 +61,16 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from ..constants import ActionType, AuthorType, NotificationCategory
-from ..models import CaseActivity, CaseMessage, InAppNotification
+from ..models import AuditTarget, CaseActivity, CaseMessage, InAppNotification
 from ..state import AppState
 from ..utils import truncate
-from .deps import current_username, get_state, has_permission, require_permission
+from .deps import (
+    current_username,
+    get_state,
+    has_permission,
+    record_access_denied,
+    require_permission,
+)
 
 logger = logging.getLogger("tlsoc.api.cases_collab")
 
@@ -556,13 +562,31 @@ async def post_case_thread(
     return _msg_public(msg)
 
 
+async def _case_target(state: AppState, case_id: str) -> AuditTarget:
+    """The audit ``case`` target of ``case_id``: its case number as the label when the
+    case can be read, else the id (a label is display text, never a reason to fail)."""
+    label = case_id
+    try:
+        case = await state.cases.get(case_id)
+        label = str(getattr(case, "case_number", "") or "") or case_id
+    except Exception:  # noqa: BLE001
+        pass
+    return AuditTarget(type="case", id=case_id, label=label)
+
+
 async def _require_author_or_moderator(
     state: AppState, request: Request, case_id: str, msg_id: str, actor: str
 ) -> None:
     """Author-scope a thread edit/delete (audit #12): only the message's own author OR a
     case moderator (``cases:close`` — senior analyst / super_admin) may mutate it. A
     plain ``cases:comment`` holder must NOT be able to rewrite or tombstone someone
-    else's message. A no-op when auth is off (has_permission allows everything)."""
+    else's message. A no-op when auth is off (has_permission allows everything).
+
+    ``has_permission`` only asks (it writes nothing), so the refusal records itself:
+    one Access denied row per refused edit or delete (a refused write is never
+    coalesced), naming the case as its target and the moderator grant the caller
+    lacks (#2). The row carries no ``case_id``, so it never enters the case's own
+    timeline or trace, exactly as the route gate's denials never did."""
     threads = getattr(state, "case_threads", None)
     if threads is None:
         raise HTTPException(status_code=503, detail="thread store unavailable")
@@ -573,6 +597,7 @@ async def _require_author_or_moderator(
         return
     if await has_permission(request, "cases", "close"):
         return
+    await record_access_denied(request, [("cases", "close")], target=await _case_target(state, case_id))
     raise HTTPException(
         status_code=403,
         detail="only the message author or a case moderator can modify this message",

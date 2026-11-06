@@ -235,6 +235,16 @@ function stepsOpenRefusal(error: unknown): RunbookStepsOpen[] | null {
   );
 }
 
+/**
+ * The toast for a reinvestigation that did not start. A refusal (403: the grant is
+ * missing, or was removed after the case opened) is worded, never the server's raw
+ * "permission denied: cases:reinvestigate"; any other failure keeps its message.
+ */
+export function reinvestigateErrorText(error: unknown): string {
+  if (error instanceof ApiError && error.status === 403) return 'You do not have permission to reinvestigate cases.';
+  return error instanceof Error && error.message ? error.message : 'The reinvestigation could not be started.';
+}
+
 /** A case already resolved or closed (a further close is its final close, never asked about). */
 function caseIsTerminal(status?: string | null): boolean {
   const s = String(status ?? '').toLowerCase();
@@ -509,6 +519,12 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
   // Runbook tab, the Overview's Next step card, the facts rail and the close dialog.
   const canReadRunbooks = hasPermission('runbooks', 'read') && hasPermission('cases', 'read');
   const canRunRunbooks = hasPermission('runbooks', 'run');
+  // POST /api/cases/{id}/reinvestigate needs `cases:reinvestigate` (tier 2 and up by
+  // default): without it the action, its R shortcut and its model list are not offered.
+  const canReinvestigate = hasPermission('cases', 'reinvestigate');
+  // GET /api/users needs `users:manage`. Without it the owner field takes a typed name and
+  // @mentions are not suggested, and the read is never sent (it could only be refused).
+  const canListUsers = hasPermission('users', 'manage');
   const runbooks = useCaseRunbooks(open ? id : null, { enabled: canReadRunbooks });
   // A deep link's tab, re-applied when the link or its case changes (closing QA integ-06).
   // The Investigation tab's link is "Open case trace", so it also asks the panel to open
@@ -737,9 +753,14 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
     };
   }, [open, id]);
 
-  // Users for the picker + @mention autocomplete (best-effort, once per open).
+  // Users for the picker + @mention autocomplete (best-effort, once per open), only for a
+  // viewer who may list users.
   React.useEffect(() => {
     if (!open) return;
+    if (!canListUsers) {
+      setPickUsers([]);
+      return;
+    }
     let cancelled = false;
     void listPickableUsers().then((res) => {
       if (!cancelled) setPickUsers(res);
@@ -747,7 +768,7 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
     return () => {
       cancelled = true;
     };
-  }, [open]);
+  }, [open, canListUsers]);
 
   // Typed ReAct timeline (#12) — lazy on the Investigation tab.
   const loadTimeline = React.useCallback(async () => {
@@ -1016,9 +1037,9 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
     if (open && tab === 'runbook' && canReadRunbooks) void refreshRunbooks();
   }, [open, tab, canReadRunbooks, refreshRunbooks]);
 
-  // Models for the reinvestigate picker (best-effort).
+  // Models for the reinvestigate picker (best-effort), read only when it can be used.
   React.useEffect(() => {
-    if (!open) return;
+    if (!open || !canReinvestigate) return;
     let cancelled = false;
     void api
       .getModels()
@@ -1029,7 +1050,7 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
     return () => {
       cancelled = true;
     };
-  }, [open]);
+  }, [open, canReinvestigate]);
 
   // FP auto-close policy (best-effort).
   React.useEffect(() => {
@@ -1340,7 +1361,7 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
       setStages(null);
       void loadTriage();
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'The reinvestigation could not be started.');
+      toast.error(reinvestigateErrorText(e));
     } finally {
       setReinvesting(false);
     }
@@ -1410,6 +1431,7 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
     actions: [] as ActionDef[],
     canAssign: false,
     canTag: false,
+    canReinvestigate: false,
     hasRunbookTab: false,
   });
   const permittedForShortcuts = (() => {
@@ -1437,6 +1459,7 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
     actions: permittedForShortcuts,
     canAssign: hasPermission('cases', 'assign'),
     canTag: hasPermission('cases', 'write'),
+    canReinvestigate,
     hasRunbookTab: canReadRunbooks,
   };
   const openActionRef = React.useRef(openAction);
@@ -1485,7 +1508,7 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
       else if (key === 'c') fire(byKind('close_disposition'));
       else if (key === 'e') fire(byKind('escalate'));
       else if (key === 'h') fire(byKind('hold'));
-      else if (key === 'r') {
+      else if (key === 'r' && state.canReinvestigate) {
         event.preventDefault();
         actionOpenerRef.current = takeActionTriggerRef.current;
         setReinvestModel('');
@@ -1700,40 +1723,47 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
                       </Button>
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="end" sideOffset={8} className="w-72">
-                      <DropdownMenuLabel>Case actions</DropdownMenuLabel>
-                      {permittedLifecycleActions.map((action) => {
-                        const Icon = action.icon;
-                        const hint = shortcutFor(action.key);
-                        return (
-                          <DropdownMenuItem
-                            key={action.key}
-                            disabled={busy}
-                            aria-keyshortcuts={hint ?? undefined}
-                            onSelect={() => openFromControl(action, takeActionTriggerRef.current)}
-                          >
-                            <Icon className="h-4 w-4" />
-                            <span className="flex-1">{action.label}</span>
-                            {hint ? <MenuShortcut>{hint}</MenuShortcut> : null}
-                          </DropdownMenuItem>
-                        );
-                      })}
-
-                      <DropdownMenuSeparator />
+                      {/* The group's label and separator go with its items: a role that may
+                          change nothing about the case (an auditor) gets no empty group. */}
+                      {permittedLifecycleActions.length > 0 ? (
+                        <>
+                          <DropdownMenuLabel>Case actions</DropdownMenuLabel>
+                          {permittedLifecycleActions.map((action) => {
+                            const Icon = action.icon;
+                            const hint = shortcutFor(action.key);
+                            return (
+                              <DropdownMenuItem
+                                key={action.key}
+                                disabled={busy}
+                                aria-keyshortcuts={hint ?? undefined}
+                                onSelect={() => openFromControl(action, takeActionTriggerRef.current)}
+                              >
+                                <Icon className="h-4 w-4" />
+                                <span className="flex-1">{action.label}</span>
+                                {hint ? <MenuShortcut>{hint}</MenuShortcut> : null}
+                              </DropdownMenuItem>
+                            );
+                          })}
+                          <DropdownMenuSeparator />
+                        </>
+                      ) : null}
                       <DropdownMenuLabel>Investigation</DropdownMenuLabel>
-                      <DropdownMenuItem
-                        disabled={reinvesting || busy}
-                        aria-keyshortcuts="R"
-                        onSelect={() => {
-                          actionOpenerRef.current = takeActionTriggerRef.current;
-                          setTakeActionOpen(false);
-                          setReinvestModel('');
-                          setReinvestOpen(true);
-                        }}
-                      >
-                        <Zap className="h-4 w-4" />
-                        <span className="flex-1">Reinvestigate</span>
-                        <MenuShortcut>R</MenuShortcut>
-                      </DropdownMenuItem>
+                      {canReinvestigate ? (
+                        <DropdownMenuItem
+                          disabled={reinvesting || busy}
+                          aria-keyshortcuts="R"
+                          onSelect={() => {
+                            actionOpenerRef.current = takeActionTriggerRef.current;
+                            setTakeActionOpen(false);
+                            setReinvestModel('');
+                            setReinvestOpen(true);
+                          }}
+                        >
+                          <Zap className="h-4 w-4" />
+                          <span className="flex-1">Reinvestigate</span>
+                          <MenuShortcut>R</MenuShortcut>
+                        </DropdownMenuItem>
+                      ) : null}
                       {canReadRunbooks && canRunRunbooks && runbookPrefs.enabled ? (
                         <DropdownMenuItem
                           disabled={busy}

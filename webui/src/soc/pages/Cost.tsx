@@ -62,6 +62,7 @@ import {
   useAnalyticsWindow,
   windowCaption,
 } from './analytics-shared';
+import { PageAccess } from './PageAccess';
 
 // --------------------------------------------------------------------------- //
 // Local types + constants
@@ -417,7 +418,19 @@ interface CostProps {
 // --------------------------------------------------------------------------- //
 // Page
 // --------------------------------------------------------------------------- //
-export default function Cost(_props: CostProps = {}) {
+/**
+ * The spend ledger reads `GET /api/usage/summary`, which needs `cost:view`; without it a
+ * typed or shared link shows the page's title and one refusal (roles-11).
+ */
+export default function Cost(props: CostProps = {}) {
+  return (
+    <PageAccess resource="cost" action="view" title={PAGE_TITLE} message="You do not have access to LLM spend.">
+      <CostPage {...props} />
+    </PageAccess>
+  );
+}
+
+function CostPage(_props: CostProps = {}) {
   // While Demo Mode is on, the ledger is fed by the deterministic $0 mock model with
   // plausible synthetic figures; the money tiles say "simulated" so a viewer never reads
   // demo spend as real spend.

@@ -54,7 +54,6 @@ from ..audit.write import audited_write
 from ..constants import ActionType, UserRole
 from ..models import CustomRole
 from ..rbac.policy import (
-    DEFAULT_ROLE,
     RESOURCES,
     can,
     normalise_denies,
@@ -65,12 +64,13 @@ from ..rbac.policy import (
 from ..state import AppState
 from ..stores.custom_roles import CustomRoleExists, CustomRoleMissing
 from .deps import (
+    AccessView,
     _rbac_config_with_custom_roles,
-    current_user,
     current_username,
     get_state,
     require_fresh_auth,
     require_permission,
+    resolve_access,
 )
 
 logger = logging.getLogger("tlsoc.api.routes_roles")
@@ -481,63 +481,61 @@ async def simulate_permission(
 async def account_permissions(
     request: Request, state: AppState = Depends(get_state)
 ) -> dict[str, Any]:
-    """The CURRENT caller's resolved ``resource -> [actions]`` grants — the data the
-    webui ``<Can>`` guard checks against.
+    """The CURRENT caller's effective ``resource -> [actions]`` grants: the one map the
+    Console's permission checks (``hasPermission``, ``<Can>``, ``ProtectedRoute``)
+    read, so the Console shows exactly what the API allows (Round 14 FX7e, roles-01).
 
-    Three back-compat modes mirror the server gates:
-      * auth DISABLED          → super_admin (full wildcard) so every surface unlocks.
+    It is answered by the server's own resolver, never a second copy of it: the
+    caller's view comes from :func:`app.api.deps.resolve_access` (the core of every
+    ``require_permission`` gate) and each declared ``resource:action`` is listed only
+    when :meth:`AccessView.allows` grants it. The base role is UNIONed with the
+    custom roles assigned to the user, each role row already carrying its own denies
+    and the operator's global per-role denies, so a custom role that grants
+    ``runbooks:publish`` lists it and one whose deny removes ``runbooks:run`` does
+    not. Writes nothing (a missing grant is not an access denial).
+
+    Three modes mirror the server gates:
+      * auth DISABLED          → super_admin (every action) so every surface unlocks.
       * auth ON, rbac OFF      → super_admin (authenticated == super_admin).
-      * auth ON, rbac ON       → the principal's base role UNIONed with any custom
-                                 roles assigned to the user (resolved against the live
-                                 matrix). An env single-admin (no persisted record)
-                                 resolves to its synced role.
+      * auth ON, rbac ON       → the effective grants above. An env single-admin (no
+                                 persisted record) resolves to its synced role.
 
-    Wildcards are exploded into concrete actions so the guard can match a literal
-    ``resource:action`` without re-implementing the wildcard rule. Auth-gated only
-    (any authenticated principal may read its OWN permissions)."""
-    auth = getattr(state, "auth", None)
-    rbac = getattr(state.prefs, "rbac", None)
-    rbac_enabled = bool(getattr(rbac, "enabled", False))
-    full = {res: ["*"] for res in RESOURCES}
-
-    # auth off OR rbac off → super_admin everywhere.
-    if auth is None or not auth.is_enabled or not rbac_enabled:
+    Every action is concrete (a wildcard is never sent), and a resource the caller
+    holds no action on is left out. Auth-gated only (any authenticated principal may
+    read its OWN permissions; an unauthenticated caller gets 401 when auth is on)."""
+    view = await resolve_access(request)
+    if view.unrestricted:
+        auth = getattr(state, "auth", None)
+        rbac = getattr(state.prefs, "rbac", None)
         return {
             "authenticated": auth is not None and auth.is_enabled,
             "role": UserRole.SUPER_ADMIN.value,
             "custom_roles": [],
-            "rbac_enabled": rbac_enabled,
-            "permissions": _explode_grants(full),
+            "rbac_enabled": bool(getattr(rbac, "enabled", False)),
+            "permissions": _effective_permissions(view),
         }
-
-    principal = current_user(request)
-    if principal is None:
-        raise HTTPException(status_code=401, detail="authentication required")
-
-    rbac_cfg = await _rbac_config_with_custom_roles(state)
-    matrix = resolve_matrix(rbac_cfg)
-    base_role = getattr(principal, "role", "") or DEFAULT_ROLE
-    # Per-user assigned custom roles ride in the user's prefs bag (User has no
-    # first-class field this wave). The env single-admin has no persisted record →
-    # no custom roles → base role only.
-    assigned: list[str] = []
-    try:
-        user = await state.users.get(principal.username)
-    except Exception:  # noqa: BLE001
-        user = None
-    if user is not None:
-        raw = (user.prefs or {}).get("custom_roles")
-        if isinstance(raw, list):
-            assigned = [str(x) for x in raw if str(x) in matrix and str(x) not in _BASE_ROLE_NAMES]
-
-    grants = _grants_for_roles(matrix, str(base_role), assigned)
+    matrix = view.matrix or {}
+    # The assigned names that take part in the decision (``can_for_roles`` drops a
+    # blank, a built-in name and an unknown or deleted role the same way).
+    assigned = [nm for nm in view.assigned if nm in matrix and nm not in _BASE_ROLE_NAMES]
     return {
         "authenticated": True,
-        "role": str(base_role),
+        "role": view.role,
         "custom_roles": assigned,
         "rbac_enabled": True,
-        "permissions": _explode_grants(grants),
+        "permissions": _effective_permissions(view),
     }
+
+
+def _effective_permissions(view: AccessView) -> dict[str, list[str]]:
+    """Every declared ``resource:action`` the caller's ``view`` allows, by resource,
+    in the vocabulary's order. A resource with no allowed action is left out."""
+    out: dict[str, list[str]] = {}
+    for resource, actions in RESOURCES.items():
+        allowed = [action for action in actions if view.allows(resource, action)]
+        if allowed:
+            out[resource] = allowed
+    return out
 
 
 # --------------------------------------------------------------------------- #

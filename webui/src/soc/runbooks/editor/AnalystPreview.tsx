@@ -172,7 +172,19 @@ export function AnalystPreview({ defn, cases, loadCaseValues, guidance, classNam
                 ))}
               </SelectContent>
             </Select>
-            <Button type="button" variant="outline" size="sm" onClick={() => void fill()} disabled={state === 'loading'}>
+            {/* Soft-disabled while it reads the case: the button keeps focus (WCAG 2.4.3, wrb-07). */}
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                if (state !== 'loading') void fill();
+              }}
+              aria-disabled={state === 'loading' || undefined}
+              aria-busy={state === 'loading' || undefined}
+              className={cn(state === 'loading' && 'cursor-not-allowed opacity-50')}
+              data-fill-case=""
+            >
               {`Fill with ${chosen?.case_number || chosen?.case_id || 'a case'}`}
             </Button>
             {filledCase ? (

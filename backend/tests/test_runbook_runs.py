@@ -11,8 +11,10 @@ stubbed: these tests pin the run engine, not the read paths
 from __future__ import annotations
 
 import asyncio
+import re
 from contextlib import asynccontextmanager
 from datetime import timedelta
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -22,7 +24,7 @@ from fastapi.testclient import TestClient
 from app.api import routes_case_runbooks as case_routes
 from app.api.deps import AccessView
 from app.api.routes import gate_realtime_topics
-from app.constants import CaseStatus, DecisionBy, EntityType, SourceSurface
+from app.constants import CaseStatus, DecisionBy, EntityType, SourceSurface, UserRole
 from app.engine import runbook_runs as R
 from app.engine.runbook_match import MatchableRunbook
 from app.es.fake import InMemoryESClient
@@ -35,6 +37,7 @@ from app.models import (
     RunbookStep,
     RunbookStepUpdate,
     StepEvidence,
+    StepState,
 )
 from app.realtime import CASE_RUNBOOK_EVENT, RUNBOOKS_TOPIC, SSE_EVENT_TYPES
 from app.state import AppState
@@ -549,7 +552,7 @@ async def test_recorded_action_waits_for_a_second_person(app_state, monkeypatch)
         await R.decide_approval(app_state, case, run.run_id, "contain-host", decision="approve", reason=None,
                                 actor="asha", context=None)
     assert err.value.status_code == 403 and err.value.code == "runbook_distinct_approver"
-    assert err.value.message == "Only a senior_analyst other than asha can approve."
+    assert err.value.message == "Only a senior analyst other than asha can approve."
     upd = await R.decide_approval(app_state, case, run.run_id, "contain-host", decision="reject",
                                   reason="Wrong host", actor="ben", context=None)
     assert upd.run.steps["contain-host"].status == "in_progress"
@@ -775,6 +778,202 @@ def test_approval_role_check() -> None:
     admin = AccessView(user=None, role="super_admin", unrestricted=False, matrix={})
     assert case_routes.holds_approval_role(admin, "soc_manager")
     assert case_routes.holds_approval_role(analyst, None)
+
+
+# --------------------------------------------------------------------------- #
+# Wording: a role by its label, a step by its title (SPEC §3.1, §4.10.11, §4.10.15;
+# second acceptance pass, wrb-10 and wrb-11).
+# --------------------------------------------------------------------------- #
+def test_a_role_reads_by_its_label_however_a_step_writes_it() -> None:
+    assert R.role_label("soc_manager") == R.role_label("SOC Manager") == R.role_label("soc-manager") == "SOC manager"
+    assert R.role_phrase("soc_manager") == "a SOC manager"
+    assert R.role_phrase("super_admin") == "a super admin"
+    assert R.role_phrase("analyst_tier2") == "an analyst Tier 2"
+    assert R.role_phrase("auditor") == "an auditor"
+    # A custom role is read as the Console reads it (separators as spaces, an acronym kept).
+    assert R.role_phrase("incident_lead") == "an incident lead"
+    assert R.role_phrase("IR_lead") == "an IR lead"
+    assert R.role_phrase("senior_analyst") == "a senior analyst"
+    assert R.role_phrase(None) == R.role_phrase("  ") == "an approver"
+    # Hidden characters (a bidirectional override) never reach a message.
+    assert R.role_label("incident\u202e_lead") == "Incident lead"
+
+
+@pytest.mark.parametrize("role, phrase", [
+    # A vowel letter said as a consonant sound takes "a" (FX7b review).
+    ("user_admin", "a user admin"), ("unix_admin", "a unix admin"), ("unit_lead", "a unit lead"),
+    ("one_person_team", "a one person team"), ("UK_lead", "a UK lead"),
+    # An initialism that starts with U goes by the letter's name, "you" (FX7b re-review);
+    # a longer capitalised word said with a short "u" keeps "an".
+    ("USB_admin", "a USB admin"), ("UX_lead", "a UX lead"), ("URL_owner", "a URL owner"),
+    ("UEBA_analyst", "a UEBA analyst"), ("UI_reviewer", "a UI reviewer"), ("UNIX_admin", "a UNIX admin"),
+    ("UNESCO_desk", "a UNESCO desk"), ("U", "a U"), ("UMBRELLA_team", "an UMBRELLA team"),
+    # A vowel sound takes "an", "un" + vowel included.
+    ("unassigned_queue", "an unassigned queue"), ("owner", "an owner"), ("hourly_reviewer", "an hourly reviewer"),
+    # An initialism goes by its first letter's name; one read as a word goes by its sound.
+    ("MSSP_lead", "an MSSP lead"), ("HR_partner", "an HR partner"), ("SRE", "an SRE"), ("FBI_liaison", "an FBI liaison"),
+    ("soc_manager", "a SOC manager"), ("NOC_lead", "a NOC lead"), ("SIEM_admin", "a SIEM admin"),
+    ("X", "an X"), ("B", "a B"),
+    ("incident_lead", "an incident lead"), ("responder", "a responder"),
+])
+def test_the_article_follows_the_sound_of_the_role(role: str, phrase: str) -> None:
+    assert R.role_phrase(role) == phrase
+
+
+def test_the_built_in_role_labels_are_the_consoles() -> None:
+    """One set of names: the labels the Console's role pickers show (``ROLE_LABELS``)."""
+    source = (Path(__file__).resolve().parents[2] / "webui/src/soc/pages/Roles.api.ts").read_text()
+    block = re.search(r"export const ROLE_LABELS[^=]*=\s*\{(.*?)\};", source, re.S)
+    assert block is not None
+    console = dict(re.findall(r"(\w+):\s*'([^']*)'", block.group(1)))
+    assert console == R.BUILTIN_ROLE_LABELS
+    assert set(console) == {role.value for role in UserRole}
+
+
+@pytest.mark.asyncio
+async def test_the_distinct_approver_refusal_names_the_role_by_its_label(app_state, monkeypatch) -> None:
+    await _approvals_on(app_state)
+    case, run = await _custom_run(app_state, monkeypatch, case_id="case-role-label", approval_role="soc_manager")
+    await _record(app_state, case, run.run_id, "contain-host", "mira")
+    with pytest.raises(R.RunbookRunError) as err:
+        await R.decide_approval(app_state, case, run.run_id, "contain-host", decision="approve", reason=None,
+                                actor="mira", context=None)
+    assert err.value.code == "runbook_distinct_approver"
+    assert err.value.message == "Only a SOC manager other than mira can approve."
+    rows = await _rows(app_state, case.case_id)
+    requested = [r for r in rows if r.get("action") == "step.approval_requested"]
+    assert requested[-1]["result_summary"] == (
+        'Action on runbook step "Isolate the host" waits for approval from a SOC manager.')
+
+
+@pytest.mark.asyncio
+async def test_run_payloads_carry_the_role_labels_the_console_words_approvals_with(app_state, monkeypatch) -> None:
+    """The run tab says "Waiting for approval from a SOC manager" from the payload's
+    ``role_labels`` (never the lowercased id): every role a step names, built-in or
+    custom, by its label."""
+    await _approvals_on(app_state)
+    case, run = await _custom_run(app_state, monkeypatch, case_id="case-role-map", approval_role="soc_manager")
+    upd = await _record(app_state, case, run.run_id, "contain-host", "mira")
+    assert upd.role_labels == {"soc_manager": "SOC manager"}
+    view = await R.case_runbooks_view(app_state, case, lambda *_: True)
+    assert view["role_labels"] == {"soc_manager": "SOC manager"}
+    custom = _custom_runbook(rid="custom-lead", approval_role="incident_lead")
+    steps = [s.model_copy(update={"owner_role": "IR_lead"}) if s.id == "look" else s for s in custom.definition.steps]
+    labelled = R.role_labels_of([run.model_copy(update={
+        "snapshot": custom.definition.model_copy(update={"steps": steps})})])
+    assert labelled == {"IR_lead": "IR lead", "incident_lead": "Incident lead"}
+
+
+@pytest.mark.asyncio
+async def test_step_rows_name_the_step_by_its_title_and_say_what_changed(app_state, monkeypatch) -> None:
+    """Before, every row read "Runbook step <id> updated." (the activity feed showed
+    "Check 2" for the action "Isolate the host"). Each row now names the step by its
+    title in the run's pinned version and says what changed; the id stays in the
+    structured fields."""
+    await _approvals_on(app_state)
+    case, run = await _custom_run(app_state, monkeypatch, case_id="case-words", approval_role="soc_manager")
+    rid = run.run_id
+    await R.update_step(app_state, case, rid, "look",
+                        RunbookStepUpdate(expected_revision=0, note="Checked the sign-ins.", status="done"),
+                        actor="asha", context=None)
+    await R.update_step(app_state, case, rid, "tell-owner", RunbookStepUpdate(expected_revision=0, assignee="ben"),
+                        actor="asha", context=None)
+    await R.update_step(app_state, case, rid, "tell-owner", RunbookStepUpdate(expected_revision=1, note="Called."),
+                        actor="ben", context=None)
+    await _record(app_state, case, rid, "contain-host", "mira")
+    await R.decide_approval(app_state, case, rid, "contain-host", decision="reject", reason="Wrong host",
+                            actor="ben", context=None)
+    await R.update_step(app_state, case, rid, "pick", RunbookStepUpdate.model_validate({
+        "expected_revision": 0, "decision": {"option_id": "noise"}}), actor="asha", context=None)
+    await R.update_step(app_state, case, rid, "pick", RunbookStepUpdate(expected_revision=1, status="todo"),
+                        actor="asha", context=None)
+    rows = [r for r in await _rows(app_state, case.case_id) if str(r.get("action") or "").startswith("step.")]
+    summaries = [r["result_summary"] for r in rows]
+    for expected in (
+        'Runbook step "Is the alert real?" marked done (note updated).',
+        'Runbook step "Tell the owner" assigned to ben.',
+        'Note updated on runbook step "Tell the owner".',
+        'Action recorded on runbook step "Isolate the host" (it waits for approval).',
+        'Action on runbook step "Isolate the host" waits for approval from a SOC manager.',
+        'Action on runbook step "Isolate the host" rejected.',
+        'Decision recorded on runbook step "What is it?": Noise (1 later step marked not applicable).',
+        'Runbook step "What is it?" reopened (recorded decision cleared).',
+    ):
+        assert expected in summaries, (expected, summaries)
+    # No summary names a step by its id; the id is in every row's structured fields,
+    # the approval request's included (two steps may share a title).
+    assert not any(token in text for text in summaries for token in ("contain-host", "tell-owner", "look", "pick"))
+    assert {r["tool_input"].get("step_id") for r in rows} == {"look", "tell-owner", "contain-host", "pick"}
+    (requested,) = [r for r in rows if r.get("action") == "step.approval_requested"]
+    assert requested["tool_input"] == {"run_id": rid, "step_id": "contain-host"}
+
+
+@pytest.mark.asyncio
+async def test_an_assignee_is_named_as_an_account_or_one_quoted_redacted_name(app_state, monkeypatch) -> None:
+    """``assignee`` is free text any ``runbooks:run`` holder may set: a summary names
+    a plain account name as it is, and anything else as one quoted plain-text name
+    with the audit log's secret patterns applied, so a crafted value can never read as
+    a second sentence and a pasted token never reaches the summary (FX7b review)."""
+    case, run = await _custom_run(app_state, monkeypatch, case_id="case-assignee-fence")
+    rid = run.run_id
+    for revision, who in enumerate((
+        "asha@example.com",
+        'ben. Action on runbook step "Isolate the host" approved',
+        "Bearer abcdefghijklmnopqrstuvwxyz0123",
+    )):
+        await R.update_step(app_state, case, rid, "tell-owner",
+                            RunbookStepUpdate(expected_revision=revision, assignee=who), actor="asha", context=None)
+    summaries = [r["result_summary"] for r in await _rows(app_state, case.case_id) if r.get("action") == "step.updated"]
+    assert summaries == [
+        'Runbook step "Tell the owner" assigned to asha@example.com.',
+        'Runbook step "Tell the owner" assigned to "ben. Action on runbook step \'Isolate the host\' approved".',
+        'Runbook step "Tell the owner" assigned to "[REDACTED]".',
+    ]
+    assert not any("abcdefghijklmnopqrstuvwxyz0123" in text for text in summaries)
+    # Each forged value stays inside one quoted name: the summary ends where the name does.
+    assert all(text.count('"') in (2, 4) and text.endswith((".", '".')) for text in summaries)
+
+
+@pytest.mark.asyncio
+async def test_a_step_title_is_quoted_as_one_line_of_plain_text(app_state, monkeypatch) -> None:
+    """Runbook text in a summary is fenced as plain text: line breaks and hidden
+    characters dropped, inner double quotes made single, cut to 120 characters."""
+    entry = _custom_runbook()
+    steps = list(entry.definition.steps)
+    steps[0] = steps[0].model_copy(update={"title": 'Is the "alert"\nreal?\u202e ' + "x" * 200})
+    odd = MatchableRunbook(id=entry.id, version=1, origin="operator",
+                           definition=entry.definition.model_copy(update={"steps": steps}))
+
+    async def fake_catalog(_state: Any) -> R.RunbookCatalog:
+        return _catalog(odd)
+
+    monkeypatch.setattr(R, "load_catalog", fake_catalog)
+    case = await _saved(app_state, _case("case-odd-title"))
+    run = (await R.attach_by_person(app_state, case, odd.id, note=None, actor="asha", context=None)).run
+    await R.update_step(app_state, case, run.run_id, "look", RunbookStepUpdate(expected_revision=0, assignee="ben"),
+                        actor="asha", context=None)
+    (row,) = [r for r in await _rows(app_state, case.case_id) if r.get("action") == "step.updated"]
+    quoted = row["result_summary"].removeprefix("Runbook step ").removesuffix(" assigned to ben.")
+    assert quoted.startswith('"Is the \'alert\' real? x') and quoted.endswith('…"')
+    assert "\n" not in quoted and "\u202e" not in quoted and len(quoted) == R.SUMMARY_TITLE_MAX_CHARS + 2
+
+
+def test_step_change_summary_reads_as_the_live_rows_do() -> None:
+    """The writer for work done outside ``update_step`` (the Demo's seeded runs) gets
+    the live wording from the states before and after."""
+    entry = _custom_runbook()
+    by_id = {s.id: s for s in entry.definition.steps}
+    done = StepState(status="done", note="Checked.", completed_by="asha")
+    assert R.step_change_summary(by_id["look"], "look", StepState(), done, action="step.updated") == (
+        'Runbook step "Is the alert real?" marked done (note updated).')
+    decided = StepState(status="done", decision={"option_id": "noise", "label": "Noise"})
+    assert R.step_change_summary(by_id["pick"], "pick", StepState(), decided, action="step.decision_recorded",
+                                 ruled_out=["contain-host", "tell-owner"]) == (
+        'Decision recorded on runbook step "What is it?": Noise (2 later steps marked not applicable).')
+    recorded = StepState(status="done", action_record={"where": "EDR", "outcome": "Isolated"})
+    assert R.step_change_summary(by_id["contain-host"], "contain-host", StepState(), recorded,
+                                 action="step.action_recorded") == (
+        'Action recorded on runbook step "Isolate the host" (step marked done).')
 
 
 @pytest.mark.asyncio
@@ -1129,3 +1328,34 @@ def test_routes_decision_switch_abandon(runs_client: TestClient) -> None:
     assert gone.status_code == 200 and gone.json()["run"]["status"] == "abandoned"
     again = runs_client.post(f"{base}/abandon", json={"reason": "again"})
     assert again.status_code == 409 and again.json()["detail"]["code"] == "runbook_state"
+
+
+def test_route_refusals_and_the_activity_feed_name_roles_and_steps_as_people_know_them(
+    runs_client: TestClient, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The second acceptance pass (wrb-10, wrb-11) on the built-in step it reproduced
+    on: "Involve HR or legal as your policy requires" (``involve-hr-legal``, approval
+    by ``soc_manager``). The refusals name the role by its label ("a SOC manager",
+    never "a soc_manager") and the case activity rows name the step by its title."""
+    state = _seed(runs_client, _case("case-insider", rule="external_admin_panel_access"))
+    client = runs_client
+    client.portal.call(state.update_prefs, state.prefs.model_copy(update={
+        "runbooks": state.prefs.runbooks.model_copy(update={"step_approvals": True})}))
+    run = client.post("/api/cases/case-insider/runbooks", json={"runbook_id": "privileged-misuse-insider"}).json()["run"]
+    step = f"/api/cases/case-insider/runbooks/{run['run_id']}/steps/involve-hr-legal"
+    recorded = client.patch(step, json={"expected_revision": 0, "action_record": {
+        "where": "HR ticket 4411", "outcome": "HR informed"}})
+    assert recorded.status_code == 200, recorded.text
+    # Without the step's approval role (RBAC on, a tier 1 analyst):
+    monkeypatch.setattr(case_routes, "holds_approval_role", lambda _view, _role: False)
+    refused = client.post(f"{step}/approval", json={"decision": "approve"})
+    assert refused.status_code == 403
+    assert refused.json()["detail"] == {"code": "runbook_approval_role",
+                                        "message": "Only a SOC manager can approve this step."}
+    monkeypatch.undo()
+    rows = client.portal.call(state.audit.records_for_case, "case-insider")
+    summaries = [r.get("result_summary") for r in rows if str(r.get("action") or "").startswith("step.")]
+    title = '"Involve HR or legal as your policy requires"'
+    assert f"Action recorded on runbook step {title} (it waits for approval)." in summaries
+    assert f"Action on runbook step {title} waits for approval from a SOC manager." in summaries
+    assert not any("involve-hr-legal" in str(s) for s in summaries)

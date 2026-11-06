@@ -3,16 +3,23 @@
  * on one line ("Draft · v5 by you", "In review · needs a second person", "Published · v4
  * is live", "Retired · read only"), the current one marked, then the facts a reviewer
  * needs: the live version and who published it, open cases pinned to it, the review date
- * and the owner. A built-in shows its own line: read only, updated with releases.
+ * and the owner. A retired runbook says which version was retired, by whom and when, and the
+ * open cases that still run it; a draft or a version in review it still holds is named as
+ * waiting (the page shows the retired version), so an action on it never acts on a version
+ * the page does not name. A version sent back to draft shows the reviewer's reason where the
+ * author works, with who sent it back and when ("Show all" for earlier notes). A built-in
+ * shows its own line: read only, updated with releases. A person is named the same way
+ * everywhere: "you" for the signed-in person, else their name.
  *
- * Every stored value (names, owner) is rendered as plain text (#9).
+ * Every stored value (names, owner, review notes) is rendered as plain text (#9).
  */
 import * as React from 'react';
 import { ChevronRight, Lock } from 'lucide-react';
 
 import { cn } from '@/lib/cn';
 import { Panel } from '@/design-system/panel';
-import type { RunbookDetail } from '@/lib/types-runbooks';
+import type { RunbookDetail, RunbookReviewNote } from '@/lib/types-runbooks';
+import { Button } from '@/ui/button';
 
 import { formatDay, reviewDueState, reviewDueWords } from '../shared/dates';
 
@@ -41,18 +48,69 @@ const STAGE_LABEL: Readonly<Record<Stage, string>> = {
   retired: 'Retired',
 };
 
-function who(name: string | null | undefined, username: string | null): string {
+/** A person as the editor names them: "you" for the signed-in person, else their name. */
+export function who(name: string | null | undefined, username: string | null): string {
   if (!name) return 'someone';
   return username && name === username ? 'you' : name;
 }
 
-/** The stage the editor is showing: the most advanced unpublished version, else published or retired. */
+/**
+ * The stage the editor is showing: a retired runbook is retired (it shows its retired
+ * version, read only), else the most advanced unpublished version, else published.
+ */
 export function currentStage(detail: RunbookDetail | null, isNew: boolean): Stage {
   if (isNew || !detail) return 'draft';
+  if (detail.summary.retired) return 'retired';
   if (detail.draft) return 'draft';
   if (detail.in_review) return 'in_review';
-  if (detail.summary.retired) return 'retired';
   return 'published';
+}
+
+/** "Sent back by Asha on Nov 5, 2026" for one review note. */
+export function reviewNoteLine(note: RunbookReviewNote, username: string | null): string {
+  const day = note.at ? formatDay(note.at) : '';
+  return `Sent back by ${who(note.by, username)}${day ? ` on ${day}` : ''}`;
+}
+
+/** Review notes newest first, the order both the strip and History list them in. */
+export function newestNotesFirst(notes: readonly RunbookReviewNote[]): RunbookReviewNote[] {
+  return [...notes].reverse();
+}
+
+/**
+ * The reviewer's reasons on the version being written: the latest first, the rest behind
+ * "Show all". Plain text, line breaks kept (#9).
+ */
+function ReviewNotes({ notes, username }: { notes: RunbookReviewNote[]; username: string | null }) {
+  const [all, setAll] = React.useState(false);
+  const listId = React.useId();
+  const newestFirst = newestNotesFirst(notes);
+  const shown = all ? newestFirst : newestFirst.slice(0, 1);
+  return (
+    <section aria-label="Review notes" className="space-y-2 border-t border-border/70 pt-3" data-review-notes="">
+      <ul id={listId} className="space-y-2">
+        {shown.map((note, index) => (
+          <li key={`${note.at}-${index}`} className="text-sm" data-review-note="">
+            <p className="font-medium text-foreground">{reviewNoteLine(note, username)}</p>
+            <p className="whitespace-pre-line text-foreground [overflow-wrap:anywhere]">{note.text}</p>
+          </li>
+        ))}
+      </ul>
+      {notes.length > 1 ? (
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="h-8 px-2"
+          aria-expanded={all}
+          aria-controls={listId}
+          onClick={() => setAll((v) => !v)}
+        >
+          {all ? 'Show the latest only' : `Show all ${notes.length.toLocaleString()} notes`}
+        </Button>
+      ) : null}
+    </section>
+  );
 }
 
 function stageNote(stage: Stage, detail: RunbookDetail | null, isNew: boolean, dirty: boolean, username: string | null): string | null {
@@ -81,7 +139,14 @@ export function GovernanceStrip({ detail, username, isNew, dirty, canDuplicate =
   const builtin = detail?.summary.origin === 'builtin';
   const live = detail?.live ?? null;
   const summary = detail?.summary ?? null;
+  const retired = !!summary?.retired;
+  const retiredDoc = retired ? detail?.retired ?? null : null;
   const openOnLive = live ? detail?.open_runs_by_version?.[String(live.version)] ?? 0 : 0;
+  const openOnRetired = retiredDoc ? detail?.open_runs_by_version?.[String(retiredDoc.version)] ?? 0 : 0;
+  // The version being written and the reasons a reviewer gave on it. A retired runbook can
+  // still hold one: it waits there, named below, with its notes.
+  const writing = detail?.draft ?? detail?.in_review ?? null;
+  const notes = writing?.review_notes ?? [];
   const due = summary?.review_due_at ?? null;
   const dueState = reviewDueState(due, now);
   const dueWords = reviewDueWords(due, now);
@@ -153,10 +218,16 @@ export function GovernanceStrip({ detail, username, isNew, dirty, canDuplicate =
       </ol>
       {summary ? (
         <dl className="flex flex-wrap items-baseline gap-x-5 gap-y-1.5 text-sm">
-          {live ? (
+          {retired ? (
+            <Fact label="Retired">
+              {retiredDoc ? `v${retiredDoc.version.toLocaleString()}` : 'yes'}
+              {retiredDoc?.retired_by ? `, retired by ${who(retiredDoc.retired_by, username)}` : ''}
+              {retiredDoc?.retired_at ? ` on ${formatDay(retiredDoc.retired_at)}` : ''}
+            </Fact>
+          ) : live ? (
             <Fact label="Live version">
               v{live.version.toLocaleString()}
-              {live.published_by ? `, published by ${live.published_by}` : ''}
+              {live.published_by ? `, published by ${who(live.published_by, username)}` : ''}
               {live.published_at ? ` on ${formatDay(live.published_at)}` : ''}
             </Fact>
           ) : (
@@ -169,7 +240,17 @@ export function GovernanceStrip({ detail, username, isNew, dirty, canDuplicate =
                 : `${openOnLive.toLocaleString()} open ${openOnLive === 1 ? 'case runs' : 'cases run'} v${live.version.toLocaleString()}`}
             </Fact>
           ) : null}
-          {due ? (
+          {retiredDoc && openOnRetired > 0 ? (
+            <Fact label="Open cases">
+              {`${openOnRetired.toLocaleString()} open ${openOnRetired === 1 ? 'case still runs' : 'cases still run'} v${retiredDoc.version.toLocaleString()}`}
+            </Fact>
+          ) : null}
+          {retired && writing ? (
+            <Fact label="Waiting">
+              {`v${writing.version.toLocaleString()} ${writing.state === 'in_review' ? 'in review' : 'draft'} by ${who(writing.author, username)}, kept while the runbook is retired`}
+            </Fact>
+          ) : null}
+          {due && !retired ? (
             <Fact label="Review due">
               <span
                 className={cn(
@@ -186,11 +267,12 @@ export function GovernanceStrip({ detail, username, isNew, dirty, canDuplicate =
           {summary.last_reviewed_at ? (
             <Fact label="Last reviewed">
               {formatDay(summary.last_reviewed_at)}
-              {summary.last_reviewed_by ? ` by ${summary.last_reviewed_by}` : ''}
+              {summary.last_reviewed_by ? ` by ${who(summary.last_reviewed_by, username)}` : ''}
             </Fact>
           ) : null}
         </dl>
       ) : null}
+      {notes.length ? <ReviewNotes notes={notes} username={username} /> : null}
     </Panel>
   );
 }

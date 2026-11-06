@@ -25,6 +25,7 @@ import type {
 
 import { useRunbookFrames } from './live';
 import { lookupResultOf, stepStateOf } from './model';
+import { roleLabelsFrom, type RoleLabels } from './roles';
 
 export interface CaseRunbooksState {
   /** The case's runs, or null until the first read (or after a failed first read). */
@@ -65,16 +66,29 @@ export function awaitingLookups(data: CaseRunbooks | null, now: number = Date.no
   return false;
 }
 
-/** `data` with `run` (from a write's answer) in place of the run of the same id. */
-export function mergeRun(data: CaseRunbooks, run: RunbookRun, progress: RunbookRunUpdate['progress'] | null, revision: number): CaseRunbooks {
+/**
+ * `data` with `run` (from a write's answer) in place of the run of the same id. The
+ * answer's `role_labels` (the run's roles by their labels: a version switch may name a new
+ * one) are added to the case's, so every approval keeps naming its role by its label.
+ */
+export function mergeRun(
+  data: CaseRunbooks,
+  run: RunbookRun,
+  progress: RunbookRunUpdate['progress'] | null,
+  revision: number,
+  roleLabels: RoleLabels = {},
+): CaseRunbooks {
   const exists = data.runs.some((r) => r.run_id === run.run_id);
   const runs = exists ? data.runs.map((r) => (r.run_id === run.run_id ? run : r)) : [...data.runs, run];
-  return {
+  const known = roleLabelsFrom(data);
+  const merged: CaseRunbooks = {
     ...data,
     runs,
     progress: progress ? { ...data.progress, [run.run_id]: progress } : data.progress,
     revision: Math.max(data.revision ?? 0, revision ?? 0),
   };
+  if (Object.keys(roleLabels).length || Object.keys(known).length) merged.role_labels = { ...known, ...roleLabels };
+  return merged;
 }
 
 export function useCaseRunbooks(caseId: string | null | undefined, opts: { enabled?: boolean } = {}): CaseRunbooksState {
@@ -121,7 +135,7 @@ export function useCaseRunbooks(caseId: string | null | undefined, opts: { enabl
   const applyUpdate = React.useCallback(
     (update: RunbookRunUpdate) => {
       if (!update?.run || update.run.case_id !== activeRef.current) return;
-      setData((prev) => (prev ? mergeRun(prev, update.run, update.progress, update.revision) : prev));
+      setData((prev) => (prev ? mergeRun(prev, update.run, update.progress, update.revision, roleLabelsFrom(update)) : prev));
     },
     [],
   );

@@ -356,6 +356,62 @@ describe('Runbooks library', () => {
     expect(await screen.findByTestId('editor-stub')).toHaveTextContent('editor imported-one');
   });
 
+  it('keeps focus in the dialog on a refused import: on the Markdown, which names the problem (wrb-07)', async () => {
+    let refuse: () => void = () => undefined;
+    mocks.importRunbook.mockImplementation(
+      () =>
+        new Promise((_resolve, reject) => {
+          refuse = () =>
+            reject(
+              new ApiError(422, 'Invalid.', {
+                detail: {
+                  code: 'runbook_invalid',
+                  message: 'Invalid.',
+                  issues: [{ path: 'source', code: 'invalid', message: 'The Markdown has no front matter.' }],
+                },
+              }),
+            );
+        }),
+    );
+    renderPage();
+    fireEvent.keyDown(await screen.findByRole('button', { name: 'More actions' }), { key: 'Enter' });
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Import Markdown' }));
+    const dialog = await screen.findByRole('dialog');
+    const markdown = within(dialog).getByLabelText('Markdown');
+    fireEvent.change(markdown, { target: { value: 'not a runbook' } });
+    const submit = within(dialog).getByRole('button', { name: 'Import as draft' });
+    act(() => submit.focus());
+    fireEvent.click(submit);
+    // While it runs the button keeps focus: soft-disabled, not disabled.
+    await waitFor(() => expect(submit).toHaveAttribute('aria-disabled', 'true'));
+    expect(submit).not.toBeDisabled();
+    expect(document.activeElement).toBe(submit);
+    fireEvent.click(submit);
+    expect(mocks.importRunbook).toHaveBeenCalledTimes(1);
+    await act(async () => refuse());
+    const error = await within(dialog).findByText('The Markdown has no front matter.');
+    await waitFor(() => expect(document.activeElement).toBe(markdown));
+    expect(markdown).toHaveAttribute('aria-invalid', 'true');
+    expect(markdown.getAttribute('aria-describedby')).toBe(error.id);
+    // Said once: through the Markdown's description as focus lands there, not as an alert too.
+    expect(error.closest('[role="alert"]')).toBeNull();
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+  });
+
+  it('says a file that is too large as an alert, since no focus moves to it', async () => {
+    renderPage();
+    fireEvent.keyDown(await screen.findByRole('button', { name: 'More actions' }), { key: 'Enter' });
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Import Markdown' }));
+    const dialog = await screen.findByRole('dialog');
+    const input = dialog.querySelector('input[type="file"]') as HTMLInputElement;
+    const big = new File(['x'], 'big.md', { type: 'text/markdown' });
+    Object.defineProperty(big, 'size', { value: 10_000_000 });
+    fireEvent.change(input, { target: { files: [big] } });
+    const alert = await within(dialog).findByRole('alert');
+    expect(alert).toHaveTextContent(/That file is 10,000,000 bytes; the limit is/);
+    expect(mocks.importRunbook).not.toHaveBeenCalled();
+  });
+
   it('shows a load failure with Retry', async () => {
     mocks.listRunbookLibrary.mockRejectedValueOnce(new ApiError(503, 'The runbook store is unavailable.'));
     renderPage();

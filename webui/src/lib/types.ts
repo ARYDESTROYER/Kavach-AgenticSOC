@@ -496,6 +496,24 @@ export interface RolesResponse {
   matrix: Record<string, Record<string, string[]>>;
 }
 
+/**
+ * GET /api/account/permissions: the signed-in person's effective grants, answered by
+ * the server's own permission resolver (the base role together with every assigned
+ * custom role, each with its denies applied). The Console's permission checks read
+ * only this map, so they show exactly what the API allows.
+ */
+export interface AccountPermissions {
+  authenticated: boolean;
+  /** The base role; `super_admin` when auth or RBAC is off. */
+  role: string;
+  /** The assigned custom roles that take part in the decision. */
+  custom_roles: string[];
+  /** False when RBAC is off: everyone signed in holds every action. */
+  rbac_enabled: boolean;
+  /** resource → the actions held on it; concrete actions only, never `*`. */
+  permissions: Record<string, string[]>;
+}
+
 // --------------------------------------------------------------------------- //
 // Agent personas. Runbooks (the one procedure feature since Round 14) are mirrored
 // in `types-runbooks.ts` and re-exported at the end of this module.

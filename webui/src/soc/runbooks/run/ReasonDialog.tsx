@@ -7,6 +7,13 @@
  * when it opened and gives focus back on close (WCAG 2.4.3), falling back to the caller's
  * `returnFocusTo` when that control has gone (a menu item unmounts with its menu).
  * The reason is plain text (#9).
+ *
+ * "Give a reason." shows only after a press of the submit button (or Ctrl or Cmd with
+ * Enter) with no reason, never on open and never because focus left the field: a menu
+ * that opened the dialog gives focus back to its own button as it closes, which takes it
+ * out of the field for a moment before the dialog brings it back (WCAG 3.3.1, no error
+ * before the person has had a chance to answer). An over-long reason says so as it is
+ * typed.
  */
 import * as React from 'react';
 
@@ -25,6 +32,9 @@ import { ARIA_DISABLED_LOOK } from './ui';
 
 /** The longest reason a step, an approval or a run keeps. */
 export const REASON_MAX_CHARS = 500;
+
+/** What an empty reason says, once the person tried to submit it. */
+export const EMPTY_REASON_ERROR = 'Give a reason.';
 
 export interface ReasonDialogProps {
   open: boolean;
@@ -58,7 +68,8 @@ export function ReasonDialog({
 }: ReasonDialogProps) {
   const [reason, setReason] = React.useState('');
   const [busy, setBusy] = React.useState(false);
-  const [touched, setTouched] = React.useState(false);
+  // Set by a submit attempt only (see the header).
+  const [submitted, setSubmitted] = React.useState(false);
   const fieldId = React.useId();
   const helpId = React.useId();
   const errorId = React.useId();
@@ -72,17 +83,17 @@ export function ReasonDialog({
     if (open) return;
     setReason('');
     setBusy(false);
-    setTouched(false);
+    setSubmitted(false);
   }, [open]);
 
   const trimmed = reason.trim();
   const tooLong = reason.length > REASON_MAX_CHARS;
   const empty = trimmed.length === 0;
-  const fieldError = touched && empty ? 'Give a reason.' : tooLong ? `Use ${REASON_MAX_CHARS} characters or fewer.` : null;
+  const fieldError = submitted && empty ? EMPTY_REASON_ERROR : tooLong ? `Use ${REASON_MAX_CHARS} characters or fewer.` : null;
   const shown = fieldError ?? error;
 
   const submit = async () => {
-    setTouched(true);
+    setSubmitted(true);
     if (busy || empty || tooLong) return;
     setBusy(true);
     try {
@@ -129,7 +140,6 @@ export function ReasonDialog({
             aria-invalid={shown ? true : undefined}
             aria-describedby={[helpId, shown ? errorId : null].filter(Boolean).join(' ')}
             onChange={(event) => setReason(event.target.value)}
-            onBlur={() => setTouched(true)}
             onKeyDown={(event) => {
               if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
                 event.preventDefault();

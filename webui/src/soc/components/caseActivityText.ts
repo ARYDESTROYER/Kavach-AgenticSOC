@@ -410,7 +410,12 @@ export function activityText(item: ActivityInput): ActivityText {
     return plain(`${name} ${LOOKUP_STATUS[m[2]]}.`);
   }
 
-  m = /^Runbook step (\S+) updated\.$/.exec(raw);
+  // A step change as the server first wrote it, by the step's id
+  // (`Runbook step check-2 updated.`). The server names the step by its title now
+  // ('Runbook step "Isolate the host" marked done.', second acceptance pass, wrb-11),
+  // and that sentence is shown as it is; a row stored before keeps its id, read as words.
+  // Only the id grammar matches (`RUNBOOK_SLUG_PATTERN`), so a quoted title never does.
+  m = /^Runbook step ([a-z0-9][a-z0-9_-]{0,63}) updated\.$/.exec(raw);
   if (m) return plain(`Runbook step "${humanizeToken(m[1])}" updated.`);
 
   m = /^registered candidate risk=(\S+) rules=(.*)$/s.exec(raw);

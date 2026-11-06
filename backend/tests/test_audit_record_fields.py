@@ -631,6 +631,12 @@ def test_the_settings_target_names_the_changed_sections_in_sentence_case() -> No
     assert target.label == "Auto-close policy, RAG"
     assert section_label("case_id_format") == "Case ID format"
     assert settings_target([]).id == "settings"
+    # Round 14 wro-03: a section's label is the name of the Console section that saves
+    # it ("Discounted inference", D30), never a name no Settings section uses.
+    assert section_label("batch") == "Discounted inference"
+    assert settings_target([AuditChange(field="batch.prefer_discounted_alerts")]).model_dump() == {
+        "type": "setting", "id": "batch", "label": "Discounted inference", "revision": None,
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -906,6 +912,29 @@ def test_a_settings_change_records_what_changed_and_never_a_secret_url() -> None
     stored = json.dumps(row)
     for leaked in ("XXXXSECRET", "T000/B000", "hunter2", "reader:"):
         assert leaked not in stored
+
+
+def test_a_discounted_inference_save_is_found_by_its_section_name() -> None:
+    """Round 14 wro-03: the row of a save in Settings, Discounted inference, names that
+    section, so searching the audit log for the section's name finds it (SPEC §4.5.5:
+    ``q`` searches the target label)."""
+    client, api = _client()
+    with client:
+        auth = _admin(client)
+        before = client.get("/api/settings", headers=auth).json()["prefs"]["batch"]["prefer_discounted_alerts"]
+        response = client.put("/api/settings", headers=auth,
+                              json={"batch": {"prefer_discounted_alerts": not before}})
+        assert response.status_code == 200, response.text
+        row = _by_action(_rows(client, api), "settings.updated")[0]
+        assert _target(row) == {"type": "setting", "id": "batch", "label": "Discounted inference"}
+        assert [c["field"] for c in row["changes"]] == ["batch.prefer_discounted_alerts"]
+        found = client.get("/api/audit", headers=auth,
+                           params={"scope": "people", "q": "Discounted inference"}).json()
+        assert [r["action"] for r in found["records"]] == ["settings.updated"]
+        assert found["records"][0]["target"]["label"] == "Discounted inference"
+        # The old schema title is no name a person would search for any more.
+        assert client.get("/api/audit", headers=auth,
+                          params={"scope": "people", "q": "Batch inference"}).json()["total"] == 0
 
 
 def test_a_settings_save_is_refused_with_503_when_the_audit_cannot_be_written(monkeypatch) -> None:

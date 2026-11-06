@@ -51,7 +51,9 @@ and advisory guidance only.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import os
 import re
 import statistics
 from dataclasses import dataclass, field
@@ -60,8 +62,10 @@ from typing import Any, Callable, Iterable, Literal, Mapping
 
 from fastapi.responses import JSONResponse
 
+from ..audit.changes import diff_changes, is_secret_key, redact_text
 from ..constants import TERMINAL_CASE_STATUSES
 from ..models import (
+    AUDIT_CHANGE_VALUE_MAX_CHARS,
     MatchPreview,
     MatchPreviewCase,
     MatchPreviewCounts,
@@ -82,6 +86,7 @@ from ..models import (
     RunbookMetricsStepRow,
     RunbookRef,
     RunbookReviewNote,
+    RunbookStep,
     RunbookSummary,
     RunbookValidation,
     RunbookVersionDoc,
@@ -438,9 +443,11 @@ def operator_detail(
         live=doc.live,
         draft=doc.draft if can_see_unpublished else None,
         in_review=doc.in_review if can_see_unpublished else None,
+        # A retired runbook still opens: read only, on the version Restore brings back.
+        retired=doc.retired_version if doc.retired else None,
         versions=[
             RunbookVersionListItem(version=v.version, state=v.state, published_by=v.published_by,
-                                   published_at=v.published_at)
+                                   published_at=v.published_at, review_notes=list(v.review_notes))
             for v in sorted(versions, key=lambda v: v.version, reverse=True)
         ],
         open_runs_by_version=dict(open_runs or {}),
@@ -1801,18 +1808,304 @@ def audit_change(field_name: str, before: Any, after: Any) -> dict[str, Any] | N
     return {"field": field_name, "before": text(before), "after": text(after)}
 
 
+#: The most definition changes one audit row records. The rest are counted in the
+#: row's summary (:func:`count_definition_changes`); the room left under the row's
+#: 50 (``AUDIT_MAX_CHANGES``) is for the version-state changes recorded beside them.
+RUNBOOK_AUDIT_MAX_DEFINITION_CHANGES = 45
+#: The definition's own fields, in the order a row lists them (the editor's order).
+_DEFINITION_TEXT_FIELDS: tuple[str, ...] = (
+    "title", "summary", "use_when", "prerequisites", "owner", "priority", "review_every_days",
+)
+#: The list fields recorded before the steps (what the runbook covers) and after them
+#: (what the investigator retrieves and reads further).
+_DEFINITION_HEAD_LISTS: tuple[str, ...] = ("mitre", "phases")
+_DEFINITION_TAIL_LISTS: tuple[str, ...] = ("retrieval_queries", "references")
+#: A step's fields, in the order a row lists them. ``lookup`` and ``options`` are
+#: recorded field by field (``steps[look].lookup.window``,
+#: ``steps[pick].options[noise].label``).
+_STEP_FIELDS: tuple[str, ...] = (
+    "title", "phase", "kind", "required", "instructions", "focus", "escalate_if", "benign_if",
+    "evidence", "owner_role", "approval_role", "target_minutes", "lookup", "options", "react", "d3fend",
+)
+#: Characters of unchanged text a long value keeps before its first difference, so
+#: the characters an audit change stores (``AUDIT_CHANGE_VALUE_MAX_CHARS``) hold the
+#: change itself (:func:`_focused`).
+_CHANGE_CONTEXT_CHARS = 100
+#: What stands for the part of a long value a change entry leaves out.
+_ELIDED = "…"
+#: What stands for a value the row withholds (the audit log's own placeholder).
+_REDACTED = "[REDACTED]"
+
+
+def _canonical(value: Any) -> str:
+    """A value as the text an audit change stores it (``models._audit_change_text``)."""
+    if value is None or isinstance(value, str):
+        return value or ""
+    return json.dumps(value, sort_keys=True, ensure_ascii=False, default=str)
+
+
+def _flat_list(value: Any) -> bool:
+    return isinstance(value, list) and all(v is None or isinstance(v, (str, int, float, bool)) for v in value)
+
+
+def _focused(before: Any, after: Any) -> tuple[Any, Any, bool]:
+    """``(before, after, redacted)``: a changed value too long for the characters an
+    audit change stores (``AUDIT_CHANGE_VALUE_MAX_CHARS``), cut on both sides so the
+    stored text starts :data:`_CHANGE_CONTEXT_CHARS` before the first difference.
+    Without the cut, an edit near the end of long instructions, a rule appended to a
+    long Applies when list or a reorder at the end of a long step list would store the
+    same first 500 characters twice (FX7b review). Text is cut by character, after the
+    audit log's secret patterns are applied (so a cut never splits a token away from
+    the pattern that finds it; ``redacted`` says one was found); a flat list by item,
+    keeping the item before the first difference. ``…`` stands for what was cut. A
+    value that fits, whose first difference falls inside what is stored, or whose
+    only difference lies inside text the secret patterns remove (a rotated token,
+    which then reads as a secret change, never as no change), is returned as it is."""
+    limit = AUDIT_CHANGE_VALUE_MAX_CHARS
+    shown = limit - _CHANGE_CONTEXT_CHARS
+    if isinstance(before, str) and isinstance(after, str):
+        if max(len(before), len(after)) <= limit:
+            return before, after, False
+        b_text, b_cut = redact_text(before)
+        a_text, a_cut = redact_text(after)
+        if b_text == a_text:
+            # The change lies inside text the secret patterns remove (a rotated
+            # token): there is no readable difference to focus on, and two equal cut
+            # sides would read as no change at all. The whole values go on, so the
+            # field is recorded with both sides redacted and marked secret, as a
+            # short value is.
+            return before, after, False
+        same = len(os.path.commonprefix([b_text, a_text]))
+        if same <= shown:
+            return before, after, False
+        start = same - _CHANGE_CONTEXT_CHARS
+        return _ELIDED + b_text[start:], _ELIDED + a_text[start:], b_cut or a_cut
+    if _flat_list(before) and _flat_list(after):
+        if max(len(_canonical(before)), len(_canonical(after))) <= limit:
+            return before, after, False
+        same = 0
+        while same < min(len(before), len(after)) and before[same] == after[same]:
+            same += 1
+        if len(_canonical(before[:same])) <= shown:
+            return before, after, False
+        start = max(0, same - 1)
+        return [_ELIDED, *before[start:]], [_ELIDED, *after[start:]], False
+    return before, after, False
+
+
+def _recorded(path: str, before: Any, after: Any, *, withheld: Iterable[str] = ()) -> list[dict[str, Any]]:
+    """The audit entries for one definition value that moved, written the way every
+    other audit row writes its changes (:func:`app.audit.changes.diff_changes`): a
+    field whose name is secret is withheld, text passes through the data export's
+    secret patterns and loses any ``user:password@``, a mapping is recorded leaf by
+    leaf and a list whose items carry ids item by item. A long value is cut to show
+    its change (:func:`_focused`). ``path`` is the dotted name
+    (``applies_when.rule_ids``, ``steps[isolate].title``); ``withheld`` names the
+    entries from which a value was left out before this call (a lookup filter on a
+    field whose name is secret), which are marked ``secret`` as a redaction is."""
+    head, dot, leaf = path.rpartition(".")
+    if not dot:
+        head, leaf = "", path
+    before, after, redacted = _focused(before, after)
+    marked = set(withheld)
+    out = [c.model_dump() for c in diff_changes({leaf: before}, {leaf: after}, prefix=head)]
+    for change in out:
+        if redacted or change["field"] in marked:
+            change["secret"] = True
+    return out
+
+
+def _filter_lines(value: Any) -> tuple[list[str], bool]:
+    """``(lines, withheld)``: a lookup filter as sorted ``field = value`` lines. Its keys
+    are evidence field names (``user.name``, ``event.created_at``), so the map is never
+    walked as a document: a dotted key would read as nested fields and a key named
+    like store bookkeeping (``updated_at``) would be dropped from the change (FX7b
+    review). A field whose name is secret keeps its name and loses its value."""
+    lines: list[str] = []
+    withheld = False
+    for key, item in sorted(dict(value or {}).items()):
+        name = str(key)
+        secret = is_secret_key(name.rpartition(".")[2], item) or is_secret_key(name, item)
+        withheld = withheld or secret
+        lines.append(f"{name} = {_REDACTED if secret else item}")
+    return lines, withheld
+
+
+def _dumped(model: Any, name: str) -> Any:
+    value = getattr(model, name, None)
+    if hasattr(value, "model_dump"):
+        value = value.model_dump(mode="json")
+    elif isinstance(value, list):
+        value = [v.model_dump(mode="json") if hasattr(v, "model_dump") else v for v in value]
+    if name == "lookup" and isinstance(value, dict):
+        value = {**value, "filter": _filter_lines(value.get("filter"))[0]}
+    return value
+
+
+def _filter_withheld(*steps: Any) -> bool:
+    return any(step is not None and step.lookup is not None and _filter_lines(step.lookup.filter)[1]
+               for step in steps)
+
+
+def _option_line(option: Any) -> str:
+    """A decision option as one line: ``noise: Noise; marks not applicable: a, b``."""
+    line = f"{option.id}: {option.label}"
+    if option.marks_not_applicable:
+        line += f"; marks not applicable: {', '.join(option.marks_not_applicable)}"
+    return line
+
+
+def _steps_by_key(defn: RunbookDefinition) -> dict[str, Any] | None:
+    """``{step id: step}``, or ``None`` when a draft repeats a step id (a draft may hold
+    content problems): such a list is then compared step by step in order."""
+    out = {step.id: step for step in defn.steps}
+    return out if len(out) == len(defn.steps) else None
+
+
+def _removed_step(key: str, step: Any, compared: tuple[str, ...]) -> list[dict[str, Any]]:
+    """What a removed step held, field by field, from its value to nothing: its phase
+    and kind, and every other field it set (``steps[<id>].instructions``); its lookup
+    as one entry (the template as canonical JSON, the filter as ``field = value``
+    lines) and its options as one entry (``noise: Noise; marks not applicable: …``).
+    A draft is overwritten in place, so this row is the only record of that text
+    (FX7b review); a field left at its default is not listed."""
+    blank = RunbookStep(id=step.id, phase=step.phase, kind=step.kind, title="")
+    out: list[dict[str, Any]] = []
+    for name in compared:
+        value = _dumped(step, name)
+        # The id is compared only when steps are compared by position (a repeated id).
+        if name == "title" or (name not in ("id", "phase", "kind") and value == _dumped(blank, name)):
+            continue
+        path = f"steps[{key}].{name}"
+        withheld: list[str] = []
+        if name == "lookup" and isinstance(value, dict):
+            value = _canonical({k: v for k, v in value.items() if v not in (None, "", [], {})})
+            withheld = [path] if _filter_withheld(step) else []
+        elif name == "options":
+            value = [_option_line(option) for option in step.options]
+        out += _recorded(path, value, None, withheld=withheld)
+    return out
+
+
+def _step_changes(before: RunbookDefinition, after: RunbookDefinition) -> list[dict[str, Any]]:
+    """The steps that came, went or changed: an added step is ``steps[<id>]`` from
+    nothing to its title; a removed one from its title to nothing, followed by the
+    fields it held (:func:`_removed_step`); a changed one names each field that moved
+    (``steps[<id>].instructions``; a lookup and the options leaf by leaf:
+    ``steps[<id>].lookup.window``, ``steps[<id>].lookup.filter``,
+    ``steps[<id>].options[<id>].label``)."""
+    old, new = _steps_by_key(before), _steps_by_key(after)
+    compared = _STEP_FIELDS
+    if old is None or new is None:
+        # By position (``steps[#2]``), so the step id is one of the compared fields.
+        old = {f"#{n}": s for n, s in enumerate(before.steps, start=1)}
+        new = {f"#{n}": s for n, s in enumerate(after.steps, start=1)}
+        compared = ("id", *_STEP_FIELDS)
+    out: list[dict[str, Any]] = []
+    for key in [*new, *(k for k in old if k not in new)]:
+        was, now = old.get(key), new.get(key)
+        if was is None or now is None:
+            out += _recorded(f"steps[{key}]", was.title if was is not None else None,
+                             now.title if now is not None else None)
+            if now is None:
+                out += _removed_step(key, was, compared)
+            continue
+        for name in compared:
+            b_value, a_value = _dumped(was, name), _dumped(now, name)
+            if b_value != a_value:
+                path = f"steps[{key}].{name}"
+                withheld = [f"{path}.filter"] if name == "lookup" and _filter_withheld(was, now) else []
+                out += _recorded(path, b_value, a_value, withheld=withheld)
+    return out
+
+
+def _full_definition_changes(before: RunbookDefinition | None, after: RunbookDefinition) -> list[dict[str, Any]]:
+    """Every change between two definitions, in the row's order, the content hash
+    last. A new runbook (``before`` is ``None``) lists what it was created with: the
+    fields it sets, its Applies when, its step count and order, never each step's text
+    (the definition is stored in full with the version)."""
+    defaults = RunbookDefinition(id=after.id, title="", summary="")
+    out: list[dict[str, Any]] = []
+
+    def value(defn: RunbookDefinition | None, name: str) -> Any:
+        return None if defn is None else _dumped(defn, name)
+
+    def moved(name: str, b_value: Any, a_value: Any, default: Any) -> bool:
+        if before is None:
+            return a_value != default or name in ("title", "summary")
+        return b_value != a_value
+
+    for name in _DEFINITION_TEXT_FIELDS:
+        b_value, a_value = value(before, name), value(after, name)
+        if moved(name, b_value, a_value, _dumped(defaults, name)):
+            out += _recorded(name, b_value, a_value)
+    blank_criteria = defaults.applies_when.model_dump(mode="json")
+    old_criteria = before.applies_when.model_dump(mode="json") if before is not None else {}
+    new_criteria = after.applies_when.model_dump(mode="json")
+    for name in new_criteria:
+        b_value, a_value = old_criteria.get(name), new_criteria.get(name)
+        if moved(name, b_value, a_value, blank_criteria.get(name)):
+            out += _recorded(f"applies_when.{name}", b_value, a_value)
+    for name in _DEFINITION_HEAD_LISTS:
+        b_value, a_value = value(before, name), value(after, name)
+        if moved(name, b_value, a_value, []):
+            out += _recorded(name, b_value, a_value)
+    b_count = len(before.steps) if before is not None else None
+    if b_count != len(after.steps):
+        out += _recorded("steps", b_count, len(after.steps))
+    b_order = [s.id for s in before.steps] if before is not None else None
+    a_order = [s.id for s in after.steps]
+    if b_order != a_order:
+        out += _recorded("step_order", b_order, a_order)
+    if before is not None:
+        out += _step_changes(before, after)
+    for name in _DEFINITION_TAIL_LISTS:
+        b_value, a_value = value(before, name), value(after, name)
+        if moved(name, b_value, a_value, []):
+            out += _recorded(name, b_value, a_value)
+    b_hash = content_hash(before) if before is not None else None
+    a_hash = content_hash(after)
+    if b_hash != a_hash:
+        out += _recorded("content_hash", b_hash, a_hash)
+    return out
+
+
 def definition_changes(before: RunbookDefinition | None, after: RunbookDefinition) -> list[dict[str, Any]]:
-    """What changed between two definitions, as audit ``changes``: the title, the
-    summary, the step count, the phases and the content hash (the full text is in the
-    version history, never in the audit row)."""
-    out: list[dict[str, Any] | None] = [
-        audit_change("title", before.title if before else None, after.title),
-        audit_change("summary", before.summary if before else None, after.summary),
-        audit_change("steps", len(before.steps) if before else None, len(after.steps)),
-        audit_change("phases", ",".join(before.phases) if before else None, ",".join(after.phases)),
-        audit_change("content_hash", content_hash(before) if before else None, content_hash(after)),
-    ]
-    return [c for c in out if c is not None]
+    """What changed between two definitions, as audit ``changes`` (SPEC §4.5.3,
+    §4.10.15): every field the draft can change, each with its before and after. The
+    title, summary, use when, prerequisites, owner, priority and review cadence; each
+    Applies when criterion (``applies_when.rule_ids``); the techniques and phases; the
+    step count and ``step_order`` (the step ids in order); each step added, removed
+    or changed, field by field (``steps[<id>].instructions``); the retrieval queries
+    and references; and the content hash, always last.
+
+    A draft save overwrites the working draft in place (drafts are not versions), so
+    this row is the only record of the text a save replaced; a removed step is
+    therefore recorded with every field it held. Values are bounded as every audit
+    change is (500 characters each), a long value cut to show where it changed
+    (:func:`_focused`), and secrets are withheld and redacted the same way
+    (:func:`_recorded`). At most :data:`RUNBOOK_AUDIT_MAX_DEFINITION_CHANGES` entries
+    are kept: when more fields changed, the first 44 and the content hash;
+    :func:`count_definition_changes` gives the number of fields that changed."""
+    full = _full_definition_changes(before, after)
+    if len(full) <= RUNBOOK_AUDIT_MAX_DEFINITION_CHANGES:
+        return full
+    kept = full[: RUNBOOK_AUDIT_MAX_DEFINITION_CHANGES - 1]
+    last = full[-1]
+    return [*kept, last] if last.get("field") == "content_hash" else full[:RUNBOOK_AUDIT_MAX_DEFINITION_CHANGES]
+
+
+def count_definition_changes(before: RunbookDefinition | None, after: RunbookDefinition) -> int:
+    """How many fields changed between two definitions, uncapped. The content hash is
+    not a field: it names the whole text. For a summary such as "63 fields changed;
+    the first 44 are recorded with the content hash" (:func:`recorded_field_count`
+    gives the second number)."""
+    return recorded_field_count(_full_definition_changes(before, after))
+
+
+def recorded_field_count(changes: Iterable[Mapping[str, Any]]) -> int:
+    """How many of ``changes`` are fields (every entry but the content hash)."""
+    return sum(1 for change in changes if change.get("field") != "content_hash")
 
 
 def state_changes(before: Any, after: Any) -> list[dict[str, Any]]:
@@ -1835,6 +2128,7 @@ __all__ = [
     "DEPRECATION_HEADERS",
     "MATCH_PREVIEW_MAX_CASES",
     "METRICS_DEFAULT_WINDOW",
+    "RUNBOOK_AUDIT_MAX_DEFINITION_CHANGES",
     "RUNBOOK_BODY_MAX_BYTES",
     "audit_change",
     "builtin_detail",
@@ -1843,6 +2137,7 @@ __all__ = [
     "blocking_parse_issues",
     "builtin_version_doc",
     "cases_in_window",
+    "count_definition_changes",
     "definition_changes",
     "definition_from_body",
     "draft_blocking_issues",
@@ -1861,6 +2156,7 @@ __all__ = [
     "open_runs_by_version",
     "operator_detail",
     "published_versions",
+    "recorded_field_count",
     "reproject",
     "runbooks_moved_response",
     "runs_started_since",

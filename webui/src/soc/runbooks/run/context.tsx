@@ -45,6 +45,7 @@ import {
   type NameOf,
   type ViewerRoles,
 } from './model';
+import { roleLabelsFrom, type RoleLabels } from './roles';
 
 /** The grant each lookup tool needs to run and to be seen (SPEC §4.10.8). */
 export const LOOKUP_TOOL_PERMISSION: Readonly<Record<LookupTool, [string, string]>> = {
@@ -98,6 +99,11 @@ export interface RunbookRunContextValue {
   /** The viewer holds runbooks:run and runbooks are on (else every row is read only). */
   canRun: boolean;
   /**
+   * Every role the runs' steps name, by its label (`CaseRunbooks.role_labels`, from the
+   * server's role registry): "soc_manager" is "SOC manager". Empty from an older server.
+   */
+  roleLabels: RoleLabels;
+  /**
    * Whether the viewer holds `role` for an approval: true, false, or null while it cannot
    * be told (the server decides then).
    */
@@ -117,7 +123,9 @@ export interface RunbookRunContextValue {
   /**
    * PATCH one step. `announce` says the result in the live region when the step finishes
    * ("Step 5 done. Next, step 6: ..."); `focusNext` also moves focus to the new Next step
-   * heading (the card's own actions, whose controls leave with the step).
+   * heading (the card's own actions, whose controls leave with the step). The live region
+   * is a write's one announcement: a stale save's note next to its step is shown, not
+   * spoken again, and nothing here shows a toast (WCAG 4.1.3, once per outcome).
    */
   updateStep: (
     stepId: string,
@@ -126,6 +134,7 @@ export interface RunbookRunContextValue {
     opts?: FinishOptions,
   ) => Promise<WriteOutcome>;
   runLookup: (stepId: string) => Promise<WriteOutcome>;
+  /** An approval: Approve says "Step 5 approved. ..." in the live region; Reject says nothing (its dialog closes on the form to record again). */
   decideApproval: (stepId: string, decision: 'approve' | 'reject', reason?: string) => Promise<WriteOutcome>;
   draftNote: (stepId: string) => Promise<WriteOutcome>;
   estimateDraft: (stepId: string) => Promise<AiCallEstimate | null>;
@@ -229,6 +238,7 @@ export function RunbookRunProvider({
     [runId],
   );
   const holdsRole = React.useCallback((role: string | null | undefined) => holdsApprovalRole(role, viewer), [viewer]);
+  const roleLabels = React.useMemo(() => roleLabelsFrom(data), [data]);
 
   const canUseTool = React.useCallback(
     (tool: LookupTool | string) => {
@@ -280,13 +290,15 @@ export function RunbookRunProvider({
           const st = after.steps?.[stepId];
           // A recorded action that now waits for approval leaves the card too.
           const verb =
-            st?.status === 'not_applicable'
-              ? 'not applicable'
-              : st?.status === 'done'
-                ? 'done'
-                : st && isWaiting(st) && wasNext
-                  ? 'recorded'
-                  : null;
+            what === 'approval' && st?.approval?.status === 'approved'
+              ? 'approved'
+              : st?.status === 'not_applicable'
+                ? 'not applicable'
+                : st?.status === 'done'
+                  ? 'done'
+                  : st && isWaiting(st) && wasNext
+                    ? 'recorded'
+                    : null;
           if (verb && beforeNumber !== null) {
             const progress = update.progress ?? runProgress(after);
             announce(advanceSentence({ number: beforeNumber, verb }, nextStep(after), progress.required_open <= 0));
@@ -325,6 +337,7 @@ export function RunbookRunProvider({
       data,
       run,
       canRun,
+      roleLabels,
       holdsRole,
       canUseTool,
       aiDrafts,
@@ -343,8 +356,13 @@ export function RunbookRunProvider({
         ),
       runLookup: (stepId) => perform(stepId, 'lookup', () => runRunbookLookup(caseId, run.run_id, stepId)),
       decideApproval: (stepId, decision, reason) =>
-        perform(stepId, 'approval', () =>
-          decideRunbookApproval(caseId, run.run_id, stepId, reason ? { decision, reason } : { decision }),
+        perform(
+          stepId,
+          'approval',
+          () => decideRunbookApproval(caseId, run.run_id, stepId, reason ? { decision, reason } : { decision }),
+          // Approve takes its own button away: say what happened (focus lands on the
+          // step's new state, `ActionRecordBlock`).
+          decision === 'approve' ? { announce: true } : {},
         ),
       draftNote: async (stepId) => {
         const outcome = await perform(stepId, 'draft', async () => {
@@ -379,6 +397,7 @@ export function RunbookRunProvider({
       data,
       run,
       canRun,
+      roleLabels,
       holdsRole,
       canUseTool,
       aiDrafts,

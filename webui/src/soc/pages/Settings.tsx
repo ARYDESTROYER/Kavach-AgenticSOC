@@ -56,13 +56,13 @@ import { Callout, LoadingState } from '@/design-system';
 import { PageHeader } from '@/soc/components/PageHeader';
 import { settingsTopic } from '@/soc/components/ask-topics';
 import { PageContainer } from '@/soc/components/PageContainer';
-import { EmptyState } from '@/soc/components/EmptyState';
 import { LoadError } from '@/soc/components/LoadError';
-import { Can } from '@/soc/components/Can';
+import { Can, Unauthorized } from '@/soc/components/Can';
 import { SETTINGS_FORM_MAX_WIDTH, StickySaveBar } from '@/soc/components/SettingsGrid';
 import {
   changedKeys as computeChangedKeys,
   changedPatch,
+  changedValueCount,
   sectionIsDirty,
 } from '@/soc/pages/settings-dirty';
 import {
@@ -80,6 +80,7 @@ import {
 import { errMsg, SettingsSectionContext } from '@/soc/pages/settings/primitives';
 import { useNavigate, useNavigationBlocker, settingsSectionHash } from '@/soc/router';
 import { useAuth } from '@/soc/auth';
+import { GRANTS_UNKNOWN_TITLE, GrantsUnknownNotice, usePageGrants } from './PageAccess';
 import { usePrefersReducedMotion } from '@/soc/hooks/usePrefersReducedMotion';
 import { useUnsavedChanges } from '@/soc/hooks/useDirtyDraft';
 
@@ -219,6 +220,31 @@ function SettingsSectionList({
 const DIRTY_DOT =
   'inline-flex h-2 w-2 shrink-0 rounded-full bg-warning forced-colors:bg-[CanvasText] forced-colors:[forced-color-adjust:none]';
 
+/** Room kept between a revealed rail item and the edge of the rail's visible part. */
+const RAIL_REVEAL_MARGIN = 8;
+
+/**
+ * Scroll the rail's own scroller, and nothing else, so its current item
+ * (`aria-current="page"`) sits inside the part of the scroller the viewer can see. That
+ * part ends at the scroller's bottom or the window's, whichever is higher: at rest the
+ * sticky rail runs below the fold. `Element.scrollIntoView` is not used, because it would
+ * also scroll the document. A hidden scroller (the desktop rail on a phone) is left alone.
+ */
+function revealCurrentRailItem(scroller: HTMLElement | null): void {
+  if (!scroller) return;
+  const item = scroller.querySelector<HTMLElement>('[aria-current="page"]');
+  if (!item) return;
+  const box = scroller.getBoundingClientRect();
+  const top = Math.max(box.top, 0);
+  const bottom = Math.min(box.bottom, window.innerHeight || box.bottom);
+  if (bottom - top <= 0) return;
+  const rect = item.getBoundingClientRect();
+  let delta = 0;
+  if (rect.top < top + RAIL_REVEAL_MARGIN) delta = rect.top - top - RAIL_REVEAL_MARGIN;
+  else if (rect.bottom > bottom - RAIL_REVEAL_MARGIN) delta = rect.bottom - bottom + RAIL_REVEAL_MARGIN;
+  if (delta !== 0) scroller.scrollTop = Math.max(0, scroller.scrollTop + delta);
+}
+
 /** "Re-run setup wizard" at the foot of the Settings navigation (C9). */
 function RerunWizardButton({ onClick }: { onClick: () => void }) {
   return (
@@ -302,6 +328,9 @@ export default function Settings({ onRerunWizard, onNavigate: onNavigateProp }: 
   const navigate = useNavigate();
   const onNavigate = onNavigateProp ?? navigate;
   const { hasPermission } = useAuth();
+  // Whether the grants could not be loaded: then a refused section says so, with a Retry,
+  // never "You do not have access" to a person whose role may hold the grant.
+  const grants = usePageGrants();
   // PUT /api/settings needs settings:manage; without it nothing this page saves can land.
   const canSave = hasPermission('settings', 'manage');
 
@@ -395,7 +424,17 @@ export default function Settings({ onRerunWizard, onNavigate: onNavigateProp }: 
     [prefs, savedPrefs],
   );
   const dirty = changed.size > 0;
-  const changedCount = changed.size;
+  // The save bar counts the VALUES changed, the way the audit log records the same save
+  // (five Chat assistant fields are five changes, not one section). The `changed` key set
+  // above still drives the minimal patch and the section dots.
+  const changedCount = React.useMemo(
+    () =>
+      changedValueCount(
+        prefs as Record<string, unknown> | null,
+        savedPrefs as Record<string, unknown> | null,
+      ),
+    [prefs, savedPrefs],
+  );
   const pendingSecretCount = React.useMemo(
     () => Object.values(secretDraft).filter((value) => value.trim().length > 0).length,
     [secretDraft],
@@ -546,15 +585,42 @@ export default function Settings({ onRerunWizard, onNavigate: onNavigateProp }: 
     [visibleGroups],
   );
 
-  // If a search/RBAC change hides the active section, jump to the first visible one.
-  // Use `setSection` (the hash-writing callback), NOT the bare `setSectionState`, so
-  // the `#/settings?s=<id>` hash stays in sync with the auto-selected section (otherwise
-  // a reload / back-forward would snap back to the now-hidden section id).
+  // Whether the viewer may open the active section. A section they may not open stays
+  // selected: a deep link to it (`#/settings?s=admin_users`, `#/users`) shows the
+  // Restricted notice below, never a silent switch to another section.
+  const activeDefForAccess = SECTION_BY_ID[section];
+  const activeAllowed =
+    !activeDefForAccess?.perm ||
+    hasPermission(activeDefForAccess.perm.resource, activeDefForAccess.perm.action);
+
+  // If a search hides the active section, jump to the first section that matches. Use
+  // `setSection` (the hash-writing callback), NOT the bare `setSectionState`, so the
+  // `#/settings?s=<id>` hash stays in sync with the auto-selected section (otherwise a
+  // reload / back-forward would snap back to the now-hidden section id). Without a
+  // search, a section the viewer may not open is left where the link put it.
   React.useEffect(() => {
-    if (flatVisible.length && !flatVisible.some((s) => s.id === section)) {
-      setSection(flatVisible[0].id as SectionId);
-    }
-  }, [flatVisible, section, setSection]);
+    if (!flatVisible.length || flatVisible.some((s) => s.id === section)) return;
+    if (!activeAllowed && !query.trim()) return;
+    setSection(flatVisible[0].id as SectionId);
+  }, [activeAllowed, flatVisible, query, section, setSection]);
+
+  // Keep the current section's rail item in view (composites-01). A deep link, a hash
+  // change or a cleared search can select a section low in the rail, and the rail scrolls
+  // on its own, so without this the highlighted item can sit below the fold and the
+  // viewer cannot see which section is open. Only the rail's own scroller moves (never the
+  // document, so an in-section anchor scroll is not disturbed), and the move is instant,
+  // which also honours reduced motion.
+  const desktopRailRef = React.useRef<HTMLDivElement | null>(null);
+  const compactRailRef = React.useRef<HTMLElement | null>(null);
+  const railReady = !loading && prefs !== null;
+  React.useEffect(() => {
+    if (!railReady) return undefined;
+    const raf = window.requestAnimationFrame(() => {
+      revealCurrentRailItem(desktopRailRef.current);
+      if (mobileNavOpen) revealCurrentRailItem(compactRailRef.current);
+    });
+    return () => window.cancelAnimationFrame(raf);
+  }, [railReady, section, query, mobileNavOpen]);
 
   /* ------------------------------------------------------------- states ---- */
 
@@ -608,34 +674,58 @@ export default function Settings({ onRerunWizard, onNavigate: onNavigateProp }: 
   const activeSectionDirty =
     sectionIsDirty(activeDef.id, changed) || (activeDef.id === 'keys' && pendingSecretCount > 0);
   const pendingChangeCount = changedCount + pendingSecretCount;
-  // The write-only footer belongs to sections that hold preferences or secrets (ST4).
-  const savesThroughPage = activeDef.id in SECTION_KEYS || activeDef.id === 'keys';
+  // The write-only footer belongs to sections that hold preferences or secrets (ST4), and
+  // never to a section the viewer may not open (it shows only the Restricted notice).
+  const savesThroughPage =
+    activeAllowed && (activeDef.id in SECTION_KEYS || activeDef.id === 'keys');
   const showSaveNote = savesThroughPage;
   // A viewer without settings:manage may read this section but not save it: a live
   // condition, so it is the one warning above the section (never on a section that saves
-  // through its own controls, such as Profile or Users).
-  const viewOnly = !canSave && savesThroughPage;
+  // through its own controls, such as Profile or Users). While the grants are unknown
+  // (their read failed) the check denies without saying anything about the role, so the
+  // section is not called view-only: the load failure and its Retry sit there instead.
+  const viewOnly = !canSave && savesThroughPage && !grants.unknown;
+  const saveGrantUnknown = !canSave && savesThroughPage && grants.unknown;
 
   /**
    * Render the active section from the registry, inside the context its
    * `SettingsSection` reads (its title, help, "Ask about this" topic and unsaved state).
    * Perm-gated sections are wrapped in a <Can> guard so a direct deep-link
-   * (`#/settings?s=admin_users`) that bypasses the rail filter still degrades to a
-   * "restricted" notice rather than the body. The no-perm personal sections render
-   * unguarded (auth-off back-compat).
+   * (`#/settings?s=admin_users`, or `#/users`, which the router sends there) that the
+   * rail does not offer shows the section's title and the Console's one permission state
+   * ("Access restricted", "You do not have access to Users."), never the body: nothing
+   * behind the guard mounts, so none of its requests is sent. While the grants are
+   * unknown (their read failed) the title sits over a load failure with a Retry instead.
+   * The no-perm personal sections render unguarded (auth-off back-compat).
    */
   const renderSection = (def: SettingsSectionDef): React.ReactNode => {
     const body = def.Component(renderCtx);
+    const refusedTitleId = `settings-refused-${def.id}-title`;
     const content = def.perm ? (
       <Can
         resource={def.perm.resource}
         action={def.perm.action}
         fallback={
-          <EmptyState
-            icon={def.icon}
-            title="Restricted"
-            description={`${def.title} is managed by administrators.`}
-          />
+          <section
+            aria-labelledby={refusedTitleId}
+            className="min-w-0"
+            data-testid={grants.unknown ? 'settings-section-unavailable' : 'settings-section-restricted'}
+          >
+            {/* The section's `h2`, in the classes every section title uses, so the page
+                still names what was opened (the rail offers no item for it). */}
+            <h2 id={refusedTitleId} className="min-w-0 break-words text-2xl text-foreground">
+              {def.title}
+            </h2>
+            {grants.unknown ? (
+              <GrantsUnknownNotice
+                className="mt-6 xl:mt-8"
+                onRetry={grants.reload}
+                fallback="Try again to load this section."
+              />
+            ) : (
+              <Unauthorized message={`You do not have access to ${def.title}.`} />
+            )}
+          </section>
         }
       >
         {body}
@@ -720,6 +810,7 @@ export default function Settings({ onRerunWizard, onNavigate: onNavigateProp }: 
               <SettingsSearch id="settings-search-compact" value={query} onChange={setQuery} />
             </div>
             <nav
+              ref={compactRailRef}
               aria-label="Settings categories"
               data-testid="settings-compact-section-scroll"
               className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain p-4"
@@ -763,6 +854,7 @@ export default function Settings({ onRerunWizard, onNavigate: onNavigateProp }: 
           >
             <SettingsSearch id="settings-search-desktop" value={query} onChange={setQuery} />
             <div
+              ref={desktopRailRef}
               data-testid="settings-desktop-section-scroll"
               className="mt-4 min-h-0 overflow-y-auto overscroll-y-contain pr-1"
             >
@@ -797,6 +889,12 @@ export default function Settings({ onRerunWizard, onNavigate: onNavigateProp }: 
             >
               Changing them needs the settings management permission. Ask an administrator.
             </Callout>
+          ) : saveGrantUnknown ? (
+            <GrantsUnknownNotice
+              className={cn('mb-6 xl:mb-8', saveWidth === 'form' && SETTINGS_FORM_MAX_WIDTH)}
+              onRetry={grants.reload}
+              fallback="Try again to check whether you can change these settings."
+            />
           ) : null}
           {renderSection(activeDef)}
 
@@ -813,7 +911,9 @@ export default function Settings({ onRerunWizard, onNavigate: onNavigateProp }: 
             saveLabel={unlockingNow ? 'Unlock and save' : 'Save changes'}
             message={
               !canSave
-                ? 'You can view these settings but not change them.'
+                ? grants.unknown
+                  ? GRANTS_UNKNOWN_TITLE
+                  : 'You can view these settings but not change them.'
                 : saveLocked
                 ? 'Settings are read-only. Turn off the settings lock in Advanced to save.'
                 : unlockingNow

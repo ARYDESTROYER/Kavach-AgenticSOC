@@ -25,7 +25,7 @@ from .agents.pipeline import InvestigationPipeline
 from .agents.standup import StandupService
 from .audit.audit_log import AuditLogger
 from .cache import Cache
-from .config import Preferences, Secrets
+from .config import EnrichmentConfig, Preferences, Secrets
 from .engine.ingest import IngestService
 from .engine.mutation_gate import MutationAdmissionGate
 from .engine.release_discovery import ReleaseDiscoveryService
@@ -753,6 +753,33 @@ class AppState:
         if self._demo is not None:
             return await self._demo.mutate_execution_prefs(mutate)
         return await self.mutate_prefs(mutate)
+
+    @property
+    def enrichment_settings(self) -> EnrichmentConfig:
+        """The enrichment settings the Settings page shows and edits, for the active
+        stack (Round 14 SPEC §3.5, wro-01): the stored real settings, or while Demo
+        Mode is on the Demo sandbox's own copy. Never :attr:`execution_prefs`' block,
+        whose ``enabled`` is forced off in Demo Mode (an isolation control, not a
+        setting), so a switch always shows the value its save changes."""
+        if self._demo is not None:
+            return self._demo.enrichment_settings()
+        return self.prefs.enrichment
+
+    async def mutate_enrichment_settings(
+        self, mutate: Callable[[EnrichmentConfig], EnrichmentConfig]
+    ) -> EnrichmentConfig:
+        """Read-modify-write :attr:`enrichment_settings` for the active stack.
+
+        Off Demo Mode the real settings are saved under the prefs lock (the same
+        strict persistence as :meth:`mutate_prefs`); while Demo Mode is on the edit
+        stays in the Demo sandbox and never reaches the real settings. ``mutate`` is
+        a pure edit of the enrichment block (it returns a new model)."""
+        if self._demo is not None:
+            return await self._demo.mutate_enrichment_settings(mutate)
+        saved = await self.mutate_prefs(
+            lambda current: current.model_copy(update={"enrichment": mutate(current.enrichment)})
+        )
+        return saved.enrichment
 
     @property
     def ingest_service(self):

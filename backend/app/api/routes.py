@@ -3230,14 +3230,30 @@ async def playbook_update(playbook_id: str, _=Depends(require_permission("runboo
 # Metrics / analytics (deterministic aggregation over cases + the cost ledger)
 # --------------------------------------------------------------------------- #
 @router.get("/metrics")
-async def metrics(window_hours: int = 24, state: AppState = Depends(get_state)) -> dict[str, Any]:
+async def metrics(
+    request: Request,
+    window_hours: int = 24,
+    state: AppState = Depends(get_state),
+    _=Depends(require_permission("metrics", "view")),
+) -> dict[str, Any]:
+    """The Metrics page's operational rollup. Needs ``metrics:view``, like every other
+    metrics read. Its ``cost`` part is the AI spend of the window, which ``cost:view``
+    governs: for a caller without that grant it is ``{}``."""
+    # Round 14 roles-04 and roles-11: the figures are store-wide, so the gate matches
+    # posture, trends and the breakdown; spend follows the one cost:view rule (the Cost
+    # page, GET /api/usage/summary, the usage breakdown, chat), and ``{}`` is the shape
+    # the payload already uses when spend cannot be read.
     # Round 12: exact store-wide headline counts (status / verdict / disposition
     # aggregates) beside figures over the SAME shared all-time case population the
     # posture rollups read, with a truncation marker for the latter. See
     # ``routes_metrics.legacy_metrics_payload``. An unreadable store is a 503.
     from . import routes_metrics
+    from .deps import has_permission
 
-    return await routes_metrics.legacy_metrics_payload(state, window_hours)
+    payload = await routes_metrics.legacy_metrics_payload(state, window_hours)
+    if not await has_permission(request, "cost", "view"):
+        payload["cost"] = {}
+    return payload
 
 
 @router.get("/feedback/stats")
@@ -8008,8 +8024,15 @@ async def standup(
 # --------------------------------------------------------------------------- #
 @router.get("/usage/summary")
 async def usage_summary(
-    window_hours: int = 24, case_id: str | None = None, state: AppState = Depends(get_state)
+    window_hours: int = 24,
+    case_id: str | None = None,
+    state: AppState = Depends(get_state),
+    _=Depends(require_permission("cost", "view")),
 ) -> dict[str, Any]:
+    """AI spend and token use over the window, or for one case with ``case_id``.
+    Needs ``cost:view``, the grant every view of AI spend needs."""
+    # Round 14 roles-11 (SPEC §3.7 and the permission matrix): the same grant the
+    # usage breakdown, the Executive board and chat's usage answers need.
     return await state.usage_store.summary(window_hours=window_hours, case_id=case_id)
 
 

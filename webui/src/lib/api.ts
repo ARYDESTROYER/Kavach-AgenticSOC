@@ -10,6 +10,7 @@
  * can show a meaningful error state.
  */
 import type {
+  AccountPermissions,
   AccountProfile,
   AccountProfileBody,
   ActivityResponse,
@@ -542,19 +543,29 @@ export function setUnauthorizedHandler(handler: (() => void) | null): void {
  * retried ONCE) or `false` if they cancelled (the original 401 surfaces). When no
  * callback is registered (auth off, or before the provider mounts) the gate is
  * inert and the 401 surfaces unchanged — the no-auth path is untouched.
+ *
+ * The gate receives the request's `reauthPurpose`, the sentence the dialog shows
+ * (for example "Sign in again to export audit events." for a read that changes
+ * nothing); without one it says the sign-in confirms a change.
  */
-let reauthGate: (() => Promise<boolean>) | null = null;
-export function setReauthHandler(handler: (() => Promise<boolean>) | null): void {
+export type ReauthGate = (purpose?: string) => Promise<boolean>;
+let reauthGate: ReauthGate | null = null;
+export function setReauthHandler(handler: ReauthGate | null): void {
   reauthGate = handler;
 }
 
-/** Extract a backend error `code` (e.g. "reauth_required") from a parsed body. */
-function bodyCode(body: unknown): string | null {
+/**
+ * The step-up code of a parsed error body (e.g. "reauth_required"), or null. A
+ * `tv_mismatch` has none: "Sign out everywhere" (or a detected refresh-token reuse)
+ * ended every session and /auth/reauth answers the same 401, so no fresh sign-in can
+ * revive it; the request falls through to the lapsed-session bounce instead.
+ */
+function stepUpCode(body: unknown): string | null {
   if (body && typeof body === 'object') {
     const detail = (body as { detail?: unknown }).detail;
     if (detail && typeof detail === 'object' && 'code' in detail) {
-      const c = (detail as { code?: unknown }).code;
-      if (typeof c === 'string') return c;
+      const { code: c, reason } = detail as { code?: unknown; reason?: unknown };
+      if (typeof c === 'string') return reason === 'tv_mismatch' ? null : c;
     }
     if ('code' in body) {
       const c = (body as { code?: unknown }).code;
@@ -593,7 +604,7 @@ async function parseBody(res: Response): Promise<unknown> {
 /** Friendly labels for backend coded errors that carry no human `message` string. */
 const ERROR_CODE_LABELS: Record<string, string> = {
   session_invalid: 'Your session is no longer valid. Please sign in again.',
-  reauth_required: 'Please re-enter your password to continue.',
+  reauth_required: 'Sign in again to continue.',
   chat_history_unavailable: 'Conversation history is temporarily unavailable. Try again.',
   chat_request_in_progress: 'This request is still running. Wait a moment, then retry.',
   chat_request_capacity_busy: 'Too many chat requests are still running. Wait a moment, then retry.',
@@ -612,6 +623,9 @@ function extractMessage(status: number, body: unknown): string {
       const d = detail as Record<string, unknown>;
       if (typeof d.message === 'string' && d.message.trim()) return d.message;
       if (typeof d.detail === 'string' && d.detail.trim()) return d.detail;
+      // A wrong password at the fresh sign-in (`reauth_required`, reason `bad_password`)
+      // says so: the code's own label would tell someone already signing in to sign in.
+      if (d.reason === 'bad_password') return 'That password is not correct. Try again.';
       if (typeof d.code === 'string' && d.code.trim())
         return ERROR_CODE_LABELS[d.code] || `Request failed (${status})`;
       return JSON.stringify(detail);
@@ -628,6 +642,8 @@ interface RequestOptions {
   _retried?: boolean;
   signal?: AbortSignal;
   cache?: RequestCache;
+  /** What a fresh sign-in is for, when the server asks for one (see `setReauthHandler`). */
+  reauthPurpose?: string;
 }
 
 /**
@@ -670,15 +686,16 @@ export async function requestResponse(
     // A 401 with `code:'reauth_required'` is a STEP-UP gate (the session is valid
     // but the action needs fresh credentials). Open the re-auth modal; if the user
     // re-authenticates, retry the original request exactly ONCE. Never recurse on a
-    // retry, and never treat the /auth/reauth call itself as a gate trigger.
+    // retry, and never treat the /auth/reauth call itself as a gate trigger. An ended
+    // session (`tv_mismatch`) is no step-up (`stepUpCode`): it bounces to sign-in below.
     if (
       res.status === 401 &&
       reauthGate &&
       !opts._retried &&
-      bodyCode(body) === 'reauth_required' &&
+      stepUpCode(body) === 'reauth_required' &&
       clean !== 'auth/reauth'
     ) {
-      const ok = await reauthGate();
+      const ok = await reauthGate(opts.reauthPurpose);
       if (ok) {
         return requestResponse(method, path, { ...opts, _retried: true });
       }
@@ -758,8 +775,10 @@ export const api = {
   // Ordinary application work, distinct from the separately hardened updater.
   jobs: {
     // A literal `kind` with a mirrored params model is checked against it (types.ts).
-    submit: <K extends BackgroundJobKind>(input: BackgroundJobSubmit<K>) =>
-      request<BackgroundJob>('POST', 'jobs', { body: input }),
+    // `reauthPurpose` is what a fresh sign-in the job asks for says it is for; an export
+    // changes nothing, so it passes one (`setReauthHandler`).
+    submit: <K extends BackgroundJobKind>(input: BackgroundJobSubmit<K>, reauthPurpose?: string) =>
+      request<BackgroundJob>('POST', 'jobs', { body: input, reauthPurpose }),
     list: (query?: { limit?: number; offset?: number }, signal?: AbortSignal) =>
       request<BackgroundJobsResponse>('GET', 'jobs', { query, signal }),
     get: (jobId: string, signal?: AbortSignal) =>
@@ -911,6 +930,9 @@ export const api = {
     // validates the data: URL (png/webp/jpeg, magic-byte sniff, bounded length).
     avatar: (value: string | null) =>
       request<AccountProfile>('PUT', 'me/avatar', { body: { avatar: value } }).then(accountProfileOf),
+    // The signed-in person's effective grants, resolved by the server's own gate:
+    // the one source the Console's permission checks read (`soc/auth.tsx`).
+    permissions: () => request<AccountPermissions>('GET', 'account/permissions'),
   },
 
   // ---- OOBE first-run setup (PUBLIC status) ---------------------------- //

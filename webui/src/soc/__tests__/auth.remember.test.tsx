@@ -16,9 +16,9 @@ import * as React from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, render, screen, waitFor } from '@testing-library/react';
 
-const { meMock, rolesMock, toastMock } = vi.hoisted(() => ({
+const { meMock, permissionsMock, toastMock } = vi.hoisted(() => ({
   meMock: vi.fn(),
-  rolesMock: vi.fn(),
+  permissionsMock: vi.fn(),
   toastMock: vi.fn(),
 }));
 
@@ -54,7 +54,7 @@ vi.mock('@/lib/api', () => {
         sso: { providers: ok({ providers: [] }), authorize: ok({ auth_url: 'https://idp/' }) },
         mfa: { setup: ok({}), confirm: ok({}), verify: ok({}), disable: ok({}) },
       },
-      roles: { get: () => rolesMock() },
+      account: { permissions: () => permissionsMock() },
       setup: {
         status: ok({
           setup_complete: true,
@@ -102,11 +102,11 @@ const Probe: React.FC = () => {
 
 beforeEach(() => {
   meMock.mockReset();
-  rolesMock.mockReset();
+  permissionsMock.mockReset();
   toastMock.mockReset();
   window.localStorage.clear();
   probe = null;
-  rolesMock.mockResolvedValue({ roles: [], rbac_enabled: false, matrix: {} });
+  permissionsMock.mockResolvedValue({ authenticated: true, role: '', custom_roles: [], rbac_enabled: false, permissions: {} });
   window.history.replaceState(null, '', '/');
 });
 

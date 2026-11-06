@@ -45,6 +45,7 @@ import type {
   UnifiedLogsMatched,
   UnifiedLogsResponse,
 } from '@/soc/UnifiedLogs.api';
+import { PageAccess } from './PageAccess';
 
 /* -------------------------------------------------------------------------- */
 /* The deep link.                                                              */
@@ -516,7 +517,19 @@ export interface UnifiedLogsPageProps {
   opts?: NavOpts;
 }
 
-export default function UnifiedLogsPage({ opts: explicit }: UnifiedLogsPageProps = {}) {
+/**
+ * Logs reads `GET /api/logs` and the source list, both `sources:read`; without it a typed
+ * or shared link shows the page's title and one refusal and sends neither (roles-05).
+ */
+export default function UnifiedLogsPage(props: UnifiedLogsPageProps = {}) {
+  return (
+    <PageAccess resource="sources" action="read" title="Logs" message="You do not have access to log sources.">
+      <UnifiedLogsView {...props} />
+    </PageAccess>
+  );
+}
+
+function UnifiedLogsView({ opts: explicit }: UnifiedLogsPageProps = {}) {
   const navigate = useNavigateOptional();
   const route = useRoute();
   const opts = explicit ?? (route.page === 'logs' ? route.opts : undefined);

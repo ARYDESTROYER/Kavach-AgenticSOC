@@ -63,6 +63,7 @@ import { RefreshButton } from '@/soc/components/RefreshButton';
 import type { Navigate } from '@/soc/router';
 import { humanizeMinutes } from './posture.format';
 import { AnalyticsWindowPicker, StripPanel, UpdatedStamp, useAnalyticsWindow } from './analytics-shared';
+import { PageAccess } from './PageAccess';
 
 type HeadlineState = AgentImprovementEvidence['headline']['state'];
 
@@ -465,7 +466,17 @@ export interface AgentEffectivenessPageProps {
  * range) and the observed outcome evidence (fixed complete-day cohorts). One refresh reads
  * both again.
  */
-export function AgentEffectivenessPage(_props: AgentEffectivenessPageProps = {}) {
+export function AgentEffectivenessPage(props: AgentEffectivenessPageProps = {}) {
+  // Agent health and the outcome evidence read `metrics:view` endpoints; without it a
+  // typed or shared link shows the page's title and one refusal (roles-04).
+  return (
+    <PageAccess resource="metrics" action="view" title={PAGE_TITLE} message="You do not have access to metrics.">
+      <AgentEffectivenessView {...props} />
+    </PageAccess>
+  );
+}
+
+function AgentEffectivenessView(_props: AgentEffectivenessPageProps = {}) {
   const [hours, setHours] = useAnalyticsWindow();
   const [healthRefresh, setHealthRefresh] = React.useState(0);
   const evidence = useAgentEffectiveness();

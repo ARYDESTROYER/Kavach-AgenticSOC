@@ -649,17 +649,24 @@ async def test_router_lookup_invalid_kind_400(app_state) -> None:
 
 
 async def test_router_set_secrets_in_memory(app_state) -> None:
+    """A key is set and cleared in the in-memory tier. Round 14: each change is audited
+    first in the real audit log, naming the key, never its value (#10)."""
     from app.api.routes_enrichment import ProviderSecretsBody, set_enrichment_secrets
 
     body = ProviderSecretsBody(secrets={"greynoise_api_key": "k1"})
-    out = await set_enrichment_secrets(name="greynoise", body=body, state=app_state)
+    out = await set_enrichment_secrets(name="greynoise", body=body, request=None, state=app_state)
     assert out["ok"] and out["key_present"] is True
     assert app_state.secrets.greynoise_api_key == "k1"  # written to the in-memory tier
     # Clearing with None removes it.
     out2 = await set_enrichment_secrets(
-        name="greynoise", body=ProviderSecretsBody(secrets={"greynoise_api_key": None}), state=app_state)
+        name="greynoise", body=ProviderSecretsBody(secrets={"greynoise_api_key": None}),
+        request=None, state=app_state)
     assert out2["key_present"] is False
     assert app_state.secrets.greynoise_api_key is None
+    rows = [r for r in await app_state.control_audit.records(limit=100)
+            if r.get("action") == "enrichment.secrets_updated"]
+    assert len(rows) == 2
+    assert all("k1" not in str(r) for r in rows)
 
 
 async def test_router_set_secrets_rejects_unknown_field(app_state) -> None:
@@ -669,7 +676,7 @@ async def test_router_set_secrets_rejects_unknown_field(app_state) -> None:
 
     with pytest.raises(HTTPException) as exc:
         await set_enrichment_secrets(
-            name="greynoise", body=ProviderSecretsBody(secrets={"bogus": "x"}), state=app_state)
+            name="greynoise", body=ProviderSecretsBody(secrets={"bogus": "x"}), request=None, state=app_state)
     assert exc.value.status_code == 400
 
 
@@ -680,7 +687,7 @@ async def test_router_set_secrets_keyless_is_400(app_state) -> None:
 
     with pytest.raises(HTTPException) as exc:
         await set_enrichment_secrets(
-            name="shodan_internetdb", body=ProviderSecretsBody(secrets={"x": "y"}), state=app_state)
+            name="shodan_internetdb", body=ProviderSecretsBody(secrets={"x": "y"}), request=None, state=app_state)
     assert exc.value.status_code == 400
 
 
@@ -691,7 +698,7 @@ async def test_router_set_secrets_unknown_provider_404(app_state) -> None:
 
     with pytest.raises(HTTPException) as exc:
         await set_enrichment_secrets(
-            name="nope", body=ProviderSecretsBody(secrets={"x": "y"}), state=app_state)
+            name="nope", body=ProviderSecretsBody(secrets={"x": "y"}), request=None, state=app_state)
     assert exc.value.status_code == 404
 
 

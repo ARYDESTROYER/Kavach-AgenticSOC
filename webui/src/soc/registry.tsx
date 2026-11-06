@@ -231,6 +231,19 @@ export function featureEnabled(
 /* -------------------------------------------------------------------------- */
 
 /**
+ * The permission requirements more than one row names, one object each. They are shared
+ * so the registry (an entry module) ships each requirement once, however many rows carry
+ * it; a row that needs one of these names the constant, never a copy.
+ */
+const METRICS_VIEW: NavPerm = { resource: 'metrics', action: 'view' };
+const CASES_READ: NavPerm = { resource: 'cases', action: 'read' };
+const SOURCES_READ: NavPerm = { resource: 'sources', action: 'read' };
+const COST_VIEW: NavPerm = { resource: 'cost', action: 'view' };
+const RAG_READ: NavPerm = { resource: 'rag', action: 'read' };
+const RUNBOOKS_READ: NavPerm = { resource: 'runbooks', action: 'read' };
+const MEMORY_READ: NavPerm = { resource: 'memory', action: 'read' };
+
+/**
  * The one typed feature table. Order is authoritative (drives rail order). Every
  * top-level rail feature keeps `hidden` falsey; consolidated deep-link-only sub-pages
  * are `hidden: true`. `nav.ts` derives NAV_GROUPS / PAGE_IDS / lookups from this.
@@ -257,7 +270,7 @@ export const FEATURES: FeatureNode[] = [
         id: 'dashboards',
         label: 'Dashboards',
         icon: LayoutGrid,
-        perm: { resource: 'metrics', action: 'view' },
+        perm: METRICS_VIEW,
       },
       { id: 'standup', label: 'Standup', icon: CalendarDays },
     ],
@@ -270,21 +283,21 @@ export const FEATURES: FeatureNode[] = [
     label: 'Case Manager',
     icon: Columns3,
     group: 'triage',
-    perm: { resource: 'cases', action: 'read' },
+    perm: CASES_READ,
   },
   {
     id: 'campaigns',
     label: 'Campaigns',
     icon: Network,
     group: 'triage',
-    perm: { resource: 'cases', action: 'read' },
+    perm: CASES_READ,
   },
   {
     id: 'logs',
     label: 'Logs',
     icon: List,
     group: 'triage',
-    perm: { resource: 'sources', action: 'read' },
+    perm: SOURCES_READ,
   },
   {
     id: 'chat',
@@ -298,7 +311,7 @@ export const FEATURES: FeatureNode[] = [
     children: [
       { id: 'chat', label: 'Chat', icon: MessageSquare },
       { id: 'investigate', label: 'Entity investigation', icon: SearchIcon },
-      { id: 'reports', label: 'Reports', icon: FileText, perm: { resource: 'cases', action: 'read' } },
+      { id: 'reports', label: 'Reports', icon: FileText, perm: CASES_READ },
     ],
   },
   {
@@ -331,7 +344,7 @@ export const FEATURES: FeatureNode[] = [
         id: 'knowledge',
         label: 'Knowledge corpus',
         icon: BookOpen,
-        perm: { resource: 'rag', action: 'read' },
+        perm: RAG_READ,
       },
       {
         // Round 14 (SPEC §4.10.1): one Runbooks feature replaces the two former
@@ -339,13 +352,13 @@ export const FEATURES: FeatureNode[] = [
         id: 'runbooks',
         label: 'Runbooks',
         icon: BookMarked,
-        perm: { resource: 'runbooks', action: 'read' },
+        perm: RUNBOOKS_READ,
       },
       {
         id: 'memory',
         label: 'Operator memory',
         icon: Brain,
-        perm: { resource: 'memory', action: 'read' },
+        perm: MEMORY_READ,
       },
       {
         // GET /api/personas is an authenticated read-only catalog and has no
@@ -369,20 +382,20 @@ export const FEATURES: FeatureNode[] = [
     group: 'analytics',
     target: 'metrics',
     children: [
-      // The Metrics page loads GET /api/metrics, which routes_metrics.py gates on
-      // `metrics:view` — so the nav child gates on the SAME grant (mirroring the
-      // `dashboards` sibling), never showing an entry that would 403 on open. (`cost`
-      // and `models` stay ungated: their GET endpoints — /api/usage/summary,
-      // /api/llm/models — are auth-only, no per-resource grant, so gating them would
-      // hide a page the principal can actually read.)
-      { id: 'metrics', label: 'Metrics', icon: BarChart3, perm: { resource: 'metrics', action: 'view' } },
+      // Each child gates on the grant its page's reads need, so the navigation never
+      // offers a page that would answer 403: Metrics and Agent effectiveness read
+      // `metrics:view` endpoints (GET /api/metrics, /api/metrics/agent-improvement),
+      // and Cost reads GET /api/usage/summary, which needs `cost:view` (Round 14
+      // roles-11). `models` stays ungated: GET /api/llm/models is auth-only, so gating
+      // it would hide a page the principal can actually read.
+      { id: 'metrics', label: 'Metrics', icon: BarChart3, perm: METRICS_VIEW },
       {
         id: 'effectiveness',
         label: 'Agent effectiveness',
         icon: TrendingUp,
-        perm: { resource: 'metrics', action: 'view' },
+        perm: METRICS_VIEW,
       },
-      { id: 'cost', label: 'Cost', icon: DollarSign },
+      { id: 'cost', label: 'Cost', icon: DollarSign, perm: COST_VIEW },
       { id: 'models', label: 'Models', icon: Cpu },
       {
         id: 'baseline',
@@ -411,7 +424,9 @@ export const FEATURES: FeatureNode[] = [
   },
 
   /* ---- Platform -------------------------------------------------------- */
-  { id: 'sources', label: 'Sources', icon: Database, group: 'platform' },
+  // Every Sources read (the list, health, coverage) needs `sources:read`, so the row, the
+  // palette entry and the console map (app help) gate on it, like Logs.
+  { id: 'sources', label: 'Sources', icon: Database, group: 'platform', perm: SOURCES_READ },
   {
     id: 'audit',
     label: 'Audit log',
@@ -466,7 +481,7 @@ export const FEATURES: FeatureNode[] = [
    * group. Order mirrors the old HIDDEN_ROUTE_IDS list for stability.            */
   { id: 'dashboard', label: 'Cyber Defence Center', icon: Gauge, group: 'overview', hidden: true },
   { id: 'investigate', label: 'Entity investigation', icon: SearchIcon, group: 'triage', hidden: true },
-  { id: 'cost', label: 'Cost', icon: DollarSign, group: 'analytics', hidden: true },
+  { id: 'cost', label: 'Cost', icon: DollarSign, group: 'analytics', hidden: true, perm: COST_VIEW },
   { id: 'models', label: 'Models', icon: Cpu, group: 'analytics', hidden: true },
   { id: 'standup', label: 'Standup', icon: CalendarDays, group: 'overview', hidden: true },
   {
@@ -475,7 +490,7 @@ export const FEATURES: FeatureNode[] = [
     icon: BookOpen,
     group: 'intelligence',
     hidden: true,
-    perm: { resource: 'rag', action: 'read' },
+    perm: RAG_READ,
   },
   {
     id: 'runbooks',
@@ -483,7 +498,7 @@ export const FEATURES: FeatureNode[] = [
     icon: BookMarked,
     group: 'intelligence',
     hidden: true,
-    perm: { resource: 'runbooks', action: 'read' },
+    perm: RUNBOOKS_READ,
   },
   {
     id: 'memory',
@@ -491,7 +506,7 @@ export const FEATURES: FeatureNode[] = [
     icon: Brain,
     group: 'intelligence',
     hidden: true,
-    perm: { resource: 'memory', action: 'read' },
+    perm: MEMORY_READ,
   },
   // Round 14 (D44): the two retired destinations stay routable for one release as
   // redirects to `#/runbooks` (router PAGE_REDIRECTS). Their label is the page they open.
@@ -501,7 +516,7 @@ export const FEATURES: FeatureNode[] = [
     icon: BookMarked,
     group: 'intelligence',
     hidden: true,
-    perm: { resource: 'runbooks', action: 'read' },
+    perm: RUNBOOKS_READ,
   },
   {
     id: 'playbooks',
@@ -509,7 +524,7 @@ export const FEATURES: FeatureNode[] = [
     icon: BookMarked,
     group: 'intelligence',
     hidden: true,
-    perm: { resource: 'runbooks', action: 'read' },
+    perm: RUNBOOKS_READ,
   },
   {
     id: 'personas',

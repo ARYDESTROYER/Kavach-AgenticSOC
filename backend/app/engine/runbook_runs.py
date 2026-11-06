@@ -56,6 +56,7 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from fastapi import HTTPException
 
+from ..audit.changes import redact_text
 from ..audit.write import audited_write
 from ..constants import (
     ActionType,
@@ -64,6 +65,7 @@ from ..constants import (
     IndicatorKind,
     Role,
     RUNBOOK_SELECTOR_ACTOR,
+    UserRole,
 )
 from ..models import (
     MAX_RUNS_PER_CASE,
@@ -121,6 +123,7 @@ logger = logging.getLogger("tlsoc.engine.runbook_runs")
 
 __all__ = [
     "ATTACHABLE_STATUSES",
+    "BUILTIN_ROLE_LABELS",
     "CASE_RUNBOOK_SURFACE",
     "LOOKUP_TOOL_GRANTS",
     "NO_ACCESS_SENTENCES",
@@ -145,10 +148,16 @@ __all__ = [
     "redact_run",
     "reduce_lookup_for_prompt",
     "reevaluate_case",
+    "role_key",
+    "role_label",
+    "role_labels_of",
+    "role_phrase",
     "run_lookup_now",
     "run_progress",
     "run_summary",
     "abandon_run",
+    "step_change_summary",
+    "step_name",
     "suggest_runbook",
     "switch_version",
     "update_step",
@@ -569,6 +578,268 @@ def _url_host(url: str | None) -> str:
 
 
 # --------------------------------------------------------------------------- #
+# Wording: roles and steps as messages and summaries name them
+# --------------------------------------------------------------------------- #
+#: The built-in roles by the label the Console shows for them (the Roles page and the
+#: role pickers: ``webui/src/soc/pages/Roles.api.ts`` ``ROLE_LABELS``; a test keeps
+#: the two the same).
+BUILTIN_ROLE_LABELS: dict[str, str] = {
+    UserRole.SUPER_ADMIN.value: "Super admin",
+    UserRole.SOC_MANAGER.value: "SOC manager",
+    UserRole.ANALYST_TIER2.value: "Analyst Tier 2",
+    UserRole.ANALYST_TIER1.value: "Analyst Tier 1",
+    UserRole.RESPONDER.value: "Responder",
+    UserRole.AUDITOR.value: "Auditor",
+}
+#: The longest step title (or decision option) a summary quotes.
+SUMMARY_TITLE_MAX_CHARS = 120
+
+
+def role_key(value: Any) -> str:
+    """A role name compared without case, spaces or hyphens (``SOC Manager``,
+    ``soc-manager`` and ``soc_manager`` are one role)."""
+    return re.sub(r"[\s-]+", "_", str(value or "").strip()).casefold()
+
+
+def _humanized(token: str) -> str:
+    """A role token as the Console's ``humanizeToken`` reads it: separators as spaces,
+    the first letter upper case, and the rest lower case unless the token is written
+    like an acronym (``IR lead`` stays as it is)."""
+    spaced = re.sub(r"[_-]+", " ", token).strip()
+    spaced = re.sub(r"\s+", " ", spaced)
+    if not spaced:
+        return ""
+    rest = spaced[1:]
+    has_lower = re.search(r"[a-z]", spaced) is not None
+    acronym = (has_lower and re.search(r"[A-Z]", rest) is not None) or (
+        not has_lower and len(spaced.replace(" ", "")) <= 3)
+    return spaced[0].upper() + (rest if acronym else rest.lower())
+
+
+def role_label(role: str | None) -> str:
+    """The name a person knows a role by (SPEC §3.1): a built-in role's label ("SOC
+    manager"), however a step writes it (``soc_manager``, ``SOC Manager``); any other
+    role (a custom one) read the way the Console reads it ("incident_lead" is
+    "Incident lead"). "Approver" when the step names none."""
+    builtin = BUILTIN_ROLE_LABELS.get(role_key(role))
+    if builtin is not None:
+        return builtin
+    clean = "".join(ch for ch in str(role or "") if unicodedata.category(ch)[0] != "C")
+    return _humanized(clean)[:64].rstrip() or "Approver"
+
+
+#: An initialism read letter by letter whose first letter's name starts with a vowel
+#: sound ("an MSSP lead", "an HR partner", "an SRE"). The look-ahead leaves out an
+#: acronym read as a word, a consonant cluster then a vowel ("a SOC manager", "a NOC
+#: lead", "a SIEM admin"). The rules of the ``inflect`` library's ``a()``.
+_AN_INITIALISM_RE = re.compile(
+    r"^(?!FJO|[HLMNS]Y.|RY[EO]|SQU|(?:F[LR]?|[HL]|MN?|N|RH?|S[CHKLMNPTVW]?|X(?:YL)?)[AEIOU])[FHLMNRSX][A-Z]")
+#: Words that start with a vowel letter but a consonant sound ("a user admin", "a unix
+#: admin", "a unit lead", "a European desk", "a one-person team") and the words that
+#: start with a silent "h" ("an hourly reviewer", "an honorary lead").
+_A_BEFORE_VOWEL_RE = re.compile(r"^(?:e[uw]|onc?e\b|onetime|uni(?:[^nmd]|mo)|u[bcfghjkqrst][aeiou]|ukr)",
+                                re.IGNORECASE)
+_AN_SILENT_H_RE = re.compile(r"^(?:hour(?!i)|heir|honest|hono)", re.IGNORECASE)
+#: A capitalised word that starts with U and is said from the letter's name "you": a
+#: short initialism ("a USB admin", "a UX lead", "a URL owner", "a UI reviewer", "a
+#: UEBA analyst"; FX7b re-review) and the ``inflect`` library's own "UN" and "UK"
+#: words ("a UN liaison", "a UNESCO desk", "a UK lead"). A longer capitalised word
+#: said with a short "u" keeps "an" ("an UMBRELLA team").
+_A_U_INITIALISM_RE = re.compile(r"^U(?:[A-Z]{1,4}|[NK][AIEO]?[A-Z]*)\b")
+
+
+def _indefinite_article(noun: str) -> str:
+    """"a" or "an" before ``noun``, by its first word's sound: an initialism by the name
+    of its first letter, a word by how it is said, and a vowel letter otherwise."""
+    word = noun.strip()
+    if not word:
+        return "a"
+    first = word.split()[0]
+    if len(first) == 1 and first.isalpha():
+        return "an" if first.upper() in "AEFHILMNORSX" else "a"  # a letter by its name: "an X"
+    if _AN_SILENT_H_RE.match(word) or _AN_INITIALISM_RE.match(word):
+        return "an"
+    if _A_U_INITIALISM_RE.match(word):
+        return "a"  # "a USB admin", "a UX lead", "a UN liaison": the letter U is said "you"
+    if not re.match(r"^[aeiou]", word, re.IGNORECASE) or _A_BEFORE_VOWEL_RE.match(word):
+        return "a"
+    return "an"
+
+
+def role_phrase(role: str | None) -> str:
+    """A role as it reads inside a sentence, with its article: "a SOC manager", "an
+    incident lead", "a super admin", "a user admin", "an MSSP lead". A leading
+    capitalised word that is not an acronym is lowered, as the Console does; "SOC"
+    keeps its capitals. The article follows the sound (:func:`_indefinite_article`)."""
+    label = role_label(role)
+    noun = label[0].lower() + label[1:] if re.match(r"^[A-Z][a-z]", label) else label
+    return f"{_indefinite_article(noun)} {noun}"
+
+
+def role_labels_of(runs: Iterable[RunbookRun]) -> dict[str, str]:
+    """Every role the runs' steps name (``approval_role``, ``owner_role`` and an
+    approval's ``required_role``), by its label (:func:`role_label`), for the run
+    payloads the Console words its approvals from."""
+    out: dict[str, str] = {}
+    for run in runs:
+        named = [r for step in run.snapshot.steps for r in (step.approval_role, step.owner_role)]
+        named += [st.approval.get("required_role") for st in run.steps.values() if isinstance(st.approval, dict)]
+        for role in named:
+            if isinstance(role, str) and role.strip() and role not in out:
+                out[role] = role_label(role)
+    return out
+
+
+def _plain_title(value: Any) -> str:
+    """Published runbook text as one line of plain text for a summary: control and
+    hidden characters (bidirectional overrides among them) dropped, whitespace
+    collapsed, double quotes made single so the quoted name stays one name, and at most
+    :data:`SUMMARY_TITLE_MAX_CHARS` characters."""
+    kept = "".join(" " if unicodedata.category(ch)[0] == "C" else ch for ch in str(value or ""))
+    text = re.sub(r"\s+", " ", kept).strip().replace('"', "'")
+    if len(text) > SUMMARY_TITLE_MAX_CHARS:
+        text = text[: SUMMARY_TITLE_MAX_CHARS - 1].rstrip() + "…"
+    return text
+
+
+#: An assignee a summary names as it is: an account name or an email address.
+_PLAIN_ACCOUNT_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._@+-]{0,63}")
+
+
+def _assignee_words(value: str | None) -> str:
+    """Who a step is assigned to, as a summary names them. ``assignee`` is free text
+    any ``runbooks:run`` holder may set, so only a plain account name (``mira``,
+    ``asha@example.com``) stands bare; anything else is quoted as one plain-text name
+    (:func:`_plain_title`, so it can never read as a second sentence) after the audit
+    log's secret patterns are applied (a pasted token reads ``[REDACTED]``). The value
+    as set stays in the row's ``changes``."""
+    who = str(value or "")
+    if not who.strip():
+        return ""
+    redacted, removed = redact_text(who)
+    if not removed and _PLAIN_ACCOUNT_RE.fullmatch(who):
+        return who
+    return f'"{_plain_title(redacted) or "someone"}"'
+
+
+def step_name(step: RunbookStep | None, step_id: str = "") -> str:
+    """A step as a summary names it: its title from the run's pinned version, in double
+    quotes ("Isolate the host"), or its id when the title is empty. The id itself stays
+    in the row's structured fields (``tool_input.step_id``, the ``changes`` paths)."""
+    title = _plain_title(step.title if step is not None else "") or _plain_title(step_id) or "step"
+    return f'"{title}"'
+
+
+#: What a status change reads as after the step's name ("marked done").
+_STATUS_WORDS: dict[str, str] = {
+    "done": "marked done",
+    "not_applicable": "marked not applicable",
+    "blocked": "marked blocked",
+    "in_progress": "marked in progress",
+    "todo": "reopened",
+}
+
+
+def _joined(parts: list[str]) -> str:
+    if len(parts) <= 1:
+        return "".join(parts)
+    return ", ".join(parts[:-1]) + " and " + parts[-1]
+
+
+def _step_update_summary(
+    step: RunbookStep, step_id: str, *, action: str, before: StepState, after: StepState,
+    changes: Sequence[AuditChange], approval_requested: bool,
+) -> str:
+    """The plain-words summary of one step change, for the audit row and the case
+    activity feed (SPEC §4.10.15): the step by its title and what changed, the main
+    change first and the others after it ("Runbook step "Isolate the host" marked done
+    (note updated)."). Notes, reasons and links are run data and are never quoted
+    here; they are in the row's ``changes``. An assignee is named only as a plain
+    account name or one quoted, redacted name (:func:`_assignee_words`)."""
+    name = step_name(step, step_id)
+    path = f"steps.{step_id}"
+    moved = {c.field for c in changes}
+    who = _assignee_words(after.assignee)
+    assignee = f"assigned to {who}" if who else "unassigned"
+    note = "note updated" if after.note.strip() else "note cleared"
+    extras: list[str] = []
+    if action == "step.decision_recorded":
+        label = _plain_title(after.decision.get("label")) if isinstance(after.decision, dict) else ""
+        lead = f"Decision recorded on runbook step {name}" + (f": {label}" if label else "")
+        skipped = sum(1 for c in changes if c.field.endswith(".status") and c.field != f"{path}.status"
+                      and c.after == "not_applicable")
+        if skipped:
+            extras.append(f"{skipped:,} later step{'' if skipped == 1 else 's'} marked not applicable")
+        main = {f"{path}.decision", f"{path}.status"}
+    elif action == "step.action_recorded":
+        lead = f"Action recorded on runbook step {name}"
+        if approval_requested:
+            extras.append("it waits for approval")
+        elif after.status == "done" and before.status != "done":
+            extras.append("step marked done")
+        main = {f"{path}.action_record", f"{path}.status", f"{path}.approval"}
+    elif f"{path}.status" in moved:
+        lead = f"Runbook step {name} {_STATUS_WORDS.get(after.status, 'updated')}"
+        # A reason comes with Not applicable and Blocked; a reopen drops the approval.
+        main = {f"{path}.status", f"{path}.reason", f"{path}.approval"}
+    elif f"{path}.assignee" in moved:
+        lead, main = f"Runbook step {name} {assignee}", {f"{path}.assignee"}
+    elif f"{path}.note" in moved:
+        lead = f"Note {'updated' if after.note.strip() else 'cleared'} on runbook step {name}"
+        main = {f"{path}.note"}
+    elif f"{path}.evidence" in moved:
+        lead, main = f"Evidence added to runbook step {name}", {f"{path}.evidence"}
+    elif f"{path}.reason" in moved:
+        lead, main = f"Reason updated on runbook step {name}", {f"{path}.reason"}
+    else:
+        lead, main = f"Runbook step {name} changed", set()
+    for field_name, words in (
+        (f"{path}.assignee", assignee),
+        (f"{path}.note", note),
+        (f"{path}.evidence", "evidence added"),
+        (f"{path}.decision", "recorded decision cleared"),
+        (f"{path}.action_record", "recorded action cleared"),
+    ):
+        if field_name in moved and field_name not in main:
+            extras.append(words)
+    return f"{lead} ({_joined(extras)})." if extras else f"{lead}."
+
+
+def step_change_summary(
+    step: RunbookStep, step_id: str, before: StepState, after: StepState, *, action: str,
+    ruled_out: Iterable[str] = (),
+) -> str:
+    """The summary the engine writes when a step goes from ``before`` to ``after``
+    by ``action`` (``step.updated``, ``step.decision_recorded`` or
+    ``step.action_recorded``); ``ruled_out`` names the later steps a decision marked
+    not applicable. For a writer that records work it did not do through
+    :func:`update_step` (the Demo seeds its runs' rows with it), so its rows read as
+    the live ones do."""
+    path = f"steps.{step_id}"
+
+    def decided(state: StepState) -> str | None:
+        return state.decision.get("label") if isinstance(state.decision, dict) else None
+
+    changes = [
+        AuditChange(field=f"{path}.{name}", before=_audit_text(old), after=_audit_text(new))
+        for name, old, new in (
+            ("assignee", before.assignee, after.assignee),
+            ("note", before.note or None, after.note or None),
+            ("decision", decided(before), decided(after)),
+            ("action_record", _record_label(before.action_record), _record_label(after.action_record)),
+            ("status", before.status, after.status),
+            ("approval", _approval_status(before), _approval_status(after)),
+        )
+        if old != new
+    ]
+    changes += [AuditChange(field=f"steps.{other}.status", before="todo", after="not_applicable")
+                for other in ruled_out if other != step_id]
+    requested = _approval_status(after) == "pending" and _approval_status(before) != "pending"
+    return _step_update_summary(step, step_id, action=action, before=before, after=after, changes=changes,
+                                approval_requested=requested)
+
+
+# --------------------------------------------------------------------------- #
 # Audited writes, frames and the ledger
 # --------------------------------------------------------------------------- #
 @dataclass
@@ -674,7 +945,7 @@ async def _audited_runs_write(
     actor_type: str,
     context: Any,
     change: ChangeFn,
-    result_summary: str,
+    result_summary: str | Callable[[Any], str],
     tool_input: Any = None,
     changes: Sequence[AuditChange] | Callable[[Any], Sequence[AuditChange]] | None = None,
     frame_runs: Callable[[Any, CaseRuns], Iterable[RunbookRun]] | None = None,
@@ -684,9 +955,10 @@ async def _audited_runs_write(
     ``change`` receives copies of the stored runs and returns ``(new_runs, result)``
     (``new_runs is None`` = nothing to change). It runs once on a fresh read as the
     pre-check (a refusal writes no row) and again inside the store's compare-and-set
-    write. ``action`` and ``changes`` may be functions of the pre-check's ``result``,
-    so the row names exactly what the change does (every status, assignee and note
-    change with its before and after). Returns ``(result, case_runs, written)``;
+    write. ``action``, ``changes`` and ``result_summary`` may be functions of the
+    pre-check's ``result``, so the row names exactly what the change does (every
+    status, assignee and note change with its before and after, and the step by its
+    title in plain words). Returns ``(result, case_runs, written)``;
     nothing is audited or published when nothing changed, and a change that had
     nothing left to do when the store wrote is answered as not written (its action
     row is followed by a failure row)."""
@@ -705,6 +977,7 @@ async def _audited_runs_write(
         raise _state_error(str(exc)) from exc
     row_action = action(result) if callable(action) else action
     row_changes = list(changes(result) if callable(changes) else (changes or []))
+    row_summary = result_summary(result) if callable(result_summary) else result_summary
 
     def _write_change(runs: list[RunbookRun]) -> tuple[list[RunbookRun] | None, Any]:
         new_runs, res = change(runs)
@@ -735,7 +1008,7 @@ async def _audited_runs_write(
             surface=_AUDIT_SURFACE,
             context=context,
             case_id=case_id,
-            result_summary=result_summary,
+            result_summary=row_summary,
             tool_input=tool_input,
             after_write=_after,
         )
@@ -1153,6 +1426,7 @@ async def case_runbooks_view(state: Any, case: Any, allows: Callable[[str, str],
         "newer_versions": newer,
         "other_tasks": tasks,
         "revision": case_runs.revision,
+        "role_labels": role_labels_of(case_runs.runs),
     }
 
 
@@ -1161,7 +1435,8 @@ def _update_payload(case_runs: CaseRuns, run_id: str, allows: Callable[[str, str
     if run is None:
         raise map_store_error(RunNotFound(run_id))
     shown = redact_run(run, allows) if allows is not None else run
-    return RunbookRunUpdate(run=shown, progress=run_progress(run), revision=case_runs.revision)
+    return RunbookRunUpdate(run=shown, progress=run_progress(run), revision=case_runs.revision,
+                            role_labels=role_labels_of([run]))
 
 
 async def latest_update(state: Any, case_id: str, run_id: str, allows: Callable[[str, str], bool]) -> RunbookRunUpdate | None:
@@ -1211,6 +1486,13 @@ class _StepOutcome:
     run_transition: str | None
     approval_requested: bool
     first_activity: bool
+    #: The row's plain-words summary, naming the step by its title (SPEC §4.10.15).
+    summary: str = ""
+    #: The step as summaries name it, and the role its approval waits for.
+    step_name: str = ""
+    approval_role: str | None = None
+    #: The step's id, for the structured fields of a follow-up row (titles repeat).
+    step_id: str = ""
 
 
 def _apply_step_update(
@@ -1389,7 +1671,11 @@ def _apply_step_update(
     run.revision += 1
     transition = _refresh_completion(run, now)
     first = untouched_before and not _run_untouched(run)
-    return runs, _StepOutcome(run_id, action, changes, transition, approval_requested, first)
+    summary = _step_update_summary(step, step_id, action=action, before=before, after=st, changes=changes,
+                                   approval_requested=approval_requested)
+    return runs, _StepOutcome(run_id, action, changes, transition, approval_requested, first, summary=summary,
+                              step_name=step_name(step, step_id), approval_role=step.approval_role,
+                              step_id=step_id)
 
 
 def _record_label(record: Any) -> str | None:
@@ -1445,7 +1731,7 @@ async def update_step(
     outcome, case_runs, written = await _audited_runs_write(
         stack, case=case, action=lambda res: res.action, actor=actor, actor_type="human",
         context=context, change=change, changes=lambda res: res.changes,
-        result_summary=f"Runbook step {step_id[:64]} updated.",
+        result_summary=lambda res: res.summary,
         tool_input={"run_id": run_id, "step_id": step_id},
         frame_runs=lambda res, cr: [r for r in cr.runs if r.run_id == run_id],
     )
@@ -1463,8 +1749,11 @@ async def _after_step_write(
     if outcome.approval_requested:
         await _record_follow_up(
             stack, case=case, action="step.approval_requested", actor=actor, actor_type="human",
-            context=context, result_summary="A recorded action waits for a second person's approval.",
-            tool_input={"run_id": run.run_id},
+            context=context,
+            result_summary=(f"Action on runbook step {outcome.step_name or step_name(None)} waits for "
+                            f"approval from {role_phrase(outcome.approval_role)}."),
+            # The id names the step exactly: two steps may share a title.
+            tool_input={"run_id": run.run_id, **({"step_id": outcome.step_id} if outcome.step_id else {})},
         )
     if outcome.first_activity:
         await _record_follow_up(
@@ -1503,15 +1792,15 @@ async def decide_approval(
         run = _find_run(runs, run_id)
         if run.status == "abandoned":
             raise _state_error("This runbook was abandoned, so its steps cannot change.")
-        _find_step(run, step_id)
+        step = _find_step(run, step_id)
         st = run.steps.get(step_id) or StepState()
         if not _waiting(st):
             raise _step_error("This step is not waiting for approval.")
         recorder = (st.action_record or {}).get("performed_by")
         if decision == "approve" and _same_person(recorder, actor):
-            role = str((st.approval or {}).get("required_role") or "approver")
+            role = (st.approval or {}).get("required_role")
             raise RunbookRunError(403, "runbook_distinct_approver",
-                                  f"Only a {role} other than {recorder} can approve.")
+                                  f"Only {role_phrase(role)} other than {recorder} can approve.")
         untouched_before = _run_untouched(run)
         prior_status = st.status
         approval = dict(st.approval or {})
@@ -1535,13 +1824,16 @@ async def decide_approval(
         run.revision += 1
         transition = _refresh_completion(run, now)
         first = untouched_before and not _run_untouched(run)
-        return runs, _StepOutcome(run_id, action, changes, transition, False, first)
+        name = step_name(step, step_id)
+        summary = f"Action on runbook step {name} {'approved' if decision == 'approve' else 'rejected'}."
+        return runs, _StepOutcome(run_id, action, changes, transition, False, first, summary=summary,
+                                  step_name=name, approval_role=step.approval_role, step_id=step_id)
 
     action = "step.approved" if decision == "approve" else "step.rejected"
     outcome, case_runs, _written = await _audited_runs_write(
         stack, case=case, action=action, actor=actor, actor_type="human", context=context,
         change=change, changes=lambda res: res.changes,
-        result_summary=("Recorded action approved." if decision == "approve" else "Recorded action rejected."),
+        result_summary=lambda res: res.summary,
         tool_input={"run_id": run_id, "step_id": step_id, "reason": clean_reason},
         frame_runs=lambda res, cr: [r for r in cr.runs if r.run_id == run_id],
     )
@@ -2311,7 +2603,7 @@ _LOOKUP_SUMMARY_REASON_CHARS = 300
 _GENERIC_LOOKUP_FAILURE = "The lookup could not run."
 
 
-def lookup_evidence_summary(result: LookupResult) -> str:
+def lookup_evidence_summary(result: LookupResult, step: RunbookStep | None = None) -> str:
     """The plain ``step.evidence_collected`` audit summary of one lookup result, worded
     per status (the action name stays ``step.evidence_collected`` for every status):
     ``ok`` "Log statistics lookup collected evidence.", ``partial`` "... collected
@@ -2321,10 +2613,18 @@ def lookup_evidence_summary(result: LookupResult) -> str:
     "... was not applicable." with the reason, ``error`` "... could not run." with the
     reason when it says more than that. Every reason is a code-authored sentence
     (``runbook_lookup`` and the lookup runners), never a log or case value; the
-    machine-readable status stays in the row's ``tool_input``. The Demo seed writes
-    the same summary (``demo_generator.demo_evidence_audit_row``)."""
+    machine-readable status stays in the row's ``tool_input``.
+
+    With the ``step`` the lookup belongs to, the lookup is named on that step by its
+    title ("Log statistics lookup on runbook step "Accounts tried" collected
+    evidence."), so two lookups of one tool in a runbook read apart in the case
+    activity feed (SPEC §4.10.15); the step id stays in ``tool_input``. The live engine
+    always names it; the Demo seed writes the same summary
+    (``demo_generator.demo_evidence_audit_row``)."""
     rules = lookups.TOOL_RULES.get(result.tool)
     name = f"{rules.label} lookup" if rules is not None else f"Lookup {result.tool}"
+    if step is not None:
+        name = f"{name} on runbook step {step_name(step, step.id)}"
     reason = re.sub(r"\s+", " ", str(result.reason or "")).strip()
     if len(reason) > _LOOKUP_SUMMARY_REASON_CHARS:
         reason = reason[: _LOOKUP_SUMMARY_REASON_CHARS - 3].rstrip() + "..."
@@ -2363,7 +2663,7 @@ async def _store_lookup(
         run = current.run(run_id)
         if run is None:
             raise RunNotFound(run_id)
-        _find_step(run, step_id)
+        step = _find_step(run, step_id)
     except _STORE_ERRORS as exc:
         raise map_store_error(exc) from exc
     try:
@@ -2372,7 +2672,7 @@ async def _store_lookup(
             expected_revision=current.revision, changes=None, write=write,
             action_type=ActionType.RUNBOOK, actor=actor, actor_type=actor_type, surface=_AUDIT_SURFACE,
             context=context, case_id=str(case.case_id),
-            result_summary=lookup_evidence_summary(result),
+            result_summary=lookup_evidence_summary(result, step),
             tool_input={"run_id": run_id, "step_id": step_id, "tool": result.tool, "status": result.status,
                         "count": result.count, "count_relation": result.count_relation},
             after_write=lambda cr: _publish_frames(stack, str(case.case_id),
@@ -2915,7 +3215,7 @@ async def draft_step(
 
     _res, case_runs, _w = await _audited_runs_write(
         stack, case=case, action="step.ai_drafted", actor=actor, actor_type="human", context=context,
-        change=change, result_summary="The AI drafted a note for a runbook step.",
+        change=change, result_summary=f"The AI drafted a note for runbook step {step_name(step, step_id)}.",
         tool_input={"run_id": run_id, "step_id": step_id, "model": model, "chars": len(draft_text)},
         frame_runs=lambda res, cr: [r for r in cr.runs if r.run_id == run_id],
     )
@@ -2971,12 +3271,15 @@ async def confirm_draft(
             changes.append(AuditChange(field=f"{path}.note", before=_audit_text(prior_note) or None,
                                        after=_audit_text(st.note) or None))
         first = untouched_before and not _run_untouched(run)
-        return runs, _StepOutcome(run_id, "step.ai_draft_confirmed", changes, transition, False, first)
+        name = step_name(step, step_id)
+        summary = f"An AI draft was confirmed as the note of runbook step {name} (step marked done)."
+        return runs, _StepOutcome(run_id, "step.ai_draft_confirmed", changes, transition, False, first,
+                                  summary=summary, step_name=name, step_id=step_id)
 
     outcome, case_runs, written = await _audited_runs_write(
         stack, case=case, action="step.ai_draft_confirmed", actor=actor, actor_type="human",
         context=context, change=change, changes=lambda res: res.changes,
-        result_summary="An AI draft was confirmed as the step's note.",
+        result_summary=lambda res: res.summary,
         tool_input={"run_id": run_id, "step_id": step_id, "chars": len(clean)},
         frame_runs=lambda res, cr: [r for r in cr.runs if r.run_id == run_id],
     )

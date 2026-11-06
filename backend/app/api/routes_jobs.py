@@ -12,9 +12,11 @@ artifact download is audited before a byte is streamed.
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 import logging
+from types import SimpleNamespace
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -60,11 +62,15 @@ from ..stores.jobs import (
 )
 from ..utils import iso_now, parse_es_timestamp
 from .deps import (
+    AccessView,
     _enforce,
+    access_view_for,
     current_username,
     get_state,
     has_permission,
+    record_access_denied,
     require_permission,
+    resolve_access,
 )
 
 router = APIRouter(prefix="/api", tags=["jobs"])
@@ -1073,6 +1079,117 @@ async def _audit_download(state: AppState, request: Request, job: Job) -> None:
         ) from exc
 
 
+#: The 403 code of a job file whose grant its owner no longer holds (Round 14
+#: roles-09). The Console words it from the code; ``message`` is the plain fallback.
+ARTIFACT_PERMISSION_LOST = "job_artifact_permission_lost"
+#: The 503 code of a job file whose grants could not be confirmed just now: the strict
+#: live check refused while the caller's access holds every grant the job needs (its
+#: read of the account or custom-role records failed, or found them unreadable).
+ARTIFACT_PERMISSION_UNVERIFIABLE = "job_permission_unverifiable"
+_ARTIFACT_PERMISSION_MESSAGES: dict[JobKind, str] = {
+    JobKind.AUDIT_EXPORT: "You no longer have permission to download audit exports.",
+    JobKind.DATA_EXPORT_ARCHIVE: "You no longer have permission to download data exports.",
+    JobKind.DATA_EXPORT_SEGMENT: "You no longer have permission to download data exports.",
+}
+_ARTIFACT_PERMISSION_MESSAGE = "You no longer have permission to download this file."
+_ARTIFACT_UNVERIFIABLE_MESSAGE = "The download could not be checked just now. Try again."
+
+
+def _grants_lacking(view: AccessView, job: Job) -> list[str]:
+    """The ``resource:action`` grants ``job`` needs that ``view`` does not hold."""
+    return [
+        f"{grant.resource}:{grant.action}"
+        for grant in job.required_permissions
+        if not view.allows(grant.resource, grant.action)
+    ]
+
+
+async def _stored_role_view(request: Request, view: AccessView) -> AccessView | None:
+    """The caller's access under their STORED account's base role, when it differs from
+    the role the session resolved (the strict live check reads the stored role; the
+    session's copy can trail a role change made by another process), else ``None``.
+    The view keeps the session's principal, so a row it backs names the right person."""
+    users = getattr(get_state(request), "users", None)
+    username = str(getattr(view.user, "username", "") or "")
+    if users is None or not username:
+        return None
+    stored = await users.get(username)
+    raw = getattr(stored, "role", None) if stored is not None else None
+    stored_role = str(getattr(raw, "value", raw) or "")
+    session_role = str(getattr(view.role, "value", view.role) or "")
+    if not stored_role or stored_role == session_role:
+        return None
+    probe = dataclasses.replace(view.user, role=stored_role) if dataclasses.is_dataclass(view.user) else (
+        SimpleNamespace(username=username, role=stored_role))
+    live = await access_view_for(get_state(request), probe)
+    return dataclasses.replace(live, user=view.user)
+
+
+async def _artifact_permission_refusal(request: Request, job: Job) -> HTTPException:
+    """The refusal of a download whose job's grants the strict live check did not confirm.
+
+    A job file is the result of work its grants allowed (an audit export needs
+    ``audit:export`` and ``audit:view``), so the same grants are required again at
+    download time (:meth:`JobRunner.permission_alive`, the strict live check against
+    the stored account). That check fails closed, so its "no" has two meanings, told
+    apart by the caller's access (:func:`resolve_access`, and the stored account's base
+    role when the session's copy of it differs):
+
+    * The caller lacks one of the job's grants now: ``403`` with a code the Console
+      words (``job_artifact_permission_lost``), a plain ``message``, the grants the job
+      needs (``required``) and the ones the caller lacks (``missing``, never empty).
+      The refusal is one Access denied row naming exactly the ``missing`` grants, the
+      role that lacks them and the job's target, coalesced like every refused read
+      (``deps.record_access_denied``).
+    * The caller holds every grant, or their access could not be resolved: the check
+      could not confirm them (its strict read of the account or custom-role records
+      failed or found them malformed). That is no permission refusal, so it writes no
+      Access denied row (a row saying "denied audit:export" to someone who holds it
+      would be false, #2) and answers ``503`` ``job_permission_unverifiable``, "Try
+      again", like the job routes' other unreadable-registry answers. Nothing is
+      downloaded either way."""
+    required = [f"{grant.resource}:{grant.action}" for grant in job.required_permissions]
+    view: AccessView | None = None
+    missing: list[str] = []
+    try:
+        view = await resolve_access(request)
+        missing = _grants_lacking(view, job)
+        if not missing and not view.unrestricted:
+            stored_view = await _stored_role_view(request, view)
+            if stored_view is not None and (lacking := _grants_lacking(stored_view, job)):
+                view, missing = stored_view, lacking
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001 (unresolved access confirms nothing)
+        logger.warning("Job %s artifact refused: the caller's access could not be resolved: %s",
+                       job.job_id, exc)
+        view, missing = None, []
+    if not missing:
+        if view is not None:
+            logger.warning(
+                "Job %s artifact refused: the live grant check failed while the caller's "
+                "access holds every grant the job needs", job.job_id,
+            )
+        return HTTPException(
+            503,
+            detail={
+                "code": ARTIFACT_PERMISSION_UNVERIFIABLE,
+                "message": _ARTIFACT_UNVERIFIABLE_MESSAGE,
+            },
+        )
+    target = _download_target(job, job.artifact) if job.artifact is not None else None
+    await record_access_denied(request, missing, view=view, target=target)
+    return HTTPException(
+        403,
+        detail={
+            "code": ARTIFACT_PERMISSION_LOST,
+            "message": _ARTIFACT_PERMISSION_MESSAGES.get(job.kind, _ARTIFACT_PERMISSION_MESSAGE),
+            "required": required,
+            "missing": missing,
+        },
+    )
+
+
 _ARTIFACT_BINARY = {"schema": {"type": "string", "format": "binary"}}
 
 
@@ -1090,7 +1207,19 @@ _ARTIFACT_BINARY = {"schema": {"type": "string", "format": "binary"}}
                 "application/x-ndjson": _ARTIFACT_BINARY,
             },
         },
-        503: {"description": "audit_unavailable: the download could not be audited"},
+        403: {
+            "description": (
+                "job_artifact_permission_lost: the job needs a grant its owner no "
+                "longer holds (an audit export needs audit:export and audit:view)"
+            ),
+        },
+        503: {
+            "description": (
+                "audit_unavailable: the download could not be audited; or "
+                "job_permission_unverifiable: the job's grants could not be "
+                "confirmed just now (try again)"
+            ),
+        },
     },
 )
 async def job_artifact(
@@ -1103,7 +1232,7 @@ async def job_artifact(
     if job.artifact is None:
         raise HTTPException(404, detail="job artifact not found")
     if not await state.job_runner.permission_alive(job):
-        raise HTTPException(403, detail="job artifact permission is no longer active")
+        raise await _artifact_permission_refusal(request, job)
     try:
         path = await state.job_runner.verify_artifact(job.artifact)
     except (FileNotFoundError, ValueError):

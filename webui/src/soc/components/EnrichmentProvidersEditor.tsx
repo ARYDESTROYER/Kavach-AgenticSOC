@@ -3,18 +3,32 @@
  * (Group 6 / Feature 7 / Round 3 Wave 2).
  *
  * Lists every registered enrichment provider (GET /api/enrichment/providers) with:
- *   - a per-provider ENABLE toggle (flips `prefs.enrichment.use_*` via the settings
- *     PUT — the manifest's `config_key` is the field name),
+ *   - a per-provider ENABLE toggle (flips the enrichment setting named by the
+ *     manifest's `config_key` through PUT /api/enrichment/config),
  *   - a per-provider write-only SECRET entry (POST .../{name}/secrets; the console
- *     only ever shows a configured BOOLEAN, never a value — #10),
+ *     only ever shows a configured BOOLEAN, never a value: #10),
  *   - a "try a lookup" box (GET /api/enrichment/lookup) rendering the fused result +
  *     the per-provider rows inside escaped CodeBlocks (#9).
  *
  * Self-contained: it fetches the provider manifests itself and writes the enrichment
- * config through the shared settings PUT, so it works BOTH mounted inside the Settings
- * "enrichment" section AND as a standalone reachable surface. RBAC is enforced server-
- * side (enrichment:read / enrichment:manage); the UI additionally gates the mutating
- * controls behind <Can resource="enrichment" action="manage">.
+ * settings through PUT /api/enrichment/config, so it works BOTH mounted inside the
+ * Settings "enrichment" section AND as a standalone reachable surface. RBAC is enforced
+ * server-side (enrichment:read / enrichment:manage); the UI additionally gates the
+ * mutating controls behind `useCan('enrichment', 'manage')`.
+ *
+ * Demo Mode (Round 14, wro-01): the listing and the save use the same settings, those of
+ * the active stack, so a switch always shows what its save changes. While Demo Mode is on
+ * they are the Demo sandbox's own copy: a "Demo Mode is on" note says that no provider is
+ * queried, that a switch or cache lifetime change is discarded when Demo Mode ends or is
+ * reset, and that provider keys are saved for real (they are never part of the Demo copy;
+ * the provider sheet repeats it above the key fields). It replaces the "Enrichment is off"
+ * note, which would describe the wrong cause. When Demo Mode is turned on, turned off or
+ * reset while the editor is open (a new Demo run), it reads the settings again, and only
+ * the newest read is shown (an older answer that lands late is dropped).
+ *
+ * The settings lock (`readOnly`, the Settings page's `read_only_settings_mode`): every
+ * switch and key field is disabled and the Lookups caption says why; the server refuses
+ * a switch save while the lock is on.
  *
  * Round 14 (SE6, F13): the editor lays out its own Settings groups ("Lookups" with the
  * two master switches as setting rows, "Providers" as a `ListRows` list with one switch
@@ -36,8 +50,11 @@ import {
   enrichmentApi,
   INDICATOR_KINDS,
   type EnrichmentLookupResult,
+  type EnrichmentConfigSaved,
   type EnrichmentProviderManifest,
 } from './EnrichmentProviders.api';
+
+import { useDemo } from '@/soc/demo';
 
 import { useCan } from './Can';
 import { CodeBlock } from './CodeBlock';
@@ -86,7 +103,7 @@ function repVariant(score?: number | null): BadgeProps['variant'] {
 /**
  * A write-only secret field for one provider key, built on the SHARED `SecretField`
  * primitive (uniform reveal toggle + boolean status pill + explicit clear across every
- * secret surface). The console NEVER shows the value — only a "Configured" / "Not set"
+ * secret surface). The console NEVER shows the value: only a "Configured" / "Not set"
  * boolean (#10). Saving posts the new value (via the Save button); clearing posts null
  * (via the primitive's "Remove stored value" affordance). An empty Save is blocked so a
  * stored secret can never be clobbered with a blank value.
@@ -95,8 +112,10 @@ const ProviderSecretField: React.FC<{
   providerName: string;
   field: { key: string; label: string; required: boolean; help?: string | null; configured: boolean };
   canManage: boolean;
+  /** The settings lock is on: the field shows its state but cannot be changed. */
+  disabled?: boolean;
   onConfigured: (key: string, configured: boolean, keyPresent: boolean) => void;
-}> = ({ providerName, field, canManage, onConfigured }) => {
+}> = ({ providerName, field, canManage, disabled = false, onConfigured }) => {
   const [draft, setDraft] = React.useState('');
   const [saving, setSaving] = React.useState(false);
 
@@ -139,12 +158,12 @@ const ProviderSecretField: React.FC<{
         required={field.required}
         value={draft}
         onChange={setDraft}
-        disabled={saving}
+        disabled={saving || disabled}
         placeholder={field.configured ? '•••••••• (enter a new value to replace)' : 'Enter a value'}
-        onClear={field.configured ? () => void save(true) : undefined}
+        onClear={field.configured && !disabled ? () => void save(true) : undefined}
         configuredLabel="Configured"
       />
-      <Button size="sm" variant="outline" disabled={saving} onClick={() => void save(false)}>
+      <Button size="sm" variant="outline" disabled={saving || disabled} onClick={() => void save(false)}>
         {saving ? <Loader2 className="size-4 animate-spin" aria-hidden /> : 'Save'}
       </Button>
     </div>
@@ -152,6 +171,15 @@ const ProviderSecretField: React.FC<{
 };
 
 /* ----------------------------------------------------------- provider row --- */
+
+/** Whether a failed save was refused because Demo Mode was turned on or off meanwhile. */
+function isDemoModeChanged(error: unknown): boolean {
+  // The `ApiError` body shape (`{ detail: { code } }`), read structurally so the check
+  // needs no runtime import from the API module.
+  if (!error || typeof error !== 'object') return false;
+  const body = (error as { body?: { detail?: { code?: unknown } } }).body;
+  return body?.detail?.code === 'demo_mode_changed';
+}
 
 /** A key-gated provider that is enabled but has no key cannot actually run. */
 function providerNeedsKey(provider: EnrichmentProviderManifest): boolean {
@@ -173,10 +201,12 @@ function keyStateLabel(provider: EnrichmentProviderManifest): string {
 const ProviderRow: React.FC<{
   provider: EnrichmentProviderManifest;
   canManage: boolean;
+  /** The settings lock is on (the switch shows its state but cannot be changed). */
+  readOnly: boolean;
   toggling: boolean;
   onToggle: (provider: EnrichmentProviderManifest, on: boolean) => void;
   onOpen: (provider: EnrichmentProviderManifest) => void;
-}> = ({ provider, canManage, toggling, onToggle, onOpen }) => {
+}> = ({ provider, canManage, readOnly, toggling, onToggle, onOpen }) => {
   const needsKey = providerNeedsKey(provider);
   return (
     <ListRow
@@ -192,7 +222,7 @@ const ProviderRow: React.FC<{
           {toggling ? <Loader2 className="size-4 animate-spin text-muted-foreground" aria-hidden /> : null}
           <Switch
             checked={provider.enabled_by_config}
-            disabled={!canManage || toggling}
+            disabled={!canManage || readOnly || toggling}
             onCheckedChange={(v) => onToggle(provider, v)}
             aria-label={`Enable ${provider.display_name}`}
           />
@@ -211,11 +241,15 @@ const ProviderRow: React.FC<{
 const ProviderSheet: React.FC<{
   provider: EnrichmentProviderManifest | null;
   canManage: boolean;
+  /** Demo Mode is on: keys are still saved for real, so the sheet says so. */
+  demoActive: boolean;
+  /** The settings lock is on: the key fields cannot be changed. */
+  readOnly: boolean;
   onClose: () => void;
   onSecretConfigured: (name: string, key: string, configured: boolean, keyPresent: boolean) => void;
   /** Hands focus back to the provider row that opened the sheet (SPEC §3.3). */
   onCloseAutoFocus?: (event: Event) => void;
-}> = ({ provider, canManage, onClose, onSecretConfigured, onCloseAutoFocus }) => {
+}> = ({ provider, canManage, demoActive, readOnly, onClose, onSecretConfigured, onCloseAutoFocus }) => {
   const setupSteps = (provider?.setup_steps ?? []).filter(
     (step): step is string => typeof step === 'string' && step.length > 0,
   );
@@ -297,12 +331,26 @@ const ProviderSheet: React.FC<{
                   <h3 id={`keys-${provider.name}`} className="text-sm font-semibold text-foreground">
                     {provider.secret_fields.length === 1 ? 'Key' : 'Keys'}
                   </h3>
+                  {/* Keys are real secrets in both stacks: the Demo note above the switches
+                      says changes there are discarded, so the sheet states the exception
+                      where the keys are entered. */}
+                  {demoActive && canManage ? (
+                    <p className="text-sm text-muted-foreground" data-testid="enrichment-demo-key-note">
+                      Keys are saved for real, also in Demo Mode, and stay after it ends.
+                    </p>
+                  ) : null}
+                  {readOnly && canManage ? (
+                    <p className="text-sm text-muted-foreground" data-testid="enrichment-locked-key-note">
+                      Keys cannot be changed while the settings lock is on.
+                    </p>
+                  ) : null}
                   {provider.secret_fields.map((f) => (
                     <ProviderSecretField
                       key={f.key}
                       providerName={provider.name}
                       field={f}
                       canManage={canManage}
+                      disabled={readOnly}
                       onConfigured={(key, configured, keyPresent) =>
                         onSecretConfigured(provider.name, key, configured, keyPresent)
                       }
@@ -319,6 +367,29 @@ const ProviderSheet: React.FC<{
 };
 
 /* ------------------------------------------------------------- lookup box --- */
+
+/** The empty result's words: why nothing was queried, or that nothing answered. */
+export function lookupEmptyCopy(
+  notQueried: EnrichmentLookupResult['not_queried'],
+): { title: string; description: string } {
+  if (notQueried === 'demo_mode') {
+    return {
+      title: 'No provider was queried',
+      description: 'Lookups do not run in Demo Mode, so the result is always empty.',
+    };
+  }
+  if (notQueried === 'disabled') {
+    return {
+      title: 'No provider was queried',
+      description: 'Enrichment is off. Turn it on above to query the enabled providers.',
+    };
+  }
+  return {
+    title: 'No provider returned data',
+    description:
+      'No enabled, capable provider returned a result for this indicator. Enable more providers or add their keys above.',
+  };
+}
 
 const LookupBox: React.FC = () => {
   const [indicator, setIndicator] = React.useState('');
@@ -399,7 +470,7 @@ const LookupBox: React.FC = () => {
         </div>
       ) : result ? (
         <div className="space-y-3">
-          {/* fused summary — values are backend-derived, rendered as plain badges */}
+          {/* fused summary: values are backend-derived, rendered as plain badges */}
           <div className="flex flex-wrap items-center gap-2 rounded-md bg-muted px-3 py-2.5">
             <Badge variant="outline" className="font-mono">
               {humanizeToken(result.kind)}
@@ -409,7 +480,7 @@ const LookupBox: React.FC = () => {
             </Badge>
             {result.is_malicious ? (
               <Badge variant="critical" className="gap-1">
-                {/* Threat-signaling icon (ShieldAlert), not ShieldCheck — a check-shield
+                {/* Threat-signaling icon (ShieldAlert), not ShieldCheck: a check-shield
                     reads as "safe/verified" and contradicts a malicious verdict (G9
                     non-color signaling). */}
                 <ShieldAlert className="size-3" aria-hidden />
@@ -430,8 +501,7 @@ const LookupBox: React.FC = () => {
             <EmptyState
               icon={Search}
               compact
-              title="No provider returned data"
-              description="No enabled, capable provider returned a result for this indicator. Enable more providers or add their keys above."
+              {...lookupEmptyCopy(result.not_queried)}
             />
           ) : (
             <div className="space-y-2">
@@ -448,7 +518,7 @@ const LookupBox: React.FC = () => {
                       </Badge>
                     ) : null}
                   </div>
-                  {/* Whole result object is UNTRUSTED — render fenced (#9). */}
+                  {/* Whole result object is UNTRUSTED: render fenced (#9). */}
                   <CodeBlock value={p} wrap maxHeightClassName="max-h-60" />
                 </div>
               ))}
@@ -467,16 +537,61 @@ const LookupBox: React.FC = () => {
 
 /* -------------------------------------------------------------------- panel - */
 
+/** The enrichment settings the editor read, for a host field outside it. */
+export interface EnrichmentSettingsLoaded {
+  /** The cache lifetime, in seconds, of the settings the editor writes. */
+  cacheTtlSeconds?: number;
+  /** True while those settings are the Demo sandbox's copy. */
+  demoActive: boolean;
+}
+
+/**
+ * What a host field that saves the same settings (the cache lifetime) hands back to the
+ * editor, so the editor reads the settings again when that save went to another stack
+ * than the one it read, or was refused because Demo Mode moved meanwhile.
+ */
+export interface EnrichmentProvidersEditorHandle {
+  /** Report a save's answer, or its error: the editor re-reads when the stack moved. */
+  afterSave: (saved: EnrichmentConfigSaved | null, error?: unknown) => void;
+}
+
 export interface EnrichmentProvidersEditorProps {
   className?: string;
   /** Suppress the panel's own heading (when hosted inside a Settings section). */
   embedded?: boolean;
+  /**
+   * The settings lock is on (Settings' `read_only_settings_mode`): every switch and key
+   * field is disabled, since the server refuses the save.
+   */
+  readOnly?: boolean;
+  /**
+   * Called each time the editor reads the settings (on mount, on Refresh, and when Demo
+   * Mode is turned on, turned off or reset), so a host field such as the cache lifetime
+   * shows the same settings, of the same stack, that the editor's switches save.
+   */
+  onSettingsLoaded?: (settings: EnrichmentSettingsLoaded) => void;
+  /** A host field that saves the same settings reports its saves here (see the handle). */
+  handleRef?: React.Ref<EnrichmentProvidersEditorHandle>;
 }
 
-export function EnrichmentProvidersEditor({ className, embedded = false }: EnrichmentProvidersEditorProps) {
+export function EnrichmentProvidersEditor({
+  className,
+  embedded = false,
+  readOnly = false,
+  onSettingsLoaded,
+  handleRef,
+}: EnrichmentProvidersEditorProps) {
   const [providers, setProviders] = React.useState<EnrichmentProviderManifest[]>([]);
   const [enrichmentEnabled, setEnrichmentEnabled] = React.useState(true);
   const [fusionEnabled, setFusionEnabled] = React.useState(false);
+  // Whether the settings shown are the Demo sandbox's copy, and of which Demo run (from
+  // the listing itself, so the note always describes the stack the switches were read
+  // from, and a save can tell when it landed in another one).
+  const [demoActive, setDemoActive] = React.useState(false);
+  const shownStackRef = React.useRef<{ demoActive: boolean; runId: string | null }>({
+    demoActive: false,
+    runId: null,
+  });
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<unknown>(null);
   // provider name with an in-flight enable/disable toggle (disables its switch).
@@ -486,19 +601,35 @@ export function EnrichmentProvidersEditor({ className, embedded = false }: Enric
   const [openName, setOpenName] = React.useState<string | null>(null);
 
   const canManage = useCan('enrichment', 'manage');
+  // The host's callback, read through a ref so a new function each render never reloads.
+  const onSettingsLoadedRef = React.useRef(onSettingsLoaded);
+  onSettingsLoadedRef.current = onSettingsLoaded;
 
+  // Each read is numbered; only the newest one may change what the editor shows. A read
+  // sent before Demo Mode moved (the mount read, a slow Refresh) can answer after the
+  // read sent because it moved, and would otherwise show the other stack's settings.
+  const loadSeqRef = React.useRef(0);
   const load = React.useCallback(async () => {
+    const seq = ++loadSeqRef.current;
     setLoading(true);
     setError(null);
     try {
       const res = await enrichmentApi.providers();
+      if (seq !== loadSeqRef.current) return;
+      const inDemo = res.demo_active === true;
       setProviders(res.providers ?? []);
       setEnrichmentEnabled(res.enrichment_enabled);
       setFusionEnabled(res.fusion_enabled);
+      shownStackRef.current = { demoActive: inDemo, runId: res.demo_run_id ?? null };
+      setDemoActive(inDemo);
+      onSettingsLoadedRef.current?.({
+        cacheTtlSeconds: typeof res.cache_ttl_seconds === 'number' ? res.cache_ttl_seconds : undefined,
+        demoActive: inDemo,
+      });
     } catch (e) {
-      setError(e);
+      if (seq === loadSeqRef.current) setError(e);
     } finally {
-      setLoading(false);
+      if (seq === loadSeqRef.current) setLoading(false);
     }
   }, []);
 
@@ -506,7 +637,43 @@ export function EnrichmentProvidersEditor({ className, embedded = false }: Enric
     void load();
   }, [load]);
 
-  /** Flip one provider's `use_*` toggle through the settings PUT (optimistic). */
+  // Demo Mode turned on, turned off or reset (a new run with a fresh copy) while the
+  // editor is open: the switches would describe another stack's settings, so read them
+  // again. The identity is the Demo flag with the run id, so a reset counts too. The OFF
+  // stand-in before the first status read and after a failed one (`confirmed === false`)
+  // is no answer and changes nothing.
+  const demo = useDemo();
+  const demoKey =
+    demo.confirmed === false ? null : `${demo.active ? 'demo' : 'off'}:${demo.status.run_id ?? ''}`;
+  const demoSeenRef = React.useRef<string | null>(null);
+  React.useEffect(() => {
+    if (demoKey === null) return;
+    const previous = demoSeenRef.current;
+    demoSeenRef.current = demoKey;
+    if (previous !== null && previous !== demoKey) void load();
+  }, [demoKey, load]);
+
+  /**
+   * After a save: when it went to another stack than the one the switches were read from
+   * (Demo Mode was turned on, turned off or reset in between), read the settings again so
+   * the page shows the stack it now edits. A refused save for that reason reads them
+   * again too.
+   */
+  const afterSave = React.useCallback(
+    (saved: Pick<EnrichmentConfigSaved, 'demo_active' | 'demo_run_id'> | null, error?: unknown) => {
+      const shown = shownStackRef.current;
+      const moved =
+        (saved !== null &&
+          ((typeof saved.demo_active === 'boolean' && saved.demo_active !== shown.demoActive) ||
+            (saved.demo_run_id !== undefined && (saved.demo_run_id ?? null) !== shown.runId))) ||
+        isDemoModeChanged(error);
+      if (moved) void load();
+    },
+    [load],
+  );
+  React.useImperativeHandle(handleRef, () => ({ afterSave }), [afterSave]);
+
+  /** Flip one provider's `use_*` toggle (optimistic, reverted on failure). */
   const toggleProvider = React.useCallback(
     async (provider: EnrichmentProviderManifest, on: boolean) => {
       setTogglingName(provider.name);
@@ -515,19 +682,21 @@ export function EnrichmentProvidersEditor({ className, embedded = false }: Enric
         prev.map((p) => (p.name === provider.name ? { ...p, enabled_by_config: on } : p)),
       );
       try {
-        await enrichmentApi.setEnrichmentConfig({ [provider.config_key]: on });
+        const saved = await enrichmentApi.setEnrichmentConfig({ [provider.config_key]: on });
         toast.success(`${provider.display_name} ${on ? 'enabled' : 'disabled'}.`);
+        afterSave(saved);
       } catch (e) {
         // revert on failure
         setProviders((prev) =>
           prev.map((p) => (p.name === provider.name ? { ...p, enabled_by_config: !on } : p)),
         );
         toast.error(errMsg(e, 'Could not update the provider.'));
+        afterSave(null, e);
       } finally {
         setTogglingName(null);
       }
     },
-    [],
+    [afterSave],
   );
 
   const setMasterFlag = React.useCallback(
@@ -536,17 +705,19 @@ export function EnrichmentProvidersEditor({ className, embedded = false }: Enric
       if (field === 'enabled') setEnrichmentEnabled(value);
       else setFusionEnabled(value);
       try {
-        await enrichmentApi.setEnrichmentConfig({ [field]: value });
+        const saved = await enrichmentApi.setEnrichmentConfig({ [field]: value });
         toast.success('Enrichment settings saved.');
+        afterSave(saved);
       } catch (e) {
         if (field === 'enabled') setEnrichmentEnabled(!value);
         else setFusionEnabled(!value);
         toast.error(errMsg(e, 'Could not save the setting.'));
+        afterSave(null, e);
       } finally {
         setSavingFlag(false);
       }
     },
-    [],
+    [afterSave],
   );
 
   const onSecretConfigured = React.useCallback(
@@ -606,20 +777,36 @@ export function EnrichmentProvidersEditor({ className, embedded = false }: Enric
         />
       ) : (
         <>
-          <SettingsGroup title="Lookups" caption="Saved as soon as you change a switch.">
+          <SettingsGroup
+            title="Lookups"
+            caption={
+              readOnly
+                ? 'Read-only while the settings lock is on.'
+                : 'Saved as soon as you change a switch.'
+            }
+          >
             <SettingRow
               variant="switch"
               label="Enrichment enabled"
               help="Master switch for all provider lookups."
               checked={enrichmentEnabled}
-              disabled={!canManage || savingFlag || loading}
+              disabled={!canManage || readOnly || savingFlag || loading}
               onCheckedChange={(v) => void setMasterFlag('enabled', v)}
             />
             {/* Off is a live condition, stated in words; the provider list below stays at
                 full contrast because it remains editable (WCAG 1.4.3, no dimming). Between
                 two switches it takes their form row width, so the group keeps one right
-                edge in this full-width section. */}
-            {!enrichmentEnabled && !loading ? (
+                edge in this full-width section. In Demo Mode the cause is Demo Mode, not
+                the switch, so the Demo note replaces the off note. */}
+            {demoActive && !loading ? (
+              <SettingRow variant="block" width="form">
+                <Callout intent="warning" title="Demo Mode is on" data-testid="enrichment-demo-callout">
+                  No provider is queried in Demo Mode. Changes to these switches and the cache
+                  lifetime apply to the demo only and are discarded when Demo Mode ends or is
+                  reset. Provider keys you save are saved for real.
+                </Callout>
+              </SettingRow>
+            ) : !enrichmentEnabled && !loading ? (
               <SettingRow variant="block" width="form">
                 <Callout intent="warning" data-testid="enrichment-off-callout">
                   Enrichment is off. No provider is queried until you turn it on.
@@ -631,7 +818,7 @@ export function EnrichmentProvidersEditor({ className, embedded = false }: Enric
               label="Fuse provider scores"
               help="Combine providers into one normalised reputation score."
               checked={fusionEnabled}
-              disabled={!canManage || savingFlag || loading}
+              disabled={!canManage || readOnly || savingFlag || loading}
               onCheckedChange={(v) => void setMasterFlag('fusion_enabled', v)}
             />
           </SettingsGroup>
@@ -675,6 +862,7 @@ export function EnrichmentProvidersEditor({ className, embedded = false }: Enric
                       key={p.name}
                       provider={p}
                       canManage={canManage}
+                      readOnly={readOnly}
                       toggling={togglingName === p.name}
                       onToggle={(prov, on) => void toggleProvider(prov, on)}
                       onOpen={(prov) => {
@@ -711,6 +899,8 @@ export function EnrichmentProvidersEditor({ className, embedded = false }: Enric
       <ProviderSheet
         provider={openProvider}
         canManage={canManage}
+        demoActive={demoActive}
+        readOnly={readOnly}
         onClose={() => setOpenName(null)}
         onCloseAutoFocus={sheetOpener.onCloseAutoFocus}
         onSecretConfigured={onSecretConfigured}

@@ -72,6 +72,11 @@ export const RUNBOOK_BOUNDARY_NOTE =
   'A runbook guides the people on this case. It never closes the case and never changes its verdict; your case policy makes the close or escalate decision. Every step change is recorded in the audit log.';
 
 export const READ_ONLY_RUN_NOTE = 'You can view this runbook but not update it.';
+
+/** What a version switch says, once: in its toast, which is a live region of its own. */
+export function switchedSentence(version: number): string {
+  return `Switched to version ${version.toLocaleString()}.`;
+}
 export const RUNBOOKS_OFF_RUN_NOTE = 'Runbooks are turned off in Settings, so steps cannot change.';
 export const EMPTY_RUNBOOK_LEAD = 'Start one to guide the work on this case.';
 
@@ -94,7 +99,7 @@ export interface RunbookPanelProps {
   users: PickableUser[];
   /**
    * The viewer's base role and whether role checks are off, for the approval hint ("Only a
-   * soc manager can approve this step."). Unknown when absent: Approve stays offered and
+   * SOC manager can approve this step."). Unknown when absent: Approve stays offered and
    * the server decides.
    */
   viewer?: { role: string | null; unrestricted: boolean } | null;
@@ -284,6 +289,13 @@ export function RunbookPanel({
   const [abandonError, setAbandonError] = React.useState<string | null>(null);
   const [message, setMessage] = React.useState('');
   const startButtonRef = React.useRef<HTMLButtonElement | null>(null);
+  // Where Start runbook hands focus back when the control that opened it is gone: the
+  // narrow strip's menu button for its Add runbook item (SPEC §3.3).
+  const pickerReturnRef = React.useRef<HTMLElement | null>(null);
+  const openPicker = React.useCallback((returnFocusTo: HTMLElement | null = null) => {
+    pickerReturnRef.current = returnFocusTo;
+    setPickerOpen(true);
+  }, []);
 
   const runs = React.useMemo(() => data?.runs ?? [], [data]);
   const run = runs.find((r) => r.run_id === runId) ?? primaryRun(data);
@@ -330,9 +342,9 @@ export function RunbookPanel({
   const loaded = data !== null;
   React.useEffect(() => {
     if (startTick === null || !loaded) return;
-    if (canStart) setPickerOpen(true);
+    if (canStart) openPicker();
     onFocusRequestHandled?.(startTick);
-  }, [startTick, loaded, canStart, onFocusRequestHandled]);
+  }, [startTick, loaded, canStart, onFocusRequestHandled, openPicker]);
 
   const onStarted = (result: RunbookAttachResult) => {
     if (result.already_attached) {
@@ -366,7 +378,16 @@ export function RunbookPanel({
       aiSuggest={aiSuggest}
       attachedIds={runs.map((r) => r.runbook_id)}
       onStarted={onStarted}
-      returnFocusTo={() => startButtonRef.current ?? rootRef.current?.querySelector<HTMLElement>('[data-next-step-heading]') ?? null}
+      returnFocusTo={() => {
+        const opener = pickerReturnRef.current;
+        pickerReturnRef.current = null;
+        return (
+          (opener?.isConnected ? opener : null) ??
+          startButtonRef.current ??
+          rootRef.current?.querySelector<HTMLElement>('[data-next-step-heading]') ??
+          null
+        );
+      }}
     />
   );
 
@@ -410,7 +431,7 @@ export function RunbookPanel({
             }
             action={
               canStart ? (
-                <Button ref={startButtonRef} onClick={() => setPickerOpen(true)}>
+                <Button ref={startButtonRef} onClick={() => openPicker()}>
                   <BookCheck aria-hidden />
                   Start runbook
                 </Button>
@@ -481,15 +502,17 @@ export function RunbookPanel({
             canAdd={canStart}
             nameOf={nameOf}
             libraryHref={canReadLibrary ? `#/runbooks?id=${encodeURIComponent(run.runbook_id)}` : null}
-            onAdd={() => setPickerOpen(true)}
+            onAdd={openPicker}
             onExport={() => void exportRunVersion(run)}
             abandonError={abandonError}
+            onAbandonClosed={() => setAbandonError(null)}
             onSwitchVersion={async (version) => {
               try {
                 const update = await switchRunbookRunVersion(c.case_id, run.run_id, version);
                 applyUpdate(update);
-                announce(`Switched to version ${version.toLocaleString()}.`);
-                toast.success(`Switched to version ${version.toLocaleString()}.`);
+                // One announcement (WCAG 4.1.3): the toast's own live region says it, so
+                // the tab's live region stays quiet.
+                toast.success(switchedSentence(version));
                 return true;
               } catch (err) {
                 toast.error(runbookFailure(err, 'The version could not be switched.').message);

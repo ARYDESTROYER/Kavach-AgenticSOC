@@ -1,19 +1,25 @@
 /**
  * The History sheet (Round 14, SPEC §4.10.5, §4.10.12): every version of the runbook with
- * its state and who published it, a step-level comparison between any two versions, and
- * "Restore as draft" (a new draft from that version's text; the live version is untouched).
+ * its state and who published it, the reasons a reviewer gave when sending it back to draft
+ * (who and when), a step-level comparison between any two versions, and "Restore as draft"
+ * (a new draft from that version's text; the live version is untouched). Every version's notes
+ * come with the version list, newest first and worded as in the governance strip, so a
+ * superseded version's reasons show without reading it; an older server that does not list
+ * them falls back to the version documents in hand. People are named as the strip names them
+ * ("you" for the signed-in person).
  *
  * Names and text are plain text (#9). Restoring needs `runbooks:manage` and is unavailable in
- * Demo Mode and on a built-in. While a draft or a version in review exists the server refuses
- * a restore (nobody's work is overwritten), and while the editor holds unsaved changes the
- * restored draft would replace them, so in both cases Restore is offered disabled with the
- * reason beside it.
+ * Demo Mode and on a built-in. On a retired runbook it starts a new draft that waits beside the
+ * retired version until the runbook is restored. While a draft or a version in review exists
+ * the server refuses a restore (nobody's work is overwritten), and while the editor holds
+ * unsaved changes the restored draft would replace them, so in both cases Restore is offered
+ * disabled with the reason beside it.
  */
 import * as React from 'react';
 import { History, RotateCcw } from 'lucide-react';
 
 import { getRunbookVersion } from '@/lib/api-runbooks';
-import type { RunbookDetail, RunbookVersionDoc } from '@/lib/types-runbooks';
+import type { RunbookDetail, RunbookReviewNote, RunbookVersionDoc, RunbookVersionListItem } from '@/lib/types-runbooks';
 import { Button } from '@/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/ui/select';
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/ui/sheet';
@@ -22,11 +28,14 @@ import { GovernanceBadge } from '../shared/chips';
 import { formatDay } from '../shared/dates';
 import { runbookFailure } from '../shared/errors';
 import { diffDefinitions, stepChangeLine } from './diff';
+import { newestNotesFirst, reviewNoteLine, who } from './GovernanceStrip';
 
 export interface HistorySheetProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   detail: RunbookDetail;
+  /** The signed-in person, so their own versions and notes read "you". */
+  username?: string | null;
   /** Restore is offered (`runbooks:manage`, not Demo, not a built-in). */
   canRestore: boolean;
   /**
@@ -72,6 +81,7 @@ export function HistorySheet({
   open,
   onOpenChange,
   detail,
+  username = null,
   canRestore,
   restoreBlocked = null,
   onRestore,
@@ -86,9 +96,18 @@ export function HistorySheet({
   const { get, load, error } = useVersionDocs(detail.summary.id, detail.revision);
   const blockedId = React.useId();
   const working = detail.draft ?? detail.in_review ?? null;
+  const retired = detail.summary.retired;
+  const workingWords = working
+    ? `Version ${working.version.toLocaleString()} is still ${working.state === 'in_review' ? 'in review' : 'a draft'}.`
+    : '';
   const blocked =
     restoreBlocked ??
-    (working ? `Version ${working.version.toLocaleString()} is still ${working.state === 'in_review' ? 'in review' : 'a draft'}. Discard or publish it first.` : null);
+    (!working
+      ? null
+      : retired
+        ? // Publishing waits until the runbook is restored, so that is the way named.
+          `${workingWords} Discard it, or restore the runbook and publish it, first.`
+        : `${workingWords} Discard or publish it first.`);
 
   React.useEffect(() => {
     if (!open) return;
@@ -108,6 +127,15 @@ export function HistorySheet({
 
   const left = from != null ? get(from) : null;
   const right = to != null ? get(to) : null;
+  // A version's review notes, newest first: from the version list, else (an older server)
+  // from whichever document of it is in hand.
+  const inHand = [detail.draft, detail.in_review, detail.live, detail.retired].filter(
+    (doc): doc is RunbookVersionDoc => !!doc,
+  );
+  const notesOf = (item: RunbookVersionListItem): RunbookReviewNote[] =>
+    newestNotesFirst(
+      item.review_notes ?? (inHand.find((doc) => doc.version === item.version) ?? get(item.version))?.review_notes ?? [],
+    );
   const diff = left && right ? diffDefinitions(left.definition, right.definition) : null;
 
   const restore = async (version: number) => {
@@ -144,8 +172,12 @@ export function HistorySheet({
             History
           </SheetTitle>
           <SheetDescription>
-            Every version of {detail.summary.title}. Restoring a version makes a new draft from its text; the live
-            version does not change until a new one is published.
+            {`Every version of ${detail.summary.title}. Restoring a version makes a new draft from its text; `}
+            {detail.live
+              ? 'the live version does not change until a new one is published.'
+              : retired
+                ? 'the runbook stays retired until someone with permission to publish restores it.'
+                : 'nothing is live until a version is published.'}
           </SheetDescription>
         </SheetHeader>
         <div className="space-y-6 p-6">
@@ -163,7 +195,7 @@ export function HistorySheet({
                   <GovernanceBadge state={v.state} />
                   <span className="min-w-0 flex-1 text-sm text-muted-foreground [overflow-wrap:anywhere]">
                     {v.published_by
-                      ? `Published by ${v.published_by}${v.published_at ? ` on ${formatDay(v.published_at)}` : ''}`
+                      ? `Published by ${who(v.published_by, username)}${v.published_at ? ` on ${formatDay(v.published_at)}` : ''}`
                       : v.state === 'draft'
                         ? 'Not published'
                         : v.state === 'in_review'
@@ -183,6 +215,20 @@ export function HistorySheet({
                       <RotateCcw aria-hidden />
                       {`Restore v${v.version.toLocaleString()} as draft`}
                     </Button>
+                  ) : null}
+                  {notesOf(v).length ? (
+                    <ul
+                      className="basis-full space-y-1.5 border-l-2 border-border pl-3"
+                      aria-label={`Review notes on v${v.version.toLocaleString()}`}
+                      data-version-notes=""
+                    >
+                      {notesOf(v).map((note, index) => (
+                        <li key={`${note.at}-${index}`} className="text-sm">
+                          <span className="font-medium text-foreground">{`${reviewNoteLine(note, username)}: `}</span>
+                          <span className="whitespace-pre-line text-foreground [overflow-wrap:anywhere]">{note.text}</span>
+                        </li>
+                      ))}
+                    </ul>
                   ) : null}
                 </li>
               ))}
@@ -226,8 +272,8 @@ export function HistorySheet({
               ) : null}
               {left && right ? (
                 <div className="space-y-1 text-sm text-muted-foreground">
-                  <p>{`v${left.version.toLocaleString()} written by ${left.author}${left.published_by ? `, published by ${left.published_by}` : ''}.`}</p>
-                  <p>{`v${right.version.toLocaleString()} written by ${right.author}${right.published_by ? `, published by ${right.published_by}` : ''}.`}</p>
+                  <p>{`v${left.version.toLocaleString()} written by ${who(left.author, username)}${left.published_by ? `, published by ${who(left.published_by, username)}` : ''}.`}</p>
+                  <p>{`v${right.version.toLocaleString()} written by ${who(right.author, username)}${right.published_by ? `, published by ${who(right.published_by, username)}` : ''}.`}</p>
                 </div>
               ) : null}
               {diff ? (

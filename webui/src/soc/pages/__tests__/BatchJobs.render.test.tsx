@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { toast } from 'sonner';
 
 import type { BackgroundJob, BackgroundJobsResponse } from '@/lib/types';
 
@@ -11,6 +12,10 @@ const mocks = vi.hoisted(() => ({
   getConfig: vi.fn(),
   putConfig: vi.fn(),
   permissions: new Set<string>(),
+  // A clean grants read with RBAC on unless a spec says otherwise; RBAC reported off with
+  // every check denied is the auth context's failed grants read (PageAccess.grantsUnknown).
+  rbacEnabled: true,
+  refresh: vi.fn(),
 }));
 
 vi.mock('@/lib/api', async (importOriginal) => {
@@ -31,14 +36,18 @@ vi.mock('@/lib/api', async (importOriginal) => {
   };
 });
 
-vi.mock('@/soc/auth', () => ({
-  useAuth: () => ({
+vi.mock('@/soc/auth', () => {
+  const context = () => ({
     username: 'tester',
     authEnabled: true,
+    isAuthenticated: true,
+    rbacEnabled: mocks.rbacEnabled,
+    refresh: mocks.refresh,
     hasPermission: (resource: string, action: string) =>
       mocks.permissions.has(`${resource}:${action}`),
-  }),
-}));
+  });
+  return { useAuth: context, useOptionalAuth: context };
+});
 
 vi.mock('@/lib/useEventStream', () => ({
   useEventStream: () => ({ live: false }),
@@ -49,7 +58,11 @@ vi.mock('sonner', () => ({
 }));
 
 import { TooltipProvider } from '@/ui/tooltip';
-import BatchJobs from '../BatchJobs';
+import { ApiError } from '@/lib/api';
+import BatchJobs, {
+  artifactDownloadBlockedReason,
+  artifactDownloadErrorText,
+} from '../BatchJobs';
 
 function job(overrides: Partial<BackgroundJob> = {}): BackgroundJob {
   return {
@@ -95,6 +108,9 @@ function renderPage() {
 describe('unified Jobs surface', () => {
   beforeEach(() => {
     mocks.permissions = new Set();
+    mocks.rbacEnabled = true;
+    mocks.refresh.mockReset().mockResolvedValue(null);
+    vi.mocked(toast.error).mockClear();
     mocks.listJobs.mockReset().mockResolvedValue(response());
     mocks.cancelJob.mockReset();
     mocks.artifact.mockReset();
@@ -122,6 +138,8 @@ describe('unified Jobs surface', () => {
     expect(screen.getByRole('button', { name: 'Cancel' })).toBeInTheDocument();
     expect(screen.queryByText('Related LLM Batch jobs')).not.toBeInTheDocument();
     expect(mocks.getConfig).not.toHaveBeenCalled();
+    // A role that does not hold models:read is not told its grants failed to load.
+    expect(screen.queryByTestId('grants-unknown')).not.toBeInTheDocument();
   });
 
   it('shows the related LLM Batch projection and policy only with models:read', async () => {
@@ -255,6 +273,7 @@ describe('unified Jobs surface', () => {
   });
 
   it('exposes Download strictly when the terminal job has an artifact id', async () => {
+    mocks.permissions = new Set(['data_export:export']);
     mocks.listJobs.mockResolvedValue(
       response({
         jobs: [
@@ -283,7 +302,101 @@ describe('unified Jobs surface', () => {
     await screen.findByText('job-no-artifact');
     // Each Download names its job, so two rows never offer two identical controls.
     expect(screen.getAllByRole('button', { name: /^Download/ })).toHaveLength(1);
-    expect(screen.getByRole('button', { name: 'Download Data export archive job-with-artifact' })).toBeInTheDocument();
+    const download = screen.getByRole('button', { name: 'Download Data export archive job-with-artifact' });
+    expect(download).not.toHaveAttribute('aria-disabled');
+  });
+
+  describe('a file whose grant the viewer no longer holds (roles-09)', () => {
+    const finishedExport = () =>
+      job({
+        job_id: 'job-audit-9',
+        kind: 'audit_export',
+        status: 'succeeded',
+        finished_at: '2026-11-05T19:53:03Z',
+        progress: { done: 761, total: 761, unit: 'events' },
+        result: { kind: 'audit_export', artifact_id: 'a-job-audit-9', counts: { events: 761 } },
+        params: { format: 'csv', order: 'asc', scope: 'all' },
+      });
+
+    it('turns Download off, with the reason, once audit:export is gone, and sends nothing', async () => {
+      mocks.permissions = new Set(['audit:view']);
+      mocks.listJobs.mockResolvedValue(response({ jobs: [finishedExport()], total: 1 }));
+      renderPage();
+      const download = await screen.findByRole('button', { name: 'Download Audit export job-audit-9' });
+      expect(download).toHaveAttribute('aria-disabled', 'true');
+      expect(download).toHaveAccessibleDescription('You no longer have permission to download audit exports.');
+      expect(screen.getByText('You no longer have permission to download audit exports.')).toBeVisible();
+      fireEvent.click(download);
+      expect(mocks.artifact).not.toHaveBeenCalled();
+    });
+
+    it('keeps Download on with both audit grants, and words a 403 from the server', async () => {
+      mocks.permissions = new Set(['audit:view', 'audit:export']);
+      mocks.listJobs.mockResolvedValue(response({ jobs: [finishedExport()], total: 1 }));
+      mocks.artifact.mockRejectedValue(
+        new ApiError(403, 'job artifact permission is no longer active', {
+          detail: { code: 'job_artifact_permission_lost', missing: ['audit:export'] },
+        }),
+      );
+      renderPage();
+      const download = await screen.findByRole('button', { name: 'Download Audit export job-audit-9' });
+      expect(download).not.toHaveAttribute('aria-disabled');
+      fireEvent.click(download);
+      await waitFor(() => expect(mocks.artifact).toHaveBeenCalledWith('job-audit-9'));
+      await waitFor(() =>
+        expect(toast.error).toHaveBeenCalledWith('You no longer have permission to download audit exports.'),
+      );
+      expect(toast.error).not.toHaveBeenCalledWith(expect.stringContaining('no longer active'));
+    });
+
+    it('claims no lost permission while the grants could not be loaded, and offers a Retry', async () => {
+      // The grants read failed: RBAC reported off and every check denied.
+      mocks.rbacEnabled = false;
+      mocks.permissions = new Set();
+      mocks.listJobs.mockResolvedValue(response({ jobs: [finishedExport()], total: 1 }));
+      mocks.artifact.mockRejectedValue(
+        new ApiError(403, 'job artifact permission is no longer active', {
+          detail: { code: 'job_artifact_permission_lost', missing: ['audit:export'] },
+        }),
+      );
+      renderPage();
+      const download = await screen.findByRole('button', { name: 'Download Audit export job-audit-9' });
+      // Nothing is known to be missing, so Download stays on and carries no reason.
+      expect(download).not.toHaveAttribute('aria-disabled');
+      expect(download).not.toHaveAccessibleDescription();
+      expect(screen.queryByText(/You no longer have permission/)).not.toBeInTheDocument();
+      // Where the Related LLM Batch jobs would be, the load failure and its Retry.
+      const notice = screen.getByTestId('grants-unknown');
+      expect(notice).toHaveTextContent('Your permissions could not be loaded.');
+      expect(notice).toHaveTextContent('Related LLM Batch jobs are not shown until your permissions load.');
+      expect(screen.queryByText('Related LLM Batch jobs')).not.toBeInTheDocument();
+      fireEvent.click(within(notice).getByRole('button', { name: 'Retry' }));
+      await waitFor(() => expect(mocks.refresh).toHaveBeenCalledTimes(1));
+      // The server still decides each download, and its refusal is worded per kind.
+      fireEvent.click(download);
+      await waitFor(() => expect(mocks.artifact).toHaveBeenCalledWith('job-audit-9'));
+      await waitFor(() =>
+        expect(toast.error).toHaveBeenCalledWith('You no longer have permission to download audit exports.'),
+      );
+    });
+
+    it('names the reason per kind and leaves other kinds to the server', () => {
+      const none = () => false;
+      expect(artifactDownloadBlockedReason('audit_export', none)).toBe(
+        'You no longer have permission to download audit exports.',
+      );
+      expect(artifactDownloadBlockedReason('data_export_segment', none)).toBe(
+        'You no longer have permission to download data exports.',
+      );
+      expect(artifactDownloadBlockedReason('audit_export', () => true)).toBeNull();
+      expect(artifactDownloadBlockedReason('some_future_kind', none)).toBeNull();
+      expect(artifactDownloadErrorText('some_future_kind', new ApiError(403, 'raw'))).toBe(
+        'You no longer have permission to download this file.',
+      );
+      expect(
+        artifactDownloadErrorText('audit_export', new ApiError(503, 'The download could not be checked just now. Try again.')),
+      ).toBe('The download could not be checked just now. Try again.');
+    });
   });
 
   it('links a finished audit export into the audit log, in the view it holds (SPEC §4.5.8)', async () => {
@@ -306,6 +419,7 @@ describe('unified Jobs surface', () => {
         },
         ...overrides,
       });
+    mocks.permissions = new Set(['audit:view', 'audit:export']);
     mocks.listJobs.mockResolvedValue(
       response({
         jobs: [

@@ -97,6 +97,7 @@ import {
   DropdownMenuSeparator,
 } from '@/ui/dropdown-menu';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/ui/select';
+import { PageAccess } from './PageAccess';
 
 /* --------------------------------------------------------------- helpers --- */
 
@@ -236,7 +237,19 @@ export interface SourcesProps {
   onNavigate?: Navigate;
 }
 
-export default function Sources(_props: SourcesProps) {
+/**
+ * Every read this page makes (the list, health, coverage) needs `sources:read`; without
+ * it the page shows its title and one refusal and sends none of them (roles-05).
+ */
+export default function Sources(props: SourcesProps) {
+  return (
+    <PageAccess resource="sources" action="read" title="Sources" message="You do not have access to log sources.">
+      <SourcesPage {...props} />
+    </PageAccess>
+  );
+}
+
+function SourcesPage(_props: SourcesProps) {
   const canManage = useCan('sources', 'manage');
   const { tableColumns, updateTableColumns } = usePrefs();
   const { active: demoActive } = useDemo();

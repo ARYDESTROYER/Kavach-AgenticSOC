@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
+import logging
 import posixpath
 import re
-from collections.abc import Iterable
-from dataclasses import dataclass
+import time
+import weakref
+from collections import OrderedDict
+from collections.abc import Awaitable, Callable, Iterable
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
@@ -708,6 +714,269 @@ async def record_chat_tool_denial(
         return False
 
 
+# --------------------------------------------------------------------------- #
+# Access denied rows (Round 14 SPEC §4.5.1 "Access denied" quick view, §4.5.5)
+# --------------------------------------------------------------------------- #
+#: A refused READ repeated within this many seconds adds no row: one row per user,
+#: permission and route per window, the audit-view coalescing rule (SPEC §4.5.5, D8)
+#: applied to denials, so a page that a role may open, a poll or a retry loop can
+#: never flood the audit log with the same refusal. A refused WRITE is always
+#: recorded on its own row.
+DENIAL_COALESCE_SECONDS = 300.0
+#: The most refused-read keys one process remembers (least recently seen first out).
+DENIAL_COALESCE_MAX_KEYS = 10_000
+#: The request methods that only read (the RFC 9110 safe methods).
+_READ_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+#: A route template keeps identifier and template characters only, bounded.
+_ROUTE_TEXT_RE = re.compile(r"[^A-Za-z0-9_.:/{}\-]")
+_ROUTE_TEXT_MAX = 200
+_PERMISSION_TEXT_MAX = 200
+
+_denials_logger = logging.getLogger("tlsoc.api.deps.denials")
+
+
+@dataclass
+class _DenialWindow:
+    """One refused-read key: when its last row was written (``None`` before the first
+    one) and how many refusals since then were coalesced into no row."""
+
+    written_at: float | None = None
+    repeats: int = 0
+
+
+@dataclass(eq=False)
+class AccessDenialRecorder:
+    """Writes the ``ACCESS_DENIED`` audit rows of refused requests (#2).
+
+    A refused write is recorded on its own row every time. A refused read is recorded
+    once per user, permission, method and route template per
+    :data:`DENIAL_COALESCE_SECONDS`; the refusals inside the window add no row, and the
+    next row written for the same key says how many there were since the previous one
+    (``tool_input.repeats_since_previous``). That count lives only in this map until
+    such a row is written: if the key is never refused again, or the process restarts,
+    or the key is evicted, the refusals coalesced since its last row are not recorded
+    (:attr:`unrecorded` counts the evicted ones). The map is bounded
+    (:data:`DENIAL_COALESCE_MAX_KEYS`, least recently seen evicted first) and lives
+    with the process state, so a restart, or another replica, may also write one extra
+    row for a key. Best-effort: a row that cannot be appended is logged and counted
+    (:attr:`dropped`) and never changes the 403."""
+
+    clock: Callable[[], float] = time.monotonic
+    window: float = DENIAL_COALESCE_SECONDS
+    max_keys: int = DENIAL_COALESCE_MAX_KEYS
+    written: int = 0
+    coalesced: int = 0
+    dropped: int = 0
+    #: Coalesced refusals whose key was evicted before a row could carry their count.
+    unrecorded: int = 0
+    _seen: OrderedDict[str, _DenialWindow] = field(default_factory=OrderedDict, repr=False)
+    _pending: set[str] = field(default_factory=set, repr=False)
+
+    @staticmethod
+    def key(actor: str, permission: str, method: str, route: str) -> str:
+        raw = json.dumps([actor, permission, method, route], ensure_ascii=True, separators=(",", ":"))
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+    def _entry(self, key: str) -> _DenialWindow:
+        entry = self._seen.get(key)
+        if entry is None:
+            entry = _DenialWindow()
+            self._seen[key] = entry
+        self._seen.move_to_end(key)
+        while len(self._seen) > max(1, self.max_keys):
+            _evicted, gone = self._seen.popitem(last=False)
+            self.unrecorded += gone.repeats
+        return entry
+
+    async def record(
+        self,
+        *,
+        read: bool,
+        actor: str,
+        permission: str,
+        method: str,
+        route: str,
+        write_row: Callable[[int], Awaitable[None]],
+    ) -> bool:
+        """Write the denial row through ``write_row(repeats_since_previous)`` unless it
+        is a read the same user was refused on the same route within the window.
+        Returns whether a row was written. Never raises."""
+        if not read:
+            try:
+                await write_row(0)
+            except Exception as exc:  # noqa: BLE001 (best effort: the 403 stands)
+                self.dropped += 1
+                _denials_logger.warning("access denied row dropped (%d so far): %s", self.dropped, exc)
+                return False
+            self.written += 1
+            return True
+        key = self.key(actor, permission, method, route)
+        now = self.clock()
+        entry = self._seen.get(key)
+        if key in self._pending or (
+            entry is not None and entry.written_at is not None and now - entry.written_at < self.window
+        ):
+            self._entry(key).repeats += 1
+            self.coalesced += 1
+            return False
+        repeats = entry.repeats if entry is not None else 0
+        self._pending.add(key)
+        try:
+            await write_row(repeats)
+        except Exception as exc:  # noqa: BLE001 (best effort: the 403 stands)
+            # Not recorded: the refusal counts toward the next row of the same key.
+            self._entry(key).repeats += 1
+            self.dropped += 1
+            _denials_logger.warning("access denied row dropped (%d so far): %s", self.dropped, exc)
+            return False
+        finally:
+            self._pending.discard(key)
+        current = self._seen.get(key)
+        # Refusals coalesced while this row was being written belong to the next row.
+        during = max(0, current.repeats - repeats) if current is not None else 0
+        entry = self._entry(key)
+        entry.written_at = now
+        entry.repeats = during
+        self.written += 1
+        return True
+
+    def reset(self) -> None:
+        self._seen.clear()
+        self._pending.clear()
+        self.written = self.coalesced = self.dropped = self.unrecorded = 0
+
+
+#: One recorder per application state (so each test app, and each Demo-free state,
+#: starts with an empty map); a state that cannot be weakly referenced shares one.
+_DENIAL_RECORDERS: "weakref.WeakKeyDictionary[Any, AccessDenialRecorder]" = weakref.WeakKeyDictionary()
+_SHARED_DENIALS = AccessDenialRecorder()
+
+
+def denial_recorder(state: Any) -> AccessDenialRecorder:
+    """The :class:`AccessDenialRecorder` of ``state`` (made on first use)."""
+    try:
+        recorder = _DENIAL_RECORDERS.get(state)
+        if recorder is None:
+            recorder = AccessDenialRecorder()
+            _DENIAL_RECORDERS[state] = recorder
+        return recorder
+    except TypeError:  # not hashable or not weakly referenceable
+        return _SHARED_DENIALS
+
+
+def _request_route(request: Any) -> tuple[str, str]:
+    """``(method, route)`` of a refused request: the matched route's template
+    (``/api/users/{username}``), never the values in the path, or the path itself when
+    no route matched. Reduced to identifier and template characters and bounded."""
+    scope = getattr(request, "scope", None)
+    scope = scope if isinstance(scope, dict) else {}
+    method = str(scope.get("method") or getattr(request, "method", "") or "").upper()
+    method = re.sub(r"[^A-Z]", "", method)[:16] or "?"
+    route = scope.get("route")
+    template = getattr(route, "path_format", None) or getattr(route, "path", None)
+    if not isinstance(template, str) or not template:
+        template = str(scope.get("path") or "")
+    return method, _ROUTE_TEXT_RE.sub("?", template)[:_ROUTE_TEXT_MAX] or "?"
+
+
+def _permission_text(missing: Any) -> str:
+    """``users:manage`` (several joined by ``, ``), in the audit token alphabet."""
+    pairs = _missing_pairs(missing)
+    text = ", ".join(
+        f"{_audit_token(resource, 32)}:{_audit_token(action, 32)}" if action
+        else _audit_token(resource, 32)
+        for resource, action in pairs
+    )
+    return text[:_PERMISSION_TEXT_MAX] or "?"
+
+
+def _denial_summary(permission: str, role: str, method: str, route: str, repeats: int) -> str:
+    """``denied users:manage for role analyst_tier2 on GET /api/users``, and, when
+    refusals of the same read were coalesced since the previous row, how many."""
+    text = f"denied {permission} for role {_audit_token(role) or '?'} on {method} {route}"
+    if repeats > 0:
+        times = "time" if repeats == 1 else "times"
+        text += f" (refused {repeats:,} more {times} since the previous record)"
+    return text
+
+
+async def record_access_denied(
+    request: Request,
+    missing: Iterable[str | tuple[str, str]] | str | tuple[str, str],
+    *,
+    view: AccessView | None = None,
+    case_id: str | None = None,
+    target: Any = None,
+) -> bool:
+    """Record that ``request`` was refused for lacking the ``missing`` grants (#2).
+
+    The one writer of the RBAC ``ACCESS_DENIED`` row: the route gate's 403
+    (:func:`_enforce`) and every in-body refusal that decided with the side-effect
+    free :func:`has_permission` (a thread edit by someone who is neither the author nor
+    a moderator, a job file whose grant has gone). A refused read is coalesced (one
+    row per user, permission and route per :data:`DENIAL_COALESCE_SECONDS`); a refused
+    write is recorded on its own row (:class:`AccessDenialRecorder`). The row always
+    goes to the real control audit (SPEC §3.5), names the request's route and carries
+    the request's audit context (client, session reference, role at the time, request
+    id). ``view`` is the caller's resolved access when the caller has it, else the
+    request's principal is used. Best-effort: returns whether a row was written and
+    never raises, so a refusal is never turned into another error."""
+    try:
+        state = get_state(request)
+        audit = getattr(state, "control_audit", None)
+        if audit is None:
+            return False
+        user = view.user if view is not None else current_user(request)
+        raw_role = getattr(view, "role", "") if view is not None else getattr(user, "role", "")
+        role = str(getattr(raw_role, "value", raw_role) or "")
+        actor = _audit_actor(getattr(user, "username", "") or "") if user is not None else "default"
+        permission = _permission_text(missing)
+        method, route = _request_route(request)
+        read = method in _READ_METHODS
+        try:
+            from ..audit.context import audit_context
+
+            context_fields = audit_context(request, user=user, actor_role=role or None).record_fields()
+        except Exception:  # noqa: BLE001 (the row is written without its context)
+            context_fields = {}
+        from ..constants import ActionType
+
+        strict = getattr(audit, "record_strict", None) if read else None
+        recorder = denial_recorder(state)
+
+        async def write_row(repeats: int) -> None:
+            tool_input: dict[str, Any] = {"permission": permission, "method": method, "route": route}
+            if read:
+                tool_input["coalesce_seconds"] = int(recorder.window)
+                tool_input["repeats_since_previous"] = repeats
+            fields = {
+                "surface": "rbac",
+                "actor": actor,
+                "case_id": case_id or None,
+                "target": target,
+                "tool_input": tool_input,
+                "result_summary": _denial_summary(permission, role, method, route, repeats),
+                **context_fields,
+            }
+            if strict is not None:
+                # A coalesced read must know whether its row landed: one that did not
+                # is not remembered, so the next refusal writes it (and counts this one).
+                await strict(action_type=ActionType.ACCESS_DENIED, outcome="denied",
+                             actor_type="human", **fields)
+            else:
+                # A signed-in person was refused (auth off never reaches a denial).
+                await audit.record(action_type=ActionType.ACCESS_DENIED, outcome="denied",
+                                   actor_type="human", **fields)
+
+        return await recorder.record(
+            read=read, actor=actor, permission=permission, method=method, route=route,
+            write_row=write_row,
+        )
+    except Exception as exc:  # noqa: BLE001 (a denial row never fails the refusal)
+        _denials_logger.warning("access denied row not written: %s", exc)
+        return False
+
+
 async def _enforce(request: Request, resource: str, action: str):
     """Shared RBAC enforcement core. Three modes (see rbac/policy.py):
 
@@ -728,28 +997,13 @@ async def _enforce(request: Request, resource: str, action: str):
 
     Always runs the auth gate first (401s an unauthenticated caller when auth is on).
     The resolution itself is :func:`resolve_access` (shared with :func:`resolve_grants`
-    so the two cannot drift); only the 403 path below writes an audit row."""
+    so the two cannot drift); only the 403 path below writes an audit row, through
+    :func:`record_access_denied` (a refused read is coalesced, a refused write is
+    recorded on its own row). The row is best-effort and never blocks the 403."""
     view = await resolve_access(request)
     if view.allows(resource, action):
         return view.user
-    state = get_state(request)
-    user = view.user
-    role = view.role
-    # Append-only audit of the denial (#2) — best-effort, never blocks the 403.
-    try:
-        from ..constants import ActionType
-
-        await state.control_audit.record(
-            action_type=ActionType.ACCESS_DENIED,
-            surface="rbac",
-            actor=getattr(user, "username", "") or "",
-            result_summary=f"denied {resource}:{action} for role {role or '?'}",
-            # A signed-in person was refused (auth off never reaches a denial).
-            outcome="denied",
-            actor_type="human",
-        )
-    except Exception:  # noqa: BLE001
-        pass
+    await record_access_denied(request, [(resource, action)], view=view)
     raise HTTPException(status_code=403, detail=f"permission denied: {resource}:{action}")
 
 
@@ -764,18 +1018,17 @@ def require_permission(resource: str, action: str):
 
 
 async def has_permission(request: Request, resource: str, action: str) -> bool:
-    """Non-raising boolean form of :func:`require_permission` — for INLINE, in-body
-    authorization decisions (e.g. "author OR a moderator grant"). Returns True when the
-    caller holds ``resource:action`` (always True when auth is off / rbac off /
-    super_admin), False on a denial. Never raises for a denial (a 401 for an
-    unauthenticated caller still propagates when auth is on)."""
-    try:
-        await _enforce(request, resource, action)
-        return True
-    except HTTPException as exc:
-        if exc.status_code == 403:
-            return False
-        raise
+    """Non-raising, side-effect free form of :func:`require_permission`, for INLINE,
+    in-body authorization decisions (e.g. "author OR a moderator grant", or what a
+    listing may include). Returns True when the caller holds ``resource:action``
+    (always True when auth is off / rbac off / super_admin), False otherwise. Never
+    raises for a missing grant (a 401 for an unauthenticated caller still propagates
+    when auth is on) and writes NO audit row: asking is not being refused, so a
+    response that answers 200 never leaves an Access denied row behind (Round 14
+    roles-02). A caller that refuses the request because of the answer records the
+    refusal itself with :func:`record_access_denied`."""
+    view = await resolve_access(request)
+    return view.allows(resource, action)
 
 
 def require_role(*roles: str):

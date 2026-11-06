@@ -510,3 +510,22 @@ async def test_a_draft_never_tells_a_person_what_their_grants_hide(app_state, mo
                        allows=lambda resource, action: resource != "sources")
     user = gateway.calls[0]["messages"][1]["content"]
     assert '"tool": "log_stats"' not in user and '"tool": "log_search"' not in user
+
+
+@pytest.mark.asyncio
+async def test_draft_and_confirm_rows_name_the_step_by_its_title(app_state, monkeypatch) -> None:
+    """The activity feed names a step as a person knows it (second acceptance pass,
+    wrb-11): by its title, never by its id, which stays in ``tool_input``."""
+    _use(monkeypatch, FakeGateway("Draft text."))
+    case, run = await _generic_run(app_state, "case-draft-words")
+    await R.draft_step(app_state, case, run.run_id, "what-happened", actor="asha", context=None,
+                       dry_run=False, can_see_cost=True)
+    await R.confirm_draft(app_state, case, run.run_id, "what-happened", "Edited by Asha.", actor="asha",
+                          context=None)
+    (drafted,) = await _rows(app_state, case.case_id, "step.ai_drafted")
+    (confirmed,) = await _rows(app_state, case.case_id, "step.ai_draft_confirmed")
+    title = '"What happened, where, and how bad is it?"'
+    assert drafted["result_summary"] == f"The AI drafted a note for runbook step {title}."
+    assert confirmed["result_summary"] == (
+        f"An AI draft was confirmed as the note of runbook step {title} (step marked done).")
+    assert drafted["tool_input"]["step_id"] == confirmed["tool_input"]["step_id"] == "what-happened"

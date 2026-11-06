@@ -6,13 +6,20 @@
  *
  *   GET  /api/enrichment/providers
  *   GET  /api/enrichment/lookup?indicator=&kind=
+ *   PUT  /api/enrichment/config                     (the enrichment settings)
  *   POST /api/enrichment/providers/{name}/secrets   (booleans-only response, #10)
  *
- * Provider enable/disable rides the SETTINGS PUT (`prefs.enrichment.use_*`) via the
- * shared `api.putSettings` — the manifest's `config_key` (e.g. `use_abuseipdb`) is
- * the `EnrichmentConfig` field flipped.
+ * The master switch, fusion, each provider's toggle (the manifest's `config_key`, e.g.
+ * `use_abuseipdb`, is the `EnrichmentConfig` field flipped) and the cache lifetime are
+ * saved through `PUT /api/enrichment/config`, which changes the same settings the
+ * providers listing reads: the real settings, or while Demo Mode is on the Demo
+ * sandbox's own copy (it never reaches the real settings and ends with Demo Mode or a
+ * reset). Never the shared settings PUT, which always writes the real settings (Round 14,
+ * wro-01: a switch must show what its save changes). The save is refused (403) while the
+ * settings lock is on. Provider keys are real secrets in both stacks (never part of the
+ * Demo copy), audited in the real audit log.
  *
- * Security: secrets are NEVER read or returned — only configured booleans (#10).
+ * Security: secrets are NEVER read or returned: only configured booleans (#10).
  * Every provider-returned string in a lookup is FENCED as UNTRUSTED by the backend
  * and rendered here inside an escaped CodeBlock (#9). The lookup is advisory and
  * never feeds `decide()` (#3).
@@ -21,7 +28,7 @@ import { api } from '@/lib/api';
 
 /* ---------------------------------------------------------------- types ----- */
 
-/** One declared secret field on a provider (boolean state only — no value, #10). */
+/** One declared secret field on a provider (boolean state only: no value, #10). */
 export interface ProviderSecretField {
   key: string;
   label: string;
@@ -55,7 +62,7 @@ export interface EnrichmentProviderManifest {
   default_enabled: boolean;
   version?: string | null;
   /**
-   * Ordered operator setup steps (Round 11) — fixed manifest strings (trusted UI
+   * Ordered operator setup steps (Round 11): fixed manifest strings (trusted UI
    * copy, plain text). Rendered as a collapsible "How to set up" ordered list.
    */
   setup_steps?: string[] | null;
@@ -66,8 +73,43 @@ export interface EnrichmentProviderManifest {
 export interface EnrichmentProvidersResponse {
   enrichment_enabled: boolean;
   fusion_enabled: boolean;
+  /** The cache lifetime, in seconds, of the same settings. */
+  cache_ttl_seconds?: number;
+  /**
+   * True while Demo Mode is on: the switches are the Demo sandbox's copy (a change lasts
+   * only until Demo Mode ends or is reset) and no provider is queried whatever they say.
+   */
+  demo_active?: boolean;
+  /**
+   * The Demo run those settings belong to (null off Demo Mode). A reset keeps Demo Mode on
+   * but starts a new run with a fresh copy, so this tells the page which run it read.
+   */
+  demo_run_id?: string | null;
   providers: EnrichmentProviderManifest[];
 }
+
+/**
+ * The enrichment settings as `PUT /api/enrichment/config` saved them (the backend's
+ * `EnrichmentConfigSaveResult`).
+ */
+export interface EnrichmentConfigSaved {
+  ok: boolean;
+  /** False when the request changed nothing (no save, no audit row). */
+  changed: boolean;
+  /** Whether the save went to the Demo sandbox's copy. */
+  demo_active: boolean;
+  /** The Demo run the save went to (null off Demo Mode). */
+  demo_run_id?: string | null;
+  /** The saved settings: `enabled`, `fusion_enabled`, `cache_ttl_seconds`, `use_*`. */
+  config: Record<string, boolean | number>;
+}
+
+/**
+ * The longest cache lifetime the enrichment save accepts, in seconds (30 days). Mirrors
+ * `CACHE_TTL_MAX_SECONDS` in `backend/app/api/routes_enrichment.py`, which refuses a
+ * longer one with 422.
+ */
+export const CACHE_TTL_MAX_SECONDS = 30 * 24 * 60 * 60;
 
 /** One fenced provider result row from a lookup (every string already escaped). */
 export interface FencedProviderResult {
@@ -78,7 +120,7 @@ export interface FencedProviderResult {
   is_malicious?: boolean | null;
   country?: string | null;
   method?: string | null;
-  /** Free-form provider-returned fields — UNTRUSTED, render fenced. */
+  /** Free-form provider-returned fields: UNTRUSTED, render fenced. */
   [key: string]: unknown;
 }
 
@@ -92,6 +134,11 @@ export interface EnrichmentLookupResult {
   country?: string | null;
   per_provider?: Record<string, unknown>;
   queried: number;
+  /**
+   * Why no provider was asked: `demo_mode` (Demo Mode never queries one) or `disabled`
+   * (enrichment is off). Absent or null when the providers were queried.
+   */
+  not_queried?: 'demo_mode' | 'disabled' | null;
   providers: FencedProviderResult[];
 }
 
@@ -121,15 +168,13 @@ export const enrichmentApi = {
     ),
 
   /**
-   * Flip one provider's `use_*` toggle (and/or the master enable / fusion flag, or the
-   * numeric `cache_ttl_seconds`) via the shared settings PUT. The body is an additive
-   * partial of `prefs.enrichment`; the proxy forwards arbitrary JSON. Returns the saved
-   * Preferences subtree shape loosely (we only read it to confirm success).
+   * Change the enrichment settings: a provider's `use_*` toggle, the master enable or
+   * fusion flag, or the numeric `cache_ttl_seconds`. The body is a partial of
+   * `EnrichmentConfig`; only the fields sent change. Saved to the settings the providers
+   * listing reads (the Demo sandbox's copy while Demo Mode is on), audited first.
    */
   setEnrichmentConfig: (patch: Record<string, boolean | number>) =>
-    api.put<{ ok: boolean; prefs?: { enrichment?: Record<string, unknown> } }>('settings', {
-      enrichment: patch,
-    }),
+    api.put<EnrichmentConfigSaved>('enrichment/config', patch),
 };
 
 /**

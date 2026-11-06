@@ -14,7 +14,6 @@ import * as React from 'react';
 import { ChevronDown, ShieldAlert, ShieldCheck } from 'lucide-react';
 
 import { cn } from '@/lib/cn';
-import { humanizeToken } from '@/lib/format';
 import { Button } from '@/ui/button';
 import { Input } from '@/ui/input';
 import { Label } from '@/ui/label';
@@ -24,6 +23,7 @@ import type { RunbookRun, RunbookStep, StepState } from '@/lib/types-runbooks';
 import { KIND_STEP_NOTE, ProvenanceChip, RunbookExternalLink, StatusMark } from '@/soc/runbooks/shared';
 
 import { actorName, evidenceLinks, numberedSteps, utcTime, type NameOf } from './model';
+import { roleWords, type RoleLabels } from './roles';
 import { useKeepFocus } from './useKeepFocus';
 import type { ActionDraft } from './useStepEditor';
 import { ARIA_DISABLED_LOOK } from './ui';
@@ -34,12 +34,8 @@ export const NOTE_MAX_CHARS = 4_000;
 export const WHERE_MAX_CHARS = 200;
 export const OUTCOME_MAX_CHARS = 500;
 
-/** "incident lead", with its article: "an incident lead", "a responder". */
-export function roleWords(role: string | null | undefined): { noun: string; withArticle: string } {
-  const noun = humanizeToken(role || 'approver').toLowerCase();
-  const article = /^[aeiou]/.test(noun) ? 'an' : 'a';
-  return { noun, withArticle: `${article} ${noun}` };
-}
+/** A role in a sentence: "a SOC manager", "an incident lead" (`roles.ts`). */
+export { roleWords } from './roles';
 
 function lowerFirst(text: string): string {
   return /^[A-Z][a-z]/.test(text) ? text[0].toLowerCase() + text.slice(1) : text;
@@ -396,14 +392,17 @@ export function ActionRecordForm({
   onChange,
   disabled,
   idBase,
+  roleLabels,
 }: {
   step: RunbookStep;
   draft: ActionDraft;
   onChange: (patch: Partial<ActionDraft>) => void;
   disabled: boolean;
   idBase: string;
+  /** The run's roles by their labels (`CaseRunbooks.role_labels`), for the approval line. */
+  roleLabels?: RoleLabels;
 }) {
-  const role = step.approval_role ? roleWords(step.approval_role) : null;
+  const role = step.approval_role ? roleWords(step.approval_role, roleLabels) : null;
   return (
     <div className="space-y-2" data-action-form="">
       <div className="grid gap-2 @[34rem]/run:grid-cols-2">
@@ -457,7 +456,16 @@ export function ActionRecordForm({
   );
 }
 
-/** The recorded action, and its approval when one is needed. */
+/** The approval's outcome line, which takes focus when the Approve button it replaces goes. */
+const APPROVAL_OUTCOME_CLASS =
+  'w-fit max-w-full rounded-sm text-xs text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-card';
+
+/**
+ * The recorded action, and its approval when one is needed. The role is named by its label
+ * ("Waiting for approval from a SOC manager"). Once the approval is decided its outcome
+ * line ("Approved by Asha Rao at 14:31 UTC.") can take focus (`data-approval-outcome`), so
+ * focus on Approve, which goes with the decision, lands on the step's new state.
+ */
 export function ActionRecordView({
   step,
   state,
@@ -467,6 +475,7 @@ export function ActionRecordView({
   busy,
   onApprove,
   onReject,
+  roleLabels,
   now = new Date(),
 }: {
   step: RunbookStep;
@@ -477,6 +486,8 @@ export function ActionRecordView({
   busy: boolean;
   onApprove: () => void;
   onReject: () => void;
+  /** The run's roles by their labels (`CaseRunbooks.role_labels`). */
+  roleLabels?: RoleLabels;
   now?: Date;
 }) {
   const record = state.action_record;
@@ -484,7 +495,7 @@ export function ActionRecordView({
   if (!record) return null;
   const recorder = actorName(record.performed_by, nameOf);
   const approval = state.approval;
-  const role = roleWords(approval?.required_role ?? step.approval_role);
+  const role = roleWords(approval?.required_role ?? step.approval_role, roleLabels);
   const isRecorder = Boolean(currentUser && record.performed_by === currentUser);
   return (
     <div className="space-y-2">
@@ -555,12 +566,12 @@ export function ActionRecordView({
           </div>
         </div>
       ) : approval?.status === 'approved' ? (
-        <p className="text-xs text-muted-foreground">
+        <p tabIndex={-1} data-approval-outcome="approved" className={APPROVAL_OUTCOME_CLASS}>
           Approved by {actorName(approval.by, nameOf)}
           {approval.at ? ` at ${utcTime(approval.at, now)}` : ''}.
         </p>
       ) : approval?.status === 'rejected' ? (
-        <p className="text-xs text-muted-foreground">
+        <p tabIndex={-1} data-approval-outcome="rejected" className={APPROVAL_OUTCOME_CLASS}>
           Rejected by {actorName(approval.by, nameOf)}
           {approval.at ? ` at ${utcTime(approval.at, now)}` : ''}
           {approval.reason ? `: ${approval.reason}` : '.'}

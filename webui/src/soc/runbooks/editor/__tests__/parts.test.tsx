@@ -48,6 +48,74 @@ describe('governance strip', () => {
     expect(screen.getByText('needs a second person')).toBeInTheDocument();
   });
 
+  it('marks a retired runbook as retired and read only, says who retired it, and drops the review date', () => {
+    const retired = makeVersion(1, 'retired', makeDefinition(), {
+      published_by: 'priya',
+      retired_by: 'asha',
+      retired_at: '2026-10-28T10:00:00Z',
+    });
+    const detail = makeDetail({
+      summary: makeSummary({ state: 'retired', retired: true, live_version: null, draft_version: null, review_due_at: '2026-10-01T00:00:00Z' }),
+      live: null,
+      draft: null,
+      retired,
+      open_runs_by_version: { '1': 1 },
+    });
+    wrap(<GovernanceStrip detail={detail} username="asha" isNew={false} dirty={false} now={NOW} />);
+    const current = screen.getByRole('list', { name: 'Lifecycle' }).querySelector('[aria-current="step"]') as HTMLElement;
+    expect(current).toHaveTextContent('Retired·read only');
+    expect(screen.getByText('v1, retired by you on Oct 28, 2026')).toBeInTheDocument();
+    expect(screen.getByText('1 open case still runs v1')).toBeInTheDocument();
+    expect(screen.queryByText('Review due')).toBeNull();
+    expect(screen.queryByText('Live version')).toBeNull();
+  });
+
+  it('shows the reason a version in review was sent back earlier, and none once it is published', () => {
+    const note = { by: 'priya', at: '2026-10-27T10:00:00Z', text: 'Add the host owner step.' };
+    const inReview = makeDetail({ draft: null, in_review: makeVersion(2, 'in_review', makeDefinition(), { review_notes: [note] }) });
+    const { unmount } = wrap(<GovernanceStrip detail={inReview} username="asha" isNew={false} dirty={false} now={NOW} />);
+    expect(screen.getByText('Sent back by priya on Oct 27, 2026')).toBeInTheDocument();
+    expect(screen.getByText('Add the host owner step.')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Show all/ })).toBeNull();
+    unmount();
+    const published = makeDetail({ draft: null, live: makeVersion(2, 'published', makeDefinition(), { review_notes: [note] }) });
+    wrap(<GovernanceStrip detail={published} username="asha" isNew={false} dirty={false} now={NOW} />);
+    expect(screen.queryByText('Add the host owner step.')).toBeNull();
+  });
+
+  it('names a person one way everywhere: the signed-in person as you, others by name', () => {
+    const detail = makeDetail({
+      summary: makeSummary({ last_reviewed_at: '2026-10-25T10:00:00Z', last_reviewed_by: 'priya' }),
+      draft: null,
+    });
+    const { unmount } = wrap(<GovernanceStrip detail={detail} username="priya" isNew={false} dirty={false} now={NOW} />);
+    expect(screen.getByText(/^v1, published by you on Oct 21, 2026$/)).toBeInTheDocument();
+    expect(screen.getByText(/^Oct 25, 2026 by you$/)).toBeInTheDocument();
+    unmount();
+    wrap(<GovernanceStrip detail={detail} username="asha" isNew={false} dirty={false} now={NOW} />);
+    expect(screen.getByText(/^v1, published by priya on Oct 21, 2026$/)).toBeInTheDocument();
+    expect(screen.getByText(/^Oct 25, 2026 by priya$/)).toBeInTheDocument();
+  });
+
+  it('names a draft a retired runbook still holds as waiting, with its review notes newest first', () => {
+    const notes = [
+      { by: 'priya', at: '2026-10-27T10:00:00Z', text: 'Name the owner.' },
+      { by: 'asha', at: '2026-10-28T10:00:00Z', text: 'Add the isolation step.' },
+    ];
+    const detail = makeDetail({
+      summary: makeSummary({ state: 'retired', retired: true, live_version: null, draft_version: 2 }),
+      live: null,
+      draft: makeVersion(2, 'draft', makeDefinition(), { author: 'asha', review_notes: notes }),
+      retired: makeVersion(1, 'retired', makeDefinition(), { retired_by: 'priya', retired_at: '2026-10-28T10:00:00Z' }),
+    });
+    wrap(<GovernanceStrip detail={detail} username="asha" isNew={false} dirty={false} now={NOW} />);
+    expect(screen.getByText('Waiting').nextElementSibling).toHaveTextContent('v2 draft by you, kept while the runbook is retired');
+    const box = screen.getByRole('region', { name: 'Review notes' });
+    expect(within(box).getByText('Sent back by you on Oct 28, 2026')).toBeInTheDocument();
+    expect(within(box).getByText('Add the isolation step.')).toBeInTheDocument();
+    expect(within(box).queryByText('Name the owner.')).toBeNull();
+  });
+
   it('gives a built-in its own read-only line', () => {
     wrap(<GovernanceStrip detail={makeBuiltinDetail()} username="asha" isNew={false} dirty={false} now={NOW} />);
     expect(screen.getByText(/Built-in runbooks are read only/)).toBeInTheDocument();
@@ -190,6 +258,38 @@ describe('Preview as analyst', () => {
     expect(await screen.findByText('203.0.113.7')).toBeInTheDocument();
     expect(screen.getByText(/This case has no value for \{\{entity\.user\}\}/)).toBeInTheDocument();
     expect(loadCaseValues).toHaveBeenCalledWith('c-214');
+  });
+
+  it('keeps focus on Fill while it reads the case (soft-disabled, wrb-07)', async () => {
+    let finish: (values: Record<string, string>) => void = () => undefined;
+    const loadCaseValues = vi.fn(
+      () =>
+        new Promise<Record<string, string>>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    wrap(
+      <AnalystPreview
+        defn={makeDefinition()}
+        cases={[{ case_id: 'c-214', case_number: 'CASE-000214', title: 'SSH spray' }]}
+        loadCaseValues={loadCaseValues}
+        guidance={null}
+      />,
+    );
+    const fill = screen.getByRole('button', { name: 'Fill with CASE-000214' });
+    fill.focus();
+    fireEvent.click(fill);
+    await waitFor(() => expect(fill).toHaveAttribute('aria-disabled', 'true'));
+    expect(fill).not.toBeDisabled();
+    expect(fill).toHaveAttribute('aria-busy', 'true');
+    expect(document.activeElement).toBe(fill);
+    // A second press while it reads asks for nothing more.
+    fireEvent.click(fill);
+    expect(loadCaseValues).toHaveBeenCalledTimes(1);
+    finish({ 'entity.ip': '203.0.113.7' });
+    expect(await screen.findByText('Values from CASE-000214.')).toBeInTheDocument();
+    expect(fill).not.toHaveAttribute('aria-disabled');
+    expect(document.activeElement).toBe(fill);
   });
 
   it('marks guidance over the budget', () => {

@@ -83,6 +83,9 @@ export function StepActions({
   const estimateAsked = React.useRef(false);
   const moreRef = React.useRef<HTMLButtonElement | null>(null);
   const primaryRef = React.useRef<HTMLButtonElement | null>(null);
+  // A reason dialog opened from More takes focus itself: More must not take it back as its
+  // menu closes (that would blur the dialog's field the moment it was focused).
+  const reasonFromMenu = React.useRef(false);
   const hintId = React.useId();
   const estimateId = React.useId();
 
@@ -192,8 +195,22 @@ export function StepActions({
           More
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" collisionPadding={16} className="w-52">
-        <DropdownMenuItem onSelect={() => setReasonFor('not_applicable')}>
+      <DropdownMenuContent
+        align="end"
+        collisionPadding={16}
+        className="w-52"
+        onCloseAutoFocus={(event) => {
+          if (!reasonFromMenu.current) return;
+          reasonFromMenu.current = false;
+          event.preventDefault();
+        }}
+      >
+        <DropdownMenuItem
+          onSelect={() => {
+            reasonFromMenu.current = true;
+            setReasonFor('not_applicable');
+          }}
+        >
           <CircleSlash className="h-4 w-4" />
           Not applicable
         </DropdownMenuItem>
@@ -203,7 +220,12 @@ export function StepActions({
             No longer blocked
           </DropdownMenuItem>
         ) : (
-          <DropdownMenuItem onSelect={() => setReasonFor('blocked')}>
+          <DropdownMenuItem
+            onSelect={() => {
+              reasonFromMenu.current = true;
+              setReasonFor('blocked');
+            }}
+          >
             <OctagonPause className="h-4 w-4" />
             Blocked
           </DropdownMenuItem>

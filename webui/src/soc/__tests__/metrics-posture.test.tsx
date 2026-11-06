@@ -67,6 +67,8 @@ vi.mock('@/lib/api', async () => ({
 
 vi.mock('@/soc/auth', () => ({
   useAuth: () => ({ authEnabled: false, hasPermission: () => true }),
+  // The page guards read the optional context (Round 14 FX7g).
+  useOptionalAuth: () => ({ authEnabled: false, hasPermission: () => true }),
 }));
 
 import Metrics, { slaRowTiming } from '../pages/Metrics';

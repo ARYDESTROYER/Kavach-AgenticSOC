@@ -5381,17 +5381,25 @@ class RunbookVersionDoc(BaseModel):
 
 
 class RunbookVersionListItem(BaseModel):
-    """One row of a runbook's version history."""
+    """One row of a runbook's version history. ``review_notes`` are the reasons a
+    reviewer gave when sending that version back to draft (oldest first), the same
+    notes its version document carries, so History shows them on every entry, a
+    superseded one too, without reading each version."""
 
     version: int
     state: RunbookVersionState
     published_by: str | None = None
     published_at: str | None = None
+    review_notes: list[RunbookReviewNote] = Field(default_factory=list)
 
 
 class RunbookDetail(BaseModel):
     """``GET /api/runbooks/{id}`` (SPEC §4.10.15a). ``draft`` and ``in_review`` are
     present only to a holder of ``runbooks:manage`` or ``runbooks:publish``.
+    ``retired`` is the retired version of a retired runbook (its last published text,
+    with ``retired_by`` and ``retired_at``), which the editor shows read only and
+    Restore makes live again; ``None`` otherwise. A retired version is readable by
+    every reader of the runbook, as its published history is.
     ``open_runs_by_version`` maps a version to the active runs pinned to it.
     ``revision`` is the library document's CAS revision, sent back as
     ``expected_revision``."""
@@ -5400,6 +5408,7 @@ class RunbookDetail(BaseModel):
     live: RunbookVersionDoc | None = None
     draft: RunbookVersionDoc | None = None
     in_review: RunbookVersionDoc | None = None
+    retired: RunbookVersionDoc | None = None
     versions: list[RunbookVersionListItem] = Field(default_factory=list)
     open_runs_by_version: dict[int, int] = Field(default_factory=dict)
     revision: int = 0
@@ -5593,13 +5602,18 @@ class CaseRunbooks(BaseModel):
     """``GET /api/cases/{case_id}/runbooks`` (SPEC §4.10.15a): the case's runs with
     evidence redacted per viewer by the lookup grants, progress per run, the newer
     published version per run, the free-form case tasks ("Other tasks") and the case
-    document's CAS revision."""
+    document's CAS revision. ``role_labels`` maps every role the runs' steps name
+    (``approval_role``, ``owner_role`` and a pending approval's ``required_role``) to
+    the label a person knows it by ("soc_manager" to "SOC manager"; a custom role read
+    the way the Console reads a token), for the approval wording (SPEC §3.1,
+    §4.10.11)."""
 
     runs: list[RunbookRun] = Field(default_factory=list)
     progress: dict[str, RunbookProgress] = Field(default_factory=dict)
     newer_versions: dict[str, int] = Field(default_factory=dict)
     other_tasks: list[CaseTask] = Field(default_factory=list)
     revision: int = 0
+    role_labels: dict[str, str] = Field(default_factory=dict)
 
 
 class RunbookCandidate(BaseModel):
@@ -5644,11 +5658,13 @@ class RunbookAttachResult(BaseModel):
 class RunbookRunUpdate(BaseModel):
     """The result of any write to one run: a step update, a lookup, an approval, an AI
     draft or its confirmation, a version switch or an abandon. ``revision`` is the case
-    document's CAS revision after the write."""
+    document's CAS revision after the write. ``role_labels`` is the run's roles by
+    their labels, as on :class:`CaseRunbooks`."""
 
     run: RunbookRun
     progress: RunbookProgress
     revision: int = 0
+    role_labels: dict[str, str] = Field(default_factory=dict)
 
 
 class RunbookSuggestion(BaseModel):

@@ -4,6 +4,15 @@
  * techniques (ATT&CK ids), severity, entity types, sources, verdicts, statuses, tags and a
  * minimum event count. Read only for a built-in or a viewer without `runbooks:manage`.
  *
+ * A picker is a dialog named for its condition ("Rule condition"). It stays open until the
+ * person presses Done or Escape, or clicks elsewhere. Done and Escape give focus back to what
+ * opened it: the chip it was opened from, else Add condition. A click elsewhere leaves focus
+ * where it landed (the field clicked keeps what is typed next), and gives it back to the opener
+ * only when the click landed where nothing takes focus. Done keeps what the picker shows: a
+ * value typed in its field but not yet added becomes a chip (a refused one keeps the picker
+ * open with the field's error), and Minimum events adds its shown 1 even when the number was
+ * never changed. Escape and a click elsewhere add nothing.
+ *
  * Values typed here are operator text and rule values seen in cases are untrusted: every
  * chip renders its value as a plain text node (#9).
  */
@@ -65,6 +74,16 @@ const TECHNIQUE_RE = /^T\d{4}(?:\.\d{3})?$/;
 export const MATCHING_HELP =
   'Each condition matches any of its values, and a runbook needs every condition it lists. A rule match is the most specific, then a technique, then the other conditions; the fallback comes last. Ties go to the higher priority, then the most conditions matched, then the newest published. Before the investigation a case has no verdict, status, tags or techniques yet: a runbook that names its rules still guides the investigator, and the rest is checked again when the case needs a person. Tags carried over from an earlier version of a runbook are conditions too: the case must carry the tag.';
 
+/** What a criterion is called in the Add condition menu. */
+function criterionMenuLabel(criterion: MatchCriterion): string {
+  return criterion === 'always' ? 'Fallback for any case' : criterion === 'min_event_count' ? 'Minimum events' : CRITERION_LABEL[criterion];
+}
+
+/** The accessible name of a criterion's picker. */
+export function pickerName(criterion: MatchCriterion): string {
+  return criterion === 'always' ? 'Fallback condition' : criterion === 'min_event_count' ? 'Minimum events condition' : `${CRITERION_LABEL[criterion]} condition`;
+}
+
 function hasCriterion(value: AppliesWhen, criterion: MatchCriterion): boolean {
   const v = value[criterion];
   if (Array.isArray(v)) return v.length > 0;
@@ -77,7 +96,7 @@ interface ChipProps {
   children: React.ReactNode;
   removeLabel?: string;
   onRemove?: () => void;
-  onOpen?: () => void;
+  onOpen?: (event: React.MouseEvent<HTMLButtonElement>) => void;
 }
 
 function CriterionChip({ label, children, removeLabel, onRemove, onOpen }: ChipProps) {
@@ -118,16 +137,26 @@ function CriterionChip({ label, children, removeLabel, onRemove, onOpen }: ChipP
   );
 }
 
-/** A text value with suggestions: type and press Enter, or pick a suggestion. */
-function ValueAdder({
-  label,
-  placeholder,
-  suggestions,
-  taken,
-  validate,
-  onAdd,
-  mono,
-}: {
+/** What Done asks of a text picker before it closes. */
+interface ValueAdderHandle {
+  /**
+   * Adds the value typed in the field but not yet added. True when nothing is left to add: the
+   * field was empty, or its value is now a chip. False when the value is refused: the field
+   * shows why and takes focus, and the picker stays open.
+   */
+  commitPending: () => boolean;
+}
+
+interface FieldError {
+  message: string;
+  /**
+   * Spoken as an alert. Not when the refusal also moves focus to the field (Done): the field
+   * names the message as its description, and an alert would say it a second time.
+   */
+  alert: boolean;
+}
+
+interface ValueAdderProps {
   label: string;
   placeholder: string;
   suggestions: string[];
@@ -135,26 +164,50 @@ function ValueAdder({
   validate: (value: string) => string | null;
   onAdd: (value: string) => void;
   mono?: boolean;
-}) {
+}
+
+/** A text value with suggestions: type and press Enter, or pick a suggestion. */
+const ValueAdder = React.forwardRef<ValueAdderHandle, ValueAdderProps>(function ValueAdder(
+  { label, placeholder, suggestions, taken, validate, onAdd, mono },
+  ref,
+) {
   const [text, setText] = React.useState('');
-  const [error, setError] = React.useState<string | null>(null);
+  const [error, setError] = React.useState<FieldError | null>(null);
+  const inputRef = React.useRef<HTMLInputElement>(null);
+  /** Set when Done's refusal should put focus on the field once its error is rendered. */
+  const focusOnError = React.useRef(false);
   const id = React.useId();
   const listId = `${id}-suggestions`;
   const query = text.trim().toLowerCase();
   const shown = suggestions
     .filter((s) => !taken.includes(s) && (!query || s.toLowerCase().includes(query)))
     .slice(0, 8);
-  const add = (raw: string) => {
+  const add = (raw: string, alert = true): boolean => {
     const value = raw.trim();
     const problem = validate(value);
     if (problem) {
-      setError(problem);
-      return;
+      setError({ message: problem, alert });
+      return false;
     }
     onAdd(value);
     setText('');
     setError(null);
+    return true;
   };
+  React.useImperativeHandle(ref, () => ({
+    commitPending: () => {
+      if (!text.trim()) return true;
+      if (add(text, false)) return true;
+      focusOnError.current = true;
+      return false;
+    },
+  }));
+  // Focus moves after the error renders, so the field already names it when focus arrives.
+  React.useLayoutEffect(() => {
+    if (!focusOnError.current || !error) return;
+    focusOnError.current = false;
+    inputRef.current?.focus();
+  }, [error]);
   return (
     <div className="space-y-2">
       <Label htmlFor={id} className="text-sm font-medium">
@@ -162,6 +215,7 @@ function ValueAdder({
       </Label>
       <div className="flex gap-2">
         <Input
+          ref={inputRef}
           id={id}
           value={text}
           placeholder={placeholder}
@@ -185,8 +239,8 @@ function ValueAdder({
         </Button>
       </div>
       {error ? (
-        <p id={`${id}-error`} role="alert" className="text-sm text-critical-text">
-          {error}
+        <p id={`${id}-error`} role={error.alert ? 'alert' : undefined} className="text-sm text-critical-text">
+          {error.message}
         </p>
       ) : null}
       {shown.length ? (
@@ -206,7 +260,7 @@ function ValueAdder({
       ) : null}
     </div>
   );
-}
+});
 
 function CheckList<T extends string>({
   legend,
@@ -249,17 +303,21 @@ function CriterionPicker({
   value,
   onChange,
   suggestions,
+  adderRef,
 }: {
   criterion: MatchCriterion;
   value: AppliesWhen;
   onChange: (next: AppliesWhen) => void;
   suggestions: CriteriaSuggestions;
+  /** The text field of a rule, technique, source or tag picker, for Done. */
+  adderRef: React.Ref<ValueAdderHandle>;
 }) {
   const set = (patch: Partial<AppliesWhen>) => onChange({ ...value, ...patch });
   switch (criterion) {
     case 'rule_ids':
       return (
         <ValueAdder
+          ref={adderRef}
           label="Add a rule"
           placeholder="Exact rule value, for example ssh_auth_failed"
           suggestions={suggestions.rules}
@@ -282,6 +340,7 @@ function CriterionPicker({
     case 'mitre':
       return (
         <ValueAdder
+          ref={adderRef}
           label="Add an ATT&CK technique"
           placeholder="T1110 or T1110.003"
           suggestions={suggestions.techniques}
@@ -347,6 +406,7 @@ function CriterionPicker({
     case 'sources':
       return (
         <ValueAdder
+          ref={adderRef}
           label="Add a source"
           placeholder="A source id, or type:wazuh for every source of a type"
           suggestions={suggestions.sources.map((s) => s.value)}
@@ -367,6 +427,7 @@ function CriterionPicker({
     case 'any_tags':
       return (
         <ValueAdder
+          ref={adderRef}
           label="Add a tag"
           placeholder="A case tag, for example vip"
           suggestions={[]}
@@ -422,10 +483,37 @@ function CriterionPicker({
 export function AppliesWhenEditor({ value, onChange, readOnly, suggestions, issues = [] }: AppliesWhenEditorProps) {
   const [open, setOpen] = React.useState<MatchCriterion | null>(null);
   const addRef = React.useRef<HTMLButtonElement>(null);
+  /**
+   * The criterion chosen from the Add condition menu, opened once the menu has finished
+   * closing (wrb-03). While the menu closes it still moves focus: back to its trigger, and to
+   * itself when the pointer leaves the item the picker now covers. Either move lands outside
+   * the picker, which would read it as dismissed and close it at once. So the picker opens
+   * from the menu's own close hand-back, which is told not to focus the trigger, and then
+   * takes focus itself.
+   */
+  const pickRef = React.useRef<MatchCriterion | null>(null);
+  /** The control the open picker gives focus back to: the chip it was opened from, else Add condition. */
+  const returnRef = React.useRef<HTMLElement | null>(null);
+  /** The open picker's text field, when it has one (rule, technique, source, tag). */
+  const adderRef = React.useRef<ValueAdderHandle>(null);
   const editable = !readOnly && !!onChange;
   const change = (next: AppliesWhen) => onChange?.(next);
   const chips: React.ReactNode[] = [];
-  const openPicker = editable ? (criterion: MatchCriterion) => () => setOpen(criterion) : () => undefined;
+  const openPicker = editable
+    ? (criterion: MatchCriterion) => (event: React.MouseEvent<HTMLButtonElement>) => {
+        // The chip itself, not the active element: a browser that does not focus a button on
+        // click (Safari) would otherwise leave nothing to return to.
+        returnRef.current = event.currentTarget;
+        setOpen(criterion);
+      }
+    : () => undefined;
+  // Done keeps what the picker shows: a value still typed in its field (a refused one keeps
+  // the picker open, its field saying why), and Minimum events' 1 before the number is changed.
+  const done = () => {
+    if (adderRef.current && !adderRef.current.commitPending()) return;
+    if (open === 'min_event_count' && value.min_event_count == null) change({ ...value, min_event_count: 1 });
+    setOpen(null);
+  };
 
   value.rule_ids.forEach((rule) =>
     chips.push(
@@ -576,11 +664,27 @@ export function AppliesWhenEditor({ value, onChange, readOnly, suggestions, issu
                   </Button>
                 </DropdownMenuTrigger>
               </PopoverAnchor>
-              <DropdownMenuContent align="start" className="w-64">
+              <DropdownMenuContent
+                align="start"
+                className="w-64"
+                onCloseAutoFocus={(event) => {
+                  const pick = pickRef.current;
+                  if (!pick) return;
+                  pickRef.current = null;
+                  event.preventDefault();
+                  returnRef.current = addRef.current;
+                  setOpen(pick);
+                }}
+              >
                 <DropdownMenuLabel>Condition</DropdownMenuLabel>
                 {addable.map((c) => (
-                  <DropdownMenuItem key={c} onSelect={() => setOpen(c)}>
-                    {c === 'always' ? 'Fallback for any case' : c === 'min_event_count' ? 'Minimum events' : CRITERION_LABEL[c]}
+                  <DropdownMenuItem
+                    key={c}
+                    onSelect={() => {
+                      pickRef.current = c;
+                    }}
+                  >
+                    {criterionMenuLabel(c)}
                   </DropdownMenuItem>
                 ))}
               </DropdownMenuContent>
@@ -588,16 +692,44 @@ export function AppliesWhenEditor({ value, onChange, readOnly, suggestions, issu
             <PopoverContent
               align="start"
               className="w-80 space-y-3"
+              aria-label={open ? pickerName(open) : undefined}
+              data-criterion-picker={open ?? undefined}
+              onOpenAutoFocus={(event) => {
+                // A radio group (Severity) has no tab stop until a value is chosen: start on
+                // the chosen level, else the first, rather than skipping to Done.
+                const box = event.currentTarget instanceof HTMLElement ? event.currentTarget : null;
+                const radio = box?.querySelector<HTMLElement>('[role="radio"][aria-checked="true"]') ?? box?.querySelector<HTMLElement>('[role="radio"]');
+                if (!radio) return;
+                event.preventDefault();
+                radio.focus();
+              }}
               onCloseAutoFocus={(e) => {
                 e.preventDefault();
-                addRef.current?.focus();
+                // This runs once the picker is gone, after its exit animation. Escape and Done
+                // closed it with focus inside, so focus is lost by now and goes back to the
+                // opener. A click or Tab elsewhere put focus where the person wanted it (the
+                // field they clicked, or another picker or menu): leave it there, as Radix does
+                // after an outside interaction, so the keys typed next are not taken away.
+                const active = document.activeElement;
+                const container = e.currentTarget instanceof Node ? e.currentTarget : null;
+                if (
+                  active instanceof HTMLElement &&
+                  active !== document.body &&
+                  active.isConnected &&
+                  !container?.contains(active)
+                ) {
+                  return;
+                }
+                const target = returnRef.current;
+                returnRef.current = null;
+                (target?.isConnected ? target : addRef.current)?.focus();
               }}
             >
               {open ? (
-                <CriterionPicker criterion={open} value={value} onChange={change} suggestions={suggestions} />
+                <CriterionPicker criterion={open} value={value} onChange={change} suggestions={suggestions} adderRef={adderRef} />
               ) : null}
               <div className="flex justify-end">
-                <Button type="button" variant="outline" size="sm" onClick={() => setOpen(null)}>
+                <Button type="button" variant="outline" size="sm" onClick={done}>
                   Done
                 </Button>
               </div>

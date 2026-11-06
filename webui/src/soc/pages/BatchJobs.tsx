@@ -13,6 +13,11 @@
  * require models:read; scheduler health is projected only when the server authorizes
  * automation:read. System projections never become personal Inbox items.
  *
+ * When the viewer's grants could not be loaded, every check answers no, which says nothing
+ * about the role. The page then leaves every Download on and claims no lost permission
+ * (the server checks each download, and its refusal is worded per kind), and where the
+ * Related LLM Batch jobs would be it says the permissions could not be loaded, with a Retry.
+ *
  * #9: every value (job id / provider / model / state) is attacker-influenceable and is
  * rendered as PLAIN text, never HTML, never re-fed into a prompt. The unified projection
  * excludes provider handles and raw provider errors; no credential or provider-private
@@ -22,8 +27,9 @@
 import * as React from 'react';
 import { ArrowRight, Download, Layers, Percent, Square } from 'lucide-react';
 import { toast } from 'sonner';
-import { api } from '@/lib/api';
+import { api, ApiError } from '@/lib/api';
 import { ListRow, ListRows, LoadingState, Panel, StatusDot } from '@/design-system';
+import { cn } from '@/lib/cn';
 import { errorMessage } from '@/lib/errorMessage';
 import type { BackgroundJob, BackgroundJobStatus, SystemWorkerHealth } from '@/lib/types';
 import { useEventStream } from '@/lib/useEventStream';
@@ -39,8 +45,8 @@ import { EmptyState } from '@/soc/components/EmptyState';
 import { LoadError } from '@/soc/components/LoadError';
 import { InlineCode } from '@/soc/components/CodeBlock';
 import { DataTable, type DataTableColumn } from '@/soc/components/DataTable';
-import { useCan } from '@/soc/components/Can';
 import { pageHash, settingsSectionHash } from '@/soc/router';
+import { GrantsUnknownNotice, usePageGrants } from './PageAccess';
 import {
   batchApi,
   BATCH_STATE_META,
@@ -96,6 +102,53 @@ function DiscountPill({ discount }: { discount: number }) {
 /** The Batch panel's tiles: strip tiles at the compact density, on the panel's grid. */
 const COMPACT_TILES: KpiStripContextValue = { density: 'compact' };
 
+/**
+ * The grants a job's file needs when it is downloaded: the server checks the job's own
+ * grants again at download time (`routes_jobs.py` `_grants`, Round 14 roles-09), so a
+ * person whose role lost one of them can no longer fetch the file. A kind not listed
+ * here is left to the server, which refuses it the same way.
+ */
+const ARTIFACT_GRANTS: Readonly<Record<string, ReadonlyArray<readonly [string, string]>>> = {
+  audit_export: [
+    ['audit', 'view'],
+    ['audit', 'export'],
+  ],
+  data_export_archive: [['data_export', 'export']],
+  data_export_segment: [['data_export', 'export']],
+};
+
+/** Why a job's file can no longer be downloaded, in the server's own words per kind. */
+export function artifactPermissionText(kind: string): string {
+  if (kind === 'audit_export') return 'You no longer have permission to download audit exports.';
+  if (kind === 'data_export_archive' || kind === 'data_export_segment') {
+    return 'You no longer have permission to download data exports.';
+  }
+  return 'You no longer have permission to download this file.';
+}
+
+/**
+ * The reason a job's Download is off for this viewer, or null while every grant its file
+ * needs is held. `has` is the viewer's permission check.
+ */
+export function artifactDownloadBlockedReason(
+  kind: string,
+  has: (resource: string, action: string) => boolean,
+): string | null {
+  const grants = ARTIFACT_GRANTS[kind];
+  if (!grants || grants.every(([resource, action]) => has(resource, action))) return null;
+  return artifactPermissionText(kind);
+}
+
+/**
+ * The toast for a download that did not happen. A refusal (403, the grant removed after
+ * the page loaded) is worded per kind, never the server's code or raw text; any other
+ * failure (a 503 "Try again", a lost file) keeps the server's sentence.
+ */
+export function artifactDownloadErrorText(kind: string, error: unknown): string {
+  if (error instanceof ApiError && error.status === 403) return artifactPermissionText(kind);
+  return errorMessage(error, 'Could not download the job artifact.');
+}
+
 /** A worker's schedule in words (the scheduler and config tokens, SPEC §4.9.5). */
 const CADENCE_WORDS: Readonly<Record<string, string>> = {
   on_ingest: 'On every ingest',
@@ -119,7 +172,9 @@ export default function BatchJobs() {
 }
 
 export function BatchJobsInner() {
-  const canReadModels = useCan('models', 'read');
+  // The viewer's grants, and whether they could be loaded at all (see the header).
+  const grants = usePageGrants();
+  const canReadModels = grants.can('models', 'read');
   const [applicationJobs, setApplicationJobs] = React.useState<BackgroundJob[]>([]);
   const [rows, setRows] = React.useState<BatchJobRow[]>([]);
   const [workers, setWorkers] = React.useState<{
@@ -210,7 +265,7 @@ export function BatchJobsInner() {
       const filename = await downloadJobArtifact(job);
       toast.success(`Downloaded ${filename}.`);
     } catch (e) {
-      toast.error(errorMessage(e, 'Could not download the job artifact.'));
+      toast.error(artifactDownloadErrorText(job.kind, e));
     }
   }, []);
 
@@ -283,46 +338,67 @@ export function BatchJobsInner() {
           // holds. The row's own name tells this job's controls from the next row's.
           const view = auditExportView(job);
           const name = `${humanizeToken(job.kind)} ${job.job_id}`;
+          // Download stays in place but is off, with its reason under it, once the
+          // viewer's role no longer holds a grant the file needs (the server refuses it).
+          // While the grants are unknown nothing is known to be missing, so it stays on
+          // and the server decides.
+          const blocked =
+            job.result?.artifact_id && !grants.unknown
+              ? artifactDownloadBlockedReason(job.kind, grants.can)
+              : null;
+          const reasonId = `job-download-reason-${job.job_id}`;
           return (
-            <span className="inline-flex justify-end gap-1.5">
-              {view ? (
-                <Button asChild variant="outline" size="sm" className="h-7">
-                  <a href={pageHash(view.page, view.opts)} aria-label={`${destinationActionLabel(view)} for ${name}`}>
-                    {destinationActionLabel(view)}
-                    <ArrowRight className="size-3.5" aria-hidden />
-                  </a>
-                </Button>
-              ) : null}
-              {job.result?.artifact_id ? (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="h-7"
-                  aria-label={`Download ${name}`}
-                  onClick={() => void downloadArtifact(job)}
-                >
-                  <Download className="size-3.5" aria-hidden />
-                  Download
-                </Button>
-              ) : null}
-              {isActiveJobStatus(job.status) ? (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="h-7"
-                  disabled={job.cancel_requested}
-                  onClick={() => void cancelJob(job)}
-                >
-                  <Square className="size-3.5" aria-hidden />
-                  {job.cancel_requested ? 'Stopping…' : 'Cancel'}
-                </Button>
+            <span className="inline-flex flex-col items-end gap-1">
+              <span className="inline-flex justify-end gap-1.5">
+                {view ? (
+                  <Button asChild variant="outline" size="sm" className="h-7">
+                    <a href={pageHash(view.page, view.opts)} aria-label={`${destinationActionLabel(view)} for ${name}`}>
+                      {destinationActionLabel(view)}
+                      <ArrowRight className="size-3.5" aria-hidden />
+                    </a>
+                  </Button>
+                ) : null}
+                {job.result?.artifact_id ? (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className={cn('h-7', blocked && 'cursor-not-allowed opacity-50')}
+                    aria-label={`Download ${name}`}
+                    // Soft-disabled: it stays focusable so its reason is read with it.
+                    aria-disabled={blocked ? true : undefined}
+                    aria-describedby={blocked ? reasonId : undefined}
+                    onClick={() => {
+                      if (!blocked) void downloadArtifact(job);
+                    }}
+                  >
+                    <Download className="size-3.5" aria-hidden />
+                    Download
+                  </Button>
+                ) : null}
+                {isActiveJobStatus(job.status) ? (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-7"
+                    disabled={job.cancel_requested}
+                    onClick={() => void cancelJob(job)}
+                  >
+                    <Square className="size-3.5" aria-hidden />
+                    {job.cancel_requested ? 'Stopping…' : 'Cancel'}
+                  </Button>
+                ) : null}
+              </span>
+              {blocked ? (
+                <span id={reasonId} className="max-w-64 text-right text-xs text-muted-foreground">
+                  {blocked}
+                </span>
               ) : null}
             </span>
           );
         },
       },
     ],
-    [cancelJob, downloadArtifact],
+    [cancelJob, downloadArtifact, grants.can, grants.unknown],
   );
 
   const columns = React.useMemo<DataTableColumn<BatchJobRow>[]>(
@@ -544,6 +620,13 @@ export function BatchJobsInner() {
                 .
               </p>
             </>
+          ) : grants.unknown ? (
+            // The Related LLM Batch jobs need models:read, which cannot be checked while
+            // the grants are unknown: say what failed, never that the role lacks it.
+            <GrantsUnknownNotice
+              onRetry={grants.reload}
+              fallback="Related LLM Batch jobs are not shown until your permissions load."
+            />
           ) : null}
         </>
       )}

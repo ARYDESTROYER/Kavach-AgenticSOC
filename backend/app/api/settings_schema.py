@@ -97,7 +97,10 @@ _SECTION_TITLES: dict[str, str] = {
     "customization": "Customization",
     # Round 4 additions.
     "threshold_tuning": "Threshold Tuning",
-    "batch": "Batch Inference",
+    # Round 14 (wro-03): the Console section that saves ``batch`` is "Discounted
+    # inference" (D30), so an audit row names the section the person saved in and a
+    # search of the audit log for that name finds it. Sentence case, as chat_agent.
+    "batch": "Discounted inference",
     "baseline": "Anomaly Baseline",
     "campaign": "Campaign Clustering",
     # Rule-identity precedent (promotion / window fairness / futility reporting).

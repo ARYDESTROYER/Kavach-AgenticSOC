@@ -51,14 +51,19 @@ import {
 import { useKeepFocus } from './useKeepFocus';
 import { useStepEditor } from './useStepEditor';
 
-/** The note a step shows after a refused or stale write. */
+/**
+ * The note a step shows after a refused or stale write. A refusal is an alert, its one
+ * announcement. A stale save's note ("This step changed since you opened it. Showing the
+ * latest.") is already said by the tab's live region, so here it is shown, not spoken
+ * again (WCAG 4.1.3: one announcement per outcome).
+ */
 export function StepNote({ stepId }: { stepId: string }) {
   const ctx = useRunbookRun();
   const note = ctx.stepNote(stepId);
   if (!note) return null;
   return (
     <p
-      role={note.tone === 'error' ? 'alert' : 'status'}
+      role={note.tone === 'error' ? 'alert' : undefined}
       data-step-note={note.tone}
       className={cn('text-xs', note.tone === 'error' ? 'text-critical-text' : 'font-medium text-warning-text')}
     >
@@ -71,7 +76,12 @@ export function StepNote({ stepId }: { stepId: string }) {
  * A recorded action with its approval (Approve, and Reject asking a reason), shared by the
  * Next step card and an opened row. Approve is offered to a holder of `runbooks:run` who
  * holds the step's approval role (or whose roles are not known yet: the server decides)
- * and who did not record the action.
+ * and who did not record the action. The role is named by its label ("a SOC manager").
+ *
+ * Approve goes with the decision, so focus it held never falls to the page body (WCAG
+ * 2.4.3): it lands on the step's new state, "Approved by Ben Ito at 14:52 UTC.", and the
+ * live region says "Step 5 approved." (with the next step). Reject asks a reason in a
+ * dialog, which gives focus back itself.
  */
 export function ActionRecordBlock({ step, state }: { step: NumberedStep['step']; state: NumberedStep['state'] }) {
   const ctx = useRunbookRun();
@@ -80,8 +90,16 @@ export function ActionRecordBlock({ step, state }: { step: NumberedStep['step'];
   const approveRef = React.useRef<HTMLDivElement | null>(null);
   const role = state.approval?.required_role ?? step.approval_role;
   const canApprove = ctx.canRun && runWorkable(ctx.run) && ctx.holdsRole(role) !== false;
+  const keepFocus = useKeepFocus(state.approval?.status ?? 'none', () => {
+    const block = approveRef.current;
+    const target =
+      block?.querySelector<HTMLElement>('[data-approval-outcome]') ??
+      block?.closest('li')?.querySelector<HTMLElement>('[data-step-button]') ??
+      document.querySelector<HTMLElement>('[data-next-step-heading]');
+    target?.focus();
+  });
   return (
-    <div ref={approveRef}>
+    <div ref={approveRef} {...keepFocus} data-action-record-block="">
       <ActionRecordView
         step={step}
         state={state}
@@ -91,6 +109,7 @@ export function ActionRecordBlock({ step, state }: { step: NumberedStep['step'];
         busy={ctx.busy === `${step.id}:approval`}
         onApprove={() => void ctx.decideApproval(step.id, 'approve')}
         onReject={() => setRejectOpen(true)}
+        roleLabels={ctx.roleLabels}
       />
       <ReasonDialog
         open={rejectOpen}
@@ -210,7 +229,14 @@ export function StepDetail({ item, onFinished }: { item: NumberedStep; onFinishe
 
       {isAction && state.action_record ? <ActionRecordBlock step={step} state={state} /> : null}
       {isAction && (!state.action_record || rejected) && editable ? (
-        <ActionRecordForm step={step} draft={editor.action} onChange={editor.setAction} disabled={busy} idBase={idBase} />
+        <ActionRecordForm
+          step={step}
+          draft={editor.action}
+          onChange={editor.setAction}
+          disabled={busy}
+          idBase={idBase}
+          roleLabels={ctx.roleLabels}
+        />
       ) : null}
 
       {showNoteField ? (

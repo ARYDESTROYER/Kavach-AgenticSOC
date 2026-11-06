@@ -354,6 +354,68 @@ def test_the_whole_life_of_a_runbook_through_the_api(box) -> None:
         {k: c.get(k) for k in ("field", "before", "after")} for c in published_row["changes"]]
 
 
+def test_a_retired_runbook_answers_with_its_retired_version(box) -> None:
+    """The editor opens a retired runbook read only on the version Restore brings back
+    (second acceptance pass, wrb-02): the detail carries it, with who retired it and
+    when, and drops it again once the runbook is restored. Before, ``live``, ``draft``
+    and ``in_review`` were all null and the editor had nothing to show."""
+    client = box["client"]
+    create(client, "retiring")
+    assert publish(client, "retiring")["retired"] is None
+    retired = client.post("/api/runbooks/retiring/retire", json={})
+    assert retired.status_code == 200, retired.text
+    assert retired.json()["retired"]["version"] == 1
+    detail = client.get("/api/runbooks/retiring").json()
+    assert detail["summary"]["retired"] is True and detail["live"] is None
+    assert detail["draft"] is None and detail["in_review"] is None
+    version = detail["retired"]
+    assert version["version"] == 1 and version["state"] == "retired"
+    assert version["retired_at"] and "retired_by" in version
+    assert version["definition"]["id"] == "retiring" and version["source"].startswith("---\n")
+    assert [(v["version"], v["state"]) for v in detail["versions"]] == [(1, "retired")]
+    restored = client.post("/api/runbooks/retiring/restore")
+    assert restored.status_code == 200, restored.text
+    assert restored.json()["retired"] is None and restored.json()["live"]["version"] == 1
+
+
+def test_the_version_list_carries_each_versions_review_notes(box) -> None:
+    """History shows why a version was sent back on every entry, a superseded one too,
+    without reading each version (second review of FX7a): each version row carries
+    the notes its version document holds, and a version never sent back carries none."""
+    client = box["client"]
+    made = create(client, "noted")
+    submitted = client.post("/api/runbooks/noted/submit", json={"version": 1, "expected_revision": made["revision"]})
+    assert submitted.status_code == 200, submitted.text
+    rejected = client.post("/api/runbooks/noted/reject", json={"version": 1, "reason": "Name the owner."})
+    assert rejected.status_code == 200, rejected.text
+    live = publish(client, "noted")
+    saved = client.put("/api/runbooks/noted/draft", json={
+        "definition": definition("noted", summary="A second text."), "expected_revision": live["revision"]})
+    assert saved.status_code == 200, saved.text
+    publish(client, "noted")
+    rows = {v["version"]: v for v in client.get("/api/runbooks/noted").json()["versions"]}
+    assert rows[1]["state"] == "superseded"
+    assert [(n["by"], n["text"]) for n in rows[1]["review_notes"]] == [
+        (n["by"], n["text"]) for n in client.get("/api/runbooks/noted/versions/1").json()["review_notes"]]
+    assert [n["text"] for n in rows[1]["review_notes"]] == ["Name the owner."]
+    assert rows[2]["review_notes"] == []
+
+
+def test_a_draft_beside_a_retired_version_leaves_the_retired_version_in_the_detail(box) -> None:
+    """Editing a retired runbook opens the next version as a draft; the retired text
+    stays the one Restore brings back, so the detail carries both."""
+    client = box["client"]
+    create(client, "retired-edit")
+    publish(client, "retired-edit")
+    retired = client.post("/api/runbooks/retired-edit/retire", json={}).json()
+    saved = client.put("/api/runbooks/retired-edit/draft", json={
+        "definition": definition("retired-edit", summary="A new text."), "expected_revision": retired["revision"]})
+    assert saved.status_code == 200, saved.text
+    body = saved.json()
+    assert body["draft"]["version"] == 2 and body["retired"]["version"] == 1
+    assert body["retired"]["definition"]["summary"] != "A new text."
+
+
 def test_publish_requires_the_reviewed_revision_and_refuses_a_stale_one(box) -> None:
     client, state = box["client"], box["state"]
     made = create(client, "bound")
@@ -551,6 +613,35 @@ def split_box() -> Any:
         add_user(client, "approver", "analyst_tier2")
         add_user(client, "tier1", "analyst_tier1")
         yield holder
+
+
+def test_a_reader_sees_the_retired_version_of_a_retired_runbook(split_box) -> None:
+    """A retired version is published history: a reader without manage or publish gets
+    it too (never a draft or a version in review), so the page opens for them as well,
+    with who retired it."""
+    client = split_box["client"]
+    login(client, "writer", "user-pass-12345")
+    made = create(client, "retired-read")
+    assert client.post("/api/runbooks/retired-read/submit",
+                       json={"version": 1, "expected_revision": made["revision"]}).status_code == 200
+    login(client, "approver", "user-pass-12345")
+    detail = client.get("/api/runbooks/retired-read").json()
+    assert client.post("/api/runbooks/retired-read/publish", json={
+        "version": 1, "expected_revision": detail["revision"], "content_hash": detail["in_review"]["content_hash"],
+    }).status_code == 200
+    login(client, "writer", "user-pass-12345")
+    retired = client.post("/api/runbooks/retired-read/retire", json={}).json()
+    # A draft on the retired runbook stays hidden from a reader.
+    assert client.put("/api/runbooks/retired-read/draft", json={
+        "definition": definition("retired-read", summary="Unpublished text."),
+        "expected_revision": retired["revision"]}).status_code == 200
+    login(client, "tier1", "user-pass-12345")
+    seen = client.get("/api/runbooks/retired-read")
+    assert seen.status_code == 200, seen.text
+    body = seen.json()
+    assert body["retired"]["version"] == 1 and body["retired"]["retired_by"] == "writer"
+    assert body["draft"] is None and body["in_review"] is None
+    assert [v["state"] for v in body["versions"]] == ["retired"]
 
 
 def test_manage_writes_and_submits_and_publish_approves(split_box) -> None:

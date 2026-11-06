@@ -846,6 +846,14 @@ export default function Cases({
   // control that would 403 (consistent with the <Can resource="cases" action="close">
   // wrap on the bulk buttons).
   const canClose = useCan('cases', 'close');
+  // The bulk bar offers each action only to a role that holds its grant (roles-07):
+  // acknowledge, tag, status and disposition need `cases:write`, Assign `cases:assign`,
+  // Reinvestigate `cases:reinvestigate`, Close and Resolve `cases:close`. A role with none
+  // of them (the read-only auditor) gets no row selection at all.
+  const canWriteCases = useCan('cases', 'write');
+  const canAssignCases = useCan('cases', 'assign');
+  const canReinvestigateCases = useCan('cases', 'reinvestigate');
+  const canBulk = canWriteCases || canAssignCases || canReinvestigateCases || canClose;
 
   const [cases, setCases] = React.useState<Case[]>([]);
   const [total, setTotal] = React.useState(0);
@@ -1200,7 +1208,7 @@ export default function Cases({
           action: { label: 'Open Inbox', onClick: () => navigate('inbox') },
         });
       } catch (e) {
-        const msg = e instanceof Error ? e.message : 'Could not start the background job.';
+        const msg = bulkJobErrorText(e);
         setBulkError(msg);
         toast.error(msg);
       } finally {
@@ -2115,7 +2123,7 @@ export default function Cases({
               onPageChange={setPage}
               onPageSizeChange={setPageSize}
               pageSizeOptions={[25, 50, 100]}
-              selectable
+              selectable={canBulk}
               selected={selected}
               onSelectedChange={setSelected}
               onRowClick={(c) => openInCaseManager(c.case_id, c.case_number || c.case_id)}
@@ -2316,6 +2324,18 @@ const BULK_STATUSES: Array<{ value: string; label: string }> = [
   { value: 'escalated', label: 'Escalated' },
 ];
 
+/**
+ * The toast for a bulk change the server did not accept. A refusal (403: the role lacks
+ * the grant the job needs, or it was removed since the page loaded) is worded, never the
+ * server's raw "permission denied: cases:write"; any other failure keeps its message.
+ */
+export function bulkJobErrorText(error: unknown): string {
+  if ((error as { status?: unknown } | null)?.status === 403) {
+    return 'You do not have permission to make this change to the selected cases.';
+  }
+  return error instanceof Error && error.message ? error.message : 'Could not start the background job.';
+}
+
 /** Dispositions an analyst may bulk-set. */
 const BULK_DISPOSITIONS: Array<{ value: string; label: string }> = [
   { value: 'true_positive', label: 'True positive' },
@@ -2388,6 +2408,9 @@ const BulkActionBar: React.FC<{
       key="bulk-bar"
       role="region"
       aria-label="Bulk actions"
+      // A bulk submit in flight disables every control; the region says it is busy, so
+      // the wait is announced whichever actions the role is offered.
+      aria-busy={busy || undefined}
       initial={{ opacity: 0, x: '-50%', y: 16 }}
       animate={{ opacity: 1, x: '-50%', y: 0 }}
       exit={{ opacity: 0, x: '-50%', y: 16 }}
@@ -2405,7 +2428,19 @@ const BulkActionBar: React.FC<{
         // them before the row starts scrolling.
         className="flex flex-nowrap items-center gap-2 overflow-x-auto px-3 py-2.5 shadow-elev2 [&>*]:shrink-0"
       >
-        <span className="inline-flex items-center rounded-md bg-primary px-2 py-0.5 text-xs font-semibold text-primary-foreground">
+        {/* The one progress cue lives in the count badge, which every role sees: a role
+            without Reinvestigate (tier 1, responder) still sees its submit in flight. */}
+        <span
+          className="inline-flex items-center rounded-md bg-primary px-2 py-0.5 text-xs font-semibold text-primary-foreground"
+          data-testid="cases-bulk-count"
+        >
+          {busy ? (
+            <LoaderCircle
+              className="mr-1 inline size-3.5 motion-safe:animate-spin"
+              aria-hidden
+              data-testid="cases-bulk-busy"
+            />
+          ) : null}
           {count} selected
         </span>
         {unavailableReason ? (
@@ -2419,146 +2454,151 @@ const BulkActionBar: React.FC<{
             badge) instead of `secondary`, whose fill token is identical to `muted`
             (theme.css `--secondary` === `--muted` === `--surface-sunken`, all
             `--slate-3`) and read as a disabled/washed-out control next to the bordered
-            `outline` buttons beside it. */}
-        <Button size="sm" variant="default" onClick={onAcknowledge} disabled={locked}>
-          <Check className="mr-1.5 size-4" aria-hidden />
-          Acknowledge
-        </Button>
+            `outline` buttons beside it. Every action below is shown only to a role that
+            holds its grant, the one the job is checked against on the server. */}
+        <Can resource="cases" action="write">
+          <Button size="sm" variant="default" onClick={onAcknowledge} disabled={locked}>
+            <Check className="mr-1.5 size-4" aria-hidden />
+            Acknowledge
+          </Button>
+        </Can>
 
         {/* Assign owner — a pure owner set (cases:assign), NOT an escalation. To move
             status use "Set status → Escalated" below. */}
-        <Popover open={assignOpen} onOpenChange={setAssignOpen}>
-          <PopoverTrigger asChild>
-            <Button size="sm" variant="outline" disabled={locked}>
-              <UserPlus className="mr-1.5 size-4" aria-hidden />
-              Assign
-            </Button>
-          </PopoverTrigger>
-          <PopoverContent className="w-60" side="top">
-            <div className="space-y-2">
-              <label
-                htmlFor="bulk-assignee"
-                className="block text-xs font-medium text-muted-foreground"
-              >
-                Assign to
-              </label>
-              <Input
-                id="bulk-assignee"
-                value={assignee}
-                onChange={(e) => setAssignee(e.target.value)}
-                placeholder="Analyst or team"
-                aria-label="Owner for bulk assignment"
-              />
-              <Button
-                size="sm"
-                className="w-full"
-                disabled={!assignee.trim() || busy}
-                onClick={() => {
-                  onAssign(assignee.trim());
-                  setAssignOpen(false);
-                }}
-              >
-                Assign {count}
+        <Can resource="cases" action="assign">
+          <Popover open={assignOpen} onOpenChange={setAssignOpen}>
+            <PopoverTrigger asChild>
+              <Button size="sm" variant="outline" disabled={locked}>
+                <UserPlus className="mr-1.5 size-4" aria-hidden />
+                Assign
               </Button>
-            </div>
-          </PopoverContent>
-        </Popover>
+            </PopoverTrigger>
+            <PopoverContent className="w-60" side="top">
+              <div className="space-y-2">
+                <label
+                  htmlFor="bulk-assignee"
+                  className="block text-xs font-medium text-muted-foreground"
+                >
+                  Assign to
+                </label>
+                <Input
+                  id="bulk-assignee"
+                  value={assignee}
+                  onChange={(e) => setAssignee(e.target.value)}
+                  placeholder="Analyst or team"
+                  aria-label="Owner for bulk assignment"
+                />
+                <Button
+                  size="sm"
+                  className="w-full"
+                  disabled={!assignee.trim() || busy}
+                  onClick={() => {
+                    onAssign(assignee.trim());
+                    setAssignOpen(false);
+                  }}
+                >
+                  Assign {count}
+                </Button>
+              </div>
+            </PopoverContent>
+          </Popover>
+        </Can>
 
-        {/* Add tag (cases:write) */}
-        <Popover open={tagOpen} onOpenChange={setTagOpen}>
-          <PopoverTrigger asChild>
-            <Button size="sm" variant="outline" disabled={locked}>
-              <TagIcon className="mr-1.5 size-4" aria-hidden />
-              Add tag
-            </Button>
-          </PopoverTrigger>
-          <PopoverContent className="w-60" side="top">
-            <div className="space-y-2">
-              <label
-                htmlFor="bulk-tag"
-                className="block text-xs font-medium text-muted-foreground"
-              >
-                Tag to add
-              </label>
-              <Input
-                id="bulk-tag"
-                value={tag}
-                onChange={(e) => setTag(e.target.value)}
-                placeholder="e.g. needs-review"
-                aria-label="Tag to add to selected cases"
-                aria-invalid={tagError ? true : undefined}
-                aria-describedby={tagError ? 'bulk-tag-error' : undefined}
-              />
-              {/* Refused as it is typed, never cut to fit. */}
-              {tagError ? (
-                <p id="bulk-tag-error" role="alert" className="text-xs font-medium text-critical-text">
-                  {tagError}
-                </p>
-              ) : null}
-              <Button
-                size="sm"
-                className="w-full"
-                disabled={!tag.trim() || Boolean(tagError) || busy}
-                onClick={() => {
-                  onAddTag(tag.trim());
-                  setTagOpen(false);
-                }}
-              >
-                Tag {count}
+        {/* Add tag, Set status and Set disposition (cases:write) */}
+        <Can resource="cases" action="write">
+          <Popover open={tagOpen} onOpenChange={setTagOpen}>
+            <PopoverTrigger asChild>
+              <Button size="sm" variant="outline" disabled={locked}>
+                <TagIcon className="mr-1.5 size-4" aria-hidden />
+                Add tag
               </Button>
-            </div>
-          </PopoverContent>
-        </Popover>
+            </PopoverTrigger>
+            <PopoverContent className="w-60" side="top">
+              <div className="space-y-2">
+                <label
+                  htmlFor="bulk-tag"
+                  className="block text-xs font-medium text-muted-foreground"
+                >
+                  Tag to add
+                </label>
+                <Input
+                  id="bulk-tag"
+                  value={tag}
+                  onChange={(e) => setTag(e.target.value)}
+                  placeholder="e.g. needs-review"
+                  aria-label="Tag to add to selected cases"
+                  aria-invalid={tagError ? true : undefined}
+                  aria-describedby={tagError ? 'bulk-tag-error' : undefined}
+                />
+                {/* Refused as it is typed, never cut to fit. */}
+                {tagError ? (
+                  <p id="bulk-tag-error" role="alert" className="text-xs font-medium text-critical-text">
+                    {tagError}
+                  </p>
+                ) : null}
+                <Button
+                  size="sm"
+                  className="w-full"
+                  disabled={!tag.trim() || Boolean(tagError) || busy}
+                  onClick={() => {
+                    onAddTag(tag.trim());
+                    setTagOpen(false);
+                  }}
+                >
+                  Tag {count}
+                </Button>
+              </div>
+            </PopoverContent>
+          </Popover>
 
-        {/* Set status (cases:write) */}
-        <Select value="" onValueChange={(v) => v && onSetStatus(v)} disabled={locked}>
-          <SelectTrigger className="h-8 w-[9.5rem]" aria-label="Set status for selected cases">
-            <span className="inline-flex items-center text-sm">
-              <SlidersHorizontal className="mr-1.5 size-4" aria-hidden />
-              Set status
-            </span>
-          </SelectTrigger>
-          <SelectContent>
-            {BULK_STATUSES.map((s) => (
-              <SelectItem key={s.value} value={s.value}>
-                {s.label}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+          {/* Set status (cases:write) */}
+          <Select value="" onValueChange={(v) => v && onSetStatus(v)} disabled={locked}>
+            {/* The icon sits beside the label, outside the clamped span: the trigger's
+                `[&>span]:line-clamp-1` turns a span into a block and stacked the two. */}
+            <SelectTrigger
+              className="h-8 w-[9.5rem] justify-start gap-1.5 [&>svg:last-child]:ml-auto"
+              aria-label="Set status for selected cases"
+            >
+              <SlidersHorizontal className="size-4 shrink-0" aria-hidden />
+              <span className="text-sm">Set status</span>
+            </SelectTrigger>
+            <SelectContent>
+              {BULK_STATUSES.map((s) => (
+                <SelectItem key={s.value} value={s.value}>
+                  {s.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
 
-        {/* Set disposition (cases:write) */}
-        <Select value="" onValueChange={(v) => v && onSetDisposition(v)} disabled={locked}>
-          <SelectTrigger
-            className="h-8 w-[10.5rem]"
-            aria-label="Set disposition for selected cases"
-          >
-            <span className="inline-flex items-center text-sm">
-              <CircleSlash className="mr-1.5 size-4" aria-hidden />
-              Set disposition
-            </span>
-          </SelectTrigger>
-          <SelectContent>
-            {BULK_DISPOSITIONS.map((d) => (
-              <SelectItem key={d.value} value={d.value}>
-                {d.label}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+          {/* Set disposition (cases:write) */}
+          <Select value="" onValueChange={(v) => v && onSetDisposition(v)} disabled={locked}>
+            <SelectTrigger
+              className="h-8 w-[10.5rem] justify-start gap-1.5 [&>svg:last-child]:ml-auto"
+              aria-label="Set disposition for selected cases"
+            >
+              <CircleSlash className="size-4 shrink-0" aria-hidden />
+              <span className="text-sm">Set disposition</span>
+            </SelectTrigger>
+            <SelectContent>
+              {BULK_DISPOSITIONS.map((d) => (
+                <SelectItem key={d.value} value={d.value}>
+                  {d.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </Can>
 
-        {/* Reinvestigate (cases:write-equivalent today — NOT wrapped in <Can>, matching
-            the single-case Reinvestigate button in CaseDetail, which is also ungated
-            pending the tracked RBAC follow-up). Gated behind a ConfirmDialog by the
-            caller since it spends LLM tokens per case (#6). */}
-        <Button size="sm" variant="outline" onClick={onReinvestigate} disabled={locked}>
-          {busy ? (
-            <LoaderCircle className="mr-1.5 size-4 motion-safe:animate-spin" aria-hidden />
-          ) : (
+        {/* Reinvestigate (cases:reinvestigate, the grant the `case_reinvestigate` job is
+            checked against, as the single-case action in CaseDetail). Gated behind a
+            ConfirmDialog by the caller since it spends LLM tokens per case (#6). */}
+        <Can resource="cases" action="reinvestigate">
+          <Button size="sm" variant="outline" onClick={onReinvestigate} disabled={locked}>
             <Zap className="mr-1.5 size-4" aria-hidden />
-          )}
-          Reinvestigate
-        </Button>
+            Reinvestigate
+          </Button>
+        </Can>
 
         {/* Close / resolve — cases:close. Hidden unless granted (RBAC-mirrored). */}
         <Can resource="cases" action="close">

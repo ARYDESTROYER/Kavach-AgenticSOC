@@ -37,7 +37,7 @@ from typing import Any, Callable
 
 from ..audit.audit_log import AuditLogger
 from ..cache import Cache
-from ..config import AutoClosePolicy, Preferences, Secrets
+from ..config import AutoClosePolicy, EnrichmentConfig, Preferences, Secrets
 from ..constants import SourceSurface
 from ..es.fake import InMemoryESClient
 from ..llm.gateway import LLMGateway
@@ -293,6 +293,14 @@ class DemoStack:
         from ..config import CorrelationRule
         self._tuned_correlation_rules: dict[str, CorrelationRule] = {}
         self._prefs_override: Preferences | None = None
+        # The sandbox's own copy of the ENRICHMENT SETTINGS, as the Settings page shows
+        # and edits them while Demo Mode is on (Round 14 SPEC §3.5, wro-01). None until
+        # the first Demo edit: the real block is then followed live. Kept apart from
+        # ``_prefs_override`` because that snapshot is written from the EXECUTION copy,
+        # whose ``enrichment.enabled`` is forced off (an isolation control, not a
+        # setting); keeping the settings here means a Demo edit never shows that forced
+        # value and the execution copy is always derived from what the page shows.
+        self._enrichment_settings: EnrichmentConfig | None = None
         # The long-lived streaming baseline behind the demo EVENT funnel (warmed/flushed
         # against the demo baseline_store). None → built lazily.
         self._funnel_baseline = None
@@ -489,7 +497,9 @@ class DemoStack:
         blocks are forced ON in the SANDBOX COPY ONLY — the REAL prefs (which these are
         read from) are never mutated (this is a model_copy). External enrichment is
         always disabled: even keyless providers perform real HTTP/DNS traffic, which
-        an offline synthetic demo must never emit. Read live so safe presentation
+        an offline synthetic demo must never emit. The enrichment block is the
+        sandbox's enrichment settings (:meth:`enrichment_settings`) with lookups forced
+        off, never the copy inside ``_prefs_override``. Read live so safe presentation
         settings still apply during the demo."""
         from ..config import (
             CaseAutomationRule, CorrelationRule, ThresholdAutomationConfig,
@@ -502,7 +512,7 @@ class DemoStack:
             "auto_close": sandbox_policy(prefs.auto_close),
             "default_correlation": every,
             "background_scan_enabled": True,
-            "enrichment": prefs.enrichment.model_copy(update={"enabled": False}),
+            "enrichment": self.enrichment_settings().model_copy(update={"enabled": False}),
             "realtime": prefs.realtime.model_copy(update={"enabled": True}),
             # Every Demo case carries a display number (seeded and live alike), from the
             # operator's own template and reset policy, so no Demo surface shows an
@@ -768,6 +778,30 @@ class DemoStack:
             pass
         self._prefs_override = new_prefs.model_copy(deep=True)
         return new_prefs
+
+    def enrichment_settings(self) -> EnrichmentConfig:
+        """The enrichment settings of this Demo run, as the Settings page shows and
+        edits them: the run's own copy once an operator changed it here, else the real
+        settings, read live (a fresh run starts from them). It is never the execution
+        copy: :meth:`_demo_prefs` derives that from this block with lookups forced off,
+        so the page shows the stored switch while no provider is ever queried. Callers
+        must not change the returned model in place (edits go through
+        :meth:`mutate_enrichment_settings`)."""
+        if self._enrichment_settings is not None:
+            return self._enrichment_settings
+        return self._get_prefs().enrichment
+
+    async def mutate_enrichment_settings(
+        self, mutate: Callable[[EnrichmentConfig], EnrichmentConfig]
+    ) -> EnrichmentConfig:
+        """Apply a pure edit to this run's enrichment settings, in the sandbox only.
+
+        The read, the edit and the store run in one synchronous step (no await), so a
+        concurrent edit cannot be lost. The real settings are never written: the copy
+        vanishes with the stack when Demo Mode ends."""
+        saved = mutate(self.enrichment_settings()).model_copy(deep=True)
+        self._enrichment_settings = saved
+        return saved
 
     async def update_execution_prefs(self, new_prefs: Preferences) -> Preferences:
         """Apply an operator change to this throwaway run without durable writes."""

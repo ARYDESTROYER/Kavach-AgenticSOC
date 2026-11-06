@@ -22,6 +22,7 @@ import { ListRow, ListRows } from '@/design-system/list-row';
 import { Panel } from '@/design-system/panel';
 import { StatusDot } from '@/design-system/status-dot';
 import { exportRunbookMarkdown, getRunbookMetrics, importRunbook, listRunbookLibrary } from '@/lib/api-runbooks';
+import { cn } from '@/lib/cn';
 import { downloadBlob } from '@/lib/download-blob';
 import { caseLabel, fmtDuration } from '@/lib/format';
 import type {
@@ -264,8 +265,15 @@ function ImportDialog({
 }) {
   const [text, setText] = React.useState('');
   const [busy, setBusy] = React.useState(false);
-  const [error, setError] = React.useState<string | null>(null);
+  /**
+   * What went wrong, said once. A refused import moves focus to the Markdown, which names the
+   * message as its description, so the message is not an alert as well. A file that is too
+   * large moves no focus, so its message is the alert.
+   */
+  const [error, setError] = React.useState<{ message: string; alert: boolean } | null>(null);
   const fileRef = React.useRef<HTMLInputElement>(null);
+  const textRef = React.useRef<HTMLTextAreaElement>(null);
+  const errorId = React.useId();
   React.useEffect(() => {
     if (!open) {
       setText('');
@@ -275,13 +283,17 @@ function ImportDialog({
   const readFile = async (file: File | undefined) => {
     if (!file) return;
     if (file.size > RUNBOOK_LIMITS.sourceBytes) {
-      setError(`That file is ${file.size.toLocaleString()} bytes; the limit is ${RUNBOOK_LIMITS.sourceBytes.toLocaleString()}.`);
+      setError({
+        message: `That file is ${file.size.toLocaleString()} bytes; the limit is ${RUNBOOK_LIMITS.sourceBytes.toLocaleString()}.`,
+        alert: true,
+      });
       return;
     }
     setText(await file.text());
     setError(null);
   };
   const submit = async () => {
+    if (busy || !text.trim()) return;
     setBusy(true);
     setError(null);
     try {
@@ -289,7 +301,13 @@ function ImportDialog({
       onImported(detail);
     } catch (err) {
       const failure = runbookFailure(err, 'Could not import that runbook.');
-      setError(failure.issues.length ? failure.issues.slice(0, 5).map((i) => i.message).join(' ') : failure.message);
+      setError({
+        message: failure.issues.length ? failure.issues.slice(0, 5).map((i) => i.message).join(' ') : failure.message,
+        alert: false,
+      });
+      // The dialog stays open on a refusal: focus goes to the Markdown the problem is in,
+      // which names the problem as its description (WCAG 2.4.3, wrb-07), so it is heard once.
+      window.setTimeout(() => textRef.current?.focus(), 0);
     } finally {
       setBusy(false);
     }
@@ -330,16 +348,19 @@ function ImportDialog({
           </div>
           <Label htmlFor="runbook-import-text">Markdown</Label>
           <Textarea
+            ref={textRef}
             id="runbook-import-text"
             rows={12}
             value={text}
             onChange={(e) => setText(e.target.value)}
+            aria-invalid={error ? true : undefined}
+            aria-describedby={error ? errorId : undefined}
             className="font-mono text-xs"
             spellCheck={false}
           />
           {error ? (
-            <p role="alert" className="text-sm text-critical-text">
-              {error}
+            <p id={errorId} role={error.alert ? 'alert' : undefined} className="text-sm text-critical-text" data-import-error="">
+              {error.message}
             </p>
           ) : null}
         </div>
@@ -347,7 +368,15 @@ function ImportDialog({
           <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
             Cancel
           </Button>
-          <Button type="button" onClick={() => void submit()} disabled={!text.trim() || busy}>
+          {/* Disabled for empty text only; while it runs it is soft-disabled and keeps focus. */}
+          <Button
+            type="button"
+            onClick={() => void submit()}
+            disabled={!text.trim()}
+            aria-disabled={busy || undefined}
+            aria-busy={busy || undefined}
+            className={cn(busy && 'cursor-not-allowed opacity-50')}
+          >
             Import as draft
           </Button>
         </DialogFooter>

@@ -14,6 +14,7 @@ This module also holds the small harness the other A7b test modules import.
 
 from __future__ import annotations
 
+import json
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -27,6 +28,12 @@ from app.api.routes import router as monolith_router
 from app.api.routes_runbooks import router as runbooks_router
 from app.config import Secrets
 from app.constants import EntityType, SourceSurface
+from app.engine.runbook_catalog import (
+    RUNBOOK_AUDIT_MAX_DEFINITION_CHANGES,
+    count_definition_changes,
+    definition_changes,
+    recorded_field_count,
+)
 from app.engine.runbook_model import (
     BUILTIN_RUNBOOK_IDS,
     builtin_runbook,
@@ -805,6 +812,333 @@ def test_a_failed_store_write_appends_a_paired_failure_row(box, monkeypatch) -> 
     assert len(action) == 1 and len(failure) == 1
     assert failure[0]["outcome"] == "failure" and failure[0]["request_id"] == action[0]["request_id"]
     assert "runbook_store_unavailable" in failure[0]["result_summary"]
+
+
+# --------------------------------------------------------------------------- #
+# A draft save records what moved (SPEC §4.5.3, §4.10.15; second acceptance pass,
+# wrb-05). A draft is overwritten in place, so the row is the only record of the
+# text a save replaced: every field the draft can change is named with its before
+# and after, not only a content hash.
+# --------------------------------------------------------------------------- #
+def _save(client: TestClient, runbook_id: str, **update: Any) -> dict[str, Any]:
+    detail = client.get(f"/api/runbooks/{runbook_id}").json()
+    response = client.put(f"/api/runbooks/{runbook_id}/draft", json={
+        "definition": definition(runbook_id, **update), "expected_revision": detail["revision"]})
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def _last_draft_row(state: AppState) -> dict[str, Any]:
+    return audit_rows(state, action="runbook.draft_updated")[-1]
+
+
+def _by_field(row: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    return {c["field"]: c for c in row["changes"]}
+
+
+def _base_definition() -> dict[str, Any]:
+    return definition("moved")
+
+
+def test_a_draft_save_names_an_applies_when_change_with_its_before_and_after(box) -> None:
+    client, state = box["client"], box["state"]
+    create(client, "moved")
+    rules = _base_definition()["applies_when"]["rule_ids"]
+    applies = {**_base_definition()["applies_when"], "rule_ids": [*rules, "ssh_auth_failed"]}
+    _save(client, "moved", applies_when=applies)
+    fields = _by_field(_last_draft_row(state))
+    assert set(fields) == {"applies_when.rule_ids", "content_hash"}
+    change = fields["applies_when.rule_ids"]
+    assert change["before"] == json.dumps(rules) and change["after"] == json.dumps([*rules, "ssh_auth_failed"])
+    assert change["secret"] is False
+
+
+def test_a_draft_save_names_a_step_reorder(box) -> None:
+    client, state = box["client"], box["state"]
+    create(client, "moved")
+    steps = _base_definition()["steps"]
+    reordered = [steps[1], steps[0], *steps[2:]]
+    _save(client, "moved", steps=reordered)
+    fields = _by_field(_last_draft_row(state))
+    assert set(fields) == {"step_order", "content_hash"}
+    assert json.loads(fields["step_order"]["before"]) == [s["id"] for s in steps]
+    assert json.loads(fields["step_order"]["after"]) == [s["id"] for s in reordered]
+
+
+def test_a_draft_save_names_the_owner_and_prerequisites_it_changed(box) -> None:
+    client, state = box["client"], box["state"]
+    create(client, "moved")
+    prerequisites = _base_definition()["prerequisites"]
+    assert prerequisites
+    _save(client, "moved", owner="mira", prerequisites="", use_when="A spray against mail.")
+    fields = _by_field(_last_draft_row(state))
+    assert {k: (v["before"], v["after"]) for k, v in fields.items() if k != "content_hash"} == {
+        "owner": (None, "mira"),
+        "prerequisites": (prerequisites, ""),
+        "use_when": (_base_definition()["use_when"], "A spray against mail."),
+    }
+    assert fields["content_hash"]["before"] != fields["content_hash"]["after"]
+
+
+def test_a_draft_save_names_each_step_field_and_each_step_added_or_removed(box) -> None:
+    client, state = box["client"], box["state"]
+    made = create(client, "moved")
+    steps = _base_definition()["steps"]
+    edited = [dict(s) for s in steps[:-1]]  # the last step is removed
+    edited[0] = {**edited[0], "title": "Is the source on our network?", "focus": "The source address range."}
+    edited[1] = {**edited[1], "instructions": "Count the distinct accounts tried in the window."}
+    added = {"id": "page-lead", "phase": edited[-1]["phase"], "kind": "record", "title": "Page the incident lead"}
+    edited.append(added)
+    _save(client, "moved", steps=edited)
+    row = _last_draft_row(state)
+    fields = _by_field(row)
+    first, second, last = steps[0], steps[1], steps[-1]
+    assert fields[f"steps[{first['id']}].title"]["before"] == first["title"]
+    assert fields[f"steps[{first['id']}].title"]["after"] == "Is the source on our network?"
+    assert fields[f"steps[{first['id']}].focus"]["after"] == "The source address range."
+    assert fields[f"steps[{second['id']}].instructions"]["before"] == second["instructions"]
+    assert fields[f"steps[{second['id']}].instructions"]["after"] == "Count the distinct accounts tried in the window."
+    # A removed step goes from its title to nothing, an added one from nothing to its title.
+    assert (fields[f"steps[{last['id']}]"]["before"], fields[f"steps[{last['id']}]"]["after"]) == (last["title"], None)
+    # The removed step's text is in the row (a draft is overwritten: it is kept nowhere else).
+    assert last["instructions"]
+    assert (fields[f"steps[{last['id']}].instructions"]["before"],
+            fields[f"steps[{last['id']}].instructions"]["after"]) == (last["instructions"], None)
+    assert (fields[f"steps[{last['id']}].kind"]["before"], fields[f"steps[{last['id']}].phase"]["before"]) == (
+        last["kind"], last["phase"])
+    assert f"steps[{last['id']}].focus" not in fields or last.get("focus")
+    assert (fields["steps[page-lead]"]["before"], fields["steps[page-lead]"]["after"]) == (None, "Page the incident lead")
+    assert json.loads(fields["step_order"]["after"])[-1] == "page-lead"
+    # The content hash names the stored text before and after, last.
+    assert row["changes"][-1]["field"] == "content_hash"
+    assert row["changes"][-1]["before"] == made["draft"]["content_hash"]
+    assert row["result_summary"] == "Saved the draft of version 1."
+
+
+def test_a_draft_save_keeps_secrets_out_of_the_recorded_text(box) -> None:
+    """Runbook text goes through the same redaction as every other audit change: a
+    bearer token in step instructions or credentials in a reference never reach the row."""
+    client, state = box["client"], box["state"]
+    create(client, "moved")
+    steps = [dict(s) for s in _base_definition()["steps"]]
+    steps[0]["instructions"] = "Call the API with Bearer abcdefghijklmnopqrstuvwxyz0123 and read the result."
+    _save(client, "moved", steps=steps,
+          references=["https://analyst:hunter2@wiki.example.com/runbooks/spray"])
+    row = _last_draft_row(state)
+    text = json.dumps(row["changes"])
+    assert "abcdefghijklmnopqrstuvwxyz0123" not in text and "hunter2" not in text
+    fields = _by_field(row)
+    instructions = fields[f"steps[{steps[0]['id']}].instructions"]
+    assert instructions["secret"] is True and "[REDACTED]" in instructions["after"]
+    references = fields["references"]
+    assert references["secret"] is True and "wiki.example.com" in references["after"]
+
+
+def test_a_large_rewrite_records_the_cap_and_says_how_many_changes_there_were(box) -> None:
+    client, state = box["client"], box["state"]
+    create(client, "moved")
+    steps = [
+        {**s, "title": f"Rewritten step {n}", "instructions": f"New instructions {n}.", "focus": f"New focus {n}.",
+         "escalate_if": f"New escalation {n}.", "benign_if": f"New benign reading {n}."}
+        for n, s in enumerate(_base_definition()["steps"], start=1)
+    ]
+    _save(client, "moved", steps=steps, title="A rewritten runbook")
+    row = _last_draft_row(state)
+    total = _rewrite_total()
+    kept = RUNBOOK_AUDIT_MAX_DEFINITION_CHANGES - 1
+    assert len(row["changes"]) == RUNBOOK_AUDIT_MAX_DEFINITION_CHANGES < 50
+    assert row["changes"][0]["field"] == "title" and row["changes"][-1]["field"] == "content_hash"
+    # The summary counts fields (the content hash is not one) and says the hash is kept.
+    assert sum(1 for c in row["changes"] if c["field"] != "content_hash") == kept
+    assert row["result_summary"] == (
+        f"Saved the draft of version 1 ({total} fields changed; "
+        f"the first {kept} are recorded with the content hash).")
+
+
+def _rewrite_total() -> int:
+    """The number of fields the rewrite above changes: the title and five fields of
+    every step (the content hash is recorded beside them, not counted as a field)."""
+    steps = len(_base_definition()["steps"])
+    return 1 + 5 * steps
+
+
+def test_a_save_at_the_cap_keeps_every_field_and_says_nothing_was_left_out(box) -> None:
+    """44 fields and the hash fit in the 45 entries: nothing is cut, so the summary
+    makes no claim about a cut (the boundary of the FX7b review's off-by-one)."""
+    client, state = box["client"], box["state"]
+    create(client, "moved")
+    base = _base_definition()
+    steps = [dict(s) for s in base["steps"]]
+    # The title plus 43 step fields = 44 fields.
+    changed = 0
+    for n, step in enumerate(steps):
+        for name in ("title", "instructions", "focus", "escalate_if"):
+            if changed == RUNBOOK_AUDIT_MAX_DEFINITION_CHANGES - 2:
+                break
+            step[name] = f"Changed {name} {n}."
+            changed += 1
+    _save(client, "moved", steps=steps, title="A rewritten runbook")
+    row = _last_draft_row(state)
+    assert recorded_field_count(row["changes"]) == RUNBOOK_AUDIT_MAX_DEFINITION_CHANGES - 1
+    assert row["changes"][-1]["field"] == "content_hash"
+    assert row["result_summary"] == "Saved the draft of version 1."
+
+
+def test_definition_changes_compare_steps_in_order_when_a_draft_repeats_a_step_id() -> None:
+    """A draft may hold content problems, a repeated step id among them: the steps are
+    then compared by position, so no change is lost to the repeated key."""
+    base = RunbookDefinition.model_validate(_base_definition())
+    twin = base.steps[0].model_copy(update={"title": "A second step with the same id"})
+    repeated = base.model_copy(update={"steps": [base.steps[0], twin, *base.steps[2:]]})
+    fields = {c["field"]: c for c in definition_changes(base, repeated)}
+    assert (fields["steps[#2].id"]["before"], fields["steps[#2].id"]["after"]) == (base.steps[1].id, base.steps[0].id)
+    assert fields["steps[#2].title"]["after"] == "A second step with the same id"
+    assert not any(f.startswith(f"steps[{base.steps[0].id}]") for f in fields)
+    # Every entry but the content hash is a field.
+    assert count_definition_changes(base, repeated) == len(definition_changes(base, repeated)) - 1
+    # A step removed from such a list is recorded with its id, by position.
+    shorter = repeated.model_copy(update={"steps": repeated.steps[:-1]})
+    gone = {c["field"]: c for c in definition_changes(repeated, shorter)}
+    last = f"steps[#{len(repeated.steps)}]"
+    assert (gone[last]["before"], gone[f"{last}.id"]["before"], gone[f"{last}.id"]["after"]) == (
+        repeated.steps[-1].title, repeated.steps[-1].id, None)
+
+
+def _base_model() -> RunbookDefinition:
+    return RunbookDefinition.model_validate(_base_definition())
+
+
+def _with_step(defn: RunbookDefinition, step_id: str, **update: Any) -> RunbookDefinition:
+    steps = [s.model_copy(update=update) if s.id == step_id else s for s in defn.steps]
+    return defn.model_copy(update={"steps": steps})
+
+
+def test_a_lookup_filter_is_recorded_whole_whatever_its_field_names() -> None:
+    """A lookup filter's keys are evidence field names, not document keys: a key named
+    like store bookkeeping (``updated_at``) or a dotted one (``event.created_at``) was
+    dropped from the change, leaving only the content hash (FX7b review)."""
+    base = _base_model()
+    step = next(s for s in base.steps if s.lookup is not None)
+    old = _with_step(base, step.id, lookup=step.lookup.model_copy(update={"filter": {"updated_at": "a"}}))
+    new = _with_step(base, step.id, lookup=step.lookup.model_copy(update={
+        "filter": {"updated_at": "b", "event.created_at": "{{case.first_seen}}"}, "window": "case_first_seen-2h..case_last_seen+2h"}))
+    fields = {c["field"]: c for c in definition_changes(old, new)}
+    assert set(fields) == {f"steps[{step.id}].lookup.filter", f"steps[{step.id}].lookup.window", "content_hash"}
+    assert json.loads(fields[f"steps[{step.id}].lookup.filter"]["before"]) == ["updated_at = a"]
+    assert json.loads(fields[f"steps[{step.id}].lookup.filter"]["after"]) == [
+        "event.created_at = {{case.first_seen}}", "updated_at = b"]
+    assert fields[f"steps[{step.id}].lookup.window"]["after"] == "case_first_seen-2h..case_last_seen+2h"
+
+
+def test_a_lookup_filter_on_a_secret_field_keeps_its_name_and_withholds_its_value() -> None:
+    base = _base_model()
+    step = next(s for s in base.steps if s.lookup is not None)
+    new = _with_step(base, step.id, lookup=step.lookup.model_copy(update={"filter": {"user.password": "hunter2"}}))
+    (change,) = [c for c in definition_changes(base, new) if c["field"].endswith(".lookup.filter")]
+    assert "hunter2" not in json.dumps(change)
+    assert json.loads(change["after"]) == ["user.password = [REDACTED]"] and change["secret"] is True
+
+
+def test_a_decision_option_change_is_named_by_the_option() -> None:
+    base = _base_model()
+    decide = next(s for s in base.steps if s.kind == "decision")
+    options = [o.model_copy(update={"label": "Benign, confirmed with the owner"}) if o.id == "benign" else o
+               for o in decide.options]
+    fields = {c["field"]: c for c in definition_changes(base, _with_step(base, decide.id, options=options))}
+    change = fields[f"steps[{decide.id}].options[benign].label"]
+    assert (change["before"], change["after"]) == ("Benign", "Benign, confirmed with the owner")
+
+
+def test_a_long_value_is_recorded_from_just_before_where_it_changed() -> None:
+    """Each side of a change is stored to 500 characters. A change past that point (a
+    rule appended to a long list, the end of long instructions, a reorder at the end
+    of a long step list) stored the same 500 characters twice (FX7b review); the row
+    now starts each side shortly before the first difference, marked with "…"."""
+    base = _base_model()
+    rules = [f"custom_rule_name_number_{i:03d}" for i in range(30)]
+    old = base.model_copy(update={"applies_when": base.applies_when.model_copy(update={"rule_ids": rules})})
+    new = old.model_copy(update={"applies_when": old.applies_when.model_copy(
+        update={"rule_ids": [*rules, "ssh_auth_failed"]})})
+    (change,) = [c for c in definition_changes(old, new) if c["field"] == "applies_when.rule_ids"]
+    assert change["before"] != change["after"]
+    assert json.loads(change["before"]) == ["…", rules[-1]]
+    assert json.loads(change["after"]) == ["…", rules[-1], "ssh_auth_failed"]
+
+    text = "Paragraph. " * 80
+    old = _with_step(base, "source-scope", instructions=text + "Old ending.")
+    new = _with_step(base, "source-scope", instructions=text + "New ending.")
+    (change,) = [c for c in definition_changes(old, new) if c["field"] == "steps[source-scope].instructions"]
+    assert change["before"].startswith("…") and change["before"].endswith("Old ending.")
+    assert change["after"].startswith("…") and change["after"].endswith("New ending.")
+
+    steps = [base.steps[i % len(base.steps)].model_copy(update={"id": f"step-with-a-longer-slug-{i:02d}"})
+             for i in range(40)]
+    old = base.model_copy(update={"steps": steps})
+    new = base.model_copy(update={"steps": [*steps[:-2], steps[-1], steps[-2]]})
+    (change,) = [c for c in definition_changes(old, new) if c["field"] == "step_order"]
+    assert json.loads(change["before"]) == ["…", steps[-3].id, steps[-2].id, steps[-1].id]
+    assert json.loads(change["after"]) == ["…", steps[-3].id, steps[-1].id, steps[-2].id]
+    # A change the stored characters already show is recorded whole.
+    short = _with_step(base, "source-scope", instructions="Short text.")
+    (change,) = [c for c in definition_changes(base, short) if c["field"] == "steps[source-scope].instructions"]
+    assert change["after"] == "Short text."
+
+
+def test_a_long_value_is_redacted_before_it_is_cut() -> None:
+    """The cut can fall inside a token: the text is redacted first, so no part of a
+    token survives the cut that would have hidden it from the secret patterns."""
+    base = _base_model()
+    # Uncut, the first difference is at 721 and a cut there starts inside the token.
+    common = "a" * 600 + " Bearer " + "T" * 40 + " " + "c" * 72
+    old = _with_step(base, "source-scope", instructions=common + "Old ending.")
+    new = _with_step(base, "source-scope", instructions=common + "New ending.")
+    (change,) = [c for c in definition_changes(old, new) if c["field"] == "steps[source-scope].instructions"]
+    assert "TTTT" not in change["before"] + change["after"]
+    assert change["secret"] is True and change["after"].endswith("New ending.")
+
+
+@pytest.mark.parametrize("lead", [100, 900])
+def test_a_rotated_token_in_text_of_any_length_reads_as_a_secret_change(lead: int) -> None:
+    """An edit that only replaces a token (a rotated bearer token in the instructions)
+    leaves both sides equal once redacted. A long value was then cut to two equal
+    tails and dropped as no change, leaving only the content hash, where a short one
+    was recorded as a secret change (FX7b re-review). Both lengths now record the
+    field, marked secret, with neither token in the row."""
+    base = _base_model()
+    old_token, new_token = "abcdefghijklmnopqrstuvwxyz0123456789", "zyxwvutsrqponmlkjihgfedcba9876543210"
+    lead_text = "Check the host. " * (lead // 16)
+    old = _with_step(base, "source-scope", instructions=f"{lead_text}Use Bearer {old_token} for the API.")
+    new = _with_step(base, "source-scope", instructions=f"{lead_text}Use Bearer {new_token} for the API.")
+    changes = definition_changes(old, new)
+    assert [c["field"] for c in changes] == ["steps[source-scope].instructions", "content_hash"]
+    change = changes[0]
+    assert change["secret"] is True
+    assert old_token not in json.dumps(change) and new_token not in json.dumps(change)
+
+
+def test_a_draft_save_through_the_api_shows_an_edit_past_the_stored_characters(box) -> None:
+    client, state = box["client"], box["state"]
+    create(client, "moved")
+    steps = [dict(s) for s in _base_definition()["steps"]]
+    steps[0]["instructions"] = "Check the source. " * 40 + "Then write it down."
+    _save(client, "moved", steps=steps)
+    steps[0]["instructions"] = "Check the source. " * 40 + "Then tell the incident lead."
+    _save(client, "moved", steps=steps)
+    fields = _by_field(_last_draft_row(state))
+    change = fields[f"steps[{steps[0]['id']}].instructions"]
+    assert change["before"] != change["after"]
+    assert change["before"].endswith("Then write it down.") and change["after"].endswith("Then tell the incident lead.")
+
+
+def test_definition_changes_for_a_new_runbook_list_what_it_was_created_with() -> None:
+    created = RunbookDefinition.model_validate(_base_definition())
+    fields = {c["field"]: c for c in definition_changes(None, created)}
+    assert {"title", "summary", "applies_when.rule_ids", "applies_when.entity_types", "phases", "steps",
+            "step_order", "content_hash"} <= set(fields)
+    assert all(c["before"] is None for c in fields.values())
+    # Nothing per step on a create, and nothing the runbook leaves at its default.
+    assert not any(f.startswith("steps[") for f in fields)
+    assert "owner" not in fields and "applies_when.always" not in fields and "priority" not in fields
 
 
 # --------------------------------------------------------------------------- #
