@@ -118,8 +118,8 @@ def _assert_ci(path: Path, workflow: dict[str, Any]) -> None:
     bootstrap_bash32 = jobs.get("bootstrap-bash32")
     if not isinstance(bootstrap_bash32, dict):
         raise ValueError(f"{path}: macOS Bash 3.2 bootstrap gate is missing")
-    if bootstrap_bash32.get("runs-on") != "macos-14":
-        raise ValueError(f"{path}: bootstrap portability gate must run on macos-14")
+    if bootstrap_bash32.get("runs-on") != "macos-15":
+        raise ValueError(f"{path}: bootstrap portability gate must run on macos-15")
     bootstrap_run = _job_run_text(bootstrap_bash32)
     for marker in (
         "/bin/bash -c",

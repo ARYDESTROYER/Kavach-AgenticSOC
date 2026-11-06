@@ -14,6 +14,9 @@ History is reconstructed from `git log`.
 
 ### Round 14
 
+- CI: the Bootstrap portability (macOS Bash 3.2) lane runs on `macos-15`, because GitHub
+  retired the `macos-14` runner image on 2 November 2026 and jobs on it no longer start. macOS 15
+  still ships Bash 3.2 as `/bin/bash`, so the lane proves the same thing.
 - Dashboards: the Overview item in the navigation opens a Dashboards library with four
   built-in boards (Cyber Defence Center, marked Default, SOC operations, Detection and data
   health, Executive summary) and your own boards. The Cyber Defence Center stays the landing
