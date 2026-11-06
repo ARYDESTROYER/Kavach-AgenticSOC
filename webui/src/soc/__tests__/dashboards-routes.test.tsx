@@ -58,7 +58,8 @@ const apiMocks = vi.hoisted(() => ({
   usageSummary: vi.fn(),
   getAgentImprovement: vi.fn(),
   auth: { me: vi.fn() },
-  roles: { get: vi.fn() },
+  // The effective grants the AuthProvider reads (GET /api/account/permissions).
+  account: { permissions: vi.fn() },
   prefs: { effective: vi.fn(), putUser: vi.fn() },
   dashboards: { list: vi.fn(), create: vi.fn(), update: vi.fn(), remove: vi.fn() },
 }));
@@ -164,12 +165,17 @@ const boardTitle = (name: string) => screen.findByRole('heading', { level: 1, na
 
 function authOff() {
   apiMocks.auth.me.mockResolvedValue({ authenticated: false, auth_enabled: false, user: null });
-  apiMocks.roles.get.mockResolvedValue({ matrix: {}, rbac_enabled: false });
+  apiMocks.account.permissions.mockResolvedValue({
+    authenticated: false, role: 'super_admin', custom_roles: [], rbac_enabled: false, permissions: {},
+  });
 }
 
+/** Sign in as `role` holding exactly `grants` (the server's effective grants). */
 function authAs(role: string, grants: Record<string, string[]>, extra: Record<string, unknown> = {}) {
   apiMocks.auth.me.mockResolvedValue({ authenticated: true, auth_enabled: true, user: { username: 'ana', role }, ...extra });
-  apiMocks.roles.get.mockResolvedValue({ matrix: { [role]: grants }, rbac_enabled: true });
+  apiMocks.account.permissions.mockResolvedValue({
+    authenticated: true, role, custom_roles: [], rbac_enabled: true, permissions: grants,
+  });
 }
 
 beforeEach(() => {

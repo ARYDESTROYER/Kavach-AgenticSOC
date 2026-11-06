@@ -69,7 +69,7 @@ class XForceProvider(EnrichmentProvider):
             setup_steps=[
                 "Create a free account at exchange.xforce.ibmcloud.com and open "
                 "Settings → API access.",
-                "Generate the API key AND API password pair (both are required — "
+                "Generate the API key AND API password pair (both are required; "
                 "they form HTTP Basic auth).",
                 "Set TLSOC_XFORCE_API_KEY and TLSOC_XFORCE_API_PASSWORD in .env "
                 "(compose maps them to XFORCE_API_KEY / XFORCE_API_PASSWORD), or "

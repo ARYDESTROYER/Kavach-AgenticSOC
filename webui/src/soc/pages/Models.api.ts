@@ -193,10 +193,11 @@ export interface BudgetConfig {
 
 /** One window's status in GET /api/budget/status. */
 export interface BudgetWindowStatus {
-  spent: number;
+  /** `null` (with `fraction` and `band`) for a caller without `cost:view`: AI spend is withheld. */
+  spent: number | null;
   cap: number | null;
   fraction: number | null;
-  band: 'ok' | 'warn' | 'over' | string;
+  band: 'ok' | 'warn' | 'over' | string | null;
 }
 
 /** GET /api/budget/status. */
@@ -207,6 +208,10 @@ export interface BudgetStatus {
   currency: string;
   daily: BudgetWindowStatus;
   monthly: BudgetWindowStatus;
+  /** The surfaces the budget does not measure (chat since Round 12). */
+  excluded_surfaces?: string[];
+  /** Today's spend on those surfaces; `null` for a caller without `cost:view`. */
+  excluded_today?: number | null;
 }
 
 /** Body for POST /api/llm/models/custom (register a self-hosted / LiteLLM model). */

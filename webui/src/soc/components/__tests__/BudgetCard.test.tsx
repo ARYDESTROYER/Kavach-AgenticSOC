@@ -19,7 +19,7 @@ vi.mock('@/soc/pages/Models.api', () => ({
   },
 }));
 
-import { BudgetCard, parseCeiling } from '../BudgetCard';
+import { BudgetCard, parseCeiling, SPEND_WITHHELD } from '../BudgetCard';
 import { modelsApi } from '@/soc/pages/Models.api';
 
 describe('parseCeiling', () => {
@@ -71,5 +71,40 @@ describe('BudgetCard ceiling input', () => {
     fireEvent.change(input, { target: { value: '10.50' } });
     fireEvent.blur(input);
     await waitFor(() => expect(input.value).toBe('10.5'));
+  });
+});
+
+describe('BudgetCard live spend without cost:view (Round 14 second acceptance pass, roles-11)', () => {
+  const budget = { enabled: true, daily_usd: 10, monthly_usd: 200, soft_warn_pct: 0.8, on_exceed: 'warn' };
+  const status = (spent: number | null, band: string | null) => ({
+    enabled: true,
+    on_exceed: 'warn',
+    soft_warn_pct: 0.8,
+    currency: 'USD',
+    daily: { spent, cap: 10, fraction: spent == null ? null : spent / 10, band },
+    monthly: { spent, cap: 200, fraction: spent == null ? null : spent / 200, band },
+  });
+
+  beforeEach(() => {
+    (modelsApi.getBudget as Mock).mockResolvedValue({ budget });
+  });
+
+  it('says the spend is withheld and shows no band when the server leaves it out', async () => {
+    (modelsApi.budgetStatus as Mock).mockResolvedValue(status(null, null));
+    render(<BudgetCard canManage={false} />);
+    expect(await screen.findAllByText(SPEND_WITHHELD)).toHaveLength(2);
+    expect(screen.getByText('Ceiling $10.00')).toBeInTheDocument();
+    expect(screen.getByText('Ceiling $200.00')).toBeInTheDocument();
+    // A withheld band never reads OK, and no gauge stands for a fraction nobody sent.
+    expect(screen.queryByText('OK')).toBeNull();
+    expect(screen.queryByRole('img', { name: /of ceiling/ })).toBeNull();
+  });
+
+  it('still shows the spend, band and gauge to a cost:view holder', async () => {
+    (modelsApi.budgetStatus as Mock).mockResolvedValue(status(2.5, 'ok'));
+    render(<BudgetCard canManage={false} />);
+    expect(await screen.findAllByText('OK')).toHaveLength(2);
+    expect(screen.queryByText(SPEND_WITHHELD)).toBeNull();
+    expect(screen.getByRole('img', { name: 'Today 25% of ceiling' })).toBeInTheDocument();
   });
 });

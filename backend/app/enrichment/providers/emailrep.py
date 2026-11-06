@@ -58,13 +58,13 @@ class EmailRepProvider(EnrichmentProvider):
                 "Set TLSOC_EMAILREP_API_KEY in .env (compose maps it to "
                 "EMAILREP_API_KEY), or paste it in this card (in-memory until "
                 "restart).",
-                "Flip this provider's toggle ON — together with HIBP it covers the "
+                "Flip this provider's toggle ON. Together with HIBP it covers the "
                 "email indicator kind.",
             ],
             example=(
                 "The 'CEO' address behind a wire-transfer request has zero social "
                 "footprint, a days-old domain and prior malicious activity on "
-                "record — EmailRep separates a spoofed BEC sender from the real "
+                "record. EmailRep separates a spoofed BEC sender from the real "
                 "executive's account in one lookup."
             ),
         )

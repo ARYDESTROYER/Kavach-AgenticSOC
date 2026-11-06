@@ -57,6 +57,30 @@ History is reconstructed from `git log`.
 - Time range: the time range control is named from the words it shows ("Last 24h, time range"),
   so a speech-input user can say what they see; the whole range stays its description and
   tooltip.
+- Second acceptance fixes, permissions: the Console shows exactly what a person's roles allow,
+  because it reads the server's own access check (`GET /api/account/permissions`), so assigned
+  custom roles and denies count. Pages, panels and actions a role cannot use are not offered and
+  send no request; a typed link shows a plain refusal, and a permissions read that failed says so
+  with Retry. Metrics reads need `metrics:view`, and AI spend needs `cost:view` wherever it shows
+  (the budget status, a case's agent timeline, a case's own investigation cost and the recorded
+  cost in Agent effectiveness leave it out, and the Console says it is withheld or shows no cost
+  line). A job's file downloads only while its owner still
+  holds the permissions the job needed. Refused requests are recorded as Access denied, a refused
+  read at most once every five minutes per person, permission and route.
+- Second acceptance fixes, runbooks: a retired runbook opens read only and can be restored,
+  Reload after a save conflict loads the other person's version, the Applies when picker stays
+  open and Done adds a typed value, a send-back reason reaches the author, and each write is
+  announced once with focus kept in place. Runbook audit rows say what changed: a draft save
+  records every field it changed with its before and after (lookup filters as field = value
+  lines; long values cut to show where they changed; removed steps with their text). Every case
+  run row names the step by its title, evidence rows included, and seeded Demo rows read the
+  same. Approvals name the role by its label ("a SOC manager"). The Audit inspector names a
+  field inside a list by its item ("Step lookup: instructions", "Source wazuh: poll interval")
+  and shows an empty value as "Empty"; Preview as analyst announces once what it filled.
+- Second acceptance fixes, settings: in Demo Mode the Enrichment switches and cache lifetime save
+  to the Demo copy only, and provider key changes are audited; the save bar counts changed
+  values; a Discounted inference save is recorded under that name; the fresh sign-in dialog says
+  what it is for ("Sign in again to export audit events.") and a wrong password says so.
 
 Details:
 
@@ -89,6 +113,22 @@ Details:
   budgeted, fenced block (never a draft), and the matching runbook attaches to cases that need a
   person after the decision is saved; `decide()` is unchanged and automatic closes never read a
   run. Retrieval indexes Published runbook text only.
+- **Second acceptance API changes.** New `PUT /api/enrichment/config` (a strict partial of the
+  enrichment settings, `cache_ttl_seconds` from 0 to 2,592,000; answers
+  `EnrichmentConfigSaveResult`, `403` under the settings lock, `409 demo_mode_changed`), and
+  `cache_ttl_seconds`, `demo_active` and `demo_run_id` on `GET /api/enrichment/providers`; the
+  `enrichment.secrets_updated` audit action on provider key saves. `RunbookDetail.retired`,
+  `RunbookVersionListItem.review_notes`, and `role_labels` on `CaseRunbooks` and
+  `RunbookRunUpdate`. `GET /api/account/permissions` lists the caller's effective actions as
+  concrete actions. `GET /api/metrics` needs `metrics:view` (its `cost` part is `{}` without
+  `cost:view`) and `GET /api/usage/summary` needs `cost:view`, both ungated before; `GET
+  /api/feedback/stats` needs `metrics:view`; without `cost:view`, `GET /api/budget/status`
+  answers `null` spend fields, `GET /api/cases/{id}/timeline` `null` cost and tokens, every case
+  the API returns (`GET /api/cases`, `GET /api/cases/{id}`, `GET /api/scans`, the case JSON
+  export and each single-case response) a `null` `token_cost` (the `Case` schema now documents
+  it as nullable), and `GET /api/metrics/agent-improvement` an unavailable `recorded_case_cost`. A job file
+  answers `403 job_artifact_permission_lost` for a real loss and `503
+  job_permission_unverifiable` when the check cannot be confirmed.
 - **Removed.** The playbook engine (`backend/app/playbooks/`), the bundled playbook Markdown
   (`backend/playbooks/`), the old runbook service and stores, the hidden Automated scans page
   (`#/scans` redirects to Case Manager filtered to cases the AI agent closed) and the

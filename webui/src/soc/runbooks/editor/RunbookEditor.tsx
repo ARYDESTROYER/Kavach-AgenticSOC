@@ -1477,6 +1477,7 @@ export function RunbookEditor({
         cases={match.preview?.gets_it.length ? match.preview.gets_it : previewCases}
         loadCaseValues={canCases ? loadCaseValues : undefined}
         guidance={guidance}
+        announce={announce}
       />
     ) : view === 'source' ? (
       <SourceView

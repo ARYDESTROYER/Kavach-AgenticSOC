@@ -56,7 +56,7 @@ class SpurProvider(EnrichmentProvider):
             example=(
                 "Flags residential-proxy / VPN / Tor exits: a credential-stuffing "
                 "login from a residential-proxy IP is not mistaken for the "
-                "road-warrior VP on hotel Wi-Fi — and vice versa."
+                "road-warrior VP on hotel Wi-Fi, and vice versa."
             ),
         )
 

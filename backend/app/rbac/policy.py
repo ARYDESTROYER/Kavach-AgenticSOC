@@ -804,9 +804,10 @@ def can_for_roles(
     Standard RBAC: a principal gets the UNION of the grants of every role it holds.
     Each role's row in the effective matrix already has that role's own ``denies``
     baked in (see :func:`effective_matrix` / :func:`_resolve_custom_role`), so unioning
-    the rows is the correct additive combination — and is byte-for-byte the same
-    resolution :func:`app.api.routes_roles._grants_for_roles` reports through
-    ``GET /api/account/permissions``, keeping the server gate consistent with the UI.
+    the rows is the correct additive combination. ``GET /api/account/permissions``
+    (the one map the Console's permission checks read) lists exactly the actions this
+    function allows, because it asks :meth:`app.api.deps.AccessView.allows`, which
+    calls this; the server gate and the Console cannot disagree.
 
     Resolution + fail-safety rules:
 

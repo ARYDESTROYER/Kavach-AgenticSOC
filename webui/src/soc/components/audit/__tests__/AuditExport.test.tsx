@@ -25,6 +25,7 @@ const h = vi.hoisted(() => ({
 
 vi.mock('@/lib/api-audit', () => ({
   AUDIT_COUNT_CAP: 100_001,
+  AUDIT_EXPORT_REAUTH_PURPOSE: 'Sign in again to export audit events.',
   listAuditPage: h.list,
   countAudit: h.count,
   submitAuditExport: h.submit,
@@ -255,6 +256,18 @@ describe('the export dialog', () => {
     const { user, dialog } = await openDialog();
     await user.click(await within(dialog).findByRole('button', { name: 'Export 1,284 events' }));
     expect(await within(dialog).findByText('You already have an audit export running. Wait for it to finish, then try again.')).toBeInTheDocument();
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+  });
+
+  it('a cancelled sign-in says the same sentence the sign-in dialog showed', async () => {
+    h.submit.mockRejectedValue(
+      new ApiError(401, 'Sign in again to continue.', { detail: { code: 'reauth_required', reason: 'stale_authn' } }),
+    );
+    renderAudit();
+    const { user, dialog } = await openDialog();
+    await user.click(await within(dialog).findByRole('button', { name: 'Export 1,284 events' }));
+    expect(await within(dialog).findByText('Sign in again to export audit events.')).toBeInTheDocument();
+    expect(within(dialog).queryByText(/export the audit log/i)).toBeNull();
     expect(screen.getByRole('dialog')).toBeInTheDocument();
   });
 

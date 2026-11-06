@@ -63,7 +63,7 @@ class MaltiverseProvider(EnrichmentProvider):
             ],
             example=(
                 "Instead of checking ten blocklists by hand, one call answers "
-                "'malicious — listed by 4 sources including a botnet-C2 feed', with "
+                "'malicious, listed by 4 sources including a botnet-C2 feed', with "
                 "the source names attached as case evidence."
             ),
         )

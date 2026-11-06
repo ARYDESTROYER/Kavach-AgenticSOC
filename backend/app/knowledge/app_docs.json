@@ -1519,7 +1519,7 @@
    "page": "analyst/case-manager.md",
    "anchor": "keyboard",
    "heading": "Keyboard",
-   "text": "In **Triage → Case Manager** the queue is one tab stop. Press **?** in the queue for this list:\n\n| Keys | Action |\n|---|---|\n| ↑ ↓ or K J | Move through the queue and open the case |\n| Home, End | First or last loaded case |\n| X or Space | Select or clear the focused case |\n| Shift+↑ ↓ or Shift+X | Extend the selection |\n| Enter | Move focus into the open case |\n| Esc | Clear the selection |\n| / | Search the queue |\n| A, C, E, H | Acknowledge, close, escalate, or hold the open case |\n| R | Reinvestigate the open case |\n| M, T | Change the owner or edit tags |\n| Alt+1 … 7 | Switch case tabs (Alt+2 is the Runbook tab) |\n\nShortcuts never fire while you type in a field, and an action you lack the permission for\ndoes nothing. After a dialog closes, focus returns to the control or row that opened it.",
+   "text": "In **Triage → Case Manager** the queue is one tab stop. Press **?** in the queue for this list\n(it lists only the keys your role can use):\n\n| Keys | Action |\n|---|---|\n| ↑ ↓ or K J | Move through the queue and open the case |\n| Home, End | First or last loaded case |\n| X or Space | Select or clear the focused case |\n| Shift+↑ ↓ or Shift+X | Extend the selection |\n| Enter | Move focus into the open case |\n| Esc | Clear the selection |\n| / | Search the queue |\n| A, C, E, H | Acknowledge, close, escalate, or hold the open case |\n| R | Reinvestigate the open case |\n| M, T | Change the owner or edit tags |\n| Alt+1 … 7 | Switch case tabs (Alt+2 is the Runbook tab) |\n\nShortcuts never fire while you type in a field, and an action you lack the permission for\ndoes nothing. After a dialog closes, focus returns to the control or row that opened it.",
    "console": [
     "page:case_manager"
    ]
@@ -1599,7 +1599,7 @@
    "page": "analyst/case-manager.md",
    "anchor": "work-the-runbook",
    "heading": "Work the runbook",
-   "text": "**Lookups** read logs, enrichment, related cases, campaigns, or ATT&CK under your own\npermissions. Their results are evidence shown as untrusted data, never as instructions;\na lookup whose data you cannot read says so instead of showing it. A lookup that runs\non attachment fills in on its own; one that runs on demand offers **Run lookup**. **Run\nagain** replaces the earlier result, and the step says so (\"Ran again at 14:31 UTC; the\nearlier result was replaced\").\n\n**Decisions** mark only the later steps still to do as Not applicable, with the reason\n\"Skipped by the decision 'Benign'\". A recorded action keeps its record.\n\n**Approvals**: when step approvals are on, an action waits for a person with the step's\napproval role. The person who recorded the action cannot approve it, and someone without\nthe role sees \"Only a soc manager can approve this step.\" in place of a working\n**Approve**; the step says so in both cases.\n\n**The AI**, when it is on, can draft a step's note from its lookup results (**Draft\nnote**) and suggest a runbook in **Start runbook** when nothing but the fallback\nmatched. Each is one metered call with a dry-run estimate on hover; a draft is labelled\n\"AI draft · not part of the case until you confirm it\", and the AI never marks a step\ndone, approves anything, or attaches a runbook by itself.",
+   "text": "**Lookups** read logs, enrichment, related cases, campaigns, or ATT&CK under your own\npermissions. Their results are evidence shown as untrusted data, never as instructions;\na lookup whose data you cannot read says so instead of showing it. A lookup that runs\non attachment fills in on its own; one that runs on demand offers **Run lookup**. **Run\nagain** replaces the earlier result, and the step says so (\"Ran again at 14:31 UTC; the\nearlier result was replaced\").\n\n**Decisions** mark only the later steps still to do as Not applicable, with the reason\n\"Skipped by the decision 'Benign'\". A recorded action keeps its record.\n\n**Approvals**: when step approvals are on, an action waits for a person with the step's\napproval role. The person who recorded the action cannot approve it, and someone without\nthe role sees \"Only a SOC manager can approve this step.\" in place of a working\n**Approve**; the step says so in both cases.\n\n**The AI**, when it is on, can draft a step's note from its lookup results (**Draft\nnote**) and suggest a runbook in **Start runbook** when nothing but the fallback\nmatched. Each is one metered call with a dry-run estimate on hover; a draft is labelled\n\"AI draft · not part of the case until you confirm it\", and the AI never marks a step\ndone, approves anything, or attaches a runbook by itself.",
    "console": [
     "page:case_manager"
    ]
@@ -1635,7 +1635,7 @@
    "page": "analyst/case-manager.md",
    "anchor": "select-cases-and-run-bulk-work",
    "heading": "Select cases and run bulk work",
-   "text": "Use a row checkbox (or X, or Space) for an individual case. **Select all visible**\nselects the loaded rows that match the current view; when more cases match than are\nloaded, **Select all N matching** takes a snapshot of every matching case from the\nserver, up to 5,000. The row checkbox is separate from row navigation, so selecting\nnever opens a case. Changing search, filters, sort, or scope does not silently discard\nhidden selections. Use **Clear case selection** (or Esc) to clear everything. The bulk\ntoolbar is shown only while at least one case is selected; rows being changed by bulk\nwork show their progress.",
+   "text": "Row selection (the checkbox, X or Space, **Select all visible**) is offered only to a role\nthat can act on cases: `cases:write`, `cases:assign`, `cases:reinvestigate` or\n`cases:close`. Use a row checkbox (or X, or Space) for an individual case. **Select all visible**\nselects the loaded rows that match the current view; when more cases match than are\nloaded, **Select all N matching** takes a snapshot of every matching case from the\nserver, up to 5,000. The row checkbox is separate from row navigation, so selecting\nnever opens a case. Changing search, filters, sort, or scope does not silently discard\nhidden selections. Use **Clear case selection** (or Esc) to clear everything. The bulk\ntoolbar is shown only while at least one case is selected; rows being changed by bulk\nwork show their progress.",
    "console": [
     "page:batchjobs"
    ]
@@ -3637,7 +3637,7 @@
    "page": "intelligence/runbooks.md",
    "anchor": "writing-a-runbook",
    "heading": "Writing a runbook",
-   "text": "In **Intelligence → Runbooks**, choose **New runbook**, or **Create a runbook** beside a\nrule in **Rules with no runbook**, which starts with that rule in Applies when. The editor\nhas three views of the same runbook:\n\n- **Edit** shows an outline of phases and steps beside the selected step's form. Add a step\n  by kind from **Add step**, add a phase from **Add phase**, and move a step by dragging it or\n  with Alt and the arrow keys. **Runbook details** at the top of the outline holds the title,\n  summary, use when, prerequisites, priority, owner, review cadence, the techniques the\n  runbook covers, search phrases and references (https links only).\n- **Preview as analyst** shows the Runbook tab as an analyst will see it before anyone\n  starts. **Fill with** a recent matching case resolves the lookup values from that case, and\n  the meter shows the investigator guidance against its budget, for example \"Investigator\n  guidance: 2,140 of 3,000 characters\".\n- **Source** shows the Markdown. Chips and front matter are the same fields; edit either, and\n  the outline follows as you type.",
+   "text": "In **Intelligence → Runbooks**, choose **New runbook**, or **Create a runbook** beside a\nrule in **Rules with no runbook**, which starts with that rule in Applies when. The editor\nhas three views of the same runbook:\n\n- **Edit** shows an outline of phases and steps beside the selected step's form. Add a step\n  by kind from **Add step**, add a phase from **Add phase**, and move a step by dragging it or\n  with Alt and the arrow keys. **Runbook details** at the top of the outline holds the title,\n  summary, use when, prerequisites, priority, owner, review cadence, the techniques the\n  runbook covers, search phrases and references (https links only).\n- **Preview as analyst** shows the Runbook tab as an analyst will see it before anyone\n  starts. **Fill with** a recent matching case resolves the lookup values from that case (a\n  screen reader hears when they arrive and which values the case does not have), and\n  the meter shows the investigator guidance against its budget, for example \"Investigator\n  guidance: 2,140 of 3,000 characters\".\n- **Source** shows the Markdown. Chips and front matter are the same fields; edit either, and\n  the outline follows as you type.",
    "console": [
     "page:runbooks"
    ]
@@ -3667,7 +3667,17 @@
    "page": "intelligence/runbooks.md",
    "anchor": "writing-a-runbook",
    "heading": "Writing a runbook",
-   "text": "If someone else saves the draft while you edit it, saving says \"Someone else changed this\ndraft. Reload it to see their changes.\" Your edit stays in the Source view until you reload,\nso you can copy it.",
+   "text": "If someone else changes the runbook while you work on it, your next write says \"Someone else\nchanged this draft. Reload it to see their changes.\" Your edit stays in the Source view until\nyou reload. **Reload** loads their version, so your next save is made on top of their change\nand never over it. Your own version stays on the page as a labelled copy (**Show your\nversion**, **Copy your version**) until you dismiss it or leave, so you can take back what you\nstill need. When you had no unsaved edits (for example, you pressed **Publish** or **Retire**),\nthere is nothing of yours to keep: Reload loads their version and no copy is kept.",
+   "console": [
+    "page:runbooks"
+   ]
+  },
+  {
+   "id": "intelligence/runbooks#writing-a-runbook:4",
+   "page": "intelligence/runbooks.md",
+   "anchor": "writing-a-runbook",
+   "heading": "Writing a runbook",
+   "text": "**Add condition** under the header opens a picker for the condition you choose (a rule, a\ntechnique, the severity and so on). The picker stays open, with focus in it, until you press\n**Done** or Escape or click elsewhere, so you can add several values in a row, by mouse or\nkeyboard. **Done** keeps what the picker shows: a value you typed but did not add with Enter\nbecomes a condition (if it is refused, the picker stays open and its field says why), and\n**Minimum events** adds its 1 even if you leave the number as it is. Escape and a click\nelsewhere add nothing. Done and Escape return you to the condition's chip you opened the picker\nfrom, or to **Add condition**; a click on another field leaves you in that field.\nWithout `runbooks:manage`, `#/runbooks?id=new` says you cannot create runbooks instead of\nopening an empty draft.",
    "console": [
     "page:runbooks"
    ]
@@ -3709,6 +3719,14 @@
     "page:runbooks",
     "settings:runbooks.runbooks-publishing"
    ]
+  },
+  {
+   "id": "intelligence/runbooks#sent-back-and-retired-versions:0",
+   "page": "intelligence/runbooks.md",
+   "anchor": "sent-back-and-retired-versions",
+   "heading": "Sent back and retired versions",
+   "text": "The reason a publisher gives when sending a version back shows on the draft, in the\ngovernance strip, with who sent it back and when (\"Show all\" lists earlier ones), and on that\nversion in **History**, newest first, for as long as the version is kept.\n\nA retired runbook opens read only on its retired version (\"Retired · read only\", with who\nretired it and when), and someone with `runbooks:publish` can **Restore** it from the editor\nheader, which makes that version live again. A draft or a version in review the runbook still\nholds is kept and named under **Waiting**, with its review notes; once the runbook is restored\nyou work on it as usual. Restoring a version as a draft from **History** is how you start a\nretired runbook's next version: the draft waits beside the retired version until someone with\n`runbooks:publish` restores the runbook.",
+   "console": []
   },
   {
    "id": "intelligence/runbooks#the-built-in-library:0",
@@ -3755,7 +3773,7 @@
    "page": "intelligence/enrichment.md",
    "anchor": "",
    "heading": "",
-   "text": "Enrichment adds external reputation and context to IPs, domains, URLs, file hashes,\nand emails. It is advisory and fail-open: one provider's timeout or failure\nmust not drop an alert or decide a case.\n\nOpen **Settings → Integrations → Enrichment**. Reading the catalog and testing a\nlookup requires `enrichment:read`; changing provider secrets requires\n`enrichment:manage`.",
+   "text": "Enrichment adds external reputation and context to IPs, domains, URLs, file hashes,\nand emails. It is advisory and fail-open: one provider's timeout or failure\nmust not drop an alert or decide a case.\n\nOpen **Settings → Integrations → Enrichment**. Reading the catalog and testing a\nlookup requires `enrichment:read`; changing the switches, the cache lifetime and\nprovider secrets requires `enrichment:manage`. The switches and the cache lifetime save\nas soon as you change them, and cannot be changed while the settings lock is on; the\nprovider panel also disables its key fields while the lock is on. Each change is\nrecorded in the audit log, and so is each provider key you set or clear (its name only,\nnever its value).",
    "console": [
     "settings:enrichment"
    ]
@@ -3777,11 +3795,19 @@
    "console": []
   },
   {
+   "id": "intelligence/enrichment#demo-mode:0",
+   "page": "intelligence/enrichment.md",
+   "anchor": "demo-mode",
+   "heading": "Demo Mode",
+   "text": "Demo Mode never queries a provider, whatever the switches say: the synthetic demo makes\nno external lookup, and **Try a lookup** returns an empty result that says why.\n\nWhile Demo Mode is on, the Enrichment section shows and changes the demo's own copy of\nthe enrichment settings, under the note **Demo Mode is on**. A switch or a cache lifetime\nyou change there applies to the demo only and is discarded when Demo Mode ends or is\nreset; your real enrichment settings stay as they were, and the change is recorded in the\ndemo's audit trail. Provider keys are not part of that copy: a key saved while Demo Mode\nis on is saved for real and stays after Demo Mode ends, and the provider's panel says so\nabove its key fields.",
+   "console": []
+  },
+  {
    "id": "intelligence/enrichment#configure-safely:0",
    "page": "intelligence/enrichment.md",
    "anchor": "configure-safely",
    "heading": "Configure safely",
-   "text": "1. Enable only providers needed for your indicator mix.\n2. Add credentials through the write-only secret control; saved responses expose\n   configured booleans, never secret values.\n3. Test with a non-sensitive indicator.\n4. Confirm provider attribution, cache state, and error handling.\n5. Set a cache lifetime that respects both freshness and provider quota.\n\nProvider terms, data handling, and rate limits remain the operator's responsibility.\nDo not interpret a single provider verdict as a case disposition.\n\nSee MITRE and threat context and\nInvestigation.",
+   "text": "1. Enable only providers needed for your indicator mix.\n2. Add credentials through the write-only secret control; saved responses expose\n   configured booleans, never secret values.\n3. Test with a non-sensitive indicator.\n4. Confirm provider attribution, cache state, and error handling.\n5. Set a cache lifetime that respects both freshness and provider quota. The longest\n   lifetime is 30 days.\n\nProvider terms, data handling, and rate limits remain the operator's responsibility.\nDo not interpret a single provider verdict as a case disposition.\n\nSee MITRE and threat context and\nInvestigation.",
    "console": []
   },
   {
@@ -4165,7 +4191,7 @@
    "page": "administration/users-rbac.md",
    "anchor": "built-in-roles",
    "heading": "Built-in roles",
-   "text": "| Role | Intended use | Default access summary |\n|---|---|---|\n| `super_admin` | Platform owner | Unrestricted; code prevents an override from locking this role out |\n| `soc_manager` | SOC administration | Cases, sources, users, settings, rules, knowledge, audit, and operational administration |\n| `analyst_tier2` | Senior analyst | Full case investigation and closure; read-only administration |\n| `analyst_tier1` | Analyst | Read, update, assign, and comment on cases; no case closure by default |\n| `responder` | Response operator | Tier-1-style case access plus working runbooks on cases and proposal approval |\n| `auditor` | Independent review | Read/view only, including the audit trail |\n\nThe backend permission vocabulary is resource/action based, for example\n`cases:close`, `sources:manage`, `models:manage`, and `audit:view`. The effective\npermission calculation is authoritative; hiding a button in the UI is not an\nauthorization boundary.",
+   "text": "| Role | Intended use | Default access summary |\n|---|---|---|\n| `super_admin` | Platform owner | Unrestricted; code prevents an override from locking this role out |\n| `soc_manager` | SOC administration | Cases, sources, users, settings, rules, knowledge, audit, and operational administration |\n| `analyst_tier2` | Senior analyst | Full case investigation and closure; read-only administration |\n| `analyst_tier1` | Analyst | Read, update, assign, and comment on cases; no case closure by default |\n| `responder` | Response operator | Tier-1-style case access plus working runbooks on cases and proposal approval |\n| `auditor` | Independent review | Read/view only, including the audit trail |\n\nThe backend permission vocabulary is resource/action based, for example\n`cases:close`, `sources:manage`, `models:manage`, and `audit:view`. The effective\npermission calculation is authoritative; hiding a button in the UI is not an\nauthorization boundary. The Console reads that same effective calculation, so a person\nsees the actions their base role and assigned custom roles allow, and no others.",
    "console": []
   },
   {
@@ -4323,7 +4349,7 @@
    "page": "administration/audit-log.md",
    "anchor": "the-record",
    "heading": "The record",
-   "text": "1. **Who.** The actor and its kind, the role it held at the time, the client address and\n   where it came from (\"From the connection\" or \"From the trusted proxy\"), the browser or\n   tool, and a short reference to the session. A forwarded header the client sent is kept\n   behind **Show forwarded header** and labelled \"Supplied by the client; not verified\".\n2. **What changed.** For a change: each field in words with its key under it, the value\n   before (struck through) and after. Secret values are never recorded and show as\n   \"Changed (secret values are never recorded)\". A field counts as secret by its name\n   (a password, secret, token, credential or key, in the singular or the plural, and the\n   credential fields a notification channel or connector reads), on either side of the\n   change, and a list holding text is judged like a single value. The lists that hold\n   field names rather than values (which secrets a source has set, which entity fields\n   correlation joins on) stay readable. A web address is reduced to its scheme and host,\n   because webhook addresses carry their credential in the path; a value that is not a\n   well-formed address keeps only the host it names, or nothing when it names none.\n3. **Details.** The full stored summary, the query as it ran, the model and tool, the tool",
+   "text": "1. **Who.** The actor and its kind, the role it held at the time, the client address and\n   where it came from (\"From the connection\" or \"From the trusted proxy\"), the browser or\n   tool, and a short reference to the session. A forwarded header the client sent is kept\n   behind **Show forwarded header** and labelled \"Supplied by the client; not verified\".\n2. **What changed.** For a change: each field in words with its key under it, the value\n   before (struck through) and after. A field of one item in a list names the item, so two\n   steps' titles never read alike: a runbook step is named by its title when the event\n   records it, for example \"Step “Check sign-ins”: instructions\", and otherwise by its id,\n   and a step the change added or removed reads \"Step lookup added\" or \"Step lookup\n   removed\". A text that was cleared shows \"Empty\"; a field that had no value shows \"Not\n   set\". Secret values are never recorded and show as\n   \"Changed (secret values are never recorded)\". A field counts as secret by its name\n   (a password, secret, token, credential or key, in the singular or the plural, and the\n   credential fields a notification channel or connector reads), on either side of the\n   change, and a list holding text is judged like a single value. The lists that hold\n   field names rather than values (which secrets a source has set, which entity fields",
    "console": []
   },
   {
@@ -4331,7 +4357,7 @@
    "page": "administration/audit-log.md",
    "anchor": "the-record",
    "heading": "The record",
-   "text": "input as an expandable tree with **Copy JSON**, and any prompt excerpt or tool output\n   in a block labelled as containing untrusted log data.\n4. **Raw record.** The record exactly as it is stored, with Copy. The values the page works\n   out to show a row (its category, its friendly name, the record id, and an outcome or\n   actor kind derived for an older row) are not part of the stored record, so they are\n   left out here and shown, labelled, in the other sections. A text field longer than\n   1,000 characters is stored cut at 1,000, and the record says which.\n5. **Record.** The event and action tokens, the surface, the target and its revision, the\n   case (a link to it), the source (a link to its logs, for people who can read sources),\n   the record id (with Copy), the event, request and investigation run ids, and the\n   application version and build.\n6. **Related.** Links that apply a filter: the same actor within 15 minutes, all events\n   for this target, all events for this case, and the actor's sign-ins in the 30 days\n   before this event. For people who can read cases, **Open case trace** opens the case\n   on its Investigation tab with the trace open.",
+   "text": "correlation joins on) stay readable. A web address is reduced to its scheme and host,\n   because webhook addresses carry their credential in the path; a value that is not a\n   well-formed address keeps only the host it names, or nothing when it names none.\n3. **Details.** The full stored summary, the query as it ran, the model and tool, the tool\n   input as an expandable tree with **Copy JSON**, and any prompt excerpt or tool output\n   in a block labelled as containing untrusted log data.\n4. **Raw record.** The record exactly as it is stored, with Copy. The values the page works\n   out to show a row (its category, its friendly name, the record id, and an outcome or\n   actor kind derived for an older row) are not part of the stored record, so they are\n   left out here and shown, labelled, in the other sections. A text field longer than\n   1,000 characters is stored cut at 1,000, and the record says which.\n5. **Record.** The event and action tokens, the surface, the target and its revision, the\n   case (a link to it), the source (a link to its logs, for people who can read sources),\n   the record id (with Copy), the event, request and investigation run ids, and the\n   application version and build.\n6. **Related.** Links that apply a filter: the same actor within 15 minutes, all events\n   for this target, all events for this case, and the actor's sign-ins in the 30 days\n   before this event. For people who can read cases, **Open case trace** opens the case\n   on its Investigation tab with the trace open.",
    "console": []
   },
   {
@@ -4383,7 +4409,7 @@
    "page": "administration/audit-log.md",
    "anchor": "requests-and-downloads",
    "heading": "Requests and downloads",
-   "text": "Every export is recorded in the audit log when it is requested, when the file is written\n(with its size and SHA-256) and each time it is downloaded. Every download of any job's\nfile is recorded before it starts, as one row per download: \"Audit export downloaded\" for\nan audit export and \"Job file downloaded\" for any other job's file. If that record cannot\nbe written, the download does not start.\n\nSubmitting an audit export, a data export or a reset is recorded first, with who asked\nand from where (\"Audit export requested\", \"Export requested\", \"Reset requested\"); if that\nrecord cannot be written, the job is not created. Every row of one such job names the job\nas its target, so **All events for this target** in its record shows who asked, what the\njob did and each download.",
+   "text": "Every export is recorded in the audit log when it is requested, when the file is written\n(with its size and SHA-256) and each time it is downloaded. Every download of any job's\nfile is recorded before it starts, as one row per download: \"Audit export downloaded\" for\nan audit export and \"Job file downloaded\" for any other job's file. If that record cannot\nbe written, the download does not start. A file can be downloaded only while its owner\nstill holds the permissions its job needed (an audit export needs `audit:export` and\n`audit:view`); once one is removed, the download is refused, nothing leaves the server,\nand the refusal is recorded as Access denied, naming the permission that is missing. If\nthose permissions cannot be checked just then (the stored account could not be read),\nthe download is not started and can be tried again, and nothing is recorded as Access\ndenied, since nothing was refused for a missing permission.\n\nSubmitting an audit export, a data export or a reset is recorded first, with who asked\nand from where (\"Audit export requested\", \"Export requested\", \"Reset requested\"); if that\nrecord cannot be written, the job is not created. Every row of one such job names the job\nas its target, so **All events for this target** in its record shows who asked, what the\njob did and each download.",
    "console": []
   },
   {
@@ -4427,11 +4453,27 @@
    "console": []
   },
   {
+   "id": "administration/audit-log#what-a-draft-save-and-a-step-row-say:0",
+   "page": "administration/audit-log.md",
+   "anchor": "what-a-draft-save-and-a-step-row-say",
+   "heading": "What a draft save and a step row say",
+   "text": "A draft is saved over in place, so Runbook draft updated is the only record of the text a\nsave replaced: it names every field the save edited, with its value before and after (the\ntitle, summary, use when, prerequisites, owner, priority and review cadence, each Applies\nwhen criterion such as `applies_when.rule_ids`, the techniques and phases, the step order,\neach step added, removed or edited field by field such as\n`steps[isolate-host].instructions`, the retrieval queries and references) and the content\nhash last. A removed step is recorded with every field it held. A lookup's filter reads as\n`field = value` lines. A value longer than the 500 characters a record keeps starts just\nbefore the first difference, marked \"…\"; an edit only inside a token the log withholds is\nrecorded as a secret change. A save that edits more than 44 fields records the first 44 and\nthe content hash, and its summary gives the number of fields.\n\nA step row's summary, which the case's activity feed shows, names the step by its title in\nthe run's version, for example `Runbook step \"Isolate the host\" marked done (note\nupdated).`, and an evidence row names the lookup's step the same way; the step id stays in\nthe record's details. An approval names the role by the label the Console shows (\"waits for\napproval from a SOC manager\").",
+   "console": []
+  },
+  {
    "id": "administration/audit-log#viewing-is-recorded:0",
    "page": "administration/audit-log.md",
    "anchor": "viewing-is-recorded",
    "heading": "Viewing is recorded",
    "text": "Opening the audit log, searching it, counting it for an export and opening a record are\nrecorded as \"Audit log viewed\", at most one row per person per filter set every five\nminutes. Recording a view never blocks the read.",
+   "console": []
+  },
+  {
+   "id": "administration/audit-log#refusals-are-recorded:0",
+   "page": "administration/audit-log.md",
+   "anchor": "refusals-are-recorded",
+   "heading": "Refusals are recorded",
+   "text": "A request refused because the person lacks a permission is recorded as \"Access denied\",\nwith the permission it needed, the role the person held, and the request it refused (its\nmethod and route, for example `GET /api/users`, never the values in the address). A\nrefused read, such as a page or panel the role may not read, is recorded at most once per\nperson, permission and route every five minutes. The next record of the same refusal says\nhow many times it was refused since the previous record (\"refused 3 more times since the\nprevious record\"); if the same refusal does not come back, the refusals after its last\nrecord are not counted anywhere. A refused change is recorded every time. Checking whether\na person holds a permission, which pages do to decide what to show, is not a refusal and\nrecords nothing. Recording a refusal never changes the answer: the request is refused\neither way.",
    "console": []
   },
   {
@@ -4449,7 +4491,7 @@
    "page": "administration/audit-log.md",
    "anchor": "limits",
    "heading": "Limits",
-   "text": "- Sign-in, sign-out and session events never block signing in. If their row cannot be\n  written it is logged and counted instead. Every other change is recorded before it takes\n  effect: if its row cannot be written, the change is not made and the request answers\n  `503 audit_unavailable`.\n- One exception keeps a broken audit store repairable: while the audit log cannot be\n  written, `POST /api/setup/secrets` still applies exactly the keys of the management\n  connection that holds the audit log (`es_mgmt_api_key`, `es_url` and `es_ca_cert`) and\n  answers `503 audit_unavailable` naming any other key it did not change. The read-only\n  log key `es_api_key` is not part of the exception.\n- A settings save that races another one is tried up to three times; one that still finds\n  the settings changed underneath answers `409 settings_conflict`. A save of the\n  tuning, baseline, Batch or campaign settings, a campaign rebuild, and a tuning apply or\n  rollback answer `409 demo_mode_changed` when Demo Mode was switched during the request.\n  A settings save says \"Demo Mode was turned on or off while saving, so nothing was saved.\n  Try again.\"; the campaign rebuild and the tuning apply and rollback name what was not\n  done instead. The failure row sits beside the action row in the log the action row went\n  to.\n- Each system update request is recorded with its own rows, including who asked and from\n  where; the update supervisor stays idempotent on the request's key.\n- Applying tuning recommendations (`POST /api/tuning/{rule}/apply`) is recorded as\n  \"Detection rule\" `rule.tuning_requested` before anything changes; each applied change\n  and each approval it opens has its own row.\n- If the backend stops between recording a change and saving it, the record names a\n  revision that was never saved.\n- \"Not applied\" is shown only when both the change and its failure record are loaded.\n- Every response carries an `X-Request-ID` header, an unexpected server error (500)\n  included, so a reported failure can be matched to its rows.",
+   "text": "- Sign-in, sign-out and session events never block signing in. If their row cannot be\n  written it is logged and counted instead. Every other change is recorded before it takes\n  effect: if its row cannot be written, the change is not made and the request answers\n  `503 audit_unavailable`.\n- One exception keeps a broken audit store repairable: while the audit log cannot be\n  written, `POST /api/setup/secrets` still applies exactly the keys of the management\n  connection that holds the audit log (`es_mgmt_api_key`, `es_url` and `es_ca_cert`) and\n  answers `503 audit_unavailable` naming any other key it did not change. The read-only\n  log key `es_api_key` is not part of the exception.\n- A settings save that races another one is tried up to three times; one that still finds\n  the settings changed underneath answers `409 settings_conflict`. A save of the\n  tuning, baseline, Batch or campaign settings, a campaign rebuild, and a tuning apply or\n  rollback answer `409 demo_mode_changed` when Demo Mode was switched during the request.\n  A settings save says \"Demo Mode was turned on or off while saving, so nothing was saved.\n  Try again.\"; the campaign rebuild and the tuning apply and rollback name what was not\n  done instead. The failure row sits beside the action row in the log the action row went\n  to.",
    "console": []
   },
   {
@@ -4457,7 +4499,7 @@
    "page": "administration/audit-log.md",
    "anchor": "limits",
    "heading": "Limits",
-   "text": "For the request and response fields of `GET /api/audit`, `GET /api/audit/count` and\n`GET /api/audit/records/{record_id}`, see the API reference.",
+   "text": "- Each system update request is recorded with its own rows, including who asked and from\n  where; the update supervisor stays idempotent on the request's key.\n- Applying tuning recommendations (`POST /api/tuning/{rule}/apply`) is recorded as\n  \"Detection rule\" `rule.tuning_requested` before anything changes; each applied change\n  and each approval it opens has its own row.\n- If the backend stops between recording a change and saving it, the record names a\n  revision that was never saved.\n- \"Not applied\" is shown only when both the change and its failure record are loaded.\n- Every response carries an `X-Request-ID` header, an unexpected server error (500)\n  included, so a reported failure can be matched to its rows.\n- The five-minute windows for \"Audit log viewed\" and for refused reads are kept in the\n  backend's memory, so a restart, or a second backend, may record one extra row. The count\n  of refused reads since a refusal's last record is kept there too: it reaches the log\n  only with the next record of the same refusal, so it is lost on a restart, when the\n  refusal does not come back, or when the backend forgets the refusal to make room (it\n  remembers the 10,000 most recent).\n\nFor the request and response fields of `GET /api/audit`, `GET /api/audit/count` and\n`GET /api/audit/records/{record_id}`, see the API reference.",
    "console": []
   },
   {
@@ -5642,7 +5684,7 @@
    "page": "operations/background-jobs.md",
    "anchor": "downloadable-artifacts",
    "heading": "Downloadable artifacts",
-   "text": "Only a terminal result with a non-empty `artifact_id` displays **Download**. The server\nreturns verified bytes through `/api/jobs/{job_id}/artifact`; it does not accept a client\nfile path or arbitrary artifact URL.\n\nData export archive and segment jobs each produce one server-managed ZIP. Segment mode follows\nthe selected scope cursors on the server and packages the numbered JSON envelopes into\nthat single ZIP, so the browser is not responsible for collecting a sequence of files.\nAn audit export produces one plain `.csv` or `.ndjson` file, never a ZIP.\n\nEvery download of every job's file is recorded in the audit log before the first byte\nis sent, after the ownership, grant and integrity checks: \"Audit export downloaded\" for\nan audit export and \"Job file downloaded\" for any other kind, always in the real audit\nlog, Demo Mode included. If that row cannot be written the download answers `503\naudit_unavailable` and sends nothing; a refused download writes no row.\n\nArtifact storage has a separate persistence and retention boundary:",
+   "text": "Only a terminal result with a non-empty `artifact_id` displays **Download**. The server\nreturns verified bytes through `/api/jobs/{job_id}/artifact`; it does not accept a client\nfile path or arbitrary artifact URL.\n\nData export archive and segment jobs each produce one server-managed ZIP. Segment mode follows\nthe selected scope cursors on the server and packages the numbered JSON envelopes into\nthat single ZIP, so the browser is not responsible for collecting a sequence of files.\nAn audit export produces one plain `.csv` or `.ndjson` file, never a ZIP.\n\nEvery download of every job's file is recorded in the audit log before the first byte\nis sent, after the ownership, grant and integrity checks: \"Audit export downloaded\" for\nan audit export and \"Job file downloaded\" for any other kind, always in the real audit\nlog, Demo Mode included. If that row cannot be written the download answers `503\naudit_unavailable` and sends nothing; a refused download writes no download row. A\nfile downloads only while its owner still holds the grants its job needed (an audit\nexport needs `audit:export` and `audit:view`): once one is removed the answer is `403\njob_artifact_permission_lost` and the refusal is recorded as Access denied, naming the\nmissing grant; when the grants cannot be confirmed just then the answer is `503\njob_permission_unverifiable` and nothing is recorded.",
    "console": []
   },
   {
@@ -5650,7 +5692,7 @@
    "page": "operations/background-jobs.md",
    "anchor": "downloadable-artifacts",
    "heading": "Downloadable artifacts",
-   "text": "- the local default is `./data/job-artifacts`;\n- the updater-managed standalone profile keeps that local default; use a reviewed\n  override/bind mount if files must survive container replacement;\n- the legacy merge profile overrides it with `/var/lib/agentic-soc/jobs` on a\n  persistent named volume;\n- the artifact root is private (`0700`) and files are private (`0600`);\n- IDs and filenames are server-generated, and only the job's own file type is admitted\n  (a ZIP for a data export, CSV or JSON Lines for an audit export);\n- size and SHA-256 are verified on every download;\n- at most the newest 50 attached artifacts are retained; older job records can remain\n  after their artifact metadata and file are pruned; and\n- unreferenced files older than two lease windows are cleaned during recovery, while\n  active reserved IDs are protected.\n\nArtifact retention is count-based, not a backup policy. A missing, expired, or failed\nintegrity check is reported instead of streaming unverified bytes. Download important\nexports promptly and move them into an independently controlled retention system.",
+   "text": "Artifact storage has a separate persistence and retention boundary:\n\n- the local default is `./data/job-artifacts`;\n- the updater-managed standalone profile keeps that local default; use a reviewed\n  override/bind mount if files must survive container replacement;\n- the legacy merge profile overrides it with `/var/lib/agentic-soc/jobs` on a\n  persistent named volume;\n- the artifact root is private (`0700`) and files are private (`0600`);\n- IDs and filenames are server-generated, and only the job's own file type is admitted\n  (a ZIP for a data export, CSV or JSON Lines for an audit export);\n- size and SHA-256 are verified on every download;\n- at most the newest 50 attached artifacts are retained; older job records can remain\n  after their artifact metadata and file are pruned; and\n- unreferenced files older than two lease windows are cleaned during recovery, while\n  active reserved IDs are protected.\n\nArtifact retention is count-based, not a backup policy. A missing, expired, or failed\nintegrity check is reported instead of streaming unverified bytes. Download important\nexports promptly and move them into an independently controlled retention system.",
    "console": []
   },
   {
@@ -7316,7 +7358,7 @@
    "page": "reference/permissions.md",
    "anchor": "case-and-operational-grants",
    "heading": "Case and operational grants",
-   "text": "Installing or rolling back a system update is additionally limited by the API to the\nbuilt-in `super_admin` with a fresh sign-in, whatever a custom role grants.",
+   "text": "Installing or rolling back a system update is additionally limited by the API to the\nbuilt-in `super_admin` with a fresh sign-in, whatever a custom role grants.\n\n`metrics:view` covers every metrics read, the operational rollup behind the Metrics page\n(`GET /api/metrics`) and the analyst feedback agreement (`GET /api/feedback/stats`)\nincluded. `cost:view` covers AI spend wherever it is shown: the Cost page and\n`GET /api/usage/summary` (one case's spend included), the usage breakdown, the spend on\nthe Executive board, chat's spending answers, the spend part of `GET /api/metrics` (left\nempty), the spent and remaining amounts of the AI budget (`GET /api/budget/status` keeps\nthe caps and settings for `models:read`), the cost and tokens on a case's agent timeline,\na case's own investigation cost (`token_cost` is `null` on every case the API returns,\nand the case page, its facts rail and Entity investigation leave it out), and the\nrecorded case cost in Agent effectiveness (shown as unavailable). A role without\n`cost:view` still reads everything else on those pages.",
    "console": []
   },
   {
@@ -7348,7 +7390,15 @@
    "page": "reference/permissions.md",
    "anchor": "settings-and-narrow-administration-grants",
    "heading": "Settings and narrow administration grants",
-   "text": "The general `settings` resource has `read` and `manage`. Newer administration\nsurfaces use narrower resources so a custom role can delegate one area without\ngranting all settings:\n\n```text\nnotifications  branding  sessions  demo  terminology  automation\nroles          models    enrichment inapp rules\n```\n\nEach narrow resource also defines `read` and `manage`. The default grants deliberately\nmirror each role's `settings` grant:\n\n| Roles | `settings` and every narrow resource |\n|---|---|\n| `super_admin`, `soc_manager` | `*` (`read` and `manage`) |\n| `analyst_tier2`, `analyst_tier1`, `responder`, `auditor` | `read` |\n\n**Discounted inference** (the Flex and Batch policy) is part of Settings and saves with\nthe other preferences, so changing it needs `settings:manage`. Before Round 14 it was on\nthe Jobs page and saved with `models:manage`; every built-in role holds both grants or\nneither, so only a custom role that held one without the other sees a difference.\n\nThe API can still combine these resources with a case/source permission where the\noperation acts on both domains. Always test the exact route with the role rather than\ninferring access solely from whether a navigation item is visible.",
+   "text": "The general `settings` resource has `read` and `manage`. Newer administration\nsurfaces use narrower resources so a custom role can delegate one area without\ngranting all settings:\n\n```text\nnotifications  branding  sessions  demo  terminology  automation\nroles          models    enrichment inapp rules\n```\n\nEach narrow resource also defines `read` and `manage`. The default grants deliberately\nmirror each role's `settings` grant:\n\n| Roles | `settings` and every narrow resource |\n|---|---|\n| `super_admin`, `soc_manager` | `*` (`read` and `manage`) |\n| `analyst_tier2`, `analyst_tier1`, `responder`, `auditor` | `read` |\n\n**Discounted inference** (the Flex and Batch policy) is part of Settings and saves with\nthe other preferences, so changing it needs `settings:manage`. Before Round 14 it was on\nthe Jobs page and saved with `models:manage`; every built-in role holds both grants or\nneither, so only a custom role that held one without the other sees a difference.",
+   "console": []
+  },
+  {
+   "id": "reference/permissions#settings-and-narrow-administration-grants:1",
+   "page": "reference/permissions.md",
+   "anchor": "settings-and-narrow-administration-grants",
+   "heading": "Settings and narrow administration grants",
+   "text": "**Enrichment** (the provider switches, fusion, the cache lifetime and provider keys)\nsaves at once and needs `enrichment:manage`. Before Round 14 its switches and cache\nlifetime saved with the other preferences under `settings:manage`; as above, only a\ncustom role that holds one of the two grants without the other sees a difference. The\nsettings lock applies to the switches, fusion and the cache lifetime too, whatever the\nrole. Provider keys are handled like source and notification channel credentials: the\nserver does not check the lock for them. The Console disables the key fields while the\nlock is on, but a direct API call with `enrichment:manage` can still set or clear a key,\nand the audit log records it. **All settings** no longer lists the `enrichment`\nsettings: the Enrichment section is their one editor.\n\nThe API can still combine these resources with a case/source permission where the\noperation acts on both domains. Always test the exact route with the role rather than\ninferring access solely from whether a navigation item is visible.",
    "console": []
   },
   {
@@ -7388,7 +7438,15 @@
    "page": "reference/permissions.md",
    "anchor": "inspect-and-test-access",
    "heading": "Inspect and test access",
-   "text": "- `GET /api/account/permissions` returns the current account's effective access.\n- `GET /api/roles` returns the role catalog/effective definitions.\n- `POST /api/roles/preview` validates a proposed role shape without persisting it.\n- `GET /api/roles/simulate` evaluates a role against a resource/action request.\n- `PUT /api/users/{username}/roles` changes a user's role.\n\nThe Agentic SOC Console uses permission guards for presentation, but the API is the security\nboundary. Non-GET routes are expected to declare an authorization dependency in\naddition to the central authentication gate.\n\nObject-level scope conditions exist as an opt-in policy hook and use a fixed,\nnon-`eval` condition vocabulary. They are off by default. Built-in RBAC therefore does\nnot by itself provide tenant isolation or arbitrary row-level case segregation.\n\nSee Users and RBAC,\nAPI authentication, and Security.",
+   "text": "- `GET /api/account/permissions` returns the current account's effective access: every\n  action the API allows it, listed as concrete actions (never `*`). The server answers it\n  with the same resolver its route checks use, so it includes the base role, every\n  assigned custom role and every deny.\n- `GET /api/roles` returns the role catalog/effective definitions.\n- `POST /api/roles/preview` validates a proposed role shape without persisting it.\n- `GET /api/roles/simulate` evaluates a role against a resource/action request.\n- `PUT /api/users/{username}/roles` changes a user's role.\n\nThe Agentic SOC Console uses permission guards for presentation, but the API is the security\nboundary. The guards read only `GET /api/account/permissions`, so the Console shows the\nactions a custom role grants (for example `runbooks:publish` or `audit:export`) and hides\nwhat a deny removes, exactly as the API decides. When that read fails, the Console hides\nevery restricted action (`super_admin` excepted) rather than guess. Non-GET routes are\nexpected to declare an authorization dependency in addition to the central authentication\ngate.\n\nObject-level scope conditions exist as an opt-in policy hook and use a fixed,\nnon-`eval` condition vocabulary. They are off by default. Built-in RBAC therefore does\nnot by itself provide tenant isolation or arbitrary row-level case segregation.",
+   "console": []
+  },
+  {
+   "id": "reference/permissions#inspect-and-test-access:1",
+   "page": "reference/permissions.md",
+   "anchor": "inspect-and-test-access",
+   "heading": "Inspect and test access",
+   "text": "See Users and RBAC,\nAPI authentication, and Security.",
    "console": []
   },
   {

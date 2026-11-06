@@ -35,7 +35,7 @@ import { JsonTree } from './JsonTree';
 import {
   ACTOR_KIND_LABEL,
   actorKindKey,
-  fieldLabel,
+  changeLabels,
   formatLocalClock,
   formatRowTime,
   parseUserAgent,
@@ -289,6 +289,10 @@ function WhoSection({ record, announce }: { record: AuditRecord; announce: (m: s
 
 function ChangeValue({ value, before }: { value: string | null; before: boolean }) {
   if (value === null) return <span className="text-muted-foreground">Not set</span>;
+  // A text cleared to nothing (or to spaces alone) would otherwise read as a blank cell,
+  // and say nothing to a screen reader: it is named, as a missing value is.
+  if (value === '') return <span className="text-muted-foreground">Empty</span>;
+  if (!value.trim()) return <span className="text-muted-foreground">Spaces only</span>;
   return before ? (
     <span className="text-muted-foreground line-through decoration-1 [overflow-wrap:anywhere]">{value}</span>
   ) : (
@@ -297,6 +301,7 @@ function ChangeValue({ value, before }: { value: string | null; before: boolean 
 }
 
 function ChangesSection({ changes }: { changes: readonly AuditChange[] }) {
+  const labels = changeLabels(changes);
   return (
     <Section id="audit-inspector-changes" title="What changed">
       <div className="overflow-hidden rounded-md border border-border/70">
@@ -319,7 +324,7 @@ function ChangesSection({ changes }: { changes: readonly AuditChange[] }) {
             {changes.map((c, i) => (
               <tr key={`${c.field}-${i}`} className="border-b border-border/70 align-top last:border-0">
                 <th scope="row" className="px-3 py-2 text-left font-normal">
-                  <span className="block text-foreground">{fieldLabel(c.field)}</span>
+                  <span className="block text-foreground">{labels[i]}</span>
                   <span className="block font-mono text-2xs text-muted-foreground [overflow-wrap:anywhere]">{c.field}</span>
                 </th>
                 {c.secret ? (

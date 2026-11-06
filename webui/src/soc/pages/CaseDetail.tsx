@@ -522,6 +522,9 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
   // POST /api/cases/{id}/reinvestigate needs `cases:reinvestigate` (tier 2 and up by
   // default): without it the action, its R shortcut and its model list are not offered.
   const canReinvestigate = hasPermission('cases', 'reinvestigate');
+  // A case's own AI spend follows `cost:view` like every other spend figure: without it
+  // the facts rail, the Overview and the Reinvestigate dialog leave it out.
+  const canViewCost = hasPermission('cost', 'view');
   // GET /api/users needs `users:manage`. Without it the owner field takes a typed name and
   // @mentions are not suggested, and the read is never sent (it could only be refused).
   const canListUsers = hasPermission('users', 'manage');
@@ -1584,6 +1587,7 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
       fpPolicy={fpPolicy}
       users={pickUsers}
       canAssign={hasPermission('cases', 'assign')}
+      canViewCost={canViewCost}
       onCaseChange={commitCase}
       onSetDisposition={
         setDispositionAction ? () => openFromControl(setDispositionAction, takeActionTriggerRef.current) : undefined
@@ -2048,6 +2052,7 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
                           onOpenTab={(next) => setTab(next)}
                           onNavigate={onNavigate}
                           presentation="case-manager"
+                          canViewCost={canViewCost}
                           onSetDisposition={
                             setDispositionAction && shownIsCurrent
                               ? (opener) => openFromControl(setDispositionAction, opener)
@@ -2281,8 +2286,11 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
             <AlertTriangle className="h-4 w-4" />
             <AlertTitle>Costs tokens and overwrites the verdict</AlertTitle>
             <AlertDescription>
-              Investigation cost to date {fmtMoney(c?.token_cost)}. Re-running spends more
-              tokens and replaces the current verdict, confidence, and rationale.
+              {canViewCost && c?.token_cost != null
+                ? `Investigation cost to date ${fmtMoney(c.token_cost)}. `
+                : null}
+              Re-running spends more tokens and replaces the current verdict, confidence, and
+              rationale.
             </AlertDescription>
           </Alert>
           <div className="space-y-1.5">

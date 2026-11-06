@@ -142,7 +142,10 @@ export interface NavPerm {
  * it needs (default: RBAC only).
  */
 export interface FeatureCtx {
-  /** RBAC axis: true when auth/RBAC are off, else consults the permission matrix. */
+  /**
+   * RBAC axis: true when auth/RBAC are off, else consults the signed-in person's
+   * effective grants (GET /api/account/permissions).
+   */
   hasPermission: (resource: string, action: string) => boolean;
   /** Prefs feature-toggle axis: is a named opt-in feature flag enabled? Default true. */
   prefsEnabled?: (flag: string) => boolean;

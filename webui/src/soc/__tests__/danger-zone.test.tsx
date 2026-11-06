@@ -21,7 +21,7 @@ const mocks = {
   submit: vi.fn(),
   authMe: vi.fn(),
   toastSuccess: vi.fn(),
-  rolesGet: vi.fn(),
+  permissions: vi.fn(),
 };
 
 vi.mock('sonner', () => ({
@@ -46,7 +46,7 @@ vi.mock('@/lib/api', () => {
     api: {
       jobs: { submit: (body: unknown) => mocks.submit(body) },
       auth: { me: () => mocks.authMe() },
-      roles: { get: () => mocks.rolesGet() },
+      account: { permissions: () => mocks.permissions() },
     },
   };
 });
@@ -69,7 +69,9 @@ beforeEach(() => {
   mocks.authMe.mockResolvedValue({ auth_enabled: false, authenticated: false, user: null });
   mocks.submit.mockReset();
   mocks.toastSuccess.mockReset();
-  mocks.rolesGet.mockResolvedValue({ matrix: {}, rbac_enabled: false });
+  mocks.permissions.mockResolvedValue({
+    authenticated: false, role: 'super_admin', custom_roles: [], rbac_enabled: false, permissions: {},
+  });
 });
 
 /** Open a tier's confirm dialog by clicking its card button, then return the dialog. */
@@ -296,12 +298,16 @@ describe('DangerZone', () => {
       authenticated: true,
       user: { username: 'viewer', role: 'viewer' },
     });
-    mocks.rolesGet.mockResolvedValue({
+    // The server's effective grants for this viewer hold no users:manage.
+    mocks.permissions.mockResolvedValue({
+      authenticated: true,
+      role: 'viewer',
+      custom_roles: [],
       rbac_enabled: true,
-      matrix: { viewer: { cases: ['read'], settings: ['read'] } },
+      permissions: { cases: ['read'], settings: ['read'] },
     });
     renderDangerZone();
-    await waitFor(() => expect(mocks.rolesGet).toHaveBeenCalled());
+    await waitFor(() => expect(mocks.permissions).toHaveBeenCalled());
     await new Promise((r) => setTimeout(r, 0));
     expect(screen.queryByTestId('danger-zone')).toBeNull();
     expect(screen.queryByRole('button', { name: 'Factory reset' })).toBeNull();

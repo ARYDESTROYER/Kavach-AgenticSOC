@@ -742,6 +742,48 @@ describe('Audit log: the grid and the inspector', () => {
     expect(s.getByRole('group', { name: 'Tool input' })).toBeInTheDocument();
   });
 
+  it('names each step in What changed and shows a cleared value as Empty (FX8)', async () => {
+    const user = userEvent.setup();
+    h.list.mockResolvedValue(
+      page([
+        rec({
+          record_id: 'mem:9',
+          action: 'runbook.draft_updated',
+          event_label: 'Runbook draft updated',
+          actor: 'asha',
+          result_summary: 'Saved the draft of version 2.',
+          changes: [
+            { field: 'prerequisites', before: 'Tab A prerequisite', after: '', secret: false },
+            { field: 'steps', before: '5', after: '4', secret: false },
+            { field: 'steps[record]', before: 'Tell the host owner', after: null, secret: false },
+            { field: 'steps[record].phase', before: 'contain', after: null, secret: false },
+            { field: 'steps[lookup].instructions', before: '', after: 'Check the host inventory first.', secret: false },
+          ],
+        }),
+      ]),
+    );
+    renderAudit();
+    await user.click(await screen.findByText('Runbook draft updated'));
+    const sheet = await screen.findByRole('region', { name: 'Runbook draft updated' });
+    const table = within(sheet).getByRole('table');
+    const header = (name: string) => within(table).getByRole('rowheader', { name: new RegExp(`^${name.replace(/[[\]().*+?]/g, '\\$&')}`) });
+    // The step count and the removed step no longer share the label "Steps".
+    expect(header('Steps steps')).toBeInTheDocument();
+    expect(header('Step record removed')).toBeInTheDocument();
+    // A removed step's fields are named by its recorded title, not as the runbook's own.
+    expect(header('Step “Tell the host owner”: phase')).toBeInTheDocument();
+    expect(header('Step lookup: instructions')).toBeInTheDocument();
+    // An emptied or empty text reads as Empty, as a missing value reads Not set.
+    const cleared = header('Prerequisites').closest('tr') as HTMLTableRowElement;
+    expect(within(cleared).getByText('Tab A prerequisite')).toHaveClass('line-through');
+    expect(within(cleared).getByText('Empty')).toBeInTheDocument();
+    const filled = header('Step lookup: instructions').closest('tr') as HTMLTableRowElement;
+    expect(within(filled).getByText('Empty')).toBeInTheDocument();
+    expect(within(filled).getByText('Check the host inventory first.')).toBeInTheDocument();
+    const removed = header('Step record removed').closest('tr') as HTMLTableRowElement;
+    expect(within(removed).getByText('Not set')).toBeInTheDocument();
+  });
+
   it('shows Raw record as the store holds it, without the read-time projections', async () => {
     const user = userEvent.setup();
     h.list.mockResolvedValue(

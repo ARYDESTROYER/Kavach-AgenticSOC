@@ -89,7 +89,8 @@ the case workspace opens after selection.
 
 ## Keyboard
 
-In **Triage → Case Manager** the queue is one tab stop. Press **?** in the queue for this list:
+In **Triage → Case Manager** the queue is one tab stop. Press **?** in the queue for this list
+(it lists only the keys your role can use):
 
 | Keys | Action |
 |---|---|
@@ -235,7 +236,7 @@ earlier result was replaced").
 
 **Approvals**: when step approvals are on, an action waits for a person with the step's
 approval role. The person who recorded the action cannot approve it, and someone without
-the role sees "Only a soc manager can approve this step." in place of a working
+the role sees "Only a SOC manager can approve this step." in place of a working
 **Approve**; the step says so in both cases.
 
 **The AI**, when it is on, can draft a step's note from its lookup results (**Draft
@@ -294,7 +295,9 @@ long the form is.
 
 ## Select cases and run bulk work
 
-Use a row checkbox (or X, or Space) for an individual case. **Select all visible**
+Row selection (the checkbox, X or Space, **Select all visible**) is offered only to a role
+that can act on cases: `cases:write`, `cases:assign`, `cases:reinvestigate` or
+`cases:close`. Use a row checkbox (or X, or Space) for an individual case. **Select all visible**
 selects the loaded rows that match the current view; when more cases match than are
 loaded, **Select all N matching** takes a snapshot of every matching case from the
 server, up to 5,000. The row checkbox is separate from row navigation, so selecting

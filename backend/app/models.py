@@ -17,7 +17,9 @@ from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Annotated, Any, ClassVar, Iterable, Literal, NamedTuple, get_args
 from urllib.parse import urlsplit
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_serializer, model_validator
+from pydantic import (
+    BaseModel, ConfigDict, Field, WithJsonSchema, field_validator, model_serializer, model_validator,
+)
 from typing_extensions import TypedDict
 
 # The answer-block contract module depends only on constants + pydantic (never on
@@ -1895,7 +1897,13 @@ class Case(BaseModel):
     # particular, ``deferred:`` candidates are durably drained on a later tick.
     awaiting_reason: str = ""
     risk_breakdown: RiskBreakdown = Field(default_factory=RiskBreakdown)
-    token_cost: float = 0.0
+    # The case's cumulative investigation spend. Stored and validated as a number; the
+    # case reads answer ``null`` for a caller without ``cost:view`` (Round 14 roles-11,
+    # ``api/routes._withhold_case_spend``), so the documented response type says so.
+    # ``Case`` is never a request body, so the schema describes responses only.
+    token_cost: Annotated[
+        float, WithJsonSchema({"anyOf": [{"type": "number"}, {"type": "null"}]}),
+    ] = 0.0
     error: str | None = None
     # --- Round 3 ADVISORY triage axes (severity / impact / urgency / priority + SLA
     # lifecycle timestamps). ALL optional + defaulted None so old stored cases load

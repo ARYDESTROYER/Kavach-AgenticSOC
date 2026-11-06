@@ -112,7 +112,8 @@ has three views of the same runbook:
   summary, use when, prerequisites, priority, owner, review cadence, the techniques the
   runbook covers, search phrases and references (https links only).
 - **Preview as analyst** shows the Runbook tab as an analyst will see it before anyone
-  starts. **Fill with** a recent matching case resolves the lookup values from that case, and
+  starts. **Fill with** a recent matching case resolves the lookup values from that case (a
+  screen reader hears when they arrive and which values the case does not have), and
   the meter shows the investigator guidance against its budget, for example "Investigator
   guidance: 2,140 of 3,000 characters".
 - **Source** shows the Markdown. Chips and front matter are the same fields; edit either, and
@@ -146,9 +147,24 @@ A Lookup step's **Test with a case** runs the lookup once against a case you cho
 saving anything. It needs `runbooks:manage`, `sources:read`, `cases:read` and the lookup's own
 grant.
 
-If someone else saves the draft while you edit it, saving says "Someone else changed this
-draft. Reload it to see their changes." Your edit stays in the Source view until you reload,
-so you can copy it.
+If someone else changes the runbook while you work on it, your next write says "Someone else
+changed this draft. Reload it to see their changes." Your edit stays in the Source view until
+you reload. **Reload** loads their version, so your next save is made on top of their change
+and never over it. Your own version stays on the page as a labelled copy (**Show your
+version**, **Copy your version**) until you dismiss it or leave, so you can take back what you
+still need. When you had no unsaved edits (for example, you pressed **Publish** or **Retire**),
+there is nothing of yours to keep: Reload loads their version and no copy is kept.
+
+**Add condition** under the header opens a picker for the condition you choose (a rule, a
+technique, the severity and so on). The picker stays open, with focus in it, until you press
+**Done** or Escape or click elsewhere, so you can add several values in a row, by mouse or
+keyboard. **Done** keeps what the picker shows: a value you typed but did not add with Enter
+becomes a condition (if it is refused, the picker stays open and its field says why), and
+**Minimum events** adds its 1 even if you leave the number as it is. Escape and a click
+elsewhere add nothing. Done and Escape return you to the condition's chip you opened the picker
+from, or to **Add condition**; a click on another field leaves you in that field.
+Without `runbooks:manage`, `#/runbooks?id=new` says you cannot create runbooks instead of
+opening an empty draft.
 
 ## Lookups
 
@@ -224,6 +240,20 @@ publish it first) and while the editor holds unsaved changes.
 
 Only a published version guides the investigator or enters the knowledge search. A draft,
 a version in review and anything the AI writes never do.
+
+### Sent back and retired versions
+
+The reason a publisher gives when sending a version back shows on the draft, in the
+governance strip, with who sent it back and when ("Show all" lists earlier ones), and on that
+version in **History**, newest first, for as long as the version is kept.
+
+A retired runbook opens read only on its retired version ("Retired · read only", with who
+retired it and when), and someone with `runbooks:publish` can **Restore** it from the editor
+header, which makes that version live again. A draft or a version in review the runbook still
+holds is kept and named under **Waiting**, with its review notes; once the runbook is restored
+you work on it as usual. Restoring a version as a draft from **History** is how you start a
+retired runbook's next version: the draft waits beside the retired version until someone with
+`runbooks:publish` restores the runbook.
 
 ## The built-in library
 

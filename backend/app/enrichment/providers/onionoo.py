@@ -58,14 +58,14 @@ class OnionooProvider(EnrichmentProvider):
             docs_url="https://metrics.torproject.org/onionoo.html",
             default_enabled=True,
             setup_steps=[
-                "Nothing to set up — Onionoo is keyless and this provider ships "
+                "Nothing to set up: Onionoo is keyless and this provider ships "
                 "enabled.",
                 "Requires outbound HTTPS to onionoo.torproject.org.",
             ],
             example=(
                 "Straight from the Tor consensus: a password-spray source that is a "
                 "live Tor exit node explains the rotating identities and tells the "
-                "analyst that blocking the single IP is pointless — block the "
+                "analyst that blocking the single IP is pointless. Block the "
                 "behaviour instead."
             ),
         )

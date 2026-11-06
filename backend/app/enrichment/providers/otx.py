@@ -71,7 +71,7 @@ class OTXProvider(EnrichmentProvider):
                 "Copy the OTX API key (free, generous limits).",
                 "Set TLSOC_OTX_API_KEY in .env (compose maps it to OTX_API_KEY), or "
                 "paste it in this card (in-memory until restart).",
-                "Flip this provider's toggle ON — one key covers IPs, domains, URLs "
+                "Flip this provider's toggle ON. One key covers IPs, domains, URLs "
                 "and hashes.",
             ],
             example=(

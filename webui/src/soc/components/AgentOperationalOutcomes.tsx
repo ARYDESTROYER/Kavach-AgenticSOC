@@ -670,17 +670,29 @@ function OutcomeDetail({ outcomes }: { outcomes: AgentOperationalOutcomesContrac
         </DetailGroup>
 
         <DetailGroup title="AI processing cost">
-          <DetailValue label="Recorded total" value={formatCurrency(cost.current.total_cost)} />
-          <DetailValue
-            label="Per costed case"
-            value={formatCurrency(cost.current.cost_per_costed_case)}
-            detail={`${cost.current.costed_cases.toLocaleString()} case-associated cost cohorts.`}
-          />
-          <DetailValue
-            label="Recorded / day"
-            value={formatCurrency(cost.current.cost_per_day)}
-            detail={`Comparable prior: ${formatCurrency(cost.baseline.cost_per_day)}. Model spend only; no labor cost is inferred.`}
-          />
+          {cost.status === 'unavailable' ? (
+            // An unavailable block carries zero figures (the ledger was not read: no
+            // cost:view, or the read failed), so it shows its reason, never $0.00.
+            <DetailValue
+              label="Recorded total"
+              value={DASH}
+              detail={asSentence(cost.reason) || 'Recorded AI cost is unavailable.'}
+            />
+          ) : (
+            <>
+              <DetailValue label="Recorded total" value={formatCurrency(cost.current.total_cost)} />
+              <DetailValue
+                label="Per costed case"
+                value={formatCurrency(cost.current.cost_per_costed_case)}
+                detail={`${cost.current.costed_cases.toLocaleString()} case-associated cost cohorts.`}
+              />
+              <DetailValue
+                label="Recorded / day"
+                value={formatCurrency(cost.current.cost_per_day)}
+                detail={`Comparable prior: ${formatCurrency(cost.baseline.cost_per_day)}. Model spend only; no labor cost is inferred.`}
+              />
+            </>
+          )}
         </DetailGroup>
       </div>
 

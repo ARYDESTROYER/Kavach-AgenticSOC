@@ -12,6 +12,7 @@ import {
   activeFilterCount,
   buildListItems,
   caseLabelsOf,
+  changeLabels,
   clearedView,
   exportFileName,
   fieldLabel,
@@ -174,8 +175,66 @@ describe('record words', () => {
 
   it('names a field in words with the key kept separately', () => {
     expect(fieldLabel('chat_agent.limits.max_parallel')).toBe('Max parallel');
-    expect(fieldLabel('sources[wazuh].poll_interval')).toBe('Poll interval');
     expect(fieldLabel('role')).toBe('Role');
+    expect(fieldLabel('client.ip_source')).toBe('IP source');
+  });
+
+  it('keeps which item of a list a field belongs to (FX8)', () => {
+    // Before the fix both read "Title" and "Poll interval": a step's title looked like
+    // the runbook's own title.
+    expect(fieldLabel('title')).toBe('Title');
+    expect(fieldLabel('steps[lookup].title')).toBe('Step lookup: title');
+    expect(fieldLabel('sources[wazuh].poll_interval')).toBe('Source wazuh: poll interval');
+    expect(fieldLabel('steps[look].lookup.window')).toBe('Step look: lookup window');
+    expect(fieldLabel('steps[pick].options[noise].label')).toBe('Step pick, option noise: label');
+    expect(fieldLabel('sources[web-proxy].config.url')).toBe('Source web-proxy: URL');
+    expect(fieldLabel('retrieval_queries[q1].text')).toBe('Retrieval query q1: text');
+    // A dot inside the brackets is the item's id, not a path step.
+    expect(fieldLabel('sources[web.proxy].enabled')).toBe('Source web.proxy: enabled');
+    // A draft that repeated a step id is compared by position.
+    expect(fieldLabel('steps[#2].id')).toBe('Step 2: ID');
+  });
+
+  it('names an added or removed item apart from the count beside it (FX8)', () => {
+    expect(fieldLabel('steps')).toBe('Steps');
+    expect(fieldLabel('steps[record]', undefined, { before: 'Tell the host owner', after: null })).toBe('Step record removed');
+    expect(fieldLabel('steps[record]', undefined, { before: null, after: 'Tell the host owner' })).toBe('Step record added');
+    expect(fieldLabel('steps[record]')).toBe('Step record');
+    expect(fieldLabel('steps[pick].options[noise]', undefined, { before: 'noise: Noise', after: null })).toBe(
+      'Step pick, option noise removed',
+    );
+  });
+
+  it('calls a step by the title the row records for it (FX8)', () => {
+    const change = (field: string, before: string | null, after: string | null, secret = false) => ({ field, before, after, secret });
+    // A removed step: its own entry carries its title, the fields it held follow.
+    expect(
+      changeLabels([
+        change('steps', '5', '4'),
+        change('steps[record]', 'Tell the host owner', null),
+        change('steps[record].phase', 'contain', null),
+        change('steps[record].kind', 'record', null),
+      ]),
+    ).toEqual(['Steps', 'Step record removed', 'Step “Tell the host owner”: phase', 'Step “Tell the host owner”: kind']);
+    // An edited step: its new title names it, also in the title's own row.
+    expect(
+      changeLabels([
+        change('title', 'Lateral movement', 'Lateral movement (custom)'),
+        change('steps[lookup].title', 'How many events came from the case IP?', 'How many events came from the case IP now?'),
+        change('steps[lookup].instructions', '', 'Check the host inventory first.'),
+        change('steps[other].instructions', 'Old', 'New'),
+      ]),
+    ).toEqual([
+      'Title',
+      'Step “How many events came from the case IP…”: title',
+      'Step “How many events came from the case IP…”: instructions',
+      'Step other: instructions',
+    ]);
+    // A title cleared to nothing keeps the one it had; a secret entry never names anything.
+    expect(changeLabels([change('steps[a].title', 'Was', ''), change('steps[a].focus', 'x', 'y')])[1]).toBe('Step “Was”: focus');
+    expect(changeLabels([change('channels[c].name', null, null, true), change('channels[c].enabled', 'false', 'true')])[1]).toBe(
+      'Channel c: enabled',
+    );
   });
 
   it('parses common user agents and keeps unknown ones raw', () => {

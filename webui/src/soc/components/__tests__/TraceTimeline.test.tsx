@@ -11,6 +11,7 @@ import { render, screen, fireEvent, within } from '@testing-library/react';
 
 import { TraceTimeline } from '../TraceTimeline';
 import { ApiError } from '@/lib/api';
+import { DASH } from '@/lib/format';
 
 describe('TraceTimeline — error state (shared LoadError)', () => {
   it('renders the shared LoadError title + message and wires Retry', () => {
@@ -67,5 +68,42 @@ describe('TraceTimeline: the decision step labels (Round 14, SPEC §3.1)', () =>
       expect(node.className, label).not.toMatch(/uppercase|tracking-|text-\[/);
     }
     expect(container.innerHTML).not.toMatch(/text-\[(?:0?\.\d+rem|\d+px)\]/);
+  });
+});
+
+describe('TraceTimeline: AI spend withheld without cost:view (Round 14 second acceptance pass, roles-11)', () => {
+  const span = {
+    id: 'span-1',
+    case_id: 'case-1',
+    step_index: 1,
+    kind: 'router' as const,
+    name: 'route',
+    ts: '2026-10-28T10:00:00Z',
+    latency_ms: 120,
+    cost: null,
+    tokens: null,
+    trusted: true,
+    summary: 'Routed to the investigator.',
+    payload_ref: {},
+  };
+  const withheld = { case_id: 'case-1', spans: [span], total: 1, totals: { cost: null, tokens: null } };
+
+  it('shows no cost badge and no dash when the server withholds the totals', () => {
+    render(<TraceTimeline data={withheld} />);
+    expect(screen.getByText('1 step')).toBeInTheDocument();
+    expect(screen.queryByText(DASH)).toBeNull();
+    expect(screen.queryByText(/tokens$/)).toBeNull();
+  });
+
+  it('shows no cost line in the case manager layout', () => {
+    render(<TraceTimeline data={withheld} presentation="case-manager" />);
+    expect(screen.queryByText(/^cost /)).toBeNull();
+    expect(screen.queryByText(/tokens$/)).toBeNull();
+  });
+
+  it('still shows the recorded cost to a cost:view holder', () => {
+    render(<TraceTimeline data={{ ...withheld, totals: { cost: 0.0123, tokens: 420 } }} presentation="case-manager" />);
+    expect(screen.getByText(/^cost \$0\.0123$/)).toBeInTheDocument();
+    expect(screen.getByText('420 tokens')).toBeInTheDocument();
   });
 });

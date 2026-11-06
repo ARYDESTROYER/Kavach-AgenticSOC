@@ -70,7 +70,7 @@ from ..models import (
 )
 from ..state import AppState
 from ..utils import iso_now, now_utc, parse_es_timestamp
-from .deps import get_state, require_permission
+from .deps import get_state, has_permission, require_permission
 from .metrics_shared import (
     CasePopulation,
     fetch_case_breakdown,
@@ -327,11 +327,14 @@ async def _load_agent_outcome_inputs(
     current_days: int,
     baseline_days: int,
     end: datetime,
+    read_usage: bool = True,
 ) -> dict[str, Any]:
     """Bounded read-only projections for the additive outcome report.
 
     Failures remain explicit availability flags. No row identifiers, usage rows,
-    source ids, or tuning rule ids leave the pure aggregation layer.
+    source ids, or tuning rule ids leave the pure aggregation layer. With
+    ``read_usage`` False (a caller without ``cost:view``) the usage ledger is not read
+    and its evidence is reported unavailable.
     """
     # EVERY ledger row in the reporting span (Round 12: no newest-5,000 cap), read with
     # the span pushed into the scan (the bundled stores range-filter ``ts`` under one
@@ -340,15 +343,18 @@ async def _load_agent_outcome_inputs(
     # few seconds like the case population.
     usage_available = True
     span_start = end - timedelta(days=max(1, current_days) + max(1, baseline_days))
-    try:
-        usage_records, usage_truncated = await fetch_ledger_span(
-            state.usage_store, span_start=span_start, end=end
-        )
-    except Exception as exc:  # noqa: BLE001 — evidence degrades, route stays available
-        logger.warning("agent-improvement usage read soft-failed: %s", exc)
-        usage_available = False
-        usage_truncated = False
-        usage_records = []
+    if not read_usage:
+        usage_available, usage_truncated, usage_records = False, False, []
+    else:
+        try:
+            usage_records, usage_truncated = await fetch_ledger_span(
+                state.usage_store, span_start=span_start, end=end
+            )
+        except Exception as exc:  # noqa: BLE001 (evidence degrades, route stays available)
+            logger.warning("agent-improvement usage read soft-failed: %s", exc)
+            usage_available = False
+            usage_truncated = False
+            usage_records = []
 
     tuning_available = True
     try:
@@ -792,6 +798,7 @@ async def metrics_auto_close_health_recorded(
 
 @router.get("/metrics/agent-improvement")
 async def metrics_agent_improvement(
+    request: Request,
     as_of: date | None = Query(
         default=None,
         description=(
@@ -805,6 +812,11 @@ async def metrics_agent_improvement(
     _=Depends(require_permission("metrics", "view")),
 ) -> dict[str, Any]:
     """Aggregate-only evidence of agent-assisted triage effectiveness.
+
+    Needs ``metrics:view``. Its recorded case-associated AI cost is AI spend, which
+    ``cost:view`` governs: for a caller without that grant the usage ledger is not
+    read and every ``recorded_case_cost`` block (the headline one and each period
+    comparison's) is ``unavailable`` with the reason that the grant is required.
 
     The response reports analyst-reported verdict agreement, material correction
     rate, human review turnaround, recorded case-associated cost, observed elapsed-
@@ -827,13 +839,17 @@ async def metrics_agent_improvement(
     population = await _population(state, None)
     end_date = as_of or request_now.date()
     report_end = datetime.combine(end_date, time.min, tzinfo=timezone.utc)
+    # Round 14 roles-11: one rule for AI spend (the Cost page, the usage breakdown,
+    # GET /api/usage/summary and chat all need cost:view).
+    show_cost = await has_permission(request, "cost", "view")
     outcome_inputs = await _load_agent_outcome_inputs(
         state,
         current_days=current_days,
         baseline_days=baseline_days,
         end=report_end,
+        read_usage=show_cost,
     )
-    return await _rollup(
+    report = await _rollup(
         agent_improvement_metrics,
         population.cases,
         as_of=as_of,
@@ -847,6 +863,29 @@ async def metrics_agent_improvement(
         prefs=state.execution_prefs,
         **outcome_inputs,
     )
+    if not show_cost:
+        _withhold_case_cost(report)
+    return report
+
+
+#: The reason an agent-improvement cost block gives a caller without ``cost:view``.
+COST_VIEW_REQUIRED_REASON = "AI spend needs the cost:view permission"
+
+
+def _withhold_case_cost(report: dict[str, Any]) -> None:
+    """Word every ``recorded_case_cost`` block of an agent-improvement ``report`` built
+    without the usage ledger (a caller without ``cost:view``): the headline outcome
+    and each period comparison's. The engine already reports them ``unavailable``
+    with zero figures (the ledger-unreadable shape the Console renders), so only the
+    reason changes, from "could not be read" to the grant it needs."""
+    blocks = [(report.get("outcomes") or {}).get("recorded_case_cost")]
+    for comparison in (report.get("period_comparisons") or {}).values():
+        if isinstance(comparison, dict):
+            blocks.append((comparison.get("outcomes") or {}).get("recorded_case_cost"))
+    for block in blocks:
+        if isinstance(block, dict):
+            block["status"] = "unavailable"
+            block["reason"] = COST_VIEW_REQUIRED_REASON
 
 
 # --------------------------------------------------------------------------- #

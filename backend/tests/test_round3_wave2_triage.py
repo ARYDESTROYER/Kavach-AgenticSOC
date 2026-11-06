@@ -35,6 +35,18 @@ from app.models import AuditDoc, Case, Entity, TriggerReason, UsageDoc
 # --------------------------------------------------------------------------- #
 # helpers
 # --------------------------------------------------------------------------- #
+
+def _request(state):
+    """A minimal request bound to ``state``. Sign-in is off in these tests, so the
+    caller holds every grant (the timeline's cost and tokens included)."""
+    from fastapi import FastAPI
+    from starlette.requests import Request
+
+    app = FastAPI()
+    app.state.tlsoc = state
+    return Request({"type": "http", "method": "GET", "path": "/api/cases/x/timeline", "headers": [],
+                    "query_string": b"", "app": app, "client": ("127.0.0.1", 9)})
+
 def _case(
     *,
     case_id: str = "case-t1",
@@ -346,7 +358,7 @@ async def test_timeline_assembles_typed_spans_and_terminal_decision(app_state):
         action_type=ActionType.VERDICT, result_summary="verdict=TRUE_POSITIVE reasoning=clear xss",
     ))
 
-    res = await case_timeline("case-tl-1", state)
+    res = await case_timeline("case-tl-1", _request(state), state)
     spans = res["spans"]
     # step ordering preserved, step_index monotonic.
     assert [s["step_index"] for s in spans] == list(range(len(spans)))
@@ -380,7 +392,7 @@ async def test_timeline_separates_trusted_and_untrusted(app_state):
         ts="2026-06-16T10:00:01+00:00", case_id="case-tl-2", actor="router",
         action_type=ActionType.DECISION, result_summary="bucket=serious",
     ))
-    res = await case_timeline("case-tl-2", state)
+    res = await case_timeline("case-tl-2", _request(state), state)
     tool_span = next(s for s in res["spans"] if s["kind"] == "execute_tool")
     assert tool_span["trusted"] is False
     # The untrusted tool OUTPUT text is not surfaced as the span summary; the query is.
@@ -404,7 +416,7 @@ async def test_timeline_attributes_cost_from_usage_ledger(app_state):
         ts="2026-06-16T10:00:00+00:00", case_id="case-tl-3", actor="investigator",
         action_type=ActionType.VERDICT, result_summary="verdict=TRUE_POSITIVE",
     ))
-    res = await case_timeline("case-tl-3", state)
+    res = await case_timeline("case-tl-3", _request(state), state)
     inv = next(s for s in res["spans"] if s["name"] == "investigator")
     assert inv["cost"] == 0.0123
     assert inv["tokens"] == 150
@@ -414,10 +426,10 @@ async def test_timeline_attributes_cost_from_usage_ledger(app_state):
 async def test_timeline_never_404s_and_no_decision_without_verdict(app_state):
     state = app_state
     # Unknown case: empty spans, no crash.
-    empty = await case_timeline("ghost-case", state)
+    empty = await case_timeline("ghost-case", _request(state), state)
     assert empty["spans"] == []
     assert empty["total"] == 0
     # A case with NO verdict yet emits no terminal decision span.
     await state.cases.save(_case(case_id="case-noverdict", verdict=None))
-    res = await case_timeline("case-noverdict", state)
+    res = await case_timeline("case-noverdict", _request(state), state)
     assert all(s["kind"] != "decision" for s in res["spans"])

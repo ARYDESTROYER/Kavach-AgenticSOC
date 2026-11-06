@@ -120,8 +120,9 @@ export interface KeyGrant {
  * to explain. The widget path (`widgets`) gates through the registry instead.
  */
 export const KEY_GRANTS: Readonly<Record<DashboardSourceKey, KeyGrant>> = {
-  // `/api/metrics` only feeds the Active risk index, which needs `cases:read`.
-  metrics: { resource: 'cases', action: 'read' },
+  // `/api/metrics` only feeds the Active risk index; the server gates it on
+  // `metrics:view` like every other metrics read (Round 14 second acceptance pass, roles-04).
+  metrics: { resource: 'metrics', action: 'view' },
   posture: { resource: 'metrics', action: 'view' },
   mitre: { resource: 'metrics', action: 'view' },
   coverage: { resource: 'metrics', action: 'view' },

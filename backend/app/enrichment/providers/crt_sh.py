@@ -53,18 +53,18 @@ class CrtShProvider(EnrichmentProvider):
             config_key="use_crt_sh",
             secret_fields=[],
             keyless=True,
-            free_tier="Keyless community service (often slow — tight 4s timeout)",
+            free_tier="Keyless community service (often slow, so a tight 4s timeout)",
             docs_url="https://crt.sh/",
             default_enabled=False,
             setup_steps=[
-                "Nothing to sign up for — crt.sh is keyless.",
+                "Nothing to sign up for: crt.sh is keyless.",
                 "Flip this provider's toggle ON (default OFF because crt.sh is "
                 "frequently slow; a timed-out lookup degrades to no-data).",
                 "Requires outbound HTTPS to crt.sh.",
             ],
             example=(
                 "The lookalike domain in a phishing case got its FIRST TLS "
-                "certificate 3 days ago — CT history corroborates RDAP's "
+                "certificate 3 days ago. CT history corroborates RDAP's "
                 "newly-registered flag, while a bank's real domain shows years of "
                 "certificates."
             ),

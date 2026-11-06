@@ -57,7 +57,7 @@ from ..llm.providers import classify_http_error
 from ..models import AuditChange, AuditTarget
 from ..state import AppState
 from ..stores.custom_models import _MAX_MODELS as _MAX_CUSTOM_MODELS
-from .deps import current_username, get_state, require_permission
+from .deps import current_username, get_state, has_permission, require_permission
 
 logger = logging.getLogger("tlsoc.api.models")
 
@@ -1008,13 +1008,36 @@ async def put_budget(
     return {"ok": True, "budget": body.model_dump(mode="json")}
 
 
+#: The spend figures of ``GET /api/budget/status`` that ``cost:view`` governs, per window.
+_BUDGET_SPEND_FIELDS: tuple[str, ...] = ("spent", "fraction", "band")
+
+
 @router.get("/budget/status")
 async def budget_status(
+    request: Request,
     state: AppState = Depends(get_state),
     _=Depends(require_permission("models", "read")),
 ) -> dict[str, Any]:
+    """The AI budget's configuration and its live daily and monthly spend.
+
+    Needs ``models:read``. The spend itself (each window's ``spent``, ``fraction`` and
+    ``band``, and ``excluded_today``) is AI spend, which ``cost:view`` governs, the
+    rule chat's budget fields already follow: for a caller without that grant those
+    fields are ``null`` and the caps and settings stay."""
+    # Round 14 roles-11: one rule for AI spend (the Cost page, GET /api/usage/summary,
+    # the usage breakdown, the Executive board, chat's spent_today and remaining).
     gate = _budget_gate(state)
-    return await gate.status()
+    status = await gate.status()
+    if not await has_permission(request, "cost", "view"):
+        for window in ("daily", "monthly"):
+            figures = status.get(window)
+            if isinstance(figures, dict):
+                for key in _BUDGET_SPEND_FIELDS:
+                    if key in figures:
+                        figures[key] = None
+        if "excluded_today" in status:
+            status["excluded_today"] = None
+    return status
 
 
 # --------------------------------------------------------------------------- #

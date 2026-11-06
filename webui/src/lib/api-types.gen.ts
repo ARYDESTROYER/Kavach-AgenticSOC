@@ -79,20 +79,28 @@ export interface paths {
         };
         /**
          * Account Permissions
-         * @description The CURRENT caller's resolved ``resource -> [actions]`` grants — the data the
-         *     webui ``<Can>`` guard checks against.
+         * @description The CURRENT caller's effective ``resource -> [actions]`` grants: the one map the
+         *     Console's permission checks (``hasPermission``, ``<Can>``, ``ProtectedRoute``)
+         *     read, so the Console shows exactly what the API allows (Round 14 FX7e, roles-01).
          *
-         *     Three back-compat modes mirror the server gates:
-         *       * auth DISABLED          → super_admin (full wildcard) so every surface unlocks.
+         *     It is answered by the server's own resolver, never a second copy of it: the
+         *     caller's view comes from :func:`app.api.deps.resolve_access` (the core of every
+         *     ``require_permission`` gate) and each declared ``resource:action`` is listed only
+         *     when :meth:`AccessView.allows` grants it. The base role is UNIONed with the
+         *     custom roles assigned to the user, each role row already carrying its own denies
+         *     and the operator's global per-role denies, so a custom role that grants
+         *     ``runbooks:publish`` lists it and one whose deny removes ``runbooks:run`` does
+         *     not. Writes nothing (a missing grant is not an access denial).
+         *
+         *     Three modes mirror the server gates:
+         *       * auth DISABLED          → super_admin (every action) so every surface unlocks.
          *       * auth ON, rbac OFF      → super_admin (authenticated == super_admin).
-         *       * auth ON, rbac ON       → the principal's base role UNIONed with any custom
-         *                                  roles assigned to the user (resolved against the live
-         *                                  matrix). An env single-admin (no persisted record)
-         *                                  resolves to its synced role.
+         *       * auth ON, rbac ON       → the effective grants above. An env single-admin (no
+         *                                  persisted record) resolves to its synced role.
          *
-         *     Wildcards are exploded into concrete actions so the guard can match a literal
-         *     ``resource:action`` without re-implementing the wildcard rule. Auth-gated only
-         *     (any authenticated principal may read its OWN permissions).
+         *     Every action is concrete (a wildcard is never sent), and a resource the caller
+         *     holds no action on is left out. Auth-gated only (any authenticated principal may
+         *     read its OWN permissions; an unauthenticated caller gets 401 when auth is on).
          */
         get: operations["account_permissions_api_account_permissions_get"];
         put?: never;
@@ -929,7 +937,15 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Budget Status */
+        /**
+         * Budget Status
+         * @description The AI budget's configuration and its live daily and monthly spend.
+         *
+         *     Needs ``models:read``. The spend itself (each window's ``spent``, ``fraction`` and
+         *     ``band``, and ``excluded_today``) is AI spend, which ``cost:view`` governs, the
+         *     rule chat's budget fields already follow: for a caller without that grant those
+         *     fields are ``null`` and the caps and settings stay.
+         */
         get: operations["budget_status_api_budget_status_get"];
         put?: never;
         post?: never;
@@ -1097,6 +1113,9 @@ export interface paths {
          *     those; ``system`` also covers older rows with no recorded decider). Both are answered
          *     by the exact queue scan and echoed as ``rule_applied`` / ``closed_by_applied``; any
          *     other value is a 400. The free-text ``q`` now also matches a case's rule values.
+         *
+         *     Round 14 (roles-11): for a caller without ``cost:view`` every row's ``token_cost``
+         *     (the case's own AI spend) is ``null``; the rows, counts and echoes are unchanged.
          */
         get: operations["list_cases_api_cases_get"];
         put?: never;
@@ -1144,7 +1163,11 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Get Case */
+        /**
+         * Get Case
+         * @description One case. For a caller without ``cost:view`` its ``token_cost`` (the case's own
+         *     AI spend) is ``null`` (Round 14 roles-11); every other field is unchanged.
+         */
         get: operations["get_case_api_cases__case_id__get"];
         put?: never;
         post?: never;
@@ -1262,7 +1285,9 @@ export interface paths {
         /**
          * Case Export
          * @description Export a case for handoff/ticketing as JSON or a Markdown report. Returns
-         *     ``{filename, content_type, content}`` so the UI can trigger a download.
+         *     ``{filename, content_type, content}`` so the UI can trigger a download. The JSON
+         *     leaves ``token_cost`` out (``null``) for a caller without ``cost:view``; the
+         *     Markdown report carries no spend.
          */
         get: operations["case_export_api_cases__case_id__export_get"];
         put?: never;
@@ -1914,13 +1939,18 @@ export interface paths {
          *     ``latency`` / ``cost`` / ``tokens`` / ``trusted``. The ``case_manager`` DECISION
          *     is rendered as a distinct TERMINAL ``decision`` span whose summary shows the exact
          *     ``(verdict, confidence, risk_score, policy clause)`` the deterministic ``decide()``
-         *     produced — re-derived at read time, mutating nothing (#3 made visible).
+         *     produced, re-derived at read time and mutating nothing (#3 made visible).
          *
          *     TRUSTED agent prose (router/investigator/formatter/decision) vs UNTRUSTED tool/log
          *     payloads (es_query / tool output) are separated by the per-span ``trusted`` flag
-         *     (#9). NEVER 404s — an unknown / not-yet-investigated case returns empty spans.
+         *     (#9). NEVER 404s: an unknown or not-yet-investigated case returns empty spans.
          *     ``prompt_excerpt`` text is dropped from a span summary when
          *     ``prefs.trace.include_prompts`` is false (the untrusted-prompt toggle).
+         *
+         *     The cost and tokens come from the usage ledger, which ``cost:view`` governs (the
+         *     grant ``GET /api/usage/summary?case_id=`` needs): for a caller without it the
+         *     ledger is not read, every span's ``cost`` and ``tokens`` are ``null`` and so are
+         *     ``totals.cost`` and ``totals.tokens``.
          */
         get: operations["case_timeline_api_cases__case_id__timeline_get"];
         put?: never;
@@ -2789,6 +2819,39 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/enrichment/config": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Put Enrichment Config
+         * @description Change the enrichment settings of the active stack (module doc).
+         *
+         *     The body is a partial of ``EnrichmentConfig`` (``{"use_spamhaus": true}``); only
+         *     the fields sent change. Audited before it is visible (#2, Round 14 SPEC §3.6): a
+         *     ``settings.updated`` row naming every changed field is appended first, and a failed
+         *     append answers ``503 audit_unavailable`` with nothing saved. Off Demo Mode this saves
+         *     the real settings and the row goes to the real audit log; while Demo Mode is on it
+         *     changes the Demo sandbox's copy only and the row goes to the Demo audit (SPEC §3.5).
+         *     While the settings lock is on it answers ``403`` and saves nothing, with Demo Mode
+         *     on or off. Demo Mode turned on or off (or reset) during the save answers ``409
+         *     demo_mode_changed`` and saves nothing; a save racing another save of the same fields
+         *     is retried from a fresh read and gives up with ``409 settings_conflict``. A body
+         *     that changes nothing saves nothing and writes no row. Never touches ``decide()``
+         *     (#3).
+         */
+        put: operations["put_enrichment_config_api_enrichment_config_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/enrichment/lookup": {
         parameters: {
             query?: never;
@@ -2802,6 +2865,8 @@ export interface paths {
          *
          *     The fused reputation uses the byte-identical default ``max()`` (#3 untouched);
          *     every provider-returned string is FENCED as UNTRUSTED before it is returned (#9).
+         *     ``not_queried`` says why no provider was asked: ``"demo_mode"`` (Demo Mode never
+         *     queries one) or ``"disabled"`` (the master switch is off); ``None`` otherwise.
          */
         get: operations["enrichment_lookup_api_enrichment_lookup_get"];
         put?: never;
@@ -2824,7 +2889,12 @@ export interface paths {
          * @description Every registered provider's manifest + its current config/key state.
          *
          *     Returns booleans only for secrets (``configured`` per field + an overall
-         *     ``key_present``) — never a secret value (#10).
+         *     ``key_present``): never a secret value (#10). The switch states are the active
+         *     stack's enrichment settings, the same ones ``PUT /api/enrichment/config`` changes
+         *     (module doc): in Demo Mode the sandbox's copy, never the execution copy whose
+         *     lookups are forced off. ``demo_active`` says that no provider is queried while
+         *     Demo Mode is on and that a change here lasts only until it ends; ``demo_run_id``
+         *     names that Demo run (``None`` off Demo Mode).
          */
         get: operations["list_enrichment_providers_api_enrichment_providers_get"];
         put?: never;
@@ -2849,8 +2919,15 @@ export interface paths {
          * @description Set/clear a provider's SECRET-tier key(s) IN MEMORY (env/in-memory only).
          *
          *     Values are written onto the in-process ``Secrets`` object (never persisted, never
-         *     returned, #10). Only the keys the provider's manifest declares may be set — an
+         *     returned, #10). Only the keys the provider's manifest declares may be set: an
          *     unknown key is a 400 so a typo can never silently set a dead field.
+         *
+         *     Round 14 (SPEC §3.6, §4.5.4): audited before the key changes, like the source and
+         *     notification channel credentials. An ``enrichment.secrets_updated`` row naming each
+         *     key (``secret: true``, never its value) goes to the real audit log first, with Demo
+         *     Mode on or off: the keys are real secrets, never part of the Demo copy. A failed
+         *     append answers ``503 audit_unavailable`` and no key changes. A body with no key
+         *     changes nothing and writes no row.
          */
         post: operations["set_enrichment_secrets_api_enrichment_providers__name__secrets_post"];
         delete?: never;
@@ -2898,7 +2975,11 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Feedback Stats Route */
+        /**
+         * Feedback Stats Route
+         * @description Analyst feedback agreement over the newest cases, a metrics read behind
+         *     ``metrics:view`` like ``GET /api/metrics`` (whose ``feedback`` part it repeats).
+         */
         get: operations["feedback_stats_route_api_feedback_stats_get"];
         put?: never;
         post?: never;
@@ -3399,7 +3480,12 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Metrics */
+        /**
+         * Metrics
+         * @description The Metrics page's operational rollup. Needs ``metrics:view``, like every other
+         *     metrics read. Its ``cost`` part is the AI spend of the window, which ``cost:view``
+         *     governs: for a caller without that grant it is ``{}``.
+         */
         get: operations["metrics_api_metrics_get"];
         put?: never;
         post?: never;
@@ -3419,6 +3505,11 @@ export interface paths {
         /**
          * Metrics Agent Improvement
          * @description Aggregate-only evidence of agent-assisted triage effectiveness.
+         *
+         *     Needs ``metrics:view``. Its recorded case-associated AI cost is AI spend, which
+         *     ``cost:view`` governs: for a caller without that grant the usage ledger is not
+         *     read and every ``recorded_case_cost`` block (the headline one and each period
+         *     comparison's) is ``unavailable`` with the reason that the grant is required.
          *
          *     The response reports analyst-reported verdict agreement, material correction
          *     rate, human review turnaround, recorded case-associated cost, observed elapsed-
@@ -7033,7 +7124,11 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Usage Summary */
+        /**
+         * Usage Summary
+         * @description AI spend and token use over the window, or for one case with ``case_id``.
+         *     Needs ``cost:view``, the grant every view of AI spend needs.
+         */
         get: operations["usage_summary_api_usage_summary_get"];
         put?: never;
         post?: never;
@@ -8011,7 +8106,7 @@ export interface components {
              * Token Cost
              * @default 0
              */
-            token_cost: number;
+            token_cost: number | null;
             trigger_reason?: components["schemas"]["TriggerReason"] | null;
             /** Updated At */
             updated_at?: string;
@@ -8178,7 +8273,11 @@ export interface components {
          * @description ``GET /api/cases/{case_id}/runbooks`` (SPEC §4.10.15a): the case's runs with
          *     evidence redacted per viewer by the lookup grants, progress per run, the newer
          *     published version per run, the free-form case tasks ("Other tasks") and the case
-         *     document's CAS revision.
+         *     document's CAS revision. ``role_labels`` maps every role the runs' steps name
+         *     (``approval_role``, ``owner_role`` and a pending approval's ``required_role``) to
+         *     the label a person knows it by ("soc_manager" to "SOC manager"; a custom role read
+         *     the way the Console reads a token), for the approval wording (SPEC §3.1,
+         *     §4.10.11).
          */
         CaseRunbooks: {
             /** Newer Versions */
@@ -8196,6 +8295,10 @@ export interface components {
              * @default 0
              */
             revision: number;
+            /** Role Labels */
+            role_labels?: {
+                [key: string]: string;
+            };
             /** Runs */
             runs?: components["schemas"]["RunbookRun"][];
         };
@@ -9881,6 +9984,237 @@ export interface components {
          * @enum {string}
          */
         Disposition: "true_positive" | "false_positive" | "benign" | "suspicious" | "duplicate" | "undetermined";
+        /** EnrichmentConfig */
+        EnrichmentConfig: {
+            /**
+             * Cache Ttl Seconds
+             * @default 21600
+             */
+            cache_ttl_seconds: number;
+            /**
+             * Enabled
+             * @default true
+             */
+            enabled: boolean;
+            /**
+             * Fusion Enabled
+             * @default false
+             */
+            fusion_enabled: boolean;
+            /**
+             * Use Abuseipdb
+             * @default true
+             */
+            use_abuseipdb: boolean;
+            /**
+             * Use Apivoid
+             * @default false
+             */
+            use_apivoid: boolean;
+            /**
+             * Use Binaryedge
+             * @default false
+             */
+            use_binaryedge: boolean;
+            /**
+             * Use Censys
+             * @default false
+             */
+            use_censys: boolean;
+            /**
+             * Use Circl Hashlookup
+             * @default true
+             */
+            use_circl_hashlookup: boolean;
+            /**
+             * Use Criminalip
+             * @default false
+             */
+            use_criminalip: boolean;
+            /**
+             * Use Crowdsec
+             * @default false
+             */
+            use_crowdsec: boolean;
+            /**
+             * Use Crt Sh
+             * @default false
+             */
+            use_crt_sh: boolean;
+            /**
+             * Use Cymru Mhr
+             * @default false
+             */
+            use_cymru_mhr: boolean;
+            /**
+             * Use Dshield
+             * @default true
+             */
+            use_dshield: boolean;
+            /**
+             * Use Emailrep
+             * @default false
+             */
+            use_emailrep: boolean;
+            /**
+             * Use Geoip
+             * @default true
+             */
+            use_geoip: boolean;
+            /**
+             * Use Google Safebrowsing
+             * @default false
+             */
+            use_google_safebrowsing: boolean;
+            /**
+             * Use Greynoise
+             * @default false
+             */
+            use_greynoise: boolean;
+            /**
+             * Use Hibp
+             * @default false
+             */
+            use_hibp: boolean;
+            /**
+             * Use Honeypot
+             * @default false
+             */
+            use_honeypot: boolean;
+            /**
+             * Use Hybrid Analysis
+             * @default false
+             */
+            use_hybrid_analysis: boolean;
+            /**
+             * Use Ipdata
+             * @default false
+             */
+            use_ipdata: boolean;
+            /**
+             * Use Ipinfo
+             * @default true
+             */
+            use_ipinfo: boolean;
+            /**
+             * Use Ipqualityscore
+             * @default false
+             */
+            use_ipqualityscore: boolean;
+            /**
+             * Use Maltiverse
+             * @default false
+             */
+            use_maltiverse: boolean;
+            /**
+             * Use Malwarebazaar
+             * @default true
+             */
+            use_malwarebazaar: boolean;
+            /**
+             * Use Metadefender
+             * @default false
+             */
+            use_metadefender: boolean;
+            /**
+             * Use Netlas
+             * @default false
+             */
+            use_netlas: boolean;
+            /**
+             * Use Onionoo
+             * @default true
+             */
+            use_onionoo: boolean;
+            /**
+             * Use Otx
+             * @default false
+             */
+            use_otx: boolean;
+            /**
+             * Use Pulsedive
+             * @default false
+             */
+            use_pulsedive: boolean;
+            /**
+             * Use Rdap
+             * @default true
+             */
+            use_rdap: boolean;
+            /**
+             * Use Robtex
+             * @default false
+             */
+            use_robtex: boolean;
+            /**
+             * Use Securitytrails
+             * @default false
+             */
+            use_securitytrails: boolean;
+            /**
+             * Use Shodan
+             * @default false
+             */
+            use_shodan: boolean;
+            /**
+             * Use Shodan Internetdb
+             * @default true
+             */
+            use_shodan_internetdb: boolean;
+            /**
+             * Use Spamhaus
+             * @default false
+             */
+            use_spamhaus: boolean;
+            /**
+             * Use Spur
+             * @default false
+             */
+            use_spur: boolean;
+            /**
+             * Use Threatfox
+             * @default true
+             */
+            use_threatfox: boolean;
+            /**
+             * Use Urlhaus
+             * @default true
+             */
+            use_urlhaus: boolean;
+            /**
+             * Use Urlscan
+             * @default false
+             */
+            use_urlscan: boolean;
+            /**
+             * Use Virustotal
+             * @default true
+             */
+            use_virustotal: boolean;
+            /**
+             * Use Xforce
+             * @default false
+             */
+            use_xforce: boolean;
+        };
+        /**
+         * EnrichmentConfigSaveResult
+         * @description The answer of ``PUT /api/enrichment/config``.
+         */
+        EnrichmentConfigSaveResult: {
+            /** Changed */
+            changed: boolean;
+            config: components["schemas"]["EnrichmentConfig"];
+            /** Demo Active */
+            demo_active: boolean;
+            /** Demo Run Id */
+            demo_run_id?: string | null;
+            /**
+             * Ok
+             * @default true
+             */
+            ok: boolean;
+        };
         /** Entity */
         Entity: {
             type: components["schemas"]["EntityType"];
@@ -12259,6 +12593,10 @@ export interface components {
          * RunbookDetail
          * @description ``GET /api/runbooks/{id}`` (SPEC §4.10.15a). ``draft`` and ``in_review`` are
          *     present only to a holder of ``runbooks:manage`` or ``runbooks:publish``.
+         *     ``retired`` is the retired version of a retired runbook (its last published text,
+         *     with ``retired_by`` and ``retired_at``), which the editor shows read only and
+         *     Restore makes live again; ``None`` otherwise. A retired version is readable by
+         *     every reader of the runbook, as its published history is.
          *     ``open_runs_by_version`` maps a version to the active runs pinned to it.
          *     ``revision`` is the library document's CAS revision, sent back as
          *     ``expected_revision``.
@@ -12271,6 +12609,7 @@ export interface components {
             open_runs_by_version?: {
                 [key: string]: number;
             };
+            retired?: components["schemas"]["RunbookVersionDoc"] | null;
             /**
              * Revision
              * @default 0
@@ -12755,7 +13094,8 @@ export interface components {
          * RunbookRunUpdate
          * @description The result of any write to one run: a step update, a lookup, an approval, an AI
          *     draft or its confirmation, a version switch or an abandon. ``revision`` is the case
-         *     document's CAS revision after the write.
+         *     document's CAS revision after the write. ``role_labels`` is the run's roles by
+         *     their labels, as on :class:`CaseRunbooks`.
          */
         RunbookRunUpdate: {
             progress: components["schemas"]["RunbookProgress"];
@@ -12764,6 +13104,10 @@ export interface components {
              * @default 0
              */
             revision: number;
+            /** Role Labels */
+            role_labels?: {
+                [key: string]: string;
+            };
             run: components["schemas"]["RunbookRun"];
         };
         /**
@@ -13054,13 +13398,18 @@ export interface components {
         };
         /**
          * RunbookVersionListItem
-         * @description One row of a runbook's version history.
+         * @description One row of a runbook's version history. ``review_notes`` are the reasons a
+         *     reviewer gave when sending that version back to draft (oldest first), the same
+         *     notes its version document carries, so History shows them on every entry, a
+         *     superseded one too, without reading each version.
          */
         RunbookVersionListItem: {
             /** Published At */
             published_at?: string | null;
             /** Published By */
             published_by?: string | null;
+            /** Review Notes */
+            review_notes?: components["schemas"]["RunbookReviewNote"][];
             /**
              * State
              * @enum {string}
@@ -18808,6 +19157,82 @@ export interface operations {
             };
         };
     };
+    put_enrichment_config_api_enrichment_config_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    cache_ttl_seconds?: number;
+                    enabled?: boolean;
+                    fusion_enabled?: boolean;
+                    use_abuseipdb?: boolean;
+                    use_apivoid?: boolean;
+                    use_binaryedge?: boolean;
+                    use_censys?: boolean;
+                    use_circl_hashlookup?: boolean;
+                    use_criminalip?: boolean;
+                    use_crowdsec?: boolean;
+                    use_crt_sh?: boolean;
+                    use_cymru_mhr?: boolean;
+                    use_dshield?: boolean;
+                    use_emailrep?: boolean;
+                    use_geoip?: boolean;
+                    use_google_safebrowsing?: boolean;
+                    use_greynoise?: boolean;
+                    use_hibp?: boolean;
+                    use_honeypot?: boolean;
+                    use_hybrid_analysis?: boolean;
+                    use_ipdata?: boolean;
+                    use_ipinfo?: boolean;
+                    use_ipqualityscore?: boolean;
+                    use_maltiverse?: boolean;
+                    use_malwarebazaar?: boolean;
+                    use_metadefender?: boolean;
+                    use_netlas?: boolean;
+                    use_onionoo?: boolean;
+                    use_otx?: boolean;
+                    use_pulsedive?: boolean;
+                    use_rdap?: boolean;
+                    use_robtex?: boolean;
+                    use_securitytrails?: boolean;
+                    use_shodan?: boolean;
+                    use_shodan_internetdb?: boolean;
+                    use_spamhaus?: boolean;
+                    use_spur?: boolean;
+                    use_threatfox?: boolean;
+                    use_urlhaus?: boolean;
+                    use_urlscan?: boolean;
+                    use_virustotal?: boolean;
+                    use_xforce?: boolean;
+                };
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EnrichmentConfigSaveResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     enrichment_lookup_api_enrichment_lookup_get: {
         parameters: {
             query: {
@@ -19221,6 +19646,13 @@ export interface operations {
                     "text/csv": string;
                 };
             };
+            /** @description job_artifact_permission_lost: the job needs a grant its owner no longer holds (an audit export needs audit:export and audit:view) */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
             /** @description Validation Error */
             422: {
                 headers: {
@@ -19230,7 +19662,7 @@ export interface operations {
                     "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
-            /** @description audit_unavailable: the download could not be audited */
+            /** @description audit_unavailable: the download could not be audited; or job_permission_unverifiable: the job's grants could not be confirmed just now (try again) */
             503: {
                 headers: {
                     [name: string]: unknown;

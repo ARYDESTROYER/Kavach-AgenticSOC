@@ -244,7 +244,12 @@ Every download of every job's file is recorded in the audit log before the first
 is sent, after the ownership, grant and integrity checks: "Audit export downloaded" for
 an audit export and "Job file downloaded" for any other kind, always in the real audit
 log, Demo Mode included. If that row cannot be written the download answers `503
-audit_unavailable` and sends nothing; a refused download writes no row.
+audit_unavailable` and sends nothing; a refused download writes no download row. A
+file downloads only while its owner still holds the grants its job needed (an audit
+export needs `audit:export` and `audit:view`): once one is removed the answer is `403
+job_artifact_permission_lost` and the refusal is recorded as Access denied, naming the
+missing grant; when the grants cannot be confirmed just then the answer is `503
+job_permission_unverifiable` and nothing is recorded.
 
 Artifact storage has a separate persistence and retention boundary:
 

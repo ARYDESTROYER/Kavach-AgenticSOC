@@ -309,8 +309,9 @@ interface RowJobState {
  *   line 2  severity · risk · outcome ············· owner  status + glyph
  *   line 3  case id (middle-ellipsis) · primary fact
  *
- * Compact is one line: title · risk · outcome or status · age. The checkbox is ALWAYS
- * visible (bulk work is discoverable) and is a sibling of the open control, never nested.
+ * Compact is one line: title · risk · outcome or status · age. For a role that may do bulk
+ * work the checkbox is ALWAYS visible (bulk work is discoverable) and is a sibling of the
+ * open control, never nested; a role with no bulk action gets no checkbox at all.
  * The open control is the row's single tab stop (roving tabindex on the list).
  */
 const QueueRow: React.FC<{
@@ -319,6 +320,8 @@ const QueueRow: React.FC<{
   checked: boolean;
   focusTarget: boolean;
   density: Density;
+  /** False for a role with no bulk action: the row has no checkbox and no X key. */
+  selectable?: boolean;
   selectionDisabled: boolean;
   job: RowJobState | null;
   /** Round 14: the case's runbook progress (live), or null when no runbook is attached. */
@@ -334,6 +337,7 @@ const QueueRow: React.FC<{
   checked,
   focusTarget,
   density,
+  selectable = true,
   selectionDisabled,
   job,
   runbookProgress = null,
@@ -407,29 +411,32 @@ const QueueRow: React.FC<{
       ) : null}
 
       {/* The checkbox is a sibling of the row-open button, never a nested button, so
-          toggling selection cannot open the case. Always visible; X / Space toggles it
-          from the keyboard (roving focus keeps the queue to ONE tab stop). */}
-      <Checkbox
-        checked={checked}
-        disabled={selectionDisabled}
-        tabIndex={-1}
-        onClick={(event) => {
-          // Shift-click extends the selection from the last toggled row.
-          if (event.shiftKey) {
-            event.preventDefault();
-            onCheckedChange(!checked, true);
-          }
-        }}
-        onCheckedChange={(next) => onCheckedChange(next === true, false)}
-        // A clicked checkbox takes focus: it becomes the roving stop, so J/K/X act on it.
-        onFocus={onFocusRow}
-        aria-label={`Select ${displayId}`}
-        className={cn(
-          'absolute left-3 z-10 bg-background',
-          density === 'compact' ? 'top-[0.5625rem]' : 'top-[0.6875rem]',
-          "before:absolute before:-inset-1 before:content-['']",
-        )}
-      />
+          toggling selection cannot open the case. Always visible to a role that may do
+          bulk work; X / Space toggles it from the keyboard (roving focus keeps the queue
+          to ONE tab stop). */}
+      {selectable ? (
+        <Checkbox
+          checked={checked}
+          disabled={selectionDisabled}
+          tabIndex={-1}
+          onClick={(event) => {
+            // Shift-click extends the selection from the last toggled row.
+            if (event.shiftKey) {
+              event.preventDefault();
+              onCheckedChange(!checked, true);
+            }
+          }}
+          onCheckedChange={(next) => onCheckedChange(next === true, false)}
+          // A clicked checkbox takes focus: it becomes the roving stop, so J/K/X act on it.
+          onFocus={onFocusRow}
+          aria-label={`Select ${displayId}`}
+          className={cn(
+            'absolute left-3 z-10 bg-background',
+            density === 'compact' ? 'top-[0.5625rem]' : 'top-[0.6875rem]',
+            "before:absolute before:-inset-1 before:content-['']",
+          )}
+        />
+      ) : null}
 
       <button
         type="button"
@@ -440,9 +447,10 @@ const QueueRow: React.FC<{
         onPointerEnter={onPrefetch}
         aria-current={active ? 'true' : undefined}
         aria-label={accessibleName}
-        aria-keyshortcuts="ArrowUp ArrowDown J K X Enter"
+        aria-keyshortcuts={selectable ? 'ArrowUp ArrowDown J K X Enter' : 'ArrowUp ArrowDown J K Enter'}
         className={cn(
-          'block w-full pl-10 pr-3 text-left',
+          'block w-full pr-3 text-left',
+          selectable ? 'pl-10' : 'pl-4',
           density === 'compact' ? 'py-1.5' : 'py-2.5',
           'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
         )}
@@ -565,20 +573,56 @@ const QueueSkeleton = () => (
   />
 );
 
-const SHORTCUTS: ReadonlyArray<{ keys: string; action: string }> = [
-  { keys: '↑ ↓  or  K J', action: 'Move through the queue and open the case' },
-  { keys: 'Home  End', action: 'First or last loaded case' },
-  { keys: 'X  or  Space', action: 'Select or clear the focused case' },
-  { keys: 'Shift + ↑ ↓  or  Shift + X', action: 'Extend the selection' },
-  { keys: 'Enter', action: 'Move focus into the open case' },
-  { keys: 'Esc', action: 'Clear the selection' },
-  { keys: '/', action: 'Search the queue' },
-  { keys: '?', action: 'Show these shortcuts' },
-  { keys: 'A  C  E  H', action: 'Acknowledge, close, escalate or hold the open case' },
-  { keys: 'R', action: 'Reinvestigate the open case' },
-  { keys: 'M  T', action: 'Change the owner or edit tags' },
-  { keys: 'Alt + 1 … 7', action: 'Switch case tabs' },
-];
+/**
+ * Whether the viewer may do any bulk work: the bar's jobs are checked against
+ * `cases:write` (acknowledge, tag, status, disposition), `cases:assign`,
+ * `cases:reinvestigate` and `cases:close`. Without one of them (the read-only auditor)
+ * the queue offers no selection at all, as the Cases page does.
+ */
+export function canSelectCases(can: (resource: string, action: string) => boolean): boolean {
+  return (
+    can('cases', 'write') || can('cases', 'assign') || can('cases', 'reinvestigate') || can('cases', 'close')
+  );
+}
+
+/**
+ * The keyboard shortcuts sheet, listing only the keys the viewer's role can use: the case
+ * keys follow the grants the open case checks before it acts (A, E, H and T `cases:write`,
+ * C `cases:close`, R `cases:reinvestigate`, M `cases:assign`), and the selection keys
+ * follow {@link canSelectCases}. A key the role cannot use does nothing, so it is not
+ * promised.
+ */
+export function caseManagerShortcuts(
+  can: (resource: string, action: string) => boolean,
+): ReadonlyArray<{ keys: string; action: string }> {
+  const write = can('cases', 'write');
+  const close = can('cases', 'close');
+  const assign = can('cases', 'assign');
+  const select = canSelectCases(can);
+  const rows: Array<{ keys: string; action: string } | false> = [
+    { keys: '↑ ↓  or  K J', action: 'Move through the queue and open the case' },
+    { keys: 'Home  End', action: 'First or last loaded case' },
+    select && { keys: 'X  or  Space', action: 'Select or clear the focused case' },
+    select && { keys: 'Shift + ↑ ↓  or  Shift + X', action: 'Extend the selection' },
+    { keys: 'Enter', action: 'Move focus into the open case' },
+    select && { keys: 'Esc', action: 'Clear the selection' },
+    { keys: '/', action: 'Search the queue' },
+    { keys: '?', action: 'Show these shortcuts' },
+    write && close
+      ? { keys: 'A  C  E  H', action: 'Acknowledge, close, escalate or hold the open case' }
+      : write
+        ? { keys: 'A  E  H', action: 'Acknowledge, escalate or hold the open case' }
+        : close && { keys: 'C', action: 'Close the open case' },
+    can('cases', 'reinvestigate') && { keys: 'R', action: 'Reinvestigate the open case' },
+    assign && write
+      ? { keys: 'M  T', action: 'Change the owner or edit tags' }
+      : assign
+        ? { keys: 'M', action: 'Change the owner' }
+        : write && { keys: 'T', action: 'Edit tags' },
+    { keys: 'Alt + 1 … 7', action: 'Switch case tabs' },
+  ];
+  return rows.filter((row): row is { keys: string; action: string } => Boolean(row));
+}
 
 /* ---- "Closed by" (Round 14, D27) ------------------------------------------------------ */
 
@@ -644,6 +688,9 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
   const announce = useAnnouncer();
   const reduceMotion = useReducedMotion();
   const { username: currentUser, hasPermission } = useAuth();
+  // Selection exists only for bulk work, so a role with no bulk action gets none (roles-07).
+  const canBulk = canSelectCases(hasPermission);
+  const shortcuts = React.useMemo(() => caseManagerShortcuts(hasPermission), [hasPermission]);
   const { active: demoActive } = useDemo();
   const routeCaseId = initialCaseId ?? route.opts?.caseId;
   // D27: `#/case_manager?closedBy=agent` (and the `#/scans` redirect) opens the queue on
@@ -1424,7 +1471,15 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
   const jobIntentRef = React.useRef<JobSubmissionIntent | null>(null);
   const bulkMenuRef = React.useRef<HTMLButtonElement | null>(null);
 
+  // GET /api/users needs `users:manage`. Without it the bulk owner field takes a typed
+  // name, and the read is never sent: it could only be refused, and every refusal writes
+  // an Access denied audit row (Round 14 roles-02).
+  const canListUsers = hasPermission('users', 'manage');
   React.useEffect(() => {
+    if (!canListUsers) {
+      setPickUsers([]);
+      return undefined;
+    }
     let cancelled = false;
     void listPickableUsers().then((users) => {
       if (!cancelled) setPickUsers(users);
@@ -1432,7 +1487,7 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [canListUsers]);
 
   const selectedCount = selectedIds.size;
   const visibleSelectedCount = React.useMemo(
@@ -1684,27 +1739,29 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
           return;
         }
       }
+      // Shift extends the selection only for a role that may select (roles-07).
+      const extend = event.shiftKey && canBulk;
       if (down) {
         event.preventDefault();
-        if (event.shiftKey && focused) {
+        if (extend && focused) {
           anchorIdRef.current = anchorIdRef.current ?? focused.case_id;
           toggleCaseSelection(focused.case_id, true);
         }
-        moveFocus(1, { extend: event.shiftKey, fromId: focused?.case_id });
+        moveFocus(1, { extend, fromId: focused?.case_id });
       } else if (up) {
         event.preventDefault();
-        if (event.shiftKey && focused) {
+        if (extend && focused) {
           anchorIdRef.current = anchorIdRef.current ?? focused.case_id;
           toggleCaseSelection(focused.case_id, true);
         }
-        moveFocus(-1, { extend: event.shiftKey, fromId: focused?.case_id });
+        moveFocus(-1, { extend, fromId: focused?.case_id });
       } else if (key === 'Home') {
         event.preventDefault();
         moveFocus('first');
       } else if (key === 'End') {
         event.preventDefault();
         moveFocus('last');
-      } else if ((key === 'x' || key === 'X' || key === ' ') && focused) {
+      } else if ((key === 'x' || key === 'X' || key === ' ') && focused && canBulk) {
         event.preventDefault();
         toggleCaseSelection(focused.case_id, !selectedIds.has(focused.case_id), event.shiftKey);
       } else if ((key === 'Enter' || key === 'o' || key === 'O') && focused) {
@@ -1719,7 +1776,7 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
         clearBulkSelection();
       }
     },
-    [clearBulkSelection, effectiveFocusId, moveFocus, selectCase, selectedCaseId, selectedIds, toggleCaseSelection],
+    [canBulk, clearBulkSelection, effectiveFocusId, moveFocus, selectCase, selectedCaseId, selectedIds, toggleCaseSelection],
   );
 
   // Page-level "/" (search) and "?" (shortcut sheet), outside text entry.
@@ -2078,32 +2135,39 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
                 </header>
 
                 {/* Selection row. With anything selected it becomes the bulk toolbar. */}
+                {/* A role with no bulk action has no selection: the row keeps only the
+                    visible count, and is not a "bulk actions" region. */}
                 <div
-                  role="region"
-                  aria-label="Case selection and bulk actions"
-                  aria-busy={bulkBusy || Boolean(trackedJob)}
+                  role={canBulk ? 'region' : undefined}
+                  aria-label={canBulk ? 'Case selection and bulk actions' : undefined}
+                  aria-busy={canBulk ? bulkBusy || Boolean(trackedJob) : undefined}
                   className="shrink-0 border-b border-border px-3 py-1.5"
+                  data-testid="case-manager-selection-row"
                 >
                   <div className="flex min-h-7 flex-wrap items-center gap-x-2 gap-y-1">
-                    <Checkbox
-                      id="case-manager-select-visible"
-                      checked={allVisibleSelected ? true : someVisibleSelected ? 'indeterminate' : false}
-                      disabled={bulkBusy || visibleCases.length === 0}
-                      onCheckedChange={(next) => toggleVisibleSelection(next === true)}
-                      aria-label="Select all visible cases"
-                      className="bg-background"
-                    />
+                    {canBulk ? (
+                      <Checkbox
+                        id="case-manager-select-visible"
+                        checked={allVisibleSelected ? true : someVisibleSelected ? 'indeterminate' : false}
+                        disabled={bulkBusy || visibleCases.length === 0}
+                        onCheckedChange={(next) => toggleVisibleSelection(next === true)}
+                        aria-label="Select all visible cases"
+                        className="bg-background"
+                      />
+                    ) : null}
                     {selectedCount === 0 ? (
                       <>
-                        <label
-                          htmlFor="case-manager-select-visible"
-                          className={cn(
-                            'ml-1 cursor-pointer text-xs font-medium text-foreground',
-                            (bulkBusy || visibleCases.length === 0) && 'cursor-not-allowed opacity-50',
-                          )}
-                        >
-                          Select visible
-                        </label>
+                        {canBulk ? (
+                          <label
+                            htmlFor="case-manager-select-visible"
+                            className={cn(
+                              'ml-1 cursor-pointer text-xs font-medium text-foreground',
+                              (bulkBusy || visibleCases.length === 0) && 'cursor-not-allowed opacity-50',
+                            )}
+                          >
+                            Select visible
+                          </label>
+                        ) : null}
                         <span className="text-xs tabular-nums text-muted-foreground">
                           {visibleCases.length} visible
                         </span>
@@ -2339,6 +2403,7 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
                                 checked={selectedIds.has(item.case_id)}
                                 focusTarget={effectiveFocusId === item.case_id}
                                 density={density}
+                                selectable={canBulk}
                                 selectionDisabled={bulkBusy}
                                 job={rowJob(item.case_id)}
                                 runbookProgress={runbookProgress[item.case_id] ?? null}
@@ -2609,7 +2674,7 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
               </DialogDescription>
             </DialogHeader>
             <dl className="grid grid-cols-[minmax(0,10rem)_minmax(0,1fr)] gap-x-4 gap-y-2 text-sm">
-              {SHORTCUTS.map((row) => (
+              {shortcuts.map((row) => (
                 <React.Fragment key={row.keys}>
                   <dt className="font-mono text-xs text-foreground">{row.keys}</dt>
                   <dd className="text-muted-foreground">{row.action}</dd>

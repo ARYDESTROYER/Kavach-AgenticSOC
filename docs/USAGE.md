@@ -1628,8 +1628,9 @@ per-provider **"How to set up"** steps (naming the exact env var to set) and an
 | Action | Endpoint |
 |---|---|
 | List every provider's manifest + configured state | `GET /api/enrichment/providers` |
+| Change the enrichment settings (a provider switch, the master switch, fusion, the cache lifetime up to 30 days; refused while the settings lock is on) | `PUT /api/enrichment/config` |
 | Look up one observable (type-routed IP/domain/hash/url/email) | `GET /api/enrichment/lookup?indicator=` |
-| Set a provider's secret | `POST /api/enrichment/providers/{name}/secrets` |
+| Set a provider's secret (audited, names only) | `POST /api/enrichment/providers/{name}/secrets` |
 
 Every lookup is **Redis-cached** (non-negotiable #8) and **fail-open** — a
 provider outage degrades that one signal, never the investigation. Multiple

@@ -140,7 +140,7 @@ export interface DashboardSourcePayloads {
   shift: Partial<StandupReport> & Record<string, unknown>;
   autoClose: RecordedAutoCloseHealth;
   usage: UsageSummary;
-  budget: BudgetStatus & { excluded_surfaces?: string[]; excluded_today?: number };
+  budget: BudgetStatus;
   campaigns: CampaignsResponse;
   tuning: TuningRecommendationsResponse;
   telemetry: TelemetryRecommendationsResponse;

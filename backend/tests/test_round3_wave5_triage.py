@@ -50,6 +50,18 @@ from app.models import AuditDoc, Case, Entity, TriggerReason, UsageDoc
 # --------------------------------------------------------------------------- #
 # helpers — cases that carry source provenance so the severity scale resolves
 # --------------------------------------------------------------------------- #
+
+def _request(state):
+    """A minimal request bound to ``state``. Sign-in is off in these tests, so the
+    caller holds every grant (the timeline's cost and tokens included)."""
+    from fastapi import FastAPI
+    from starlette.requests import Request
+
+    app = FastAPI()
+    app.state.tlsoc = state
+    return Request({"type": "http", "method": "GET", "path": "/api/cases/x/timeline", "headers": [],
+                    "query_string": b"", "app": app, "client": ("127.0.0.1", 9)})
+
 def _case(
     *,
     case_id: str = "case-w5",
@@ -357,7 +369,7 @@ async def test_timeline_totals_reconcile_single_call(app_state) -> None:
         ts="2026-06-16T10:00:02+00:00", case_id=cid, actor="investigator",
         action_type=ActionType.VERDICT, result_summary="verdict=TRUE_POSITIVE"))
 
-    res = await case_timeline(cid, state)
+    res = await case_timeline(cid, _request(state), state)
     assert res["totals"]["cost"] == pytest.approx(0.02)   # was 0.04 (2x) pre-fix
     assert res["totals"]["tokens"] == 150                  # was 300 pre-fix
     # Each of the two investigator spans gets HALF the role total; they sum to the truth.
@@ -389,7 +401,7 @@ async def test_timeline_totals_reconcile_multistep_react(app_state) -> None:
         ts="2026-06-16T11:00:09+00:00", case_id=cid, actor="investigator",
         action_type=ActionType.VERDICT, result_summary="verdict=TRUE_POSITIVE"))
 
-    res = await case_timeline(cid, state)
+    res = await case_timeline(cid, _request(state), state)
     assert res["totals"]["cost"] == pytest.approx(0.08)    # 4 x 0.02, not 0.04
     assert res["totals"]["tokens"] == 600                   # 4 x 150,  not 300
     inv_llm = [
@@ -412,7 +424,7 @@ async def test_timeline_attributes_cost_exactly_single_row(app_state) -> None:
     await state.audit.write(AuditDoc(
         ts="2026-06-16T10:00:00+00:00", case_id=cid, actor="investigator",
         action_type=ActionType.VERDICT, result_summary="verdict=TRUE_POSITIVE"))
-    res = await case_timeline(cid, state)
+    res = await case_timeline(cid, _request(state), state)
     inv = next(s for s in res["spans"] if s["name"] == "investigator")
     assert inv["cost"] == pytest.approx(0.0123)
     assert inv["tokens"] == 150
@@ -444,7 +456,7 @@ async def test_timeline_multi_role_each_reconciles(app_state) -> None:
         ts="2026-06-16T10:00:05+00:00", case_id=cid, actor="investigator",
         action_type=ActionType.VERDICT, result_summary="verdict=TRUE_POSITIVE"))
 
-    res = await case_timeline(cid, state)
+    res = await case_timeline(cid, _request(state), state)
     router_cost = sum(
         s["cost"] for s in res["spans"]
         if s["name"] == "router" and s["cost"] is not None
@@ -474,7 +486,7 @@ async def test_timeline_ledger_miss_degrades_to_no_cost(app_state) -> None:
     await state.audit.write(AuditDoc(
         ts="2026-06-16T10:00:00+00:00", case_id=cid, actor="investigator",
         action_type=ActionType.VERDICT, result_summary="verdict=TRUE_POSITIVE"))
-    res = await case_timeline(cid, state)
+    res = await case_timeline(cid, _request(state), state)
     inv = next(s for s in res["spans"] if s["name"] == "investigator")
     assert inv["cost"] is None and inv["tokens"] is None
     assert res["totals"]["cost"] == 0.0

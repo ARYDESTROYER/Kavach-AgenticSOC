@@ -12,7 +12,7 @@ vi.mock('@/lib/api-runbooks', () => ({ testRunbookLookup: mocks.testRunbookLooku
 import type { RunbookDefinition } from '@/lib/types-runbooks';
 import { TooltipProvider } from '@/ui/tooltip';
 
-import { AnalystPreview } from '../AnalystPreview';
+import { AnalystPreview, FILL_FAILED_TEXT, fillAnnouncement } from '../AnalystPreview';
 import { AppliesWhenEditor, MATCHING_HELP } from '../AppliesWhenEditor';
 import { addStep, changeKind, placeIssues, updateStep } from '../draft';
 import { GovernanceStrip } from '../GovernanceStrip';
@@ -290,6 +290,76 @@ describe('Preview as analyst', () => {
     expect(await screen.findByText('Values from CASE-000214.')).toBeInTheDocument();
     expect(fill).not.toHaveAttribute('aria-disabled');
     expect(document.activeElement).toBe(fill);
+  });
+
+  it('says once that the values arrived, and which ones the case does not have (FX8, WCAG 4.1.3)', async () => {
+    const { defn, id } = lookupDefinition();
+    const withFilter: RunbookDefinition = {
+      ...defn,
+      steps: defn.steps.map((s) =>
+        s.id === id && s.lookup ? { ...s, lookup: { ...s.lookup, filter: { ip: '{{entity.ip}}', user: '{{entity.user}}' } } } : s,
+      ),
+    };
+    const announce = vi.fn();
+    wrap(
+      <AnalystPreview
+        defn={withFilter}
+        cases={[{ case_id: 'c-214', case_number: 'CASE-000214', title: 'SSH spray' }]}
+        loadCaseValues={vi.fn().mockResolvedValue({ 'entity.ip': '203.0.113.7' })}
+        guidance={null}
+        announce={announce}
+      />,
+    );
+    const fill = screen.getByRole('button', { name: 'Fill with CASE-000214' });
+    fill.focus();
+    fireEvent.click(fill);
+    expect(await screen.findByText('Values from CASE-000214.')).toBeInTheDocument();
+    expect(announce).toHaveBeenCalledTimes(1);
+    expect(announce).toHaveBeenCalledWith('Preview filled with values from CASE-000214. It has no value for the case user.');
+    // Focus stays on Fill (wrb-07): the announcement is the only signal, so it must come.
+    expect(document.activeElement).toBe(fill);
+    expect(fillAnnouncement('CASE-000215', [])).toBe('Preview filled with values from CASE-000215.');
+    expect(fillAnnouncement('CASE-000215', ['entity.user', 'entity.host', 'case.rule'])).toBe(
+      'Preview filled with values from CASE-000215. It has no value for the case user, the case host and the case rule.',
+    );
+  });
+
+  it('says a failed fill assertively, once, and shows it without a second live region (FX8)', async () => {
+    const announce = vi.fn();
+    wrap(
+      <AnalystPreview
+        defn={makeDefinition()}
+        cases={[{ case_id: 'c-214', case_number: 'CASE-000214', title: 'SSH spray' }]}
+        loadCaseValues={vi.fn().mockRejectedValue(new Error('boom'))}
+        guidance={null}
+        announce={announce}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Fill with CASE-000214' }));
+    const shown = await screen.findByText(FILL_FAILED_TEXT);
+    expect(shown).not.toHaveAttribute('role');
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(announce).toHaveBeenCalledTimes(1);
+    expect(announce).toHaveBeenCalledWith(FILL_FAILED_TEXT, 'assertive');
+  });
+
+  it('says nothing when the read ends after the preview has gone (FX8)', async () => {
+    let finish: (values: Record<string, string>) => void = () => undefined;
+    const announce = vi.fn();
+    const { unmount } = wrap(
+      <AnalystPreview
+        defn={makeDefinition()}
+        cases={[{ case_id: 'c-214', case_number: 'CASE-000214', title: 'SSH spray' }]}
+        loadCaseValues={() => new Promise<Record<string, string>>((resolve) => (finish = resolve))}
+        guidance={null}
+        announce={announce}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Fill with CASE-000214' }));
+    unmount();
+    finish({});
+    await new Promise((r) => setTimeout(r, 0));
+    expect(announce).not.toHaveBeenCalled();
   });
 
   it('marks guidance over the budget', () => {

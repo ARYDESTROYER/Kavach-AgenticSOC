@@ -30,7 +30,7 @@ class RobtexProvider(EnrichmentProvider):
             display_name="Robtex",
             description=(
                 "Passive-DNS + AS/BGP context for an IP (which domains point or "
-                "pointed at it, who announces it). Pure pivot context — never a "
+                "pointed at it, who announces it). Pure pivot context, never a "
                 "verdict."
             ),
             indicator_kinds=[IndicatorKind.IP],
@@ -41,14 +41,14 @@ class RobtexProvider(EnrichmentProvider):
             docs_url="https://freeapi.robtex.com/",
             default_enabled=False,
             setup_steps=[
-                "Nothing to sign up for — the free API is keyless.",
+                "Nothing to sign up for: the free API is keyless.",
                 "Flip this provider's toggle ON (default OFF because the free tier "
                 "is slow and tightly rate-limited).",
                 "Requires outbound HTTPS to freeapi.robtex.com.",
             ],
             example=(
                 "Passive DNS shows that the C2 IP in your case also hosted "
-                "'invoice-portal-secure.example' last month — pivot data that links "
+                "'invoice-portal-secure.example' last month: pivot data that links "
                 "two otherwise unrelated cases into one campaign."
             ),
         )

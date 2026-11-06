@@ -26,7 +26,7 @@ import { ChevronDown, Download, ExternalLink, FileJson, FileSpreadsheet, ShieldC
 import { toast } from 'sonner';
 
 import { ApiError, api } from '@/lib/api';
-import { AUDIT_COUNT_CAP, countAudit, submitAuditExport } from '@/lib/api-audit';
+import { AUDIT_COUNT_CAP, AUDIT_EXPORT_REAUTH_PURPOSE, countAudit, submitAuditExport } from '@/lib/api-audit';
 import { errorMessage } from '@/lib/errorMessage';
 import type { BackgroundJob } from '@/lib/types';
 import type { AuditCount, AuditExportJobParams } from '@/lib/types-audit';
@@ -198,7 +198,8 @@ function exportErrorText(error: unknown): string {
     const body = error.body as { detail?: { code?: string } } | undefined;
     const code = body?.detail?.code;
     if (code === 'job_busy') return 'You already have an audit export running. Wait for it to finish, then try again.';
-    if (code === 'reauth_required') return 'Sign in again to export the audit log.';
+    // The same sentence the sign-in dialog showed for this export.
+    if (code === 'reauth_required') return AUDIT_EXPORT_REAUTH_PURPOSE;
   }
   return errorMessage(error, 'The export could not be started.');
 }

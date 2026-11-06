@@ -105,6 +105,8 @@ export function budgetLine(budget: BudgetStatus, currency: string): string {
   if (!budget.enabled) return 'No AI budget is set.';
   const pick = budget.monthly?.cap != null ? { w: budget.monthly, period: 'this month' } : budget.daily?.cap != null ? { w: budget.daily, period: 'today' } : null;
   if (!pick || pick.w.cap == null) return 'No AI budget cap is set.';
+  // The server leaves the spend out for a viewer without cost:view (the widget itself needs it).
+  if (pick.w.spent == null) return 'You do not have access to AI spend.';
   const pct = typeof pick.w.fraction === 'number' && Number.isFinite(pick.w.fraction) ? ` (${shareText(pick.w.fraction)})` : '';
   return `${moneyText(pick.w.spent, currency)} of ${fmtMoney(pick.w.cap, currency)} ${pick.period}${pct}`;
 }

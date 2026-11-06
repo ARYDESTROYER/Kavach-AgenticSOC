@@ -62,6 +62,7 @@ import {
 } from '@/soc/components/badges';
 
 import { CaseDetail } from '@/soc/pages/CaseDetail';
+import { useOptionalAuth } from '@/soc/auth';
 import { useNavigateOptional, type Navigate } from '@/soc/router';
 
 /* ---------------------------------------------------------------- consts --- */
@@ -177,6 +178,11 @@ const ResultCard: React.FC<{ c: Case; onOpen?: (caseId: string) => void }> = ({
   c,
   onOpen,
 }) => {
+  // A case's own AI spend follows `cost:view`: without it the server answers
+  // `token_cost: null` and the result leaves the row out. A render with no auth
+  // provider (the no-auth profile's tests) reads like auth off: every grant held.
+  const auth = useOptionalAuth();
+  const canViewCost = (auth ? auth.hasPermission('cost', 'view') : true) && c.token_cost != null;
   const entityLabel = c.entity
     ? `${humanizeToken(c.entity.type)} · ${c.entity.value}`
     : DASH;
@@ -325,10 +331,12 @@ const ResultCard: React.FC<{ c: Case; onOpen?: (caseId: string) => void }> = ({
               {String(c.member_event_keys?.length || c.member_event_ids?.length || 0)} events
             </dd>
           </div>
-          <div className="flex items-baseline justify-between gap-3">
-            <dt className="text-muted-foreground">Investigation cost</dt>
-            <dd className="text-right font-mono tabular-nums text-foreground">{fmtMoney(c.token_cost)}</dd>
-          </div>
+          {canViewCost ? (
+            <div className="flex items-baseline justify-between gap-3">
+              <dt className="text-muted-foreground">Investigation cost</dt>
+              <dd className="text-right font-mono tabular-nums text-foreground">{fmtMoney(c.token_cost)}</dd>
+            </div>
+          ) : null}
         </dl>
 
         <p className="flex items-center gap-1.5 text-sm text-muted-foreground">

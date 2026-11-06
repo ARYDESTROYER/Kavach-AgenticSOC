@@ -54,7 +54,7 @@ class ShodanProvider(EnrichmentProvider):
                 "Set TLSOC_SHODAN_API_KEY in .env (compose maps it to "
                 "SHODAN_API_KEY), or paste it in this card (in-memory until restart).",
                 "Flip this provider's toggle ON. The keyless InternetDB provider "
-                "already covers basic exposure — enable this one for org/ISP, OS and "
+                "already covers basic exposure; enable this one for org/ISP, OS and "
                 "richer banner detail.",
             ],
             example=(

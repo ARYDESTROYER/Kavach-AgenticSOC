@@ -10,7 +10,7 @@
  *   DELETE /roles/{name}: delete a custom role.
  *   POST   /roles/preview: resolve a DRAFT role + diff vs the live matrix.
  *   GET    /roles/simulate: can() outcome for role × resource × action.
- *   GET    /account/permissions: the CALLER's resolved grants (drives capability).
+ *   GET    /account/permissions: the CALLER's effective grants (drives capability).
  *   PUT    /users/{username}/roles: assign a base role + custom_roles[] to a user.
  *
  * #9: role names / descriptions / grant maps are operator-influenceable; they are
@@ -18,6 +18,7 @@
  * HTML and never interpolated into a prompt.
  */
 import { api } from '@/lib/api';
+import type { AccountPermissions } from '@/lib/types';
 
 /** A grant/deny map: resource → list of actions (may include the "*" wildcard). */
 export type GrantMap = Record<string, string[]>;
@@ -81,14 +82,8 @@ export interface SimulateResponse {
   role_exists: boolean;
 }
 
-/** GET /api/account/permissions: the caller's resolved grants. */
-export interface AccountPermissions {
-  authenticated: boolean;
-  role: string;
-  custom_roles: string[];
-  rbac_enabled: boolean;
-  permissions: GrantMap;
-}
+/** GET /api/account/permissions: the caller's effective grants (one shared declaration). */
+export type { AccountPermissions };
 
 /** A draft submitted to create/update/preview a custom role. */
 export interface CustomRoleBody {
@@ -111,6 +106,8 @@ export const rolesApi = {
     api.post<RolePreviewResponse>('roles/preview', body),
   simulate: (role: string, resource: string, action: string) =>
     api.get<SimulateResponse>('roles/simulate', { role, resource, action }),
+  // The same read, and the same declared shape, as the Console's permission checks
+  // (`api.account.permissions` in `soc/auth.tsx`).
   accountPermissions: () => api.get<AccountPermissions>('account/permissions'),
   assignUserRoles: (
     username: string,

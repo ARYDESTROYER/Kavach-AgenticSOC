@@ -58,6 +58,18 @@ The names describe defaults, not organizational job titles. Notably, the built-i
 Installing or rolling back a system update is additionally limited by the API to the
 built-in `super_admin` with a fresh sign-in, whatever a custom role grants.
 
+`metrics:view` covers every metrics read, the operational rollup behind the Metrics page
+(`GET /api/metrics`) and the analyst feedback agreement (`GET /api/feedback/stats`)
+included. `cost:view` covers AI spend wherever it is shown: the Cost page and
+`GET /api/usage/summary` (one case's spend included), the usage breakdown, the spend on
+the Executive board, chat's spending answers, the spend part of `GET /api/metrics` (left
+empty), the spent and remaining amounts of the AI budget (`GET /api/budget/status` keeps
+the caps and settings for `models:read`), the cost and tokens on a case's agent timeline,
+a case's own investigation cost (`token_cost` is `null` on every case the API returns,
+and the case page, its facts rail and Entity investigation leave it out), and the
+recorded case cost in Agent effectiveness (shown as unavailable). A role without
+`cost:view` still reads everything else on those pages.
+
 ## Runbooks
 
 | Action | Allows |
@@ -129,6 +141,17 @@ the other preferences, so changing it needs `settings:manage`. Before Round 14 i
 the Jobs page and saved with `models:manage`; every built-in role holds both grants or
 neither, so only a custom role that held one without the other sees a difference.
 
+**Enrichment** (the provider switches, fusion, the cache lifetime and provider keys)
+saves at once and needs `enrichment:manage`. Before Round 14 its switches and cache
+lifetime saved with the other preferences under `settings:manage`; as above, only a
+custom role that holds one of the two grants without the other sees a difference. The
+settings lock applies to the switches, fusion and the cache lifetime too, whatever the
+role. Provider keys are handled like source and notification channel credentials: the
+server does not check the lock for them. The Console disables the key fields while the
+lock is on, but a direct API call with `enrichment:manage` can still set or clear a key,
+and the audit log records it. **All settings** no longer lists the `enrichment`
+settings: the Enrichment section is their one editor.
+
 The API can still combine these resources with a case/source permission where the
 operation acts on both domains. Always test the exact route with the role rather than
 inferring access solely from whether a navigation item is visible.
@@ -198,15 +221,22 @@ assignment of that role as a privileged operation.
 
 ## Inspect and test access
 
-- `GET /api/account/permissions` returns the current account's effective access.
+- `GET /api/account/permissions` returns the current account's effective access: every
+  action the API allows it, listed as concrete actions (never `*`). The server answers it
+  with the same resolver its route checks use, so it includes the base role, every
+  assigned custom role and every deny.
 - `GET /api/roles` returns the role catalog/effective definitions.
 - `POST /api/roles/preview` validates a proposed role shape without persisting it.
 - `GET /api/roles/simulate` evaluates a role against a resource/action request.
 - `PUT /api/users/{username}/roles` changes a user's role.
 
 The Agentic SOC Console uses permission guards for presentation, but the API is the security
-boundary. Non-GET routes are expected to declare an authorization dependency in
-addition to the central authentication gate.
+boundary. The guards read only `GET /api/account/permissions`, so the Console shows the
+actions a custom role grants (for example `runbooks:publish` or `audit:export`) and hides
+what a deny removes, exactly as the API decides. When that read fails, the Console hides
+every restricted action (`super_admin` excepted) rather than guess. Non-GET routes are
+expected to declare an authorization dependency in addition to the central authentication
+gate.
 
 Object-level scope conditions exist as an opt-in policy hook and use a fixed,
 non-`eval` condition vocabulary. They are off by default. Built-in RBAC therefore does

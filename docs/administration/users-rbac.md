@@ -22,7 +22,8 @@ permission overrides. RBAC is enforced only when authentication and RBAC are ena
 The backend permission vocabulary is resource/action based, for example
 `cases:close`, `sources:manage`, `models:manage`, and `audit:view`. The effective
 permission calculation is authoritative; hiding a button in the UI is not an
-authorization boundary.
+authorization boundary. The Console reads that same effective calculation, so a person
+sees the actions their base role and assigned custom roles allow, and no others.
 
 ## Add a local user
 

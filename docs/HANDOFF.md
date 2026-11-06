@@ -6,10 +6,12 @@
 > source of truth for *where we are*, *how to run it*, *what's done*, and *what's next*.
 > Everything in here is verified against the repo as of the date below — not from memory.
 
-- **Repo:** `ARYDESTROYER/Agentic-Kibana`  ·  **Integration target:** `Testing`  ·  **Date:** 2026-10-29
-- **Round 14 (newest, 2026-10):** nine operator asks on `claude/round14`, heading to `Testing`
-  by a pull request. The automatic sign-out notice no longer states how long the session
-  lasted. The Audit log (`#/audit`) is server-paged with three scopes
+- **Repo:** `ARYDESTROYER/Agentic-Kibana`  ·  **Integration target:** `Testing`  ·  **Date:** 2026-11-06
+- **Round 14 (newest, 2026-10 and 11):** nine operator asks on `claude/round14`. It is built,
+  two closing acceptance passes and their fixes are done, and every gate is green apart from five
+  sandbox-only environment tests (SPEC §11.4 "Final gates"); it heads to `Testing` by a pull
+  request. The automatic sign-out notice no longer states how long the session lasted. The
+  Audit log (`#/audit`) is server-paged with three scopes
   (People and settings, Agent activity, All), search and filters in the URL, a record inspector
   that shows what changed, and an audited CSV or JSON Lines export (new `audit:export`, fresh
   sign-in, refused in Demo Mode); every new audit row records its outcome, actor type, action,
@@ -380,7 +382,7 @@ can never override.
 cd backend
 python3 -m venv .venv && . .venv/bin/activate
 pip install -r requirements-dev.txt        # greenlet is pinned, so a fresh install is green
-python -m pytest -q                         # latest recorded full run: 8,674 passed, 4 skipped; see Journal.md
+python -m pytest -q                         # latest recorded full run: 12,450 passed, 6 skipped, 5 sandbox-only env failures; see Journal.md
 ```
 
 ### WebUI build + tests + lint
@@ -389,7 +391,7 @@ cd webui
 npm ci
 npm run check:types # hard-fail API drift in CI with TLSOC_REQUIRE_TYPEGEN=1
 npm run gates       # tokens, contrast, CVD, and raw-style regression guards
-npm run test:strict # latest recorded full run: 5,425 passed, 1 skipped / 520 files; CI-parity quiet-output gate
+npm run test:strict # latest recorded full run: 8,576 passed, 1 skipped / 652 files; CI-parity quiet-output gate
 npm run lint -- --max-warnings=0
 npm run build      # version-matched MkDocs Help Center + tsc --noEmit + Vite
 npm run docs:check # verify the generated docs artifact matches VERSION

@@ -29,7 +29,7 @@ class MetaDefenderProvider(EnrichmentProvider):
             display_name="MetaDefender (OPSWAT)",
             description=(
                 "Multi-engine AV results for a file hash from OPSWAT MetaDefender "
-                "Cloud — a VirusTotal-style detected/total engine ratio."
+                "Cloud: a VirusTotal-style detected/total engine ratio."
             ),
             indicator_kinds=[IndicatorKind.FILE_HASH],
             config_key="use_metadefender",

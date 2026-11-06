@@ -322,6 +322,32 @@ describe('AgentOperationalOutcomes', () => {
   });
 });
 
+describe('AgentOperationalOutcomes: recorded cost withheld without cost:view (Round 14 second acceptance pass, roles-11)', () => {
+  it('shows the reason in the cost detail, never zero figures', () => {
+    // The server withholds the headline block and every period comparison's.
+    const withheld = evidence();
+    const blocks = [
+      withheld.outcomes!.recorded_case_cost,
+      ...Object.values(withheld.period_comparisons ?? {}).map((p) => p!.outcomes!.recorded_case_cost),
+    ];
+    for (const cost of blocks) {
+      cost.status = 'unavailable';
+      cost.reason = 'AI spend needs the cost:view permission';
+      cost.current = { total_cost: 0, call_count: 0, costed_cases: 0, cost_per_costed_case: 0, cost_per_day: 0 };
+      cost.baseline = { total_cost: 0, call_count: 0, costed_cases: 0, cost_per_costed_case: 0, cost_per_day: 0 };
+    }
+
+    renderOutcome(<AgentOperationalOutcomes evidence={withheld} />);
+
+    const group = screen.getByText('AI processing cost').closest('div')!;
+    expect(group).toHaveTextContent('Recorded total');
+    expect(group).toHaveTextContent('AI spend needs the cost:view permission.');
+    expect(group).not.toHaveTextContent('$0');
+    expect(within(group).queryByText('Per costed case')).toBeNull();
+    expect(within(group).queryByText('Recorded / day')).toBeNull();
+  });
+});
+
 describe('SourceCoverageGuidance', () => {
   it('labels absent source-gap evidence as a long-term objective, not a recommendation', () => {
     const view = renderOutcome(<SourceCoverageGuidance evidence={evidence()} />);

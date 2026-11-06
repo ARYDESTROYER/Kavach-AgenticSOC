@@ -407,8 +407,9 @@ engineering sequence is ordered by data safety and measurable outcomes, not scre
   count; `audit_view_dropped` and `audit_identity_dropped` in `/api/diagnostics/health`; the
   lazy first-seen session row as `session.created`; strict KV writes for the dashboard, price
   overlay and custom model stores so their failure rows can be written; reducing every `*_url`
-  value in `changes`; and the three mapping calls on `RealESClient`, so an upgraded
-  Elasticsearch audit index gains the Round 14 mapping without the operator step.
+  value in `changes`; the three mapping calls on `RealESClient`, so an upgraded
+  Elasticsearch audit index gains the Round 14 mapping without the operator step; and
+  `AccessDenialRecorder.unrecorded` and `dropped` in `/api/diagnostics/health` (FX7f).
 - ☐ **Rule sheet and Logs follow-ups**: widen the Round 12 `rule` entity grammar so Ask AI is
   offered for rule names with spaces or other scripts (still fenced); data-stream-aware IGNORE
   feed attribution; band push events on the canonical scale in the ingest noise counters; a
@@ -469,6 +470,10 @@ engineering sequence is ordered by data safety and measurable outcomes, not scre
   other Radix Selects that pass `value={x || undefined}` (`Models.tsx`, `CaseManager.tsx`) for the
   uncontrolled-to-controlled warning FX6s fixed in Roles; name the auto-refresh select from the
   words it shows ("5 sec"), as the time range trigger now is.
+- ☐ **Second acceptance follow-ups (FX7)**: a second chip click while an Applies when picker is
+  open (Radix DismissableLayer, FX7a); role wording for lower-case initialisms and unassigned
+  code points (FX7b, FX7c); a live focus trace of Case detail's Take action "Start runbook"
+  (FX7c); a live re-measure of Case Manager's `GET /api/users` gate (FX7g).
 - **Never** (product decisions, not backlog): executable response actions of any kind (the suite
   never acts on another system), and runbooks that close or escalate a case.
 

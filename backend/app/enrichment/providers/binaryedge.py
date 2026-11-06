@@ -53,7 +53,7 @@ class BinaryEdgeProvider(EnrichmentProvider):
                 "Flip this provider's toggle ON.",
             ],
             example=(
-                "A third scan-data angle on an IP's open ports and services — useful "
+                "A third scan-data angle on an IP's open ports and services, useful "
                 "when Shodan/Censys disagree or have stale data for the address in "
                 "your case."
             ),

@@ -59,7 +59,7 @@ class IPDataProvider(EnrichmentProvider):
             ],
             example=(
                 "One lookup says the source IP 'is_known_attacker' on two open "
-                "blocklists AND is a Tor exit in Romania — reputation, anonymity "
+                "blocklists AND is a Tor exit in Romania: reputation, anonymity "
                 "and geo in a single row of the case evidence."
             ),
         )

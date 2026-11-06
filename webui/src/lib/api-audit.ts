@@ -59,11 +59,15 @@ export function getAuditRecord(
   });
 }
 
+/** What the fresh sign-in dialog says for an audit export: a read, so not "a change". */
+export const AUDIT_EXPORT_REAUTH_PURPOSE = 'Sign in again to export audit events.';
+
 /**
  * Submit the `audit_export` job (`POST /api/jobs`). The server asks for a fresh
- * sign-in first (the shared step-up flow opens the re-authentication dialog), answers
- * `429 job_busy` when this person already has one running, and records the request
- * in the audit log. Keep one `idempotencyKey` per user intent across retries.
+ * sign-in first (the shared step-up flow opens the sign-in dialog, which says the
+ * sign-in is for the export), answers `429 job_busy` when this person already has one
+ * running, and records the request in the audit log. Keep one `idempotencyKey` per
+ * user intent across retries.
  */
 export function submitAuditExport(
   params: AuditExportJobParams,
@@ -74,5 +78,5 @@ export function submitAuditExport(
     idempotency_key: idempotencyKey,
     params,
   };
-  return request<BackgroundJob>('POST', 'jobs', { body });
+  return request<BackgroundJob>('POST', 'jobs', { body, reauthPurpose: AUDIT_EXPORT_REAUTH_PURPOSE });
 }

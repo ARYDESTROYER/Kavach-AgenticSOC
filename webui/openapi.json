@@ -1782,9 +1782,16 @@
             "type": "string"
           },
           "token_cost": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "default": 0.0,
-            "title": "Token Cost",
-            "type": "number"
+            "title": "Token Cost"
           },
           "trigger_reason": {
             "anyOf": [
@@ -2100,7 +2107,7 @@
         "type": "object"
       },
       "CaseRunbooks": {
-        "description": "``GET /api/cases/{case_id}/runbooks`` (SPEC §4.10.15a): the case's runs with\nevidence redacted per viewer by the lookup grants, progress per run, the newer\npublished version per run, the free-form case tasks (\"Other tasks\") and the case\ndocument's CAS revision.",
+        "description": "``GET /api/cases/{case_id}/runbooks`` (SPEC §4.10.15a): the case's runs with\nevidence redacted per viewer by the lookup grants, progress per run, the newer\npublished version per run, the free-form case tasks (\"Other tasks\") and the case\ndocument's CAS revision. ``role_labels`` maps every role the runs' steps name\n(``approval_role``, ``owner_role`` and a pending approval's ``required_role``) to\nthe label a person knows it by (\"soc_manager\" to \"SOC manager\"; a custom role read\nthe way the Console reads a token), for the approval wording (SPEC §3.1,\n§4.10.11).",
         "properties": {
           "newer_versions": {
             "additionalProperties": {
@@ -2127,6 +2134,13 @@
             "default": 0,
             "title": "Revision",
             "type": "integer"
+          },
+          "role_labels": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Role Labels",
+            "type": "object"
           },
           "runs": {
             "items": {
@@ -6113,6 +6127,261 @@
         ],
         "title": "Disposition",
         "type": "string"
+      },
+      "EnrichmentConfig": {
+        "properties": {
+          "cache_ttl_seconds": {
+            "default": 21600,
+            "title": "Cache Ttl Seconds",
+            "type": "integer"
+          },
+          "enabled": {
+            "default": true,
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "fusion_enabled": {
+            "default": false,
+            "title": "Fusion Enabled",
+            "type": "boolean"
+          },
+          "use_abuseipdb": {
+            "default": true,
+            "title": "Use Abuseipdb",
+            "type": "boolean"
+          },
+          "use_apivoid": {
+            "default": false,
+            "title": "Use Apivoid",
+            "type": "boolean"
+          },
+          "use_binaryedge": {
+            "default": false,
+            "title": "Use Binaryedge",
+            "type": "boolean"
+          },
+          "use_censys": {
+            "default": false,
+            "title": "Use Censys",
+            "type": "boolean"
+          },
+          "use_circl_hashlookup": {
+            "default": true,
+            "title": "Use Circl Hashlookup",
+            "type": "boolean"
+          },
+          "use_criminalip": {
+            "default": false,
+            "title": "Use Criminalip",
+            "type": "boolean"
+          },
+          "use_crowdsec": {
+            "default": false,
+            "title": "Use Crowdsec",
+            "type": "boolean"
+          },
+          "use_crt_sh": {
+            "default": false,
+            "title": "Use Crt Sh",
+            "type": "boolean"
+          },
+          "use_cymru_mhr": {
+            "default": false,
+            "title": "Use Cymru Mhr",
+            "type": "boolean"
+          },
+          "use_dshield": {
+            "default": true,
+            "title": "Use Dshield",
+            "type": "boolean"
+          },
+          "use_emailrep": {
+            "default": false,
+            "title": "Use Emailrep",
+            "type": "boolean"
+          },
+          "use_geoip": {
+            "default": true,
+            "title": "Use Geoip",
+            "type": "boolean"
+          },
+          "use_google_safebrowsing": {
+            "default": false,
+            "title": "Use Google Safebrowsing",
+            "type": "boolean"
+          },
+          "use_greynoise": {
+            "default": false,
+            "title": "Use Greynoise",
+            "type": "boolean"
+          },
+          "use_hibp": {
+            "default": false,
+            "title": "Use Hibp",
+            "type": "boolean"
+          },
+          "use_honeypot": {
+            "default": false,
+            "title": "Use Honeypot",
+            "type": "boolean"
+          },
+          "use_hybrid_analysis": {
+            "default": false,
+            "title": "Use Hybrid Analysis",
+            "type": "boolean"
+          },
+          "use_ipdata": {
+            "default": false,
+            "title": "Use Ipdata",
+            "type": "boolean"
+          },
+          "use_ipinfo": {
+            "default": true,
+            "title": "Use Ipinfo",
+            "type": "boolean"
+          },
+          "use_ipqualityscore": {
+            "default": false,
+            "title": "Use Ipqualityscore",
+            "type": "boolean"
+          },
+          "use_maltiverse": {
+            "default": false,
+            "title": "Use Maltiverse",
+            "type": "boolean"
+          },
+          "use_malwarebazaar": {
+            "default": true,
+            "title": "Use Malwarebazaar",
+            "type": "boolean"
+          },
+          "use_metadefender": {
+            "default": false,
+            "title": "Use Metadefender",
+            "type": "boolean"
+          },
+          "use_netlas": {
+            "default": false,
+            "title": "Use Netlas",
+            "type": "boolean"
+          },
+          "use_onionoo": {
+            "default": true,
+            "title": "Use Onionoo",
+            "type": "boolean"
+          },
+          "use_otx": {
+            "default": false,
+            "title": "Use Otx",
+            "type": "boolean"
+          },
+          "use_pulsedive": {
+            "default": false,
+            "title": "Use Pulsedive",
+            "type": "boolean"
+          },
+          "use_rdap": {
+            "default": true,
+            "title": "Use Rdap",
+            "type": "boolean"
+          },
+          "use_robtex": {
+            "default": false,
+            "title": "Use Robtex",
+            "type": "boolean"
+          },
+          "use_securitytrails": {
+            "default": false,
+            "title": "Use Securitytrails",
+            "type": "boolean"
+          },
+          "use_shodan": {
+            "default": false,
+            "title": "Use Shodan",
+            "type": "boolean"
+          },
+          "use_shodan_internetdb": {
+            "default": true,
+            "title": "Use Shodan Internetdb",
+            "type": "boolean"
+          },
+          "use_spamhaus": {
+            "default": false,
+            "title": "Use Spamhaus",
+            "type": "boolean"
+          },
+          "use_spur": {
+            "default": false,
+            "title": "Use Spur",
+            "type": "boolean"
+          },
+          "use_threatfox": {
+            "default": true,
+            "title": "Use Threatfox",
+            "type": "boolean"
+          },
+          "use_urlhaus": {
+            "default": true,
+            "title": "Use Urlhaus",
+            "type": "boolean"
+          },
+          "use_urlscan": {
+            "default": false,
+            "title": "Use Urlscan",
+            "type": "boolean"
+          },
+          "use_virustotal": {
+            "default": true,
+            "title": "Use Virustotal",
+            "type": "boolean"
+          },
+          "use_xforce": {
+            "default": false,
+            "title": "Use Xforce",
+            "type": "boolean"
+          }
+        },
+        "title": "EnrichmentConfig",
+        "type": "object"
+      },
+      "EnrichmentConfigSaveResult": {
+        "description": "The answer of ``PUT /api/enrichment/config``.",
+        "properties": {
+          "changed": {
+            "title": "Changed",
+            "type": "boolean"
+          },
+          "config": {
+            "$ref": "#/components/schemas/EnrichmentConfig"
+          },
+          "demo_active": {
+            "title": "Demo Active",
+            "type": "boolean"
+          },
+          "demo_run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Demo Run Id"
+          },
+          "ok": {
+            "default": true,
+            "title": "Ok",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "changed",
+          "demo_active",
+          "config"
+        ],
+        "title": "EnrichmentConfigSaveResult",
+        "type": "object"
       },
       "Entity": {
         "properties": {
@@ -11086,7 +11355,7 @@
         "type": "object"
       },
       "RunbookDetail": {
-        "description": "``GET /api/runbooks/{id}`` (SPEC §4.10.15a). ``draft`` and ``in_review`` are\npresent only to a holder of ``runbooks:manage`` or ``runbooks:publish``.\n``open_runs_by_version`` maps a version to the active runs pinned to it.\n``revision`` is the library document's CAS revision, sent back as\n``expected_revision``.",
+        "description": "``GET /api/runbooks/{id}`` (SPEC §4.10.15a). ``draft`` and ``in_review`` are\npresent only to a holder of ``runbooks:manage`` or ``runbooks:publish``.\n``retired`` is the retired version of a retired runbook (its last published text,\nwith ``retired_by`` and ``retired_at``), which the editor shows read only and\nRestore makes live again; ``None`` otherwise. A retired version is readable by\nevery reader of the runbook, as its published history is.\n``open_runs_by_version`` maps a version to the active runs pinned to it.\n``revision`` is the library document's CAS revision, sent back as\n``expected_revision``.",
         "properties": {
           "draft": {
             "anyOf": [
@@ -11124,6 +11393,16 @@
             },
             "title": "Open Runs By Version",
             "type": "object"
+          },
+          "retired": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RunbookVersionDoc"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "revision": {
             "default": 0,
@@ -11993,7 +12272,7 @@
         "type": "object"
       },
       "RunbookRunUpdate": {
-        "description": "The result of any write to one run: a step update, a lookup, an approval, an AI\ndraft or its confirmation, a version switch or an abandon. ``revision`` is the case\ndocument's CAS revision after the write.",
+        "description": "The result of any write to one run: a step update, a lookup, an approval, an AI\ndraft or its confirmation, a version switch or an abandon. ``revision`` is the case\ndocument's CAS revision after the write. ``role_labels`` is the run's roles by\ntheir labels, as on :class:`CaseRunbooks`.",
         "properties": {
           "progress": {
             "$ref": "#/components/schemas/RunbookProgress"
@@ -12002,6 +12281,13 @@
             "default": 0,
             "title": "Revision",
             "type": "integer"
+          },
+          "role_labels": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Role Labels",
+            "type": "object"
           },
           "run": {
             "$ref": "#/components/schemas/RunbookRun"
@@ -12810,7 +13096,7 @@
         "type": "object"
       },
       "RunbookVersionListItem": {
-        "description": "One row of a runbook's version history.",
+        "description": "One row of a runbook's version history. ``review_notes`` are the reasons a\nreviewer gave when sending that version back to draft (oldest first), the same\nnotes its version document carries, so History shows them on every entry, a\nsuperseded one too, without reading each version.",
         "properties": {
           "published_at": {
             "anyOf": [
@@ -12833,6 +13119,13 @@
               }
             ],
             "title": "Published By"
+          },
+          "review_notes": {
+            "items": {
+              "$ref": "#/components/schemas/RunbookReviewNote"
+            },
+            "title": "Review Notes",
+            "type": "array"
           },
           "state": {
             "enum": [
@@ -16440,7 +16733,7 @@
     },
     "/api/account/permissions": {
       "get": {
-        "description": "The CURRENT caller's resolved ``resource -> [actions]`` grants — the data the\nwebui ``<Can>`` guard checks against.\n\nThree back-compat modes mirror the server gates:\n  * auth DISABLED          → super_admin (full wildcard) so every surface unlocks.\n  * auth ON, rbac OFF      → super_admin (authenticated == super_admin).\n  * auth ON, rbac ON       → the principal's base role UNIONed with any custom\n                             roles assigned to the user (resolved against the live\n                             matrix). An env single-admin (no persisted record)\n                             resolves to its synced role.\n\nWildcards are exploded into concrete actions so the guard can match a literal\n``resource:action`` without re-implementing the wildcard rule. Auth-gated only\n(any authenticated principal may read its OWN permissions).",
+        "description": "The CURRENT caller's effective ``resource -> [actions]`` grants: the one map the\nConsole's permission checks (``hasPermission``, ``<Can>``, ``ProtectedRoute``)\nread, so the Console shows exactly what the API allows (Round 14 FX7e, roles-01).\n\nIt is answered by the server's own resolver, never a second copy of it: the\ncaller's view comes from :func:`app.api.deps.resolve_access` (the core of every\n``require_permission`` gate) and each declared ``resource:action`` is listed only\nwhen :meth:`AccessView.allows` grants it. The base role is UNIONed with the\ncustom roles assigned to the user, each role row already carrying its own denies\nand the operator's global per-role denies, so a custom role that grants\n``runbooks:publish`` lists it and one whose deny removes ``runbooks:run`` does\nnot. Writes nothing (a missing grant is not an access denial).\n\nThree modes mirror the server gates:\n  * auth DISABLED          → super_admin (every action) so every surface unlocks.\n  * auth ON, rbac OFF      → super_admin (authenticated == super_admin).\n  * auth ON, rbac ON       → the effective grants above. An env single-admin (no\n                             persisted record) resolves to its synced role.\n\nEvery action is concrete (a wildcard is never sent), and a resource the caller\nholds no action on is left out. Auth-gated only (any authenticated principal may\nread its OWN permissions; an unauthenticated caller gets 401 when auth is on).",
         "operationId": "account_permissions_api_account_permissions_get",
         "responses": {
           "200": {
@@ -18721,6 +19014,7 @@
     },
     "/api/budget/status": {
       "get": {
+        "description": "The AI budget's configuration and its live daily and monthly spend.\n\nNeeds ``models:read``. The spend itself (each window's ``spent``, ``fraction`` and\n``band``, and ``excluded_today``) is AI spend, which ``cost:view`` governs, the\nrule chat's budget fields already follow: for a caller without that grant those\nfields are ``null`` and the caps and settings stay.",
         "operationId": "budget_status_api_budget_status_get",
         "responses": {
           "200": {
@@ -18928,7 +19222,7 @@
     },
     "/api/cases": {
       "get": {
-        "description": "List cases, optionally windowed, sorted, paged and narrowed to a lifecycle group.\n\nThe declared 200 schema is the envelope EVERY caller has always received. A request\nthat engages one of ``sort_field`` / ``sort_order`` / ``status_group`` additionally\nreceives the :class:`CaseListEcho` keys — ``sortable_fields``, ``sort_field``,\n``sort_order``, ``limit_applied``, ``offset_applied``, ``max_offset`` and\n``status_group_applied`` — describing what the server actually applied.\n\nThey are additive and opt-in rather than always present, because a caller that sends\nnone of the new parameters must keep receiving its envelope key for key. They are\ndeliberately not folded into the declared response model: as optional fields there\nthey would be emitted as nulls to every legacy caller, and declaring the extended\nenvelope as a second response model splits the shared ``Case`` component into\nvalidation and serialisation variants, which changes every generated case type.\n\nRound 14 (SPEC §4.6.1): ``rule`` keeps the cases whose ``rule_ids`` hold that exact\nvalue (as stored: never trimmed or case-folded; 1 to 256 characters on one line), the\npopulation the rule sheet's \"Show the N cases\" opens and its case count measures.\n``closed_by`` keeps terminal cases closed by ``agent``, ``analyst``,\n``analyst_policy`` or ``system`` (the exact-aggregation engine's values, and only\nthose; ``system`` also covers older rows with no recorded decider). Both are answered\nby the exact queue scan and echoed as ``rule_applied`` / ``closed_by_applied``; any\nother value is a 400. The free-text ``q`` now also matches a case's rule values.",
+        "description": "List cases, optionally windowed, sorted, paged and narrowed to a lifecycle group.\n\nThe declared 200 schema is the envelope EVERY caller has always received. A request\nthat engages one of ``sort_field`` / ``sort_order`` / ``status_group`` additionally\nreceives the :class:`CaseListEcho` keys — ``sortable_fields``, ``sort_field``,\n``sort_order``, ``limit_applied``, ``offset_applied``, ``max_offset`` and\n``status_group_applied`` — describing what the server actually applied.\n\nThey are additive and opt-in rather than always present, because a caller that sends\nnone of the new parameters must keep receiving its envelope key for key. They are\ndeliberately not folded into the declared response model: as optional fields there\nthey would be emitted as nulls to every legacy caller, and declaring the extended\nenvelope as a second response model splits the shared ``Case`` component into\nvalidation and serialisation variants, which changes every generated case type.\n\nRound 14 (SPEC §4.6.1): ``rule`` keeps the cases whose ``rule_ids`` hold that exact\nvalue (as stored: never trimmed or case-folded; 1 to 256 characters on one line), the\npopulation the rule sheet's \"Show the N cases\" opens and its case count measures.\n``closed_by`` keeps terminal cases closed by ``agent``, ``analyst``,\n``analyst_policy`` or ``system`` (the exact-aggregation engine's values, and only\nthose; ``system`` also covers older rows with no recorded decider). Both are answered\nby the exact queue scan and echoed as ``rule_applied`` / ``closed_by_applied``; any\nother value is a 400. The free-text ``q`` now also matches a case's rule values.\n\nRound 14 (roles-11): for a caller without ``cost:view`` every row's ``token_cost``\n(the case's own AI spend) is ``null``; the rows, counts and echoes are unchanged.",
         "operationId": "list_cases_api_cases_get",
         "parameters": [
           {
@@ -19243,6 +19537,7 @@
     },
     "/api/cases/{case_id}": {
       "get": {
+        "description": "One case. For a caller without ``cost:view`` its ``token_cost`` (the case's own\nAI spend) is ``null`` (Round 14 roles-11); every other field is unchanged.",
         "operationId": "get_case_api_cases__case_id__get",
         "parameters": [
           {
@@ -19524,7 +19819,7 @@
     },
     "/api/cases/{case_id}/export": {
       "get": {
-        "description": "Export a case for handoff/ticketing as JSON or a Markdown report. Returns\n``{filename, content_type, content}`` so the UI can trigger a download.",
+        "description": "Export a case for handoff/ticketing as JSON or a Markdown report. Returns\n``{filename, content_type, content}`` so the UI can trigger a download. The JSON\nleaves ``token_cost`` out (``null``) for a caller without ``cost:view``; the\nMarkdown report carries no spend.",
         "operationId": "case_export_api_cases__case_id__export_get",
         "parameters": [
           {
@@ -21152,7 +21447,7 @@
     },
     "/api/cases/{case_id}/timeline": {
       "get": {
-        "description": "A TYPED ReAct span timeline for a case (the ``TraceSpan`` shape).\n\nAssembled from the already-recorded ``tlsoc-agent-audit`` rows (oldest-first) +\nthe per-case usage/cost ledger. Each audit row becomes ONE span classified by\n``kind`` (invoke_agent | chat | execute_tool | decision) with ``step_index`` /\n``latency`` / ``cost`` / ``tokens`` / ``trusted``. The ``case_manager`` DECISION\nis rendered as a distinct TERMINAL ``decision`` span whose summary shows the exact\n``(verdict, confidence, risk_score, policy clause)`` the deterministic ``decide()``\nproduced — re-derived at read time, mutating nothing (#3 made visible).\n\nTRUSTED agent prose (router/investigator/formatter/decision) vs UNTRUSTED tool/log\npayloads (es_query / tool output) are separated by the per-span ``trusted`` flag\n(#9). NEVER 404s — an unknown / not-yet-investigated case returns empty spans.\n``prompt_excerpt`` text is dropped from a span summary when\n``prefs.trace.include_prompts`` is false (the untrusted-prompt toggle).",
+        "description": "A TYPED ReAct span timeline for a case (the ``TraceSpan`` shape).\n\nAssembled from the already-recorded ``tlsoc-agent-audit`` rows (oldest-first) +\nthe per-case usage/cost ledger. Each audit row becomes ONE span classified by\n``kind`` (invoke_agent | chat | execute_tool | decision) with ``step_index`` /\n``latency`` / ``cost`` / ``tokens`` / ``trusted``. The ``case_manager`` DECISION\nis rendered as a distinct TERMINAL ``decision`` span whose summary shows the exact\n``(verdict, confidence, risk_score, policy clause)`` the deterministic ``decide()``\nproduced, re-derived at read time and mutating nothing (#3 made visible).\n\nTRUSTED agent prose (router/investigator/formatter/decision) vs UNTRUSTED tool/log\npayloads (es_query / tool output) are separated by the per-span ``trusted`` flag\n(#9). NEVER 404s: an unknown or not-yet-investigated case returns empty spans.\n``prompt_excerpt`` text is dropped from a span summary when\n``prefs.trace.include_prompts`` is false (the untrusted-prompt toggle).\n\nThe cost and tokens come from the usage ledger, which ``cost:view`` governs (the\ngrant ``GET /api/usage/summary?case_id=`` needs): for a caller without it the\nledger is not read, every span's ``cost`` and ``tokens`` are ``null`` and so are\n``totals.cost`` and ``totals.tokens``.",
         "operationId": "case_timeline_api_cases__case_id__timeline_get",
         "parameters": [
           {
@@ -22888,9 +23183,182 @@
         "summary": "Diagnostics Precedent Composition"
       }
     },
+    "/api/enrichment/config": {
+      "put": {
+        "description": "Change the enrichment settings of the active stack (module doc).\n\nThe body is a partial of ``EnrichmentConfig`` (``{\"use_spamhaus\": true}``); only\nthe fields sent change. Audited before it is visible (#2, Round 14 SPEC §3.6): a\n``settings.updated`` row naming every changed field is appended first, and a failed\nappend answers ``503 audit_unavailable`` with nothing saved. Off Demo Mode this saves\nthe real settings and the row goes to the real audit log; while Demo Mode is on it\nchanges the Demo sandbox's copy only and the row goes to the Demo audit (SPEC §3.5).\nWhile the settings lock is on it answers ``403`` and saves nothing, with Demo Mode\non or off. Demo Mode turned on or off (or reset) during the save answers ``409\ndemo_mode_changed`` and saves nothing; a save racing another save of the same fields\nis retried from a fresh read and gives up with ``409 settings_conflict``. A body\nthat changes nothing saves nothing and writes no row. Never touches ``decide()``\n(#3).",
+        "operationId": "put_enrichment_config_api_enrichment_config_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "description": "A partial of the enrichment settings: only the fields sent change.",
+                "minProperties": 1,
+                "properties": {
+                  "cache_ttl_seconds": {
+                    "maximum": 2592000.0,
+                    "minimum": 0.0,
+                    "type": "integer"
+                  },
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "fusion_enabled": {
+                    "type": "boolean"
+                  },
+                  "use_abuseipdb": {
+                    "type": "boolean"
+                  },
+                  "use_apivoid": {
+                    "type": "boolean"
+                  },
+                  "use_binaryedge": {
+                    "type": "boolean"
+                  },
+                  "use_censys": {
+                    "type": "boolean"
+                  },
+                  "use_circl_hashlookup": {
+                    "type": "boolean"
+                  },
+                  "use_criminalip": {
+                    "type": "boolean"
+                  },
+                  "use_crowdsec": {
+                    "type": "boolean"
+                  },
+                  "use_crt_sh": {
+                    "type": "boolean"
+                  },
+                  "use_cymru_mhr": {
+                    "type": "boolean"
+                  },
+                  "use_dshield": {
+                    "type": "boolean"
+                  },
+                  "use_emailrep": {
+                    "type": "boolean"
+                  },
+                  "use_geoip": {
+                    "type": "boolean"
+                  },
+                  "use_google_safebrowsing": {
+                    "type": "boolean"
+                  },
+                  "use_greynoise": {
+                    "type": "boolean"
+                  },
+                  "use_hibp": {
+                    "type": "boolean"
+                  },
+                  "use_honeypot": {
+                    "type": "boolean"
+                  },
+                  "use_hybrid_analysis": {
+                    "type": "boolean"
+                  },
+                  "use_ipdata": {
+                    "type": "boolean"
+                  },
+                  "use_ipinfo": {
+                    "type": "boolean"
+                  },
+                  "use_ipqualityscore": {
+                    "type": "boolean"
+                  },
+                  "use_maltiverse": {
+                    "type": "boolean"
+                  },
+                  "use_malwarebazaar": {
+                    "type": "boolean"
+                  },
+                  "use_metadefender": {
+                    "type": "boolean"
+                  },
+                  "use_netlas": {
+                    "type": "boolean"
+                  },
+                  "use_onionoo": {
+                    "type": "boolean"
+                  },
+                  "use_otx": {
+                    "type": "boolean"
+                  },
+                  "use_pulsedive": {
+                    "type": "boolean"
+                  },
+                  "use_rdap": {
+                    "type": "boolean"
+                  },
+                  "use_robtex": {
+                    "type": "boolean"
+                  },
+                  "use_securitytrails": {
+                    "type": "boolean"
+                  },
+                  "use_shodan": {
+                    "type": "boolean"
+                  },
+                  "use_shodan_internetdb": {
+                    "type": "boolean"
+                  },
+                  "use_spamhaus": {
+                    "type": "boolean"
+                  },
+                  "use_spur": {
+                    "type": "boolean"
+                  },
+                  "use_threatfox": {
+                    "type": "boolean"
+                  },
+                  "use_urlhaus": {
+                    "type": "boolean"
+                  },
+                  "use_urlscan": {
+                    "type": "boolean"
+                  },
+                  "use_virustotal": {
+                    "type": "boolean"
+                  },
+                  "use_xforce": {
+                    "type": "boolean"
+                  }
+                },
+                "title": "EnrichmentConfigEdit",
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EnrichmentConfigSaveResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Put Enrichment Config"
+      }
+    },
     "/api/enrichment/lookup": {
       "get": {
-        "description": "Enrich one indicator across the capable, enabled providers (cached, fenced).\n\nThe fused reputation uses the byte-identical default ``max()`` (#3 untouched);\nevery provider-returned string is FENCED as UNTRUSTED before it is returned (#9).",
+        "description": "Enrich one indicator across the capable, enabled providers (cached, fenced).\n\nThe fused reputation uses the byte-identical default ``max()`` (#3 untouched);\nevery provider-returned string is FENCED as UNTRUSTED before it is returned (#9).\n``not_queried`` says why no provider was asked: ``\"demo_mode\"`` (Demo Mode never\nqueries one) or ``\"disabled\"`` (the master switch is off); ``None`` otherwise.",
         "operationId": "enrichment_lookup_api_enrichment_lookup_get",
         "parameters": [
           {
@@ -22952,7 +23420,7 @@
     },
     "/api/enrichment/providers": {
       "get": {
-        "description": "Every registered provider's manifest + its current config/key state.\n\nReturns booleans only for secrets (``configured`` per field + an overall\n``key_present``) — never a secret value (#10).",
+        "description": "Every registered provider's manifest + its current config/key state.\n\nReturns booleans only for secrets (``configured`` per field + an overall\n``key_present``): never a secret value (#10). The switch states are the active\nstack's enrichment settings, the same ones ``PUT /api/enrichment/config`` changes\n(module doc): in Demo Mode the sandbox's copy, never the execution copy whose\nlookups are forced off. ``demo_active`` says that no provider is queried while\nDemo Mode is on and that a change here lasts only until it ends; ``demo_run_id``\nnames that Demo run (``None`` off Demo Mode).",
         "operationId": "list_enrichment_providers_api_enrichment_providers_get",
         "responses": {
           "200": {
@@ -22972,7 +23440,7 @@
     },
     "/api/enrichment/providers/{name}/secrets": {
       "post": {
-        "description": "Set/clear a provider's SECRET-tier key(s) IN MEMORY (env/in-memory only).\n\nValues are written onto the in-process ``Secrets`` object (never persisted, never\nreturned, #10). Only the keys the provider's manifest declares may be set — an\nunknown key is a 400 so a typo can never silently set a dead field.",
+        "description": "Set/clear a provider's SECRET-tier key(s) IN MEMORY (env/in-memory only).\n\nValues are written onto the in-process ``Secrets`` object (never persisted, never\nreturned, #10). Only the keys the provider's manifest declares may be set: an\nunknown key is a 400 so a typo can never silently set a dead field.\n\nRound 14 (SPEC §3.6, §4.5.4): audited before the key changes, like the source and\nnotification channel credentials. An ``enrichment.secrets_updated`` row naming each\nkey (``secret: true``, never its value) goes to the real audit log first, with Demo\nMode on or off: the keys are real secrets, never part of the Demo copy. A failed\nappend answers ``503 audit_unavailable`` and no key changes. A body with no key\nchanges nothing and writes no row.",
         "operationId": "set_enrichment_secrets_api_enrichment_providers__name__secrets_post",
         "parameters": [
           {
@@ -23078,6 +23546,7 @@
     },
     "/api/feedback/stats": {
       "get": {
+        "description": "Analyst feedback agreement over the newest cases, a metrics read behind\n``metrics:view`` like ``GET /api/metrics`` (whose ``feedback`` part it repeats).",
         "operationId": "feedback_stats_route_api_feedback_stats_get",
         "responses": {
           "200": {
@@ -23438,6 +23907,9 @@
             },
             "description": "The verified artifact: a ZIP for a data export, a CSV or JSON Lines file for an audit export. Every download is audited first."
           },
+          "403": {
+            "description": "job_artifact_permission_lost: the job needs a grant its owner no longer holds (an audit export needs audit:export and audit:view)"
+          },
           "422": {
             "content": {
               "application/json": {
@@ -23449,7 +23921,7 @@
             "description": "Validation Error"
           },
           "503": {
-            "description": "audit_unavailable: the download could not be audited"
+            "description": "audit_unavailable: the download could not be audited; or job_permission_unverifiable: the job's grants could not be confirmed just now (try again)"
           }
         },
         "summary": "Job Artifact",
@@ -24163,6 +24635,7 @@
     },
     "/api/metrics": {
       "get": {
+        "description": "The Metrics page's operational rollup. Needs ``metrics:view``, like every other\nmetrics read. Its ``cost`` part is the AI spend of the window, which ``cost:view``\ngoverns: for a caller without that grant it is ``{}``.",
         "operationId": "metrics_api_metrics_get",
         "parameters": [
           {
@@ -24204,7 +24677,7 @@
     },
     "/api/metrics/agent-improvement": {
       "get": {
-        "description": "Aggregate-only evidence of agent-assisted triage effectiveness.\n\nThe response reports analyst-reported verdict agreement, material correction\nrate, human review turnaround, recorded case-associated cost, observed elapsed-\nclosure differences, confirmed-positive case mix, alert volume, and non-causal\nthreshold-tuning context. Unsupported true-positive-alert yield and source-gap\nguidance remain explicitly unavailable. It never emits a synthetic score, row or\ncase identifiers, raw evidence, model calls, or writes; a truncated, mix-shifted,\nguardrail-unevaluable, or undersized cohort is explicitly classified as\ninsufficient evidence. Reporting remains advisory and is never read by the\ndeterministic case decision (#3).",
+        "description": "Aggregate-only evidence of agent-assisted triage effectiveness.\n\nNeeds ``metrics:view``. Its recorded case-associated AI cost is AI spend, which\n``cost:view`` governs: for a caller without that grant the usage ledger is not\nread and every ``recorded_case_cost`` block (the headline one and each period\ncomparison's) is ``unavailable`` with the reason that the grant is required.\n\nThe response reports analyst-reported verdict agreement, material correction\nrate, human review turnaround, recorded case-associated cost, observed elapsed-\nclosure differences, confirmed-positive case mix, alert volume, and non-causal\nthreshold-tuning context. Unsupported true-positive-alert yield and source-gap\nguidance remain explicitly unavailable. It never emits a synthetic score, row or\ncase identifiers, raw evidence, model calls, or writes; a truncated, mix-shifted,\nguardrail-unevaluable, or undersized cohort is explicitly classified as\ninsufficient evidence. Reporting remains advisory and is never read by the\ndeterministic case decision (#3).",
         "operationId": "metrics_agent_improvement_api_metrics_agent_improvement_get",
         "parameters": [
           {
@@ -31176,6 +31649,7 @@
     },
     "/api/usage/summary": {
       "get": {
+        "description": "AI spend and token use over the window, or for one case with ``case_id``.\nNeeds ``cost:view``, the grant every view of AI spend needs.",
         "operationId": "usage_summary_api_usage_summary_get",
         "parameters": [
           {

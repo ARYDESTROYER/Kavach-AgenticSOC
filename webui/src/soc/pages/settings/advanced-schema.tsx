@@ -76,6 +76,11 @@ const CURATED_SECTIONS: ReadonlySet<string> = new Set([
   // sections now.
   'batch',
   'runbooks',
+  // The Enrichment section edits every `enrichment` knob through its own save, which
+  // follows the active stack (the Demo sandbox's copy while Demo Mode is on, wro-01). A
+  // second editor here would save the real settings through the page save instead, so the
+  // two would show different values for one switch in Demo Mode.
+  'enrichment',
 ]);
 
 /**

@@ -366,7 +366,8 @@ const DEFS: WidgetDef[] = [
     defaultSize: { w: 4, h: 4, minW: 2, minH: 3 },
     sources: ['metrics'],
     requests: reads({ key: 'metrics' }),
-    requires: CASES_READ,
+    // GET /api/metrics needs metrics:view (Round 14 second acceptance pass, roles-04).
+    requires: METRICS_VIEW,
     caseDerived: true,
     configFields: [TITLE_FIELD],
   },

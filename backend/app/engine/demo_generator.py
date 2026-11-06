@@ -1650,16 +1650,20 @@ def _demo_audit_row(case_id: str, label: str, ts: str, action: str, actor: str, 
 def demo_evidence_audit_row(run: Any, case: Any, step_id: str, result: Any) -> dict[str, Any]:
     """The ``step.evidence_collected`` row of one stored lookup result, as the live
     engine writes it (``runbook_runs._store_lookup``), dated when the lookup ran: the
-    system actor for an automatic lookup, else the person who ran it."""
+    system actor for an automatic lookup, else the person who ran it. The summary
+    names the lookup on its step by the step's title in the run's version, as the live
+    row does."""
     from ..models import RUNBOOK_SYSTEM_RUNNER
     from .runbook_runs import lookup_evidence_summary
 
     case_id = str(getattr(case, "case_id", "") or run.case_id)
     automatic = result.ran_by == RUNBOOK_SYSTEM_RUNNER
+    snapshot = getattr(run, "snapshot", None)
+    step = next((s for s in getattr(snapshot, "steps", None) or [] if s.id == step_id), None)
     return _demo_audit_row(
         case_id, str(getattr(case, "case_number", "") or ""), str(result.ran_at or run.attached_at),
         "step.evidence_collected", result.ran_by or "analyst", "system" if automatic else "human",
-        lookup_evidence_summary(result),
+        lookup_evidence_summary(result, step),
         {"run_id": run.run_id, "step_id": step_id, "tool": result.tool, "status": result.status,
          "count": result.count, "count_relation": result.count_relation},
     )
@@ -1710,13 +1714,27 @@ def demo_runbook_audit_rows(run: Any, case: Any) -> list[dict[str, Any]]:
         rows.append(row(str(first.started_at or first.completed_at or run.attached_at), "run.started",
                         people[0] if people else "analyst", "human",
                         f"Work started on runbook {title}.", {"run_id": run.run_id}))
+    from ..models import StepState
+    from .runbook_runs import step_change_summary
+
+    steps_by_id = {s.id: s for s in getattr(run.snapshot, "steps", None) or []}
     for step_id, st in worked:
         action = ("step.decision_recorded" if st.decision else
                   "step.action_recorded" if st.action_record else "step.updated")
+        # Worded as the live engine words the same change: the step by its title and
+        # what changed, the id kept in ``tool_input`` (second acceptance pass, wrb-11).
+        step = steps_by_id.get(step_id)
+        ruled: list[str] = []
+        if step is not None and isinstance(st.decision, dict):
+            for option in getattr(step, "options", None) or []:
+                if option.id == st.decision.get("option_id"):
+                    ruled = [t for t in option.marks_not_applicable
+                             if t in ruled_out and getattr(run.steps.get(t), "status", "") == "not_applicable"]
+        summary = (step_change_summary(step, step_id, StepState(), st, action=action, ruled_out=ruled)
+                   if step is not None else f"Runbook step {step_id[:64]} updated.")
         rows.append(row(str(st.completed_at or run.completed_at or run.attached_at), action,
                         st.completed_by or (people[0] if people else "analyst"), "human",
-                        f"Runbook step {step_id[:64]} updated.",
-                        {"run_id": run.run_id, "step_id": step_id}))
+                        summary, {"run_id": run.run_id, "step_id": step_id}))
     for step in getattr(run.snapshot, "steps", None) or []:
         state = run.steps.get(step.id)
         for item in (state.evidence if state is not None else []):

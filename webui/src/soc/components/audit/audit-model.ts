@@ -10,6 +10,7 @@
 import type { NavOpts } from '@/lib/types';
 import type {
   AuditActorType,
+  AuditChange,
   AuditFilters,
   AuditOutcome,
   AuditPageQuery,
@@ -565,13 +566,171 @@ export function recordSentence(record: AuditRecord): string {
   return target ? `${record.event_label}: ${target}.` : `${record.event_label}.`;
 }
 
-/** "Max parallel" from `chat_agent.limits.max_parallel` or `sources[wazuh].poll_interval`. */
-export function fieldLabel(path: string): string {
-  const last = path.split('.').filter(Boolean).pop() ?? path;
-  const bare = last.replace(/\[[^\]]*\]$/, '');
-  const words = bare.replace(/[_-]+/g, ' ').trim();
-  if (!words) return path;
-  return words.charAt(0).toUpperCase() + words.slice(1);
+/** One part of a change path: `steps[lookup]` is `{ name: 'steps', key: 'lookup' }`. */
+interface PathPart {
+  name: string;
+  key: string | null;
+}
+
+/**
+ * The parts of a recorded change path (`steps[pick].options[noise].label`). A dot inside
+ * brackets belongs to the item's id (`sources[web.proxy].url`), never splits the path.
+ */
+function pathParts(path: string): PathPart[] {
+  const parts: PathPart[] = [];
+  let name = '';
+  for (let i = 0; i < path.length; i += 1) {
+    const ch = path[i];
+    if (ch === '[') {
+      const end = path.indexOf(']', i + 1);
+      if (end < 0) {
+        name += path.slice(i);
+        break;
+      }
+      parts.push({ name, key: path.slice(i + 1, end) });
+      name = '';
+      i = end;
+      if (path[i + 1] === '.') i += 1;
+    } else if (ch === '.') {
+      if (name) parts.push({ name, key: null });
+      name = '';
+    } else {
+      name += ch;
+    }
+  }
+  if (name) parts.push({ name, key: null });
+  return parts;
+}
+
+/** Initialisms a field name holds in lower case (`ip_source`, `config.url`). */
+const INITIALISMS = new Set(['api', 'dns', 'ecs', 'http', 'https', 'id', 'ip', 'llm', 'mfa', 'ocsf', 'sla', 'smtp', 'sso', 'ttl', 'uri', 'url']);
+
+/** `poll_interval` reads "poll interval"; `ip_source` reads "IP source". */
+function nameWords(name: string): string {
+  return name
+    .replace(/[_-]+/g, ' ')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((w) => (INITIALISMS.has(w.toLowerCase()) ? w.toUpperCase() : w))
+    .join(' ');
+}
+
+/** "step" from `steps`, "query" from `retrieval_queries`: one item of a keyed list. */
+function itemNoun(name: string): string {
+  const words = nameWords(name);
+  if (/ies$/i.test(words)) return `${words.slice(0, -3)}y`;
+  if (/(ss|x|ch|sh)es$/i.test(words)) return words.slice(0, -2);
+  if (/[^s]s$/i.test(words)) return words.slice(0, -1);
+  return words;
+}
+
+const capitalised = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);
+
+/** The longest item name a label shows before it is cut (the full name is in the row). */
+const ITEM_NAME_MAX = 40;
+
+/**
+ * The words for one item of a keyed list: its recorded name in quotes when the row
+ * carries it (`“Tell the host owner”`), else its id; a position key (`#2`, a draft
+ * that repeated a step id) reads as the number.
+ */
+function itemName(path: string, key: string, names: ReadonlyMap<string, string> | undefined): string {
+  const named = names?.get(path);
+  if (named) {
+    if (named.length <= ITEM_NAME_MAX) return `“${named}”`;
+    // Cut at a word when one ends in the second half, never inside a word.
+    const cut = named.slice(0, ITEM_NAME_MAX - 1);
+    const space = cut.lastIndexOf(' ');
+    return `“${(space > ITEM_NAME_MAX / 2 ? cut.slice(0, space) : cut).trimEnd()}…”`;
+  }
+  return key.startsWith('#') ? key.slice(1) : key;
+}
+
+/**
+ * A recorded field in words. A plain path reads as its last name: "Max parallel" from
+ * `chat_agent.limits.max_parallel`. A path through a keyed list keeps which item it is,
+ * so two steps' titles never read alike: "Step lookup: title" from `steps[lookup].title`,
+ * "Step pick, option noise: label" from `steps[pick].options[noise].label`, and "Source
+ * wazuh: poll interval". `names` gives an item's recorded name by its path
+ * (`steps[lookup]` to "Sign-ins in the last 7 days"; see {@link changeLabels}), shown in
+ * its place. A row for the item itself (`steps[record]`) names the item, and says it was
+ * added or removed when `sides` has one side empty.
+ */
+export function fieldLabel(
+  path: string,
+  names?: ReadonlyMap<string, string>,
+  sides?: { before: string | null; after: string | null },
+): string {
+  const parts = pathParts(path);
+  if (!parts.length) return path;
+  let lastKeyed = -1;
+  parts.forEach((p, i) => {
+    if (p.key !== null) lastKeyed = i;
+  });
+  if (lastKeyed < 0) {
+    const words = nameWords(parts[parts.length - 1].name);
+    return words ? capitalised(words) : path;
+  }
+  // Each keyed item along the path, by its path so far (`steps[pick]`), as "step pick".
+  const items: string[] = [];
+  let prefix = '';
+  parts.forEach((p, i) => {
+    prefix = prefix ? `${prefix}${p.name ? `.${p.name}` : ''}` : p.name;
+    if (p.key === null) return;
+    prefix = `${prefix}[${p.key}]`;
+    const self = i === parts.length - 1;
+    // The item's own row carries its name as the value, so the label keeps its id.
+    const name = self ? (p.key.startsWith('#') ? p.key.slice(1) : p.key) : itemName(prefix, p.key, names);
+    const noun = itemNoun(p.name);
+    items.push(noun ? `${noun} ${name}` : name);
+  });
+  const context = capitalised(items.join(', '));
+  if (lastKeyed === parts.length - 1) {
+    if (sides && sides.before !== null && sides.after === null) return `${context} removed`;
+    if (sides && sides.before === null && sides.after !== null) return `${context} added`;
+    return context;
+  }
+  // The names after the last item, without a generic `config` wrapper: "lookup window".
+  const tail = parts
+    .slice(lastKeyed + 1)
+    .filter((p, i, all) => !(p.name === 'config' && i < all.length - 1))
+    .map((p) => nameWords(p.name))
+    .filter(Boolean)
+    .join(' ');
+  return tail ? `${context}: ${tail}` : context;
+}
+
+/** Leaf names that hold an item's name (a step's `title`, an option's `label`). */
+const ITEM_NAME_FIELDS = new Set(['title', 'label', 'name']);
+
+/**
+ * The label of every change in a row, in order (the inspector's "What changed"). An item
+ * the row names, by its own added or removed entry or its title, label or name entry
+ * (the newer value when it changed), is called by that name in its other entries.
+ */
+export function changeLabels(changes: readonly AuditChange[]): string[] {
+  const names = new Map<string, string>();
+  const text = (c: AuditChange) => {
+    if (c.secret) return null;
+    const after = c.after?.trim();
+    const before = c.before?.trim();
+    return after || before || null;
+  };
+  // A title, label or name entry first: it is the item's name even when the item's own
+  // entry is not in the row.
+  for (const c of changes) {
+    const dot = c.field.lastIndexOf('.');
+    if (dot < 0 || !c.field.slice(0, dot).endsWith(']') || !ITEM_NAME_FIELDS.has(c.field.slice(dot + 1))) continue;
+    const value = text(c);
+    if (value && !names.has(c.field.slice(0, dot))) names.set(c.field.slice(0, dot), value);
+  }
+  for (const c of changes) {
+    if (!c.field.endsWith(']')) continue;
+    const value = text(c);
+    if (value && !names.has(c.field)) names.set(c.field, value);
+  }
+  return changes.map((c) => fieldLabel(c.field, names, c));
 }
 
 /**

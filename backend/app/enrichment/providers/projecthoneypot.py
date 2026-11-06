@@ -82,12 +82,12 @@ class ProjectHoneypotProvider(EnrichmentProvider):
                 "Set TLSOC_HONEYPOT_ACCESS_KEY in .env (compose maps it to "
                 "HONEYPOT_ACCESS_KEY), or paste it in this card (in-memory until "
                 "restart).",
-                "Flip this provider's toggle ON. Lookups are DNS queries — the "
+                "Flip this provider's toggle ON. Lookups are DNS queries, so the "
                 "backend host needs outbound DNS resolution.",
             ],
             example=(
                 "Classifies a web-facing source IP as a known comment spammer or "
-                "email harvester with a 0..255 threat score — ideal for cutting "
+                "email harvester with a 0..255 threat score, ideal for cutting "
                 "through noisy WAF and form-abuse alerts."
             ),
         )

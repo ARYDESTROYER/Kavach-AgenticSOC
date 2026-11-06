@@ -29,7 +29,8 @@ vi.mock('sonner', () => ({ toast: toastMock, Toaster: () => null }));
 
 const apiMocks = vi.hoisted(() => ({
   auth: { me: vi.fn() },
-  roles: { get: vi.fn() },
+  // The effective grants the AuthProvider reads (GET /api/account/permissions).
+  account: { permissions: vi.fn() },
   prefs: { effective: vi.fn(), putUser: vi.fn() },
   dashboards: { list: vi.fn(), create: vi.fn(), update: vi.fn(), remove: vi.fn() },
 }));
@@ -77,9 +78,12 @@ function board(id: string, name: string, widgets: number, updatedAt?: string): D
 
 function authOff() {
   apiMocks.auth.me.mockResolvedValue({ authenticated: false, auth_enabled: false, user: null });
-  apiMocks.roles.get.mockResolvedValue({ matrix: {}, rbac_enabled: false });
+  apiMocks.account.permissions.mockResolvedValue({
+    authenticated: false, role: 'super_admin', custom_roles: [], rbac_enabled: false, permissions: {},
+  });
 }
 
+/** Sign in as `role` holding exactly `grants` (the server's effective grants). */
 function authAs(role: string, grants: Record<string, string[]>, extra: Record<string, unknown> = {}) {
   apiMocks.auth.me.mockResolvedValue({
     authenticated: true,
@@ -87,7 +91,9 @@ function authAs(role: string, grants: Record<string, string[]>, extra: Record<st
     user: { username: 'ana', role },
     ...extra,
   });
-  apiMocks.roles.get.mockResolvedValue({ matrix: { [role]: grants }, rbac_enabled: true });
+  apiMocks.account.permissions.mockResolvedValue({
+    authenticated: true, role, custom_roles: [], rbac_enabled: true, permissions: grants,
+  });
 }
 
 function renderLibrary(hash = '#/dashboards') {

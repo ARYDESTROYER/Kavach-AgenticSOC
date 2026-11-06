@@ -3569,9 +3569,18 @@ built" pointer.
   source maps also attribute FX5p +187 B (`case-tabs.ts` +141, `router.tsx` +46); the rest is within
   ±18 B of noise. FX6 added no entry script bytes (the entry stylesheet grew 168 B with FX6h's
   `nav.css`, which the budget does not count): the r9b-fx6-complete gate build measured 337,215 B
-  again, 0 B against `44efc6e`. WP-GEN re-measures the final tree
-  and decides whether to rebase `PRE_REVAMP_ENTRY_BYTES`, recording the figure here and in
-  AGENTS.md "Round 14 baseline".
+  again, 0 B against `44efc6e`. The FX7 packages and their integration measured 337,163 B
+  (gate run r10b-fx7-complete and the integration build, `build-int2`), 77 B inside the budget
+  and 52 B under the 337,215 B of the tree before them; the integration added no entry script
+  bytes (its Console changes are all in lazy chunks), so no rebase. Shares measured on separate
+  snapshots: FX7e `lib/api.ts` +168 B (the wrong-password wording and the revoke-all bounce),
+  `auth.tsx` -76 B and `ReauthDialog.tsx` -17 B; FX7g `registry.tsx` about -187 B (one shared
+  object per repeated permission). The optional explicit `grantsUnknown` flag on the auth
+  context (FX7g-fix) measured +18 B and was left out: `PageAccess` derives the same state from
+  the context. The final gates measured the integrated tree at 337,163 B again (§11.4 "Final
+  gates"): 947 B over the 336,216 B baseline, 77 B inside the budget and 62,837 B under the
+  ceiling. **Decision: no rebase**; the figure is in AGENTS.md "Round 14 baseline", and the 77 B
+  left means the next first-paint addition is likely to need its own bytes found first.
 
 #### Console grammar, navigation and pages (W2a, W2b, W3, W4a, W8a, W8b, W9a, W9b, FX3wa, FX3wb, FX3wc, FX5n, FX5p, FX6s, FX6t)
 
@@ -4029,7 +4038,7 @@ built" pointer.
   digest keeps the lines that carry cases first, in the chart's order, and names the omitted lines
   that measured zero (`zero_series`).
 
-#### Runbooks (A3, A7a, A7b, A7c, A8a, A8b, A8c, FX1, FX2b, FX3b, FX3b2, W7a, W7b, FX5b, FX5m, FX5r)
+#### Runbooks (A3, A7a, A7b, A7c, A8a, A8b, A8c, FX1, FX2b, FX3b, FX3b2, W7a, W7b, FX5b, FX5m, FX5r, FX7a, FX7c)
 
 - **Lookup field names (A3, refines §4.10.8).** Seven logical names (`ip`, `user`, `host`, `rule`,
   `rule_name`, `severity`, `action`) mean the source's mapped field; any other name is a physical
@@ -4250,8 +4259,121 @@ built" pointer.
 - **Export and metrics (A8b).** The data export manifest is schema 2 with the runbook groups;
   `case_runbook_runs` is listed with `rows_dropped` (run documents are not exported as rows).
   `GET /api/metrics` carries `runbook_usage`; `playbook_usage` is deprecated.
+- **The editor after the second acceptance pass (FX7a; wrb-01, wrb-02, wrb-03, wrb-04, wrb-06,
+  wrb-07, roles-08).** Reload after a draft save conflict loads the other person's version and
+  drops the stale working copy instead of keeping it under the newer revision (wrb-01). A retired
+  runbook opens read only on `RunbookDetail.retired`, with Restore (wrb-02). Choosing a criterion
+  from Add condition opens its picker and the picker stays open; on close it returns focus to its
+  opener only when focus would otherwise be lost (the page body, a removed element or the picker
+  itself), so a click on another field keeps that field's focus; Done first adds a value typed but
+  not yet added (a refused one keeps the picker open, with the error as the field's description
+  and focus on the field), while Escape and a click elsewhere add nothing (wrb-03). The reason a
+  publisher gives when sending a version back reaches the author: the governance strip names the
+  latest one ("Sent back by Asha on Nov 5, 2026") and History shows them on every entry, from
+  `RunbookVersionListItem.review_notes` (wrb-04). Each editor write is announced once, by its
+  toast (wrb-06). "Fill with <case>" in the analyst preview is soft-disabled while it reads the
+  case, so it keeps focus, and a refused import keeps its dialog open with focus on the Markdown,
+  whose description is the message, read once (wrb-07). `#/runbooks?id=new` shows a refusal to a
+  viewer without `runbooks:manage` instead of an empty editor (roles-08).
+- **The run inside a case after the second acceptance pass (FX7c; wrb-06, wrb-07, wrb-09, wrb-10,
+  wrb-11).** Approve moves focus to the step's "Approved by <name> at <time>." line, and the tab's
+  live region says once "Step N approved. Next, step M: <title>" (or "All required steps are
+  done."); a refused approval keeps focus on Approve (wrb-07). The version switch is announced by
+  its toast only, and the "This step changed since you opened it. Showing the latest." note is
+  plain text the live region reads once (wrb-06). A reason dialog says "Give a reason." only after
+  an empty submit, and the Runbook actions and narrow step menus (Add runbook, Switch version,
+  Abandon run) do not take focus back as they open a dialog (wrb-09). The Console words a role as
+  the server does (`runbooks/run/roles.ts`): `role_labels` first, then the Console's role labels,
+  then the role's own words by the server's `_humanized` rule counted in code points, with the
+  same article rule, Unicode word end and case fold (`run/model.ts` `roleKey` follows Python's
+  `str.casefold` and whitespace, which also decides whether Approve is shown); a differential run
+  against the backend over 63,530 inputs found no difference (wrb-10). The activity feed shows the
+  server's step summaries as written and words only rows stored before by their step id (wrb-11).
 
-#### API contract changes beyond §4 (B1, FX3b2)
+#### Roles, page access and AI spend (FX7e, FX7f, FX7g, the integration change)
+
+- **The Console reads the server's own access check (FX7e, roles-01).** `GET
+  /api/account/permissions` is answered by `deps.resolve_access`, the core of every
+  `require_permission` gate: each declared `resource:action` is listed only when
+  `AccessView.allows` grants it, so the base role, every assigned custom role, each role's denies
+  and the operator's per-role denies all count, every action is concrete (never `*`) and a
+  resource with no allowed action is left out. `hasPermission`, `<Can>` and `ProtectedRoute` read
+  only this map, never the role matrix, so a custom role that grants `runbooks:publish` or
+  `audit:export` shows its actions and a deny hides what it removes. `AuthProvider.refresh()`
+  reads `/api/auth/me` and the grants and publishes both in one render, so no render shows a
+  session before its grants. When the grants cannot be read, every restricted check answers no
+  (`super_admin` excepted). With auth or RBAC off the route answers `super_admin` and every action.
+- **The fresh sign-in says what it is for (FX7e, roles-12).** `request()` hands the gate a
+  `reauthPurpose` and the dialog shows it, else "Sign in again to confirm this change.": "Sign in
+  again to export audit events." (`AUDIT_EXPORT_REAUTH_PURPOSE`, also the audit export dialog's
+  sentence when the sign-in is cancelled) and "Sign in again to start this export." for a data
+  export. A wrong password reads "That password is not correct. Try again." (`reason
+  bad_password`; a server message still wins), and a `tv_mismatch` answer (every session revoked)
+  skips the dialog and returns to the sign-in page with its notice.
+- **A page or read the role cannot use is not offered (FX7g; roles-02 to roles-07, roles-11).**
+  `pages/PageAccess.tsx` wraps Metrics, Agent effectiveness, Cost, Sources and Logs: on a typed or
+  shared URL without the grant the page keeps its title, shows one refusal and sends no request.
+  The registry requires `sources:read` for Sources and `cost:view` for Cost, in the menu and on
+  the route. The Cyber Defence Center sends each read only with its grant (`metrics:view` for the
+  totals, trends, flow and posture, `cost:view` for LLM spend, `sources:read` for ingest
+  coverage); without `metrics:view` one compact notice replaces the strip and the panels that
+  need it are left out, and a 403 on a gated read marks the grant as missing, is not retried and
+  reloads the shell's grants once (no Retry for a refusal). Case Manager and Case detail read `GET
+  /api/users` only with `users:manage`; Case Manager offers row selection, Select visible and the
+  selection keys only with a grant that acts on cases (`cases:write`, `assign`, `reinvestigate` or
+  `close`), and its shortcut sheet lists only the keys the role can use. Reinvestigate (menu, R key and model list) needs `cases:reinvestigate`, each bulk-bar
+  action its own grant. A forbidden Settings deep link stays and shows "Access restricted" under
+  the section title. While the grants failed to load, `PageAccess`, Settings and Jobs say "Your
+  permissions could not be loaded." with a Retry, never "You do not have access". On the
+  Dashboards boards the `metrics` key and the Active risk index need `metrics:view`, as `GET
+  /api/metrics` does (the integration change). Settings opens a deep link with its rail item in
+  view (composites-01), and the save bar counts changed values, not sections, by the audit's
+  counting rules (`settings-dirty.ts`, wro-02).
+- **Metrics and AI spend gates (FX7f; roles-04, roles-11).** `GET /api/metrics` and `GET
+  /api/feedback/stats` need `metrics:view`, and the metrics payload's `cost` is `{}` without
+  `cost:view`; `GET /api/usage/summary` needs `cost:view`. Without `cost:view`, `GET
+  /api/budget/status` keeps the caps and settings for `models:read` and answers `null` for each
+  window's `spent`, `fraction` and `band` and for `excluded_today`; `GET /api/cases/{id}/timeline`
+  does not read the usage ledger and answers `null` span `cost` and `tokens` and `null` totals;
+  `GET /api/metrics/agent-improvement` does not read the ledger and every `recorded_case_cost`
+  block (the headline and each period comparison) is `unavailable` with the reason "AI spend
+  needs the cost:view permission". The Console shows these as withheld, never as figures: the
+  budget card says "You do not have access to AI spend." with the ceiling and no band, the agent
+  trace shows no cost, and Agent effectiveness shows the reason in place of $0.00 (the
+  integration change). A case's own spend follows the same rule (the integration fix): every
+  route that returns a whole case (`GET /api/cases`, `GET /api/cases/{id}`, `GET /api/scans`,
+  the case JSON export, `POST /api/investigate` and each single-case action, feedback, comment,
+  tags, assignment, investigate and reinvestigate response) answers `token_cost: null` without
+  `cost:view` (`routes._case_spend_visible`, `_withhold_case_spend`; the stored figure is
+  unchanged, and the `Case` schema documents the field as nullable), and the Console leaves the
+  investigation cost out of the facts rail, the Overview profile line, the Reinvestigate dialog
+  and Entity investigation (`test_spend_gates.py`, `FactsRail.test.tsx`).
+- **Job files and refusal rows (FX7f; roles-02, roles-09).** A job file downloads only while its
+  owner holds every grant its job needed, checked against the session's access and the stored
+  account's base role: a real loss answers `403 job_artifact_permission_lost` and writes an Access
+  denied row naming only the missing grants and the role that lacks them; when those grants are
+  held but the strict live check still refuses, `503 job_permission_unverifiable` ("The download
+  could not be checked just now. Try again."), with no row. The Jobs page turns Download off with
+  its reason once the grant is gone and words a 403 per file type. A request refused for a
+  missing grant writes an Access denied row (permission, role, method and route template); a
+  refused read is coalesced per person, permission and route in a five-minute window and the next
+  row says how many refusals it covers, a refused write is recorded every time, and a permission
+  check alone records nothing. Rows written in Demo Mode go to `control_audit`.
+- **Settings rows name their section (FX7f, wro-03).** A save in Discounted inference is recorded
+  with the target "Discounted inference" (`settings_schema` labels `batch` so), the name the
+  Console and the audit search use.
+- **Live re-measure fixes (the integration).** The live re-measure of the 25 second-pass findings
+  on the integrated tree found all 25 fixed and three small new issues, each fixed with a test.
+  The Audit inspector names a field inside a list by its item: a runbook step by the title the
+  row records, else by its id ("Step lookup: instructions"); a step the change added or removed
+  reads "Step record-outcome added" or "removed"; an empty value reads "Empty" and spaces alone
+  "Spaces only". The same rule names list items on every row (a source setting reads "Source
+  wazuh: poll interval"). Preview as analyst announces once, politely, that it filled from a case
+  and which values it lacks, and a failed case read says "Could not read that case. Try again."
+  The enrichment provider descriptions, setup steps and examples carry no em dashes
+  (`test_enrichment_provider_copy.py`).
+
+#### API contract changes beyond §4 (B1, FX3b2, FX7a, FX7b, FX7d)
 
 - **Generated contract.** B1 regenerated `webui/openapi.json` and `api-types.gen.ts`, removed the
   retired `Playbook*`, `Runbook*` and `AuditRecord` client types and methods from `types.ts` and
@@ -4264,6 +4386,76 @@ built" pointer.
   `migrated_procedures: {legacy id: runbook id}` (the migration marker's map for the procedure
   sources; empty before the migration or when the marker cannot be read), filtered to runbooks
   the viewer can see; the Console's automation target display reads it.
+- **`RunbookDetail.retired` (FX7b, wrb-02).** `GET /api/runbooks/{id}` and every library write
+  answer `retired: RunbookVersionDoc | None`: the retired version of a retired runbook (its last
+  published text, `retired_by` and `retired_at`), readable by every reader as published history
+  is, and `None` otherwise and after Restore. The editor opens a retired runbook read only on it,
+  with Restore.
+- **`role_labels` on `CaseRunbooks` and `RunbookRunUpdate` (FX7b, wrb-10).** `{role: label}` for
+  every role the runs' steps name (`approval_role`, `owner_role`, a pending approval's
+  `required_role`): a built-in role by the label the Console's role pickers show
+  (`soc_manager` is "SOC manager"; a test keeps the backend's labels equal to `ROLE_LABELS`), a
+  custom role read as `humanizeToken` reads it. Approval refusals word the role the same way with
+  its article by sound ("Only a SOC manager other than Admin can approve.", "an MSSP lead", "a
+  user admin", "a USB admin").
+- **`runbook.draft_updated` changes (FX7b, wrb-05).** A draft is overwritten in place, so the row
+  is the only record of the text a save replaced. It names every field that moved with its before
+  and after: the headline fields, each Applies when criterion (`applies_when.rule_ids`), the
+  techniques and phases, the step count and `step_order`, each step added (`steps[<id>]` from
+  nothing to its title), removed (its title, then every field it held, from its value to
+  nothing) or changed field by field (`steps[<id>].instructions`; a lookup leaf by leaf with its
+  filter as sorted `field = value` lines; options as `steps[<id>].options[<id>].label`), the
+  retrieval queries and references, and the content hash last. Values go through the audit log's
+  redaction; a value longer than the 500 stored characters starts just before its first
+  difference, marked "…" (text is redacted before the cut; a change only inside a redacted token,
+  such as a rotated bearer token, is recorded as a secret change). At most 45 entries: when more fields
+  changed, the first 44 and the content hash, and the summary says "(N fields changed; the first
+  44 are recorded with the content hash)".
+- **`RunbookVersionListItem.review_notes` (FX7a, wrb-04).** Each row of a runbook's version history
+  carries the reasons a reviewer gave when sending that version back to draft (oldest first, the
+  same notes its version document holds), so History shows them on every entry, a superseded one
+  too, without reading each version; drafts and versions in review stay hidden from readers
+  without `runbooks:manage` or `runbooks:publish`, so readers see no new notes.
+- **Step rows name the step (FX7b, wrb-11).** Every case run row (step updates, approvals, the
+  approval request, the AI draft and its confirmation, and each lookup's evidence row) names the
+  step by its title in the run's pinned version, as one line of plain text in double quotes, and
+  says what changed ('Runbook step "Isolate the host" marked done (note updated).', 'Log
+  statistics lookup on runbook step "How many accounts were tried?" collected evidence.'). An
+  assignee is named bare only as a plain account name; anything else is one quoted name with
+  secrets redacted. The step id stays in `tool_input.step_id` (the approval request included) and
+  the `changes` paths; the web keeps its legacy "Runbook step <id> updated." reading for rows
+  stored before.
+- **Enrichment settings follow the active stack (FX7d, wro-01, refines the §3.5 settings
+  row).** `GET /api/enrichment/providers` and the new `PUT /api/enrichment/config` read and
+  write the same settings, those of the active stack: the real settings, audited in
+  `control_audit`, or while Demo Mode is on the Demo sandbox's own copy, audited in the
+  Demo audit, followed live until its first Demo edit and discarded when Demo Mode ends or
+  is reset; the execution copy keeps every lookup off. This joins the execution-scoped
+  curated settings (threshold tuning, baseline, campaigns, discounted inference) as an
+  exception to the §3.5 settings row, so a switch always shows what its save changes. The
+  Enrichment section's switches, fusion and cache lifetime save through it, gated by
+  `enrichment:manage` (they saved through `PUT /api/settings` under `settings:manage`
+  before); **All settings** no longer lists the `enrichment` block, so the Console has one
+  editor of it (`PUT /api/settings` still writes the real block in both stacks, as §3.5
+  says for settings, and the Enrichment section shows the demo copy while Demo Mode is
+  on). The body is a strict
+  partial of `EnrichmentConfig` (one boolean per switch, `cache_ttl_seconds` a whole number
+  from 0 to 2,592,000, 30 days), run through the model's validation; it answers
+  `EnrichmentConfigSaveResult` (`ok`, `changed`, `demo_active`, `demo_run_id`, `config`),
+  `422` for a refused body, `403` while the settings lock is on (with Demo Mode on or off,
+  also when the lock is turned on after the action row), `409 settings_conflict`, `409
+  demo_mode_changed` (Demo Mode turned on, turned off or reset during the save) and `503
+  audit_unavailable`; a body that changes nothing writes no row. The listing gains
+  `cache_ttl_seconds`, `demo_active` and `demo_run_id` (a reset keeps Demo Mode on with a
+  new run, so the page reads the settings again), and a lookup gains `not_queried`
+  (`demo_mode` or `disabled`).
+- **Enrichment provider keys are audited (FX7d, §3.6, §4.5.4).** `POST
+  /api/enrichment/providers/{name}/secrets` appends an `enrichment.secrets_updated` row to
+  `control_audit` before a key changes, with Demo Mode on or off (keys are real secrets,
+  never part of the Demo copy), naming each key with `secret: true` and never its value; a
+  failed append answers `503 audit_unavailable` and no key changes. Like the source and
+  notification channel credential routes, it does not check the settings lock on the
+  server; the Console disables the key fields while the lock is on.
 
 ### 11.2 Per package
 
@@ -4357,6 +4549,21 @@ built" pointer.
   also moved the inbox not-due details into `notifications/inapp.py`, widened the audit Outcome
   column, and made the Logs live-tail caveat say only the search box does not apply while an exact
   filter is applied.
+- **FX7a to FX7g** (`919f8cd`, and the integration change after it that applied their
+  orchestrator patches and these records): the second acceptance pass's 25 confirmed findings
+  (§11.4). The runbook editor: Reload after a conflict, a retired runbook, the Applies when
+  picker, send-back reasons, focus and announcements, the new-runbook refusal (FX7a). Runbook
+  audit rows that say what changed and name the step and role, `RunbookDetail.retired`,
+  `role_labels`, and Demo seeded rows worded as live ones (FX7b). The run inside a case: focus
+  after Approve, one announcement per outcome, reason dialogs from menus, role and step wording
+  (FX7c). Enrichment settings that follow the Demo sandbox through `PUT /api/enrichment/config`,
+  audited provider keys and their event label (FX7d). Effective permissions in the Console from
+  `GET /api/account/permissions`, and the fresh sign-in's purpose (FX7e). Metrics, AI spend and
+  job file gates, honest Access denied rows, the Discounted inference audit target (FX7f). Page
+  access, gated reads, Settings deep links, the grants-unknown state, Reinvestigate and bulk
+  gates, the save bar's value count and the rail reveal (FX7g). The integration also made the
+  Console show withheld AI spend as withheld (the budget card, the agent trace and Agent
+  effectiveness) and gated the boards' `metrics` key and Active risk index on `metrics:view`.
 
 ### 11.3 Known limitations
 
@@ -4406,6 +4613,20 @@ Runbooks and Demo Mode:
   while matching uses the Demo overlay, so "Gets it" can count cases from rules not listed there.
 - **The migration acceptance fixture has no known exceptions** (`KNOWN_FIXTURE_EXCEPTIONS` in
   `test_runbook_migration.py` is empty).
+- **A second chip click while a picker is open (FX7a, pre-existing).** With one Applies when
+  picker open, a click on another condition's chip closes the open picker but does not open the
+  chip's, so a second click is needed: Radix `DismissableLayer` (1.1.13) runs the outside-pointer
+  dismissal on the document click, after the chip's own click has opened its picker.
+- **A role written as a lower-case initialism reads as a word (FX7b).** `hr_partner` reads "a hr
+  partner", because the role-label rule (the Console's `humanizeToken`) lowercases it; a role
+  written `HR_partner` reads "an HR partner".
+- **Unassigned code points in role names (FX7c).** The Console's role wording does not drop
+  unassigned code points (Unicode category Cn), which the server drops; Python 3.11 uses Unicode
+  14.0 and the browser a later version, so a character only the browser knows can be worded
+  differently.
+- **The approval hint with role-based access control off (FX7c, by design).** With RBAC off,
+  `/api/auth/me` reports `super_admin` for every user, so the Console never shows "Only a SOC
+  manager can approve this step."; the server decides each approval.
 
 Audit log:
 
@@ -4467,6 +4688,15 @@ Audit log:
   `PUT /api/settings` (a model `base_url`) is recorded in full in `changes`.
 - **A crash between the action row and the write** leaves an action row whose target revision
   was never written (§3.6, documented in the audit log page).
+- **The refused-read count after a row (FX7f).** The number of refusals coalesced since a
+  refusal's last Access denied row reaches the log only with the next row of the same refusal
+  (person, permission and route); it is lost on a restart, when the refusal does not come back, or
+  when the key is evicted (the recorder keeps the 10,000 most recent).
+  `AccessDenialRecorder.unrecorded` counts evictions, but `/api/diagnostics/health` does not show
+  it yet.
+- **The data export keeps whole records.** The `data_export:export` archive carries each case's
+  `token_cost` and the usage ledger as stored, whether or not the exporting role holds
+  `cost:view`: it is an administrator's copy of the application state, under its own grant.
 
 Rules, Logs and severity:
 
@@ -4571,8 +4801,8 @@ shared tree):
   at 4x CPU on the production Overview, 117 to 150 ms per run (133 ms pooled; Inbox 67 ms), fixed
   by FX5n (§11.1 "The rail toggle takes two consecutive frames"); the Runbook tab's Confirm with a
   Demo AI draft (below); the Settings switch distance and the first-control offsets (§11.1
-  "Settings switch distance"). The second acceptance pass (`SP/r14/impl/final2/`) runs on the
-  merged tree.
+  "Settings switch distance"). The second acceptance pass (`SP/r14/impl/final2/`) ran on
+  `b4d6413` (below).
 - FX5r live re-measure (seeded Demo 8746/5746, the three-lookup Demo AI drafts; while a draft
   waits, the action row sits under the step question and a long draft shows four lines with Show
   the whole draft, so Confirm no longer moves with draft length). Confirm top and bottom:
@@ -4617,12 +4847,128 @@ shared tree):
   337,240 B and 0 B against `HEAD`; OpenAPI without drift; `check_docs`, `check_version` and the CI
   contract pass; the knowledge corpus was stale from FX6j's pages until the integration
   regenerated it.
+- Second acceptance pass (`b4d6413`, 2026-11-05 and 06; `SP/r14/impl/final2/`): five lanes on
+  disposable demos with writes allowed (every runbook write flow, the other writes, restricted
+  roles, the re-measure of the first pass's fixes, the operator's composites), every finding
+  re-checked by an independent skeptic: 25 confirmed (6 major, 19 minor; none uncertain) and 2
+  refuted (wrb-08, an author's enabled Publish under the distinct approver rule, the API gap
+  "Co-editors learn at Publish" already records; roles-10, Demo Mode refusing an audit export
+  before the grant check, as every job kind is). The six majors and their packages: wrb-02, a
+  retired runbook could not be opened (FX7a, FX7b); wrb-03, the Applies when picker closed at
+  once (FX7a); wrb-04, a send-back reason never reached the author (FX7a); wro-01, the Demo
+  Enrichment switches showed the Demo copy and saved the real settings (FX7d); roles-01, the
+  Console ignored assigned custom roles (FX7e); roles-02, restricted pages sent requests their
+  roles could not make, each a 403 and an Access denied row (FX7f, FX7g). The minors: wrb-01
+  (confirmed at minor), wrb-06, wrb-07 and roles-08 (FX7a); wrb-05, wrb-10 and wrb-11 (FX7b on
+  the server, FX7c in the Console); wrb-09 (FX7c); wro-03 (FX7f); roles-04, roles-09 and
+  roles-11 (FX7f on the server, FX7g in the Console); roles-03, roles-05, roles-06, roles-07,
+  wro-02 and composites-01 (FX7g); roles-12 (FX7e). Each package reproduced its findings with the
+  pass's probes, fixed them, added a regression test for each, was reviewed twice and re-reviewed
+  (no finding rejected), and re-measured every fix live before and after on its own demo (ports
+  8762 to 8768): for example Title kept focus and typed text after a picker closed, Done added a
+  typed Rule, Tag, Technique and Source, a 964-character instructions edit with a rotated token
+  recorded a secret change, "Only a UX lead can approve this step.", a locked enrichment save
+  answered 403 and a key save wrote its audit row without the value, with the grants read held
+  for 4 s the Console appeared only once the grants arrived, and a restricted responder sent no
+  refused request on Overview, Metrics, Agent effectiveness, Cost, Sources or Logs. The one
+  refused read left live, `GET /api/users` twice from Case Manager for the responder, tier 1 and
+  the auditor, is removed by the Case Manager patches the integration applied (pinned by
+  `CaseManager.test.tsx`, not re-measured live).
+- r10b-fx7-complete (FX7a to FX7g, on the tree before this integration): backend 12,445 tests,
+  12,434 passed, 6 skipped, 5 failed (the five sandbox-only tests, all 55 tests of their files
+  pass with the proxy and AWS variables unset); ruff fatal clean; tsc exit 2 before regeneration (four
+  contract pins: two waited for the generated client, two for `role_labels`, which FX7b added to
+  `CaseRunbooks` and `RunbookRunUpdate` and the gate added to the TypeScript mirror), 0 with the
+  regenerated types; eslint 0/0; design gates pass; Vitest 555 files, 7,636 passed, 7 failed, 1
+  skipped (the console map waited for regeneration and FX7e's test patches were pending; all green
+  in a patched scratch copy); entry 337,163 B, 77 B under 337,240 B and 52 B under `b4d6413`.
+- Integration of FX7 (on `919f8cd`, this change): backend 1,977 tests in the 40 files the patches
+  and records touch passed (Demo, metrics and spend gates, triage, agent improvement, enrichment
+  settings and key rows, effective permissions, job files, Access denied rows, audit writers,
+  runbook governance, library and runs, the Round 12, 13 and 14 records, `test_round14_contracts.py`,
+  `test_app_knowledge.py`, `test_chat_golden_set.py`); Vitest 551 files (the 541 that import a
+  changed web source, the 33 that read one from disk, the changed tests, console-map.contract,
+  danger-zone, dashboards-library and dashboards-routes), 7,606 passed, 0 failed, with an empty
+  stderr; tsc 0; eslint 0/0; design gates pass; ruff fatal clean; `check:types` without drift;
+  `check_docs` 84 pages; the corpus current (877 chunks); entry 337,163 B, the same as the gate run
+  (§11.1 "Entry bundle"). The first run of the knowledge tests failed 5 (an uncitable section's
+  rebase, the two distinct approver destinations and their golden question, and "Where are
+  runbooks?") because the new Help Center text made two sections longer and split them into more
+  chunks; the text moved into two subsections ("Sent back and retired versions" in
+  `intelligence/runbooks.md`, "What a draft save and a step row say" in
+  `administration/audit-log.md`) with the earlier sections back to their old wording, and
+  `test_app_knowledge.py` with `test_chat_golden_set.py` then passed 802 of 802.
 
-**Final gates on the merged tree (TO BE FILLED BY WP-GEN):** backend `pytest` count, ruff fatal,
-web `test:strict` count and files, tsc, lint, design gates, `check:types`, full build, the final
-entry chunk and the rebase decision (§11.1 "Entry bundle"), `docs:check`, `check_docs`,
-`build_app_knowledge --check`, `check_ci_contract`, `check_version`, the geometry and timing
-checks of §8.3 with their measured values, and the final screenshot folders.
+- Live re-measure of the second pass's findings (on the integrated tree, 2026-11-06): the 25
+  confirmed findings were re-run with the pass's probes on two disposable demos with writes
+  allowed (one for the runbook flows, one for restricted roles with RBAC on), and all 25 measured
+  fixed. For example, a 409 on a draft save loaded the other person's version on Reload with their
+  edit kept; a retired runbook opened read only with Restore, and focus stayed on More actions;
+  each Applies when picker was still open at +300 and +1,200 ms with focus in its input; a
+  send-back reason reached the author's governance strip and the History sheet; each runbook write
+  and the version switch were announced once; Approve moved focus to "Approved by" with one
+  message; a reason dialog opened without a stale error; five focused draft saves each recorded
+  their changed fields with before and after; a custom role's grants were followed by the Console;
+  about 40 minutes of browsing by 10 users left no Console-caused Access denied row; a restricted
+  responder's Overview showed one notice and kept focus on "View all" across 70 s of live polling;
+  the Demo Enrichment switches saved to the Demo copy; and the Settings rail showed the
+  deep-linked section at 1280, 1440 and 1920 and on the phone sheet with the page scroll at 0. The
+  Applies when pickers stayed inside the viewport at 390 by 844 (left 16, right 336) with no
+  horizontal overflow. The re-measure reported one new minor finding, the labels of the Audit
+  inspector's draft-save changes. FX8 fixed it: the inspector names each change by its item (a
+  step by its recorded title, an added or removed step as such) and shows a text cleared to
+  nothing as "Empty"; with it, Preview as analyst speaks a fill's outcome once, and the enrichment
+  providers' setup text has no em dashes.
+
+**Final gates on the merged tree** (2026-11-06; `919f8cd` with this integration change in the
+working tree, 108 files changed and 5 added: the FX7 orchestrator patches and records, the
+integration's review fixes, which also withhold a case's `token_cost` without `cost:view`, and
+FX8; the gates left the tree unchanged):
+
+- Backend `pytest`: 12,461 tests, 12,450 passed, 6 skipped, 0 errors and 5 failed, the five
+  sandbox-only tests (`test_enrich.py::test_no_keys_neutral_and_run_returns_dict`,
+  `test_round3_wave1_enrichment.py::test_enrich_ip_no_keys_neutral_unchanged`,
+  `test_round3_wave2b_config.py::test_new_secret_fields_default_none` and
+  `::test_new_secret_fields_surface_as_configured_booleans`, and
+  `test_round3_wave2b_netguard.py::test_real_keyless_dispatch_on_public_ip_fails_open_fast`);
+  their four files pass 55 of 55 with the sandbox's proxy and AWS variables unset, as CI runs, and
+  no other test failed or flaked under load. Ruff fatal (`E9,F63,F7,F82`) on `backend/app`,
+  `backend/tests`, `updater/agentic_soc_updater` and `scripts`: clean.
+- Web `test:strict`: the contract step 5 of 5; Vitest 652 files, 8,577 tests, 8,576 passed, 1
+  skipped (`bundle-first-paint`'s case that runs only with `REQUIRE_DIST_BUILD=1`), 0 failed, with
+  an empty stderr and no captured console output. tsc 0; eslint 0 errors, 0 warnings; the design
+  gates pass (token existence 37 tokens, contrast on 166 axes in both themes, no new arbitrary
+  text sizes, no new raw hex, chart ramps colour-vision separable, login accents 364 composites);
+  `check:types` without drift (OpenAPI 3.1.0, 293 paths).
+- Full build: exit 0. The MkDocs Help Center bundled 0.1.13 (Testing) at `/docs/0.1/`, then
+  `tsc --noEmit` was clean and Vite built 3,523 modules with no warnings. The entry chunk is
+  337,163 B on disk (gzip 102.10 kB): 947 B over `PRE_REVAMP_ENTRY_BYTES` 336,216 B, 77 B inside
+  the 337,240 B budget and 62,837 B under the 400,000 B ceiling, the same as the integration
+  build; the other 24 first-paint assertions pass against this `dist/`. Rebase decision: none
+  (§11.1 "Entry bundle").
+- `docs:check` (app 0.1.13, docs 0.1), `check_docs` (84 public pages), `build_app_knowledge
+  --check` (the corpus current, 877 chunks; its 5 breadcrumb warnings are on `919f8cd` too),
+  `check_ci_contract` (3 workflows, 3 shipping Dockerfiles) and `check_version`: pass.
+- The §8.3 geometry and timing checks, last measured with the first pass's scripts by the second
+  pass's re-measure lane on `b4d6413` (the first pass's values are above): the Overview cases row
+  at 777 (1440), 801 (1280), 896 (1920) and 1576 (390, at the edge of 1568 ±8), with no band
+  headers; the page header title at 89 on 19 pages at 1440 and 88 at 1920; first content at 144
+  at 1440 (Settings 140, Runbooks 148 with the Demo Mode notice); the Settings first control at
+  339 and 453 at 1440 (recorded in §11.1, not changed); all 129 labelled switch rows in 31
+  sections inside the 44rem form row at 1440 and 1920 (the named rows 467, 527 and 516 px,
+  "Enrichment enabled" 496 px), as §11.1 "Settings switch distance" amends the target; no label
+  overlaps in 31 sections at 390, 1440 and 1920 and no horizontal overflow; 0 px of drift for 16
+  nav icons from 0 to 200 ms of a toggle (production 1440 light and 1920 dark, click and Ctrl+B);
+  the toggle's median longest frame at 4x CPU on the production Overview 33 to 50 ms (Ctrl+B
+  collapse 50, 33 and 33 ms, expand 50, 50 and 50 ms; click 33 and 33 ms), 120 of 120 toggles at
+  or under 100 ms at a load of 1.5 to 3.2, where the first pass measured 117 to 150 ms (FX5n); no
+  horizontal scroll in the audit log at 1280 and 1440 with the inspector open, seeded and live;
+  the case sheet's close button hit by `elementFromPoint` at its centre in 8 probes at four sizes
+  (F1); and the Runbook tab's Confirm with a Demo AI draft at 473, 513 and 451 (1440 by 900, target
+  567), 651, 591 and 651 with bottoms at 683, 623 and 683 (390 by 844, target 768, above the
+  fold) and 477, 477 and 455 (1920 by 1080), with 13 to 16 Tab stops (limit 19). All pass.
+- Screenshots: the final BEFORE | AFTER composites for asks 1 to 9 were delivered to the
+  operator.
 
 ---
 

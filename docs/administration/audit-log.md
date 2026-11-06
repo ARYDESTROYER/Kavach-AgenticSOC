@@ -166,7 +166,12 @@ The record has six sections:
    tool, and a short reference to the session. A forwarded header the client sent is kept
    behind **Show forwarded header** and labelled "Supplied by the client; not verified".
 2. **What changed.** For a change: each field in words with its key under it, the value
-   before (struck through) and after. Secret values are never recorded and show as
+   before (struck through) and after. A field of one item in a list names the item, so two
+   steps' titles never read alike: a runbook step is named by its title when the event
+   records it, for example "Step “Check sign-ins”: instructions", and otherwise by its id,
+   and a step the change added or removed reads "Step lookup added" or "Step lookup
+   removed". A text that was cleared shows "Empty"; a field that had no value shows "Not
+   set". Secret values are never recorded and show as
    "Changed (secret values are never recorded)". A field counts as secret by its name
    (a password, secret, token, credential or key, in the singular or the plural, and the
    credential fields a notification channel or connector reads), on either side of the
@@ -269,7 +274,13 @@ Every export is recorded in the audit log when it is requested, when the file is
 (with its size and SHA-256) and each time it is downloaded. Every download of any job's
 file is recorded before it starts, as one row per download: "Audit export downloaded" for
 an audit export and "Job file downloaded" for any other job's file. If that record cannot
-be written, the download does not start.
+be written, the download does not start. A file can be downloaded only while its owner
+still holds the permissions its job needed (an audit export needs `audit:export` and
+`audit:view`); once one is removed, the download is refused, nothing leaves the server,
+and the refusal is recorded as Access denied, naming the permission that is missing. If
+those permissions cannot be checked just then (the stored account could not be read),
+the download is not started and can be tried again, and nothing is recorded as Access
+denied, since nothing was refused for a missing permission.
 
 Submitting an audit export, a data export or a reset is recorded first, with who asked
 and from where ("Audit export requested", "Export requested", "Reset requested"); if that
@@ -338,11 +349,45 @@ named for what did not happen (for example "Runbook publication failed", "Step a
 failed", "AI draft not saved"), with the same request id. The pair reads as "Not applied
 (see the next record)" in the record.
 
+### What a draft save and a step row say
+
+A draft is saved over in place, so Runbook draft updated is the only record of the text a
+save replaced: it names every field the save edited, with its value before and after (the
+title, summary, use when, prerequisites, owner, priority and review cadence, each Applies
+when criterion such as `applies_when.rule_ids`, the techniques and phases, the step order,
+each step added, removed or edited field by field such as
+`steps[isolate-host].instructions`, the retrieval queries and references) and the content
+hash last. A removed step is recorded with every field it held. A lookup's filter reads as
+`field = value` lines. A value longer than the 500 characters a record keeps starts just
+before the first difference, marked "…"; an edit only inside a token the log withholds is
+recorded as a secret change. A save that edits more than 44 fields records the first 44 and
+the content hash, and its summary gives the number of fields.
+
+A step row's summary, which the case's activity feed shows, names the step by its title in
+the run's version, for example `Runbook step "Isolate the host" marked done (note
+updated).`, and an evidence row names the lookup's step the same way; the step id stays in
+the record's details. An approval names the role by the label the Console shows ("waits for
+approval from a SOC manager").
+
 ## Viewing is recorded
 
 Opening the audit log, searching it, counting it for an export and opening a record are
 recorded as "Audit log viewed", at most one row per person per filter set every five
 minutes. Recording a view never blocks the read.
+
+## Refusals are recorded
+
+A request refused because the person lacks a permission is recorded as "Access denied",
+with the permission it needed, the role the person held, and the request it refused (its
+method and route, for example `GET /api/users`, never the values in the address). A
+refused read, such as a page or panel the role may not read, is recorded at most once per
+person, permission and route every five minutes. The next record of the same refusal says
+how many times it was refused since the previous record ("refused 3 more times since the
+previous record"); if the same refusal does not come back, the refusals after its last
+record are not counted anywhere. A refused change is recorded every time. Checking whether
+a person holds a permission, which pages do to decide what to show, is not a refusal and
+records nothing. Recording a refusal never changes the answer: the request is refused
+either way.
 
 ## Retention
 
@@ -387,6 +432,12 @@ lifecycle settings in the template you apply. See
 - "Not applied" is shown only when both the change and its failure record are loaded.
 - Every response carries an `X-Request-ID` header, an unexpected server error (500)
   included, so a reported failure can be matched to its rows.
+- The five-minute windows for "Audit log viewed" and for refused reads are kept in the
+  backend's memory, so a restart, or a second backend, may record one extra row. The count
+  of refused reads since a refusal's last record is kept there too: it reaches the log
+  only with the next record of the same refusal, so it is lost on a restart, when the
+  refusal does not come back, or when the backend forgets the refusal to make room (it
+  remembers the 10,000 most recent).
 
 For the request and response fields of `GET /api/audit`, `GET /api/audit/count` and
 `GET /api/audit/records/{record_id}`, see the [API reference](../reference/api.md).

@@ -751,6 +751,11 @@ export const OverviewPanel: React.FC<{
    * the Runbook tab. Nothing in it changes the case (#3).
    */
   runbookCard?: React.ReactNode;
+  /**
+   * Whether the viewer holds `cost:view`. Without it the profile line leaves the
+   * investigation cost out (the server answers `token_cost: null` for that viewer too).
+   */
+  canViewCost: boolean;
 }> = ({
   c,
   fpPolicy,
@@ -766,6 +771,7 @@ export const OverviewPanel: React.FC<{
   presentation = 'default',
   onSetDisposition,
   runbookCard = null,
+  canViewCost,
 }) => {
   const isCaseManager = presentation === 'case-manager';
   const trigger = c.trigger_reason as
@@ -1881,7 +1887,9 @@ export const OverviewPanel: React.FC<{
           {c.agent_persona && c.agent_persona !== 'generalist' ? (
             <span>Profile {humanizeToken(c.agent_persona)}</span>
           ) : null}
-          <span>Investigation cost {fmtMoney(c.token_cost)}</span>
+          {canViewCost && c.token_cost != null ? (
+            <span>Investigation cost {fmtMoney(c.token_cost)}</span>
+          ) : null}
           {c.decision_by ? <span>Decided by {humanizeToken(c.decision_by)}</span> : null}
         </div>
         ) : null}

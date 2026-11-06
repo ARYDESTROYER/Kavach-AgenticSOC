@@ -28,7 +28,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field
 
 from ..config import AutoClosePolicy
@@ -46,7 +46,7 @@ from ..models import (
     TimelineStagesResponse,
     TraceSpan,
 )
-from .deps import get_state, require_permission
+from .deps import get_state, has_permission, require_permission
 
 router = APIRouter(prefix="/api")
 
@@ -181,6 +181,7 @@ def _empty_chips() -> dict[str, Any]:
 @router.get("/cases/{case_id}/timeline")
 async def case_timeline(
     case_id: str,
+    request: Request,
     state: "Any" = Depends(get_state),
     _=Depends(require_permission("cases", "read")),
 ) -> dict[str, Any]:
@@ -192,18 +193,28 @@ async def case_timeline(
     ``latency`` / ``cost`` / ``tokens`` / ``trusted``. The ``case_manager`` DECISION
     is rendered as a distinct TERMINAL ``decision`` span whose summary shows the exact
     ``(verdict, confidence, risk_score, policy clause)`` the deterministic ``decide()``
-    produced — re-derived at read time, mutating nothing (#3 made visible).
+    produced, re-derived at read time and mutating nothing (#3 made visible).
 
     TRUSTED agent prose (router/investigator/formatter/decision) vs UNTRUSTED tool/log
     payloads (es_query / tool output) are separated by the per-span ``trusted`` flag
-    (#9). NEVER 404s — an unknown / not-yet-investigated case returns empty spans.
+    (#9). NEVER 404s: an unknown or not-yet-investigated case returns empty spans.
     ``prompt_excerpt`` text is dropped from a span summary when
-    ``prefs.trace.include_prompts`` is false (the untrusted-prompt toggle)."""
+    ``prefs.trace.include_prompts`` is false (the untrusted-prompt toggle).
+
+    The cost and tokens come from the usage ledger, which ``cost:view`` governs (the
+    grant ``GET /api/usage/summary?case_id=`` needs): for a caller without it the
+    ledger is not read, every span's ``cost`` and ``tokens`` are ``null`` and so are
+    ``totals.cost`` and ``totals.tokens``."""
     rows = await state.audit.records_for_case(case_id)
     include_prompts = getattr(state.prefs.trace, "include_prompts", True)
 
     # Per-role cost/token attribution from the usage ledger (aggregate → per-span).
-    cost_by_role, tokens_by_role = await _usage_attribution(state, case_id)
+    # Round 14 roles-11: one rule for AI spend, so only a cost:view holder reads it.
+    show_usage = await has_permission(request, "cost", "view")
+    if show_usage:
+        cost_by_role, tokens_by_role = await _usage_attribution(state, case_id)
+    else:
+        cost_by_role, tokens_by_role = {}, {}
 
     # Count the audit LLM rows (PROMPT + VERDICT) per role from the SAME rows the spans
     # are built from. The role's ledger TOTAL is split across exactly the spans that
@@ -237,8 +248,8 @@ async def case_timeline(
         "spans": [s.model_dump(mode="json") for s in spans],
         "total": len(spans),
         "totals": {
-            "cost": round(sum(s.cost or 0.0 for s in spans), 6),
-            "tokens": sum(s.tokens or 0 for s in spans),
+            "cost": round(sum(s.cost or 0.0 for s in spans), 6) if show_usage else None,
+            "tokens": sum(s.tokens or 0 for s in spans) if show_usage else None,
         },
     }
 

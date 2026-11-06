@@ -2486,7 +2486,8 @@ export interface Case {
   analyst_policy?: AnalystPolicyRecord | null;
   title?: string;
   summary?: string;
-  token_cost?: number;
+  /** The case's own AI spend; `null` for a viewer without `cost:view`. */
+  token_cost?: number | null;
   error?: string;
   agent_persona?: string;
   /** Kept readable for cases investigated before Round 14; never written by new code. */

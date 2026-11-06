@@ -847,6 +847,10 @@ describe('the other modules', () => {
     expect(budgetLine({ ...budget, daily: { spent: 1, cap: null, fraction: null } } as unknown as BudgetStatus, 'USD')).toBe(
       'No AI budget cap is set.',
     );
+    // A viewer without cost:view: the server leaves the spend out, never "$0.00 of $10.00".
+    expect(
+      budgetLine({ ...budget, daily: { spent: null, cap: 10, fraction: null, band: null } } as unknown as BudgetStatus, 'USD'),
+    ).toBe('You do not have access to AI spend.');
   });
 });
 

@@ -66,11 +66,11 @@ export function DataExportSection() {
     intentRef.current = intent;
     setSubmitting(true);
     try {
-      const job = await api.jobs.submit({
-        kind,
-        idempotency_key: intent.idempotencyKey,
-        params,
-      });
+      // An export changes nothing, so its fresh sign-in says what it is for.
+      const job = await api.jobs.submit(
+        { kind, idempotency_key: intent.idempotencyKey, params },
+        'Sign in again to start this export.',
+      );
       intentRef.current = null;
       announceJobAccepted(job);
       toast.success('Portable export queued and running in the background.', {

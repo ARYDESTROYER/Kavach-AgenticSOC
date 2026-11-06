@@ -9,11 +9,11 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
-const { getMock, putMock, authMeMock, rolesGetMock } = vi.hoisted(() => ({
+const { getMock, putMock, authMeMock, permissionsMock } = vi.hoisted(() => ({
   getMock: vi.fn(),
   putMock: vi.fn(),
   authMeMock: vi.fn(),
-  rolesGetMock: vi.fn(),
+  permissionsMock: vi.fn(),
 }));
 
 vi.mock('@/lib/api', () => ({
@@ -24,7 +24,7 @@ vi.mock('@/lib/api', () => ({
     get: getMock,
     put: putMock,
     auth: { me: authMeMock, logout: vi.fn().mockResolvedValue({ ok: true }) },
-    roles: { get: rolesGetMock },
+    account: { permissions: permissionsMock },
   },
 }));
 
@@ -46,9 +46,9 @@ describe('AutomationNudge — inverted autopilot reassurance card', () => {
     getMock.mockReset().mockResolvedValue({ config: { enabled: true, shadow_eval: true } });
     putMock.mockReset().mockResolvedValue({ ok: true });
     authMeMock.mockReset().mockResolvedValue({ auth_enabled: false, authenticated: true, user: null });
-    rolesGetMock
+    permissionsMock
       .mockReset()
-      .mockResolvedValue({ roles: [], default_role: 'analyst_tier1', rbac_enabled: false, matrix: {} });
+      .mockResolvedValue({ authenticated: true, role: 'super_admin', custom_roles: [], rbac_enabled: false, permissions: {} });
   });
 
   it('renders the "Autopilot is on" reassurance with a sensitivity dial + one-click OFF', async () => {
@@ -108,11 +108,12 @@ describe('AutomationNudge — inverted autopilot reassurance card', () => {
       authenticated: true,
       user: { username: 'ana', role: 'analyst_tier1' },
     });
-    rolesGetMock.mockResolvedValue({
-      roles: [],
-      default_role: 'analyst_tier1',
+    permissionsMock.mockResolvedValue({
+      authenticated: true,
+      role: 'analyst_tier1',
+      custom_roles: [],
       rbac_enabled: true,
-      matrix: { analyst_tier1: { cases: ['read'] } },
+      permissions: { cases: ['read'] },
     });
 
     renderNudge();

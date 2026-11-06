@@ -56,12 +56,12 @@ class SecurityTrailsProvider(EnrichmentProvider):
                 "Set TLSOC_SECURITYTRAILS_API_KEY in .env (compose maps it to "
                 "SECURITYTRAILS_API_KEY), or paste it in this card (in-memory until "
                 "restart).",
-                "Flip this provider's toggle ON — the 6h Redis cache stretches the "
+                "Flip this provider's toggle ON. The 6h Redis cache stretches the "
                 "small quota across repeated lookups.",
             ],
             example=(
                 "The suspicious domain resolves to one throwaway VPS, has zero MX "
-                "records and two subdomains — single-purpose phishing "
+                "records and two subdomains: single-purpose phishing "
                 "infrastructure, unlike a real business domain with mail and dozens "
                 "of subdomains."
             ),

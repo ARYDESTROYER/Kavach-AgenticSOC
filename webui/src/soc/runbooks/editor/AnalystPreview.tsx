@@ -6,7 +6,10 @@
  * investigator guidance meter shows the server's measured length against the budget
  * (§4.10.9): "Investigator guidance: 2,140 of 3,000 characters".
  *
- * Every case value is shown as plain text (#9); nothing here writes anything.
+ * Every case value is shown as plain text (#9); nothing here writes anything. Focus stays on
+ * Fill while it reads the case (wrb-07); the outcome is spoken once through the editor's
+ * announcer, a failure assertively (WCAG 4.1.3), since the line that shows it is not a live
+ * region.
  */
 import * as React from 'react';
 
@@ -14,6 +17,7 @@ import { cn } from '@/lib/cn';
 import type { PhaseId, RunbookDefinition, RunbookStep, RunbookTemplateValue } from '@/lib/types-runbooks';
 import { Button } from '@/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/ui/select';
+import { useAnnouncer, type Announce } from '@/soc/components/announcer';
 
 import { KindChip, StatusMark, TemplateChip } from '../shared/chips';
 import {
@@ -21,6 +25,7 @@ import {
   PHASE_LABEL,
   PHASE_ORDER,
   phaseFrameworkLine,
+  TEMPLATE_VALUE_LABEL,
   templateToken,
   templateValueOf,
   windowLabel,
@@ -43,8 +48,38 @@ export interface AnalystPreviewProps {
   loadCaseValues?: (caseId: string) => Promise<CaseValues>;
   /** The server's measured investigator guidance length and budget, when validated. */
   guidance: { chars: number; budget: number } | null;
+  /** Speaks the outcome of a fill (the editor's announcer); else the page's announcer. */
+  announce?: Announce;
   className?: string;
 }
+
+/** "a", "a and b", "a, b and c". */
+function listWords(items: readonly string[]): string {
+  if (items.length < 2) return items.join('');
+  return `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`;
+}
+
+/** The template values a definition's lookups use, once each, in step order. */
+function templatesUsedBy(defn: RunbookDefinition): RunbookTemplateValue[] {
+  const used = defn.steps.flatMap((s) =>
+    s.lookup ? [...Object.values(s.lookup.filter), s.lookup.indicator ?? ''].map(templateValueOf).filter(Boolean) : [],
+  ) as RunbookTemplateValue[];
+  return Array.from(new Set(used));
+}
+
+/**
+ * What a screen reader hears once a fill has read the case: "Preview filled with values from
+ * CASE-000214. It has no value for the case user." (the visible lines say the same).
+ */
+export function fillAnnouncement(caseName: string, missing: readonly RunbookTemplateValue[]): string {
+  const filled = `Preview filled with values from ${caseName}.`;
+  if (!missing.length) return filled;
+  const words = missing.map((t) => TEMPLATE_VALUE_LABEL[t].charAt(0).toLowerCase() + TEMPLATE_VALUE_LABEL[t].slice(1));
+  return `${filled} It has no value for ${listWords(words)}.`;
+}
+
+/** The visible and spoken text of a failed fill. */
+export const FILL_FAILED_TEXT = 'Could not read that case. Try again.';
 
 function phasesOf(defn: RunbookDefinition): PhaseId[] {
   const used = new Set(defn.steps.map((s) => s.phase));
@@ -125,7 +160,17 @@ export function GuidanceMeter({ guidance }: { guidance: { chars: number; budget:
   );
 }
 
-export function AnalystPreview({ defn, cases, loadCaseValues, guidance, className }: AnalystPreviewProps) {
+export function AnalystPreview({ defn, cases, loadCaseValues, guidance, announce, className }: AnalystPreviewProps) {
+  const pageAnnounce = useAnnouncer();
+  const say = announce ?? pageAnnounce;
+  // A read that ends after the preview has gone (another view, another runbook) says nothing.
+  const mounted = React.useRef(true);
+  React.useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
   const [caseId, setCaseId] = React.useState<string>('');
   // The values shown and the case they were read from, kept together: choosing another case
   // in the list does not change whose values the lookups show until "Fill" reads it.
@@ -138,20 +183,22 @@ export function AnalystPreview({ defn, cases, loadCaseValues, guidance, classNam
   const fill = async () => {
     if (!chosen || !loadCaseValues) return;
     const target = chosen.case_id;
+    const name = chosen.case_number || chosen.case_id;
     setState('loading');
     try {
       const next = await loadCaseValues(target);
+      if (!mounted.current) return;
       setFilled({ caseId: target, values: next });
       setState('idle');
+      say(fillAnnouncement(name, templatesUsedBy(defn).filter((t) => !next[t])));
     } catch {
+      if (!mounted.current) return;
       setState('error');
+      say(FILL_FAILED_TEXT, 'assertive');
     }
   };
 
-  const templatesUsed = defn.steps.flatMap((s) =>
-    s.lookup ? [...Object.values(s.lookup.filter), s.lookup.indicator ?? ''].map(templateValueOf).filter(Boolean) : [],
-  ) as RunbookTemplateValue[];
-  const unfilled = values ? Array.from(new Set(templatesUsed.filter((t) => !values[t]))) : [];
+  const unfilled = values ? templatesUsedBy(defn).filter((t) => !values[t]) : [];
 
   let number = 0;
   return (
@@ -190,11 +237,9 @@ export function AnalystPreview({ defn, cases, loadCaseValues, guidance, classNam
             {filledCase ? (
               <span className="text-sm text-muted-foreground">Values from {filledCase.case_number || filledCase.case_id}.</span>
             ) : null}
-            {state === 'error' ? (
-              <span role="alert" className="text-sm text-critical-text">
-                Could not read that case. Try again.
-              </span>
-            ) : null}
+            {/* Spoken once through the announcer (above); not a live region of its own, so a
+                screen reader does not hear it twice. */}
+            {state === 'error' ? <span className="text-sm text-critical-text">{FILL_FAILED_TEXT}</span> : null}
           </div>
         ) : (
           <p className="border-t border-border/70 pt-3 text-sm text-muted-foreground">

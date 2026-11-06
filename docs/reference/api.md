@@ -210,7 +210,7 @@ holder of `runbooks:manage` or `runbooks:publish`; for anyone else it does not e
 | `POST /api/runbooks/match-preview` | Which of the last 500 cases of the last 30 days a definition (or a stored runbook, by `id`) would get, where another runbook wins, and the near misses. Also needs `cases:read`. Attaches nothing |
 | `POST /api/runbooks` | Create a runbook as a version 1 draft from `{definition}` or `{source}` |
 | `POST /api/runbooks/import` | Import Markdown. Always a new draft: a clashing id is renamed and every problem is kept as an import note; the import is due for review at once |
-| `GET /api/runbooks/{id}` | One runbook: summary, live version, version list and, for `manage` or `publish`, its draft and in-review versions |
+| `GET /api/runbooks/{id}` | One runbook: summary, live version, version list and, for `manage` or `publish`, its draft and in-review versions. A retired runbook also answers its retired version (`retired`: the text, `retired_by` and `retired_at`), which Restore brings back |
 | `GET /api/runbooks/{id}/versions/{n}` | One version with its Markdown source (`404 runbook_version_not_found` for a draft without `manage` or `publish`) |
 | `GET /api/runbooks/{id}/export?version=` | One version as a `text/markdown` attachment. The export is recorded in the audit log first; if that fails, nothing is sent (`503 audit_unavailable`) |
 | `PUT /api/runbooks/{id}/draft` | Save the draft from `{definition}` or `{source}` with `expected_revision`. Editing a Published runbook creates the next version as a draft; editing a version in review takes it back to draft. A save that changes nothing writes nothing |
@@ -241,7 +241,7 @@ match preview while row-level data scope is on.
 
 | Operation | Contract |
 | --- | --- |
-| `GET /api/cases/{case_id}/runbooks` | The case's runs (`CaseRunbooks`), each step's lookup evidence redacted for the caller by the grant its tool needs, progress, newer Published versions and the case's other tasks. Needs `runbooks:read` and `cases:read` |
+| `GET /api/cases/{case_id}/runbooks` | The case's runs (`CaseRunbooks`), each step's lookup evidence redacted for the caller by the grant its tool needs, progress, newer Published versions, the case's other tasks and `role_labels` (each role the steps name by its label, "SOC manager"). Needs `runbooks:read` and `cases:read` |
 | `GET /api/cases/{case_id}/runbooks/candidates` | The Start runbook list with the match explanation for each runbook |
 | `POST /api/cases/{case_id}/runbooks` | `{runbook_id, note?}`: start a Published runbook by hand. Idempotent per case and runbook: `201` for a new run, `200` with `already_attached` when it is already there |
 | `POST /api/cases/{case_id}/runbooks/suggest` | The AI suggests a runbook. One gateway call; `dry_run=true` returns the estimate only |
@@ -921,10 +921,12 @@ against the daily AI budget.
 
 ## Base metrics and retrieval-history evidence
 
-`GET /api/metrics` returns its deterministic dashboard aggregates plus an additive
-`retrieval_history` object. Its headline counts (`total_cases`, `open_cases`,
-`needs_human_cases`, `closed_cases`, `by_status`, `by_verdict`, `by_disposition`) are
-exact store-wide counts; `counts_exact` is false, with the reason in `counts_note`, when
+`GET /api/metrics` needs `metrics:view` and returns its deterministic dashboard
+aggregates plus an additive `retrieval_history` object. Its `cost` part is the AI spend
+of the window, which `cost:view` governs: for a caller without that grant it is `{}`
+(see [Spend and metrics grants](#spend-and-metrics-grants)). The `GET /api/metrics`
+headline counts (`total_cases`, `open_cases`, `needs_human_cases`, `closed_cases`,
+`by_status`, `by_verdict`, `by_disposition`) are exact store-wide counts; `counts_exact` is false, with the reason in `counts_note`, when
 part of them could only be tallied over the analysed cases. Every other figure is
 computed over all cases when the store holds no more than 20,000, else over its newest
 20,000, and `truncated`, `store_total` (the exact case count), and `fetched` (the cases
@@ -961,12 +963,33 @@ numerator and rate remain `null`. In an otherwise history-complete cohort,
 exists they do not force the headline unavailable. Absent instrumentation is never
 converted to zero.
 
+### Spend and metrics grants
+
+`GET /api/feedback/stats` needs `metrics:view`. `GET /api/usage/summary` (the Cost page,
+and one case's spend with `case_id`) needs `cost:view`. `cost:view` also governs the
+spend on the routes that show it beside other figures, which answer everything else to a
+caller without it:
+
+- `GET /api/budget/status` (`models:read`) keeps the caps and settings but returns each
+  window's `spent`, `fraction` and `band` and `excluded_today` as `null`.
+- `GET /api/cases/{case_id}/timeline` leaves every span's `cost` and `tokens` and both
+  `totals` `null`.
+- `GET /api/cases`, `GET /api/cases/{case_id}`, `GET /api/scans`, the case JSON export
+  (`GET /api/cases/{case_id}/export`) and every single-case response
+  (`POST /api/investigate`, and a case's action, feedback, comment, tags, assignment,
+  investigate and reinvestigate) return the case with its own AI spend, `token_cost`, as
+  `null`. The stored figure is unchanged.
+
 ## Agent-improvement evidence
 
 `GET /api/metrics/agent-improvement` is an additive, read-only reporting endpoint
 protected by `metrics:view`. By default it compares the **last seven complete UTC
 days** with the **preceding, non-overlapping 28 complete UTC days**. The current UTC
-day is excluded so a partial day cannot be compared with complete history.
+day is excluded so a partial day cannot be compared with complete history. Its recorded
+case-associated AI cost needs `cost:view` too: for a caller without it the usage ledger
+is not read, and every `recorded_case_cost` block (the headline one and each period
+comparison's) is `unavailable` with zero figures and the reason
+"AI spend needs the cost:view permission".
 
 Optional query parameters are:
 
@@ -1161,7 +1184,16 @@ recorded in the audit log before the first byte is sent, after the ownership, gr
 integrity checks: `audit.export_downloaded` for an audit export, `job.artifact_downloaded`
 for any other kind, always in the real audit log (Demo Mode included). If that row cannot
 be written the download answers `503 audit_unavailable` and sends nothing. A refused
-download (`404`, `403`, `410`) writes no row.
+download (`404`, `403`, `410`, `503`) writes no download row. A file needs, at download
+time, the grants its job needed (an audit export needs `audit:export` and `audit:view`),
+checked again against the stored account. When its owner no longer holds one of them the
+answer is `403` with `{"code": "job_artifact_permission_lost", "message", "required",
+"missing"}` (`required` lists the job's grants, `missing` the ones the caller lacks now),
+and the refusal is recorded as Access denied, naming the missing grants, like any refused
+read. When the check cannot confirm the grants although the caller holds them (the stored
+account or custom roles could not be read), the answer is `503` with `{"code":
+"job_permission_unverifiable", "message"}`, nothing is recorded as Access denied, and the
+download can be tried again.
 
 Application-job progress upserts one stable per-user Inbox notification and publishes
 actor-scoped SSE topic `jobs`, event type `job`, with polling as a client fallback.

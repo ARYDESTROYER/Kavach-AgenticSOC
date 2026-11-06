@@ -800,9 +800,9 @@ See `docs/ENVIRONMENT.md` for the full detail. Summary:
 ## 7. Build / run / test cheatsheet
 
 ```bash
-# Backend tests (offline; MUST stay green) — latest recorded full run: 8,678 tests (see Journal for the exact current count)
+# Backend tests (offline; MUST stay green). Latest recorded full run: 12,461 tests (see Journal for the exact current count)
 cd backend && python3 -m venv .venv && . .venv/bin/activate && pip install -r requirements-dev.txt
-python -m pytest -q                         # -> latest recorded full run: 8,674 passed, 4 skipped (see Journal)
+python -m pytest -q                         # -> latest recorded full run: 12,450 passed, 6 skipped, 5 sandbox-only env failures (see Journal)
 
 # Backend run locally (in-memory store, mock LLM if no keys)
 uvicorn app.main:app --port 8088
@@ -810,7 +810,7 @@ uvicorn app.main:app --port 8088
 # Web UI + installed Help Center build, tests, and lint (Node 22)
 cd webui && npm install && npm run build   # MkDocs bundle + tsc --noEmit + Vite -> webui/dist/
 npm run docs:check                         # validate app 0.1.13 ↔ bundled docs 0.1
-npm run test:strict                        # -> latest recorded full run: 5,425 passed, 1 skipped / 520 files; zero stderr/console output
+npm run test:strict                        # -> latest recorded full run: 8,576 passed, 1 skipped / 652 files; zero stderr/console output
 npm run lint                               # 0 errors, 0 warnings; jsx-a11y at error
 
 # Shipping backend acceptance also runs `python -m pip check` inside the final
@@ -872,8 +872,8 @@ cp .env.example .env   # set TLSOC_PG_PASSWORD + at least one LLM key
   `/api` proxy forwards arbitrary JSON). Keep `webui/src/lib/types.ts` in sync with
   `models.py`.
 - **Secrets:** env only; UI shows booleans (`configured ✓`) never values.
-- **Tests:** add/keep offline tests; `pytest -q` green (latest recorded full run: 8,674 passed, 4 skipped) +
-  `npm run build` clean + `npm run test:strict` (latest recorded full run: 5,425 passed, 1 skipped / 520 files) +
+- **Tests:** add/keep offline tests; `pytest -q` green (latest recorded full run: 12,450 passed, 6 skipped; 5 sandbox-only env failures) +
+  `npm run build` clean + `npm run test:strict` (latest recorded full run: 8,576 passed, 1 skipped / 652 files) +
   `npm run lint` (0 errors, jsx-a11y at error) before
   every commit. (Counts rise each round — see `Journal.md` for the exact current totals.)
 - **Git:** active branch `Testing`. Commit focused changes; push when asked. The
@@ -1040,18 +1040,28 @@ identity, process privilege, or frozen-base bytes. Repository-level branch
 protection, required-check, and `github-pages` environment policy remain administrator
 controls and must be verified independently of source changes.
 
-**Round 14 baseline (TO BE FILLED BY WP-GEN):** backend pytest passed/skipped, webui Vitest
-passed/skipped/files, the entry chunk against `PRE_REVAMP_ENTRY_BYTES` (lowered by WP-GEN from
-377,070 B to 336,216 B, budget 337,240 B; the final measured entry goes here, Round 14 SPEC §11.1
-"Entry bundle"), eslint and the design gates. Until WP-GEN fills this line, the latest recorded full backend run is 11,900
-tests (11,888 passed, 6 skipped, 6 failed: five sandbox-only environment tests and the records
-test this documentation pass fixes; Journal, run r6b-fix), and the snapshot below is Round 13's.
+**Round 14 baseline (2026-11-06, closing gates on the integrated tree; Round 14 SPEC §11.4
+"Final gates"):** backend **12,461 pytest** tests: 12,450 passed, 6 skipped, 0 errors and 5
+failed, the five sandbox-only environment tests, whose four files pass 55 of 55 with the
+sandbox's proxy and AWS variables unset (CI runs without them); ruff fatal clean. webui
+`npm run test:strict` **8,576 Vitest** specs passed, 1 skipped (the dist-required case outside
+the build lane), 0 failed / 652 files, with zero stderr and no captured console output, and its
+5 contract checks pass. Full docs+app build clean (3,523 modules, no warnings); entry chunk
+**337,163 B** against `PRE_REVAMP_ENTRY_BYTES` 336,216 B (lowered by WP-GEN from 377,070 B):
+947 B over the baseline, 77 B inside the 337,240 B budget and 62,837 B under the 400,000 B
+ceiling, so no rebase (Round 14 SPEC §11.1 "Entry bundle"); the first-paint assertions, motion
+off the entry path among them, pass on the built `dist/`. eslint **0 errors, 0 warnings**; the
+design gates pass (37 tokens, contrast on 166 axes in both themes, no new arbitrary text sizes or
+raw hex, chart ramps colour-vision separable, 364 login accent composites); `check:types` without
+drift (293 paths); `docs:check`, `check_version`, `check_ci_contract` (3 workflows, 3 shipping
+Dockerfiles), `check_docs` (84 pages) and `build_app_knowledge --check` (877 chunks) pass.
 
-**Current baseline (2026-10-23, Round 13 chat, closing gates):** backend **8,674 pytest** passed, 4 skipped (0 failures);
-webui **5,425 Vitest** specs passed, 1 skipped (the dist-required case outside the build lane) / 520 files
-with zero stderr or captured console output, full docs+app build clean (3,406 modules; entry chunk
-371,859 B, inside the +1,024 B budget over the recorded `PRE_REVAMP_ENTRY_BYTES` baseline
-371,003 B and under the 400,000 B ceiling;
+**Current baseline (2026-11-06, Round 14, closing gates):** backend **12,450 pytest** passed, 6 skipped
+(5 sandbox-only environment failures, which pass with the sandbox's proxy and AWS variables unset);
+webui **8,576 Vitest** specs passed, 1 skipped (the dist-required case outside the build lane) / 652 files
+with zero stderr or captured console output, full docs+app build clean (3,523 modules; entry chunk
+337,163 B, inside the +1,024 B budget over the recorded `PRE_REVAMP_ENTRY_BYTES` baseline
+336,216 B and under the 400,000 B ceiling;
 motion remains lazy and off the entry path); eslint **0 errors, 0 warnings**; **zero new webui runtime
 deps except the deliberate lazy `motion`** (12.42.2). Version 0.1 adds only the
 explicitly pinned connector/SQL packaging dependencies required by its advertised

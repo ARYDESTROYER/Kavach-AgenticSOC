@@ -213,7 +213,8 @@ const SECTION_COMPONENTS: Record<string, SectionRenderer> = {
     }),
   standup: (ctx) => h(StandupSection, { prefs: ctx.prefs, update: ctx.update }),
   notifications: (ctx) => h(NotificationsEditor, { prefs: ctx.prefs, update: ctx.update }),
-  enrichment: (ctx) => h(EnrichmentSection, { prefs: ctx.prefs, update: ctx.update }),
+  enrichment: (ctx) =>
+    h(EnrichmentSection, { prefs: ctx.prefs, update: ctx.update, readOnly: ctx.readOnly }),
   knowledge: (ctx) =>
     h(KnowledgeSection, { prefs: ctx.prefs, update: ctx.update, onNavigate: ctx.onNavigate }),
   runbooks: (ctx) => h(RunbooksSection, { prefs: ctx.prefs, update: ctx.update }),

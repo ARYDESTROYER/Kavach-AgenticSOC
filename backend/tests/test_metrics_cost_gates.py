@@ -83,6 +83,8 @@ def test_metrics_need_metrics_view():
         refused = client.get("/api/metrics", params={"window_hours": 24})
         assert refused.status_code == 403
         assert refused.json()["detail"] == "permission denied: metrics:view"
+        # The feedback agreement figures are a metrics read too.
+        assert client.get("/api/feedback/stats").status_code == 403
         # Spend is a separate grant the role still holds.
         assert client.get("/api/usage/summary", params={"window_hours": 24}).status_code == 200
 
@@ -105,6 +107,7 @@ def test_usage_summary_needs_cost_view_and_metrics_leave_spend_out():
 def test_a_role_with_both_grants_reads_both():
     with _client() as client:
         _as_tier1(client)
+        assert client.get("/api/feedback/stats").status_code == 200
         usage = client.get("/api/usage/summary", params={"window_hours": 24})
         assert usage.status_code == 200, usage.text
         assert usage.json()["total_cost"] > 0

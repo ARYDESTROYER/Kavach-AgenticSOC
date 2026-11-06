@@ -209,8 +209,10 @@ def test_the_planned_rows_hold_no_lookup_row_and_a_collected_row_is_the_live_one
     assert row["ts"] == collected.ran_at and row["action"] == "step.evidence_collected"
     assert row["actor"] == RUNBOOK_SYSTEM_RUNNER and row["actor_type"] == "system"
     assert row["case_id"] == "case-0001" and row["target"].label == "CASE-0001"
-    # The live engine's own per-status wording (``runbook_runs.lookup_evidence_summary``).
-    assert row["result_summary"] == "Log statistics lookup collected evidence."
+    # The live engine's own per-status wording (``runbook_runs.lookup_evidence_summary``),
+    # the lookup named on its step by the step's title.
+    assert row["result_summary"] == (
+        'Log statistics lookup on runbook step "How many accounts were tried?" collected evidence.')
     assert row["tool_input"] == {"run_id": run.run_id, "step_id": "accounts-tried", "tool": "log_stats",
                                  "status": "ok", "count": 4, "count_relation": "eq"}
     by_person = demo_evidence_audit_row(run, brute_force_world[0], "accounts-tried",
@@ -223,6 +225,37 @@ def test_the_planned_rows_hold_no_lookup_row_and_a_collected_row_is_the_live_one
     with_result = run.model_copy(update={"steps": steps})
     rows = demo_runbook_audit_rows(with_result, brute_force_world[0])
     assert [r["action"] for r in rows].count("step.evidence_collected") == 1
+
+
+def test_seeded_evidence_rows_name_the_lookup_step_as_live_rows_do(brute_force_world: list[Case]) -> None:
+    """Brute force has two Log statistics lookups; each seeded evidence row names its
+    own step by its title, as the live engine's row does (FX7b review)."""
+    from app.engine.runbook_runs import lookup_evidence_summary
+
+    run = _plan(brute_force_world)["case-0001"]
+    stats = [s for s in run.snapshot.steps if s.lookup is not None and s.lookup.tool == "log_stats"]
+    assert len(stats) == 2
+    collected = LookupResult(tool="log_stats", status="ok", count=4, ran_at="2026-10-28T10:00:05Z",
+                             ran_by=RUNBOOK_SYSTEM_RUNNER, facts=[{"label": "Events", "value": "4"}])
+    rows = [demo_evidence_audit_row(run, brute_force_world[0], s.id, collected) for s in stats]
+    assert [r["result_summary"] for r in rows] == [lookup_evidence_summary(collected, s) for s in stats]
+    assert len({r["result_summary"] for r in rows}) == 2
+
+
+def test_the_seeded_step_rows_name_each_step_by_its_title(brute_force_world: list[Case]) -> None:
+    """A seeded case's activity feed reads as a live one (second acceptance pass,
+    wrb-11): each worked step is named by its title in the run's version and the row
+    says what changed, never "Runbook step <id> updated."; the id stays in
+    ``tool_input``."""
+    run = _plan(brute_force_world)["case-0001"]
+    rows = [r for r in demo_runbook_audit_rows(run, brute_force_world[0]) if r["action"].startswith("step.")]
+    assert rows
+    titles = {s.id: s.title for s in run.snapshot.steps}
+    for r in rows:
+        step_id = r["tool_input"]["step_id"]
+        assert f'"{titles[step_id]}"' in r["result_summary"], r["result_summary"]
+        assert not r["result_summary"].endswith(" updated."), r["result_summary"]
+        assert step_id not in r["result_summary"].replace(titles[step_id], "")
 
 
 # --------------------------------------------------------------------------- #

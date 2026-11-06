@@ -6,7 +6,8 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import userEvent from '@testing-library/user-event';
 
 import type { BackgroundJob, BackgroundJobKind, Case } from '@/lib/types';
-import CaseManager from '../CaseManager';
+import CaseManager, { canSelectCases, caseManagerShortcuts } from '../CaseManager';
+import { listPickableUsers } from '../CaseDetail.api';
 
 expect.extend(toHaveNoViolations);
 
@@ -1778,5 +1779,91 @@ describe('CaseManager', () => {
 
     expect(await axe(view.container)).toHaveNoViolations();
     expect(await axe(menu)).toHaveNoViolations();
+  });
+
+  // GET /api/users needs `users:manage` (Round 14 roles-02): without it the owner list is
+  // never asked for, since every refusal writes an Access denied audit row.
+  it('does not read the owner list without users:manage', async () => {
+    vi.mocked(listPickableUsers).mockClear();
+    render(<CaseManager />);
+    await screen.findByTestId('embedded-case-detail');
+    expect(listPickableUsers).not.toHaveBeenCalled();
+  });
+
+  it('reads the owner list once with users:manage', async () => {
+    vi.mocked(listPickableUsers).mockClear();
+    mocks.permissions.add('users:manage');
+    render(<CaseManager />);
+    await screen.findByTestId('embedded-case-detail');
+    await waitFor(() => expect(listPickableUsers).toHaveBeenCalledTimes(1));
+  });
+
+  // Round 14 roles-07: selection exists only for bulk work, so a read-only role (the
+  // auditor) gets no checkboxes, no "Select visible" and no selection keys, and the
+  // shortcuts sheet promises only keys the role can use (as the Cases page does).
+  it('gives a read-only auditor no selection, no selection keys, and only usable shortcuts', async () => {
+    mocks.permissions = new Set(['cases:read']);
+    render(<CaseManager />);
+    await screen.findByTestId('embedded-case-detail');
+    expect(screen.queryByRole('checkbox', { name: /^Select CASE-/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('checkbox', { name: 'Select all visible cases' })).not.toBeInTheDocument();
+    expect(screen.queryByText('Select visible')).not.toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: 'Case selection and bulk actions' })).not.toBeInTheDocument();
+    // The visible count stays.
+    expect(within(screen.getByTestId('case-manager-selection-row')).getByText(/\d+ visible/)).toBeInTheDocument();
+
+    const list = screen.getByRole('list', { name: 'Cases' });
+    const firstRow = within(screen.getAllByTestId('case-queue-row')[0]).getAllByRole('button')[0];
+    expect(firstRow).toHaveAttribute('aria-keyshortcuts', 'ArrowUp ArrowDown J K Enter');
+    act(() => firstRow.focus());
+    fireEvent.keyDown(list, { key: 'x' });
+    fireEvent.keyDown(list, { key: 'J', shiftKey: true });
+    expect(screen.queryByText(/\d+ selected/)).not.toBeInTheDocument();
+
+    fireEvent.keyDown(document.body, { key: '?' });
+    const sheet = await screen.findByRole('dialog', { name: 'Keyboard shortcuts' });
+    const listed = Array.from(sheet.querySelectorAll('dt')).map((el) => el.textContent);
+    for (const keys of ['X  or  Space', 'Shift + ↑ ↓  or  Shift + X', 'Esc', 'A  C  E  H', 'R', 'M  T']) {
+      expect(listed).not.toContain(keys);
+    }
+    expect(listed).toEqual(expect.arrayContaining(['↑ ↓  or  K J', 'Alt + 1 … 7']));
+  });
+
+  it('keeps selection and every case key for a role that holds all the case grants', async () => {
+    render(<CaseManager />);
+    await screen.findByTestId('embedded-case-detail');
+    expect(screen.getByRole('checkbox', { name: 'Select all visible cases' })).toBeInTheDocument();
+    expect(screen.getAllByRole('checkbox', { name: /^Select CASE-/ }).length).toBeGreaterThan(0);
+    fireEvent.keyDown(document.body, { key: '?' });
+    const sheet = await screen.findByRole('dialog', { name: 'Keyboard shortcuts' });
+    const listed = Array.from(sheet.querySelectorAll('dt')).map((el) => el.textContent);
+    expect(listed).toEqual(expect.arrayContaining(['X  or  Space', 'A  C  E  H', 'R', 'M  T']));
+  });
+});
+
+describe('caseManagerShortcuts and canSelectCases', () => {
+  const grantsOf = (...held: string[]) => (resource: string, action: string) =>
+    held.includes(`${resource}:${action}`);
+  const keysFor = (...held: string[]) => caseManagerShortcuts(grantsOf(...held)).map((row) => row.keys);
+
+  it('lists the case keys each grant allows, and the selection keys with any bulk grant', () => {
+    expect(keysFor('cases:read')).toEqual(['↑ ↓  or  K J', 'Home  End', 'Enter', '/', '?', 'Alt + 1 … 7']);
+    expect(keysFor('cases:write')).toEqual(
+      expect.arrayContaining(['X  or  Space', 'A  E  H', 'T']),
+    );
+    expect(keysFor('cases:write')).not.toContain('R');
+    expect(keysFor('cases:close')).toEqual(expect.arrayContaining(['C', 'X  or  Space']));
+    expect(keysFor('cases:assign')).toEqual(expect.arrayContaining(['M']));
+    expect(keysFor('cases:assign')).not.toContain('M  T');
+    expect(keysFor('cases:write', 'cases:close', 'cases:assign', 'cases:reinvestigate')).toEqual(
+      expect.arrayContaining(['A  C  E  H', 'R', 'M  T']),
+    );
+  });
+
+  it('allows selection only with a bulk grant', () => {
+    expect(canSelectCases(grantsOf('cases:read', 'cases:comment'))).toBe(false);
+    for (const grant of ['cases:write', 'cases:assign', 'cases:reinvestigate', 'cases:close']) {
+      expect(canSelectCases(grantsOf(grant))).toBe(true);
+    }
   });
 });

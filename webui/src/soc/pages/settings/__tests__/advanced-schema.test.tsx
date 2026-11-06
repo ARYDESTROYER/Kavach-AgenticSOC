@@ -147,6 +147,29 @@ describe('AdvancedSchemaSection (schema-driven generic renderer)', () => {
     expect(screen.queryByLabelText('Max tool calls')).not.toBeInTheDocument();
   });
 
+  it('hides enrichment: the Enrichment section is its one editor (wro-01)', async () => {
+    schemaMock.mockResolvedValueOnce({
+      sections: [
+        ...SCHEMA.sections,
+        {
+          key: 'enrichment',
+          title: 'Enrichment',
+          kind: 'object' as const,
+          model: 'EnrichmentConfig',
+          fields: [
+            { name: 'use_spamhaus', type: 'boolean' as const, default: false, required: false, choices: null, description: null },
+            { name: 'cache_ttl_seconds', type: 'integer' as const, default: 21600, required: false, choices: null, description: null },
+          ],
+        },
+      ],
+    });
+    renderSection({ baseline: { enabled: false } });
+    await waitFor(() => expect(screen.getByLabelText('Data view pattern')).toBeInTheDocument());
+    expect(screen.queryByText('Enrichment')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Use spamhaus')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Cache TTL seconds')).not.toBeInTheDocument();
+  });
+
   it('special-cases read_only_settings_mode (field) as read-only (managed elsewhere)', async () => {
     renderSection({ baseline: { enabled: false } });
     await waitFor(() => expect(screen.getByLabelText('Data view pattern')).toBeInTheDocument());

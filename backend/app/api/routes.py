@@ -2264,6 +2264,7 @@ async def chat(
 async def investigate(
     body: InvestigateRequest, state: AppState = Depends(get_state),
     _=Depends(require_permission("cases", "reinvestigate")),
+    request: Request = None,  # type: ignore[assignment]
 ) -> dict[str, Any]:
     query_source = state.active_source_for_id(body.source_id)
     if body.source_id and query_source is None:
@@ -2279,7 +2280,7 @@ async def investigate(
     case = await state.pipeline.investigate_cluster(
         cluster, body.source_surface, state.execution_prefs, query_source=query_source
     )
-    return _case_view(case, state)
+    return _case_view(case, state, spend=await _case_spend_visible(request))
 
 
 # --------------------------------------------------------------------------- #
@@ -3257,7 +3258,12 @@ async def metrics(
 
 
 @router.get("/feedback/stats")
-async def feedback_stats_route(state: AppState = Depends(get_state)) -> dict[str, Any]:
+async def feedback_stats_route(
+    state: AppState = Depends(get_state),
+    _=Depends(require_permission("metrics", "view")),
+) -> dict[str, Any]:
+    """Analyst feedback agreement over the newest cases, a metrics read behind
+    ``metrics:view`` like ``GET /api/metrics`` (whose ``feedback`` part it repeats)."""
     cases, _total = await state.cases.list(limit=2000)
     return feedback_stats(cases)
 
@@ -6108,13 +6114,42 @@ def _with_advisory_bands(case: Case, prefs: Preferences | None) -> Case:
         return case
 
 
-def _case_view(case: Case, state: AppState) -> dict[str, Any]:
+async def _case_spend_visible(request: Request | None) -> bool:
+    """Whether this caller may read a case's own AI spend, ``Case.token_cost``.
+
+    Round 14 (roles-11, second acceptance integration): AI spend follows one rule,
+    ``cost:view``, wherever it is shown, and a case's cumulative investigation cost is
+    spend like the cost and tokens on its timeline (``GET /cases/{id}/timeline``) and
+    chat's case figures (``agents/chat_tools/cases.py``). Every case read and every
+    single-case response consults this. ``None`` is a direct in-process call (tests,
+    jobs), which has no caller to withhold from. Never raises for a missing grant and
+    writes no audit row: the case is still answered, only the figure is left out."""
+    if request is None:
+        return True
+    from .deps import has_permission
+
+    return await has_permission(request, "cost", "view")
+
+
+def _withhold_case_spend(view: dict[str, Any]) -> dict[str, Any]:
+    """Leave a case's own AI spend out of one serialised case: the ``token_cost`` key
+    stays and its value is ``null``, the shape the timeline totals and the budget
+    windows use for a caller without ``cost:view``. Display only (#3)."""
+    if "token_cost" in view:
+        view["token_cost"] = None
+    return view
+
+
+def _case_view(case: Case, state: AppState, *, spend: bool = True) -> dict[str, Any]:
     """The JSON every single-case MUTATION returns (Round 12 final review): the same
     shape as ``GET /cases/{id}``, the stored case plus its read-time advisory bands
     under ``execution_prefs``. A client that renders the response (the Case Manager
     header after Acknowledge or Close) otherwise saw ``severity_band: null`` and fell
     back to a risk-score band, so a source-asserted Critical case read as Info until a
     reload. Display only: nothing here is stored or read by ``decide()`` (#3).
+
+    ``spend=False`` (a caller without ``cost:view``, see :func:`_case_spend_visible`)
+    answers ``token_cost: null``, as ``GET /cases/{id}`` does for that caller.
 
     Fail-open like the read path: the mutation is already saved when this runs, so a
     preference lookup that fails degrades to the prefs-free severity axis
@@ -6123,7 +6158,8 @@ def _case_view(case: Case, state: AppState) -> dict[str, Any]:
         prefs: Preferences | None = state.execution_prefs
     except Exception:  # noqa: BLE001 — advisory only; never fail a saved mutation
         prefs = None
-    return _with_advisory_bands(case, prefs).model_dump(mode="json")
+    view = _with_advisory_bands(case, prefs).model_dump(mode="json")
+    return view if spend else _withhold_case_spend(view)
 
 
 # --------------------------------------------------------------------------- #
@@ -6525,6 +6561,7 @@ async def list_cases(
     closed_by: str | None = None,
     state: AppState = Depends(get_state),
     _=Depends(require_permission("cases", "read")),
+    request: Request = None,  # type: ignore[assignment]
 ) -> CaseListResponse | JSONResponse:
     """List cases, optionally windowed, sorted, paged and narrowed to a lifecycle group.
 
@@ -6549,6 +6586,9 @@ async def list_cases(
     those; ``system`` also covers older rows with no recorded decider). Both are answered
     by the exact queue scan and echoed as ``rule_applied`` / ``closed_by_applied``; any
     other value is a 400. The free-text ``q`` now also matches a case's rule values.
+
+    Round 14 (roles-11): for a caller without ``cost:view`` every row's ``token_cost``
+    (the case's own AI spend) is ``null``; the rows, counts and echoes are unchanged.
     """
     # ADDITIVE (Round-6 #37): an OPTIONAL created_at time window so Overview widgets can
     # honor the TimeRangePicker. Default (both None) == byte-identical prior behaviour:
@@ -6723,15 +6763,22 @@ async def list_cases(
     prefs = state.execution_prefs
     cases = [_with_advisory_bands(c, prefs) for c in cases]
     payload = CaseListResponse(cases=cases, total=total, window_total_exact=window_total_exact)
+    spend = await _case_spend_visible(request)
     # A request that engaged NONE of the new parameters is answered by the declared
     # response model, exactly as before — same keys, same bytes, same object for the
     # in-process callers that await this coroutine directly.
-    if not extended:
+    if not extended and spend:
         return payload
     # A request that DID engage them gets the same envelope plus the echoes. Encoding
     # through ``jsonable_encoder`` is the same step FastAPI's own response-model path
-    # takes, so the shared keys are byte for byte what they always were.
+    # takes, so the shared keys are byte for byte what they always were. A caller
+    # without ``cost:view`` gets the same envelope with each row's spend left out.
     body = jsonable_encoder(payload)
+    if not spend:
+        for row in body.get("cases") or []:
+            _withhold_case_spend(row)
+    if not extended:
+        return JSONResponse(body)
     body.update(
         jsonable_encoder(
             CaseListEcho(
@@ -6766,7 +6813,10 @@ async def get_case(
     case_id: str,
     state: AppState = Depends(get_state),
     _=Depends(require_permission("cases", "read")),
-) -> Case:
+    request: Request = None,  # type: ignore[assignment]
+) -> Case | JSONResponse:
+    """One case. For a caller without ``cost:view`` its ``token_cost`` (the case's own
+    AI spend) is ``null`` (Round 14 roles-11); every other field is unchanged."""
     case = await state.cases.get(case_id)
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
@@ -6774,7 +6824,12 @@ async def get_case(
     # ``execution_prefs`` (NOT ``prefs``) — the SAME authority the list surface above
     # uses. The two diverged, so under an active demo sandbox one case could band
     # differently in the list and in its own detail view.
-    return _with_advisory_bands(case, state.execution_prefs)
+    banded = _with_advisory_bands(case, state.execution_prefs)
+    if await _case_spend_visible(request):
+        return banded
+    # The declared model's own encoding with the one figure left out: a ``null`` would
+    # not validate as the stored ``float``, so the body is sent as encoded.
+    return JSONResponse(_withhold_case_spend(jsonable_encoder(banded)))
 
 
 class CaseAction(BaseModel):
@@ -7035,7 +7090,8 @@ async def case_action(
 
         user = await _enforce(request, "cases", _grant_for_body(body))
     actor = getattr(user, "username", "") or body.analyst or "analyst"
-    return await _perform_case_action(case_id, body, actor, state, context=_request_audit_context(request))
+    view = await _perform_case_action(case_id, body, actor, state, context=_request_audit_context(request))
+    return view if await _case_spend_visible(request) else _withhold_case_spend(view)
 
 
 def _request_audit_context(request: Request | None) -> Any:
@@ -7505,7 +7561,7 @@ async def case_feedback(
             await state.rag_service.index_resolved_case(case, note=body.comment)
         except Exception as exc:  # noqa: BLE001 — feedback must survive RAG outages
             logger.warning("Feedback RAG refresh failed for %s: %s", case_id, exc)
-    return _case_view(case, state)
+    return _case_view(case, state, spend=await _case_spend_visible(request))
 
 
 @router.post("/cases/{case_id}/comment")
@@ -7534,7 +7590,7 @@ async def case_comment(
         actor_type="human", outcome="success",
         case_id=case_id, result_summary="comment added",
     )
-    return _case_view(case, state)
+    return _case_view(case, state, spend=await _case_spend_visible(request))
 
 
 @router.post("/cases/{case_id}/tags")
@@ -7570,7 +7626,7 @@ async def case_tags(
         from ..engine import runbook_runs
 
         await runbook_runs.reevaluate_case(state, case, trigger="tags")
-    return _case_view(case, state)
+    return _case_view(case, state, spend=await _case_spend_visible(request))
 
 
 @router.post("/cases/{case_id}/assign")
@@ -7608,15 +7664,18 @@ async def case_assign(
         actor_type="human", outcome="success",
         case_id=case_id, result_summary=f"assigned to {case.assignee or '(unassigned)'}",
     )
-    return _case_view(case, state)
+    return _case_view(case, state, spend=await _case_spend_visible(request))
 
 
 @router.get("/cases/{case_id}/export")
 async def case_export(
-    case_id: str, format: str = "json", state: AppState = Depends(get_state)
+    case_id: str, format: str = "json", state: AppState = Depends(get_state),
+    request: Request = None,  # type: ignore[assignment]
 ) -> dict[str, Any]:
     """Export a case for handoff/ticketing as JSON or a Markdown report. Returns
-    ``{filename, content_type, content}`` so the UI can trigger a download."""
+    ``{filename, content_type, content}`` so the UI can trigger a download. The JSON
+    leaves ``token_cost`` out (``null``) for a caller without ``cost:view``; the
+    Markdown report carries no spend."""
     case = await state.cases.get(case_id)
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
@@ -7630,10 +7689,14 @@ async def case_export(
     if fmt == "json":
         import json as _json
 
+        dumped = case.model_dump(mode="json")
         return {
             "filename": f"{case_id}.json",
             "content_type": "application/json",
-            "content": _json.dumps(case.model_dump(mode="json"), indent=2, default=str),
+            "content": _json.dumps(
+                dumped if await _case_spend_visible(request) else _withhold_case_spend(dumped),
+                indent=2, default=str,
+            ),
         }
     raise HTTPException(status_code=400, detail=f"unsupported format: {format}")
 
@@ -7708,6 +7771,7 @@ async def case_investigate(
     case_id: str,
     state: AppState = Depends(get_state),
     _=Depends(require_permission("cases", "reinvestigate")),
+    request: Request = None,  # type: ignore[assignment]
 ) -> dict[str, Any]:
     """Human-triggered (re-)investigation of a stored case (C3-4).
 
@@ -7740,7 +7804,7 @@ async def case_investigate(
         cluster, case.source_surface, state.execution_prefs,
         force=True, query_source=query_source,
     )
-    return _case_view(updated, state)
+    return _case_view(updated, state, spend=await _case_spend_visible(request))
 
 
 class ReinvestigateRequest(BaseModel):
@@ -7758,6 +7822,7 @@ async def case_reinvestigate(
     body: ReinvestigateRequest | None = None,
     state: AppState = Depends(get_state),
     _=Depends(require_permission("cases", "reinvestigate")),
+    request: Request = None,  # type: ignore[assignment]
 ) -> dict[str, Any]:
     """Manually re-run the SHARED investigation pipeline on a stored case (force).
 
@@ -7810,7 +7875,7 @@ async def case_reinvestigate(
     updated = await state.pipeline.investigate_cluster(
         cluster, case.source_surface, prefs_eff, force=True, query_source=query_source
     )
-    return _case_view(updated, state)
+    return _case_view(updated, state, spend=await _case_spend_visible(request))
 
 
 @router.post("/cases/{case_id}/run-playbook", deprecated=True, status_code=410)
@@ -7966,9 +8031,15 @@ async def case_forwarding(
 # Automated scans (Surface 3)
 # --------------------------------------------------------------------------- #
 @router.get("/scans")
-async def scans(limit: int = 50, state: AppState = Depends(get_state)) -> dict[str, Any]:
+async def scans(
+    limit: int = 50, state: AppState = Depends(get_state),
+    request: Request = None,  # type: ignore[assignment]
+) -> dict[str, Any]:
     cases, total = await state.cases.list_scans(limit=min(limit, 200))
-    return {"cases": [c.model_dump(mode="json") for c in cases], "total": total}
+    rows = [c.model_dump(mode="json") for c in cases]
+    if not await _case_spend_visible(request):
+        rows = [_withhold_case_spend(row) for row in rows]
+    return {"cases": rows, "total": total}
 
 
 @router.get("/scans/notifications")

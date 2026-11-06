@@ -441,7 +441,7 @@
       ],
       "page": "cost",
       "opts": {},
-      "requires": null,
+      "requires": "cost:view",
       "blurb": "",
       "keywords": [
         "spend",
@@ -541,7 +541,7 @@
       ],
       "page": "sources",
       "opts": {},
-      "requires": null,
+      "requires": "sources:read",
       "blurb": "",
       "keywords": [
         "connectors",

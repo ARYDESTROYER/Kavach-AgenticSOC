@@ -532,11 +532,25 @@ describe('older hosts and stored windows', () => {
       </DashboardDataProvider>,
     );
     await settle();
-    // `metrics` and `cases` both need cases:read: never requested, so no 403 to explain.
-    expect(apiMocks.getMetrics).not.toHaveBeenCalled();
+    // `cases` needs cases:read: never requested, so no 403 to explain. `metrics` needs
+    // metrics:view, as the server's GET /api/metrics does, so it is still read.
     expect(apiMocks.listCases).not.toHaveBeenCalled();
+    expect(apiMocks.getMetrics).toHaveBeenCalledTimes(1);
     expect(fetchPostureMock).toHaveBeenCalledTimes(1);
     expect(apiMocks.get).toHaveBeenCalledWith('sources/health');
+  });
+
+  it('never reads GET /api/metrics without metrics:view (Round 14 second acceptance pass, roles-04)', async () => {
+    const can = (resource: string, action: string) => !(resource === 'metrics' && action === 'view');
+    render(
+      <DashboardDataProvider objectScoped={false} can={can}>
+        <Probe />
+      </DashboardDataProvider>,
+    );
+    await settle();
+    expect(apiMocks.getMetrics).not.toHaveBeenCalled();
+    expect(fetchPostureMock).not.toHaveBeenCalled();
+    expect(apiMocks.listCases).toHaveBeenCalledTimes(1);
   });
 
   it('a stored window that is not one of the four presets falls back to the last 24 hours', async () => {

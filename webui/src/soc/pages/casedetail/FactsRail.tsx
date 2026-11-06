@@ -143,6 +143,11 @@ export interface FactsRailProps {
   fpPolicy?: FpPolicy;
   users: PickableUser[];
   canAssign: boolean;
+  /**
+   * Whether the viewer holds `cost:view`. Without it the Record section leaves the
+   * investigation cost out (the server answers `token_cost: null` for that viewer too).
+   */
+  canViewCost: boolean;
   onCaseChange: (next: Case) => void;
   /** Open the Set disposition dialog (offered when a human close recorded no outcome). */
   onSetDisposition?: () => void;
@@ -169,6 +174,7 @@ export const FactsRail: React.FC<FactsRailProps> = ({
   fpPolicy,
   users,
   canAssign,
+  canViewCost,
   onCaseChange,
   onSetDisposition,
   onShowRelated,
@@ -402,7 +408,9 @@ export const FactsRail: React.FC<FactsRailProps> = ({
       <RailSection title="Record" icon={History} testId="facts-record">
         <dl className="space-y-1.5">
           <Fact label="Decided by">{c.decision_by ? humanizeToken(c.decision_by) : DASH}</Fact>
-          <Fact label="Investigation cost">{fmtMoney(c.token_cost)}</Fact>
+          {canViewCost && c.token_cost != null ? (
+            <Fact label="Investigation cost">{fmtMoney(c.token_cost)}</Fact>
+          ) : null}
           <Fact label="Creation build">
             {appVersion || buildSha
               ? `${appVersion ? `v${appVersion}` : 'version unavailable'} · ${
