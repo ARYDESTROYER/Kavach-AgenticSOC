@@ -45,6 +45,7 @@ from typing import Any, Iterable
 from ...config import ChatAgentConfig
 from ...constants import ActionType
 from ...models import ChatToolInfo
+from ...stored_text import audit_actor_key
 from .base import ChatTool, ChatToolContext, Grant, ToolOutcome, render_tool_signatures
 from .common import ToolCall, call_scope, logs_console_view, parse_input
 from .taint import TaintLedger
@@ -67,7 +68,6 @@ BUDGETED_TOOLS: frozenset[str] = frozenset({"lookup_indicator"})
 DATA_TOOL_MODULES: tuple[str, ...] = ("logs", "cases", "stats", "metrics", "intel", "ops")
 OPTIONAL_TOOL_MODULES: tuple[str, ...] = ("app_help", "app_status")
 
-_ACTOR_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 _TOKEN_RE = re.compile(r"[^A-Za-z0-9_.:\-]")
 _RESERVED_KWARGS = frozenset({"self", "ctx"})
 #: The per-call budget of a tool that scans a whole population (``timeout_s`` on the
@@ -211,9 +211,9 @@ def _for_caller(tool: ChatTool, ctx: ChatToolContext) -> ChatTool | None:
 
 
 def _actor(ctx: ChatToolContext) -> str:
-    """The audit actor exactly as the other chat audit writers spell it (control
-    characters removed, 160 chars, ``default`` when auth is off)."""
-    return _ACTOR_CONTROL_RE.sub("", str(ctx.user or ""))[:160] or "default"
+    """The audit actor exactly as the other chat audit writers spell it
+    (:func:`app.stored_text.audit_actor_key`, ``default`` when auth is off)."""
+    return audit_actor_key(str(ctx.user or "")) or "default"
 
 
 def _token(value: Any, limit: int = 64) -> str:

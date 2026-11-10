@@ -42,6 +42,7 @@ from app.models import AUDIT_ACTOR_MAX_CHARS, AuditDoc, User
 from app.state import AppState
 from app.stored_text import (
     USERNAME_MAX_CHARS,
+    audit_actor_key,
     clean_tree,
     multi_line,
     shown,
@@ -85,13 +86,26 @@ def test_the_text_policy_removes_and_never_replaces() -> None:
     ("alice", None), (" alice\n", None), ("", None), ("a" * USERNAME_MAX_CHARS, None),
     (f"stg-nul{NUL}probe", "control"), ("tab\tin", "control"), (f"x{LONE}", "control"),
     ("a" * (USERNAME_MAX_CHARS + 1), "longer"),
+    # The actor form of a longer name is reserved, so no new account can share it.
+    (audit_actor_key("svc." + "a" * 200), "reserved"),
 ])
 def test_username_problem(name: str, problem: str | None) -> None:
     found = username_problem(name)
     assert (found is None) if problem is None else (problem in (found or ""))
     # Sign-in checks the characters only: length is bounded where accounts are created.
     chars = username_char_problem(name)
-    assert (chars is None) if problem in (None, "longer") else (problem in (chars or ""))
+    assert (chars is None) if problem in (None, "longer", "reserved") else (problem in (chars or ""))
+
+
+def test_the_actor_key_keeps_a_fitting_name_and_tells_long_names_apart() -> None:
+    assert audit_actor_key("alice") == "alice" and audit_actor_key(f"al{NUL}ice\n") == "alice"
+    assert audit_actor_key("a" * USERNAME_MAX_CHARS) == "a" * USERNAME_MAX_CHARS
+    assert audit_actor_key(None) is None and audit_actor_key(3) == 3
+    first, second = "x" * USERNAME_MAX_CHARS + "-one", "x" * USERNAME_MAX_CHARS + "-two"
+    keys = {audit_actor_key(first), audit_actor_key(second), audit_actor_key("x" * USERNAME_MAX_CHARS)}
+    assert len(keys) == 3 and all(len(key) == USERNAME_MAX_CHARS for key in keys)
+    # Stable, so every row an account writes carries one actor.
+    assert audit_actor_key(first) == audit_actor_key(first) and audit_actor_key(first).startswith("x" * 147 + "~")
 
 
 # --------------------------------------------------------------------------- #
@@ -127,7 +141,9 @@ def test_every_audit_string_is_cleaned_on_write_and_the_row_still_written() -> N
 
 def test_the_actor_is_bounded_like_a_username_and_never_blanked() -> None:
     long = AuditDoc(action_type=ActionType.AUTH_EVENT, actor="x" * 500)
-    assert AUDIT_ACTOR_MAX_CHARS == USERNAME_MAX_CHARS == 160 and long.actor == "x" * 160
+    assert AUDIT_ACTOR_MAX_CHARS == USERNAME_MAX_CHARS == 160
+    assert long.actor == audit_actor_key("x" * 500) and len(long.actor) == 160
+    assert AuditDoc(action_type=ActionType.AUTH_EVENT, actor="x" * 160).actor == "x" * 160
     # A name made only of removed characters still shows that a name was given.
     only_controls = AuditDoc(action_type=ActionType.AUTH_EVENT, actor=f"{NUL}\n{LONE}")
     assert only_controls.actor == "\ufffd" and "\\u0000" not in _payload(only_controls)
@@ -293,12 +309,13 @@ def test_a_nul_login_is_a_401_recorded_clean_and_the_default_view_still_reads(tm
         assert only_nul.status_code == 401
         rows = _failed_logins(client)
         by_actor = {r["actor"]: r for r in rows}
-        assert set(by_actor) >= {"xy", "stg-nulprobe", "z" * 160, "\ufffd"}
+        assert set(by_actor) >= {"xy", "stg-nulprobe", audit_actor_key("z" * 400), "\ufffd"}
         assert by_actor["xy"]["result_summary"] == (
             "login failed: the username contains control or invalid characters")
         assert by_actor["\ufffd"]["result_summary"] == by_actor["xy"]["result_summary"]
         # A long name is looked up like any other (no account has it), recorded bounded.
-        assert by_actor["z" * 160]["result_summary"] == "login failed"
+        assert len(audit_actor_key("z" * 400)) == 160
+        assert by_actor[audit_actor_key("z" * 400)]["result_summary"] == "login failed"
         assert all(NUL not in json.dumps(r) and "\\u0000" not in json.dumps(r) for r in rows)
         listed = client.get("/api/audit", params={"scope": "people", "from": "now-7d"}, headers=auth)
         assert listed.status_code == 200
@@ -332,8 +349,10 @@ def test_a_nul_or_overlong_username_cannot_be_created(tmp_path) -> None:
 
 def test_a_longer_name_an_older_build_created_still_signs_in_and_sees_its_activity(tmp_path) -> None:
     """An older build created accounts with no length bound. Such an account still
-    signs in, and its activity feed shows both its new rows (actor bounded to 160 on
-    write) and the older rows that carry the whole name."""
+    signs in, and its activity feed shows both its new rows (the actor key of 160
+    characters, ending in a digest of the whole name) and the older rows that carry
+    the whole name. Another account that shares its first 160 characters never sees
+    them, nor it that account's rows."""
     long_name = "svc." + "a" * 170 + "@example.com"
     assert len(long_name) > USERNAME_MAX_CHARS
     with TestClient(_app(tmp_path, auth_seed_admin=True)) as client:
@@ -343,7 +362,10 @@ def test_a_longer_name_an_older_build_created_still_signs_in_and_sees_its_activi
             users = await state.users.list()
             legacy = User(username=long_name, password_hash=hash_password("Long-Pass-123!"),
                           role="analyst_tier1", active=True)
-            await state.users._save([*users, legacy])  # noqa: SLF001 (as an older build stored it)
+            # An account named exactly the long name's first 160 characters.
+            prefix = User(username=long_name[:USERNAME_MAX_CHARS], password_hash=hash_password("Prefix-Pass-123!"),
+                          role="analyst_tier1", active=True)
+            await state.users._save([*users, legacy, prefix])  # noqa: SLF001 (as an older build stored it)
             await state.refresh_users()
             # A row an older build wrote, with the whole name as the actor.
             older = AuditDoc(action_type=ActionType.AUTH_EVENT, actor="placeholder",
@@ -360,11 +382,25 @@ def test_a_longer_name_an_older_build_created_still_signs_in_and_sees_its_activi
         activity = client.get("/api/account/activity", headers=auth)
         assert activity.status_code == 200, activity.text
         rows = activity.json()["activity"]
-        assert any(r.get("actor") == long_name[:USERNAME_MAX_CHARS] for r in rows)
+        assert any(r.get("actor") == audit_actor_key(long_name) for r in rows)
         assert rows[-1]["result_summary"] == "older row" and rows[-1]["actor"] == long_name
         stamps = [str(r.get("ts") or "") for r in rows]
         assert stamps == sorted(stamps, reverse=True)
         assert len(client.get("/api/account/activity", params={"limit": 1}, headers=auth).json()["activity"]) == 1
+        long_actors = {r.get("actor") for r in rows}
+
+        client.cookies.clear()  # each request below is authenticated by its own token
+        prefix_name = long_name[:USERNAME_MAX_CHARS]
+        response = client.post("/api/auth/login", json={"username": prefix_name, "password": "Prefix-Pass-123!"})
+        assert response.status_code == 200, response.text
+        prefix_auth = {"Authorization": f"Bearer {response.json()['token']}"}
+        client.cookies.clear()
+        prefix_rows = client.get("/api/account/activity", headers=prefix_auth).json()["activity"]
+        assert prefix_rows and {r.get("actor") for r in prefix_rows} == {prefix_name}
+        assert not any(r.get("result_summary") == "older row" for r in prefix_rows)
+        # The long account still reads only its own rows after the other one signed in.
+        again = client.get("/api/account/activity", headers=auth).json()["activity"]
+        assert {r.get("actor") for r in again} == long_actors and prefix_name not in long_actors
 
 
 def test_the_first_run_setup_refuses_a_nul_username(tmp_path) -> None:

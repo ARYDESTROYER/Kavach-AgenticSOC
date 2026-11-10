@@ -18,6 +18,7 @@ from typing import Any
 from fastapi import HTTPException, Request
 
 from ..state import AppState
+from ..stored_text import audit_actor_key
 
 # Routes reachable WITHOUT a session even when auth is enabled. Kept deliberately
 # tiny (deny-by-default). Matched against the NORMALISED path (so `//`, `.`, `..`
@@ -582,11 +583,9 @@ _AUDIT_TOKEN_RE = re.compile(r"[^A-Za-z0-9_.:\-]")
 # usernames are not identifier-shaped (an SSO account is keyed by its verified email,
 # an admin-created one is free text). It must be written exactly as ``_enforce`` and
 # every other audit writer write it, or ``records_for_actor``'s exact ``term`` query
-# (the account-activity feed) and the audit actor filter never find the row (#2). Only
-# control characters are removed, since an audit actor is a single-line field, and the
-# length gets the same bound as the other username-bearing audit fields (160).
-_CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
-_AUDIT_ACTOR_MAX = 160
+# (the account-activity feed) and the audit actor filter never find the row (#2). It is
+# ``app.stored_text.audit_actor_key``, the form ``AuditDoc`` records: control characters
+# removed, and a name longer than 160 characters ends in a digest of the whole name.
 
 
 def _audit_token(value: Any, limit: int = 64) -> str:
@@ -596,8 +595,7 @@ def _audit_token(value: Any, limit: int = 64) -> str:
 def _audit_actor(actor: Any) -> str:
     """The audit ``actor`` for a chat row: the username as given, minus control
     characters, bounded; ``"default"`` when there is none (auth off, §5.2)."""
-    text = _CONTROL_CHARS_RE.sub("", str(actor if actor is not None else ""))
-    return text[:_AUDIT_ACTOR_MAX] or "default"
+    return audit_actor_key(str(actor if actor is not None else "")) or "default"
 
 
 def _missing_pairs(missing: Any) -> list[tuple[str, str]]:
@@ -669,9 +667,10 @@ async def record_chat_tool_denial(
     refused because the caller lacks a grant (SPEC §5.1: one row per refused step, and
     only for a call the model actually requested — catalogue resolution never audits).
 
-    ``surface="chat"``; ``actor`` is the caller's username written as given (only
-    control characters removed, 160-char bound; ``"default"`` when auth is off, matching
-    the chat execution audit, §5.2), so the row is attributed to the real account.
+    ``surface="chat"``; ``actor`` is the caller's username written as given
+    (``app.stored_text.audit_actor_key``: control characters removed, at most 160
+    characters; ``"default"`` when auth is off, matching the chat execution audit,
+    §5.2), so the row is attributed to the real account.
     ``missing`` takes ``"resource:action"`` strings (``ChatToolContext.missing``) or
     ``(resource, action)`` pairs. ``result_summary`` starts with the ``turn=<id>
     step=<n>`` correlation prefix every chat audit row carries; the model-influenced

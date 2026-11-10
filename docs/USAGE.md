@@ -2043,7 +2043,9 @@ a control character in the name is an ordinary failed sign-in (`401 invalid
 credentials`), recorded with the name minus those characters and a summary that says
 why it was refused. The length bound applies when an account is created: an account an
 older build created with a longer name still signs in, and its audit rows record the
-first 160 characters of the name.
+first 147 characters of the name, `~` and the first 12 hex digits of the name's SHA-256,
+so it never shares an actor with an account named its first 160 characters. A new name
+of that form is refused.
 
 ### Custom roles
 

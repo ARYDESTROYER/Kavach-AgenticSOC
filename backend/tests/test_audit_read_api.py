@@ -60,6 +60,7 @@ from app.models import (
     encode_audit_record_id,
 )
 from app.state import AppState
+from app.stored_text import audit_actor_key
 from app.stores.base import AuditCursorExpired, AuditRepository
 from app.stores.sql import SqlAuditRepository, build_async_engine, create_all
 from app.stores.sql.models import AuditRow
@@ -1473,15 +1474,22 @@ def test_old_exact_parameters_are_bounded_and_keep_their_meaning(api):
     """``actor``, ``action``, ``surface``, ``case_id`` and ``source_id`` still match
     exactly as sent (never stripped), up to 512 characters; a longer value is the coded
     422, so a view row, which records the filters, stays small. A stored actor is at
-    most 160 characters (bounded on write like a username), so the longest actor that
-    can match is that long; a 512-character filter is still accepted and matches none."""
+    most 160 characters (bounded on write like a username; a longer name keeps its first
+    characters and a digest of the whole name), so the longest actor that can match is
+    that long; a 512-character filter is still accepted and matches none, and a longer
+    name never matches the account named its first 160 characters."""
     long_actor = "a" * 160
+    longer_key = audit_actor_key(long_actor + "b" * 352)
     _seed(api, [
         {"ts": _ts(1), "action_type": "status", "surface": "r14", "actor": long_actor + "b" * 352},
         {"ts": _ts(2), "action_type": "status", "surface": "r14", "actor": " padded "},
+        {"ts": _ts(3), "action_type": "status", "surface": "r14", "actor": long_actor},
     ])
+    assert len(longer_key) == 160 and longer_key != long_actor
     assert [r["actor"] for r in api.get("/api/audit", params={"actor": long_actor}).json()["records"]] == [
         long_actor]
+    assert [r["actor"] for r in api.get("/api/audit", params={"actor": longer_key}).json()["records"]] == [
+        longer_key]
     widest = api.get("/api/audit", params={"actor": long_actor + "b" * 352})
     assert widest.status_code == 200 and widest.json()["records"] == []
     assert [r["actor"] for r in api.get("/api/audit", params={"actor": " padded "}).json()["records"]] == [

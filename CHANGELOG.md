@@ -57,7 +57,9 @@ is renamed, there is no new dependency and the version stays 0.1.13.
   the Audit log, its count, its exports, account activity or chat's audit search.
   - Audit text is cleaned on write in one place (`AuditDoc`): control characters are removed
     from names, ids and labels (a name made only of them is recorded as U+FFFD), NUL from all
-    other text, and the actor is capped at 160 characters.
+    other text, and the actor is capped at 160 characters (a longer name an older build
+    allowed keeps its first characters and ends in a digest of the whole name, so two long
+    names never share an actor).
   - Rows an older build stored are read as if cleaned and are never rewritten. The cases,
     usage and kv JSON reads, the kv compare-and-set among them, use the same NUL-safe reader.
     SQLite reads are unchanged.

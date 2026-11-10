@@ -31,6 +31,7 @@ through unchanged, so validation reports them as before. Standard library only.
 
 from __future__ import annotations
 
+import hashlib
 import re
 from typing import Any, Callable
 
@@ -44,6 +45,12 @@ _SURROGATE_RE = re.compile(f"[{_SURROGATES}]")
 
 #: The longest username an account may have, and the bound of an audit ``actor``.
 USERNAME_MAX_CHARS = 160
+#: An actor longer than :data:`USERNAME_MAX_CHARS` (an account an older build created
+#: without a length bound) is recorded as its first characters, ``~`` and the first
+#: hex digits of the SHA-256 of the whole cleaned name, exactly 160 characters in all.
+_ACTOR_DIGEST_CHARS = 12
+_ACTOR_PREFIX_CHARS = USERNAME_MAX_CHARS - _ACTOR_DIGEST_CHARS - 1
+_ACTOR_KEY_SHAPE_RE = re.compile(f"^.{{{_ACTOR_PREFIX_CHARS}}}~[0-9a-f]{{{_ACTOR_DIGEST_CHARS}}}$", re.S)
 
 
 def single_line(value: Any, limit: int | None = None) -> Any:
@@ -52,6 +59,21 @@ def single_line(value: Any, limit: int | None = None) -> Any:
         return value
     text = _LINE_UNSAFE_RE.sub("", value)
     return text[:limit] if limit is not None else text
+
+
+def audit_actor_key(value: Any) -> Any:
+    """The audit ``actor`` for a name: :func:`single_line`, kept whole when it fits in
+    :data:`USERNAME_MAX_CHARS`; a longer name keeps its first characters and ends in
+    ``~`` and a digest of the whole name, so two long names that share their first 160
+    characters never become one actor (the account activity feed and the audit actor
+    filter match the actor exactly). Every audit writer records this form."""
+    if not isinstance(value, str):
+        return value
+    text = single_line(value)
+    if len(text) <= USERNAME_MAX_CHARS:
+        return text
+    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:_ACTOR_DIGEST_CHARS]
+    return f"{text[:_ACTOR_PREFIX_CHARS]}~{digest}"
 
 
 def multi_line(value: Any) -> Any:
@@ -102,20 +124,26 @@ def username_char_problem(value: Any) -> str | None:
 
 def username_problem(value: Any) -> str | None:
     """Why ``value`` cannot be the name of a new account, or ``None`` when it can:
-    :func:`username_char_problem`, then at most :data:`USERNAME_MAX_CHARS` characters.
+    :func:`username_char_problem`, then at most :data:`USERNAME_MAX_CHARS` characters,
+    and not shaped like the actor :func:`audit_actor_key` records for a longer name
+    (a new account must never share an older long account's audit actor).
 
     Checked on the name as the stores keep it (surrounding whitespace removed). An
     empty name is left to the caller, which already answers it its own way."""
     problem = username_char_problem(value)
     if problem is not None:
         return problem
-    if len(value.strip()) > USERNAME_MAX_CHARS:
+    name = value.strip()
+    if len(name) > USERNAME_MAX_CHARS:
         return f"the username is longer than {USERNAME_MAX_CHARS} characters"
+    if _ACTOR_KEY_SHAPE_RE.match(name):
+        return "the username has a reserved form"
     return None
 
 
 __all__ = [
     "USERNAME_MAX_CHARS",
+    "audit_actor_key",
     "clean_tree",
     "multi_line",
     "shown",

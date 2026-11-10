@@ -37,6 +37,7 @@ from app.constants import ActionType, UserRole
 from app.es.fake import InMemoryESClient
 from app.llm.providers import MockProvider
 from app.state import AppState
+from app.stored_text import audit_actor_key
 
 T1 = UserRole.ANALYST_TIER1.value
 
@@ -371,11 +372,13 @@ async def test_record_chat_tool_denial_writes_the_actor_as_given():
     ]
     audit.rows.clear()
     # Only control characters go (an audit actor is one line), and the length is
-    # bounded like the other username-bearing audit fields.
+    # bounded like the other username-bearing audit fields (``audit_actor_key``: a
+    # longer name ends in a digest of the whole name, the form ``AuditDoc`` records).
     await record_chat_tool_denial(audit, actor="bob\n\x00smith\x7f", tool_name="t")
     await record_chat_tool_denial(audit, actor="u" * 400, tool_name="t")
     await record_chat_tool_denial(audit, actor=None, tool_name="t")  # type: ignore[arg-type]
-    assert [r["actor"] for r in audit.rows] == ["bobsmith", "u" * 160, "default"]
+    assert [r["actor"] for r in audit.rows] == ["bobsmith", audit_actor_key("u" * 400), "default"]
+    assert len(audit.rows[1]["actor"]) == 160 and audit.rows[1]["actor"].startswith("u" * 147 + "~")
 
 
 async def test_record_chat_tool_denial_accepts_ctx_missing_strings():

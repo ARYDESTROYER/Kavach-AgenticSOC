@@ -63,7 +63,7 @@ from .constants import (
     UserRole,
     Verdict,
 )
-from .stored_text import USERNAME_MAX_CHARS, clean_tree, multi_line, single_line
+from .stored_text import USERNAME_MAX_CHARS, audit_actor_key, clean_tree, multi_line, single_line
 from .utils import coerce_float, dotted_get, iso_now, new_id, parse_es_timestamp, to_millis
 
 
@@ -2279,10 +2279,13 @@ class AuditDoc(BaseModel):
     @field_validator("actor", mode="before")
     @classmethod
     def _bounded_actor(cls, value: Any) -> Any:
-        """The actor as attempted, minus control characters, bounded like a username.
-        An actor made only of removed characters is kept as one U+FFFD, so the row
-        still shows that a name was given (it is never blanked to ``""``)."""
-        return _required_line(value, AUDIT_ACTOR_MAX_CHARS)
+        """The actor as attempted, minus control characters, bounded like a username
+        (:func:`app.stored_text.audit_actor_key`: a longer name ends in a digest of the
+        whole name, so two long names never become one actor). An actor made only of
+        removed characters is kept as one U+FFFD, so the row still shows that a name
+        was given (it is never blanked to ``""``)."""
+        cleaned = audit_actor_key(value)
+        return "\ufffd" if cleaned == "" and isinstance(value, str) and value else cleaned
 
     @field_validator(
         "prompt_excerpt", "query_text", "tool_output_summary", "result_summary", mode="before",

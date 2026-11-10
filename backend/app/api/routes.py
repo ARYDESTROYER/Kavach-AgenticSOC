@@ -92,7 +92,6 @@ from ..llm.pricing import (
     models_by_provider,
 )
 from ..models import (
-    AUDIT_ACTOR_MAX_CHARS,
     AUDIT_MAX_CHANGES,
     AuditTarget,
     Case,
@@ -123,7 +122,7 @@ from ..stores.proposals import (
     evidence_summary,
     sanitize_decision_reason,
 )
-from ..stored_text import shown, single_line, username_char_problem, username_problem
+from ..stored_text import audit_actor_key, shown, username_char_problem, username_problem
 from ..tools.enrich import EnrichTool
 from ..utils import (
     iso_now,
@@ -4522,10 +4521,11 @@ async def _records_for_actor(state: AppState, actor: str, limit: int) -> list[di
     audit = getattr(state, "control_audit", None)
     if audit is None:
         return []
-    # The actor as ``AuditDoc`` stores it (cleaned, at most 160 characters). For every
-    # name an account can be created with today this is the name itself; a longer name
-    # an older build allowed also has older rows that carry it whole.
-    stored = single_line(actor, AUDIT_ACTOR_MAX_CHARS)
+    # The actor as ``AuditDoc`` stores it (``audit_actor_key``). For every name an
+    # account can be created with today this is the name itself; a longer name an older
+    # build allowed is recorded with a digest of the whole name (so an account sharing
+    # its first 160 characters never reads its rows), and its older rows carry it whole.
+    stored = audit_actor_key(actor)
     try:
         rows = await audit.records_for_actor(stored, limit)
         if stored != actor:
