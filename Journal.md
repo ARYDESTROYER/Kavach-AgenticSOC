@@ -11805,3 +11805,18 @@
 - Tests: test_audit_nul_hygiene (two accounts sharing the prefix never see each other's rows), test_audit_read_api, test_resolve_grants and 9 related files passed; test_postgres_json_nul on a local PostgreSQL 16 passed; ruff fatal clean.
 - Status: done; thread replied and resolved.
 - Next: drive PR #139 CI to green. Still open: the Users page exact `actor=` link misses the new rows of a legacy name over 160 characters (they carry the key); lone-surrogate rows from older builds are display-safe only in the audit routes and account activity.
+
+### 2026-11-10 16:50Z - orchestrator - PR #139: two adversarial reviews of the long-username actor key
+- Context: be5c5f0 recorded a username over 160 characters as its first 147 characters, `~` and 12 hex digits of the SHA-256 of the typed text. Two review workflows (three lenses each, every finding re-checked by a skeptic told to refute it) confirmed gaps; a0c51f9 and the commit after it close them.
+- Did:
+  - The key is now the first 127 characters, `~` and 32 hex digits of the SHA-256 of the account the name identifies: stripped and lower case, as the user store matches it, and taken before cleaning. Sign-in keeps the name as typed, so the old 12-hex digest of typed text could be reached by padding or recasing.
+  - `username_problem` refuses a new name ending in `~` and 32 hex digits, in any case (422). `UserStore.create` refuses a new name that is the start, 127 characters or more, of an existing longer name (409). Older builds recorded such an account's chat and access-denied rows under the first 160 characters of the typed name, and a leading space, a removed character or `İ` moves that cut.
+  - `same_recorded_actor` lets a keyed audit retry of a row an older build wrote with the whole long name converge, on SQL `write_strict` and the Elasticsearch ledger claim. Before, a proposal decision interrupted before the upgrade failed with "audit event id collision" on every retry. Any other actor is still a collision, and the stored row is kept.
+  - The exact audit actor filter matches a longer name in both forms, so the Users and Account page links find its new rows. A value of 160 characters or fewer is matched exactly as before; `bob\x07` no longer widens to `bob`.
+- Refuted: Job ownership needs no change, because `Job.actor` has been bounded at 160 since before Round 14. System-update rows carry per-request ids, so no retry stays stuck.
+- Tests: test_audit_nul_hygiene (the retry test fails with the equivalence switched off), test_audit_read_api, test_resolve_grants, test_users_store, test_audit_export, test_oidc and the 73 files that write or read audit actors, users, retries or SSO all pass; the PostgreSQL NUL and rollback modules pass on a local PostgreSQL 16; ruff fatal clean.
+- Status: done.
+- Next: drive PR #139 to green. Known limits:
+  - A prefix account created before this fix can still read a long account's older chat rows.
+  - Chat's `audit_search` matches an actor exactly, so it misses a long account's new rows.
+  - A short legacy name with a control character cannot sign in on this build; its older chat rows were recorded under the cleaned name.

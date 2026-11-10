@@ -2047,7 +2047,7 @@ first 127 characters of the name, `~` and 32 hex digits of the SHA-256 of the ac
 (its name in lower case), so it never shares an actor with another account, however
 either is typed at sign-in. The audit actor filter finds such an account's rows by its
 whole name. A new name that ends in `~` and 32 hex digits is refused with `422`, and
-one that is the first 160 characters of an existing longer name with `409`.
+one that is the start (127 characters or more) of an existing longer name with `409`.
 
 ### Custom roles
 

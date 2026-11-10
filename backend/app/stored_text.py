@@ -66,7 +66,7 @@ def audit_actor_key(value: Any) -> Any:
     """The audit ``actor`` for a name: :func:`single_line`, kept whole when it fits in
     :data:`USERNAME_MAX_CHARS`. A longer name keeps its first characters and ends in
     ``~`` and a digest of the account it names (the name as the user store matches it:
-    surrounding whitespace removed, lower case), so two accounts never become one
+    surrounding whitespace removed, lower case, before cleaning), so two accounts never become one
     actor: a long name never shares a key with another account, however it is typed
     at sign-in, and a short one never ends like a key (:func:`username_problem`).
     Every audit writer records this form; the account activity feed and the audit
@@ -76,7 +76,9 @@ def audit_actor_key(value: Any) -> Any:
     text = single_line(value)
     if len(text) <= USERNAME_MAX_CHARS:
         return text
-    account = text.strip().lower()
+    # The account exactly as the user store matches it (taken before cleaning, so two
+    # older names that differ only by a removed character stay two accounts).
+    account = value.strip().lower()
     digest = hashlib.sha256(account.encode("utf-8", "surrogatepass")).hexdigest()[:_ACTOR_DIGEST_CHARS]
     return f"{text[:_ACTOR_PREFIX_CHARS]}~{digest}"
 

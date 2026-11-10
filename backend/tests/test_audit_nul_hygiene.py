@@ -131,6 +131,23 @@ def test_the_actor_key_digest_names_the_account_not_the_typed_text() -> None:
         assert key[-32:] != digest
 
 
+def test_two_older_long_names_that_differ_by_a_removed_character_stay_two_actors() -> None:
+    plain, controlled = "a" * 200, "a" * 80 + "\x07" + "a" * 120
+    assert audit_actor_key(plain) != audit_actor_key(controlled)
+    assert audit_actor_key(controlled)[:127] == "a" * 127 and "\x07" not in audit_actor_key(controlled)
+
+
+def test_the_exact_actor_filter_widens_only_for_a_longer_name() -> None:
+    from app.audit.query import AuditFilters, build_predicate, matches
+
+    short = build_predicate(AuditFilters(actor="bob\x07"))
+    assert matches(short, {"actor": "bob\x07"}) and not matches(short, {"actor": "bob"})
+    legacy = "svc." + "a" * 170 + "@example.com"
+    long = build_predicate(AuditFilters(actor=legacy))
+    assert matches(long, {"actor": legacy}) and matches(long, {"actor": audit_actor_key(legacy)})
+    assert not matches(long, {"actor": legacy[:USERNAME_MAX_CHARS]})
+
+
 def test_a_stored_whole_long_name_and_its_key_are_one_retry() -> None:
     legacy = "u" * 170
     assert same_recorded_actor(legacy, audit_actor_key(legacy))
@@ -331,10 +348,24 @@ async def test_the_user_store_refuses_the_cut_of_a_longer_name_and_the_key_form(
                 f" {legacy[:USERNAME_MAX_CHARS]} ", audit_actor_key(legacy), audit_actor_key(legacy).upper()):
         with pytest.raises(ValueError):
             await store.create(username=bad, password_hash="h")
+    # Older builds cut the name as typed: a leading space, a removed control character
+    # or a letter whose lower case is longer moves the cut, so any start of at least
+    # 127 characters is refused.
+    for bad in (legacy[:USERNAME_MAX_CHARS - 1], legacy[:127]):
+        with pytest.raises(ValueError):
+            await store.create(username=bad, password_hash="h")
+    controlled = "b" * 80 + "\x07" + "b" * 120
+    dotted = "c" * 100 + "\u0130" + "c" * 100
+    await store._save([*await store.list(),  # noqa: SLF001
+                       User(username=controlled, password_hash="h", role="analyst_tier1"),
+                       User(username=dotted, password_hash="h", role="analyst_tier1")])
+    for bad in ("b" * USERNAME_MAX_CHARS, dotted.lower()[:USERNAME_MAX_CHARS], dotted[:USERNAME_MAX_CHARS]):
+        with pytest.raises(ValueError):
+            await store.create(username=bad, password_hash="h")
     # Shorter starts and other names are ordinary names.
-    assert (await store.create(username=legacy[:USERNAME_MAX_CHARS - 1], password_hash="h")).username
+    assert (await store.create(username=legacy[:126], password_hash="h")).username
     assert (await store.create(username="a" * USERNAME_MAX_CHARS, password_hash="h")).username
-    assert len(await store.list()) == 3
+    assert len(await store.list()) == 5
 
 
 # --------------------------------------------------------------------------- #

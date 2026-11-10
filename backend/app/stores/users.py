@@ -28,7 +28,7 @@ from typing import Any, Callable
 
 from ..constants import USERS_KEY, USERS_NS, UserRole
 from ..models import User
-from ..stored_text import USERNAME_MAX_CHARS, username_problem
+from ..stored_text import USERNAME_MAX_CHARS, single_line, username_problem
 from ..utils import iso_now
 from .base import KVStore, kv_mutate
 
@@ -53,16 +53,28 @@ def _checked_name(username: str) -> str:
     return uname
 
 
+#: The shortest start of a longer name that :func:`_cut_of_a_longer_name` refuses.
+_CUT_MIN_CHARS = 127
+
+
 def _cut_of_a_longer_name(uname: str, entries: list[User]) -> bool:
-    """Whether ``uname`` is the first :data:`USERNAME_MAX_CHARS` characters of an
-    existing longer name (an account an older build created). Older builds recorded
-    such an account's chat audit rows under that cut, and an account named it would
-    read them as its own activity."""
+    """Whether ``uname`` is the start, at least :data:`_CUT_MIN_CHARS` characters
+    long, of an existing name longer than :data:`USERNAME_MAX_CHARS` (an account an
+    older build created). Older builds recorded such an account's chat and access
+    denied rows under the first 160 characters of its name as typed at sign-in, with
+    control characters removed, so a leading space or a removed character moves that
+    cut; an account named any such start could read those rows as its own."""
     wanted = _norm(uname)
-    return any(
-        len(u.username) > USERNAME_MAX_CHARS and _norm(u.username[:USERNAME_MAX_CHARS]) == wanted
-        for u in entries
-    )
+    if len(wanted) < _CUT_MIN_CHARS:
+        return False
+    for u in entries:
+        cleaned = single_line(u.username).strip()
+        if len(cleaned) <= USERNAME_MAX_CHARS:
+            continue
+        longer = cleaned.lower()
+        if longer != wanted and longer.startswith(wanted):
+            return True
+    return False
 
 
 class UserStore:
