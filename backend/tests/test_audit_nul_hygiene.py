@@ -18,6 +18,7 @@ covers what does not need PostgreSQL:
 from __future__ import annotations
 
 import json
+import re
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -36,6 +37,7 @@ from app.audit.events import truncated_fields
 from app.config import Secrets
 from app.constants import ActionType
 from app.es.fake import InMemoryESClient
+from app.es.indices import bootstrap_indices
 from app.llm.providers import MockProvider
 from app.auth.passwords import hash_password
 from app.models import AUDIT_ACTOR_MAX_CHARS, AuditDoc, User
@@ -45,6 +47,7 @@ from app.stored_text import (
     audit_actor_key,
     clean_tree,
     multi_line,
+    same_recorded_actor,
     shown,
     single_line,
     username_char_problem,
@@ -86,8 +89,11 @@ def test_the_text_policy_removes_and_never_replaces() -> None:
     ("alice", None), (" alice\n", None), ("", None), ("a" * USERNAME_MAX_CHARS, None),
     (f"stg-nul{NUL}probe", "control"), ("tab\tin", "control"), (f"x{LONE}", "control"),
     ("a" * (USERNAME_MAX_CHARS + 1), "longer"),
-    # The actor form of a longer name is reserved, so no new account can share it.
+    # The actor form of a longer name is reserved, in any letter case and at any
+    # length, so no new account can share it however its owner types it.
     (audit_actor_key("svc." + "a" * 200), "reserved"),
+    (audit_actor_key("svc." + "a" * 200).upper(), "reserved"),
+    ("x~" + "F0" * 16, "reserved"), ("x~" + "f0" * 15, None), ("x-" + "f0" * 16, None),
 ])
 def test_username_problem(name: str, problem: str | None) -> None:
     found = username_problem(name)
@@ -105,7 +111,33 @@ def test_the_actor_key_keeps_a_fitting_name_and_tells_long_names_apart() -> None
     keys = {audit_actor_key(first), audit_actor_key(second), audit_actor_key("x" * USERNAME_MAX_CHARS)}
     assert len(keys) == 3 and all(len(key) == USERNAME_MAX_CHARS for key in keys)
     # Stable, so every row an account writes carries one actor.
-    assert audit_actor_key(first) == audit_actor_key(first) and audit_actor_key(first).startswith("x" * 147 + "~")
+    assert audit_actor_key(first) == audit_actor_key(first)
+    assert re.fullmatch("x" * 127 + "~[0-9a-f]{32}", audit_actor_key(first))
+
+
+def test_the_actor_key_digest_names_the_account_not_the_typed_text() -> None:
+    """Sign-in matches a name with surrounding whitespace removed and in any letter
+    case, and the session keeps the name as typed. The digest is of the account, so
+    the same account typed another way keeps its digest, and another account cannot
+    reach a long account's key by padding or recasing what it types."""
+    legacy = "svc." + "a" * 170 + "@example.com"
+    digest = audit_actor_key(legacy)[-32:]
+    for typed in (legacy.upper(), f"  {legacy}  ", f"{legacy}\u00a0"):
+        assert audit_actor_key(typed)[-32:] == digest
+    prefix = legacy[:USERNAME_MAX_CHARS]
+    for typed in (prefix + " " * 40, prefix + "\u00a0\u3000" * 20, " " * 3 + prefix + " " * 3):
+        key = audit_actor_key(typed)
+        assert len(key) == USERNAME_MAX_CHARS and key != audit_actor_key(legacy)
+        assert key[-32:] != digest
+
+
+def test_a_stored_whole_long_name_and_its_key_are_one_retry() -> None:
+    legacy = "u" * 170
+    assert same_recorded_actor(legacy, audit_actor_key(legacy))
+    assert same_recorded_actor("alice", "alice") and same_recorded_actor(None, None)
+    assert not same_recorded_actor(legacy[:USERNAME_MAX_CHARS], audit_actor_key(legacy))
+    assert not same_recorded_actor(audit_actor_key(legacy), legacy)
+    assert not same_recorded_actor("v" * 170, audit_actor_key(legacy))
 
 
 # --------------------------------------------------------------------------- #
@@ -191,6 +223,44 @@ async def test_record_strict_on_sqlite_succeeds_and_stores_the_clean_row() -> No
         await engine.dispose()
 
 
+@pytest.mark.parametrize("backend", ["sql", "es"])
+async def test_a_keyed_retry_after_the_upgrade_keeps_the_row_an_older_build_wrote(
+        backend: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """An older build recorded a longer name whole. A retry of the same keyed row on
+    this build (a proposal decision whose effect failed, say) records its key: the
+    same retry, never an "event id collision", and the stored row stays as written."""
+    import app.models as models
+
+    legacy = "svc." + "a" * 170 + "@example.com"
+    engine = None
+    if backend == "sql":
+        engine = build_async_engine("sqlite+aiosqlite:///:memory:")
+        await create_all(engine)
+        repo: Any = SqlAuditRepository(engine)
+    else:
+        es = InMemoryESClient()
+        await bootstrap_indices(es)
+        repo = AuditLogger(es)
+    fields = dict(action_type=ActionType.USER_MGMT, event_id="proposal-decision:p-1:approve",
+                  actor=legacy, surface="proposals", result_summary="approved")
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(models, "audit_actor_key", single_line)  # the older build
+            await repo.record_strict(**fields)
+        await repo.record_strict(**fields)  # this build: converges
+        await repo.record_strict(**fields)
+        rows = await repo.records_for_actor(legacy)
+        assert [row["actor"] for row in rows] == [legacy]
+        # Another actor on the same id is still a collision.
+        with pytest.raises(RuntimeError):
+            await repo.record_strict(**{**fields, "actor": "v" * 170})
+        with pytest.raises(RuntimeError):
+            await repo.record_strict(**{**fields, "actor": legacy[:USERNAME_MAX_CHARS]})
+    finally:
+        if engine is not None:
+            await engine.dispose()
+
+
 # --------------------------------------------------------------------------- #
 # The NUL-safe JSON accessor
 # --------------------------------------------------------------------------- #
@@ -249,6 +319,22 @@ async def test_the_user_store_refuses_a_nul_or_overlong_username() -> None:
     assert await store.list() == []
     created = await store.create(username=" alice ", password_hash="h")
     assert created.username == "alice"
+
+
+async def test_the_user_store_refuses_the_cut_of_a_longer_name_and_the_key_form() -> None:
+    """Older builds recorded a longer name's chat rows under its first 160 characters,
+    and this build records its key: no new account may be named either."""
+    store = UserStore(_MemoryKV())
+    legacy = "svc." + "a" * 170 + "@example.com"
+    await store._save([User(username=legacy, password_hash="h", role="analyst_tier1")])  # noqa: SLF001
+    for bad in (legacy[:USERNAME_MAX_CHARS], legacy[:USERNAME_MAX_CHARS].upper(),
+                f" {legacy[:USERNAME_MAX_CHARS]} ", audit_actor_key(legacy), audit_actor_key(legacy).upper()):
+        with pytest.raises(ValueError):
+            await store.create(username=bad, password_hash="h")
+    # Shorter starts and other names are ordinary names.
+    assert (await store.create(username=legacy[:USERNAME_MAX_CHARS - 1], password_hash="h")).username
+    assert (await store.create(username="a" * USERNAME_MAX_CHARS, password_hash="h")).username
+    assert len(await store.list()) == 3
 
 
 # --------------------------------------------------------------------------- #
@@ -401,6 +487,16 @@ def test_a_longer_name_an_older_build_created_still_signs_in_and_sees_its_activi
         # The long account still reads only its own rows after the other one signed in.
         again = client.get("/api/account/activity", headers=auth).json()["activity"]
         assert {r.get("actor") for r in again} == long_actors and prefix_name not in long_actors
+        # The Users page link filters the audit log by the stored name: it finds the
+        # account's rows in both forms, and none of the other account's.
+        admin = _admin(client)
+        client.cookies.clear()
+        listed = client.get("/api/audit", params={"scope": "all", "actor": long_name, "from": "now-1y",
+                                                  "to": "now+1d"}, headers=admin)
+        assert listed.status_code == 200, listed.text
+        found = {r.get("actor") for r in listed.json()["records"]}
+        assert found == {audit_actor_key(long_name)} or found == {audit_actor_key(long_name), long_name}
+        assert prefix_name not in found
 
 
 def test_the_first_run_setup_refuses_a_nul_username(tmp_path) -> None:

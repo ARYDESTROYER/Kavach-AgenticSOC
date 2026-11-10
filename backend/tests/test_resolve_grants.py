@@ -378,7 +378,7 @@ async def test_record_chat_tool_denial_writes_the_actor_as_given():
     await record_chat_tool_denial(audit, actor="u" * 400, tool_name="t")
     await record_chat_tool_denial(audit, actor=None, tool_name="t")  # type: ignore[arg-type]
     assert [r["actor"] for r in audit.rows] == ["bobsmith", audit_actor_key("u" * 400), "default"]
-    assert len(audit.rows[1]["actor"]) == 160 and audit.rows[1]["actor"].startswith("u" * 147 + "~")
+    assert len(audit.rows[1]["actor"]) == 160 and audit.rows[1]["actor"].startswith("u" * 127 + "~")
 
 
 async def test_record_chat_tool_denial_accepts_ctx_missing_strings():

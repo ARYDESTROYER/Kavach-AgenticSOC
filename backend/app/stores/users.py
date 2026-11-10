@@ -28,7 +28,7 @@ from typing import Any, Callable
 
 from ..constants import USERS_KEY, USERS_NS, UserRole
 from ..models import User
-from ..stored_text import username_problem
+from ..stored_text import USERNAME_MAX_CHARS, username_problem
 from ..utils import iso_now
 from .base import KVStore, kv_mutate
 
@@ -51,6 +51,18 @@ def _checked_name(username: str) -> str:
     if problem is not None:
         raise ValueError(problem)
     return uname
+
+
+def _cut_of_a_longer_name(uname: str, entries: list[User]) -> bool:
+    """Whether ``uname`` is the first :data:`USERNAME_MAX_CHARS` characters of an
+    existing longer name (an account an older build created). Older builds recorded
+    such an account's chat audit rows under that cut, and an account named it would
+    read them as its own activity."""
+    wanted = _norm(uname)
+    return any(
+        len(u.username) > USERNAME_MAX_CHARS and _norm(u.username[:USERNAME_MAX_CHARS]) == wanted
+        for u in entries
+    )
 
 
 class UserStore:
@@ -211,6 +223,8 @@ class UserStore:
         def apply(entries: list[User]) -> User:
             if any(_norm(u.username) == _norm(uname) for u in entries):
                 raise ValueError(f"user '{uname}' already exists")
+            if _cut_of_a_longer_name(uname, entries):
+                raise ValueError("the username is the start of a longer existing username")
             entries.append(user)
             return user
 

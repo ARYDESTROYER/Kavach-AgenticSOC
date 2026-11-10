@@ -26,6 +26,7 @@ from typing import Any
 
 from ..constants import CONFIG_INDEX
 from ..es.base import BaseESClient
+from ..stored_text import same_recorded_actor
 
 logger = logging.getLogger("tlsoc.stores.ledger_claims")
 
@@ -421,6 +422,14 @@ def _validate_retry(
     authoritative_semantic = {
         key: value for key, value in authoritative.items() if key not in retry_metadata
     }
+    # A row an older build wrote records a longer name whole; this build records its
+    # key (``audit_actor_key``). The same retry, not a collision; the stored row stays.
+    if (
+        "actor" in authoritative_semantic
+        and "actor" in incoming_semantic
+        and same_recorded_actor(authoritative_semantic["actor"], incoming_semantic["actor"])
+    ):
+        authoritative_semantic["actor"] = incoming_semantic["actor"]
     if incoming_semantic != authoritative_semantic:
         raise RuntimeError(f"audit event id collision: {logical_id}")
 

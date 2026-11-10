@@ -46,11 +46,12 @@ _SURROGATE_RE = re.compile(f"[{_SURROGATES}]")
 #: The longest username an account may have, and the bound of an audit ``actor``.
 USERNAME_MAX_CHARS = 160
 #: An actor longer than :data:`USERNAME_MAX_CHARS` (an account an older build created
-#: without a length bound) is recorded as its first characters, ``~`` and the first
-#: hex digits of the SHA-256 of the whole cleaned name, exactly 160 characters in all.
-_ACTOR_DIGEST_CHARS = 12
+#: without a length bound) is recorded as its first characters, ``~`` and 32 hex
+#: digits (128 bits) of the SHA-256 of the account it names, 160 characters in all.
+_ACTOR_DIGEST_CHARS = 32
 _ACTOR_PREFIX_CHARS = USERNAME_MAX_CHARS - _ACTOR_DIGEST_CHARS - 1
-_ACTOR_KEY_SHAPE_RE = re.compile(f"^.{{{_ACTOR_PREFIX_CHARS}}}~[0-9a-f]{{{_ACTOR_DIGEST_CHARS}}}$", re.S)
+#: The ending of that form. A new username may not end this way, in any letter case.
+_ACTOR_KEY_END_RE = re.compile(f"~[0-9a-f]{{{_ACTOR_DIGEST_CHARS}}}$", re.I)
 
 
 def single_line(value: Any, limit: int | None = None) -> Any:
@@ -63,17 +64,30 @@ def single_line(value: Any, limit: int | None = None) -> Any:
 
 def audit_actor_key(value: Any) -> Any:
     """The audit ``actor`` for a name: :func:`single_line`, kept whole when it fits in
-    :data:`USERNAME_MAX_CHARS`; a longer name keeps its first characters and ends in
-    ``~`` and a digest of the whole name, so two long names that share their first 160
-    characters never become one actor (the account activity feed and the audit actor
-    filter match the actor exactly). Every audit writer records this form."""
+    :data:`USERNAME_MAX_CHARS`. A longer name keeps its first characters and ends in
+    ``~`` and a digest of the account it names (the name as the user store matches it:
+    surrounding whitespace removed, lower case), so two accounts never become one
+    actor: a long name never shares a key with another account, however it is typed
+    at sign-in, and a short one never ends like a key (:func:`username_problem`).
+    Every audit writer records this form; the account activity feed and the audit
+    actor filter read by it."""
     if not isinstance(value, str):
         return value
     text = single_line(value)
     if len(text) <= USERNAME_MAX_CHARS:
         return text
-    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:_ACTOR_DIGEST_CHARS]
+    account = text.strip().lower()
+    digest = hashlib.sha256(account.encode("utf-8", "surrogatepass")).hexdigest()[:_ACTOR_DIGEST_CHARS]
     return f"{text[:_ACTOR_PREFIX_CHARS]}~{digest}"
+
+
+def same_recorded_actor(stored: Any, proposed: Any) -> bool:
+    """Whether a stored audit ``actor`` and the one a retry of the same keyed row
+    would write are one: equal, or the stored one is a longer name an older build
+    recorded whole and ``proposed`` is its :func:`audit_actor_key`."""
+    if stored == proposed:
+        return True
+    return isinstance(stored, str) and isinstance(proposed, str) and audit_actor_key(stored) == proposed
 
 
 def multi_line(value: Any) -> Any:
@@ -125,8 +139,9 @@ def username_char_problem(value: Any) -> str | None:
 def username_problem(value: Any) -> str | None:
     """Why ``value`` cannot be the name of a new account, or ``None`` when it can:
     :func:`username_char_problem`, then at most :data:`USERNAME_MAX_CHARS` characters,
-    and not shaped like the actor :func:`audit_actor_key` records for a longer name
-    (a new account must never share an older long account's audit actor).
+    and not ending like the actor :func:`audit_actor_key` records for a longer name
+    (``~`` and 32 hex digits, in any letter case: a new account must never share an
+    older long account's audit actor, whatever case its owner types at sign-in).
 
     Checked on the name as the stores keep it (surrounding whitespace removed). An
     empty name is left to the caller, which already answers it its own way."""
@@ -136,7 +151,7 @@ def username_problem(value: Any) -> str | None:
     name = value.strip()
     if len(name) > USERNAME_MAX_CHARS:
         return f"the username is longer than {USERNAME_MAX_CHARS} characters"
-    if _ACTOR_KEY_SHAPE_RE.match(name):
+    if _ACTOR_KEY_END_RE.search(name):
         return "the username has a reserved form"
     return None
 
@@ -146,6 +161,7 @@ __all__ = [
     "audit_actor_key",
     "clean_tree",
     "multi_line",
+    "same_recorded_actor",
     "shown",
     "single_line",
     "username_char_problem",

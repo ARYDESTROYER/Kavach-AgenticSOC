@@ -61,6 +61,7 @@ from ...models import (
     UsageDoc,
 )
 from ...realtime import publish_case_changed
+from ...stored_text import same_recorded_actor
 from ...utils import (
     now_utc,
     parse_es_timestamp,
@@ -1353,6 +1354,14 @@ class SqlAuditRepository(AuditRepository):
                     for key, value in payload.items()
                     if key not in retry_metadata
                 }
+                # A row an older build wrote records a longer name whole; this build
+                # records its key (``audit_actor_key``). The same retry, not a collision.
+                if (
+                    "actor" in existing_semantic
+                    and "actor" in payload_semantic
+                    and same_recorded_actor(existing_semantic["actor"], payload_semantic["actor"])
+                ):
+                    existing_semantic["actor"] = payload_semantic["actor"]
                 if existing is None or existing_semantic != payload_semantic:
                     raise RuntimeError(
                         f"audit event id collision: {doc.event_id}"

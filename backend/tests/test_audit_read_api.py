@@ -1475,9 +1475,9 @@ def test_old_exact_parameters_are_bounded_and_keep_their_meaning(api):
     exactly as sent (never stripped), up to 512 characters; a longer value is the coded
     422, so a view row, which records the filters, stays small. A stored actor is at
     most 160 characters (bounded on write like a username; a longer name keeps its first
-    characters and a digest of the whole name), so the longest actor that can match is
-    that long; a 512-character filter is still accepted and matches none, and a longer
-    name never matches the account named its first 160 characters."""
+    characters and a digest of the account it names), and the filter matches a longer
+    name in both forms, so a 512-character filter is still accepted and finds that name's
+    rows, and a longer name never matches the account named its first 160 characters."""
     long_actor = "a" * 160
     longer_key = audit_actor_key(long_actor + "b" * 352)
     _seed(api, [
@@ -1490,8 +1490,9 @@ def test_old_exact_parameters_are_bounded_and_keep_their_meaning(api):
         long_actor]
     assert [r["actor"] for r in api.get("/api/audit", params={"actor": longer_key}).json()["records"]] == [
         longer_key]
+    # The whole longer name finds its row (recorded as its key), and only it.
     widest = api.get("/api/audit", params={"actor": long_actor + "b" * 352})
-    assert widest.status_code == 200 and widest.json()["records"] == []
+    assert widest.status_code == 200 and [r["actor"] for r in widest.json()["records"]] == [longer_key]
     assert [r["actor"] for r in api.get("/api/audit", params={"actor": " padded "}).json()["records"]] == [
         " padded "]
     assert api.get("/api/audit", params={"actor": "padded"}).json()["records"] == []
