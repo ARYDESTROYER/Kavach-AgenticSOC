@@ -15,9 +15,10 @@ Open **Intelligence → Runbooks** to see the library. Every runbook is used in 
 - **The library and the editor**, where your team writes, reviews and publishes runbooks.
 - **The case**, where the matching runbook appears on the Runbook tab of Case detail and
   Case Manager, with a Next step card on the Overview tab.
-- **The investigator**, which reads the published runbook that matches a cluster as
-  trusted guidance before it investigates, and the knowledge search, which indexes
-  published runbooks.
+- **The investigator**, which reads the published runbook that specifically matches a
+  cluster as trusted guidance before it investigates, and the knowledge search, which
+  indexes published runbooks. The Generic incident fallback is never given to the
+  investigator as guidance.
 
 The library lists every runbook with where it came from (Built-in, Yours or Imported), the
 rules and techniques it applies to, its state, its phases and steps, its runs in the last 30
@@ -100,6 +101,19 @@ Matching is free: no model is called. A runbook attaches to a case at most once;
 change to the case attaches another runbook only when it matches more specifically than every
 runbook already on the case, and it never removes one.
 
+### The fallback and the investigator
+
+Only a specific match guides the investigator. When the fallback is all that matches, the
+case records it (it shows as **Selected only** in the Investigation view) and it attaches
+for people, but the investigator gets no runbook block and no extra searches from it (its
+text stays in the knowledge search like any Published runbook): a checklist that matches
+every case says nothing about this one, and as trusted guidance it pulled verdicts toward
+NEEDS_HUMAN. Guidance from a specific runbook can change the verdict the investigator
+returns, and so which cases your policy closes automatically; turn **Guide the agent with
+the matching runbook** off in Settings to give the investigator no runbook guidance, and
+**Use Published runbooks in retrieval** off as well to keep runbook text out of its
+knowledge search.
+
 ## Writing a runbook
 
 In **Intelligence → Runbooks**, choose **New runbook**, or **Create a runbook** beside a
@@ -115,7 +129,8 @@ has three views of the same runbook:
   starts. **Fill with** a recent matching case resolves the lookup values from that case (a
   screen reader hears when they arrive and which values the case does not have), and
   the meter shows the investigator guidance against its budget, for example "Investigator
-  guidance: 2,140 of 3,000 characters".
+  guidance: 2,140 of 3,000 characters". A fallback runbook shows no meter: it is a
+  checklist for people and the investigator is never given it as guidance.
 - **Source** shows the Markdown. Chips and front matter are the same fields; edit either, and
   the outline follows as you type.
 

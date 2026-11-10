@@ -45,6 +45,7 @@ from ..models import (
     Cursor,
     UsageDoc,
 )
+from ..stored_text import multi_line
 from ..utils import parse_millis_strict, relative_to_millis_strict, truncate
 
 logger = logging.getLogger("tlsoc.stores.base")
@@ -677,9 +678,14 @@ def build_audit_doc(
 ) -> AuditDoc:
     """The one constructor of an append-only audit row (``record`` and
     ``record_strict`` in every backend). The three free-text fields are capped at
-    1,000 characters as before; the Round 14 fields (SPEC §4.5.3) are optional,
-    validated and bounded by :class:`app.models.AuditDoc`, and omitted from the stored
-    document when unset, so a row written without them keeps its pre-Round-14 shape."""
+    1,000 characters as before, after NUL and lone surrogates are removed so the cap
+    stays exact; the Round 14 fields (SPEC §4.5.3) are optional, validated and bounded
+    by :class:`app.models.AuditDoc`, which also cleans every string of the row (see
+    ``app.stored_text``), and omitted from the stored document when unset, so a row
+    written without them keeps its pre-Round-14 shape."""
+    prompt_excerpt, tool_output_summary, result_summary = (
+        multi_line(prompt_excerpt), multi_line(tool_output_summary), multi_line(result_summary),
+    )
     return AuditDoc(
         event_id=event_id,
         **({"ts": ts} if ts else {}),
@@ -860,7 +866,8 @@ class AuditRepository(ABC):
         """Recent audit rows attributed to ``actor`` (NEWEST first) — the per-user
         account-activity feed (Wave 3). NON-abstract with a safe default ([]) so a
         third-party AuditRepository keeps working; the bundled ES/SQL stores override
-        it. Never raises."""
+        it and RAISE when the read fails, so a failure is reported as unavailable and
+        never as an empty feed."""
         return []
 
     async def records(
@@ -878,8 +885,9 @@ class AuditRepository(ABC):
         """Filtered, bounded, read-only listing of the append-only audit (the admin
         audit viewer, W7c). NEWEST first. NON-abstract with a safe default ([]) so a
         third-party AuditRepository keeps working; the bundled ES/SQL stores override
-        it. Read-only (#2 — never mutates). Never raises. ``source_id`` (A5.3 coverage
-        observability) filters to a single source's poll history."""
+        it and RAISE when the read fails (every caller reports that as unavailable,
+        never as no rows). Read-only (#2: never mutates). ``source_id`` (A5.3
+        coverage observability) filters to a single source's poll history."""
         return []
 
     # ------------------------------------------------------------------ #

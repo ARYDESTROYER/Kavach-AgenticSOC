@@ -1140,7 +1140,7 @@
   },
   {
    "file": "generic-incident.md",
-   "version": 1,
+   "version": 2,
    "issues": [],
    "definition": {
     "id": "generic-incident",
@@ -1178,7 +1178,7 @@
       "title": "What happened, where, and how bad is it?",
       "instructions": "",
       "focus": "the detection, the affected hosts, accounts and data, and the business impact.",
-      "escalate_if": "production systems, sensitive data or a privileged account is involved, or the activity continues.",
+      "escalate_if": "the evidence shows compromise or harm, such as a privileged account used without approval, sensitive data exposed, or malicious activity that continues after a block.",
       "benign_if": "a known test, a misconfiguration or expected behaviour explains it.",
       "required": true,
       "evidence": "note",
@@ -1247,7 +1247,7 @@
       "title": "What is the scope: which hosts, accounts and data?",
       "instructions": "",
       "focus": null,
-      "escalate_if": "more than one host or account, or data leaving the network.",
+      "escalate_if": "confirmed spread to other hosts or accounts, or data sent out of the network without approval.",
       "benign_if": "one host or account, contained, with no data at risk.",
       "required": true,
       "evidence": "note",
@@ -1385,7 +1385,7 @@
      "https://csrc.nist.gov/pubs/sp/800/61/r3/final"
     ]
    },
-   "export": "---\nid: generic-incident\ntitle: Generic incident (NIST 800-61)\nsummary: A general response procedure for a case no other runbook covers, following the NIST incident response life cycle.\nuse_when: No other runbook matches the case. Replace it with a specific runbook when you see the same kind of case again.\nversion: 1\npriority: 0\nreview_every_days: 180\napplies_when:\n  always: true\nretrieval_queries:\n  - incident response procedure\n  - incident scoping and containment\nreferences:\n  - https://csrc.nist.gov/pubs/sp/800/61/r3/final\n---\n\n## Triage\n\n### What happened, where, and how bad is it? {#what-happened kind=check evidence=note}\nFocus: the detection, the affected hosts, accounts and data, and the business impact.\nEscalate if: production systems, sensitive data or a privileged account is involved, or the activity continues.\nBenign if: a known test, a misconfiguration or expected behaviour explains it.\n\n### Name an incident lead {#incident-lead kind=record}\n\nName the person who leads the response until the case is closed.\n\n## Investigate\n\n### Other alerts for the case's entities in 24 hours {#entity-alerts kind=lookup}\nFocus: other rules that fired for the same address around the case.\n\n```lookup\ntool: log_stats\nfilter:\n  ip: \"{{entity.ip}}\"\ngroup_by: [rule]\nwindow: case_first_seen-1d..case_last_seen+1h\nlimit: 20\nrun: on_attach\n```\n\n### What is the scope: which hosts, accounts and data? {#scope kind=check evidence=note}\nEscalate if: more than one host or account, or data leaving the network.\nBenign if: one host or account, contained, with no data at risk.\n\n### Incident, suspicious or benign? {#decide kind=decision}\nEscalate if: confirmed malicious activity, or impact on production systems or data.\nBenign if: a test, a misconfiguration or expected behaviour.\nOptions:\n- incident: Incident\n- suspicious: Suspicious, not confirmed\n- benign: Benign | skips: contain-systems, remove-cause, restore-service\n\nRecording a decision does not change the verdict or close the case.\n\n## Contain\n\n### Contain the affected systems or accounts {#contain-systems kind=action}\n\nIsolate hosts, disable accounts or block addresses as the scope needs. Record each change.\n\n## Eradicate\n\n### Remove the cause {#remove-cause kind=action}\n\nRemove the malware, access or misconfiguration that caused the incident.\n\n## Recover\n\n### Restore normal service {#restore-service kind=action}\n\nBring systems back into service and watch them closely for a while.\n\n## Close and learn\n\n### Record the outcome and what you would change {#record-outcome kind=record}\n\nWrite what happened and what you would change. If this kind of case comes back, write a specific runbook for it.\n"
+   "export": "---\nid: generic-incident\ntitle: Generic incident (NIST 800-61)\nsummary: A general response procedure for a case no other runbook covers, following the NIST incident response life cycle.\nuse_when: No other runbook matches the case. Replace it with a specific runbook when you see the same kind of case again.\nversion: 2\npriority: 0\nreview_every_days: 180\napplies_when:\n  always: true\nretrieval_queries:\n  - incident response procedure\n  - incident scoping and containment\nreferences:\n  - https://csrc.nist.gov/pubs/sp/800/61/r3/final\n---\n\n## Triage\n\n### What happened, where, and how bad is it? {#what-happened kind=check evidence=note}\nFocus: the detection, the affected hosts, accounts and data, and the business impact.\nEscalate if: the evidence shows compromise or harm, such as a privileged account used without approval, sensitive data exposed, or malicious activity that continues after a block.\nBenign if: a known test, a misconfiguration or expected behaviour explains it.\n\n### Name an incident lead {#incident-lead kind=record}\n\nName the person who leads the response until the case is closed.\n\n## Investigate\n\n### Other alerts for the case's entities in 24 hours {#entity-alerts kind=lookup}\nFocus: other rules that fired for the same address around the case.\n\n```lookup\ntool: log_stats\nfilter:\n  ip: \"{{entity.ip}}\"\ngroup_by: [rule]\nwindow: case_first_seen-1d..case_last_seen+1h\nlimit: 20\nrun: on_attach\n```\n\n### What is the scope: which hosts, accounts and data? {#scope kind=check evidence=note}\nEscalate if: confirmed spread to other hosts or accounts, or data sent out of the network without approval.\nBenign if: one host or account, contained, with no data at risk.\n\n### Incident, suspicious or benign? {#decide kind=decision}\nEscalate if: confirmed malicious activity, or impact on production systems or data.\nBenign if: a test, a misconfiguration or expected behaviour.\nOptions:\n- incident: Incident\n- suspicious: Suspicious, not confirmed\n- benign: Benign | skips: contain-systems, remove-cause, restore-service\n\nRecording a decision does not change the verdict or close the case.\n\n## Contain\n\n### Contain the affected systems or accounts {#contain-systems kind=action}\n\nIsolate hosts, disable accounts or block addresses as the scope needs. Record each change.\n\n## Eradicate\n\n### Remove the cause {#remove-cause kind=action}\n\nRemove the malware, access or misconfiguration that caused the incident.\n\n## Recover\n\n### Restore normal service {#restore-service kind=action}\n\nBring systems back into service and watch them closely for a while.\n\n## Close and learn\n\n### Record the outcome and what you would change {#record-outcome kind=record}\n\nWrite what happened and what you would change. If this kind of case comes back, write a specific runbook for it.\n"
   },
   {
    "file": "malware-endpoint.md",

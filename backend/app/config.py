@@ -1403,8 +1403,10 @@ class RunbookConfig(BaseModel):
     * ``enabled``: the feature (library, runs, guidance). Never derived from an old key.
     * ``auto_attach``: attach the matching runbook to cases that need a person (D32).
     * ``fallback``: attach Generic incident when nothing else matches (D33).
-    * ``investigator_guidance``: feed the winning Published runbook to the
-      investigator as trusted, advisory guidance (#9).
+    * ``investigator_guidance``: feed the Published runbook that specifically matches
+      (tier 1 or higher) to the investigator as trusted, advisory guidance (#9). The
+      Generic incident fallback is never fed: it is a checklist for people. Guidance
+      can change the verdict the model returns, never ``decide()``.
     * ``rag_corpus``: index Published runbooks for retrieval.
     * ``ai_suggest`` / ``ai_step_drafts``: offer "Suggest a runbook" and "Draft note"
       as clicks; each is one gateway call, ledgered and budget-gated (#6).
@@ -3470,7 +3472,15 @@ class RBACConfig(BaseModel):
             out["custom_roles"] = [
                 normalise_custom_role(spec, legacy=legacy) for spec in out["custom_roles"]
             ]
-        out["rbac_grants_version"] = RBAC_GRANTS_VERSION
+        # A stamp a newer build wrote is kept (this build only reads it as current),
+        # so a rollback and a save never lower it and re-run a newer once-only rule.
+        stored_stamp = data.get("rbac_grants_version")
+        newer = (
+            isinstance(stored_stamp, int)
+            and not isinstance(stored_stamp, bool)
+            and stored_stamp > RBAC_GRANTS_VERSION
+        )
+        out["rbac_grants_version"] = stored_stamp if newer else RBAC_GRANTS_VERSION
         return out
 
 

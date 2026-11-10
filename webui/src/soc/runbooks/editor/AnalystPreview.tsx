@@ -129,7 +129,20 @@ function LookupLine({ step, values }: { step: RunbookStep; values: CaseValues | 
   );
 }
 
-export function GuidanceMeter({ guidance }: { guidance: { chars: number; budget: number } | null }) {
+/** Shown in place of the meter for a fallback (`applies_when.always`) runbook. */
+export const FALLBACK_GUIDANCE_TEXT = 'A fallback is a checklist for people: the investigator is never given it as guidance.';
+
+export function GuidanceMeter({
+  guidance,
+  fallback = false,
+}: {
+  guidance: { chars: number; budget: number } | null;
+  /** A fallback runbook matches every case, so the investigator is never given it. */
+  fallback?: boolean;
+}) {
+  if (fallback) {
+    return <p className="text-sm text-muted-foreground">{FALLBACK_GUIDANCE_TEXT}</p>;
+  }
   if (!guidance) {
     return <p className="text-sm text-muted-foreground">Investigator guidance is measured once the runbook checks out.</p>;
   }
@@ -204,7 +217,7 @@ export function AnalystPreview({ defn, cases, loadCaseValues, guidance, announce
   return (
     <section aria-label="Preview as analyst" className={cn('min-w-0 space-y-4', className)} data-analyst-preview="">
       <div className="surface-panel space-y-4 p-4 xl:p-5">
-        <GuidanceMeter guidance={guidance} />
+        <GuidanceMeter guidance={guidance} fallback={defn.applies_when.always} />
         {cases.length && loadCaseValues ? (
           <div className="flex flex-wrap items-center gap-2 border-t border-border/70 pt-3">
             <Select value={chosen?.case_id ?? ''} onValueChange={(v) => setCaseId(v)}>

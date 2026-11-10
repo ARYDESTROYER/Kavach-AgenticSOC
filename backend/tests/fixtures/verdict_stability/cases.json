@@ -1,0 +1,29 @@
+{
+ "$comment": "Frozen fixtures for tests/test_verdict_stability_gate.py. Synthetic clusters, no real data. benign_cues is the evidence the sensitivity model reads from the untrusted evidence fence (url.path); events, spacing_seconds (default 300) and severity (default 2.0) shape the cluster and so its risk score; expect says which runbook the investigator should be given under the build's defaults: none for a case only the Generic incident fallback matches, or the id of the specific runbook that matches its rule. recorded holds the two-replicate mean FALSE_POSITIVE-verdict and close-eligible rates this build measured on these fixtures, the same for both arms: each arm must stay within the gate threshold of them, so a prompt or retrieval change that moves both arms alike still fails. A change meant to move the verdict mix updates recorded in the same reviewed change.",
+ "contract": 1,
+ "recorded": {"fp_rate": 0.7045, "close_rate": 0.6136},
+ "cases": [
+  {"id": "lms-ajax-01", "rule": "lms_ajax_service_call", "ip": "198.51.100.11", "events": 4, "benign_cues": 4, "expect": "none"},
+  {"id": "lms-ajax-02", "rule": "lms_ajax_service_call", "ip": "198.51.100.12", "events": 5, "benign_cues": 3, "expect": "none"},
+  {"id": "lms-ajax-03", "rule": "lms_ajax_service_call", "ip": "198.51.100.13", "events": 3, "benign_cues": 2, "expect": "none"},
+  {"id": "lms-ajax-04", "rule": "lms_ajax_service_call", "ip": "198.51.100.14", "events": 6, "benign_cues": 1, "expect": "none"},
+  {"id": "lms-sesskey-01", "rule": "lms_session_key_reuse", "ip": "198.51.100.21", "events": 4, "benign_cues": 5, "expect": "none"},
+  {"id": "lms-sesskey-02", "rule": "lms_session_key_reuse", "ip": "198.51.100.22", "events": 3, "benign_cues": 3, "expect": "none"},
+  {"id": "lms-sesskey-03", "rule": "lms_session_key_reuse", "ip": "198.51.100.23", "events": 5, "benign_cues": 2, "expect": "none"},
+  {"id": "lms-sesskey-04", "rule": "lms_session_key_reuse", "ip": "198.51.100.24", "events": 4, "benign_cues": 0, "expect": "none"},
+  {"id": "lms-notfound-01", "rule": "lms_path_not_found", "ip": "198.51.100.31", "events": 40, "spacing_seconds": 1, "severity": 6.0, "benign_cues": 4, "expect": "none"},
+  {"id": "lms-notfound-02", "rule": "lms_path_not_found", "ip": "198.51.100.32", "events": 5, "benign_cues": 2, "expect": "none"},
+  {"id": "lms-notfound-03", "rule": "lms_path_not_found", "ip": "198.51.100.33", "events": 3, "benign_cues": 1, "expect": "none"},
+  {"id": "lms-profiles-01", "rule": "lms_bulk_profile_view", "ip": "198.51.100.41", "events": 4, "benign_cues": 3, "expect": "none"},
+  {"id": "lms-profiles-02", "rule": "lms_bulk_profile_view", "ip": "198.51.100.42", "events": 6, "benign_cues": 0, "expect": "none"},
+  {"id": "lms-upload-01", "rule": "lms_upload_extension", "ip": "198.51.100.51", "events": 3, "benign_cues": 2, "expect": "none"},
+  {"id": "lms-upload-02", "rule": "lms_upload_extension", "ip": "198.51.100.52", "events": 4, "benign_cues": 1, "expect": "none"},
+  {"id": "vpn-admin-01", "rule": "vpn_admin_panel_login", "ip": "198.51.100.61", "events": 3, "benign_cues": 3, "expect": "none"},
+  {"id": "vpn-admin-02", "rule": "vpn_admin_panel_login", "ip": "198.51.100.62", "events": 5, "benign_cues": 0, "expect": "none"},
+  {"id": "dns-odd-01", "rule": "dns_unusual_resolver", "ip": "198.51.100.71", "events": 30, "spacing_seconds": 2, "severity": 7.0, "benign_cues": 5, "expect": "none"},
+  {"id": "dns-odd-02", "rule": "dns_unusual_resolver", "ip": "198.51.100.72", "events": 3, "benign_cues": 2, "expect": "none"},
+  {"id": "mail-auth-01", "rule": "mail_auth", "ip": "198.51.100.81", "events": 4, "benign_cues": 9, "expect": "brute-force-password-spray"},
+  {"id": "mail-auth-02", "rule": "mail_auth", "ip": "198.51.100.82", "events": 6, "benign_cues": 0, "expect": "brute-force-password-spray"},
+  {"id": "ransomware-01", "rule": "ransomware_behavior", "ip": "198.51.100.91", "events": 5, "benign_cues": 0, "expect": "ransomware-destructive"}
+ ]
+}

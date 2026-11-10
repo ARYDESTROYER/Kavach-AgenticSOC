@@ -40,7 +40,7 @@ vi.mock('@/lib/api', () => {
       },
       roles: { get: ok({ roles: [], rbac_enabled: false, matrix: {} }) },
       sessions: { list: () => sessionsList(), revoke: vi.fn(), revokeOthers: vi.fn() },
-      account_activity: ok({ events: [] }),
+      account_activity: ok({ activity: [] }),
     },
   };
 });

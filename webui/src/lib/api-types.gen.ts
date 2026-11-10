@@ -31,7 +31,8 @@ export interface paths {
         /**
          * Account Activity
          * @description The caller's OWN recent account/audit activity (newest first). Reads the
-         *     append-only audit log filtered by actor. Read-only; never raises.
+         *     append-only audit log filtered by actor. Read-only. When the audit log cannot be
+         *     read the answer is ``503 audit_unavailable``, never an empty list.
          */
         get: operations["account_activity_api_account_activity_get"];
         put?: never;
@@ -7416,7 +7417,7 @@ export interface components {
          *     True}``; a URL is reduced to scheme and host by the writer, which sets ``secret``
          *     when anything was removed. A value that is not text is stored as canonical JSON
          *     text (:func:`_audit_change_text`); ``before`` and ``after`` are cut to 500
-         *     characters.
+         *     characters and lose NUL and lone surrogates, ``field`` is one clean line.
          */
         AuditChange: {
             /** After */

@@ -99,10 +99,12 @@
   and canonical runtime acceptance gate passes. See
   `docs/releases/channels.md`. Repository administrators remain responsible for enforcing
   the documented branch and environment protections.
-- **Current CI contract:** every candidate exposes eighteen independent quality lanes
+- **Current CI contract:** every candidate exposes twenty independent quality lanes
   plus the fail-closed **CI passed** aggregate. In addition to the complete backend,
-  Console, contract, design, package, and documentation checks, CI boots the supported
-  PostgreSQL+pgvector/Redis state path, runs fail-closed workflow/ShellCheck and fatal
+  Console, contract, design, package, and documentation checks, CI runs the verdict
+  stability gate in its own lane, boots the supported
+  PostgreSQL+pgvector/Redis state path, boots the previous release on the candidate's
+  PostgreSQL data (the N to N-1 rollback lane), runs fail-closed workflow/ShellCheck and fatal
   Python static checks separately from deploy/updater contracts, and builds the
   shipping backend, Console/Help Center, and updater images without publishing them.
   Require **CI passed** on `Testing` and

@@ -12,6 +12,66 @@ History is reconstructed from `git log`.
 
 ## [Unreleased]
 
+### Round 14 follow-up fixes
+
+Three bugs a staging rehearsal of Round 14 found. `decide()` is unchanged, no wire identifier
+is renamed, there is no new dependency and the version stays 0.1.13.
+
+- Rolling back: this build tolerates and keeps what a newer build writes, so the next release
+  can roll back to it cleanly.
+  - A job record of a kind this build does not know is kept unchanged, never run or listed,
+    counts toward capacity, is pruned once it has finished and never puts startup into
+    safe-stop. A corrupt job record or idempotency map still fails closed.
+  - Settings saves keep preference keys this build does not model (top level and nested) and
+    stored values it only clamped, without bringing back retired keys. A migration stamp keeps
+    only a newer build's valid stamp, and a save whose read of the stored settings fails
+    writes nothing.
+  - A corpus migration marker (KV namespace `rag_corpus_migration`, one document per source)
+    lets the knowledge projection replace another build's deliberate id scheme instead of
+    refusing it at the retention floor. A projection that would reach zero is still refused.
+  - New CI lane, N to N-1 rollback acceptance: the previous release pinned in
+    `scripts/rollback_previous_release.json` boots on PostgreSQL data this release wrote, and
+    this release boots as the previous one on synthetic future data it must keep.
+  - Rolling back to a build before Round 14 keeps three documented hazards (an audit export
+    job record puts it in safe-stop, its projection is refused, and its graceful stop drops
+    `runbooks.*` settings); see the upgrade notes.
+- Runbooks: the Generic incident fallback (any runbook that applies to every case) is no
+  longer given to the investigator as guidance. A staging A/B measured the FALSE_POSITIVE
+  verdict rate falling from about 69% to about 32% while a Round 14 Testing build fed it to
+  every investigation.
+  - It is still chosen, recorded on the case (Selected only) and attached for people, but adds
+    no runbook block and no extra knowledge searches. Like every Published runbook, its text
+    stays in the knowledge search while `runbooks.rag_corpus` is on.
+  - A specific runbook still guides the investigator. Guidance can change the verdict the
+    agent returns, never `decide()`. `runbooks.investigator_guidance: false` removes all
+    runbook guidance, and `runbooks.rag_corpus: false` also keeps runbook text out of the
+    knowledge search.
+  - The built-in Generic incident runbook is version 2: its two broad escalation lines now
+    name evidence of harm. The runbook editor shows a fallback as a checklist for people
+    instead of a guidance meter.
+  - New CI lane, Verdict stability gate: a deterministic offline two-arm run on frozen
+    fixtures fails when guidance or prompt text moves the FALSE_POSITIVE-verdict or
+    close-eligible rate more than 15 points, between the guided and unguided arms or from the
+    rates recorded on the fixtures.
+- Audit log on PostgreSQL: one `\u0000` (or lone surrogate) in an audit row no longer breaks
+  the Audit log, its count, its exports, account activity or chat's audit search.
+  - Audit text is cleaned on write in one place (`AuditDoc`): control characters are removed
+    from names, ids and labels (a name made only of them is recorded as U+FFFD), NUL from all
+    other text, and the actor is capped at 160 characters.
+  - Rows an older build stored are read as if cleaned and are never rewritten. The cases,
+    usage and kv JSON reads, the kv compare-and-set among them, use the same NUL-safe reader.
+    SQLite reads are unchanged.
+  - A sign-in with a control character in the username is an ordinary 401, recorded cleaned
+    with the reason. New accounts are limited to 160 characters with no control characters:
+    user creation answers 422 (without repeating the name) and first-run setup 400. An account
+    an older build created with a longer name still signs in.
+  - Account activity answers `503 audit_unavailable`, and chat's `audit_search` says the audit
+    trail did not answer, instead of reporting no rows.
+  - Settings, Sessions and activity: the Activity tab shows the signed-in person's events again.
+    It read a response key the server never sent, so it always said "No recent activity."
+  - Every `backend/tests/test_postgres_*.py` module now runs in the PostgreSQL acceptance lane,
+    which fails if any of them is skipped.
+
 ### Round 14
 
 - CI: the Bootstrap portability (macOS Bash 3.2) lane runs on `macos-15`, because GitHub

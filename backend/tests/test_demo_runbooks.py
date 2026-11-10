@@ -419,29 +419,35 @@ def _with_a_case_no_runbook_covers(cases: list[Case]) -> list[Case]:
     return [*cases, stray]
 
 
-def test_guidance_without_the_fallback_never_names_generic_incident() -> None:
-    """With the fallback off a case no runbook's Applies when matches gets no guidance
-    (as the live pipeline gives none), every other case keeps its match, and every
-    seeded run still names its case's runbook."""
+def test_guidance_never_names_the_fallback() -> None:
+    """The fallback is a checklist for people, never investigator guidance (as the
+    live pipeline gives none): a case no runbook's Applies when matches gets no
+    guidance whether the fallback is on or off, every other case keeps its match,
+    and every seeded run names its case's runbook, except a fallback run, whose case
+    names none."""
     catalog = demo_builtin_catalog()
-    on = _with_a_case_no_runbook_covers(_seeded(1337))
-    assert gen.seed_demo_runbook_guidance(on, catalog, prefs=Preferences()) == len(on)
-    assert on[-1].runbook_id == "generic-incident"   # the fallback is what covers it
-    prefs = Preferences()
-    prefs.runbooks.fallback = False
-    now_ms = to_millis(now_utc())
-    cases = _with_a_case_no_runbook_covers(_seeded(1337, now_ms=now_ms))
-    assert gen.seed_demo_runbook_guidance(cases, catalog, prefs=prefs) == len(cases) - 1
-    assert cases[-1].runbook_id is None and cases[-1].runbook_version is None
-    assert not any(c.runbook_id == "generic-incident" for c in cases)
-    assert [c.runbook_id for c in cases[:-1]] == [c.runbook_id for c in on[:-1]]
-    by_id = {c.case_id: c for c in cases}
-    runs = gen.plan_demo_runbook_runs(cases, catalog, prefs=prefs, seed=1337, now_millis=now_ms)
-    assert runs and not any(r.runbook_id == "generic-incident" for r in runs)
-    assert "demo-stray-0000" not in {r.case_id for r in runs}
-    for run in runs:
-        case = by_id[run.case_id]
-        assert (case.runbook_id, case.runbook_version) == (run.runbook_id, run.version)
+    stamped: dict[bool, list[str | None]] = {}
+    for fallback in (True, False):
+        prefs = Preferences()
+        prefs.runbooks.fallback = fallback
+        now_ms = to_millis(now_utc())
+        cases = _with_a_case_no_runbook_covers(_seeded(1337, now_ms=now_ms))
+        assert gen.seed_demo_runbook_guidance(cases, catalog, prefs=prefs) == len(cases) - 1
+        assert cases[-1].runbook_id is None and cases[-1].runbook_version is None
+        assert not any(c.runbook_id == "generic-incident" for c in cases)
+        stamped[fallback] = [c.runbook_id for c in cases[:-1]]
+        by_id = {c.case_id: c for c in cases}
+        runs = gen.plan_demo_runbook_runs(cases, catalog, prefs=prefs, seed=1337, now_millis=now_ms)
+        assert runs
+        for run in runs:
+            case = by_id[run.case_id]
+            if run.runbook_id == "generic-incident":
+                assert fallback and run.attached_by == "fallback" and case.runbook_id is None
+            else:
+                assert (case.runbook_id, case.runbook_version) == (run.runbook_id, run.version)
+        stray = {r.runbook_id for r in runs if r.case_id == "demo-stray-0000"}
+        assert stray <= ({"generic-incident"} if fallback else set())
+    assert stamped[True] == stamped[False]
 
 
 def test_guidance_over_the_character_budget_is_not_given(monkeypatch: pytest.MonkeyPatch) -> None:

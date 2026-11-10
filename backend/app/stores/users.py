@@ -28,6 +28,7 @@ from typing import Any, Callable
 
 from ..constants import USERS_KEY, USERS_NS, UserRole
 from ..models import User
+from ..stored_text import username_problem
 from ..utils import iso_now
 from .base import KVStore, kv_mutate
 
@@ -36,6 +37,20 @@ logger = logging.getLogger("tlsoc.stores.users")
 
 def _norm(username: str) -> str:
     return (username or "").strip().lower()
+
+
+def _checked_name(username: str) -> str:
+    """The username as stored (surrounding whitespace removed). Raises ``ValueError``
+    for an empty name, or one ``username_problem`` refuses (a control character,
+    ``\\u0000`` among them, or more than 160 characters): every audit row the account
+    writes carries its name as the actor."""
+    uname = (username or "").strip()
+    if not uname:
+        raise ValueError("username is required")
+    problem = username_problem(uname)
+    if problem is not None:
+        raise ValueError(problem)
+    return uname
 
 
 class UserStore:
@@ -176,10 +191,10 @@ class UserStore:
         fields; ``mfa_required`` is the admin MFA-enrollment mandate (NEVER the
         enrolled ``mfa_enabled`` flag — no secret is minted here); ``prefs`` seeds
         the free-form prefs bag (e.g. ``{"custom_roles": [...]}`` — the same shape
-        ``PUT /api/users/{u}/roles`` writes). All optional + defaulted (additive)."""
-        uname = (username or "").strip()
-        if not uname:
-            raise ValueError("username is required")
+        ``PUT /api/users/{u}/roles`` writes). All optional + defaulted (additive).
+        A username with a control character or over 160 characters raises
+        ``ValueError`` too (:func:`_checked_name`)."""
+        uname = _checked_name(username)
         user = User(
             username=uname,
             password_hash=password_hash,
@@ -218,13 +233,15 @@ class UserStore:
         mutation) so two concurrent first-run setup requests cannot both observe an empty
         store and each save an admin (last-writer-wins) — exactly ONE admin is created
         under concurrency (H4 / FINDING #13). At single-process scale the lock is the
-        whole guard; the emptiness check inside it is the linearization point."""
+        whole guard; the emptiness check inside it is the linearization point. The
+        username is checked as :meth:`create` checks it (``ValueError``)."""
+        uname = _checked_name(username)
         async with self._lock:
             entries = await self._load()
             if entries:
                 return None
             user = User(
-                username=(username or "").strip(),
+                username=uname,
                 password_hash=password_hash,
                 role=role,
                 active=active,

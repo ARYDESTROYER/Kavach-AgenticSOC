@@ -90,7 +90,7 @@ vi.mock('@/lib/api', () => {
         // The effective grants the AuthProvider reads (GET /api/account/permissions).
         permissions: ok({ authenticated: false, role: 'super_admin', custom_roles: [], rbac_enabled: false, permissions: {} }),
       },
-      account_activity: ok({ events: [] }),
+      account_activity: ok({ activity: [] }),
       sessions: { list: ok({ sessions: [] }), revoke: ok({ ok: true }), revokeOthers: ok({ revoked: 0 }) },
       users: { list: ok({ users: [] }), create: ok({}), update: ok({}), remove: ok({}) },
       admin: {

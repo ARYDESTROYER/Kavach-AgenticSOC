@@ -126,6 +126,25 @@ Sign-ins and sign-outs are never blocked this way.
   management connection keys (`es_mgmt_api_key`, `es_url`, `es_ca_cert`), so a broken
   audit connection stays repairable.
 
+## The Audit log answers "could not be read" on PostgreSQL
+
+On a PostgreSQL state backend, an earlier build answered `503 audit_unavailable`
+for People and settings, Agent activity, a search or a count over any time range that
+held an audit row with a `\u0000` in it, while All kept working. The account activity
+list showed nothing. One failed sign-in with a NUL in the username was enough to write
+such a row.
+
+The current build never writes one (audit text is cleaned on write, an account cannot be created with
+such a username, and a sign-in with one is an ordinary failed sign-in), and reads a row an older build stored as if it had been cleaned, without
+rewriting it. After upgrading, every scope reads again with no data change. To see
+whether any such rows are stored, run this read-only check:
+
+```sql
+BEGIN TRANSACTION READ ONLY;
+SELECT count(*) FROM audit WHERE strpos(doc::text, '\u0000') > 0;
+ROLLBACK;
+```
+
 ## UI is blank or stale
 
 Verify backend readiness through the nginx `/api` proxy, then inspect browser network
@@ -199,6 +218,15 @@ If a rebuild legitimately produces a much smaller corpus (you disabled sources o
 purpose), lower `rag.min_projection_retention`, or set it to `0` to disable the ratio
 guard. A projection reaching **zero** is refused regardless; that is never a
 legitimate rebuild of a non-empty corpus, and no setting changes that.
+
+A release that deliberately replaces a source's documents with a new document-id
+scheme records a corpus-migration marker (KV namespace `rag_corpus_migration`). With
+that marker, a build on either side of the migration (after an upgrade, or after an
+image-only rollback) replaces the other build's documents instead of refusing at the
+retention floor, and logs `RAG projection replaced a marked corpus migration` at INFO.
+A refusal at the retention floor right after a rollback to a build without markers
+(before this contract) is the corpus-migration case; see
+[Upgrades](upgrades.md#rolling-back-from-round-14).
 
 Narrowing `precedent.window.size` to drop unwanted precedent is a shrink like any other
 and can therefore trip the same ratio floor. When the refusal is attributable to that

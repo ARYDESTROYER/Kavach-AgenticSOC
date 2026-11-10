@@ -2036,6 +2036,15 @@ fields plus `mfa_required` (`null` = leave unchanged; clearing a text field is a
 explicit empty string); custom roles are re-assigned post-hoc via the roles
 endpoint. All additive — the base `role` must remain one of the six built-ins.
 
+A username is at most 160 characters and may not contain a control character (a
+`\u0000` among them), because every audit row the account writes carries its name.
+Such a name is refused with `422` here and `400` in the first-run setup. A sign-in with
+a control character in the name is an ordinary failed sign-in (`401 invalid
+credentials`), recorded with the name minus those characters and a summary that says
+why it was refused. The length bound applies when an account is created: an account an
+older build created with a longer name still signs in, and its audit rows record the
+first 160 characters of the name.
+
 ### Custom roles
 
 **Settings → Security & access → Roles & permissions** manages **operator-defined
@@ -2395,7 +2404,8 @@ to get editable profiles. Secrets never leak: `public()` excludes `password_hash
 
 Your recent account activity is available at `GET /api/account/activity?limit=50`
 (your own audit rows, newest first) — it powers the "recent activity" list on the
-account page.
+account page. When the audit log cannot be read the answer is `503 audit_unavailable`,
+never an empty list.
 
 ---
 

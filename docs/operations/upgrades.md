@@ -549,6 +549,23 @@ new state lives in the existing key-value store. Read these before upgrading:
   when nothing else matches (Settings → Integrations → Runbooks). A runbook never closes
   a case. Closing a case by hand with required steps still open asks for a short reason,
   which is recorded; it never blocks the close.
+- **Runbooks can shift the verdict mix.** By default the investigator is also given the
+  Published runbook that specifically matches a case (its rules, techniques or other
+  conditions) as trusted guidance, with the runbook's search phrases. That text can
+  change the verdict the agent returns, and so which cases close automatically; the
+  close and escalate decision itself is unchanged. The Generic incident fallback is
+  never given to the investigator as guidance (no runbook block and no extra searches):
+  it is a checklist for people. A Round 14 Testing build did give it to the
+  investigator, and on a staging copy that moved about half of the FALSE_POSITIVE
+  verdicts to NEEDS_HUMAN. A case whose rules no specific runbook covers gets no runbook
+  guidance. Like every Published runbook, its text stays in the knowledge search while
+  `runbooks.rag_corpus` is on, so a case's own search can still return a passage of it.
+  To give the agent no runbook guidance, set `runbooks.investigator_guidance: false`
+  (**Guide the agent with the matching runbook** in Settings); to keep runbook text out
+  of its knowledge search as well, also set `runbooks.rag_corpus: false` (**Use
+  Published runbooks in retrieval**). The built-in Generic incident runbook is now
+  version 2: two of its escalation lines name evidence of harm instead of conditions
+  most alerts meet.
 - **Settings keys from earlier versions.** `playbooks.enabled: false` becomes
   `runbooks.investigator_guidance: false`; the earlier `runbooks.enabled: false` (stop
   reference runbook retrieval) and `rag.use_runbooks: false` become
@@ -656,7 +673,34 @@ can be ignored.
 
 ### Rolling back from Round 14
 
-An image-only rollback to a build before Round 14 keeps working, with these effects:
+A build before Round 14 predates the rollback forward-compatibility contract (see
+[Rollback](#rollback)), so three things it finds in Round 14 data break it. Check for
+them on a copy of the data before an image-only rollback to such a build:
+
+- **An audit export job puts it in safe-stop.** The earlier build cannot read a job
+  record of the `audit_export` kind, treats the whole job registry as corrupt and starts
+  in factory-reset safe-stop: every route, `/api/health/ready` included, answers
+  `503 factory_reset_in_progress`, and the container reports unhealthy. Read-only check
+  on PostgreSQL:
+  `SELECT j.value->>'kind', count(*) FROM kv, json_each(kv.value->'jobs') j WHERE kv.namespace='jobs' AND kv.key='jobs' GROUP BY 1;`.
+  There is no product way to remove such a record from the earlier build; removing it
+  by hand edits durable state and needs explicit approval.
+- **Its knowledge projection is refused.** The earlier build rebuilds 9 legacy runbook
+  chunks against the 51 `runbook-library:` chunks Round 14 wrote, refuses the projection
+  at the retention floor (`RAG projection REFUSED (retention_floor)`), serves no runbook
+  passage and re-embeds the corpus on every investigation. Lowering
+  `rag.min_projection_retention` to `0` on that build lets its projection through.
+  This needs a working settings API, so resolve the audit export safe-stop first. Set it
+  back to `0.5` (or the value it had) as soon as you return to Round 14 or later: the
+  value is kept in the shared preferences, and `0` leaves every knowledge source without
+  its retention floor.
+- **Its graceful stop drops runbook settings.** It rewrites the preferences document
+  from its own schema: every `runbooks.*` setting is removed, so after returning to
+  Round 14 they read as their defaults again. Note the values first (**Settings →
+  Integrations → Runbooks**) and set them again after the return.
+
+Apart from those, an image-only rollback to a build before Round 14 keeps working,
+with these effects:
 
 - The stored procedure and reference runbook documents were never changed, so the
   earlier build finds them as they were. Runbooks written or published in Round 14, and
@@ -813,6 +857,44 @@ cancellation, and deliberate post-success rollback restore the prior application
 images without rewriting PostgreSQL or discarding post-snapshot writes. Any release
 that needs a schema migration is blocked from one-click installation and must follow
 a release-specific manual procedure.
+
+### Rollback forward compatibility
+
+From this build on, the running build tolerates and keeps what a newer build wrote, so
+the release after it can be rolled back to it with an image-only rollback:
+
+- **Jobs of an unknown kind.** A well-formed job record of a kind this build does not
+  know is kept exactly as stored through every registry write. It is never run, listed
+  or cancelled here, it counts toward the 1,000-job capacity, and it is pruned like any
+  other record once its status is terminal. It never puts startup into safe-stop; only a
+  corrupt record (not an object, or missing what makes it a job) still does.
+- **Preference keys it does not model.** A settings save keeps every stored key this
+  build does not model, at the top level and inside each settings section, and keeps a
+  stored value it only clamped for its own use (a chat limit above its ceiling) unless an
+  administrator changed that value. A migration stamp keeps only a newer build's valid
+  stamp; a malformed one is saved as the stamp this build set, so a once-only migration
+  does not run again on every load. A save whose read of the stored document fails
+  writes nothing rather than erase what it would have kept. Keys this build retired
+  on purpose (`playbooks.llm_select`) are not brought back. Items of a list (sources,
+  rules) are saved as this build models them.
+- **Intentional knowledge corpus migrations.** A release that replaces a knowledge
+  source's documents with a new document-id scheme records a marker (the KV namespace
+  `rag_corpus_migration`, one document per source naming its scheme and the schemes it
+  replaced). The projection guard reads it on either side of the migration: another
+  build's marked documents are replaced rather than counted as a shrink, so no
+  retention-floor refusal and no re-embedding on every investigation. A projection
+  reaching zero is still refused, and an unmarked shrink still trips the floor.
+
+The CI rollback lane (`scripts/rollback_lane.py`) boots this release on PostgreSQL,
+writes the data it introduces (an audit export job, the migrated runbook corpus, changed
+`runbooks.*` settings), then boots the previous release pinned in
+`scripts/rollback_previous_release.json` on that data and checks health, the corpus and
+the settings, and finally boots this release again. A second scenario repeats the steps
+with this release as the previous one and plants synthetic future data (an unknown job
+kind, unknown preference keys, a marker-identified corpus) that it must keep, so the lane
+gates this release's own forward contract whatever the pin is. When a release is cut, pin
+it as the previous release for the next one, and set `forward_contract` to `true` once
+the pinned release carries this contract, so the pinned scenario plants that data too.
 
 Stable fixes start on a focused branch from the affected source, merge into
 `Testing`, pass the same acceptance gate, and promote forward to `main` as a patch

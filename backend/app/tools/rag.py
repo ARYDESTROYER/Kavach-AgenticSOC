@@ -50,6 +50,7 @@ from ..llm.gateway import FAILURE_NOT_CONFIGURED, LLMGateway
 from ..models import PHASE_LABELS as RUNBOOK_PHASE_LABELS
 from ..models import RagChunk
 from ..stores.precedent_exclusions import normalise_reason as normalise_exclusion_reason
+from ..stores.rag_corpus_migration import scheme_of
 from ..utils import iso_now
 from .base import Tool, ToolResult
 from .vectorstore import (
@@ -68,6 +69,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from ..models import Case
     from ..stores.cases import CaseStore
     from ..stores.precedent_exclusions import PrecedentExclusionStore
+    from ..stores.rag_corpus_migration import RagCorpusMigrationStore
     from ..stores.rag_health import RagHealthStore
     from ..stores.runbook_library import RunbookLibraryStore
 
@@ -1170,6 +1172,7 @@ class RagService:
         health: "RagHealthStore | None" = None,
         exclusions: "PrecedentExclusionStore | None" = None,
         library: "RunbookLibraryStore | Callable[[], Any] | None" = None,
+        corpus_migrations: "RagCorpusMigrationStore | None" = None,
     ) -> None:
         self._gateway = gateway
         self._prefs = prefs
@@ -1196,6 +1199,9 @@ class RagService:
         # Defaulted None so every historical/test construction is unchanged; when
         # absent, the in-process ``last_projection`` below is the only record.
         self._health = health
+        # Optional intentional-migration markers (stores/rag_corpus_migration.py).
+        # Without them every source is guarded exactly as before.
+        self._corpus_migrations = corpus_migrations
         # Optional durable per-case precedent EXCLUSION set (stores/precedent_exclusions).
         # Defaulted None exactly like ``health`` above, so every historical/test
         # construction — and any deployment that never excludes anything — is byte-
@@ -1907,8 +1913,18 @@ class RagService:
         chunks: list[StoredChunk],
         *,
         scope: frozenset[str] | None = None,
+        migrated: dict[str, int] | None = None,
     ) -> None:
         """Refuse a projection that collapsed or shrank past the configured floor.
+
+        **AN INTENTIONAL MIGRATION IS NOT A SHRINK.** ``migrated`` counts, per source,
+        the stored chunks a corpus-migration marker identifies as another build's
+        deliberate id scheme for that source (:meth:`_marked_migration_counts`): a
+        newer build's corpus after a rollback, or the scheme this build replaced. The
+        retention-floor comparison leaves them out (like with like: this build's own
+        scheme against its own projection), so the projection replaces them instead of
+        being refused. The zero-projection refusal below counts them: an empty rebuild
+        never replaces a live corpus, marked or not. Without a marker nothing changes.
 
         A projection is a rebuild of a source of truth that has NOT shrunk. So a
         rebuild that yields zero documents while the previous corpus held thousands
@@ -1999,9 +2015,17 @@ class RagService:
                 reason_code=REFUSAL_EMPTY_PROJECTION,
             )
         retention = float(getattr(self._prefs.rag, "min_projection_retention", 0.0) or 0.0)
-        if retention > 0.0 and incoming_total < outgoing_total * retention:
+        # Scope the retention comparison to same-scheme ids for a marker-identified
+        # migration (see above); the zero check already ran on everything stored.
+        compared = {
+            name: max(0, int(count or 0) - int((migrated or {}).get(name, 0) or 0))
+            for name, count in relevant.items()
+        }
+        compared_total = sum(compared.values())
+        if retention > 0.0 and incoming_total < compared_total * retention:
+            outgoing_total = compared_total
             attributed = self._window_reduction_attribution(
-                relevant, incoming_by_source, scope=scope
+                compared, incoming_by_source, scope=scope
             )
             if attributed:
                 raise ProjectionCollapsed(
@@ -2085,8 +2109,95 @@ class RagService:
             logger.warning("Reading RAG source counts failed: %s", exc)
             return None
 
+    async def record_runbook_corpus_migration(self) -> bool:
+        """Record the Round 14 runbook corpus migration (``runbook-library:`` ids
+        replace the legacy ``runbook:`` and ``seed:runbook`` ids) in the marker
+        contract of ``stores.rag_corpus_migration``. Idempotent; a newer build's
+        marker that already names this build's scheme is kept. Returns whether a
+        marker naming this build's scheme is in force. Never raises."""
+        if self._corpus_migrations is None:
+            return False
+        try:
+            marker = await self._corpus_migrations.record(
+                RUNBOOK_SOURCE,
+                scheme=RUNBOOK_DOCUMENT_PREFIX,
+                replaced=LEGACY_RUNBOOK_DOCUMENT_PREFIXES,
+            )
+        except Exception as exc:  # noqa: BLE001 - the guard simply stays strict
+            logger.warning("Runbook corpus migration marker not recorded: %s", exc)
+            return False
+        return marker is not None
+
+    async def _marked_migration_counts(
+        self,
+        outgoing: dict[str, int] | None,
+        chunks: list[StoredChunk],
+        *,
+        scope: frozenset[str] | None,
+    ) -> dict[str, int]:
+        """Per source, the stored chunks a corpus-migration marker identifies as
+        another build's deliberate id scheme (``stores.rag_corpus_migration``).
+
+        A marker counts only when this projection's own documents of that source
+        belong to one of the marker's schemes (so this build's own scheme is named);
+        the stored chunks of the marker's OTHER schemes are then the expected state of
+        an intentional migration, in either direction. Anything unreadable, an
+        unmarked source, or a marker that does not name this build's scheme yields
+        nothing, so the guard stays exactly as strict as before. Never raises."""
+        if self._corpus_migrations is None or not outgoing:
+            return {}
+        incoming_ids: dict[str, set[str]] = {}
+        for chunk in chunks:
+            document_id = str((chunk.metadata or {}).get("document_id") or chunk.doc_id or "")
+            if document_id:
+                incoming_ids.setdefault(str(chunk.source or "unknown"), set()).add(document_id)
+        documents: list[dict[str, Any]] | None = None
+        out: dict[str, int] = {}
+        for source, count in outgoing.items():
+            if not count or source not in incoming_ids or (scope is not None and source not in scope):
+                continue
+            try:
+                marker = await self._corpus_migrations.read(source)
+            except Exception as exc:  # noqa: BLE001 - unreadable reads as unmarked
+                logger.warning("RAG corpus migration marker for %s unreadable: %s", source, exc)
+                continue
+            if marker is None:
+                continue
+            schemes = marker.schemes
+            own = {scheme_of(doc_id, schemes) for doc_id in incoming_ids[source]} - {None}
+            if not own:
+                continue  # this build's scheme is not named: no licence
+            foreign = schemes - own
+            if not foreign:
+                continue
+            if documents is None:
+                try:
+                    documents = list(await self._store.list_documents())
+                except Exception as exc:  # noqa: BLE001 - unknown keeps the guard strict
+                    logger.warning("RAG documents unreadable for the migration check: %s", exc)
+                    return {}
+            marked = sum(
+                int(document.get("chunk_count") or 0)
+                for document in documents
+                if isinstance(document, dict)
+                and str(document.get("source") or "") == source
+                and scheme_of(str(document.get("document_id") or ""), schemes) in foreign
+            )
+            if marked:
+                out[source] = marked
+                logger.info(
+                    "RAG source %s holds %d chunk(s) of a marked corpus migration (%s); "
+                    "they are replaced, not counted as loss",
+                    source, marked, ", ".join(sorted(foreign)),
+                )
+        return out
+
     def _record_projection_outcome(
-        self, outgoing: dict[str, int] | None, incoming: dict[str, int] | None
+        self,
+        outgoing: dict[str, int] | None,
+        incoming: dict[str, int] | None,
+        *,
+        migrated: dict[str, int] | None = None,
     ) -> None:
         """Compare the OUTGOING corpus with the INCOMING one, per source.
 
@@ -2097,6 +2208,8 @@ class RagService:
         per-source outcome is published on ``self.last_projection`` so a health
         endpoint can surface it without re-deriving anything. A source the operator
         just disabled is expected to go to zero, so it is recorded but not warned on.
+        Chunks a marked corpus migration replaced (``migrated``) are not a shrink: the
+        row records them as ``migration_replaced`` and logs the replacement at INFO.
         """
         at = iso_now()
         outcome: dict[str, dict[str, Any]] = {}
@@ -2115,17 +2228,26 @@ class RagService:
             before = int(known_outgoing.get(source, 0))
             after = int(incoming.get(source, 0))
             enabled = self._source_enabled(source)
+            replaced = min(before, max(0, int((migrated or {}).get(source, 0) or 0)))
             outcome[source] = {
                 "source": source,
                 "before": before,
                 "after": after,
                 "delta": after - before,
-                "shrank": after < before,
+                "shrank": after < before - replaced,
                 "collapsed": before > 0 and after == 0,
                 "source_enabled": enabled,
                 "at": at,
             }
-            if after < before and enabled:
+            if replaced:
+                outcome[source]["migration_replaced"] = replaced
+            if replaced and after < before and after >= before - replaced and after > 0:
+                logger.info(
+                    "RAG projection replaced a marked corpus migration of %s: %d -> %d "
+                    "chunk(s) (%d of another build's id scheme)",
+                    source, before, after, replaced,
+                )
+            elif after < before and enabled:
                 logger.warning(
                     "RAG projection SHRANK an enabled source: %s %d -> %d chunk(s) "
                     "(delta %+d)%s",
@@ -2308,7 +2430,10 @@ class RagService:
                     MANAGED_PROJECTION_SOURCES if held is None
                     else frozenset(MANAGED_PROJECTION_SOURCES - {RUNBOOK_SOURCE})
                 )
-                self._guard_projection_collapse(outgoing, chunks, scope=scope)
+                migrated = await self._marked_migration_counts(outgoing, chunks, scope=scope)
+                self._guard_projection_collapse(
+                    outgoing, chunks, scope=scope, migrated=migrated
+                )
                 if chunks:
                     await self._store.add(chunks)
                 expected = await self._verify_projection(chunks)
@@ -2318,7 +2443,7 @@ class RagService:
                 self.invalidate_precedent_distribution()
                 logger.info("RAG seeded with %d chunk(s)", len(chunks))
                 self._record_projection_outcome(
-                    outgoing, await self._chunk_counts_by_source()
+                    outgoing, await self._chunk_counts_by_source(), migrated=migrated
                 )
                 await self._persist_projection_health()
             except ProjectionCollapsed as exc:
@@ -5326,7 +5451,13 @@ class RagService:
                 # UNSCOPED on purpose: unlike ``ensure_seeded``, this replacement is a
                 # whole-store rebuild — it re-embeds operator imports and carries over
                 # preserved precedent — so the whole corpus is the right comparison.
-                self._guard_projection_collapse(outgoing, replacement)
+                self._guard_projection_collapse(
+                    outgoing,
+                    replacement,
+                    migrated=await self._marked_migration_counts(
+                        outgoing, replacement, scope=None
+                    ),
+                )
 
                 await self._store.clear()
                 cleared = True

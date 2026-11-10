@@ -617,6 +617,17 @@ write index (`docs/operations/upgrades.md`, "Applying the Round 14 audit templat
 until then a date-like value in an audit row can map a field as a date and later rows
 are refused.
 
+**Symptom: on PostgreSQL the Audit log's People and settings or Agent activity view
+answers `503 audit_unavailable`, while All still works, and account activity is empty.**
+An earlier build could not read an audit row with a `\u0000` in it through a filter;
+one failed sign-in with a NUL in the username wrote such a row. Upgrade: the current
+build cleans audit text on write, refuses such usernames (a sign-in with one is an
+ordinary `401`), and reads older rows as if
+they had been cleaned (they are never rewritten). Read-only check for stored rows:
+`SELECT count(*) FROM audit WHERE strpos(doc::text, '\u0000') > 0;`. A failed read is now
+reported as `503 audit_unavailable` by account activity and as "The audit trail did not
+answer" by chat, never as no rows.
+
 ---
 
 ## O. Invalid `correlation_rules` JSON

@@ -465,7 +465,8 @@ function CriterionPicker({
           <span className="space-y-1">
             <span className="block text-sm font-medium text-foreground">Fallback for any case</span>
             <span className="block text-sm text-muted-foreground">
-              Applies when no other runbook matches. A fallback lists no other condition.
+              Applies when no other runbook matches. A fallback lists no other condition. It is a
+              checklist for people; the investigator is never given it as guidance.
             </span>
           </span>
           <Switch

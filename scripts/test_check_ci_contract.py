@@ -80,6 +80,50 @@ def _ci_workflow() -> dict[str, object]:
             ),
         },
     ]
+    postgres_service = {"image": "pgvector/pgvector:pg16@sha256:" + "a" * 64}
+    postgres_redis = _job()
+    postgres_redis["services"] = {"postgres": dict(postgres_service)}
+    postgres_redis["steps"] = [
+        {"uses": PINNED_CHECKOUT},
+        {
+            "name": policy.POSTGRES_ACCEPTANCE_STEP,
+            "env": {
+                "POSTGRES_TEST_DB_URL": "postgresql+asyncpg://ci@127.0.0.1:5432/ci",
+                "ACCEPTANCE_MODULES": " ".join(policy._postgres_acceptance_modules()),
+            },
+            "run": (
+                'python -m pytest -q -rs "${modules[@]}" --junit-xml=report.xml\n'
+                'if counts["skipped"]: raise SystemExit("skipped")\n'
+                'raise SystemExit(f"no PostgreSQL acceptance test executed from {m}")\n'
+            ),
+        },
+    ]
+    rollback_lane = _job()
+    rollback_lane["services"] = {"postgres": dict(postgres_service)}
+    rollback_lane["steps"] = [
+        {"uses": PINNED_CHECKOUT},
+        {"run": "python -m unittest scripts.test_rollback_lane -v"},
+        {
+            "run": (
+                "python scripts/rollback_lane.py \\\n"
+                "  --database-url postgresql+asyncpg://ci@127.0.0.1:5432/ci \\\n"
+                '  --work-dir "${RUNNER_TEMP}/rollback-lane"\n'
+            )
+        },
+    ]
+    verdict_stability = _job()
+    verdict_stability["steps"] = [
+        {"uses": PINNED_CHECKOUT},
+        {"run": "python -m pytest -q -rs tests/test_verdict_stability_gate.py"},
+    ]
+    gated = [
+        "quality",
+        "bootstrap-bash32",
+        "container-images",
+        "postgres-redis",
+        "rollback-lane",
+        "verdict-stability",
+    ]
     return {
         "on": {"pull_request": {}, "push": {}},
         "permissions": {"contents": "read"},
@@ -87,27 +131,42 @@ def _ci_workflow() -> dict[str, object]:
             "quality": _job(),
             "bootstrap-bash32": bootstrap_bash32,
             "container-images": container_images,
+            "postgres-redis": postgres_redis,
+            "rollback-lane": rollback_lane,
+            "verdict-stability": verdict_stability,
             "ci": {
                 "name": "CI passed",
                 "runs-on": "ubuntu-latest",
                 "timeout-minutes": 5,
                 "if": "${{ always() }}",
-                "needs": ["quality", "bootstrap-bash32", "container-images"],
+                "needs": list(gated),
                 "steps": [
                     {
-                        "run": (
-                            'result="${{ needs.quality.result }}"\n'
-                            'bootstrap="${{ needs.bootstrap-bash32.result }}"\n'
-                            'images="${{ needs.container-images.result }}"\n'
-                            '[[ "$result" == "success" ]]\n'
-                            '[[ "$bootstrap" == "success" ]]\n'
-                            '[[ "$images" == "success" ]]'
+                        "run": "\n".join(
+                            [
+                                *(
+                                    f'r{index}="${{{{ needs.{job_id}.result }}}}"'
+                                    for index, job_id in enumerate(gated)
+                                ),
+                                *(
+                                    f'[[ "$r{index}" == "success" ]]'
+                                    for index, _ in enumerate(gated)
+                                ),
+                            ]
                         )
                     }
                 ],
             },
         },
     }
+
+
+def _aggregate_echo_only(workflow: dict[str, object]) -> list[dict[str, str]]:
+    """Aggregate steps that inspect every result but never require success."""
+    needs = workflow["jobs"]["ci"]["needs"]  # type: ignore[index]
+    return [
+        {"run": "\n".join(f'echo "${{{{ needs.{job_id}.result }}}}"' for job_id in needs)}
+    ]
 
 
 class WorkflowPolicyTests(unittest.TestCase):
@@ -214,17 +273,106 @@ class WorkflowPolicyTests(unittest.TestCase):
 
     def test_aggregate_must_explicitly_require_success(self) -> None:
         workflow = _ci_workflow()
-        workflow["jobs"]["ci"]["steps"] = [  # type: ignore[index]
-            {
-                "run": (
-                    'echo "${{ needs.quality.result }}"\n'
-                    'echo "${{ needs.bootstrap-bash32.result }}"\n'
-                    'echo "${{ needs.container-images.result }}"'
-                )
-            }
-        ]
+        workflow["jobs"]["ci"]["steps"] = _aggregate_echo_only(workflow)  # type: ignore[index]
         with self.assertRaisesRegex(ValueError, "explicit success"):
             policy._assert_ci(Path("ci.yml"), workflow)
+
+    def test_every_postgres_only_module_is_discovered(self) -> None:
+        modules = policy._postgres_acceptance_modules()
+        for expected in (
+            "tests/test_postgres_state_acceptance.py",
+            "tests/test_postgres_json_nul.py",
+            "tests/test_postgres_rollback_compat.py",
+            "tests/test_postgres_runbook_fallback.py",
+        ):
+            self.assertIn(expected, modules)
+
+    def test_postgres_acceptance_must_run_every_postgres_module(self) -> None:
+        workflow = _ci_workflow()
+        step = workflow["jobs"]["postgres-redis"]["steps"][1]  # type: ignore[index]
+        step["env"]["ACCEPTANCE_MODULES"] = "tests/test_postgres_state_acceptance.py"
+        with self.assertRaisesRegex(ValueError, "does not run tests/test_postgres_"):
+            policy._assert_ci(Path("ci.yml"), workflow)
+
+    def test_postgres_acceptance_cannot_drop_its_skip_assertion(self) -> None:
+        workflow = _ci_workflow()
+        step = workflow["jobs"]["postgres-redis"]["steps"][1]  # type: ignore[index]
+        step["run"] = step["run"].replace('counts["skipped"]', "counts")
+        with self.assertRaisesRegex(ValueError, "executed-not-skipped"):
+            policy._assert_ci(Path("ci.yml"), workflow)
+
+    def test_postgres_acceptance_must_name_a_live_server(self) -> None:
+        workflow = _ci_workflow()
+        step = workflow["jobs"]["postgres-redis"]["steps"][1]  # type: ignore[index]
+        del step["env"]["POSTGRES_TEST_DB_URL"]
+        with self.assertRaisesRegex(ValueError, "POSTGRES_TEST_DB_URL"):
+            policy._assert_ci(Path("ci.yml"), workflow)
+
+    def test_rollback_lane_is_required(self) -> None:
+        workflow = _ci_workflow()
+        del workflow["jobs"]["rollback-lane"]  # type: ignore[index]
+        workflow["jobs"]["ci"]["needs"].remove("rollback-lane")  # type: ignore[index]
+        with self.assertRaisesRegex(ValueError, "rollback lane is missing"):
+            policy._assert_ci(Path("ci.yml"), workflow)
+
+    def test_rollback_lane_needs_a_postgres_service(self) -> None:
+        workflow = _ci_workflow()
+        del workflow["jobs"]["rollback-lane"]["services"]  # type: ignore[index]
+        with self.assertRaisesRegex(ValueError, "rollback lane has no postgres service"):
+            policy._assert_ci(Path("ci.yml"), workflow)
+
+    def test_rollback_lane_must_run_its_unit_tests(self) -> None:
+        workflow = _ci_workflow()
+        steps = workflow["jobs"]["rollback-lane"]["steps"]  # type: ignore[index]
+        del steps[1]
+        with self.assertRaisesRegex(ValueError, "scripts.test_rollback_lane"):
+            policy._assert_ci(Path("ci.yml"), workflow)
+
+    def test_rollback_lane_cannot_drop_a_scenario(self) -> None:
+        for flag in policy.ROLLBACK_REHEARSAL_FLAGS:
+            with self.subTest(flag=flag):
+                workflow = _ci_workflow()
+                step = workflow["jobs"]["rollback-lane"]["steps"][2]  # type: ignore[index]
+                step["run"] = step["run"].rstrip("\n") + f" {flag}\n"
+                with self.assertRaisesRegex(ValueError, "must not pass"):
+                    policy._assert_ci(Path("ci.yml"), workflow)
+
+    def test_verdict_stability_gate_is_required(self) -> None:
+        workflow = _ci_workflow()
+        del workflow["jobs"]["verdict-stability"]  # type: ignore[index]
+        workflow["jobs"]["ci"]["needs"].remove("verdict-stability")  # type: ignore[index]
+        with self.assertRaisesRegex(ValueError, "verdict stability gate is missing"):
+            policy._assert_ci(Path("ci.yml"), workflow)
+
+    def test_verdict_stability_gate_must_run_the_gate_file(self) -> None:
+        workflow = _ci_workflow()
+        workflow["jobs"]["verdict-stability"]["steps"][1]["run"] = (  # type: ignore[index]
+            "python -m pytest -q tests/test_runbook_prompt.py"
+        )
+        with self.assertRaisesRegex(ValueError, "does not run tests/test_verdict_stability_gate"):
+            policy._assert_ci(Path("ci.yml"), workflow)
+
+    def test_verdict_stability_gate_cannot_be_narrowed(self) -> None:
+        workflow = _ci_workflow()
+        workflow["jobs"]["verdict-stability"]["steps"][1]["run"] = (  # type: ignore[index]
+            "python -m pytest -q tests/test_verdict_stability_gate.py -k arithmetic"
+        )
+        with self.assertRaisesRegex(ValueError, "whole gate file"):
+            policy._assert_ci(Path("ci.yml"), workflow)
+
+    def test_the_new_lanes_must_enter_the_aggregate(self) -> None:
+        for job_id in ("rollback-lane", "verdict-stability"):
+            with self.subTest(job=job_id):
+                workflow = _ci_workflow()
+                workflow["jobs"]["ci"]["needs"].remove(job_id)  # type: ignore[index]
+                with self.assertRaisesRegex(ValueError, "dependency drift"):
+                    policy._assert_ci(Path("ci.yml"), workflow)
+
+    def test_the_real_ci_workflow_passes(self) -> None:
+        ci_path = policy.WORKFLOW_DIR / "ci.yml"
+        workflow = policy._load(ci_path)
+        policy._assert_common(ci_path, workflow)
+        policy._assert_ci(ci_path, workflow)
 
     def test_shipping_webui_runtime_smoke_cannot_be_removed(self) -> None:
         workflow = _ci_workflow()

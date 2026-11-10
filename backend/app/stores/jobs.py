@@ -4,6 +4,13 @@ The registry uses one document in the existing state-backend KV.  It deliberatel
 does not add an Elasticsearch index, SQL table, or migration.  Every mutation is a
 confirmed compare-and-set, including worker leases, per-item completion, cancellation,
 and transition-audit reconciliation.
+
+Forward compatibility (an N to N-1 rollback): a well-formed row whose ``kind`` this
+build does not know was written by a newer build. It is tolerated and preserved
+byte-stable through every write, never run, listed or cancelled here, counted toward
+capacity, and pruned like any other row once terminal (:func:`_is_forward_record`).
+Only a corrupt row (not an object, or missing what makes it a job) still makes the
+registry fail closed.
 """
 
 from __future__ import annotations
@@ -68,6 +75,101 @@ FACTORY_RECOVERY_REFUSAL = (
     "factory reset recovery is in progress; only a fresh factory reset retry may be "
     "submitted"
 )
+
+
+#: The job kinds this build knows. A stored row of any other kind is a FORWARD record
+#: (written by a newer build) when it is otherwise well formed (:func:`_is_forward_record`).
+_KNOWN_KIND_VALUES = frozenset(kind.value for kind in JobKind)
+_TERMINAL_STATUS_VALUES = frozenset(status.value for status in TERMINAL_STATUSES)
+
+
+def _is_forward_record(job_id: str, payload: Any) -> bool:
+    """Whether ``payload`` is a well-formed job record of a kind this build does not
+    know: a FORWARD record a newer build wrote (an N to N-1 rollback finds them).
+
+    Well formed means it is a job at all: an object whose ``job_id`` is its registry
+    key and whose ``kind``, ``status`` and ``created_at`` are non-empty strings, with
+    the optional envelope fields this build reads for capacity, pruning, artifact
+    protection and idempotency of the right type. The kind, the status and every
+    other field are the newer build's business and are never interpreted further.
+
+    A forward record is carried byte-stable through every registry write, never run,
+    listed or cancelled by this build, counted toward capacity, and pruned like any
+    other row once its status is terminal. A row that fails this test and does not
+    validate as a :class:`Job` is CORRUPT, and a registry holding one still fails
+    closed."""
+    if not isinstance(payload, dict):
+        return False
+    kind = payload.get("kind")
+    if not isinstance(kind, str) or not kind or kind in _KNOWN_KIND_VALUES:
+        return False
+    if payload.get("job_id") != job_id or not job_id:
+        return False
+    for name in ("status", "created_at"):
+        value = payload.get(name)
+        if not isinstance(value, str) or not value:
+            return False
+    for name in ("actor", "actor_generation", "idempotency_key_hash"):
+        if not isinstance(payload.get(name, ""), str):
+            return False
+    for name in ("finished_at", "pending_artifact_id"):
+        if payload.get(name) is not None and not isinstance(payload.get(name), str):
+            return False
+    for name in ("artifact", "params"):
+        if payload.get(name) is not None and not isinstance(payload.get(name), dict):
+            return False
+    return True
+
+
+def _forward_terminal(payload: dict[str, Any]) -> bool:
+    """Whether a forward record's status is one this build knows to be terminal (an
+    unknown status is never assumed finished, so it is never pruned)."""
+    return str(payload.get("status") or "") in _TERMINAL_STATUS_VALUES
+
+
+def _forward_artifact(payload: dict[str, Any]) -> JobArtifact | None:
+    """A forward record's attached artifact as this build's metadata, or ``None``
+    (absent, or a shape this build cannot read; the orphan sweep then owns it)."""
+    raw = payload.get("artifact")
+    if not isinstance(raw, dict):
+        return None
+    try:
+        return JobArtifact.model_validate(raw)
+    except Exception:  # noqa: BLE001 - a newer artifact shape is not this build's file
+        return None
+
+
+def _forward_artifact_ids(payload: dict[str, Any]) -> set[str]:
+    """The artifact identities a forward record holds (attached and reserved), so the
+    orphan sweep never deletes a newer build's file."""
+    out: set[str] = set()
+    artifact = payload.get("artifact")
+    if isinstance(artifact, dict) and isinstance(artifact.get("artifact_id"), str):
+        out.add(artifact["artifact_id"])
+    pending = payload.get("pending_artifact_id")
+    if isinstance(pending, str):
+        out.add(pending)
+    return {value for value in out if value}
+
+
+class _Registry:
+    """One decoded registry document: the jobs this build knows, the idempotency
+    bindings (of known and forward rows), the forward records (kept raw, written back
+    verbatim) and the factory fence."""
+
+    __slots__ = ("jobs", "keys", "forward", "fence")
+
+    def __init__(
+        self,
+        jobs: dict[str, Job],
+        keys: dict[str, str],
+        forward: dict[str, dict[str, Any]],
+        fence: str,
+    ) -> None:
+        self.jobs = jobs
+        self.keys = keys
+        self.forward = forward
+        self.fence = fence
 
 
 class JobConflict(RuntimeError):
@@ -314,63 +416,105 @@ class JobStore:
         self._lock = asyncio.Lock()
 
     @staticmethod
-    def _decode(doc: dict[str, Any] | None) -> tuple[dict[str, Job], dict[str, str]]:
+    def _decode_registry(doc: dict[str, Any] | None) -> tuple[_Registry, bool]:
+        """Partition a registry document into known jobs, forward records and corrupt
+        rows. Returns the registry and whether any row (or the jobs map itself) is
+        corrupt; a forward record is never corrupt (:func:`_is_forward_record`)."""
         raw_jobs = doc.get("jobs", {}) if isinstance(doc, dict) else {}
         raw_keys = doc.get("idempotency", {}) if isinstance(doc, dict) else {}
+        # An idempotency map that is present but not an object is corrupt too: treating
+        # it as empty would silently drop every binding, so a retried submit with a
+        # used key would start a second job. Absent (or null) still means none.
+        corrupt = not isinstance(raw_jobs, dict) or (
+            raw_keys is not None and not isinstance(raw_keys, dict)
+        )
         jobs: dict[str, Job] = {}
-        for job_id, payload in (raw_jobs or {}).items():
-            try:
-                jobs[str(job_id)] = Job.model_validate(payload)
-            except Exception:  # corrupt rows are excluded, never executed
+        forward: dict[str, dict[str, Any]] = {}
+        for job_id, payload in (raw_jobs if isinstance(raw_jobs, dict) else {}).items():
+            key = str(job_id)
+            if _is_forward_record(key, payload):
+                forward[key] = payload  # kept as stored and written back verbatim
                 continue
+            try:
+                jobs[key] = Job.model_validate(payload)
+            except Exception:  # corrupt rows are excluded, never executed
+                corrupt = True
         keys = {
             str(key): str(value)
-            for key, value in (raw_keys or {}).items()
-            if str(value) in jobs
+            for key, value in (raw_keys if isinstance(raw_keys, dict) else {}).items()
+            if str(value) in jobs or str(value) in forward
         }
-        return jobs, keys
+        fence = str((doc or {}).get("factory_fence") or "") if isinstance(doc, dict) else ""
+        return _Registry(jobs, keys, forward, fence), corrupt
+
+    @staticmethod
+    def _decode(doc: dict[str, Any] | None) -> tuple[dict[str, Job], dict[str, str]]:
+        """The known jobs and the idempotency bindings (forward records excluded)."""
+        registry, _corrupt = JobStore._decode_registry(doc)
+        return registry.jobs, registry.keys
+
+    @staticmethod
+    def _decode_strict(doc: Any) -> _Registry:
+        """Decode a registry document, failing closed on a corrupt one: a document
+        that is not an object, a jobs map that is not an object, or a row that is
+        neither a valid job nor a well-formed forward record."""
+        if doc is not None and not isinstance(doc, dict):
+            raise ValueError("job registry is not a JSON object")
+        registry, corrupt = JobStore._decode_registry(doc)
+        if corrupt:
+            raise ValueError("job registry contains an invalid record")
+        return registry
 
     @staticmethod
     def _encode(
-        jobs: dict[str, Job], keys: dict[str, str], factory_fence: str = ""
+        jobs: dict[str, Job],
+        keys: dict[str, str],
+        factory_fence: str = "",
+        forward: dict[str, dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
+        rows: dict[str, Any] = {
+            job_id: job.model_dump(mode="json") for job_id, job in jobs.items()
+        }
+        for job_id, payload in (forward or {}).items():
+            rows.setdefault(job_id, payload)
         return {
-            "jobs": {
-                job_id: job.model_dump(mode="json") for job_id, job in jobs.items()
-            },
-            "idempotency": dict(keys),
+            "jobs": rows,
+            "idempotency": {key: value for key, value in keys.items() if value in rows},
             "factory_fence": factory_fence,
         }
 
     async def _load_strict(self) -> tuple[dict[str, Job], dict[str, str]]:
         getter = getattr(self._kv, "get_strict", None) or self._kv.get
-        doc = await getter(JOBS_NS, JOBS_KEY)
-        if doc is not None and not isinstance(doc, dict):
-            raise ValueError("job registry is not a JSON object")
-        raw = doc.get("jobs", {}) if isinstance(doc, dict) else {}
-        jobs, keys = self._decode(doc)
-        if not isinstance(raw, dict) or len(jobs) != len(raw):
-            raise ValueError("job registry contains an invalid record")
-        return jobs, keys
+        registry = self._decode_strict(await getter(JOBS_NS, JOBS_KEY))
+        return registry.jobs, registry.keys
 
-    async def _mutate(
-        self, change: Callable[[dict[str, Job], dict[str, str]], _T]
-    ) -> _T:
+    async def _load_registry_strict(self) -> _Registry:
+        getter = getattr(self._kv, "get_strict", None) or self._kv.get
+        return self._decode_strict(await getter(JOBS_NS, JOBS_KEY))
+
+    async def _mutate_registry(self, change: Callable[[_Registry], _T]) -> _T:
+        """Strict mutation over the whole decoded registry (forward records and the
+        factory fence included). ``change`` edits ``registry`` in place."""
         box: dict[str, _T] = {}
 
         def mutate(current: dict[str, Any] | None) -> dict[str, Any]:
-            jobs, keys = self._decode(current)
-            raw = current.get("jobs", {}) if isinstance(current, dict) else {}
-            if not isinstance(raw, dict) or len(jobs) != len(raw):
-                raise ValueError("job registry contains an invalid record")
-            box["value"] = change(jobs, keys)
-            fence = str((current or {}).get("factory_fence") or "")
-            return self._encode(jobs, keys, fence)
+            registry = self._decode_strict(current)
+            box["value"] = change(registry)
+            return self._encode(
+                registry.jobs, registry.keys, registry.fence, registry.forward
+            )
 
         await kv_mutate_strict(
             self._kv, JOBS_NS, JOBS_KEY, mutate, lock=self._lock
         )
         return box["value"]
+
+    async def _mutate(
+        self, change: Callable[[dict[str, Job], dict[str, str]], _T]
+    ) -> _T:
+        return await self._mutate_registry(
+            lambda registry: change(registry.jobs, registry.keys)
+        )
 
     async def _mutate_meta(
         self,
@@ -379,35 +523,31 @@ class JobStore:
         ],
     ) -> _T:
         """Strict mutation that can atomically inspect/update the factory fence."""
-        box: dict[str, _T] = {}
 
-        def mutate(current: dict[str, Any] | None) -> dict[str, Any]:
-            jobs, keys = self._decode(current)
-            raw = current.get("jobs", {}) if isinstance(current, dict) else {}
-            if not isinstance(raw, dict) or len(jobs) != len(raw):
-                raise ValueError("job registry contains an invalid record")
-            value, fence = change(
-                jobs,
-                keys,
-                str((current or {}).get("factory_fence") or ""),
-            )
-            box["value"] = value
-            return self._encode(jobs, keys, fence)
+        def apply(registry: _Registry) -> _T:
+            value, fence = change(registry.jobs, registry.keys, registry.fence)
+            registry.fence = fence
+            return value
 
-        await kv_mutate_strict(
-            self._kv, JOBS_NS, JOBS_KEY, mutate, lock=self._lock
-        )
-        return box["value"]
+        return await self._mutate_registry(apply)
 
     async def create(self, job: Job) -> tuple[Job, bool, list[JobArtifact]]:
         """Reserve an actor-scoped idempotency key and prune oldest terminal rows."""
 
-        def change(
-            jobs: dict[str, Job], keys: dict[str, str], fence: str
-        ) -> tuple[tuple[Job, bool, list[JobArtifact]], str]:
+        def change(registry: _Registry) -> tuple[Job, bool, list[JobArtifact]]:
+            jobs, keys, forward, fence = (
+                registry.jobs, registry.keys, registry.forward, registry.fence
+            )
             bound = keys.get(job.idempotency_key_hash)
             if bound:
                 existing = jobs.get(bound)
+                if existing is None and bound in forward:
+                    # The key names a job of a kind this build does not know, so it
+                    # cannot be this request (which this build validated as one of
+                    # its own kinds).
+                    raise JobConflict(
+                        "idempotency key is already bound to a different job request"
+                    )
                 if existing is None:
                     raise RuntimeError("job idempotency registry is inconsistent")
                 if existing.request_fingerprint != job.request_fingerprint:
@@ -419,7 +559,7 @@ class JobStore:
                 # can arrive arbitrarily late, so a wall-clock release would permit a
                 # duplicate side effect. A deliberate repeat mints a new key; normal
                 # terminal-row pruning removes the old binding atomically.
-                return (existing, False, []), fence
+                return existing, False, []
 
             if job.kind in ONE_ACTIVE_PER_ACTOR_KINDS:
                 actor = job.actor.strip().lower()
@@ -469,14 +609,39 @@ class JobStore:
                     raise JobCapacityError(FACTORY_RECOVERY_REFUSAL)
 
             pruned: list[JobArtifact] = []
-            while len(jobs) >= MAX_JOBS:
-                terminal = [j for j in jobs.values() if j.status in TERMINAL_STATUSES]
+            # Forward records (kinds a newer build wrote) count toward capacity and
+            # are pruned like any other row once terminal.
+            while len(jobs) + len(forward) >= MAX_JOBS:
+                terminal: list[tuple[tuple[str, str], str]] = [
+                    ((row.finished_at or row.created_at, row.job_id), row.job_id)
+                    for row in jobs.values()
+                    if row.status in TERMINAL_STATUSES
+                ] + [
+                    (
+                        (
+                            str(payload.get("finished_at") or payload.get("created_at")),
+                            job_id,
+                        ),
+                        job_id,
+                    )
+                    for job_id, payload in forward.items()
+                    if _forward_terminal(payload)
+                ]
                 if not terminal:
                     raise JobCapacityError(
                         "job registry is full of active work; retry after a job finishes"
                     )
-                victim = min(terminal, key=lambda row: (row.finished_at or row.created_at, row.job_id))
-                jobs.pop(victim.job_id, None)
+                victim_id = min(terminal)[1]
+                if victim_id in forward:
+                    payload = forward.pop(victim_id)
+                    hashed = str(payload.get("idempotency_key_hash") or "")
+                    if keys.get(hashed) == victim_id:
+                        keys.pop(hashed, None)
+                    forward_artifact = _forward_artifact(payload)
+                    if forward_artifact is not None:
+                        pruned.append(forward_artifact)
+                    continue
+                victim = jobs.pop(victim_id)
                 if keys.get(victim.idempotency_key_hash) == victim.job_id:
                     keys.pop(victim.idempotency_key_hash, None)
                 if victim.artifact is not None:
@@ -509,6 +674,10 @@ class JobStore:
                 _json_size(row.params)
                 for row in jobs.values()
                 if row.status not in TERMINAL_STATUSES
+            ) + sum(
+                _json_size(payload.get("params") or {})
+                for payload in forward.values()
+                if not _forward_terminal(payload)
             )
             if active_param_bytes + _json_size(job.params) > MAX_REGISTRY_PARAM_BYTES:
                 raise JobCapacityError(
@@ -519,9 +688,10 @@ class JobStore:
             # A failed privacy boundary remains globally fenced. Only an explicitly
             # fresh, permission-stamped factory retry can atomically take ownership;
             # ordinary submissions and claims remain stopped throughout recovery.
-            return (job, True, pruned), job.job_id if recovery else fence
+            registry.fence = job.job_id if recovery else fence
+            return job, True, pruned
 
-        return await self._mutate_meta(change)
+        return await self._mutate_registry(change)
 
     async def get(self, job_id: str) -> Job | None:
         jobs, _ = await self._load_strict()
@@ -576,16 +746,13 @@ class JobStore:
 
         # SqlKVStore.get is already authoritative/raising; ES exposes the explicit
         # strict read. Keep the same bundled-store abstraction used by _load_strict.
-        getter = getattr(self._kv, "get_strict", None) or self._kv.get
-        doc = await getter(JOBS_NS, JOBS_KEY)
-        if doc is not None and not isinstance(doc, dict):
-            raise ValueError("job registry is not a JSON object")
-        jobs, _keys = self._decode(doc)
-        raw_jobs = doc.get("jobs", {}) if isinstance(doc, dict) else {}
-        if not isinstance(raw_jobs, dict) or len(jobs) != len(raw_jobs):
-            raise ValueError("job registry contains an invalid record")
-        fence = str((doc or {}).get("factory_fence") or "")
-        if fence and fence not in jobs:
+        # A forward record (a kind a newer build wrote) is neither corruption nor a
+        # reset in progress, so it never puts startup into safe-stop; only a corrupt
+        # registry or a fence without an owning row does. A fence a newer build's row
+        # owns is still a fence (this build cannot prove that reset finished).
+        registry = await self._load_registry_strict()
+        fence = registry.fence
+        if fence and fence not in registry.jobs and fence not in registry.forward:
             raise ValueError("job registry factory fence has no owning row")
         return fence
 
@@ -852,11 +1019,28 @@ class JobStore:
         """Cancel active work and purge terminal rows for a deleted account generation."""
         needle = actor.strip().lower()
 
-        def change(
-            jobs: dict[str, Job], keys: dict[str, str]
-        ) -> tuple[list[JobArtifact], int]:
+        def change(registry: _Registry) -> tuple[list[JobArtifact], int]:
+            jobs, keys = registry.jobs, registry.keys
             artifacts: list[JobArtifact] = []
             removed = 0
+            # A terminal forward record of the deleted account generation is purged
+            # like any other terminal row; an active one is left to the build that
+            # understands it (this build cannot cancel what it cannot run).
+            for job_id, payload in list(registry.forward.items()):
+                if (
+                    str(payload.get("actor") or "").lower() != needle
+                    or str(payload.get("actor_generation") or "") != generation
+                    or not _forward_terminal(payload)
+                ):
+                    continue
+                forward_artifact = _forward_artifact(payload)
+                if forward_artifact is not None:
+                    artifacts.append(forward_artifact)
+                registry.forward.pop(job_id, None)
+                hashed = str(payload.get("idempotency_key_hash") or "")
+                if keys.get(hashed) == job_id:
+                    keys.pop(hashed, None)
+                removed += 1
             for job_id, job in list(jobs.items()):
                 if job.actor.lower() != needle or job.actor_generation != generation:
                     continue
@@ -874,7 +1058,7 @@ class JobStore:
                 removed += 1
             return artifacts, removed
 
-        return await self._mutate(change)
+        return await self._mutate_registry(change)
 
     async def purge_retired_terminal(
         self, job_id: str
@@ -1068,25 +1252,35 @@ class JobStore:
         ]
 
     async def artifact_ids(self) -> set[str]:
-        jobs, _ = await self._load_strict()
+        registry = await self._load_registry_strict()
         return {
             job.artifact.artifact_id
-            for job in jobs.values()
+            for job in registry.jobs.values()
             if job.artifact is not None
+        } | {
+            payload["artifact"]["artifact_id"]
+            for payload in registry.forward.values()
+            if isinstance(payload.get("artifact"), dict)
+            and isinstance(payload["artifact"].get("artifact_id"), str)
+            and payload["artifact"]["artifact_id"]
         }
 
     async def protected_artifact_ids(self) -> set[str]:
-        """Attached plus durably reserved in-progress artifact identities."""
-        jobs, _ = await self._load_strict()
-        return {
+        """Attached plus durably reserved in-progress artifact identities (a forward
+        record's included, so the orphan sweep never deletes a newer build's file)."""
+        registry = await self._load_registry_strict()
+        protected = {
             value
-            for job in jobs.values()
+            for job in registry.jobs.values()
             for value in (
                 job.artifact.artifact_id if job.artifact is not None else None,
                 job.pending_artifact_id,
             )
             if value
         }
+        for payload in registry.forward.values():
+            protected |= _forward_artifact_ids(payload)
+        return protected
 
     async def mark_transition_audited(self, job_id: str, seq: int) -> None:
         def change(jobs: dict[str, Job], _keys: dict[str, str]) -> None:
@@ -1180,9 +1374,8 @@ class JobStore:
         if status not in TERMINAL_STATUSES:
             raise ValueError("factory receipt must be terminal")
 
-        def change(
-            jobs: dict[str, Job], _keys: dict[str, str], fence: str
-        ) -> tuple[tuple[Job, list[JobArtifact]], str]:
+        def change(registry: _Registry) -> tuple[Job, list[JobArtifact]]:
+            jobs, _keys, fence = registry.jobs, registry.keys, registry.fence
             current = self._owned(jobs, job_id, token)
             if fence != job_id:
                 raise RuntimeError("factory reset fence ownership changed")
@@ -1191,6 +1384,12 @@ class JobStore:
                 for row in jobs.values()
                 if row.artifact is not None
             ]
+            # A factory reset clears every personal record, forward ones included.
+            for payload in registry.forward.values():
+                forward_artifact = _forward_artifact(payload)
+                if forward_artifact is not None:
+                    artifacts.append(forward_artifact)
+            registry.forward.clear()
             receipt = Job(
                 job_id=current.job_id,
                 kind=JobKind.TIERED_RESET,
@@ -1224,9 +1423,10 @@ class JobStore:
             # The privacy boundary is not complete merely because the old registry
             # was compacted. Keep admission fenced until the sanitized reset receipt
             # and this transition are both durably audited by the runner.
-            return (receipt, artifacts), job_id
+            registry.fence = job_id
+            return receipt, artifacts
 
-        receipt, artifacts = await self._mutate_meta(change)
+        receipt, artifacts = await self._mutate_registry(change)
         return receipt, [artifact for artifact in artifacts if artifact is not None]
 
     @staticmethod

@@ -125,14 +125,15 @@ values stay write-only appears only under sections that hold preferences or secr
   decision.
 - **Integrations → Runbooks** holds every runbook setting: whether runbooks are on, a
   link to the runbook library, attaching the matching runbook to a case and the
-  **Generic incident** fallback, guiding the agent with the matching runbook, using
+  **Generic incident** fallback (a checklist for people, never given to the agent as
+  guidance), guiding the agent with the runbook that specifically matches a case, using
   Published runbooks in retrieval, the two AI help offers (**Suggest a runbook** and
   **Draft note** on Check steps, each one model call in the cost ledger), and the
   publishing rules (the publisher must differ from the author, step approvals, and the
   review interval for new runbooks, from 30 to 730 days). Only Published runbook text is
-  trusted, and a runbook never closes or escalates a case. **Knowledge & threat
-  context → Retrieval** shows whether Published runbooks are in retrieval and links
-  here. See [Runbooks](../intelligence/runbooks.md).
+  trusted, and a runbook never closes or escalates a case, although guidance can change
+  the verdict the agent returns. **Knowledge & threat context → Retrieval** shows
+  whether Published runbooks are in retrieval and links here. See [Runbooks](../intelligence/runbooks.md).
 - **General → Data scope** starts with **Connected sources**, one row that shows how
   many sources are enabled ("5 of 5 enabled") and opens the Sources page.
 - **Account → Security & two-factor** is one row, **Two-factor authentication**, with

@@ -1472,14 +1472,18 @@ def test_invalid_new_parameters_are_refused_with_a_coded_detail(api, params, cod
 def test_old_exact_parameters_are_bounded_and_keep_their_meaning(api):
     """``actor``, ``action``, ``surface``, ``case_id`` and ``source_id`` still match
     exactly as sent (never stripped), up to 512 characters; a longer value is the coded
-    422, so a view row, which records the filters, stays small."""
-    long_actor = "a" * 512
+    422, so a view row, which records the filters, stays small. A stored actor is at
+    most 160 characters (bounded on write like a username), so the longest actor that
+    can match is that long; a 512-character filter is still accepted and matches none."""
+    long_actor = "a" * 160
     _seed(api, [
-        {"ts": _ts(1), "action_type": "status", "surface": "r14", "actor": long_actor},
+        {"ts": _ts(1), "action_type": "status", "surface": "r14", "actor": long_actor + "b" * 352},
         {"ts": _ts(2), "action_type": "status", "surface": "r14", "actor": " padded "},
     ])
     assert [r["actor"] for r in api.get("/api/audit", params={"actor": long_actor}).json()["records"]] == [
         long_actor]
+    widest = api.get("/api/audit", params={"actor": long_actor + "b" * 352})
+    assert widest.status_code == 200 and widest.json()["records"] == []
     assert [r["actor"] for r in api.get("/api/audit", params={"actor": " padded "}).json()["records"]] == [
         " padded "]
     assert api.get("/api/audit", params={"actor": "padded"}).json()["records"] == []

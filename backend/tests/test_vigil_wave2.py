@@ -112,18 +112,37 @@ async def test_runbook_selection_audited(app_state: AppState, mock_provider) -> 
     assert not [r for r in records if r.get("actor") == "playbook_selector"]
 
 
-async def test_unmatched_cluster_gets_the_fallback(app_state: AppState, mock_provider) -> None:
+async def _procedure_groups(app_state: AppState, case_id: str) -> list[str]:
+    records = await app_state.audit.records_for_case(case_id)
+    procedure = [r for r in records if r.get("actor") == "procedure_provenance"][-1]["tool_input"]
+    return [g["group"] for g in procedure["retrieval_query_groups"]]
+
+
+async def test_unmatched_cluster_gets_the_fallback_for_people_not_the_investigator(
+    app_state: AppState, mock_provider,
+) -> None:
     _script(mock_provider)
     # 'mail_fim' is in the rule catalog but no built-in lists it, so the Generic
-    # incident runbook is the guidance (D33, fallback on by default).
+    # incident runbook is the fallback (D33, fallback on by default). It is a
+    # checklist for people: it attaches to the case, and the investigator gets no
+    # block and no extra retrieval groups from it.
     case = await app_state.pipeline.investigate_cluster(
         _cluster("mail_fim", n=6), SourceSurface.INVESTIGATE, app_state.prefs
     )
-    assert case.runbook_id == "generic-incident"
+    assert case.runbook_id is None and case.runbook_version is None
     _system, user_msg = _investigator_messages(mock_provider)
-    assert RUNBOOK_OPEN in user_msg
-    block = user_msg.split(RUNBOOK_OPEN)[1].split(RUNBOOK_CLOSE)[0]
-    assert "Generic incident" in block
+    assert RUNBOOK_OPEN not in user_msg and RUNBOOK_HEADING not in user_msg
+    assert "Generic incident" not in user_msg
+    assert await _procedure_groups(app_state, case.case_id) == ["cluster"]
+    records = await app_state.audit.records_for_case(case.case_id)
+    selector = [r for r in records if r.get("action") == "runbook.selected"][-1]["tool_input"]
+    assert selector["runbook_status"] == "fallback"
+    selection = selector["runbook_selection"]
+    assert selection["id"] == "generic-incident" and selection["used"] is False and selection["tier"] == 0
+    assert selection["reason"].endswith("It is a checklist for people and is not given to the investigator.")
+    # The case needs a person, so the Generic incident checklist still attaches.
+    runs = (await app_state.runbook_runs.get(case.case_id)).runs
+    assert [(r.runbook_id, r.attached_by) for r in runs] == [("generic-incident", "fallback")]
 
 
 async def test_unmatched_cluster_without_fallback_gets_no_runbook(app_state: AppState, mock_provider) -> None:
@@ -137,17 +156,20 @@ async def test_unmatched_cluster_without_fallback_gets_no_runbook(app_state: App
     assert RUNBOOK_OPEN not in user_msg
 
 
+@pytest.mark.parametrize("rule", ["mail_auth", "mail_fim"])
 @pytest.mark.parametrize("setting", ["investigator_guidance", "enabled"])
-async def test_guidance_off_uses_no_runbook(app_state: AppState, mock_provider, setting) -> None:
+async def test_guidance_off_uses_no_runbook(app_state: AppState, mock_provider, setting, rule) -> None:
     await _set_runbooks(app_state, **{setting: False})
     _script(mock_provider)
     case = await app_state.pipeline.investigate_cluster(
-        _cluster("mail_auth", n=6), SourceSurface.INVESTIGATE, app_state.prefs
+        _cluster(rule, n=6), SourceSurface.INVESTIGATE, app_state.prefs
     )
-    # Switched off: no runbook, even for a matching cluster.
+    # Switched off: no runbook, even for a matching cluster (mail_auth, tier 3), and
+    # no runbook retrieval groups: only the cluster's own query.
     assert case.runbook_id is None
     _system, user_msg = _investigator_messages(mock_provider)
     assert RUNBOOK_OPEN not in user_msg
+    assert await _procedure_groups(app_state, case.case_id) == ["cluster"]
 
 
 def test_runbook_cannot_grant_tools_outside_registry(app_state: AppState) -> None:

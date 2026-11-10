@@ -86,8 +86,22 @@ def test_no_match_falls_back_to_generic_incident_or_nothing() -> None:
     cluster = _cluster(rule="ml_stats_unknown")
     guidance = select_investigator_runbook(cluster, _prefs(), builtin_runbook_catalog())
     assert guidance.status == GUIDANCE_FALLBACK
-    assert guidance.runbook_id == GENERIC_INCIDENT_RUNBOOK_ID and guidance.selected
-    assert guidance.reason == "Fallback: no other runbook matched this case."
+    # The fallback is named and explained, but it is a checklist for people: the
+    # investigator gets no text and no retrieval queries from it.
+    assert guidance.runbook_id == GENERIC_INCIDENT_RUNBOOK_ID and not guidance.selected
+    assert guidance.text is None and guidance.retrieval_queries == () and guidance.prompt_chars == 0
+    assert guidance.version == builtin_runbook(GENERIC_INCIDENT_RUNBOOK_ID).version
+    assert guidance.explanation is not None and guidance.explanation.tier == 0
+    assert guidance.reason == (
+        "Fallback: no other runbook matched this case. "
+        "It is a checklist for people and is not given to the investigator."
+    )
+    payload = guidance.selection_payload()
+    assert payload is not None
+    assert (payload["id"], payload["status"], payload["used"], payload["tier"]) == (
+        GENERIC_INCIDENT_RUNBOOK_ID, GUIDANCE_FALLBACK, False, 0,
+    )
+    assert guidance.audit_outcome == "success" and guidance.label.startswith(GENERIC_INCIDENT_RUNBOOK_ID)
 
     off = select_investigator_runbook(cluster, _prefs(fallback=False), builtin_runbook_catalog())
     assert off.status == GUIDANCE_NO_MATCH and not off.selected
@@ -210,4 +224,23 @@ def test_bundled_cloud_data_and_ransomware_runbooks_select_exactly() -> None:
         _cluster(rule="unrelated_custom_rule"), _prefs(), builtin_runbook_catalog()
     )
     assert unrelated.runbook_id == GENERIC_INCIDENT_RUNBOOK_ID
-    assert unrelated.status == GUIDANCE_FALLBACK
+    assert unrelated.status == GUIDANCE_FALLBACK and not unrelated.selected
+
+
+def test_an_operator_always_runbook_is_a_fallback_too_and_never_guides() -> None:
+    # Any ``always`` runbook is tier 0, whoever wrote it: it matches every case, so it
+    # is not evidence about this one and never reaches the investigator.
+    catch_all = _rb("our-generic", always=True, priority=99, focus="Escalate everything.")
+    guidance = select_investigator_runbook(_cluster(rule="anything"), _prefs(), [catch_all])
+    assert guidance.status == GUIDANCE_FALLBACK and guidance.runbook_id == "our-generic"
+    assert not guidance.selected and guidance.text is None and guidance.retrieval_queries == ()
+
+
+def test_a_specific_match_still_beats_the_fallback_and_guides() -> None:
+    specific = _rb("web-rule", rule_ids=["web_path_enum"], focus="Check the allow list first.")
+    catch_all = _rb("our-generic", always=True, priority=99)
+    guidance = select_investigator_runbook(
+        _cluster(rule="web_path_enum"), _prefs(), [catch_all, specific, *builtin_runbook_catalog()],
+    )
+    assert guidance.status == GUIDANCE_MATCHED and guidance.runbook_id == "web-rule"
+    assert guidance.selected and "Focus: Check the allow list first." in (guidance.text or "")

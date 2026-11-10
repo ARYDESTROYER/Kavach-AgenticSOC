@@ -31,14 +31,16 @@ bootstrap from it.
 
 ## GitHub merge gate
 
-Every pull request receives nineteen visible statuses from
-`.github/workflows/ci.yml`: eighteen independently diagnosable quality lanes plus the
+Every pull request receives twenty-one visible statuses from
+`.github/workflows/ci.yml`: twenty independently diagnosable quality lanes plus the
 aggregate **CI passed** result. In addition to repository, backend, Console, API,
-design, documentation, and package checks, the gate boots the supported
-PostgreSQL+pgvector/Redis state path, validates workflows and shell separately from
-deploy/updater contracts, rejects fatal Python correctness faults, and builds all
+design, documentation, and package checks, the gate runs the verdict stability gate in
+its own lane, boots the supported PostgreSQL+pgvector/Redis state path and runs every
+PostgreSQL-only test module against it, boots the previous release on this release's
+PostgreSQL data (the N to N-1 rollback lane), validates workflows and shell separately
+from deploy/updater contracts, rejects fatal Python correctness faults, and builds all
 three shipping images. The aggregate runs even when a dependency fails or is
-cancelled and succeeds only when all eighteen
+cancelled and succeeds only when all twenty
 report success.
 
 Branch protection needs only the stable aggregate name **CI passed**. Requiring that
@@ -71,6 +73,30 @@ python -m pytest tests/test_api.py::test_name -q
 Tests that touch pipeline behavior should assert fail-safe human routing, audit writes,
 usage ledger writes, cursor/idempotency behavior, and the deterministic case-manager
 boundary as applicable. Every new state-changing route needs an authorization test.
+
+### Verdict stability gate
+
+`backend/tests/test_verdict_stability_gate.py` runs frozen synthetic fixtures
+(`backend/tests/fixtures/verdict_stability/cases.json`) through the real pipeline in two
+arms: this build's defaults, and the same build with
+`runbooks.investigator_guidance: false`. The model is a deterministic sensitivity model
+whose verdict is a declared function of the prompt (benign cues inside the untrusted
+evidence against the `Escalate if:` lines in trusted context), not a measurement of a
+real model. The gate fails when the FALSE_POSITIVE-verdict rate or the close-eligible
+rate moves between the arms by more than 15 percentage points, when either arm's rate
+moves by more than 15 points from the rate recorded in the fixture file (`recorded`, so a
+prompt or retrieval change that moves both arms alike also fails), or when that threshold
+does not clear the measured replicate floor. It needs no key and no network, and runs in
+the complete suite and in its own CI lane:
+
+```bash
+python -m pytest -q tests/test_verdict_stability_gate.py
+```
+
+A guidance or prompt change that is meant to move the verdict mix is a product
+decision: record it in the changelog and the upgrade notes, and update `recorded` (or the
+fixtures, or the threshold) in the same reviewed change, never only to make the build
+pass.
 
 ## Console suite
 
@@ -347,6 +373,32 @@ three-cell BuildKit matrix then builds the backend `full`, Console/Help Center, 
 updater images without publishing them and verifies their immutable candidate labels,
 healthchecks, ports, runtime user or updater protocol as applicable. These are
 required lanes, not advisory previews.
+
+The N to N-1 rollback lane runs against its own PostgreSQL service. It boots this release
+on a scratch database, writes the data it introduces, boots the previous release pinned
+in `scripts/rollback_previous_release.json` on that data, and boots this release again;
+any safe-stop, refused knowledge projection, re-embedding on every retrieval, failed
+health check or lost `runbooks.*` setting fails it. Run it locally against any
+PostgreSQL server (it creates and drops its own database):
+
+```bash
+backend/.venv/bin/python scripts/rollback_lane.py \
+  --database-url postgresql+asyncpg://user:password@127.0.0.1:5432/postgres
+python3 -m unittest scripts.test_rollback_lane -v
+```
+
+Each run has two scenarios on separate scratch databases: the pinned previous release,
+and this checkout as the previous release with synthetic future data planted (an unknown
+job kind, unknown preference keys, a marker-identified corpus) that a release carrying
+the forward-compatibility contract must keep. The second scenario is what fails the lane
+if this build's own forward contract regresses while the pinned release still
+understands everything this release writes. `--pinned-only` skips it;
+`--previous-backend` or `--previous-release` runs one rehearsal against that backend
+directory or commit instead (add `--forward-contract` to plant the future data there).
+The forward direction also has offline tests
+(`backend/tests/test_rollback_forward_compat.py`) and PostgreSQL tests
+(`backend/tests/test_postgres_rollback_compat.py`, skipped without
+`POSTGRES_TEST_DB_URL`).
 
 The raw Compose invocation above is a read-only CI render, not a deployed-lifecycle
 command. After updater bootstrap, manual start/stop/build/restart operations must use

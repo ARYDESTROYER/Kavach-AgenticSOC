@@ -92,6 +92,7 @@ from ..llm.pricing import (
     models_by_provider,
 )
 from ..models import (
+    AUDIT_ACTOR_MAX_CHARS,
     AUDIT_MAX_CHANGES,
     AuditTarget,
     Case,
@@ -122,6 +123,7 @@ from ..stores.proposals import (
     evidence_summary,
     sanitize_decision_reason,
 )
+from ..stored_text import shown, single_line, username_char_problem, username_problem
 from ..tools.enrich import EnrichTool
 from ..utils import (
     iso_now,
@@ -3409,6 +3411,10 @@ async def demo_disable(
 # no-auth "old version" remains the default and fully available.
 # --------------------------------------------------------------------------- #
 class LoginBody(BaseModel):
+    # Any text is accepted here: a username with a control character (``\u0000``
+    # among them, ``username_char_problem``) is answered by the route as an ordinary
+    # failed sign-in (401) and recorded, cleaned, as attempted. Length is bounded where
+    # accounts are created, not here: an older build allowed longer names.
     username: str
     password: str
     # Round 12: "Remember me" (additive; the proxies forward arbitrary JSON). The
@@ -3851,15 +3857,22 @@ async def auth_login(
     auth = state.auth
     if not auth.is_enabled:
         raise HTTPException(status_code=400, detail="authentication is disabled")
+    # A username no account can have (a control character, NUL among them) is never
+    # looked up; the check still runs, against no account, so it costs the same. The
+    # failed attempt is recorded with the name as attempted, cleaned and bounded on
+    # write (``AuditDoc``), and its summary says why it was refused. A long name is
+    # looked up as usual (an older build created accounts with no length bound).
+    refused = username_char_problem(body.username)
     # Constant-cost credential check (no token yet: the lifetime depends on the
     # Remember-me decision below, which needs the verified principal's role).
-    user = auth.principal(body.username) if auth.check_password(
-        body.username, body.password
-    ) else None
+    checked = auth.check_password("" if refused else body.username, body.password)
+    user = auth.principal(body.username) if checked and refused is None else None
     if user is None:
         await _record_identity_event(
             state, request, action="auth.login_failed", outcome="failure",
-            actor=body.username or "", summary="login failed", from_request=False,
+            actor=body.username or "",
+            summary="login failed" if refused is None else f"login failed: {refused}",
+            from_request=False,
         )
         raise HTTPException(status_code=401, detail="invalid credentials")
     # --- MFA phase 1 (Wave 2 / F3): the password is correct, but the user has MFA
@@ -4382,10 +4395,12 @@ async def account_activity(
     state: AppState = Depends(get_state),
 ) -> dict[str, Any]:
     """The caller's OWN recent account/audit activity (newest first). Reads the
-    append-only audit log filtered by actor. Read-only; never raises."""
+    append-only audit log filtered by actor. Read-only. When the audit log cannot be
+    read the answer is ``503 audit_unavailable``, never an empty list."""
     principal = _require_session(state, request)
     rows = await _records_for_actor(state, principal.username, limit)
-    return {"activity": rows}
+    # A lone surrogate an older build stored cannot be carried by a UTF-8 response.
+    return {"activity": shown(rows)}
 
 
 # --------------------------------------------------------------------------- #
@@ -4502,14 +4517,26 @@ def _short(sid: str) -> str:
 
 async def _records_for_actor(state: AppState, actor: str, limit: int) -> list[dict[str, Any]]:
     """Read the caller's own audit rows (newest first) via the audit repository's
-    per-actor reader. Best-effort — returns [] on any error."""
+    per-actor reader. A failed read is ``503 audit_unavailable`` (logged), so the
+    feed never shows "no activity" for a trail it could not read."""
     audit = getattr(state, "control_audit", None)
     if audit is None:
         return []
+    # The actor as ``AuditDoc`` stores it (cleaned, at most 160 characters). For every
+    # name an account can be created with today this is the name itself; a longer name
+    # an older build allowed also has older rows that carry it whole.
+    stored = single_line(actor, AUDIT_ACTOR_MAX_CHARS)
     try:
-        return await audit.records_for_actor(actor, limit)
-    except Exception:  # noqa: BLE001
-        return []
+        rows = await audit.records_for_actor(stored, limit)
+        if stored != actor:
+            older = await audit.records_for_actor(actor, limit)
+            rows = sorted([*rows, *older], key=lambda row: str(row.get("ts") or ""), reverse=True)
+        return rows[:limit]
+    except Exception as exc:  # noqa: BLE001 (any store failure is "unavailable")
+        logger.warning("Account activity read failed: %s", exc)
+        raise HTTPException(status_code=503, detail={
+            "code": "audit_unavailable", "message": "Your recent activity could not be read.",
+        }) from exc
 
 
 # --------------------------------------------------------------------------- #
@@ -5770,6 +5797,13 @@ async def create_user(
     state: AppState = Depends(get_state),
     _=Depends(require_permission("users", "manage")),
 ) -> dict[str, Any]:
+    # No control character (``\u0000`` among them) and at most 160 characters: every
+    # row the account writes carries its name as the audit actor. Answered here, not by
+    # a model validator, so the 422 never echoes the value (a lone surrogate in an
+    # echoed value cannot be encoded and turned the answer into a 500).
+    name_problem = username_problem(body.username)
+    if name_problem is not None:
+        raise HTTPException(status_code=422, detail=name_problem)
     pw = (body.password or "").strip()
     if len(pw) < 8:
         raise HTTPException(status_code=400, detail="password must be at least 8 characters")

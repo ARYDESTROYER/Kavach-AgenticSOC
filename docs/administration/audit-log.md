@@ -203,7 +203,12 @@ the failure row that follows it in time has the same request id, and **see the n
 record** opens it. A link to a record that is not in the current store says "This record is
 not in the current store."; one that could not be read offers **Retry**.
 
-Every value is shown as plain text, exactly as stored.
+Every value is shown as plain text, exactly as stored. Values are cleaned when a row is
+written: names, ids and labels lose control characters (an actor keeps at most 160
+characters, and a name made only of such characters is recorded as U+FFFD), and
+summaries, queries and tool input lose NUL characters, so what was attempted is still
+recorded without them. A lone surrogate that an older build stored is
+shown as U+FFFD.
 
 ## Keyboard
 

@@ -289,9 +289,15 @@ export interface ActivityEvent {
   [key: string]: unknown;
 }
 
-/** GET /api/account/activity — the user's recent audit trail. */
+/**
+ * GET /api/account/activity: the user's recent audit trail. The server answers
+ * `{activity: [...]}` with audit records (`action`, `action_type`, `result_summary`,
+ * `client.ip`, ...); `activityRows` in the Sessions page maps them onto
+ * {@link ActivityEvent}. `events` is read too, so a differently shaped answer still shows.
+ */
 export interface ActivityResponse {
-  events: ActivityEvent[];
+  activity?: ActivityEvent[];
+  events?: ActivityEvent[];
   count?: number;
   [key: string]: unknown;
 }

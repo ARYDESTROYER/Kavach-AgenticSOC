@@ -88,6 +88,7 @@ from ..usage import (
     _top,
 )  # reuse the ES summary aggregation helpers
 from ..update_operations import UPDATE_OPERATIONS_NS
+from .json_read import readable_json
 from .models import AuditRow, CaseRow, KVRow, UsageRow
 
 logger = logging.getLogger("tlsoc.stores.sql")
@@ -185,8 +186,9 @@ def _case_sort_column(sort_field: str) -> Any:
     errors (matching ES tolerance of a missing sort field)."""
     if sort_field == "risk_score":
         # cast to Float so ordering is NUMERIC (2 < 10), not lexicographic, on both
-        # SQLite (json_extract) and Postgres (->>) via the JSON accessor.
-        return cast(CaseRow.doc["risk_score"].as_float(), Float)
+        # SQLite (json_extract) and Postgres (->>) via the JSON accessor, which a
+        # stored NUL escape cannot break (``readable_json``).
+        return cast(readable_json(CaseRow.doc)["risk_score"].as_float(), Float)
     if sort_field in {"created_at", "updated_at"}:
         return getattr(CaseRow, sort_field)
     return CaseRow.created_at
@@ -895,7 +897,7 @@ def _created_keep(lo: str | None, hi: str | None) -> Any | None:
 
 
 def _sql_json_text(key: str) -> Any:
-    return CaseRow.doc[key].as_string()
+    return readable_json(CaseRow.doc)[key].as_string()
 
 
 _SQL_GROUP_FIELDS: dict[str, Any] = {
@@ -1147,7 +1149,7 @@ async def _sql_usage_pushdown(sessionmaker: Any, spec: Any) -> Any | None:
         "model": UsageRow.model,
         "surface": UsageRow.surface,
         "provider": UsageRow.model,
-        "service_tier": UsageRow.doc["processing_tier"].as_string(),
+        "service_tier": readable_json(UsageRow.doc)["processing_tier"].as_string(),
     }
     cols = [column_for[name].label(f"g{i}") for i, name in enumerate(group_by)]
     if unit:
@@ -1156,8 +1158,8 @@ async def _sql_usage_pushdown(sessionmaker: Any, spec: Any) -> Any | None:
         func.count().label("calls"),
         func.sum(UsageRow.cost).label("cost"),
         func.sum(UsageRow.total_tokens).label("total_tokens"),
-        func.sum(UsageRow.doc["prompt_tokens"].as_integer()).label("input_tokens"),
-        func.sum(UsageRow.doc["completion_tokens"].as_integer()).label("output_tokens"),
+        func.sum(readable_json(UsageRow.doc)["prompt_tokens"].as_integer()).label("input_tokens"),
+        func.sum(readable_json(UsageRow.doc)["completion_tokens"].as_integer()).label("output_tokens"),
     ]
     state = UsageRowSet()
     hour_cache: dict[str, Any] = {}
@@ -1239,7 +1241,9 @@ async def _sql_usage_pushdown(sessionmaker: Any, spec: Any) -> Any | None:
 # two-valued (``IS NOT NULL AND ...``), so ``NOT`` means what it means in Python and
 # Elasticsearch: a row without the field does not match ``Eq`` and does match
 # ``Not(Eq)``. Real columns are used where they exist (``ts``, ``action_type``,
-# ``case_id``); everything else is read from the JSON document.
+# ``case_id``); everything else is read from the JSON document through
+# ``readable_json``, so a ``\u0000`` stored anywhere in a row (an older build wrote
+# them; audit rows are never rewritten) cannot fail the read on PostgreSQL.
 # --------------------------------------------------------------------------- #
 def _audit_field(name: str) -> Any:
     if name == "action_type":
@@ -1247,7 +1251,8 @@ def _audit_field(name: str) -> Any:
     if name == "case_id":
         return AuditRow.case_id
     path = tuple(name.split("."))
-    return (AuditRow.doc[path[0]] if len(path) == 1 else AuditRow.doc[path]).as_string()
+    doc = readable_json(AuditRow.doc)
+    return (doc[path[0]] if len(path) == 1 else doc[path]).as_string()
 
 
 def _like_escape(text_value: str) -> str:
@@ -1432,7 +1437,8 @@ class SqlAuditRepository(AuditRepository):
         """Recent audit rows attributed to ``actor`` (NEWEST first) — the per-user
         account-activity feed (Wave 3). ``actor`` lives inside the JSON ``doc``; the
         filter is pushed into SQL through a JSON accessor (Round 14), so a sparse
-        actor's rows are found however far back they are. Never raises."""
+        actor's rows are found however far back they are. A read failure RAISES: the
+        caller reports it as unavailable, never as an empty feed."""
         from ...audit.query import Eq
 
         if not actor:
@@ -1443,13 +1449,9 @@ class SqlAuditRepository(AuditRepository):
             .order_by(AuditRow.ts.desc(), AuditRow.id.desc())
             .limit(max(1, int(limit)))
         )
-        try:
-            async with self._sm() as session:
-                rows = (await session.execute(stmt)).scalars().all()
-            return [r.doc or {} for r in rows]
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Audit read for actor %s failed: %s", actor, exc)
-            return []
+        async with self._sm() as session:
+            rows = (await session.execute(stmt)).scalars().all()
+        return [r.doc or {} for r in rows]
 
     async def records(
         self,
@@ -1469,7 +1471,7 @@ class SqlAuditRepository(AuditRepository):
         ``actor``, ``surface`` and ``source_id`` (A5.3) live inside the JSON ``doc``
         and are pushed into SQL through JSON accessors (Round 14 SPEC §4.5.3) instead
         of the former paged Python scan, so the result is exact at any depth.
-        Read-only; never raises."""
+        Read-only. A read failure RAISES, so no caller can mistake it for no rows."""
         from ...audit.query import Eq, all_of
 
         parts = [
@@ -1492,13 +1494,9 @@ class SqlAuditRepository(AuditRepository):
             .order_by(AuditRow.ts.desc(), AuditRow.id.desc())
             .limit(max(1, int(limit)))
         )
-        try:
-            async with self._sm() as session:
-                rows = (await session.execute(stmt)).scalars().all()
-            return [r.doc or {} for r in rows]
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Audit records read failed: %s", exc)
-            return []
+        async with self._sm() as session:
+            rows = (await session.execute(stmt)).scalars().all()
+        return [r.doc or {} for r in rows]
 
     # ------------------------------------------------------------------ #
     # Round 14 read API (SPEC §4.5.5): filters pushed into SQL through JSON
@@ -1583,7 +1581,7 @@ class SqlAuditRepository(AuditRepository):
         wanted = sorted({r for r in run_ids if isinstance(r, str) and r})
         if not wanted:
             return {}
-        run_expr = AuditRow.doc["run_id"].as_string()
+        run_expr = _audit_field("run_id")
         stmt = (
             select(run_expr, func.count())
             .where(and_(self._within_snapshot(_audit_sql(predicate), snapshot), run_expr.in_(wanted)))
@@ -1949,8 +1947,10 @@ class SqlKVStore(KVStore):
         """
         from sqlalchemy.exc import IntegrityError
 
+        # ``readable_json``: a NUL escape anywhere in the stored document must not fail
+        # the compare-and-set on PostgreSQL (every ``kv_mutate`` goes through here).
         revision = func.coalesce(
-            cast(KVRow.value["_rev"].as_string(), Integer), 0
+            cast(readable_json(KVRow.value)["_rev"].as_string(), Integer), 0
         )
         stmt = (
             update(KVRow)
@@ -2065,7 +2065,16 @@ class SqlConfigStore(ConfigRepository):
             return Preferences()
 
     async def save(self, prefs: Preferences) -> None:
-        await self._kv.put(_CONFIG_NS, _CONFIG_KEY, prefs.model_dump(mode="json"))
+        # Keep the stored keys this build does not model (and stored values it only
+        # clamped for its own use), so an older build never erases a newer build's
+        # settings (:func:`app.preferences_roundtrip.preferences_document`). A failed
+        # read aborts the save (it raises, nothing is written): a plain dump would
+        # erase exactly what the save keeps.
+        from ...preferences_roundtrip import preferences_document
+
+        getter = getattr(self._kv, "get_strict", None) or self._kv.get
+        stored = await getter(_CONFIG_NS, _CONFIG_KEY)
+        await self._kv.put(_CONFIG_NS, _CONFIG_KEY, preferences_document(prefs, stored))
 
     async def seed_rule_catalog(self, prefs: Preferences) -> Preferences:
         """First-run seeding of the built-in rule catalog (C3-1). Idempotent."""

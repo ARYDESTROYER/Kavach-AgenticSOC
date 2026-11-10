@@ -60,7 +60,7 @@ vi.mock('@/lib/api', () => {
       getBranding: ok({}),
       caseIdPreview: ok({ samples: [], valid: true }),
       account: { get: ok({ username: '', role: '', env_managed: false }), put: ok({}), avatar: ok({}) },
-      account_activity: ok({ events: [] }),
+      account_activity: ok({ activity: [] }),
       sessions: { list: ok({ sessions: [] }), revoke: ok({ ok: true }), revokeOthers: ok({ revoked: 0 }) },
       users: { list: ok({ users: [] }), create: ok({}), update: ok({}), remove: ok({}) },
       admin: {
