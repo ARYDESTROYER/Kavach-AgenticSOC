@@ -278,16 +278,18 @@ A new `SourceType` enum value (`constants.py`) and (for receivers) the right
 ## Continuous integration (merge gate)
 
 `.github/workflows/ci.yml` runs on every pull request (and pushes to `main` /
-`Testing`) and must be green before merge. It exposes eighteen independently
+`Testing`) and must be green before merge. It exposes twenty independently
 diagnosable quality checks plus one fail-closed aggregate:
 
 | Status check | Contract |
 | --- | --- |
 | Repository & version contracts | Canonical SemVer, release-channel, package, image, Compose, OpenAPI, and documentation metadata agree. |
 | Backend tests (offline) | The complete fake-ES/mock-LLM/SQLite suite passes, including deny-by-default route authorization coverage. |
+| Verdict stability gate | A deterministic two-arm run of frozen fixtures through the real pipeline, with a declared sensitivity model and no key or network, fails when runbook guidance or prompt text moves the FALSE_POSITIVE-verdict or close-eligible rate more than 15 points between the guided and unguided arms or from the rates recorded on the fixtures. |
 | Backend package integrity | The sdist and wheel build, install, report the canonical version, and contain required runbooks, playbooks, model, and ATT&CK data. |
 | Backend startup smoke | Production dependencies import, feature routers discover, the ASGI lifespan starts on isolated SQLite state, and liveness reports the expected version. |
-| PostgreSQL & Redis acceptance | The supported PostgreSQL+pgvector state path boots against pinned service images, readiness proves a real KV write/read, the vector extension exists, and Redis responds. |
+| PostgreSQL & Redis acceptance | The supported PostgreSQL+pgvector state path boots against pinned service images, readiness proves a real KV write/read, the vector extension exists, and Redis responds. Every `backend/tests/test_postgres_*.py` module then runs against the live service, and the step fails if any of them is skipped or executes no test. |
+| N to N-1 rollback acceptance | This release boots on a scratch PostgreSQL database and writes an audit export job, the migrated runbook corpus and changed runbook settings; the previous release pinned in `scripts/rollback_previous_release.json` then boots on that data and this release boots again. A second scenario boots this checkout as the previous release on synthetic future data (an unknown job kind, unknown preference keys, a marker-identified corpus) that it must keep. Any safe-stop, refused knowledge projection, re-embedding on every retrieval, failed health check or lost runbook setting fails it. |
 | Web UI tests (Vitest) | The complete component, interaction, accessibility, and page regression suite passes with zero stderr or captured console stdout. |
 | TypeScript & OpenAPI drift | Backend OpenAPI regeneration is byte-stable and the Console type-checks without a soft skip. |
 | Web UI lint | ESLint, hooks, and `jsx-a11y` finish with zero errors or warnings. |
@@ -301,7 +303,7 @@ diagnosable quality checks plus one fail-closed aggregate:
 | Release image build (backend) | The complete backend image builds from the shipping Dockerfile and its OCI identity, healthcheck, port, and non-root runtime contract match the candidate. |
 | Release image build (webui) | The Console plus version-matched Help Center image builds and its OCI identity, healthcheck, and port match the candidate. |
 | Release image build (updater) | The isolated updater image builds and its OCI identity, healthcheck, protocol label, and entry point match the candidate. |
-| CI passed | Runs even after failures and fails unless every one of the eighteen checks completed successfully. |
+| CI passed | Runs even after failures and fails unless every one of the twenty checks completed successfully. |
 
 The jobs intentionally run separately and in parallel. This costs a few repeated
 dependency-cache restores and image layers, but a pull request cannot hide API drift,

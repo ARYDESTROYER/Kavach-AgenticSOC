@@ -1431,10 +1431,12 @@ def demo_investigator_guidance(case: Case, catalog: Any, *, prefs: Preferences) 
     from the runbook the investigator read (§4.10.9). This is that selection, as the
     live pipeline makes it: the operator's switches (runbooks on and investigator
     guidance on), the same match over the Demo pipeline's matchable catalog the
-    attachment uses (D43; Generic incident while the fallback is on), and the
-    character budget a runbook's rendering must fit to be read. Every investigated
-    case gets guidance, an automatic close too (only a person's case gets a run); a
-    case closed by an analyst rule never reached the investigator and gets none."""
+    attachment uses (D43), and the character budget a runbook's rendering must fit to
+    be read. The fallback (Generic incident, tier 0) is a checklist for people and is
+    never given to the investigator, so a case only it matches gets none. Every
+    investigated case a specific runbook matches gets guidance, an automatic close too
+    (only a person's case gets a run); a case closed by an analyst rule never reached
+    the investigator and gets none."""
     from .precedent import is_policy_closed
     from .runbook_match import match
     from .runbook_model import MAX_RUNBOOK_PROMPT_CHARS, render_runbook_prompt
@@ -1446,9 +1448,10 @@ def demo_investigator_guidance(case: Case, catalog: Any, *, prefs: Preferences) 
     if case.verdict is None or is_policy_closed(case):
         return None
     matchable = tuple(getattr(catalog, "matchable", catalog) or ())
-    winner = match(case_facts(case, prefs), matchable, fallback=bool(cfg.fallback)).winner
-    if winner is None:
-        return None
+    result = match(case_facts(case, prefs), matchable, fallback=bool(cfg.fallback))
+    winner = result.winner
+    if winner is None or result.explanation is None or result.explanation.tier == 0:
+        return None  # no match, or only the fallback, which the investigator is not given
     if len(render_runbook_prompt(winner.definition, winner.version)) > MAX_RUNBOOK_PROMPT_CHARS:
         return None  # over the budget: the investigator is not given it
     return winner

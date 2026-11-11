@@ -3,7 +3,7 @@ id: generic-incident
 title: Generic incident (NIST 800-61)
 summary: A general response procedure for a case no other runbook covers, following the NIST incident response life cycle.
 use_when: No other runbook matches the case. Replace it with a specific runbook when you see the same kind of case again.
-version: 1
+version: 2
 priority: 0
 review_every_days: 180
 applies_when:
@@ -19,7 +19,7 @@ references:
 
 ### What happened, where, and how bad is it? {#what-happened kind=check evidence=note}
 Focus: the detection, the affected hosts, accounts and data, and the business impact.
-Escalate if: production systems, sensitive data or a privileged account is involved, or the activity continues.
+Escalate if: the evidence shows compromise or harm, such as a privileged account used without approval, sensitive data exposed, or malicious activity that continues after a block.
 Benign if: a known test, a misconfiguration or expected behaviour explains it.
 
 ### Name an incident lead {#incident-lead kind=record}
@@ -41,7 +41,7 @@ run: on_attach
 ```
 
 ### What is the scope: which hosts, accounts and data? {#scope kind=check evidence=note}
-Escalate if: more than one host or account, or data leaving the network.
+Escalate if: confirmed spread to other hosts or accounts, or data sent out of the network without approval.
 Benign if: one host or account, contained, with no data at risk.
 
 ### Incident, suspicious or benign? {#decide kind=decision}

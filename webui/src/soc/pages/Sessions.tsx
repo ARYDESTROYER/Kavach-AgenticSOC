@@ -27,7 +27,7 @@ import { LogOut } from 'lucide-react';
 import { toast } from 'sonner';
 
 import { api, ApiError } from '@/lib/api';
-import type { ActivityEvent, Session } from '@/lib/types';
+import type { ActivityEvent, ActivityResponse, Session } from '@/lib/types';
 import { cn } from '@/lib/cn';
 import { humanizeAge, humanizeUntil, formatTimestamp, humanizeToken, DASH } from '@/lib/format';
 import { focusRing } from '@/lib/ui-recipes';
@@ -377,6 +377,26 @@ export function SessionsTable({
 // --------------------------------------------------------------------------- //
 // Activity tab
 // --------------------------------------------------------------------------- //
+/**
+ * The activity rows of a `GET /api/account/activity` answer. The server sends audit
+ * records under `activity`, so each row's event name, summary and client address are
+ * mapped onto the fields the list shows (`action`, `detail`, `ip`).
+ */
+export function activityRows(res: ActivityResponse | null | undefined): ActivityEvent[] {
+  const rows = Array.isArray(res?.activity) ? res.activity : Array.isArray(res?.events) ? res.events : [];
+  return rows.map((row) => {
+    const text = (value: unknown): string | undefined =>
+      typeof value === 'string' && value ? value : undefined;
+    const client = row.client && typeof row.client === 'object' ? (row.client as { ip?: unknown }) : {};
+    return {
+      ...row,
+      action: text(row.action) ?? text(row.action_type),
+      detail: text(row.detail) ?? text(row.result_summary),
+      ip: text(row.ip) ?? text(client.ip) ?? null,
+    };
+  });
+}
+
 function ActivityList({ events, loading }: { events: ActivityEvent[]; loading: boolean }) {
   const columns: DataTableColumn<ActivityEvent>[] = [
     {
@@ -486,7 +506,7 @@ export function SessionsInner({ embedded = false }: SessionsInnerProps) {
     setActivityLoading(true);
     try {
       const res = await api.account_activity();
-      setActivity(res.events ?? []);
+      setActivity(activityRows(res));
     } catch (e) {
       // Activity is best-effort; a failure shouldn't break the page.
       toast.error(errMsg(e, 'Could not load activity.'));

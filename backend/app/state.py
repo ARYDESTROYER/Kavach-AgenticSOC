@@ -590,6 +590,13 @@ class AppState:
         the caller and the next start resumes."""
         from .engine.runbook_migration import run_runbook_migration
 
+        # The corpus side of the migration: ``runbook-library:`` ids replace the legacy
+        # runbook ids on purpose. Recorded before any projection (idempotent, and never
+        # over a newer build's marker), so neither this build nor an older or newer one
+        # reads the replacement as corpus loss.
+        record = getattr(getattr(self, "rag", None), "record_runbook_corpus_migration", None)
+        if callable(record):
+            await record()
         outcome = await run_runbook_migration(
             library=self.runbook_library,
             legacy=self.legacy_procedures,
@@ -1748,6 +1755,7 @@ class AppState:
         record path is fail-open)."""
         from .stores.noise_counters import NoiseCounterStore
         from .stores.precedent_exclusions import PrecedentExclusionStore
+        from .stores.rag_corpus_migration import RagCorpusMigrationStore
         from .stores.rag_health import RagHealthStore
 
         self._real_noise_counters = NoiseCounterStore(self._kv)
@@ -1760,6 +1768,10 @@ class AppState:
         # silently undid itself. Same single-KV-document pattern: no new index, no table,
         # no migration.
         self._precedent_exclusions = PrecedentExclusionStore(self._kv)
+        # Intentional RAG corpus migration markers (one KV document per source), so a
+        # deliberate source replacement is never read as corpus loss on either side of
+        # an upgrade or a rollback.
+        self._rag_corpus_migrations = RagCorpusMigrationStore(self._kv)
 
     @property
     def enrichment_registry(self):
@@ -2903,6 +2915,7 @@ class AppState:
                 library=lambda: self.runbook_library,
                 health=getattr(self, "_rag_health", None),
                 exclusions=getattr(self, "_precedent_exclusions", None),
+                corpus_migrations=getattr(self, "_rag_corpus_migrations", None),
             )
         try:
             from .es.client import RealESClient
@@ -2921,6 +2934,7 @@ class AppState:
             library=lambda: self.runbook_library,
             health=getattr(self, "_rag_health", None),
             exclusions=getattr(self, "_precedent_exclusions", None),
+            corpus_migrations=getattr(self, "_rag_corpus_migrations", None),
         )
 
     def rebuild_log_source(self) -> None:

@@ -116,6 +116,7 @@ from ..models import (
     normalise_audit_ip,
 )
 from ..state import AppState
+from ..stored_text import shown
 from ..stores.base import AuditCursorExpired, AuditHit, AuditSearchPage
 from ..utils import parse_es_timestamp
 from .deps import get_state, require_permission
@@ -904,7 +905,10 @@ def to_record(doc: dict[str, Any], record_id: str, *, demo: bool) -> AuditRecord
     """One stored row as the read API returns it: as stored, plus the read-time
     projections (category, friendly name, derived outcome and actor kind, Demo flag,
     the fields that hit the write cap). Lenient: a value that drifted is dropped as
-    not recorded, never a reason to hide the row."""
+    not recorded, never a reason to hide the row. A lone surrogate an older build
+    stored is shown as U+FFFD (``stored_text.shown``): a UTF-8 response cannot carry
+    it, and one such row must not fail the whole page."""
+    doc = shown(doc)
     info = events.classify(doc)
     outcome, outcome_derived = events.derive_outcome(doc)
     actor_type, actor_type_derived = events.derive_actor_type(doc)

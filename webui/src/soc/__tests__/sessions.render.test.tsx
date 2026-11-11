@@ -54,7 +54,7 @@ vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
 import { AuthProvider } from '../auth';
 import { TooltipProvider } from '@/ui/tooltip';
-import Sessions, { sessionActionLabel } from '../pages/Sessions';
+import Sessions, { activityRows, sessionActionLabel } from '../pages/Sessions';
 
 function renderSessions() {
   return render(
@@ -72,7 +72,7 @@ describe('Sessions page', () => {
     activity.mockReset();
     revoke.mockReset();
     revokeOthers.mockReset();
-    activity.mockResolvedValue({ events: [] });
+    activity.mockResolvedValue({ activity: [] });
     sessionsList.mockResolvedValue({
       sessions: [
         {
@@ -161,5 +161,36 @@ describe('sessionActionLabel', () => {
     expect(sessionActionLabel('Sign out', { ...base, current: true })).toBe('Sign out Firefox on Windows (this device)');
     // The owner only where the table shows owners (the admin console).
     expect(sessionActionLabel('Sign out', base, true)).toBe('Sign out Firefox on Windows for alice');
+  });
+});
+
+describe('Sessions activity rows', () => {
+  const record = {
+    id: 'a-1',
+    ts: new Date(Date.now() - 120_000).toISOString(),
+    action: 'auth.login',
+    action_type: 'AUTH_EVENT',
+    result_summary: 'Signed in with a password',
+    client: { ip: '203.0.113.5', user_agent: 'Mozilla/5.0' },
+  };
+
+  it('maps the audit records the server sends under activity', () => {
+    const [row] = activityRows({ activity: [record] });
+    expect(row.action).toBe('auth.login');
+    expect(row.detail).toBe('Signed in with a password');
+    expect(row.ip).toBe('203.0.113.5');
+    // The event name falls back to the action type; nothing at all is an empty list.
+    expect(activityRows({ activity: [{ action_type: 'AUTH_EVENT' }] })[0].action).toBe('AUTH_EVENT');
+    expect(activityRows({})).toEqual([]);
+    expect(activityRows(null)).toEqual([]);
+  });
+
+  it('shows the signed-in person\'s activity on the Activity tab', async () => {
+    activity.mockResolvedValue({ activity: [record] });
+    sessionsList.mockResolvedValue({ sessions: [] });
+    renderSessions();
+    fireEvent.mouseDown(await screen.findByRole('tab', { name: 'Activity' }));
+    expect(await screen.findByText('Signed in with a password')).toBeInTheDocument();
+    expect(screen.queryByText('No recent activity.')).not.toBeInTheDocument();
   });
 });

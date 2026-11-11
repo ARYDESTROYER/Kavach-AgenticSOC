@@ -135,7 +135,7 @@ export function RunbooksSection({ prefs, update }: SecProps) {
           <SettingRow
             variant="switch"
             label="Attach Generic incident when nothing matches"
-            help="The NIST 800-61 based runbook, shown on the case as Fallback."
+            help="The NIST 800-61 based runbook, shown on the case as Fallback. It is a checklist for people; the agent is not given it as guidance, although the knowledge search can still find its steps."
             checked={cfg.fallback}
             disabled={off || !cfg.auto_attach}
             onCheckedChange={(v) => set({ fallback: v })}
@@ -149,7 +149,7 @@ export function RunbooksSection({ prefs, update }: SecProps) {
           <SettingRow
             variant="switch"
             label="Guide the agent with the matching runbook"
-            help="Give the investigator the winning Published runbook as guidance. It can recommend, never decide."
+            help="Give the investigator the Published runbook that specifically matches a case, never the Generic incident fallback. It can change the verdict the agent returns; code still makes the close decision."
             checked={cfg.investigator_guidance}
             disabled={off}
             onCheckedChange={(v) => set({ investigator_guidance: v })}

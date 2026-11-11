@@ -47,6 +47,7 @@ from dataclasses import dataclass, field, fields
 from datetime import datetime, timezone
 from typing import Any, Mapping, Sequence, Union
 
+from ..stored_text import USERNAME_MAX_CHARS, audit_actor_key, single_line
 from ..utils import dotted_get, parse_es_timestamp
 from . import events
 from .events import TABLE, EventTable, ascii_lower
@@ -427,7 +428,13 @@ def build_predicate(filters: AuditFilters, table: EventTable = TABLE) -> Predica
     if filters.event:
         parts.append(event_predicate(filters.event, table))
     if filters.actor:
-        parts.append(Eq("actor", filters.actor))
+        # A longer name an older build allowed is recorded as its key from this build
+        # on (``audit_actor_key``) and whole in older rows: the exact filter finds both.
+        # Only the length rule widens it; a shorter value is matched exactly as sent.
+        if len(single_line(filters.actor)) > USERNAME_MAX_CHARS:
+            parts.append(In("actor", (filters.actor, audit_actor_key(filters.actor))))
+        else:
+            parts.append(Eq("actor", filters.actor))
     if filters.actor_contains:
         parts.append(Contains("actor", filters.actor_contains))
     if filters.actor_kind:

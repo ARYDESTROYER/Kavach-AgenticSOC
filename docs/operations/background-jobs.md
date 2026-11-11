@@ -348,6 +348,14 @@ Terminal jobs compact large inputs and per-item maps. The retained record is des
 for status, counts, bounded failures, result navigation, and audit correlation, not as a
 copy of every submitted document or case ID.
 
+A record of a job kind this build does not know (one a newer release wrote, found after
+an image-only rollback) is kept exactly as stored. This build never runs, lists or
+cancels it, protects its result file from cleanup, counts it toward the 1,000-job
+capacity and prunes it like any other record once its status is terminal; a factory
+reset clears it. Only a corrupt record (not an object, or missing its id, kind, status
+or creation time) makes the registry unreadable, and startup then enters factory-reset
+safe-stop as before.
+
 ## Troubleshooting checklist
 
 1. Open **Analytics → Jobs** and record the job ID, kind, status, progress, and safe

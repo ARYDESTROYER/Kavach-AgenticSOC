@@ -350,14 +350,17 @@ seconds, below the Web UI proxy's 300-second limit.
 ### Runbooks
 
 `runbooks` holds the switches of the one Runbooks feature, edited under **Settings →
-Integrations → Runbooks**. None of them changes a case decision.
+Integrations → Runbooks**. None of them changes the close or escalate decision: that is
+made in code against the case policy, which never reads a runbook. Investigator guidance
+does change what the agent sees, so it can change the verdict the agent returns, and with
+it which cases the policy closes automatically.
 
 | Key | Default | Meaning |
 |---|---|---|
 | `enabled` | `true` | The feature: the library, runs on cases and investigator guidance. Off stops every run write (`409 runbook_state`) |
 | `auto_attach` | `true` | Attach the matching Published runbook to each case that needs a person |
-| `fallback` | `true` | Attach the Generic incident runbook when nothing else matches |
-| `investigator_guidance` | `true` | Give the matching Published runbook to the investigator as trusted, advisory guidance |
+| `fallback` | `true` | Attach the Generic incident runbook when nothing else matches. It is a checklist for people and is never given to the investigator as guidance; while `rag_corpus` is on, its text stays in the knowledge search like any Published runbook |
+| `investigator_guidance` | `true` | Give the Published runbook that specifically matches a case (its rules, techniques or other conditions; never the Generic incident fallback) to the investigator as trusted, advisory guidance. `false` removes the runbook block and the runbook's search phrases from every investigation |
 | `rag_corpus` | `true` | Index Published runbooks for the knowledge search |
 | `ai_suggest` | `true` | Offer **Suggest a runbook** on a case (one metered model call per click) |
 | `ai_step_drafts` | `true` | Offer **Draft note** on a step (one metered model call per click) |

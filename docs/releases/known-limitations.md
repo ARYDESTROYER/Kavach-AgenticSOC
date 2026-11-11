@@ -280,6 +280,22 @@ conversations the older build trimmed to its own 100-message window in the meant
 **Required change:** a versioned, reversible data migration for KV documents, so a
 rollback can restore the form an older build reads.
 
+### Rolling back to a build before Round 14 is not clean
+
+Builds before Round 14 predate the rollback forward-compatibility contract. After an
+image-only rollback to such a build, a stored `audit_export` job record puts it in
+factory-reset safe-stop (every route answers `503 factory_reset_in_progress`), its
+knowledge projection is refused at the retention floor against the migrated runbook
+corpus, and its graceful stop drops every `runbooks.*` setting. The checks and
+workarounds are in [Upgrades](../operations/upgrades.md#rolling-back-from-round-14);
+if you lower `rag.min_projection_retention` to `0` on the earlier build, restore it after
+the return, because the shared preferences keep it. From this build on, unknown job kinds, unknown preference keys and marked corpus
+migrations are kept, and a CI lane boots the previous release on each candidate's data
+([Rollback forward compatibility](../operations/upgrades.md#rollback-forward-compatibility)).
+
+**Required change:** none for later releases; it cannot be fixed inside the earlier
+builds themselves.
+
 ### Single replica only
 
 Run exactly one backend replica. Signature locks, receiver ownership, schedulers,

@@ -214,7 +214,9 @@ async def test_a_draft_never_reaches_the_prompt_and_its_published_version_does(a
     draft_case = await _investigate(state, "custom_op_rule")
     user = _investigator_user_message(mock_provider)
     assert "Ask the owner of the custom service first." not in user
-    assert draft_case.runbook_id == "generic-incident"  # the draft is not matchable
+    # The draft is not matchable, so only the fallback matched, and the fallback is
+    # never given to the investigator.
+    assert RUNBOOK_OPEN not in user and draft_case.runbook_id is None
 
     await state.runbook_library.update(defn.id, lambda doc: catalog_ops.t_publish(
         doc, 1, actor="bob", now=iso_now(), expected_hash=None, require_distinct_approver=False,
@@ -342,7 +344,9 @@ async def test_a_tagged_case_is_guided_by_its_tag_runbook_when_investigated_agai
     await _store_operator_runbook(state, _tag_definition(), publish=True)
     _strong(mock_provider)
     first = await _investigate(state, "custom_op_rule")
-    assert first.runbook_id == "generic-incident"  # the tag is not on the case yet
+    # The tag is not on the case yet: only the fallback matched, which guides nothing.
+    assert first.runbook_id is None
+    assert RUNBOOK_OPEN not in _investigator_user_message(mock_provider)
     stored = await state.cases.get(first.case_id)
     await state.cases.save(stored.model_copy(update={"tags": ["vip"]}))
 

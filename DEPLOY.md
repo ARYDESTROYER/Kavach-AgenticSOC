@@ -685,7 +685,21 @@ table is added. The full list is in `docs/operations/upgrades.md` ("Round 14 cha
   new audit fields stay in the store unused. Chat limits that Round 14 saved keep the
   45 s lookup timeout, the 900 s stall timeout and the backend-wide 48, and read lookups
   at once and questions per user as 8 and 10 (the earlier build's maximums); set them by
-  hand if other values are wanted.
+  hand if other values are wanted. A build before Round 14 predates the rollback
+  forward-compatibility contract, so on a copy of the data first check for three
+  hazards (details and read-only checks in `docs/operations/upgrades.md`, "Rolling back
+  from Round 14"): any `audit_export` job record puts that build in safe-stop with every
+  route answering `503 factory_reset_in_progress`; its knowledge projection is refused
+  at the retention floor against the 51 `runbook-library:` chunks; and its graceful
+  stop drops every `runbooks.*` setting.
+- **Rollback forward compatibility (this build on).** This build keeps job records of
+  kinds it does not know (never run, pruned once terminal, never a safe-stop), keeps
+  preference keys it does not model and values it only clamped, and honours
+  corpus-migration markers (KV namespace `rag_corpus_migration`), so the next release
+  rolls back to it cleanly. The CI rollback lane (`scripts/rollback_lane.py`, previous
+  release pinned in `scripts/rollback_previous_release.json`) boots the previous
+  release on this release's PostgreSQL data on every candidate, and boots this release
+  as the previous one on synthetic future data it must keep.
 
 **Chat without limits, Remember me and exact dashboards (Round 12, same candidate).** No
 database migration, index or table is added; everything below lives in existing KV

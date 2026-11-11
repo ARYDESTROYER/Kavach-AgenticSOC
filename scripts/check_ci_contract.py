@@ -21,6 +21,20 @@ SHIPPING_DOCKERFILES = (
     ROOT / "webui" / "Dockerfile",
     ROOT / "updater" / "Dockerfile",
 )
+POSTGRES_ACCEPTANCE_STEP = "Run the PostgreSQL state acceptance tests"
+#: Flags that turn the rollback lane into a one-off rehearsal or drop its
+#: self-forward scenario; the required lane never passes them.
+ROLLBACK_REHEARSAL_FLAGS = ("--pinned-only", "--previous-backend", "--previous-release")
+
+
+def _postgres_acceptance_modules() -> list[str]:
+    """Every PostgreSQL-only backend test module, relative to ``backend/``.
+
+    These modules skip themselves without a PostgreSQL URL, so the offline suite
+    cannot stand in for them: each one must run in the live-service acceptance step.
+    """
+    tests = ROOT / "backend" / "tests"
+    return sorted(f"tests/{path.name}" for path in tests.glob("test_postgres_*.py"))
 
 
 class UniqueKeyLoader(yaml.SafeLoader):
@@ -230,6 +244,9 @@ def _assert_ci(path: Path, workflow: dict[str, Any]) -> None:
                 raise ValueError(
                     f"{path}: service {job_id}.{service_id} must use an image digest"
                 )
+    _assert_postgres_acceptance(path, jobs)
+    _assert_rollback_lane(path, jobs)
+    _assert_verdict_stability(path, jobs)
     aggregate = jobs.get("ci")
     if not isinstance(aggregate, dict) or aggregate.get("name") != "CI passed":
         raise ValueError(f"{path}: fail-closed aggregate job 'ci' is missing")
@@ -719,6 +736,88 @@ def _assert_docs(path: Path, workflow: dict[str, Any]) -> None:
         raise ValueError(f"{path}: documentation deploy must use github-pages environment")
     if deploy.get("needs") != "publish":
         raise ValueError(f"{path}: documentation deploy must require the publisher")
+
+
+def _step_text(step: dict[str, Any]) -> str:
+    """A step's run script plus its environment values (where module lists live)."""
+    env = step.get("env")
+    values = [str(value) for value in env.values()] if isinstance(env, dict) else []
+    return "\n".join([str(step.get("run", "")), *values])
+
+
+def _assert_postgres_acceptance(path: Path, jobs: dict[str, Any]) -> None:
+    """Every PostgreSQL-only module runs against the live service, never skipped."""
+    job = jobs.get("postgres-redis")
+    if not isinstance(job, dict):
+        raise ValueError(f"{path}: PostgreSQL & Redis acceptance job is missing")
+    if "postgres" not in (job.get("services") or {}):
+        raise ValueError(f"{path}: PostgreSQL acceptance job has no postgres service")
+    step = next(
+        (
+            candidate
+            for candidate in job.get("steps", [])
+            if isinstance(candidate, dict)
+            and candidate.get("name") == POSTGRES_ACCEPTANCE_STEP
+        ),
+        None,
+    )
+    if not isinstance(step, dict):
+        raise ValueError(f"{path}: PostgreSQL acceptance test step is missing")
+    env = step.get("env") if isinstance(step.get("env"), dict) else {}
+    if not str(env.get("POSTGRES_TEST_DB_URL", "")).startswith("postgresql"):
+        raise ValueError(
+            f"{path}: PostgreSQL acceptance tests must export POSTGRES_TEST_DB_URL"
+        )
+    text = _step_text(step)
+    for module in _postgres_acceptance_modules():
+        if module not in text:
+            raise ValueError(
+                f"{path}: PostgreSQL acceptance step does not run {module}"
+            )
+    for marker in ("--junit-xml", 'counts["skipped"]', "no PostgreSQL acceptance test executed"):
+        if marker not in text:
+            raise ValueError(
+                f"{path}: PostgreSQL acceptance step lacks its executed-not-skipped "
+                f"assertion ({marker!r})"
+            )
+
+
+def _assert_rollback_lane(path: Path, jobs: dict[str, Any]) -> None:
+    """The N to N-1 rollback lane runs both scenarios on a live PostgreSQL service."""
+    job = jobs.get("rollback-lane")
+    if not isinstance(job, dict):
+        raise ValueError(f"{path}: N to N-1 rollback lane is missing")
+    if "postgres" not in (job.get("services") or {}):
+        raise ValueError(f"{path}: N to N-1 rollback lane has no postgres service")
+    text = _job_run_text(job)
+    for marker in (
+        "python scripts/rollback_lane.py",
+        "--database-url postgresql",
+        "python -m unittest scripts.test_rollback_lane",
+    ):
+        if marker not in text:
+            raise ValueError(f"{path}: the N to N-1 rollback lane lacks {marker!r}")
+    for flag in ROLLBACK_REHEARSAL_FLAGS:
+        if flag in text:
+            raise ValueError(
+                f"{path}: the N to N-1 rollback lane must not pass {flag} "
+                "(it replaces or drops a required scenario)"
+            )
+
+
+def _assert_verdict_stability(path: Path, jobs: dict[str, Any]) -> None:
+    """The deterministic verdict stability gate runs as its own lane."""
+    job = jobs.get("verdict-stability")
+    if not isinstance(job, dict):
+        raise ValueError(f"{path}: verdict stability gate is missing")
+    text = _job_run_text(job)
+    if "python -m pytest" not in text or "tests/test_verdict_stability_gate.py" not in text:
+        raise ValueError(
+            f"{path}: verdict stability gate does not run "
+            "tests/test_verdict_stability_gate.py"
+        )
+    if "--deselect" in text or " -k " in text:
+        raise ValueError(f"{path}: verdict stability gate must run the whole gate file")
 
 
 def _job_run_text(job: Any) -> str:

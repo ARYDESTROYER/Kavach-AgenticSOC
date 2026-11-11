@@ -63,6 +63,7 @@ from .constants import (
     UserRole,
     Verdict,
 )
+from .stored_text import USERNAME_MAX_CHARS, audit_actor_key, clean_tree, multi_line, single_line
 from .utils import coerce_float, dotted_get, iso_now, new_id, parse_es_timestamp, to_millis
 
 
@@ -2020,6 +2021,14 @@ class Case(BaseModel):
 # is optional and written at append time only; there is no backfill. Values that come
 # from a caller (a user agent, a forwarded header, a setting value) are bounded here so
 # an audit append never fails because the caller sent something long.
+#
+# Every audit string is also cleaned here, on write, whoever the writer is
+# (``app.stored_text``): single-line fields lose control characters and lone
+# surrogates, multi-line text loses NUL and lone surrogates, and ``tool_input`` is
+# cleaned leaf by leaf. A NUL or a lone surrogate stored in a PostgreSQL ``json``
+# document makes every ``->>`` read of that row fail, so neither is ever written. The
+# characters are removed, not replaced, and cleaning never raises: an audit-first
+# write with such a value succeeds and records the rest of the value.
 AuditOutcome = Literal["success", "failure", "denied", "partial", "unknown"]
 AUDIT_OUTCOMES: tuple[str, ...] = get_args(AuditOutcome)
 AuditActorType = Literal["human", "agent", "system", "service"]
@@ -2048,11 +2057,21 @@ AUDIT_CHANGE_FIELD_MAX_CHARS = 200
 #: Every free-text audit field is capped at this length when written (the inspector
 #: says "Stored truncated at 1,000 characters" for a field that hit it).
 AUDIT_TEXT_WRITE_CAP = 1_000
+#: ``AuditDoc.actor``: the bound of a username, which is what an actor usually is.
+AUDIT_ACTOR_MAX_CHARS = USERNAME_MAX_CHARS
 
 
 def _clip_text(value: Any, limit: int) -> Any:
     """Cut a string to ``limit`` characters; any other value passes to validation."""
     return value[:limit] if isinstance(value, str) else value
+
+
+def _required_line(value: Any, limit: int) -> Any:
+    """A required single-line value as stored: :func:`app.stored_text.single_line`,
+    and a value made only of removed characters becomes one U+FFFD, so the row is
+    still written (an audit-first write must not start failing on such a value)."""
+    cleaned = single_line(value, limit)
+    return "\ufffd" if cleaned == "" and isinstance(value, str) and value else cleaned
 
 
 _IPV4_WITH_PORT_RE = re.compile(r"(\d{1,3}(?:\.\d{1,3}){3}):\d{1,5}")
@@ -2115,17 +2134,17 @@ class AuditClient(BaseModel):
     @field_validator("peer", mode="before")
     @classmethod
     def _bounded_address(cls, value: Any) -> Any:
-        return "" if value is None else _clip_text(value, 64)
+        return "" if value is None else single_line(value, 64)
 
     @field_validator("forwarded_for", mode="before")
     @classmethod
     def _bounded_forwarded_for(cls, value: Any) -> Any:
-        return _clip_text(value, AUDIT_FORWARDED_FOR_MAX_CHARS)
+        return single_line(value, AUDIT_FORWARDED_FOR_MAX_CHARS)
 
     @field_validator("user_agent", mode="before")
     @classmethod
     def _bounded_user_agent(cls, value: Any) -> Any:
-        return "" if value is None else _clip_text(value, AUDIT_USER_AGENT_MAX_CHARS)
+        return "" if value is None else single_line(value, AUDIT_USER_AGENT_MAX_CHARS)
 
 
 class AuditTarget(BaseModel):
@@ -2144,12 +2163,12 @@ class AuditTarget(BaseModel):
     @field_validator("id", mode="before")
     @classmethod
     def _bounded_id(cls, value: Any) -> Any:
-        return _clip_text(value, AUDIT_TARGET_ID_MAX_CHARS)
+        return _required_line(value, AUDIT_TARGET_ID_MAX_CHARS)
 
     @field_validator("label", mode="before")
     @classmethod
     def _bounded_label(cls, value: Any) -> Any:
-        return "" if value is None else _clip_text(value, AUDIT_TARGET_LABEL_MAX_CHARS)
+        return "" if value is None else single_line(value, AUDIT_TARGET_LABEL_MAX_CHARS)
 
 
 def _audit_change_text(value: Any) -> Any:
@@ -2173,7 +2192,7 @@ class AuditChange(BaseModel):
     True}``; a URL is reduced to scheme and host by the writer, which sets ``secret``
     when anything was removed. A value that is not text is stored as canonical JSON
     text (:func:`_audit_change_text`); ``before`` and ``after`` are cut to 500
-    characters."""
+    characters and lose NUL and lone surrogates, ``field`` is one clean line."""
 
     field: str = Field(min_length=1, max_length=AUDIT_CHANGE_FIELD_MAX_CHARS)
     before: str | None = None
@@ -2183,12 +2202,12 @@ class AuditChange(BaseModel):
     @field_validator("field", mode="before")
     @classmethod
     def _bounded_field(cls, value: Any) -> Any:
-        return _clip_text(value, AUDIT_CHANGE_FIELD_MAX_CHARS)
+        return _required_line(value, AUDIT_CHANGE_FIELD_MAX_CHARS)
 
     @field_validator("before", "after", mode="before")
     @classmethod
     def _bounded_value(cls, value: Any) -> Any:
-        return _clip_text(_audit_change_text(value), AUDIT_CHANGE_VALUE_MAX_CHARS)
+        return _clip_text(multi_line(_audit_change_text(value)), AUDIT_CHANGE_VALUE_MAX_CHARS)
 
 
 #: The Round 14 ``AuditDoc`` keys. A row that leaves one unset is stored without the
@@ -2249,10 +2268,41 @@ class AuditDoc(BaseModel):
     # One id per investigation run, so the Agent activity scope can group its rows.
     run_id: str | None = Field(default=None, max_length=AUDIT_RUN_ID_MAX_CHARS)
 
+    @field_validator(
+        "event_id", "ts", "case_id", "source_id", "surface", "model", "tool_name", "run_id",
+        mode="before",
+    )
+    @classmethod
+    def _single_line(cls, value: Any) -> Any:
+        return single_line(value)
+
+    @field_validator("actor", mode="before")
+    @classmethod
+    def _bounded_actor(cls, value: Any) -> Any:
+        """The actor as attempted, minus control characters, bounded like a username
+        (:func:`app.stored_text.audit_actor_key`: a longer name ends in a digest of the
+        whole name, so two long names never become one actor). An actor made only of
+        removed characters is kept as one U+FFFD, so the row still shows that a name
+        was given (it is never blanked to ``""``)."""
+        cleaned = audit_actor_key(value)
+        return "\ufffd" if cleaned == "" and isinstance(value, str) and value else cleaned
+
+    @field_validator(
+        "prompt_excerpt", "query_text", "tool_output_summary", "result_summary", mode="before",
+    )
+    @classmethod
+    def _stored_text(cls, value: Any) -> Any:
+        return multi_line(value)
+
+    @field_validator("tool_input", mode="before")
+    @classmethod
+    def _stored_tool_input(cls, value: Any) -> Any:
+        return clean_tree(value)
+
     @field_validator("actor_role", mode="before")
     @classmethod
     def _bounded_actor_role(cls, value: Any) -> Any:
-        return _clip_text(value, AUDIT_ROLE_MAX_CHARS)
+        return single_line(value, AUDIT_ROLE_MAX_CHARS)
 
     @field_validator("changes", mode="before")
     @classmethod

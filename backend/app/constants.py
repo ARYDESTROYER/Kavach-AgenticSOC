@@ -260,6 +260,13 @@ RAG_HEALTH_NS = "rag_health"
 RAG_HEALTH_KEY = "rag_health"
 RAG_HEALTH_DOC_ID = "rag_health"        # ES doc id within CONFIG_INDEX
 
+# Intentional RAG corpus migrations (``stores.rag_corpus_migration``): one KV document
+# per knowledge source, keyed by the source name, naming the document-id scheme a
+# build projects and the schemes it replaced on purpose. The projection guard reads
+# it so a deliberate source replacement, in either direction of an upgrade or a
+# rollback, is never mistaken for corpus loss. Same zero-migration KV pattern.
+RAG_CORPUS_MIGRATION_NS = "rag_corpus_migration"
+
 # --------------------------------------------------------------------------- #
 # Operator-added CUSTOM MODELS (self-hosted / LiteLLM / vLLM / Ollama — any
 # OpenAI-compatible endpoint) registered at RUNTIME from the UI, so a local model

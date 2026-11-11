@@ -184,22 +184,19 @@ class AuditLogger(AuditRepository):
 
     async def records_for_actor(self, actor: str, limit: int = 50) -> list[dict[str, Any]]:
         """Recent audit rows attributed to ``actor`` (NEWEST first) — the per-user
-        account-activity feed (Wave 3). Read-only; never raises."""
+        account-activity feed (Wave 3). Read-only. A read failure RAISES: the caller
+        reports it as unavailable, never as an empty feed."""
         if not actor:
             return []
-        try:
-            resp = await self._es.search(
-                AUDIT_READ_PATTERN,
-                {
-                    "query": {"term": {"actor": actor}},
-                    "sort": [{"ts": {"order": "desc"}}],
-                    "size": limit,
-                },
-            )
-            return [h.get("_source", {}) or {} for h in resp.get("hits", {}).get("hits", [])]
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Audit read for actor %s failed: %s", actor, exc)
-            return []
+        resp = await self._es.search(
+            AUDIT_READ_PATTERN,
+            {
+                "query": {"term": {"actor": actor}},
+                "sort": [{"ts": {"order": "desc"}}],
+                "size": limit,
+            },
+        )
+        return [h.get("_source", {}) or {} for h in resp.get("hits", {}).get("hits", [])]
 
     async def records(
         self,
@@ -215,7 +212,8 @@ class AuditLogger(AuditRepository):
     ) -> list[dict[str, Any]]:
         """Filtered, bounded listing of the append-only audit for the admin audit
         viewer (W7c). NEWEST first. A term/range bool query; absent filters are
-        omitted. Read-only on the management-scoped audit index; never raises.
+        omitted. Read-only on the management-scoped audit index. A read failure
+        RAISES, so no caller can mistake it for no rows.
 
         ``source_id`` (A5.3 coverage observability) filters to the append-only poll
         history of a single source (e.g. ``GET /api/audit?source_id=elk-a``)."""
@@ -240,19 +238,15 @@ class AuditLogger(AuditRepository):
         query: dict[str, Any] = (
             {"bool": {"filter": filters}} if filters else {"match_all": {}}
         )
-        try:
-            resp = await self._es.search(
-                AUDIT_READ_PATTERN,
-                {
-                    "query": query,
-                    "sort": [{"ts": {"order": "desc"}}],
-                    "size": limit,
-                },
-            )
-            return [h.get("_source", {}) or {} for h in resp.get("hits", {}).get("hits", [])]
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Audit records read failed: %s", exc)
-            return []
+        resp = await self._es.search(
+            AUDIT_READ_PATTERN,
+            {
+                "query": query,
+                "sort": [{"ts": {"order": "desc"}}],
+                "size": limit,
+            },
+        )
+        return [h.get("_source", {}) or {} for h in resp.get("hits", {}).get("hits", [])]
 
     # ------------------------------------------------------------------ #
     # Round 14 read API (SPEC §4.5.5)

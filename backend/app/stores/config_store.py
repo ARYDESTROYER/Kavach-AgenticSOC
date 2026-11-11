@@ -2,7 +2,9 @@
 
 Preferences are persisted as a single document. Load is tolerant of schema
 drift (Pydantic ignores unknown keys and fills defaults for missing ones), so
-upgrading the suite never breaks an existing config document.
+upgrading the suite never breaks an existing config document. Save keeps what this
+build does not model (:func:`app.preferences_roundtrip.preferences_document`), so a
+rollback to an older build and the return never erase a newer build's settings.
 """
 
 from __future__ import annotations
@@ -11,6 +13,7 @@ import logging
 
 from ..config import Preferences
 from ..constants import CONFIG_DOC_ID, CONFIG_INDEX
+from ..preferences_roundtrip import preferences_document
 from ..es.base import BaseESClient
 from .base import ConfigRepository
 
@@ -37,9 +40,19 @@ class ConfigStore(ConfigRepository):
 
     async def save(self, prefs: Preferences) -> None:
         # Full-document replace (not a partial update) so a removed nested
-        # preference key never leaves a stale value behind in Elasticsearch.
+        # preference key never leaves a stale value behind in Elasticsearch. The
+        # document keeps the stored keys this build does not model (and stored values
+        # it only clamped for its own use), so an older build never erases them. The
+        # read is strict: a failed read aborts the save (it raises, nothing is
+        # written), because a plain dump would erase exactly what the save keeps. A
+        # missing document (404) reads as None, a valid first save.
+        getter = getattr(self._es, "get_doc_strict", None) or self._es.get_doc
+        stored = await getter(CONFIG_INDEX, CONFIG_DOC_ID)
         await self._es.index_doc(
-            CONFIG_INDEX, prefs.model_dump(mode="json"), doc_id=CONFIG_DOC_ID, refresh=True
+            CONFIG_INDEX,
+            preferences_document(prefs, stored),
+            doc_id=CONFIG_DOC_ID,
+            refresh=True,
         )
 
     async def seed_rule_catalog(self, prefs: Preferences) -> Preferences:

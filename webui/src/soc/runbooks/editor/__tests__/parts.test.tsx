@@ -12,7 +12,7 @@ vi.mock('@/lib/api-runbooks', () => ({ testRunbookLookup: mocks.testRunbookLooku
 import type { RunbookDefinition } from '@/lib/types-runbooks';
 import { TooltipProvider } from '@/ui/tooltip';
 
-import { AnalystPreview, FILL_FAILED_TEXT, fillAnnouncement } from '../AnalystPreview';
+import { AnalystPreview, FALLBACK_GUIDANCE_TEXT, FILL_FAILED_TEXT, fillAnnouncement } from '../AnalystPreview';
 import { AppliesWhenEditor, MATCHING_HELP } from '../AppliesWhenEditor';
 import { addStep, changeKind, placeIssues, updateStep } from '../draft';
 import { GovernanceStrip } from '../GovernanceStrip';
@@ -366,6 +366,16 @@ describe('Preview as analyst', () => {
     wrap(<AnalystPreview defn={makeDefinition()} cases={[]} guidance={{ chars: 3_200, budget: 3_000 }} />);
     expect(screen.getByRole('meter', { name: 'Investigator guidance length' })).toHaveAttribute('aria-valuetext', '3,200 of 3,000 characters');
     expect(screen.getByText(/Over the budget/)).toBeInTheDocument();
+  });
+
+  it('says a fallback runbook is never given to the investigator instead of measuring it', () => {
+    const base = makeDefinition();
+    const fallback: RunbookDefinition = { ...base, applies_when: { ...base.applies_when, rule_ids: [], always: true } };
+    wrap(<AnalystPreview defn={fallback} cases={[]} guidance={{ chars: 1_353, budget: 3_000 }} />);
+    expect(screen.getByText(FALLBACK_GUIDANCE_TEXT)).toBeInTheDocument();
+    expect(screen.queryByRole('meter', { name: 'Investigator guidance length' })).not.toBeInTheDocument();
+    expect(screen.queryByText(/Investigator guidance:/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/The investigator reads/)).not.toBeInTheDocument();
   });
 });
 

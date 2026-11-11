@@ -800,9 +800,9 @@ See `docs/ENVIRONMENT.md` for the full detail. Summary:
 ## 7. Build / run / test cheatsheet
 
 ```bash
-# Backend tests (offline; MUST stay green). Latest recorded full run: 12,461 tests (see Journal for the exact current count)
+# Backend tests (offline; MUST stay green). Latest recorded full run: 12,554 tests (see Journal for the exact current count)
 cd backend && python3 -m venv .venv && . .venv/bin/activate && pip install -r requirements-dev.txt
-python -m pytest -q                         # -> latest recorded full run: 12,450 passed, 6 skipped, 5 sandbox-only env failures (see Journal)
+python -m pytest -q                         # -> latest recorded full run: 12,525 passed, 24 skipped, 5 sandbox-only env failures (see Journal)
 
 # Backend run locally (in-memory store, mock LLM if no keys)
 uvicorn app.main:app --port 8088
@@ -810,7 +810,7 @@ uvicorn app.main:app --port 8088
 # Web UI + installed Help Center build, tests, and lint (Node 22)
 cd webui && npm install && npm run build   # MkDocs bundle + tsc --noEmit + Vite -> webui/dist/
 npm run docs:check                         # validate app 0.1.13 ↔ bundled docs 0.1
-npm run test:strict                        # -> latest recorded full run: 8,576 passed, 1 skipped / 652 files; zero stderr/console output
+npm run test:strict                        # -> latest recorded full run: 8,578 passed, 1 skipped / 652 files; zero stderr/console output
 npm run lint                               # 0 errors, 0 warnings; jsx-a11y at error
 
 # Shipping backend acceptance also runs `python -m pip check` inside the final
@@ -872,8 +872,8 @@ cp .env.example .env   # set TLSOC_PG_PASSWORD + at least one LLM key
   `/api` proxy forwards arbitrary JSON). Keep `webui/src/lib/types.ts` in sync with
   `models.py`.
 - **Secrets:** env only; UI shows booleans (`configured ✓`) never values.
-- **Tests:** add/keep offline tests; `pytest -q` green (latest recorded full run: 12,450 passed, 6 skipped; 5 sandbox-only env failures) +
-  `npm run build` clean + `npm run test:strict` (latest recorded full run: 8,576 passed, 1 skipped / 652 files) +
+- **Tests:** add/keep offline tests; `pytest -q` green (latest recorded full run: 12,525 passed, 24 skipped; 5 sandbox-only env failures) +
+  `npm run build` clean + `npm run test:strict` (latest recorded full run: 8,578 passed, 1 skipped / 652 files) +
   `npm run lint` (0 errors, jsx-a11y at error) before
   every commit. (Counts rise each round — see `Journal.md` for the exact current totals.)
 - **Git:** active branch `Testing`. Commit focused changes; push when asked. The
@@ -881,7 +881,7 @@ cp .env.example .env   # set TLSOC_PG_PASSWORD + at least one LLM key
   Stable promotion. Keep the documented pull-request gates and the required
   `CI passed` aggregate enforced through repository settings; branch names alone
   do not prove acceptance.
-- **CI/CD acceptance (non-negotiable):** `.github/workflows/ci.yml` exposes eighteen
+- **CI/CD acceptance (non-negotiable):** `.github/workflows/ci.yml` exposes twenty
   independently diagnosable quality lanes plus the fail-closed `CI passed`
   aggregate. The aggregate must be required on both `Testing` and `main`, and the
   exact candidate must pass it on `Testing`, on the resulting `main` commit, and on
@@ -1056,9 +1056,10 @@ raw hex, chart ramps colour-vision separable, 364 login accent composites); `che
 drift (293 paths); `docs:check`, `check_version`, `check_ci_contract` (3 workflows, 3 shipping
 Dockerfiles), `check_docs` (84 pages) and `build_app_knowledge --check` (877 chunks) pass.
 
-**Current baseline (2026-11-06, Round 14, closing gates):** backend **12,450 pytest** passed, 6 skipped
-(5 sandbox-only environment failures, which pass with the sandbox's proxy and AWS variables unset);
-webui **8,576 Vitest** specs passed, 1 skipped (the dist-required case outside the build lane) / 652 files
+**Current baseline (2026-11-10, Round 14 follow-up fixes, integration gates):** backend **12,525 pytest**
+passed, 24 skipped (the PostgreSQL-only modules skip offline and run in the PostgreSQL lane; 5
+sandbox-only environment failures, which pass with the sandbox's proxy and AWS variables unset);
+webui **8,578 Vitest** specs passed, 1 skipped (the dist-required case outside the build lane) / 652 files
 with zero stderr or captured console output, full docs+app build clean (3,523 modules; entry chunk
 337,163 B, inside the +1,024 B budget over the recorded `PRE_REVAMP_ENTRY_BYTES` baseline
 336,216 B and under the 400,000 B ceiling;

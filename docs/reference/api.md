@@ -531,7 +531,13 @@ Demo Mode is on. Demo rows carry `demo: true` and a `record_id` that starts with
 
 **Records.** A `record_id` is opaque and names the store it came from. Every value is
 returned as stored, as plain text; `prompt_excerpt` and `tool_output_summary` carry
-fenced, untrusted log data. A row written before Round 14 has `outcome: null` (an
+fenced, untrusted log data. Every audit string is cleaned when the row is written: names,
+ids, labels and client fields lose control characters and are bounded (an actor to 160
+characters; an actor, target id or change field made only of such characters is stored
+as U+FFFD), and every other text, `tool_input` included, loses NUL characters. A lone
+UTF-16 surrogate is removed on write, and one stored by an older build is returned as
+U+FFFD. On PostgreSQL a row an older build stored with `\u0000` is read as if it had
+been cleaned, and is never rewritten. A row written before Round 14 has `outcome: null` (an
 access-denied row reads as denied and an error row as failed, with `outcome_derived:
 true`). `category`, `event_label`, `demo` and the `*_derived` flags are computed when the
 row is read and are not part of the stored record.

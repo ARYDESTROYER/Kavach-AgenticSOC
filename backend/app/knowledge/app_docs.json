@@ -1745,7 +1745,7 @@
    "page": "analyst/investigation.md",
    "anchor": "read-the-result-in-layers",
    "heading": "Read the result in layers",
-   "text": "Investigation inputs are projected from the **latest investigation run** only. The\nrunbook appears as an input only when the investigator actually received its guidance;\na runbook that was matched but never reached the investigator (the cheap router path,\nthe kill switch, a guidance budget) shows as **Selected only** in the Investigation\nview and never counts as an input. A case investigated before Round 14 keeps its stored\nprocedure id under **Runbook (before Round 14)**. If no applicable input was recorded,\nthe summary stays absent. If\nprovenance could not be read, the Console reports that limitation instead of treating\nit as a successful empty result.",
+   "text": "Investigation inputs are projected from the **latest investigation run** only. The\nrunbook appears as an input only when the investigator actually received its guidance;\na runbook that was matched but never reached the investigator (the Generic incident\nfallback, which is never given to it as guidance, the cheap router path, the kill switch,\na guidance budget) shows as **Selected only** in the Investigation view and never counts\nas an input. A case investigated before Round 14 keeps its stored procedure id under\n**Runbook (before Round 14)**. If no applicable input was recorded,\nthe summary stays absent. If\nprovenance could not be read, the Console reports that limitation instead of treating\nit as a successful empty result.",
    "console": []
   },
   {
@@ -3581,7 +3581,7 @@
    "page": "intelligence/runbooks.md",
    "anchor": "",
    "heading": "",
-   "text": "Runbooks are your team's step-by-step response procedures. The matching runbook is\nattached to each case that needs a person. Analysts work through it as a checklist; the AI\nruns the read-only lookups and can draft notes. A runbook never closes a case; your case\npolicy does that.\n\nOpen **Intelligence → Runbooks** to see the library. Every runbook is used in three places:\n\n- **The library and the editor**, where your team writes, reviews and publishes runbooks.\n- **The case**, where the matching runbook appears on the Runbook tab of Case detail and\n  Case Manager, with a Next step card on the Overview tab.\n- **The investigator**, which reads the published runbook that matches a cluster as\n  trusted guidance before it investigates, and the knowledge search, which indexes\n  published runbooks.\n\nThe library lists every runbook with where it came from (Built-in, Yours or Imported), the\nrules and techniques it applies to, its state, its phases and steps, its runs in the last 30\ndays and when its review is due. The figures above the list count runs, completed runs and\ncases with a runbook from your cases, so they need `cases:read`; without it they say so and\nthe rest of the page works. A figure that is still loading or could not be read says so\nrather than showing a number, and when a month of runs is too large to count in full the run\nfigures read \"at least\".",
+   "text": "Runbooks are your team's step-by-step response procedures. The matching runbook is\nattached to each case that needs a person. Analysts work through it as a checklist; the AI\nruns the read-only lookups and can draft notes. A runbook never closes a case; your case\npolicy does that.\n\nOpen **Intelligence → Runbooks** to see the library. Every runbook is used in three places:\n\n- **The library and the editor**, where your team writes, reviews and publishes runbooks.\n- **The case**, where the matching runbook appears on the Runbook tab of Case detail and\n  Case Manager, with a Next step card on the Overview tab.\n- **The investigator**, which reads the published runbook that specifically matches a\n  cluster as trusted guidance before it investigates, and the knowledge search, which\n  indexes published runbooks. The Generic incident fallback is never given to the\n  investigator as guidance.",
    "console": [
     "page:runbooks"
    ]
@@ -3591,7 +3591,7 @@
    "page": "intelligence/runbooks.md",
    "anchor": "",
    "heading": "",
-   "text": "Reading runbooks needs `runbooks:read`. Writing, sending for review, retiring and\nrestoring a version as a draft need `runbooks:manage`. Publishing, sending a version back\nto draft, restoring a retired runbook and marking a runbook reviewed need\n`runbooks:publish`. Working through a runbook on a case needs `runbooks:run`.",
+   "text": "The library lists every runbook with where it came from (Built-in, Yours or Imported), the\nrules and techniques it applies to, its state, its phases and steps, its runs in the last 30\ndays and when its review is due. The figures above the list count runs, completed runs and\ncases with a runbook from your cases, so they need `cases:read`; without it they say so and\nthe rest of the page works. A figure that is still loading or could not be read says so\nrather than showing a number, and when a month of runs is too large to count in full the run\nfigures read \"at least\".\n\nReading runbooks needs `runbooks:read`. Writing, sending for review, retiring and\nrestoring a version as a draft need `runbooks:manage`. Publishing, sending a version back\nto draft, restoring a retired runbook and marking a runbook reviewed need\n`runbooks:publish`. Working through a runbook on a case needs `runbooks:run`.",
    "console": [
     "page:runbooks"
    ]
@@ -3633,11 +3633,19 @@
    ]
   },
   {
+   "id": "intelligence/runbooks#the-fallback-and-the-investigator:0",
+   "page": "intelligence/runbooks.md",
+   "anchor": "the-fallback-and-the-investigator",
+   "heading": "The fallback and the investigator",
+   "text": "Only a specific match guides the investigator. When the fallback is all that matches, the\ncase records it (it shows as **Selected only** in the Investigation view) and it attaches\nfor people, but the investigator gets no runbook block and no extra searches from it (its\ntext stays in the knowledge search like any Published runbook): a checklist that matches\nevery case says nothing about this one, and as trusted guidance it pulled verdicts toward\nNEEDS_HUMAN. Guidance from a specific runbook can change the verdict the investigator\nreturns, and so which cases your policy closes automatically; turn **Guide the agent with\nthe matching runbook** off in Settings to give the investigator no runbook guidance, and\n**Use Published runbooks in retrieval** off as well to keep runbook text out of its\nknowledge search.",
+   "console": []
+  },
+  {
    "id": "intelligence/runbooks#writing-a-runbook:0",
    "page": "intelligence/runbooks.md",
    "anchor": "writing-a-runbook",
    "heading": "Writing a runbook",
-   "text": "In **Intelligence → Runbooks**, choose **New runbook**, or **Create a runbook** beside a\nrule in **Rules with no runbook**, which starts with that rule in Applies when. The editor\nhas three views of the same runbook:\n\n- **Edit** shows an outline of phases and steps beside the selected step's form. Add a step\n  by kind from **Add step**, add a phase from **Add phase**, and move a step by dragging it or\n  with Alt and the arrow keys. **Runbook details** at the top of the outline holds the title,\n  summary, use when, prerequisites, priority, owner, review cadence, the techniques the\n  runbook covers, search phrases and references (https links only).\n- **Preview as analyst** shows the Runbook tab as an analyst will see it before anyone\n  starts. **Fill with** a recent matching case resolves the lookup values from that case (a\n  screen reader hears when they arrive and which values the case does not have), and\n  the meter shows the investigator guidance against its budget, for example \"Investigator\n  guidance: 2,140 of 3,000 characters\".\n- **Source** shows the Markdown. Chips and front matter are the same fields; edit either, and\n  the outline follows as you type.",
+   "text": "In **Intelligence → Runbooks**, choose **New runbook**, or **Create a runbook** beside a\nrule in **Rules with no runbook**, which starts with that rule in Applies when. The editor\nhas three views of the same runbook:\n\n- **Edit** shows an outline of phases and steps beside the selected step's form. Add a step\n  by kind from **Add step**, add a phase from **Add phase**, and move a step by dragging it or\n  with Alt and the arrow keys. **Runbook details** at the top of the outline holds the title,\n  summary, use when, prerequisites, priority, owner, review cadence, the techniques the\n  runbook covers, search phrases and references (https links only).\n- **Preview as analyst** shows the Runbook tab as an analyst will see it before anyone\n  starts. **Fill with** a recent matching case resolves the lookup values from that case (a\n  screen reader hears when they arrive and which values the case does not have), and\n  the meter shows the investigator guidance against its budget, for example \"Investigator\n  guidance: 2,140 of 3,000 characters\". A fallback runbook shows no meter: it is a\n  checklist for people and the investigator is never given it as guidance.\n- **Source** shows the Markdown. Chips and front matter are the same fields; edit either, and\n  the outline follows as you type.",
    "console": [
     "page:runbooks"
    ]
@@ -3935,10 +3943,11 @@
    "page": "administration/settings.md",
    "anchor": "sections-new-or-moved-in-this-release",
    "heading": "Sections new or moved in this release",
-   "text": "- **General → Discounted inference** moved here from the Jobs page. It holds the live\n  Flex preference for compatible alert investigations, its standard fallback, and the\n  optional asynchronous Batch queue. Anyone who can read models can open it. It saves\n  with the rest of Settings, so changing it needs the settings management permission;\n  on the Jobs page it saved on its own and needed model management. Every built-in\n  role holds both permissions or neither, so only a custom role that holds one without\n  the other notices. Without settings management the section is read-only. The usage ledger\n  records the tier each call actually used, and neither path changes a verdict or a case\n  decision.\n- **Integrations → Runbooks** holds every runbook setting: whether runbooks are on, a\n  link to the runbook library, attaching the matching runbook to a case and the\n  **Generic incident** fallback, guiding the agent with the matching runbook, using\n  Published runbooks in retrieval, the two AI help offers (**Suggest a runbook** and\n  **Draft note** on Check steps, each one model call in the cost ledger), and the\n  publishing rules (the publisher must differ from the author, step approvals, and the\n  review interval for new runbooks, from 30 to 730 days). Only Published runbook text is\n  trusted, and a runbook never closes or escalates a case. **Knowledge & threat",
+   "text": "- **General → Discounted inference** moved here from the Jobs page. It holds the live\n  Flex preference for compatible alert investigations, its standard fallback, and the\n  optional asynchronous Batch queue. Anyone who can read models can open it. It saves\n  with the rest of Settings, so changing it needs the settings management permission;\n  on the Jobs page it saved on its own and needed model management. Every built-in\n  role holds both permissions or neither, so only a custom role that holds one without\n  the other notices. Without settings management the section is read-only. The usage ledger\n  records the tier each call actually used, and neither path changes a verdict or a case\n  decision.\n- **Integrations → Runbooks** holds every runbook setting: whether runbooks are on, a\n  link to the runbook library, attaching the matching runbook to a case and the\n  **Generic incident** fallback (a checklist for people, never given to the agent as\n  guidance), guiding the agent with the runbook that specifically matches a case, using\n  Published runbooks in retrieval, the two AI help offers (**Suggest a runbook** and\n  **Draft note** on Check steps, each one model call in the cost ledger), and the\n  publishing rules (the publisher must differ from the author, step approvals, and the\n  review interval for new runbooks, from 30 to 730 days). Only Published runbook text is",
    "console": [
     "settings:discounted-inference",
     "settings:runbooks",
+    "settings:knowledge.knowledge-rag",
     "settings:general",
     "settings:account_security",
     "settings:case_policy",
@@ -3953,10 +3962,11 @@
    "page": "administration/settings.md",
    "anchor": "sections-new-or-moved-in-this-release",
    "heading": "Sections new or moved in this release",
-   "text": "context → Retrieval** shows whether Published runbooks are in retrieval and links\n  here. See Runbooks.\n- **General → Data scope** starts with **Connected sources**, one row that shows how\n  many sources are enabled (\"5 of 5 enabled\") and opens the Sources page.\n- **Account → Security & two-factor** is one row, **Two-factor authentication**, with\n  its state (On or Off) and a **Turn on** (or **Turn off**) button; the enrollment or\n  turn-off steps open under the row and **Cancel** closes them. The last enrollment step\n  is **Verify and turn on**. **Profile** shows the same state with a **Turn on** (or\n  **Manage**) button that opens this section.\n- **General → SLA, priority & suppression** shows one row per priority in one panel,\n  each with its respond and resolve minutes and a plain reading (for example \"P1\n  Critical: respond within 15 minutes, resolve within 4 hours\"), followed by the clock\n  settings.\n- **Organization → All settings** shows every schema key with readable labels: group\n  titles in sentence case, and known acronyms stay in upper case (IP, URL, ID, TTL,\n  SLA, RAG).\n- **Security & access → Single sign-on & policy** lists each OIDC provider as a group\n  of labelled rows (display name, client ID, the client secret, allowed domains and\n  tenants, the group claim, the default role, the group to role map, account creation",
+   "text": "trusted, and a runbook never closes or escalates a case, although guidance can change\n  the verdict the agent returns. **Knowledge & threat context → Retrieval** shows\n  whether Published runbooks are in retrieval and links here. See Runbooks.\n- **General → Data scope** starts with **Connected sources**, one row that shows how\n  many sources are enabled (\"5 of 5 enabled\") and opens the Sources page.\n- **Account → Security & two-factor** is one row, **Two-factor authentication**, with\n  its state (On or Off) and a **Turn on** (or **Turn off**) button; the enrollment or\n  turn-off steps open under the row and **Cancel** closes them. The last enrollment step\n  is **Verify and turn on**. **Profile** shows the same state with a **Turn on** (or\n  **Manage**) button that opens this section.\n- **General → SLA, priority & suppression** shows one row per priority in one panel,\n  each with its respond and resolve minutes and a plain reading (for example \"P1\n  Critical: respond within 15 minutes, resolve within 4 hours\"), followed by the clock\n  settings.\n- **Organization → All settings** shows every schema key with readable labels: group\n  titles in sentence case, and known acronyms stay in upper case (IP, URL, ID, TTL,\n  SLA, RAG).\n- **Security & access → Single sign-on & policy** lists each OIDC provider as a group",
    "console": [
     "settings:discounted-inference",
     "settings:runbooks",
+    "settings:knowledge.knowledge-rag",
     "settings:general",
     "settings:account_security",
     "settings:case_policy",
@@ -3971,10 +3981,11 @@
    "page": "administration/settings.md",
    "anchor": "sections-new-or-moved-in-this-release",
    "heading": "Sections new or moved in this release",
-   "text": "and the callback URL to register). Allowed domains and tenants are lists: press Enter,\n  a comma or a space to add each one, and a pasted list becomes one entry per item. A\n  group to role map line that does not read as `group=role` with one of the six roles is\n  reported when you leave the field and is not saved; the text stays as you typed it. The\n  client secret is saved on its own with **Save secret**; only whether one is set ever\n  comes back, and a failed save keeps what you typed so you can try again. The session\n  policy ends with an\n  **Access tokens** group whose one value is not enforced in this version.\n- **Security & access → Roles & permissions** says **Role-based access is off** while\n  it is: every signed-in account then counts as Super admin. It is turned on through\n  the settings API (`rbac.enabled`); there is no switch for it in the Console.\n- **Security & access → Users**: **Change roles** keeps only custom roles that still\n  exist. A custom role deleted after it was assigned grants nothing; the dialog names it\n  and removes it from the account when you save.",
+   "text": "of labelled rows (display name, client ID, the client secret, allowed domains and\n  tenants, the group claim, the default role, the group to role map, account creation\n  and the callback URL to register). Allowed domains and tenants are lists: press Enter,\n  a comma or a space to add each one, and a pasted list becomes one entry per item. A\n  group to role map line that does not read as `group=role` with one of the six roles is\n  reported when you leave the field and is not saved; the text stays as you typed it. The\n  client secret is saved on its own with **Save secret**; only whether one is set ever\n  comes back, and a failed save keeps what you typed so you can try again. The session\n  policy ends with an\n  **Access tokens** group whose one value is not enforced in this version.\n- **Security & access → Roles & permissions** says **Role-based access is off** while\n  it is: every signed-in account then counts as Super admin. It is turned on through\n  the settings API (`rbac.enabled`); there is no switch for it in the Console.\n- **Security & access → Users**: **Change roles** keeps only custom roles that still\n  exist. A custom role deleted after it was assigned grants nothing; the dialog names it\n  and removes it from the account when you save.",
    "console": [
     "settings:discounted-inference",
     "settings:runbooks",
+    "settings:knowledge.knowledge-rag",
     "settings:general",
     "settings:account_security",
     "settings:case_policy",
@@ -4365,7 +4376,7 @@
    "page": "administration/audit-log.md",
    "anchor": "the-record",
    "heading": "The record",
-   "text": "**Copy link** copies the address of this record with the page's filters. When a change was\nrecorded but its save then failed, the record says \"Not applied (see the next record)\":\nthe failure row that follows it in time has the same request id, and **see the next\nrecord** opens it. A link to a record that is not in the current store says \"This record is\nnot in the current store.\"; one that could not be read offers **Retry**.\n\nEvery value is shown as plain text, exactly as stored.",
+   "text": "**Copy link** copies the address of this record with the page's filters. When a change was\nrecorded but its save then failed, the record says \"Not applied (see the next record)\":\nthe failure row that follows it in time has the same request id, and **see the next\nrecord** opens it. A link to a record that is not in the current store says \"This record is\nnot in the current store.\"; one that could not be read offers **Retry**.\n\nEvery value is shown as plain text, exactly as stored. Values are cleaned when a row is\nwritten: names, ids and labels lose control characters (an actor keeps at most 160\ncharacters, and a name made only of such characters is recorded as U+FFFD), and\nsummaries, queries and tool input lose NUL characters, so what was attempted is still\nrecorded without them. A lone surrogate that an older build stored is\nshown as U+FFFD.",
    "console": []
   },
   {
@@ -5732,7 +5743,7 @@
    "page": "operations/background-jobs.md",
    "anchor": "capacity-and-retention",
    "heading": "Capacity and retention",
-   "text": "The registry retains at most 1,000 jobs and never evicts active work to make room. It\nalso bounds active canonical parameters to 8 MiB in aggregate. Large Knowledge imports\nare pre-bounded in the Console (up to 20 documents, with aggregate UTF-8 headroom), but\nconcurrent active work can still make the server return a capacity error. Retry later\nwith the same intent key if admission was ambiguous; submit a new intent only when the\nprevious result is conclusive.\n\nTerminal jobs compact large inputs and per-item maps. The retained record is designed\nfor status, counts, bounded failures, result navigation, and audit correlation, not as a\ncopy of every submitted document or case ID.",
+   "text": "The registry retains at most 1,000 jobs and never evicts active work to make room. It\nalso bounds active canonical parameters to 8 MiB in aggregate. Large Knowledge imports\nare pre-bounded in the Console (up to 20 documents, with aggregate UTF-8 headroom), but\nconcurrent active work can still make the server return a capacity error. Retry later\nwith the same intent key if admission was ambiguous; submit a new intent only when the\nprevious result is conclusive.\n\nTerminal jobs compact large inputs and per-item maps. The retained record is designed\nfor status, counts, bounded failures, result navigation, and audit correlation, not as a\ncopy of every submitted document or case ID.\n\nA record of a job kind this build does not know (one a newer release wrote, found after\nan image-only rollback) is kept exactly as stored. This build never runs, lists or\ncancels it, protects its result file from cleanup, counts it toward the 1,000-job\ncapacity and prunes it like any other record once its status is terminal; a factory\nreset clears it. Only a corrupt record (not an object, or missing its id, kind, status\nor creation time) makes the registry unreadable, and startup then enters factory-reset\nsafe-stop as before.",
    "console": []
   },
   {
@@ -6246,7 +6257,7 @@
    "page": "operations/upgrades.md",
    "anchor": "round-14-changes",
    "heading": "Round 14 changes",
-   "text": "which is recorded; it never blocks the close.\n- **Settings keys from earlier versions.** `playbooks.enabled: false` becomes\n  `runbooks.investigator_guidance: false`; the earlier `runbooks.enabled: false` (stop\n  reference runbook retrieval) and `rag.use_runbooks: false` become\n  `runbooks.rag_corpus: false`. The new `runbooks.enabled` is always on after the\n  upgrade. See Configuration.\n- **Permissions.** Stored grants and denies that name `playbooks` keep working in every\n  layer (role overrides, the resource layer, denies and custom roles) and are read as\n  `runbooks`: `playbooks:manage` also gives the new `runbooks:publish`, and a stored\n  `runbooks:manage` grant gains `runbooks:publish` once (a stored deny of manage denies\n  publish too), so no role loses or gains the ability to make runbook text trusted.\n  After the first load, a `runbooks` entry wins over a `playbooks` key kept beside it.\n  `runbooks:run` is new and granted to every built-in role except auditor, and\n  `audit:export` is new for super admin, SOC manager and auditor. See\n  Permissions.\n- **Discounted inference moved.** The Flex and Batch policy is now in **Settings →\n  General → Discounted inference** and saves with Settings, so it needs\n  `settings:manage` (on the Jobs page it needed `models:manage`). Every built-in role\n  holds both grants or neither.",
+   "text": "which is recorded; it never blocks the close.\n- **Runbooks can shift the verdict mix.** By default the investigator is also given the\n  Published runbook that specifically matches a case (its rules, techniques or other\n  conditions) as trusted guidance, with the runbook's search phrases. That text can\n  change the verdict the agent returns, and so which cases close automatically; the\n  close and escalate decision itself is unchanged. The Generic incident fallback is\n  never given to the investigator as guidance (no runbook block and no extra searches):\n  it is a checklist for people. A Round 14 Testing build did give it to the\n  investigator, and on a staging copy that moved about half of the FALSE_POSITIVE\n  verdicts to NEEDS_HUMAN. A case whose rules no specific runbook covers gets no runbook\n  guidance. Like every Published runbook, its text stays in the knowledge search while\n  `runbooks.rag_corpus` is on, so a case's own search can still return a passage of it.\n  To give the agent no runbook guidance, set `runbooks.investigator_guidance: false`\n  (**Guide the agent with the matching runbook** in Settings); to keep runbook text out\n  of its knowledge search as well, also set `runbooks.rag_corpus: false` (**Use\n  Published runbooks in retrieval**). The built-in Generic incident runbook is now",
    "console": [
     "page:runbooks",
     "settings:storage"
@@ -6257,7 +6268,7 @@
    "page": "operations/upgrades.md",
    "anchor": "round-14-changes",
    "heading": "Round 14 changes",
-   "text": "- **HTTP changes.** `GET /api/playbooks`, `GET /api/playbooks/{id}`,\n  `/api/playbooks/coverage` and `/api/playbooks/selection/{case_id}`, and `?shape=v1` on\n  `GET /api/runbooks` and `GET /api/runbooks/{id}`, answer from the runbook library in\n  the earlier shape for one release, with `Deprecation` headers. Every write of the\n  earlier shapes, including `POST /api/cases/{case_id}/run-playbook`, answers `410\n  runbooks_moved`: an old-shape write cannot be honoured without making unreviewed text\n  trusted. Update scripts to the `/api/runbooks` routes. See\n  Retired procedure routes.\n- **Automation rules that ran a procedure now attach a runbook.** A case-automation rule\n  with the action stored as `run_playbook` keeps its stored form, but it now attaches\n  the runbook its target became (at no model cost) instead of starting a new\n  investigation. A target that is unknown, a Draft or retired is skipped and recorded as\n  \"Runbook not attached\" (`run.attach_skipped`), and the rule list shows \"Needs a\n  runbook\" beside it.\n- **Audit log page.** The audit log is server-paged with three scopes; `GET /api/audit`\n  keeps every earlier parameter's meaning, but a call without `scope` now returns 100\n  rows by default and at most 200 per call (a larger `limit` is clamped, never refused),\n  with a `next_cursor`, instead of up to 500 at once. Audit exports are a new job kind\n  that needs `audit:export` and a fresh sign-in.\n- **Dashboards and navigation.** The landing page is unchanged. The navigation's\n  Overview entry now opens the Dashboards library, and the Automated scans page is gone\n  (`#/scans` opens Case Manager filtered to cases the agent closed).\n- **Sign-in notice.** The automatic sign-out notice no longer states how long the\n  session lasted; `/api/auth/me` still sends `lifetime_seconds` for API clients.",
+   "text": "version 2: two of its escalation lines name evidence of harm instead of conditions\n  most alerts meet.\n- **Settings keys from earlier versions.** `playbooks.enabled: false` becomes\n  `runbooks.investigator_guidance: false`; the earlier `runbooks.enabled: false` (stop\n  reference runbook retrieval) and `rag.use_runbooks: false` become\n  `runbooks.rag_corpus: false`. The new `runbooks.enabled` is always on after the\n  upgrade. See Configuration.\n- **Permissions.** Stored grants and denies that name `playbooks` keep working in every\n  layer (role overrides, the resource layer, denies and custom roles) and are read as\n  `runbooks`: `playbooks:manage` also gives the new `runbooks:publish`, and a stored\n  `runbooks:manage` grant gains `runbooks:publish` once (a stored deny of manage denies\n  publish too), so no role loses or gains the ability to make runbook text trusted.\n  After the first load, a `runbooks` entry wins over a `playbooks` key kept beside it.\n  `runbooks:run` is new and granted to every built-in role except auditor, and\n  `audit:export` is new for super admin, SOC manager and auditor. See\n  Permissions.\n- **Discounted inference moved.** The Flex and Batch policy is now in **Settings →\n  General → Discounted inference** and saves with Settings, so it needs\n  `settings:manage` (on the Jobs page it needed `models:manage`). Every built-in role",
    "console": [
     "page:runbooks",
     "settings:storage"
@@ -6268,7 +6279,7 @@
    "page": "operations/upgrades.md",
    "anchor": "round-14-changes",
    "heading": "Round 14 changes",
-   "text": "Applying the Round 14 audit template:\n\nOn an Elasticsearch state backend upgraded from an earlier build, run these before the\nRound 14 backend starts, with the management API key (its `manage_index_templates`\ncluster grant and `manage` on `tlsoc-agent-*` cover both calls). `ES_URL`, `ES_CA_CERT`\nand `TLSOC_ES_MGMT_API_KEY` stand for your cluster's URL, its CA file and the encoded\nmanagement key:\n\n```bash\ncurl --cacert \"$ES_CA_CERT\" -H \"Authorization: ApiKey $TLSOC_ES_MGMT_API_KEY\" \\\n  -X PUT \"$ES_URL/_index_template/tlsoc-agent-audit-template\" \\\n  -H 'Content-Type: application/json' \\\n  --data-binary @deploy/mappings/tlsoc-agent-audit.template.json\ncurl --cacert \"$ES_CA_CERT\" -H \"Authorization: ApiKey $TLSOC_ES_MGMT_API_KEY\" \\\n  -X POST \"$ES_URL/tlsoc-agent-audit/_rollover\"\n```\n\nThe first call replaces the stored audit template with the shipped one; the second makes\na new audit write index from it, so every row from then on is mapped with date detection\noff. Earlier indices keep their mapping.",
+   "text": "holds both grants or neither.\n- **HTTP changes.** `GET /api/playbooks`, `GET /api/playbooks/{id}`,\n  `/api/playbooks/coverage` and `/api/playbooks/selection/{case_id}`, and `?shape=v1` on\n  `GET /api/runbooks` and `GET /api/runbooks/{id}`, answer from the runbook library in\n  the earlier shape for one release, with `Deprecation` headers. Every write of the\n  earlier shapes, including `POST /api/cases/{case_id}/run-playbook`, answers `410\n  runbooks_moved`: an old-shape write cannot be honoured without making unreviewed text\n  trusted. Update scripts to the `/api/runbooks` routes. See\n  Retired procedure routes.\n- **Automation rules that ran a procedure now attach a runbook.** A case-automation rule\n  with the action stored as `run_playbook` keeps its stored form, but it now attaches\n  the runbook its target became (at no model cost) instead of starting a new\n  investigation. A target that is unknown, a Draft or retired is skipped and recorded as\n  \"Runbook not attached\" (`run.attach_skipped`), and the rule list shows \"Needs a\n  runbook\" beside it.\n- **Audit log page.** The audit log is server-paged with three scopes; `GET /api/audit`\n  keeps every earlier parameter's meaning, but a call without `scope` now returns 100\n  rows by default and at most 200 per call (a larger `limit` is clamped, never refused),\n  with a `next_cursor`, instead of up to 500 at once. Audit exports are a new job kind\n  that needs `audit:export` and a fresh sign-in.\n- **Dashboards and navigation.** The landing page is unchanged. The navigation's\n  Overview entry now opens the Dashboards library, and the Automated scans page is gone\n  (`#/scans` opens Case Manager filtered to cases the agent closed).\n- **Sign-in notice.** The automatic sign-out notice no longer states how long the\n  session lasted; `/api/auth/me` still sends `lifetime_seconds` for API clients.",
    "console": [
     "page:runbooks",
     "settings:storage"
@@ -6279,7 +6290,7 @@
    "page": "operations/upgrades.md",
    "anchor": "round-14-changes",
    "heading": "Round 14 changes",
-   "text": "**If Storage & retention is active.** Applying Storage & retention on Elasticsearch adds\nits lifecycle policy to this same template (the `index.lifecycle.name` and\n`index.lifecycle.rollover_alias` settings). The shipped file has no lifecycle settings,\nso the first call above drops them, and the index the rollover creates is not managed by\nthe policy. Look at the stored template before the first call:\n\n```bash\ncurl --cacert \"$ES_CA_CERT\" -H \"Authorization: ApiKey $TLSOC_ES_MGMT_API_KEY\" \\\n  \"$ES_URL/_index_template/tlsoc-agent-audit-template\"\n```\n\nIf its `template.settings` show a `lifecycle` entry, do one of these:\n\n- Keep the policy through the step: in a copy of the shipped file, add the two lifecycle\n  settings the stored template shows to `template.settings`, and send that copy in the\n  first call instead. With the policy Agentic SOC applies, the settings read:\n\n  ```json\n  \"settings\": {\n    \"number_of_shards\": 1,\n    \"number_of_replicas\": 0,\n    \"index.lifecycle.name\": \"tlsoc-agent-ledgers-hot-warm\",\n    \"index.lifecycle.rollover_alias\": \"tlsoc-agent-audit\"\n  }\n  ```",
+   "text": "Applying the Round 14 audit template:\n\nOn an Elasticsearch state backend upgraded from an earlier build, run these before the\nRound 14 backend starts, with the management API key (its `manage_index_templates`\ncluster grant and `manage` on `tlsoc-agent-*` cover both calls). `ES_URL`, `ES_CA_CERT`\nand `TLSOC_ES_MGMT_API_KEY` stand for your cluster's URL, its CA file and the encoded\nmanagement key:\n\n```bash\ncurl --cacert \"$ES_CA_CERT\" -H \"Authorization: ApiKey $TLSOC_ES_MGMT_API_KEY\" \\\n  -X PUT \"$ES_URL/_index_template/tlsoc-agent-audit-template\" \\\n  -H 'Content-Type: application/json' \\\n  --data-binary @deploy/mappings/tlsoc-agent-audit.template.json\ncurl --cacert \"$ES_CA_CERT\" -H \"Authorization: ApiKey $TLSOC_ES_MGMT_API_KEY\" \\\n  -X POST \"$ES_URL/tlsoc-agent-audit/_rollover\"\n```\n\nThe first call replaces the stored audit template with the shipped one; the second makes\na new audit write index from it, so every row from then on is mapped with date detection\noff. Earlier indices keep their mapping.",
    "console": [
     "page:runbooks",
     "settings:storage"
@@ -6287,6 +6298,17 @@
   },
   {
    "id": "operations/upgrades#round-14-changes:9",
+   "page": "operations/upgrades.md",
+   "anchor": "round-14-changes",
+   "heading": "Round 14 changes",
+   "text": "**If Storage & retention is active.** Applying Storage & retention on Elasticsearch adds\nits lifecycle policy to this same template (the `index.lifecycle.name` and\n`index.lifecycle.rollover_alias` settings). The shipped file has no lifecycle settings,\nso the first call above drops them, and the index the rollover creates is not managed by\nthe policy. Look at the stored template before the first call:\n\n```bash\ncurl --cacert \"$ES_CA_CERT\" -H \"Authorization: ApiKey $TLSOC_ES_MGMT_API_KEY\" \\\n  \"$ES_URL/_index_template/tlsoc-agent-audit-template\"\n```\n\nIf its `template.settings` show a `lifecycle` entry, do one of these:\n\n- Keep the policy through the step: in a copy of the shipped file, add the two lifecycle\n  settings the stored template shows to `template.settings`, and send that copy in the\n  first call instead. With the policy Agentic SOC applies, the settings read:\n\n  ```json\n  \"settings\": {\n    \"number_of_shards\": 1,\n    \"number_of_replicas\": 0,\n    \"index.lifecycle.name\": \"tlsoc-agent-ledgers-hot-warm\",\n    \"index.lifecycle.rollover_alias\": \"tlsoc-agent-audit\"\n  }\n  ```",
+   "console": [
+    "page:runbooks",
+    "settings:storage"
+   ]
+  },
+  {
+   "id": "operations/upgrades#round-14-changes:10",
    "page": "operations/upgrades.md",
    "anchor": "round-14-changes",
    "heading": "Round 14 changes",
@@ -6301,7 +6323,23 @@
    "page": "operations/upgrades.md",
    "anchor": "rolling-back-from-round-14",
    "heading": "Rolling back from Round 14",
-   "text": "An image-only rollback to a build before Round 14 keeps working, with these effects:\n\n- The stored procedure and reference runbook documents were never changed, so the\n  earlier build finds them as they were. Runbooks written or published in Round 14, and\n  runs on cases, stay in the store unused.\n- Stored `playbooks` grants and the `run_playbook` automation rules are read as before.\n  A `runbooks:publish` or `runbooks:run` grant means nothing to the earlier build.\n- New audit rows keep their extra fields; the earlier build ignores them.\n- Chat limits that Round 14 saved keep the lookup timeout (45 s), the stall timeout\n  (900 s) and the backend-wide limit (48 questions). Lookups at once and questions per\n  user read as 8 and 10, the earlier build's maximums, instead of 12. Set them by hand if\n  other values are wanted.",
+   "text": "A build before Round 14 predates the rollback forward-compatibility contract (see\nRollback), so three things it finds in Round 14 data break it. Check for\nthem on a copy of the data before an image-only rollback to such a build:",
+   "console": []
+  },
+  {
+   "id": "operations/upgrades#rolling-back-from-round-14:1",
+   "page": "operations/upgrades.md",
+   "anchor": "rolling-back-from-round-14",
+   "heading": "Rolling back from Round 14",
+   "text": "- **An audit export job puts it in safe-stop.** The earlier build cannot read a job\n  record of the `audit_export` kind, treats the whole job registry as corrupt and starts\n  in factory-reset safe-stop: every route, `/api/health/ready` included, answers\n  `503 factory_reset_in_progress`, and the container reports unhealthy. Read-only check\n  on PostgreSQL:\n  `SELECT j.value->>'kind', count(*) FROM kv, json_each(kv.value->'jobs') j WHERE kv.namespace='jobs' AND kv.key='jobs' GROUP BY 1;`.\n  There is no product way to remove such a record from the earlier build; removing it\n  by hand edits durable state and needs explicit approval.\n- **Its knowledge projection is refused.** The earlier build rebuilds 9 legacy runbook\n  chunks against the 51 `runbook-library:` chunks Round 14 wrote, refuses the projection\n  at the retention floor (`RAG projection REFUSED (retention_floor)`), serves no runbook\n  passage and re-embeds the corpus on every investigation. Lowering\n  `rag.min_projection_retention` to `0` on that build lets its projection through.\n  This needs a working settings API, so resolve the audit export safe-stop first. Set it\n  back to `0.5` (or the value it had) as soon as you return to Round 14 or later: the\n  value is kept in the shared preferences, and `0` leaves every knowledge source without\n  its retention floor.\n- **Its graceful stop drops runbook settings.** It rewrites the preferences document\n  from its own schema: every `runbooks.*` setting is removed, so after returning to\n  Round 14 they read as their defaults again. Note the values first (**Settings →\n  Integrations → Runbooks**) and set them again after the return.",
+   "console": []
+  },
+  {
+   "id": "operations/upgrades#rolling-back-from-round-14:2",
+   "page": "operations/upgrades.md",
+   "anchor": "rolling-back-from-round-14",
+   "heading": "Rolling back from Round 14",
+   "text": "Apart from those, an image-only rollback to a build before Round 14 keeps working,\nwith these effects:\n\n- The stored procedure and reference runbook documents were never changed, so the\n  earlier build finds them as they were. Runbooks written or published in Round 14, and\n  runs on cases, stay in the store unused.\n- Stored `playbooks` grants and the `run_playbook` automation rules are read as before.\n  A `runbooks:publish` or `runbooks:run` grant means nothing to the earlier build.\n- New audit rows keep their extra fields; the earlier build ignores them.\n- Chat limits that Round 14 saved keep the lookup timeout (45 s), the stall timeout\n  (900 s) and the backend-wide limit (48 questions). Lookups at once and questions per\n  user read as 8 and 10, the earlier build's maximums, instead of 12. Set them by hand if\n  other values are wanted.",
    "console": []
   },
   {
@@ -6390,7 +6428,31 @@
    "page": "operations/upgrades.md",
    "anchor": "rollback",
    "heading": "Rollback",
-   "text": "Rollback is not merely starting an older image. A newer version may have written state\nthat older code does not understand. Version 0.1 does not provide a general schema\nmigration framework. The v1 supervisor therefore accepts only signed plans whose\nmigration strategy is `none`, verifies a PostgreSQL custom-format backup before\nswitching, and retains it only for explicit break-glass recovery. Automatic in-flight,\ncancellation, and deliberate post-success rollback restore the prior application\nimages without rewriting PostgreSQL or discarding post-snapshot writes. Any release\nthat needs a schema migration is blocked from one-click installation and must follow\na release-specific manual procedure.\n\nStable fixes start on a focused branch from the affected source, merge into\n`Testing`, pass the same acceptance gate, and promote forward to `main` as a patch\nrelease. Emergency timing may shorten review, but it must not reverse the permanent\nTesting-to-Stable direction or patch only `main`.\n\nSee Version 0.1,\nDocumentation versions, and\nHealth, backup, and restore.",
+   "text": "Rollback is not merely starting an older image. A newer version may have written state\nthat older code does not understand. Version 0.1 does not provide a general schema\nmigration framework. The v1 supervisor therefore accepts only signed plans whose\nmigration strategy is `none`, verifies a PostgreSQL custom-format backup before\nswitching, and retains it only for explicit break-glass recovery. Automatic in-flight,\ncancellation, and deliberate post-success rollback restore the prior application\nimages without rewriting PostgreSQL or discarding post-snapshot writes. Any release\nthat needs a schema migration is blocked from one-click installation and must follow\na release-specific manual procedure.",
+   "console": []
+  },
+  {
+   "id": "operations/upgrades#rollback-forward-compatibility:0",
+   "page": "operations/upgrades.md",
+   "anchor": "rollback-forward-compatibility",
+   "heading": "Rollback forward compatibility",
+   "text": "From this build on, the running build tolerates and keeps what a newer build wrote, so\nthe release after it can be rolled back to it with an image-only rollback:",
+   "console": []
+  },
+  {
+   "id": "operations/upgrades#rollback-forward-compatibility:1",
+   "page": "operations/upgrades.md",
+   "anchor": "rollback-forward-compatibility",
+   "heading": "Rollback forward compatibility",
+   "text": "- **Jobs of an unknown kind.** A well-formed job record of a kind this build does not\n  know is kept exactly as stored through every registry write. It is never run, listed\n  or cancelled here, it counts toward the 1,000-job capacity, and it is pruned like any\n  other record once its status is terminal. It never puts startup into safe-stop; only a\n  corrupt record (not an object, or missing what makes it a job) still does.\n- **Preference keys it does not model.** A settings save keeps every stored key this\n  build does not model, at the top level and inside each settings section, and keeps a\n  stored value it only clamped for its own use (a chat limit above its ceiling) unless an\n  administrator changed that value. A migration stamp keeps only a newer build's valid\n  stamp; a malformed one is saved as the stamp this build set, so a once-only migration\n  does not run again on every load. A save whose read of the stored document fails\n  writes nothing rather than erase what it would have kept. Keys this build retired\n  on purpose (`playbooks.llm_select`) are not brought back. Items of a list (sources,\n  rules) are saved as this build models them.\n- **Intentional knowledge corpus migrations.** A release that replaces a knowledge\n  source's documents with a new document-id scheme records a marker (the KV namespace\n  `rag_corpus_migration`, one document per source naming its scheme and the schemes it\n  replaced). The projection guard reads it on either side of the migration: another\n  build's marked documents are replaced rather than counted as a shrink, so no\n  retention-floor refusal and no re-embedding on every investigation. A projection\n  reaching zero is still refused, and an unmarked shrink still trips the floor.",
+   "console": []
+  },
+  {
+   "id": "operations/upgrades#rollback-forward-compatibility:2",
+   "page": "operations/upgrades.md",
+   "anchor": "rollback-forward-compatibility",
+   "heading": "Rollback forward compatibility",
+   "text": "The CI rollback lane (`scripts/rollback_lane.py`) boots this release on PostgreSQL,\nwrites the data it introduces (an audit export job, the migrated runbook corpus, changed\n`runbooks.*` settings), then boots the previous release pinned in\n`scripts/rollback_previous_release.json` on that data and checks health, the corpus and\nthe settings, and finally boots this release again. A second scenario repeats the steps\nwith this release as the previous one and plants synthetic future data (an unknown job\nkind, unknown preference keys, a marker-identified corpus) that it must keep, so the lane\ngates this release's own forward contract whatever the pin is. When a release is cut, pin\nit as the previous release for the next one, and set `forward_contract` to `true` once\nthe pinned release carries this contract, so the pinned scenario plants that data too.\n\nStable fixes start on a focused branch from the affected source, merge into\n`Testing`, pass the same acceptance gate, and promote forward to `main` as a patch\nrelease. Emergency timing may shorten review, but it must not reverse the permanent\nTesting-to-Stable direction or patch only `main`.\n\nSee Version 0.1,\nDocumentation versions, and\nHealth, backup, and restore.",
    "console": []
   },
   {
@@ -6486,6 +6548,14 @@
    "console": []
   },
   {
+   "id": "operations/troubleshooting#the-audit-log-answers-could-not-be-read-on-postgresql:0",
+   "page": "operations/troubleshooting.md",
+   "anchor": "the-audit-log-answers-could-not-be-read-on-postgresql",
+   "heading": "The Audit log answers \"could not be read\" on PostgreSQL",
+   "text": "On a PostgreSQL state backend, an earlier build answered `503 audit_unavailable`\nfor People and settings, Agent activity, a search or a count over any time range that\nheld an audit row with a `\\u0000` in it, while All kept working. The account activity\nlist showed nothing. One failed sign-in with a NUL in the username was enough to write\nsuch a row.\n\nThe current build never writes one (audit text is cleaned on write, an account cannot be created with\nsuch a username, and a sign-in with one is an ordinary failed sign-in), and reads a row an older build stored as if it had been cleaned, without\nrewriting it. After upgrading, every scope reads again with no data change. To see\nwhether any such rows are stored, run this read-only check:\n\n```sql\nBEGIN TRANSACTION READ ONLY;\nSELECT count(*) FROM audit WHERE strpos(doc::text, '\\u0000') > 0;\nROLLBACK;\n```",
+   "console": []
+  },
+  {
    "id": "operations/troubleshooting#ui-is-blank-or-stale:0",
    "page": "operations/troubleshooting.md",
    "anchor": "ui-is-blank-or-stale",
@@ -6538,7 +6608,17 @@
    "page": "operations/troubleshooting.md",
    "anchor": "the-knowledge-corpus-is-empty-or-auto-close-has-stopped",
    "heading": "The knowledge corpus is empty, or auto-close has stopped",
-   "text": "A reconciliation warning (*\"the corpus holds N analyst-confirmed precedent documents\nbut the case history qualifies M records\"*) is the early warning for this failure. The\ncorpus is a projection of the case history, so a large divergence means the projection\nbroke, not that the history is small. Note that `N` is expected to be smaller than `M`\nwhenever `M` exceeds the precedent window size; only a large shortfall is reported.\n\nIf a rebuild legitimately produces a much smaller corpus (you disabled sources on\npurpose), lower `rag.min_projection_retention`, or set it to `0` to disable the ratio\nguard. A projection reaching **zero** is refused regardless; that is never a\nlegitimate rebuild of a non-empty corpus, and no setting changes that.\n\nNarrowing `precedent.window.size` to drop unwanted precedent is a shrink like any other\nand can therefore trip the same ratio floor. When the refusal is attributable to that\n(the precedent source shrank to within the new window while every other knowledge source\nheld steady), health reports it as a refused **window reduction** rather than as a corpus\nloss. Nothing was destroyed and the model provider is not implicated; lower\n`rag.min_projection_retention` to let the intended reduction through.",
+   "text": "A reconciliation warning (*\"the corpus holds N analyst-confirmed precedent documents\nbut the case history qualifies M records\"*) is the early warning for this failure. The\ncorpus is a projection of the case history, so a large divergence means the projection\nbroke, not that the history is small. Note that `N` is expected to be smaller than `M`\nwhenever `M` exceeds the precedent window size; only a large shortfall is reported.\n\nIf a rebuild legitimately produces a much smaller corpus (you disabled sources on\npurpose), lower `rag.min_projection_retention`, or set it to `0` to disable the ratio\nguard. A projection reaching **zero** is refused regardless; that is never a\nlegitimate rebuild of a non-empty corpus, and no setting changes that.\n\nA release that deliberately replaces a source's documents with a new document-id\nscheme records a corpus-migration marker (KV namespace `rag_corpus_migration`). With\nthat marker, a build on either side of the migration (after an upgrade, or after an\nimage-only rollback) replaces the other build's documents instead of refusing at the\nretention floor, and logs `RAG projection replaced a marked corpus migration` at INFO.\nA refusal at the retention floor right after a rollback to a build without markers\n(before this contract) is the corpus-migration case; see\nUpgrades.",
+   "console": [
+    "page:effectiveness"
+   ]
+  },
+  {
+   "id": "operations/troubleshooting#the-knowledge-corpus-is-empty-or-auto-close-has-stopped:3",
+   "page": "operations/troubleshooting.md",
+   "anchor": "the-knowledge-corpus-is-empty-or-auto-close-has-stopped",
+   "heading": "The knowledge corpus is empty, or auto-close has stopped",
+   "text": "Narrowing `precedent.window.size` to drop unwanted precedent is a shrink like any other\nand can therefore trip the same ratio floor. When the refusal is attributable to that\n(the precedent source shrank to within the new window while every other knowledge source\nheld steady), health reports it as a refused **window reduction** rather than as a corpus\nloss. Nothing was destroyed and the model provider is not implicated; lower\n`rag.min_projection_retention` to let the intended reduction through.",
    "console": [
     "page:effectiveness"
    ]
@@ -7258,11 +7338,19 @@
    "page": "reference/configuration.md",
    "anchor": "runbooks",
    "heading": "Runbooks",
-   "text": "`runbooks` holds the switches of the one Runbooks feature, edited under **Settings →\nIntegrations → Runbooks**. None of them changes a case decision.\n\n| Key | Default | Meaning |\n|---|---|---|\n| `enabled` | `true` | The feature: the library, runs on cases and investigator guidance. Off stops every run write (`409 runbook_state`) |\n| `auto_attach` | `true` | Attach the matching Published runbook to each case that needs a person |\n| `fallback` | `true` | Attach the Generic incident runbook when nothing else matches |\n| `investigator_guidance` | `true` | Give the matching Published runbook to the investigator as trusted, advisory guidance |\n| `rag_corpus` | `true` | Index Published runbooks for the knowledge search |\n| `ai_suggest` | `true` | Offer **Suggest a runbook** on a case (one metered model call per click) |\n| `ai_step_drafts` | `true` | Offer **Draft note** on a step (one metered model call per click) |\n| `require_distinct_approver` | `false` | Nobody who wrote or edited a version may publish it |\n| `step_approvals` | `false` | Honour the approver role an Action or Record step names |\n| `review_every_days_default` | 180 | Review cadence of a new operator runbook, 30 to 730 days |\n| `runbooks_config_version` | 1 | Internal marker of the one-time mapping below |",
+   "text": "`runbooks` holds the switches of the one Runbooks feature, edited under **Settings →\nIntegrations → Runbooks**. None of them changes the close or escalate decision: that is\nmade in code against the case policy, which never reads a runbook. Investigator guidance\ndoes change what the agent sees, so it can change the verdict the agent returns, and with\nit which cases the policy closes automatically.",
    "console": []
   },
   {
    "id": "reference/configuration#runbooks:1",
+   "page": "reference/configuration.md",
+   "anchor": "runbooks",
+   "heading": "Runbooks",
+   "text": "| Key | Default | Meaning |\n|---|---|---|\n| `enabled` | `true` | The feature: the library, runs on cases and investigator guidance. Off stops every run write (`409 runbook_state`) |\n| `auto_attach` | `true` | Attach the matching Published runbook to each case that needs a person |\n| `fallback` | `true` | Attach the Generic incident runbook when nothing else matches. It is a checklist for people and is never given to the investigator as guidance; while `rag_corpus` is on, its text stays in the knowledge search like any Published runbook |\n| `investigator_guidance` | `true` | Give the Published runbook that specifically matches a case (its rules, techniques or other conditions; never the Generic incident fallback) to the investigator as trusted, advisory guidance. `false` removes the runbook block and the runbook's search phrases from every investigation |\n| `rag_corpus` | `true` | Index Published runbooks for the knowledge search |\n| `ai_suggest` | `true` | Offer **Suggest a runbook** on a case (one metered model call per click) |\n| `ai_step_drafts` | `true` | Offer **Draft note** on a step (one metered model call per click) |\n| `require_distinct_approver` | `false` | Nobody who wrote or edited a version may publish it |\n| `step_approvals` | `false` | Honour the approver role an Action or Record step names |\n| `review_every_days_default` | 180 | Review cadence of a new operator runbook, 30 to 730 days |\n| `runbooks_config_version` | 1 | Internal marker of the one-time mapping below |",
+   "console": []
+  },
+  {
+   "id": "reference/configuration#runbooks:2",
    "page": "reference/configuration.md",
    "anchor": "runbooks",
    "heading": "Runbooks",
@@ -7979,6 +8067,14 @@
    "anchor": "rollback-loses-chat-and-thread-data",
    "heading": "Rollback loses chat and thread data",
    "text": "The current build adds a second, milder rollback loss on every backend: each new chat\nanswer is stored in full in its own exchange document, which older builds do not read.\nRolled back, they show each message's compact copy, so answers longer than 24,000\ncharacters end at that length and the oldest messages of long conversations appear as\npreviews or, past 140 messages, are not shown. Rolling forward restores them, except for\nconversations the older build trimmed to its own 100-message window in the meantime.\n\n**Required change:** a versioned, reversible data migration for KV documents, so a\nrollback can restore the form an older build reads.",
+   "console": []
+  },
+  {
+   "id": "releases/known-limitations#rolling-back-to-a-build-before-round-14-is-not-clean:0",
+   "page": "releases/known-limitations.md",
+   "anchor": "rolling-back-to-a-build-before-round-14-is-not-clean",
+   "heading": "Rolling back to a build before Round 14 is not clean",
+   "text": "Builds before Round 14 predate the rollback forward-compatibility contract. After an\nimage-only rollback to such a build, a stored `audit_export` job record puts it in\nfactory-reset safe-stop (every route answers `503 factory_reset_in_progress`), its\nknowledge projection is refused at the retention floor against the migrated runbook\ncorpus, and its graceful stop drops every `runbooks.*` setting. The checks and\nworkarounds are in Upgrades;\nif you lower `rag.min_projection_retention` to `0` on the earlier build, restore it after\nthe return, because the shared preferences keep it. From this build on, unknown job kinds, unknown preference keys and marked corpus\nmigrations are kept, and a CI lane boots the previous release on each candidate's data\n(Rollback forward compatibility).\n\n**Required change:** none for later releases; it cannot be fixed inside the earlier\nbuilds themselves.",
    "console": []
   },
   {

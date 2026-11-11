@@ -53,6 +53,7 @@ from ..audit.write import audited_write
 from ..auth.passwords import hash_password
 from ..constants import ActionType, UserRole
 from ..models import AuditChange, AuditTarget
+from ..stored_text import username_problem
 from ..state import AppState
 from .deps import get_state
 
@@ -152,6 +153,10 @@ async def setup_account(
     uname = (body.username or "").strip()
     if not uname:
         raise HTTPException(status_code=400, detail="username is required")
+    # The same rule as every account (no control character, at most 160 characters).
+    name_problem = username_problem(uname)
+    if name_problem is not None:
+        raise HTTPException(status_code=400, detail=name_problem)
 
     # 3) server-enforced strong-password policy (min length / != username / not common).
     policy_err = password_policy_error(body.password or "", uname)

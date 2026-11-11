@@ -303,10 +303,12 @@ export type RunAttachedBy = 'rule' | 'fallback' | 'person' | 'suggestion';
 /**
  * Why a runbook did or did not guide an investigation (`RunbookGuidance.status` in
  * `backend/app/agents/investigator.py`, read back through the case rationale):
- * `matched` (tier 1 to 3), `fallback` (the Generic incident runbook, tier 0),
- * `no_match`, `guidance_off` (investigator guidance turned off), `runbooks_off`,
- * `library_unavailable` (fail closed), `selection_failed` and `over_budget` (the
- * winner's guidance is over the 3,000 character budget, so it was not used).
+ * `matched` (tier 1 to 3, the only status whose guidance reaches the investigator),
+ * `fallback` (the Generic incident runbook, tier 0: chosen and attached for people,
+ * never given to the investigator), `no_match`, `guidance_off` (investigator guidance
+ * turned off), `runbooks_off`, `library_unavailable` (fail closed), `selection_failed`
+ * and `over_budget` (the winner's guidance is over the 3,000 character budget, so it
+ * was not used).
  */
 export type RunbookGuidanceStatus =
   | 'matched'

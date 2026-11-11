@@ -61,10 +61,18 @@ logger = logging.getLogger("tlsoc.agents.investigator")
 # draft, a version in review, a retired runbook or AI text (D39, #9). The guidance
 # can only inform the investigator: the close or escalate decision stays with
 # ``case_manager.decide()`` (#3), which never reads it.
+#
+# Only a specific match (tier 1 or higher) guides the investigator. The fallback (an
+# ``always`` runbook, tier 0, Generic incident by default) matches every case, so as
+# trusted guidance it shifted the verdict mix of every investigation away from
+# FALSE_POSITIVE. It is still chosen and recorded, and it still attaches to a case
+# that needs a person, but it gives the investigator no block and no retrieval
+# queries (``RunbookGuidance.selected`` is False).
 # --------------------------------------------------------------------------- #
 #: A runbook matched on its criteria (tier 1 to 3).
 GUIDANCE_MATCHED = "matched"
-#: Nothing else matched, so the Generic incident fallback was chosen (tier 0, D33).
+#: Nothing else matched, so the Generic incident fallback was chosen (tier 0, D33). It
+#: is a checklist for people: the investigator is not given it.
 GUIDANCE_FALLBACK = "fallback"
 #: No runbook matched (and the fallback is off or absent).
 GUIDANCE_NO_MATCH = "no_match"
@@ -99,6 +107,9 @@ _GUIDANCE_SENTENCES: dict[str, str] = {
     ),
 }
 
+#: Appended to the fallback's match sentence: why the investigator did not receive it.
+FALLBACK_NOT_GIVEN_SENTENCE = "It is a checklist for people and is not given to the investigator."
+
 
 @dataclass(frozen=True)
 class RunbookGuidance:
@@ -107,8 +118,9 @@ class RunbookGuidance:
     ``text`` is the investigator rendering (``runbook_model.render_runbook_prompt``)
     of the chosen version, within the budget, or ``None`` when no runbook guides this
     investigation (``status`` says why). ``runbook_id`` and ``version`` are set
-    whenever a runbook was matched, also when it was not used (``over_budget``), so
-    the audit trail names it."""
+    whenever a runbook was matched, also when it was not used (``over_budget``, or the
+    ``fallback``, which is never given to the investigator), so the audit trail names
+    it."""
 
     status: str
     runbook_id: str | None = None
@@ -152,8 +164,13 @@ class RunbookGuidance:
     @property
     def reason(self) -> str:
         """One plain sentence: why this runbook (or none) guides the investigation."""
-        if self.status in (GUIDANCE_MATCHED, GUIDANCE_FALLBACK):
+        if self.status == GUIDANCE_MATCHED:
             return describe_explanation(self.explanation, tied=self.tied)
+        if self.status == GUIDANCE_FALLBACK:
+            return (
+                f"{describe_explanation(self.explanation, tied=self.tied)} "
+                f"{FALLBACK_NOT_GIVEN_SENTENCE}"
+            )
         return _GUIDANCE_SENTENCES.get(self.status, _GUIDANCE_SENTENCES[GUIDANCE_NO_MATCH])
 
     def selection_payload(self) -> dict[str, Any] | None:
@@ -198,7 +215,12 @@ def select_investigator_runbook(
     yet, leaves them pending. Before an investigation the verdict and status are not
     known yet, and a cluster carries no technique, so those criteria are pending
     (``runbook_match``): a runbook that names rules is chosen on its rules, and the
-    rest is checked again when the case is evaluated after the verdict (D43)."""
+    rest is checked again when the case is evaluated after the verdict (D43).
+
+    When the winner is the fallback (tier 0), it is named and explained but not given
+    to the investigator (``status`` ``fallback``, ``text`` ``None``, no retrieval
+    queries): a checklist that matches every case is not evidence about this one. It
+    still attaches to the case after the verdict, for people (``auto_attach``)."""
     cfg = getattr(prefs, "runbooks", None)
     if cfg is not None and not getattr(cfg, "enabled", True):
         return RunbookGuidance.none(GUIDANCE_RUNBOOKS_OFF)
@@ -216,10 +238,22 @@ def select_investigator_runbook(
     winner, explanation = result.winner, result.explanation
     if winner is None or explanation is None:
         return RunbookGuidance.none(GUIDANCE_NO_MATCH)
-    status = GUIDANCE_FALLBACK if explanation.tier == 0 else GUIDANCE_MATCHED
+    if explanation.tier == 0:
+        # The fallback: recorded on the ``runbook.selected`` row (``used`` false) so
+        # the case says which runbook people get, but no prompt text and no
+        # ``runbook:1..n`` retrieval groups reach the investigator.
+        return RunbookGuidance(
+            status=GUIDANCE_FALLBACK,
+            runbook_id=winner.id,
+            version=winner.version,
+            title=winner.title,
+            origin=winner.origin,
+            explanation=explanation,
+            tied=len(result.tied),
+        )
     text = render_runbook_prompt(winner.definition, winner.version)
     base = RunbookGuidance(
-        status=status,
+        status=GUIDANCE_MATCHED,
         runbook_id=winner.id,
         version=winner.version,
         title=winner.title,
