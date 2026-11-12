@@ -108,6 +108,15 @@ exclude_docs: |
   VIGIL_STUDY.md
   requirements.txt
   research/
+  # Screenshots used only by the repository README.md and INSTALL.md, kept out
+  # of the bundled Help Center and so out of the Console image.
+  assets/screenshots/audit-log.webp
+  assets/screenshots/dashboards-library.webp
+  assets/screenshots/runbooks.webp
+  assets/screenshots/settings-models.webp
+  assets/screenshots/users-add-user.webp
+  assets/screenshots/users-rbac.webp
+  assets/screenshots/workspace-chat.webp
 
 nav:
   - Use the product:

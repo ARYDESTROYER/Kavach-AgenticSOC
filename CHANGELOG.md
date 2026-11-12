@@ -12,6 +12,33 @@ History is reconstructed from `git log`.
 
 ## [Unreleased]
 
+### Documentation refresh
+
+Documentation only. No code, configuration default, wire identifier, dependency or release
+identity changes, and the version stays 0.1.13.
+
+- `README.md` is rewritten as the repository landing page: what the product is and is not,
+  key capabilities, a screenshot gallery, a system architecture diagram with a numbered
+  walk-through, the deployment topology, the safety model mapped to the 12 non-negotiables,
+  supported sources, a demo quick start, an installation summary, configuration layers,
+  release channels, the documentation map and the license status. The history of failed
+  release tags moves out of the README into the linked release pages.
+- New root `INSTALL.md`: a step-by-step installation guide for five paths (workstation demo,
+  the reference Compose stack, production hardening, attaching to an existing Elastic stack
+  and running from source). It shows every first-run screen (first administrator, sign-in and
+  the four setup stages) with numbered highlights, real health-check output, updates,
+  uninstall and troubleshooting.
+- New documentation assets: 25 real Console screenshots in `docs/assets/screenshots/`, taken
+  on a fresh first-run install and on the seeded demo, and hand-drawn light and dark SVG
+  diagrams of the system data flow and the Compose deployment in `docs/assets/architecture/`.
+- Help Center: the Install, First-run setup, Quickstart and Architecture pages use the same
+  screenshots and diagrams (offline, one select opens each full size), and the generated chat
+  knowledge corpus is regenerated from them. Seven screenshots that only the repository
+  README and INSTALL use are excluded from the bundled Help Center, so they do not enlarge
+  the Console image.
+- The guides record a known 0.1.13 Console issue: in the source editor, a required index
+  pattern that shows its default must be typed again before **Add source** accepts it.
+
 ### Round 14 follow-up fixes
 
 Three bugs a staging rehearsal of Round 14 found. `decide()` is unchanged, no wire identifier

@@ -1,0 +1,240 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="1100" viewBox="0 0 1200 1100" role="img" aria-labelledby="title desc" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif"><title id="title">Agentic SOC architecture and data flow</title><desc id="desc">Logical architecture of Agentic SOC in eleven numbered stages. Security sources (SIEM and log stores, EDR and XDR alerts, queues and streams, object stores and files) sit inside an untrusted-data fence. 1 Connectors: three read-only pull connectors (Elasticsearch, OpenSearch, Wazuh indexer) and sixteen push, queue and object-store receivers. 2 Normalise every record to the OCSF 1.4 event model, keeping provenance; unmapped and raw_data fields stay untrusted. 3 Poll and ingest with a durable cursor per feed, no skip and no duplicate. 4 Deterministic entity correlation, case signatures and a 0 to 100 risk score. 5 Admission gates: the routing risk gate and the budget and cost gate. 6 AI investigation: router, investigator with read-only tools (log query, Redis-cached enrichment, knowledge retrieval, Published runbooks, MITRE ATT&amp;CK context) and formatter; source-derived evidence enters prompts fenced as untrusted data. 7 One model gateway carries every model call to the model providers and writes the usage and cost ledger. 8 The deterministic Case Manager runs decide() against the operator's AutoClosePolicy: close, escalate or needs human; the model only recommends. 9 Cases, collaboration, background jobs and the append-only audit log. 10 The Console and API, Workspace Chat (one engine, read-only tools, metered through the gateway) and analysts. 11 The state store: PostgreSQL with pgvector, Elasticsearch or SQLite.</desc><defs><marker id="ah" viewBox="0 0 10 10" refX="9.5" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto"><path d="M0,0.8 L10,5 L0,9.2 z" fill="#59636e"/></marker><marker id="ahs" viewBox="0 0 10 10" refX="0.5" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto"><path d="M10,0.8 L0,5 L10,9.2 z" fill="#59636e"/></marker></defs><rect x="0.5" y="0.5" width="1199" height="1099" rx="14" fill="#ffffff" stroke="#d1d9e0"/><text x="32" y="42" font-size="22" fill="#1f2328" font-weight="600">Agentic SOC architecture and data flow</text>
+<text x="32" y="66" font-size="13.5" fill="#59636e">Numbered stages follow one security signal from a source to a reviewed case. Code decides; the model only recommends.</text>
+<rect x="20" y="86" width="1160" height="266" rx="12" fill="#f6f8fa" stroke="#e3e8ee" stroke-width="1"/>
+<rect x="20" y="388" width="1160" height="316" rx="12" fill="#f6f8fa" stroke="#e3e8ee" stroke-width="1"/>
+<rect x="20" y="740" width="1160" height="212" rx="12" fill="#f6f8fa" stroke="#e3e8ee" stroke-width="1"/>
+<text x="1164" y="106" font-size="12" text-anchor="end"><tspan font-weight="600" fill="#1f2328">Deterministic data plane</tspan><tspan fill="#59636e">   every enabled event, no model calls</tspan></text>
+<rect x="32" y="122" width="210" height="218" rx="10" fill="#fff4ec" stroke="#c25200" stroke-width="1.4" stroke-dasharray="6 4"/>
+<text x="44" y="141" font-size="11.5" fill="#a84600" font-weight="600">Untrusted source data</text>
+<rect x="42" y="152" width="190" height="40" rx="6" fill="#ffffff" stroke="#818b98" stroke-width="1"/>
+<text x="54" y="169" font-size="12.5" fill="#1f2328" font-weight="600">SIEM and log stores</text>
+<text x="54" y="185" font-size="11.5" fill="#59636e">Elastic, OpenSearch, Wazuh</text>
+<rect x="42" y="198" width="190" height="40" rx="6" fill="#ffffff" stroke="#818b98" stroke-width="1"/>
+<text x="54" y="215" font-size="12.5" fill="#1f2328" font-weight="600">EDR, XDR and apps</text>
+<text x="54" y="231" font-size="11.5" fill="#59636e">webhook, Splunk HEC, syslog</text>
+<rect x="42" y="244" width="190" height="40" rx="6" fill="#ffffff" stroke="#818b98" stroke-width="1"/>
+<text x="54" y="261" font-size="12.5" fill="#1f2328" font-weight="600">Queues and streams</text>
+<text x="54" y="277" font-size="11.5" fill="#59636e">Kafka, SQS, Pub/Sub, NATS</text>
+<rect x="42" y="290" width="190" height="40" rx="6" fill="#ffffff" stroke="#818b98" stroke-width="1"/>
+<text x="54" y="307" font-size="12.5" fill="#1f2328" font-weight="600">Object stores and files</text>
+<text x="54" y="323" font-size="11.5" fill="#59636e">S3, GCS, Azure Blob, files</text>
+<rect x="272" y="122" width="214" height="218" rx="10" fill="#eaf3fa" stroke="#0072b2" stroke-width="1.25"/>
+<circle cx="291" cy="144" r="11" fill="#1f2328"/>
+<text x="291" y="148.2" font-size="12" font-weight="700" text-anchor="middle" fill="#ffffff">1</text>
+<text x="309" y="149" font-size="14" fill="#1f2328" font-weight="600">Connectors</text>
+<rect x="284" y="162" width="190" height="76" rx="6" fill="#ffffff" stroke="#0072b2" stroke-width="1"/>
+<text x="296" y="180" font-size="12.5" fill="#1f2328" font-weight="600">Pull connectors (3)</text>
+<text x="296" y="197" font-size="11.5" fill="#59636e">Elasticsearch, OpenSearch,</text>
+<text x="296" y="212" font-size="11.5" fill="#59636e">Wazuh indexer</text>
+<text x="296" y="227" font-size="11.5" fill="#59636e">read-only, scoped key</text>
+<rect x="284" y="248" width="190" height="82" rx="6" fill="#ffffff" stroke="#0072b2" stroke-width="1"/>
+<text x="296" y="266" font-size="12.5" fill="#1f2328" font-weight="600">Receivers (16)</text>
+<text x="296" y="283" font-size="11.5" fill="#59636e">webhook, HEC, syslog, file</text>
+<text x="296" y="298" font-size="11.5" fill="#59636e">Kafka, SQS, Pub/Sub, NATS</text>
+<text x="296" y="313" font-size="11.5" fill="#59636e">S3, GCS, Azure Blob, more</text>
+<path d="M232,178 H284" fill="none" stroke="#59636e" stroke-width="1.5" stroke-linejoin="round" marker-end="url(#ah)"/>
+<path d="M232,218 H256 M232,264 H256 M232,310 H256 M256,218 V310" fill="none" stroke="#59636e" stroke-width="1.5" stroke-linejoin="round"/>
+<path d="M256,289 H284" fill="none" stroke="#59636e" stroke-width="1.5" stroke-linejoin="round" marker-end="url(#ah)"/>
+<rect x="516" y="160" width="196" height="144" rx="10" fill="#eaf3fa" stroke="#0072b2" stroke-width="1.25"/>
+<circle cx="535" cy="182" r="11" fill="#1f2328"/>
+<text x="535" y="186.2" font-size="12" font-weight="700" text-anchor="middle" fill="#ffffff">2</text>
+<text x="553" y="187" font-size="14" fill="#1f2328" font-weight="600">Normalise to OCSF</text>
+<text x="528" y="210" font-size="12" fill="#59636e">Canonical OCSF 1.4 events</text>
+<text x="528" y="226" font-size="12" fill="#59636e">with source provenance</text>
+<text x="528" y="242" font-size="12" fill="#59636e">unmapped, raw_data kept</text>
+<rect x="528" y="258" width="172" height="30" rx="6" fill="#ffffff" stroke="#c25200" stroke-width="1.2" stroke-dasharray="5 3"/>
+<text x="614" y="277" font-size="11.5" fill="#a84600" font-weight="600" text-anchor="middle">untrusted, always fenced</text>
+<rect x="742" y="160" width="196" height="144" rx="10" fill="#eaf3fa" stroke="#0072b2" stroke-width="1.25"/>
+<circle cx="761" cy="182" r="11" fill="#1f2328"/>
+<text x="761" y="186.2" font-size="12" font-weight="700" text-anchor="middle" fill="#ffffff">3</text>
+<text x="779" y="187" font-size="14" fill="#1f2328" font-weight="600">Poll and ingest</text>
+<text x="754" y="210" font-size="12" fill="#59636e">Durable cursor per feed:</text>
+<text x="754" y="226" font-size="12" fill="#59636e">no skip, no duplicate</text>
+<text x="754" y="242" font-size="12" fill="#59636e"></text>
+<text x="754" y="258" font-size="12" fill="#59636e">Push and queue batches</text>
+<text x="754" y="274" font-size="12" fill="#59636e">join the same pipeline</text>
+<rect x="968" y="160" width="200" height="144" rx="10" fill="#eaf3fa" stroke="#0072b2" stroke-width="1.25"/>
+<circle cx="987" cy="182" r="11" fill="#1f2328"/>
+<text x="987" y="186.2" font-size="12" font-weight="700" text-anchor="middle" fill="#ffffff">4</text>
+<text x="1005" y="187" font-size="14" fill="#1f2328" font-weight="600">Correlate and score</text>
+<text x="980" y="210" font-size="12" fill="#59636e">Entity correlation</text>
+<text x="980" y="226" font-size="12" fill="#59636e">Case signature keeps</text>
+<text x="980" y="242" font-size="12" fill="#59636e">cases idempotent</text>
+<text x="980" y="258" font-size="12" fill="#59636e"></text>
+<text x="980" y="274" font-size="12" fill="#59636e">Risk score 0 to 100</text>
+<path d="M486,232 H516" fill="none" stroke="#59636e" stroke-width="1.5" stroke-linejoin="round" marker-end="url(#ah)"/>
+<path d="M712,232 H742" fill="none" stroke="#59636e" stroke-width="1.5" stroke-linejoin="round" marker-end="url(#ah)"/>
+<path d="M938,232 H968" fill="none" stroke="#59636e" stroke-width="1.5" stroke-linejoin="round" marker-end="url(#ah)"/>
+<path d="M1068,304 L1068,362 Q1068,370 1060,370 L145,370 Q137,370 137,378 L137,424" fill="none" stroke="#59636e" stroke-width="1.5" stroke-linejoin="round" marker-end="url(#ah)"/>
+<rect x="524.404" y="361" width="151.192" height="18" rx="9" fill="#ffffff"/>
+<text x="600" y="374" font-size="11.5" fill="#59636e" text-anchor="middle">clusters with a risk score</text>
+<text x="1164" y="408" font-size="12" text-anchor="end"><tspan font-weight="600" fill="#1f2328">Admission and reasoning</tspan><tspan fill="#59636e">   only admitted candidates reach a model</tspan></text>
+<rect x="32" y="424" width="210" height="268" rx="10" fill="#eaf3fa" stroke="#0072b2" stroke-width="1.25"/>
+<circle cx="51" cy="446" r="11" fill="#1f2328"/>
+<text x="51" y="450.2" font-size="12" font-weight="700" text-anchor="middle" fill="#ffffff">5</text>
+<text x="69" y="451" font-size="14" fill="#1f2328" font-weight="600">Admission gates</text>
+<rect x="44" y="464" width="186" height="108" rx="6" fill="#ffffff" stroke="#0072b2" stroke-width="1"/>
+<text x="56" y="482" font-size="12.5" fill="#1f2328" font-weight="600">Routing risk gate</text>
+<text x="56" y="499" font-size="11.5" fill="#59636e">Event clusters go on at</text>
+<text x="56" y="514" font-size="11.5" fill="#59636e">risk 70 or more (default)</text>
+<text x="56" y="529" font-size="11.5" fill="#59636e">Alert feeds go straight on</text>
+<text x="56" y="544" font-size="11.5" fill="#59636e">Below the floor: a visible</text>
+<text x="56" y="559" font-size="11.5" fill="#59636e">$0 candidate, not dropped</text>
+<rect x="44" y="582" width="186" height="98" rx="6" fill="#ffffff" stroke="#0072b2" stroke-width="1"/>
+<text x="56" y="600" font-size="12.5" fill="#1f2328" font-weight="600">Budget and cost gate</text>
+<text x="56" y="617" font-size="11.5" fill="#59636e">Daily AI budget and caps</text>
+<text x="56" y="632" font-size="11.5" fill="#59636e">checked before pipeline calls</text>
+<text x="56" y="647" font-size="11.5" fill="#59636e">Over budget: the case</text>
+<text x="56" y="662" font-size="11.5" fill="#59636e">goes to a person</text>
+<rect x="272" y="424" width="612" height="268" rx="10" fill="#fdf3e1" stroke="#b06a00" stroke-width="1.25"/>
+<path d="M242,583 H288" fill="none" stroke="#59636e" stroke-width="1.5" stroke-linejoin="round" marker-end="url(#ah)"/>
+<circle cx="291" cy="446" r="11" fill="#1f2328"/>
+<text x="291" y="450.2" font-size="12" font-weight="700" text-anchor="middle" fill="#ffffff">6</text>
+<text x="309" y="451" font-size="14" fill="#1f2328" font-weight="600">AI investigation</text>
+<text x="425.613" y="451" font-size="12" fill="#59636e">advisory: it recommends, code decides</text>
+<rect x="288" y="466" width="108" height="44" rx="6" fill="#ffffff" stroke="#0072b2" stroke-width="1"/>
+<text x="342" y="484" font-size="12" fill="#1f2328" font-weight="600" text-anchor="middle">Log query</text>
+<text x="342" y="500" font-size="11" fill="#59636e" text-anchor="middle">read-only key</text>
+<rect x="406" y="466" width="108" height="44" rx="6" fill="#ffffff" stroke="#0072b2" stroke-width="1"/>
+<text x="460" y="484" font-size="12" fill="#1f2328" font-weight="600" text-anchor="middle">Enrichment</text>
+<text x="460" y="500" font-size="11" fill="#59636e" text-anchor="middle">Redis-cached</text>
+<rect x="524" y="466" width="108" height="44" rx="6" fill="#ffffff" stroke="#0072b2" stroke-width="1"/>
+<text x="578" y="484" font-size="12" fill="#1f2328" font-weight="600" text-anchor="middle">Knowledge</text>
+<text x="578" y="500" font-size="11" fill="#59636e" text-anchor="middle">RAG retrieval</text>
+<rect x="642" y="466" width="108" height="44" rx="6" fill="#ffffff" stroke="#0072b2" stroke-width="1"/>
+<text x="696" y="484" font-size="12" fill="#1f2328" font-weight="600" text-anchor="middle">Runbooks</text>
+<text x="696" y="500" font-size="11" fill="#59636e" text-anchor="middle">Published only</text>
+<rect x="760" y="466" width="108" height="44" rx="6" fill="#ffffff" stroke="#0072b2" stroke-width="1"/>
+<text x="814" y="484" font-size="12" fill="#1f2328" font-weight="600" text-anchor="middle">MITRE</text>
+<text x="814" y="500" font-size="11" fill="#59636e" text-anchor="middle">ATT&amp;CK context</text>
+<path d="M342,510 V526 M460,510 V526 M578,510 V526 M696,510 V526 M814,510 V526 M342,526 H814" fill="none" stroke="#59636e" stroke-width="1.5" stroke-linejoin="round"/>
+<path d="M578,526 V544" fill="none" stroke="#59636e" stroke-width="1.5" stroke-linejoin="round" marker-end="url(#ah)"/>
+<rect x="288" y="544" width="164" height="78" rx="6" fill="#ffffff" stroke="#b06a00" stroke-width="1"/>
+<text x="300" y="562" font-size="13" fill="#1f2328" font-weight="600">Router</text>
+<text x="300" y="579" font-size="11.5" fill="#59636e">Cheap first triage</text>
+<text x="300" y="594" font-size="11.5" fill="#59636e">clear benign: short path</text>
+<text x="300" y="609" font-size="11.5" fill="#59636e">else full investigation</text>
+<rect x="492" y="544" width="172" height="78" rx="6" fill="#ffffff" stroke="#b06a00" stroke-width="1"/>
+<text x="504" y="562" font-size="13" fill="#1f2328" font-weight="600">Investigator</text>
+<text x="504" y="579" font-size="11.5" fill="#59636e">ReAct loop over the</text>
+<text x="504" y="594" font-size="11.5" fill="#59636e">read-only tools</text>
+<text x="504" y="609" font-size="11.5" fill="#59636e">persona and runbook</text>
+<rect x="704" y="544" width="164" height="78" rx="6" fill="#ffffff" stroke="#b06a00" stroke-width="1"/>
+<text x="716" y="562" font-size="13" fill="#1f2328" font-weight="600">Formatter</text>
+<text x="716" y="579" font-size="11.5" fill="#59636e">verdict, confidence</text>
+<text x="716" y="594" font-size="11.5" fill="#59636e">and compact evidence</text>
+<text x="716" y="609" font-size="11.5" fill="#59636e">a recommendation only</text>
+<path d="M452,583 H492" fill="none" stroke="#59636e" stroke-width="1.5" stroke-linejoin="round" marker-end="url(#ah)"/>
+<path d="M664,583 H704" fill="none" stroke="#59636e" stroke-width="1.5" stroke-linejoin="round" marker-end="url(#ah)"/>
+<rect x="288" y="636" width="376" height="42" rx="6" fill="#ffffff" stroke="#c25200" stroke-width="1.2" stroke-dasharray="5 3"/>
+<text x="476" y="653" font-size="11.5" fill="#a84600" font-weight="600" text-anchor="middle">Source-derived evidence enters prompts</text>
+<text x="476" y="669" font-size="11.5" fill="#a84600" font-weight="600" text-anchor="middle">fenced and labelled as untrusted data</text>
+<path d="M786,622 L786,714 Q786,722 778,722 L174,722 Q166,722 166,730 L166,776" fill="none" stroke="#59636e" stroke-width="1.5" stroke-linejoin="round" marker-end="url(#ah)"/>
+<rect x="382.042" y="713" width="187.916" height="18" rx="9" fill="#ffffff"/>
+<text x="476" y="726" font-size="11.5" fill="#59636e" text-anchor="middle">verdict and evidence (advisory)</text>
+<rect x="914" y="424" width="254" height="58" rx="8" fill="#ffffff" stroke="#818b98" stroke-width="1.25"/>
+<text x="926" y="443" font-size="12.5" fill="#1f2328" font-weight="600">Model providers</text>
+<text x="926" y="459" font-size="11.5" fill="#59636e">Anthropic, OpenAI, Azure OpenAI,</text>
+<text x="926" y="474" font-size="11.5" fill="#59636e">Bedrock, Vertex, OpenAI-compatible</text>
+<rect x="914" y="504" width="254" height="110" rx="10" fill="#eaf3fa" stroke="#0072b2" stroke-width="1.25"/>
+<circle cx="933" cy="526" r="11" fill="#1f2328"/>
+<text x="933" y="530.2" font-size="12" font-weight="700" text-anchor="middle" fill="#ffffff">7</text>
+<text x="951" y="531" font-size="14" fill="#1f2328" font-weight="600">One model gateway</text>
+<text x="926" y="553" font-size="12" fill="#59636e">Every model call, every surface</text>
+<text x="926" y="570" font-size="12" fill="#59636e">Pipeline budget pre-flight</text>
+<text x="926" y="587" font-size="12" fill="#59636e">Retries and circuit breaker</text>
+<rect x="914" y="634" width="254" height="58" rx="8" fill="#e5f4ee" stroke="#007f5c" stroke-width="1.25"/>
+<text x="926" y="656" font-size="12.5" fill="#1f2328" font-weight="600">Usage and cost ledger</text>
+<text x="926" y="674" font-size="11.5" fill="#59636e">one record for every model call</text>
+<path d="M1041,504 V482" fill="none" stroke="#59636e" stroke-width="1.5" stroke-linejoin="round" marker-end="url(#ah)"/>
+<path d="M1041,614 V634" fill="none" stroke="#59636e" stroke-width="1.5" stroke-linejoin="round" marker-end="url(#ah)"/>
+<path d="M884,560 H914" fill="none" stroke="#59636e" stroke-width="1.5" stroke-linejoin="round" marker-end="url(#ah)"/>
+<text x="1164" y="760" font-size="12" text-anchor="end"><tspan font-weight="600" fill="#1f2328">Decide, record, review</tspan></text>
+<rect x="32" y="776" width="268" height="164" rx="10" fill="#eaf3fa" stroke="#0072b2" stroke-width="1.25"/>
+<circle cx="51" cy="798" r="11" fill="#1f2328"/>
+<text x="51" y="802.2" font-size="12" font-weight="700" text-anchor="middle" fill="#ffffff">8</text>
+<text x="69" y="803" font-size="14" fill="#1f2328" font-weight="600">Case Manager</text>
+<text x="44" y="823" font-size="12" fill="#59636e">decide() is deterministic code</text>
+<text x="44" y="839" font-size="12" fill="#59636e">verdict, confidence and risk</text>
+<text x="44" y="855" font-size="12" fill="#59636e">against your AutoClosePolicy</text>
+<rect x="44" y="868" width="60" height="26" rx="13" fill="#ffffff" stroke="#0072b2" stroke-width="1.2"/>
+<text x="74" y="885" font-size="12" fill="#1f2328" font-weight="600" text-anchor="middle">Close</text>
+<rect x="112" y="868" width="74" height="26" rx="13" fill="#ffffff" stroke="#0072b2" stroke-width="1.2"/>
+<text x="149" y="885" font-size="12" fill="#1f2328" font-weight="600" text-anchor="middle">Escalate</text>
+<rect x="194" y="868" width="94" height="26" rx="13" fill="#ffffff" stroke="#0072b2" stroke-width="1.2"/>
+<text x="241" y="885" font-size="12" fill="#1f2328" font-weight="600" text-anchor="middle">Needs human</text>
+<text x="44" y="914" font-size="11.5" fill="#59636e">The model only recommends.</text>
+<text x="44" y="929" font-size="11.5" fill="#59636e">Needs human never auto-closes.</text>
+<path d="M300,839 H330" fill="none" stroke="#59636e" stroke-width="1.5" stroke-linejoin="round" marker-end="url(#ah)"/>
+<rect x="330" y="776" width="270" height="164" rx="10" fill="#e5f4ee" stroke="#007f5c" stroke-width="1.25"/>
+<circle cx="349" cy="798" r="11" fill="#1f2328"/>
+<text x="349" y="802.2" font-size="12" font-weight="700" text-anchor="middle" fill="#ffffff">9</text>
+<text x="367" y="803" font-size="14" fill="#1f2328" font-weight="600">Cases and audit</text>
+<text x="342" y="826" font-size="12" fill="#59636e">Cases, idempotent by signature</text>
+<text x="342" y="844" font-size="12" fill="#59636e">Notes, tasks and runbook runs</text>
+<text x="342" y="862" font-size="12" fill="#59636e">Background jobs with leases</text>
+<rect x="342" y="878" width="246" height="50" rx="6" fill="#ffffff" stroke="#007f5c" stroke-width="1.6"/>
+<text x="354" y="898" font-size="12.5" fill="#1f2328" font-weight="600">Append-only audit log</text>
+<text x="354" y="915" font-size="11.5" fill="#59636e">every agent and human action</text>
+<rect x="630" y="776" width="538" height="164" rx="10" fill="#f8ecf3" stroke="#a3507d" stroke-width="1.25"/>
+<path d="M600,839 H642" fill="none" stroke="#59636e" stroke-width="1.5" stroke-linejoin="round" marker-end="url(#ah)"/>
+<circle cx="649" cy="798" r="11" fill="#1f2328"/>
+<text x="649" y="802.2" font-size="12" font-weight="700" text-anchor="middle" fill="#ffffff">10</text>
+<text x="667" y="803" font-size="14" fill="#1f2328" font-weight="600">Console and API</text>
+<rect x="642" y="816" width="170" height="46" rx="6" fill="#ffffff" stroke="#a3507d" stroke-width="1"/>
+<text x="654" y="834" font-size="12.5" fill="#1f2328" font-weight="600">Console (React)</text>
+<text x="654" y="852" font-size="11.5" fill="#59636e">cases, rules, audit, admin</text>
+<rect x="642" y="880" width="170" height="48" rx="6" fill="#ffffff" stroke="#0072b2" stroke-width="1"/>
+<text x="654" y="898" font-size="12.5" fill="#1f2328" font-weight="600">API (FastAPI)</text>
+<text x="654" y="916" font-size="11.5" fill="#59636e">auth, roles, permissions</text>
+<path d="M727,862 V880" fill="none" stroke="#59636e" stroke-width="1.5" stroke-linejoin="round" marker-end="url(#ah)"/>
+<rect x="830" y="816" width="138" height="112" rx="6" fill="#ffffff" stroke="#b06a00" stroke-width="1"/>
+<text x="842" y="835" font-size="12.5" fill="#1f2328" font-weight="600">Workspace Chat</text>
+<text x="842" y="852" font-size="11.5" fill="#59636e">one chat engine</text>
+<text x="842" y="867" font-size="11.5" fill="#59636e">read-only tools</text>
+<rect x="840" y="878" width="118" height="40" rx="6" fill="#ffffff" stroke="#c25200" stroke-width="1.2" stroke-dasharray="5 3"/>
+<text x="899" y="894" font-size="11" fill="#a84600" font-weight="600" text-anchor="middle">untrusted values</text>
+<text x="899" y="909" font-size="11" fill="#a84600" font-weight="600" text-anchor="middle">stay fenced</text>
+<rect x="980" y="816" width="176" height="112" rx="6" fill="#ffffff" stroke="#a3507d" stroke-width="1"/>
+<text x="992" y="834" font-size="12.5" fill="#1f2328" font-weight="600">Analysts</text>
+<text x="992" y="852" font-size="11.5" fill="#59636e">review, approve, close</text>
+<text x="992" y="868" font-size="11.5" fill="#59636e">alerts: email, Slack,</text>
+<text x="992" y="884" font-size="11.5" fill="#59636e">Teams, PagerDuty,</text>
+<text x="992" y="900" font-size="11.5" fill="#59636e">webhook, in-app Inbox</text>
+<path d="M899,816 L899,602 Q899,596 905,596 L914,596" fill="none" stroke="#59636e" stroke-width="1.5" stroke-linejoin="round" marker-end="url(#ah)"/>
+<rect x="846.828" y="713" width="104.344" height="18" rx="9" fill="#ffffff"/>
+<text x="899" y="726" font-size="11.5" fill="#59636e" text-anchor="middle">chat model calls</text>
+<path d="M465,940 V968" fill="none" stroke="#59636e" stroke-width="1.5" stroke-linejoin="round" marker-end="url(#ah)"/>
+<path d="M727,928 V968" fill="none" stroke="#59636e" stroke-width="1.5" stroke-linejoin="round" marker-end="url(#ah)" marker-start="url(#ahs)"/>
+<rect x="20" y="968" width="1160" height="84" rx="12" fill="#e5f4ee" stroke="#007f5c" stroke-width="1.25"/>
+<circle cx="43" cy="992" r="11" fill="#1f2328"/>
+<text x="43" y="996.2" font-size="12" font-weight="700" text-anchor="middle" fill="#ffffff">11</text>
+<text x="61" y="997" font-size="14" fill="#1f2328" font-weight="600">State store</text>
+<text x="146.319" y="997" font-size="12" fill="#59636e">choose one backend; the application's own records, apart from your source logs</text>
+<text x="36" y="1024" font-size="12" fill="#59636e">cases, audit log, usage ledger, cursors, configuration, users, knowledge and runbooks</text>
+<rect x="660" y="984" width="180" height="52" rx="6" fill="#ffffff" stroke="#007f5c" stroke-width="1"/>
+<text x="672" y="1004" font-size="12.5" fill="#1f2328" font-weight="600">PostgreSQL + pgvector</text>
+<text x="672" y="1022" font-size="11.5" fill="#59636e">reference Compose</text>
+<rect x="850" y="984" width="150" height="52" rx="6" fill="#ffffff" stroke="#007f5c" stroke-width="1"/>
+<text x="862" y="1004" font-size="12.5" fill="#1f2328" font-weight="600">Elasticsearch</text>
+<text x="862" y="1022" font-size="11.5" fill="#59636e">existing ELK stack</text>
+<rect x="1010" y="984" width="158" height="52" rx="6" fill="#ffffff" stroke="#007f5c" stroke-width="1"/>
+<text x="1022" y="1004" font-size="12.5" fill="#1f2328" font-weight="600">SQLite</text>
+<text x="1022" y="1022" font-size="11.5" fill="#59636e">single node, evaluation</text>
+<rect x="32" y="1068" width="18" height="12" rx="3" fill="#ffffff" stroke="#818b98" stroke-width="1.2"/>
+<text x="57" y="1078" font-size="12" fill="#59636e">External system</text>
+<rect x="167.352" y="1068" width="18" height="12" rx="3" fill="#eaf3fa" stroke="#0072b2" stroke-width="1.2"/>
+<text x="192.352" y="1078" font-size="12" fill="#59636e">Deterministic code</text>
+<rect x="318.731" y="1068" width="18" height="12" rx="3" fill="#fdf3e1" stroke="#b06a00" stroke-width="1.2"/>
+<text x="343.731" y="1078" font-size="12" fill="#59636e">Model-backed, advisory</text>
+<rect x="501.87" y="1068" width="18" height="12" rx="3" fill="#e5f4ee" stroke="#007f5c" stroke-width="1.2"/>
+<text x="526.87" y="1078" font-size="12" fill="#59636e">Records and state</text>
+<rect x="649.262" y="1068" width="18" height="12" rx="3" fill="#f8ecf3" stroke="#a3507d" stroke-width="1.2"/>
+<text x="674.262" y="1078" font-size="12" fill="#59636e">People and surfaces</text>
+<rect x="810.55" y="1068" width="18" height="12" rx="3" fill="#fff4ec" stroke="#c25200" stroke-width="1.2" stroke-dasharray="4 2"/>
+<text x="835.55" y="1078" font-size="12" fill="#59636e">Untrusted, fenced data</text>
+<path d="M985.9984374999999,1074 H1013.9984374999999" fill="none" stroke="#59636e" stroke-width="1.5" stroke-linejoin="round" marker-end="url(#ah)"/>
+<text x="1022" y="1078" font-size="12" fill="#59636e">Data flow</text>
+<circle cx="1104.65" cy="1074" r="9" fill="#1f2328"/>
+<text x="1104.65" y="1078.2" font-size="12" font-weight="700" text-anchor="middle" fill="#ffffff">1</text>
+<text x="1120.65" y="1078" font-size="12" fill="#59636e">Stage</text></svg>

@@ -789,7 +789,7 @@
    "page": "getting-started/quickstart.md",
    "anchor": "",
    "heading": "",
-   "text": "Use the deterministic demo to explore the analyst workflow without an external\nsource or provider bill. Use the Compose stack when you are ready to evaluate a\nreal source with persistent application state.\n\nInfo: Choose the matching channel",
+   "text": "Use the deterministic demo to explore the analyst workflow without an external\nsource or provider bill. Use the Compose stack when you are ready to evaluate a\nreal source with persistent application state.\n\nInfo: Choose the matching channel\n\n`Testing` contains integrated candidates. Under the release contract, `main`\nholds only accepted Stable source and immutable `v0.1.13` identifies this candidate.\nThe remote has both canonical branches. Use `v0.1.13` only when its signed GitHub\nRelease and public digest-pinned images verify and canonical PostgreSQL Compose\nruntime acceptance completes, and use `Testing` only for an unreleased preview.\nRepository administrators must verify branch protections and required checks\nindependently.\n\nNote: Never install from v0.1.4 to v0.1.12\n\nThese immutable tags are non-installable history and must never be recommended.",
    "console": []
   },
   {
@@ -797,7 +797,7 @@
    "page": "getting-started/quickstart.md",
    "anchor": "",
    "heading": "",
-   "text": "`Testing` contains integrated candidates. Under the release contract, `main`\nholds only accepted Stable source and immutable `v0.1.13` identifies this candidate.\nThe remote has both canonical branches; use `v0.1.13` only when its signed GitHub\nRelease and public digest-pinned images verify and canonical PostgreSQL Compose\nruntime acceptance completes, and use `Testing` only for an unreleased preview;\nrepository administrators must verify branch protections and required checks\nindependently. Never use `v0.1.4` or `v0.1.5`: those immutable\nfailed-publication records do not have a canonical signed plan and public\nGitHub Release. Never bootstrap from `v0.1.6` either: its signed/public artifact\nset is valid, but canonical macOS Bash 3.2 acceptance failed before supervisor\ninstallation. Versions 0.1.7 and 0.1.8 are also immutable, superseded history:\n0.1.7 could not publish the private control socket under dropped capabilities,\nwhile 0.1.8 reached signed-plan verification but cosign's default TUF cache was\nunwritable beneath the read-only root filesystem. Version 0.1.9 corrected that\ncache location, then failed when the constrained supervisor could not traverse\nthe runner-owned verification directory; it has no installable GitHub Release.\nVersion 0.1.10 fixed that traversal boundary but its signed-release job timed out\nwhile the architecture-neutral Web Console builder ran under target emulation.\nVersion 0.1.11 then passed all image and plan verification, including inside the\nconstrained updater, but its post-verification cleanup failed before canonical\nRelease publication. Version 0.1.12 completed the entire signed/public release,\nbut canonical v0.1.1 bootstrap failed closed before application mutation because\nmatching absent legacy state-schema labels were normalized asymmetrically.\nThese are immutable, non-installable history and must never be recommended.",
+   "text": "- `v0.1.4` and `v0.1.5`: failed-publication records without a canonical signed plan\n  and public GitHub Release.\n- `v0.1.6`: its signed, public artifact set is valid, but canonical macOS Bash 3.2\n  acceptance failed before supervisor installation. Never bootstrap from it.\n- `v0.1.7`: it could not publish the private control socket under dropped\n  capabilities.\n- `v0.1.8`: it reached signed-plan verification, but cosign's default TUF cache was\n  unwritable beneath the read-only root filesystem.\n- `v0.1.9`: it corrected that cache location, then failed when the constrained\n  supervisor could not traverse the runner-owned verification directory. It has no\n  installable GitHub Release.\n- `v0.1.10`: it fixed that traversal boundary, but its signed-release job timed out\n  while the architecture-neutral Web Console builder ran under target emulation.\n- `v0.1.11`: it passed all image and plan verification, including inside the\n  constrained updater, but its post-verification cleanup failed before canonical\n  Release publication.\n- `v0.1.12`: it completed the entire signed, public release, but canonical v0.1.1\n  bootstrap failed closed before application mutation because matching absent legacy\n  state-schema labels were normalized asymmetrically.",
    "console": []
   },
   {
@@ -805,7 +805,7 @@
    "page": "getting-started/quickstart.md",
    "anchor": "get-the-source",
    "heading": "Get the source",
-   "text": "[Testing]\n\n```bash\ngit clone --branch Testing --depth 1 \\\n  https://github.com/ARYDESTROYER/Agentic-Kibana.git\ncd Agentic-Kibana\n```\n\n[Stable 0.1.13 (after acceptance)]\n\n```bash\ngit clone --branch v0.1.13 --depth 1 \\\n  https://github.com/ARYDESTROYER/Agentic-Kibana.git\ncd Agentic-Kibana\n```\n\nThe `v0.1.13` tag is absent before publication and immutable afterward; do not\ncreate, move, or replace it locally. Users\npulling `main` receive the current accepted Stable source, while candidate work\nremains isolated on `Testing`. A branch name alone is not acceptance evidence,\nso repository administrators must verify protections and required checks. If the\nsigned Release, public image evidence, or canonical runtime acceptance is missing,\nuse a previously verified Stable release.",
+   "text": "[Testing]\n\n```bash\ngit clone --branch Testing https://github.com/ARYDESTROYER/Kavach-AgenticSOC.git\ncd Kavach-AgenticSOC\n```\n\n[Stable 0.1.13 (after acceptance)]\n\n```bash\ngit clone https://github.com/ARYDESTROYER/Kavach-AgenticSOC.git\ncd Kavach-AgenticSOC\ngit checkout v0.1.13\n```\n\nThe `v0.1.13` tag is absent before publication and immutable afterward; do not\ncreate, move, or replace it locally. Users pulling `main` receive the current\naccepted Stable source, while candidate work remains isolated on `Testing`. A branch\nname alone is not acceptance evidence, so repository administrators must verify\nprotections and required checks. If the signed Release, public image evidence, or\ncanonical runtime acceptance is missing, use a previously verified Stable release.\n\nKeep a full clone (no `--depth 1`): the one-time updater bootstrap checks that the\nrelease commit is contained in `origin/main`, which a shallow single-branch clone lacks.",
    "console": []
   },
   {
@@ -821,7 +821,15 @@
    "page": "getting-started/quickstart.md",
    "anchor": "requirements",
    "heading": "Requirements",
-   "text": "- Python 3.11\n- Node.js 22 and npm\n- macOS or Linux with Bash\n\n```bash\n./scripts/run-demo.sh\n```\n\nOpen `http://127.0.0.1:5173` and sign in with the demo-only account printed by the\nscript. In the standard seed it is `Admin` / `Admin@123`. Stop both processes with\nCtrl+C.\n\nWarning: Demo credentials are not deployment credentials\n\nNever expose the demo account or reuse its password with real data. Demo Mode\nisolates triage and forces the mock provider, but organization settings you\ndeliberately change remain real configuration.\n\nContinue with Demo Mode for story generation, seeded mode, and reset\nbehaviour, or Your first case for the analyst walkthrough.",
+   "text": "- Python 3.11\n- Node.js 22 and npm\n- macOS or Linux with Bash\n\n```bash\n./scripts/run-demo.sh\n```\n\nThe script starts the backend on port `8088` with sign-in enabled and the Console dev\nserver on port `5173`, then completes setup for you. Open `http://127.0.0.1:5173` and\nsign in with the demo-only account printed by the script. In the standard seed it is\n`Admin` / `Admin@123`. Stop both processes with Ctrl+C.\n\nWarning: Demo credentials are not deployment credentials\n\nNever expose the demo account or reuse its password with real data. Demo Mode\nisolates triage and forces the mock provider, but organization settings you\ndeliberately change remain real configuration.",
+   "console": []
+  },
+  {
+   "id": "getting-started/quickstart#what-you-see-first:0",
+   "page": "getting-started/quickstart.md",
+   "anchor": "what-you-see-first",
+   "heading": "What you see first",
+   "text": "The first page is the **Cyber Defence Center**, already populated with synthetic\nactivity. A badge in the header marks the workspace as a demo. Select a screenshot to\nopen it full size.\n\nThe Cyber Defence Center with synthetic activity. Partial coverage appears because the demo's durable alert counters started less than 24 hours before the capture.\n\nContinue with Demo Mode for story generation, seeded mode, and reset\nbehaviour, or Your first case for the analyst walkthrough.",
    "console": []
   },
   {
@@ -829,7 +837,7 @@
    "page": "getting-started/quickstart.md",
    "anchor": "option-b-standalone-stack",
    "heading": "Option B: standalone stack",
-   "text": "The standalone deployment contains PostgreSQL + pgvector for Agentic SOC state, Redis\nfor enrichment caching, the FastAPI backend, and the nginx-served Agentic SOC Console.\nYour SIEM or event source is connected separately and is not modified.",
+   "text": "The standalone deployment contains PostgreSQL + pgvector for Agentic SOC state, Redis\nfor enrichment caching, the FastAPI backend, the nginx-served Agentic SOC Console, and\nthe private update supervisor. Your SIEM or event source is connected separately and is\nnot modified. Install Agentic SOC shows the full topology.",
    "console": []
   },
   {
@@ -837,7 +845,7 @@
    "page": "getting-started/quickstart.md",
    "anchor": "requirements_1",
    "heading": "Requirements",
-   "text": "- Docker Engine or Docker Desktop\n- Docker Compose v2 (`docker compose`)\n- an Anthropic/OpenAI key or a reachable OpenAI-compatible model, unless you keep\n  triage in Demo Mode\n- a least-privilege read-only credential for each pull source",
+   "text": "- Docker Engine or Docker Desktop\n- Docker Compose v2 (`docker compose`)\n- Git, Bash, and Python 3 on the host (the Compose wrapper script uses Bash and Python 3)\n- an Anthropic/OpenAI key or a reachable OpenAI-compatible model, unless you keep\n  triage in Demo Mode\n- a least-privilege read-only credential for each pull source",
    "console": []
   },
   {
@@ -845,7 +853,7 @@
    "page": "getting-started/quickstart.md",
    "anchor": "configure",
    "heading": "Configure",
-   "text": "```bash\ncp .env.example .env\n```\n\nSet unique values for the database password, JWT signing secret, and first admin:\n\n```dotenv\nTLSOC_PG_PASSWORD=<random-database-password>\nTLSOC_AUTH_ENABLED=true\nTLSOC_AUTH_JWT_SECRET=<stable-random-secret-at-least-32-bytes>\nTLSOC_AUTH_ADMIN_USERNAME=admin\nTLSOC_AUTH_ADMIN_PASSWORD=<unique-admin-password>\n\n# Configure one provider, or register a compatible local model after setup.\nTLSOC_ANTHROPIC_API_KEY=\nTLSOC_OPENAI_API_KEY=\n```\n\nGenerate random values with `openssl rand -hex 32`. Do not commit `.env`. Set\n`TLSOC_AUTH_COOKIE_SECURE=true` when TLS terminates in front of the console.",
+   "text": "```bash\ncp .env.example .env\n```\n\nSet unique values for the database password, JWT signing secret, and an environment\nadministrator:\n\n```dotenv\nTLSOC_PG_PASSWORD=<random-database-password>\nTLSOC_AUTH_ENABLED=true\nTLSOC_AUTH_JWT_SECRET=<stable-random-secret-at-least-32-bytes>\nTLSOC_AUTH_ADMIN_USERNAME=admin\nTLSOC_AUTH_ADMIN_PASSWORD=<unique-admin-password>\n\n# Configure one provider, or register a compatible local model after setup.\nTLSOC_ANTHROPIC_API_KEY=\nTLSOC_OPENAI_API_KEY=\n```\n\nGenerate random values with `openssl rand -hex 32`. Do not commit `.env`. Set\n`TLSOC_AUTH_COOKIE_SECURE=true` when TLS terminates in front of the console.\n\nWith `TLSOC_AUTH_ADMIN_PASSWORD` set, the backend does not seed the demonstration\n`Admin` account, and the Console opens on **Create your admin account**, where you\ncreate a named administrator. The environment administrator remains a fallback sign-in.\nLeave `AGENTIC_SOC_UPDATE_REPOSITORY` as `.env.example` ships it: it names the repository\nwhose signed releases the update supervisor trusts, not the clone URL.",
    "console": []
   },
   {
@@ -861,7 +869,7 @@
    "page": "getting-started/quickstart.md",
    "anchor": "connect-one-narrow-source",
    "heading": "Connect one narrow source",
-   "text": "1. Open **Sources**, choose **Add source**, and select a connector.\n2. For a pull source, use a credential limited to read and metadata access on one\n   test index or feed. Never use a superuser or service-system account.\n3. Set a narrow data scope and map the source fields. Use **Analyze sample** only\n   with a representative non-sensitive record; the sample is not persisted.\n4. Use **Test connection** where the connector supports it, then save.\n5. Send or expose one synthetic alert and confirm its timestamp, rule, severity,\n   entities, source identity, and raw provenance in **Logs** and **Cases**.\n6. Widen the scope only after the normalized record and resulting case are correct.\n\nHTTP receivers accept supported JSON, NDJSON, CEF, LEEF, GELF, syslog, or key/value\npayloads at:\n\n```text\nPOST /api/ingest/<source-id>\n```\n\nThe sender must retry non-success responses. UI-supplied source secrets are a\nruntime secret tier and must be re-entered after a backend restart; environment\nsecrets remain the durable deployment tier.",
+   "text": "1. Open **Sources**, choose **Add source**, and select a connector.\n2. For a pull source, use a credential limited to read and metadata access on one\n   test index or feed. Never use a superuser or service-system account.\n3. Set a narrow data scope and map the source fields.\n4. Use **Test connection** where the connector supports it, then save. Once the source\n   is saved, you can paste a representative non-sensitive record into **Paste a sample\n   record (optional)** and select **Suggest mappings**; the sample is not persisted.\n5. Send or expose one synthetic alert and confirm its timestamp, rule, severity,\n   entities, source identity, and raw provenance in **Logs** and **Cases**.\n6. Widen the scope only after the normalized record and resulting case are correct.\n\nHTTP receivers accept supported JSON, NDJSON, CEF, LEEF, GELF, syslog, or key/value\npayloads at:\n\n```text\nPOST /api/ingest/<source-id>\n```\n\nThe sender must retry non-success responses. UI-supplied source secrets are a\nruntime secret tier and must be re-entered after a backend restart; environment\nsecrets remain the durable deployment tier.",
    "console": []
   },
   {
@@ -869,7 +877,7 @@
    "page": "getting-started/quickstart.md",
    "anchor": "verify-the-workflow",
    "heading": "Verify the workflow",
-   "text": "- **Sources** shows configuration and health signals.\n- **Logs** shows normalized records and source attribution.\n- **Cases** separates source facts, investigator findings, and policy decisions.\n- **Cost** records each model call through the single gateway.\n- **Audit** records state-changing analyst and agent actions.",
+   "text": "- **Sources** shows configuration and health signals.\n- **Logs** shows normalized records and source attribution.\n- **Cases** separates source facts, investigator findings, and policy decisions.\n- **Cost** records each model call through the single gateway.\n- **Audit log** records state-changing analyst and agent actions.\n\nThe screenshots below come from the demo. On **Sources**, each connected source shows\nits type, status, enabled switch, last event, and protocol.\n\nSources in the demo: five connected sources, all ready.\n\nIn **Case Manager**, a case's Investigation tab shows the **Decision** card, labelled\n**Code**, above the **AI assessment**, labelled **AI** and marked advisory. The close or\nescalate decision is made by deterministic code against the operator policy, never by\nthe model.\n\nCase Manager: the code decision above the advisory AI assessment.",
    "console": []
   },
   {
@@ -885,8 +893,10 @@
    "page": "getting-started/first-run.md",
    "anchor": "",
    "heading": "",
-   "text": "This guide applies to **Agentic SOC 0.1** and is for administrators opening a new Agentic SOC\nConsole for the first time. The console shows setup instead of the operational\nworkspace until the deployment is marked complete.",
-   "console": []
+   "text": "This guide applies to **Agentic SOC 0.1** and is for administrators opening a new Agentic SOC\nConsole for the first time. The console shows setup instead of the operational\nworkspace until the deployment is marked complete.\n\nThe screenshots on this page come from a real fresh install of 0.1.13. Numbered amber\nbadges mark the controls each step uses; select a screenshot to open it full size. The\nscreenshots use the light theme; a fresh install opens in the dark theme, the\norganization default, and each user can change it under\n**Settings → Account → Appearance**. The sign-in screens follow the browser's own\nchoice, with a light and dark switch in the top right corner.",
+   "console": [
+    "settings:customization"
+   ]
   },
   {
    "id": "getting-started/first-run#before-you-begin:0",
@@ -901,7 +911,35 @@
    "page": "getting-started/first-run.md",
    "anchor": "1-secure-the-administrator-account",
    "heading": "1. Secure the administrator account",
-   "text": "When authentication is enabled and no user exists, Agentic SOC can bootstrap an initial\nadministrator. If the deployment presents the seeded `Admin` account, replace its\ndefault password immediately and create named accounts before connecting real data.\nNever retain demo credentials on a shared deployment.\n\nFor role design, MFA, SSO, and session policy, see\nIdentity and access.",
+   "text": "When authentication is enabled and no user exists, Agentic SOC can bootstrap an initial\nadministrator. If the deployment presents the seeded `Admin` account, replace its\ndefault password immediately and create named accounts before connecting real data.\nNever retain demo credentials on a shared deployment.\n\nWhich screen you see first depends on the deployment's `.env`; see\nChoose how the first administrator is created.\n\nFor role design, MFA, SSO, and session policy, see\nIdentity and access.",
+   "console": []
+  },
+  {
+   "id": "getting-started/first-run#create-the-first-administrator:0",
+   "page": "getting-started/first-run.md",
+   "anchor": "create-the-first-administrator",
+   "heading": "Create the first administrator",
+   "text": "**Create your admin account** appears when authentication is on and no account exists\nyet. It works only while no account exists and setup is not complete: the moment the\nfirst administrator exists, it locks itself.\n\nCreate your admin account, on a fresh install.\n\n1. In **Admin username** (badge 1), choose the administrator's sign-in name, for\n   example `soc-admin`. Use a different name from any environment administrator.\n2. In **Display name (optional)** (badge 2), enter the name the Console shows, for\n   example `SOC Administrator`.\n3. In **Password** (badge 3), enter a strong, unique password. The policy line reads\n   \"Use at least 12 characters, not your username or a common password.\", and the\n   meter below the field rates the password.\n4. In **Confirm password** (badge 4), repeat it. A mismatch shows \"Passwords do not\n   match.\"\n5. Select **Create admin & sign in** (badge 5). The button stays disabled until the form\n   is valid. The account is created as a `super_admin` and you are signed in.\n\nThe server checks the same password policy and writes the audit record before it\ncreates the account.\n\nNext, the Console may offer **Secure your account**: an optional second factor for this\naccount. Select **Turn on two-factor** to enroll an authenticator app now, or\n**Skip for now & continue** to set it up later under\n**Settings → Account → Security & two-factor**.",
+   "console": [
+    "settings:account_security"
+   ]
+  },
+  {
+   "id": "getting-started/first-run#create-the-first-administrator:1",
+   "page": "getting-started/first-run.md",
+   "anchor": "create-the-first-administrator",
+   "heading": "Create the first administrator",
+   "text": "The optional second-factor offer after the account is created.",
+   "console": [
+    "settings:account_security"
+   ]
+  },
+  {
+   "id": "getting-started/first-run#sign-in-later:0",
+   "page": "getting-started/first-run.md",
+   "anchor": "sign-in-later",
+   "heading": "Sign in later",
+   "text": "The sign-in form has two steps. First enter the **Username** (badge 1) and select\n**Continue** (badge 2); the button appears once you type a username.\n\nSign-in, step 1: the username.\n\nThen enter the **Password** (badge 1). **Remember me** (badge 2) keeps this browser\nsigned in for a server-bounded time, up to 24 hours, and asks you to confirm first;\nleave it clear on a shared computer. Select **Sign in** (badge 3). **Back** returns to\nthe username step.\n\nSign-in, step 2: the password and Remember me.\n\nNote: Remember me over plain HTTP\n\nThis screenshot was captured on a direct local connection. On the Compose stack over\nplain HTTP, **Remember me** is greyed out and reads \"Available when the console is\nserved over HTTPS\". It becomes available once the Console is behind TLS and\n`TLSOC_AUTH_COOKIE_SECURE=true`.\n\nWhen the backend seeded the demonstration administrator, the sign-in page shows a hint\nwith `Admin` / `Admin@123`. Sign in, change that password at once, and create named\naccounts.",
    "console": []
   },
   {
@@ -909,7 +947,7 @@
    "page": "getting-started/first-run.md",
    "anchor": "2-workspace",
    "heading": "2. Workspace",
-   "text": "Choose one starting mode:\n\n- **Live environment** connects your own security systems and AI provider. Polling\n  and processing begin after setup is launched.\n- **Synthetic demo** seeds isolated sample cases, metrics, and activity and uses the\n  deterministic `$0` mock runtime. It never calls a configured live provider and is\n  not a connection test for a real source.\n\nDemo data and the mock runtime make the next two stages optional. Demo Mode is\nreversible and can be removed later.",
+   "text": "Choose one starting mode:\n\n- **Live environment** connects your own security systems and AI provider. Polling\n  and processing begin after setup is launched.\n- **Synthetic demo** seeds isolated sample cases, metrics, and activity and uses the\n  deterministic `$0` mock runtime. It never calls a configured live provider and is\n  not a connection test for a real source.\n\nDemo data and the mock runtime make the next two stages optional. Demo Mode is\nreversible and can be removed later.\n\nStep 1 of 4: Workspace.\n\nThe wizard rail on the left lists the four stages. Each stage shows a check when it is\nready, an amber triangle when it needs attention, and a circle when it is not started.\nOn a fresh install **Live environment** (badge 1) is already selected. Select\n**Synthetic demo** (badge 2) instead for an isolated evaluation, then select\n**Continue** (badge 3).",
    "console": []
   },
   {
@@ -917,7 +955,39 @@
    "page": "getting-started/first-run.md",
    "anchor": "3-data-sources",
    "heading": "3. Data sources",
-   "text": "The source editor is driven by connector manifests. It renders the connection,\nauthentication, feed, and mapping fields supported by the selected connector.\n\n1. Choose an implemented connector from the support matrix.\n2. Give the source a stable ID and a recognizable display name.\n3. Configure the transport and non-secret fields.\n4. For a pull source, use a credential restricted to read and index-metadata access\n   on the intended patterns. Never use a superuser or service-system account.\n5. Configure one narrow feed first.\n6. Use **Test connection** for Elasticsearch, OpenSearch, or Wazuh. The test uses\n   the current draft without saving it.\n7. Save a push receiver, send a synthetic event, and inspect source health instead;\n   push and broker receivers do not have a meaningful one-shot connection test.\n\nSecret values are not returned to the console. The source record stores only which\nsecret field names are configured. If the source editor is open and you try to move\nto another setup stage or close a re-run, Agentic SOC asks before discarding that\ndraft.",
+   "text": "The source editor is driven by connector manifests. It renders the connection,\nauthentication, feed, and mapping fields supported by the selected connector.\n\n1. Choose an implemented connector from the support matrix.\n2. Give the source a recognizable display name. The Console derives the source ID from\n   it when you first save, and the ID then stays fixed.\n3. Configure the transport and non-secret fields.\n4. For a pull source, use a credential restricted to read and index-metadata access\n   on the intended patterns. Never use a superuser or service-system account.\n5. Configure one narrow feed first.\n6. Use **Test connection** for Elasticsearch, OpenSearch, or Wazuh. The test uses\n   the current draft without saving it.\n7. Save a push receiver, send a synthetic event, and inspect source health instead;\n   push and broker receivers do not have a meaningful one-shot connection test.\n\nSecret values are not returned to the console. The source record stores only which\nsecret field names are configured. If the source editor is open and you try to move\nto another setup stage or close a re-run, Agentic SOC asks before discarding that\ndraft.",
+   "console": []
+  },
+  {
+   "id": "getting-started/first-run#walkthrough-an-elasticsearch-source:0",
+   "page": "getting-started/first-run.md",
+   "anchor": "walkthrough-an-elasticsearch-source",
+   "heading": "Walkthrough: an Elasticsearch source",
+   "text": "These screenshots add an Elasticsearch / ELK pull source. Other connectors show their\nown fields in the same editor.\n\nSelect **Add your first source**. The connector picker opens. Type in\n**Search connectors…** (badge 1) to filter the 19 connectors, which are grouped as SIEM\nand log stores, transports and receivers, queues and brokers, object stores, and files.\nSelect the **Elasticsearch / ELK** card (badge 2). Each card's **?** button explains the\nconnector.\n\nChoose and configure a connector.\n\nThe editor opens on the chosen connector (badge 1); **Choose a different connector**\ngoes back to the picker, and **How to add Elasticsearch / ELK** expands a short guide.\nFill in the top of the form:",
+   "console": []
+  },
+  {
+   "id": "getting-started/first-run#walkthrough-an-elasticsearch-source:1",
+   "page": "getting-started/first-run.md",
+   "anchor": "walkthrough-an-elasticsearch-source",
+   "heading": "Walkthrough: an Elasticsearch source",
+   "text": "1. **Display name** (badge 2): a friendly name shown across the Console, for example\n   `Production SIEM`. Leave **Enabled**, **Primary (the agent reads from this)**, and\n   **Auto-Correlate** on for the first source.\n2. **Elasticsearch URL** (badge 3, required): the base URL of the Elasticsearch HTTP\n   API. On the Compose network use the container name, for example\n   `https://elasticsearch:9200`.\n3. **API key (read-only)** (badge 4): a read-only key scoped to the log index pattern\n   only, never `kibana_system` or the `elastic` superuser. It is stored in the secret\n   store and afterwards shown only as configured.\n4. **CA certificate (PEM)**: paste a private CA certificate, select a `.pem` or `.crt`\n   file, or give a path mounted into the container such as `/certs/ca/ca.crt`. Leave it\n   blank for a public CA.\n\nThe top of the Elasticsearch / ELK source editor. The URL is an example.\n\nScroll down to the connection's TLS switch and the field mapping:",
+   "console": []
+  },
+  {
+   "id": "getting-started/first-run#walkthrough-an-elasticsearch-source:2",
+   "page": "getting-started/first-run.md",
+   "anchor": "walkthrough-an-elasticsearch-source",
+   "heading": "Walkthrough: an Elasticsearch source",
+   "text": "1. **Verify TLS certificates** (badge 1): keep it on. Disable it only for a throwaway\n   lab with self-signed certificates.\n2. **Log index pattern** (badge 2, required): the index pattern or data view the agent\n   reads, for example `all-logs-*`. Comma-separated patterns are allowed.\n3. Check the mapped fields: **Timestamp field** (`@timestamp`, which drives the durable\n   cursor), **Source IP field** (`source.ip`), **User field** (`user.name`),\n   **Host field** (`host.name`), and **Rule / module field** (`event.module`).\n\nTLS verification and the field mapping.\n\nTip: Type the index pattern yourself\n\nThe **Log index pattern** field shows a default such as `all-logs-*`, but the editor\ndoes not count that default as an entry until you edit the field. If **Add source**\nreports \"Please complete required fields: Log index pattern\" while the field shows a\nvalue, clear the field and type your pattern. The OpenSearch and Wazuh index pattern\nfields behave the same way.\n\nAt the bottom of the editor, the **Feeds** block sets each feed's pattern, role (Events,\nAlerts, or Ignore), optional feed query, and poll schedule; **Correlation** sets the\nentity strategy, and **Display** sets the message field. The defaults suit a first\nsource. Then:",
+   "console": []
+  },
+  {
+   "id": "getting-started/first-run#walkthrough-an-elasticsearch-source:3",
+   "page": "getting-started/first-run.md",
+   "anchor": "walkthrough-an-elasticsearch-source",
+   "heading": "Walkthrough: an Elasticsearch source",
+   "text": "1. Select **Test connection** (badge 1) to test the draft without saving it.\n2. Select **Add source** (badge 2) to save it. Only the URL and the index pattern are\n   required to save; you can add the API key later.\n\nTest the draft, then save the source.\n\nThe stage now lists the saved source (badge 1) with its **Primary** badge, its connector\nand mode (`Elasticsearch · Pull`), and **Edit** and **Remove**. Another pull source can\nbe made primary with **Make primary**. The footer button reads **Skip for now** until a\nsource is enabled, and **Continue** (badge 2) afterwards.\n\nOne enabled source, ready to continue.",
    "console": []
   },
   {
@@ -925,9 +995,21 @@
    "page": "getting-started/first-run.md",
    "anchor": "4-ai-runtime",
    "heading": "4. AI runtime",
-   "text": "Add an OpenAI key for the fresh-install GPT-5.6 Luna completion defaults, or add an\nalternate provider key and change the role assignments in Settings. Provider keys are\n**write-only**: the console reports only whether one is configured and never returns\nits value. A blank field leaves an existing key unchanged. A newly typed key saves\nautomatically when you leave this stage, including Back, a progress-stage link,\nContinue, or a setup re-run's Close action. If the write fails, setup stays on the\nAI runtime stage so you can retry.\n\nFresh workspaces assign `gpt-5.6-luna` to router, investigator, formatter, standup,\nchat, and overview; embeddings remain on `text-embedding-3-small`. Existing stored\nassignments are never rewritten. Provider/model selection, self-hosted\nOpenAI-compatible endpoints, budgets, and per-role routing remain configurable under\n**Settings → General → Models** after launch. In Demo Mode, the deterministic mock runtime is\nalready available, so a live key is optional.\n\nEvery provider call passes through the shared cost ledger. The default daily budget\nis a preflight ceiling, not a provider-side billing limit; configure provider-side\nbudgets as a second boundary.",
+   "text": "Add an OpenAI key for the fresh-install GPT-5.6 Luna completion defaults, or add an\nalternate provider key and change the role assignments in Settings. Provider keys are\n**write-only**: the console reports only whether one is configured and never returns\nits value. A blank field leaves an existing key unchanged. A newly typed key saves\nautomatically when you leave this stage, including Back, a progress-stage link,\nContinue, or a setup re-run's Close action. If the write fails, setup stays on the\nAI runtime stage so you can retry.\n\nStep 3 of 4: AI runtime, before any key is entered.\n\nThe stage has three fields, each marked **not set** until a key is configured:\n\n- **OpenAI API key** (badge 1): the default runtime for GPT-5.6 Luna completion roles\n  and vector embeddings.\n- **Anthropic API key**: an optional alternate runtime for Claude models.\n- **Embedding API key**: optional. Leave it blank to reuse the OpenAI key for knowledge\n  retrieval.\n\nWithout a key the stage warns \"A live provider is recommended\": live investigations\nthen use the limited mock runtime until a provider is added. The footer button reads\n**Skip for now** (badge 2) when no key is typed or configured, and **Continue**\notherwise.",
    "console": [
-    "settings:models"
+    "settings:models",
+    "page:models"
+   ]
+  },
+  {
+   "id": "getting-started/first-run#4-ai-runtime:1",
+   "page": "getting-started/first-run.md",
+   "anchor": "4-ai-runtime",
+   "heading": "4. AI runtime",
+   "text": "Fresh workspaces assign `gpt-5.6-luna` to router, investigator, formatter, standup,\nchat, and overview; embeddings remain on `text-embedding-3-small`. Existing stored\nassignments are never rewritten. Per-role model selection is under\n**Settings → General → Models**; providers, self-hosted OpenAI-compatible endpoints and\nbudgets are on **Analytics → Models**. In Demo Mode, the deterministic mock runtime is\nalready available, so a live key is optional.\n\nEvery provider call passes through the shared cost ledger. The default daily budget\nis a preflight ceiling, not a provider-side billing limit; configure provider-side\nbudgets as a second boundary. Workspace and Case Manager chat are metered in the same\nledger but sit outside the daily and monthly AI budget; their only bound is an optional\nchat-only daily cap, off by default.",
+   "console": [
+    "settings:models",
+    "page:models"
    ]
   },
   {
@@ -935,7 +1017,7 @@
    "page": "getting-started/first-run.md",
    "anchor": "5-review-launch",
    "heading": "5. Review & launch",
-   "text": "The final stage reports each item as **Ready**, **Needs attention**, or **Optional**.\nIt distinguishes these outcomes instead of claiming every configuration is complete:\n\n- **Demo workspace is ready** when Synthetic demo is active;\n- **Ready for live triage** when a live source and provider are configured; or\n- **Ready with limited capabilities** when live telemetry or a live provider is\n  missing.\n\nThe **Automation posture** row explains that adaptive investigation routing and\nrelated-case grouping are on by default. Detailed controls remain in **Settings**.\nThis posture does not change the deterministic close/escalate authority.\n\nSelect **Launch Agentic SOC** on first run. This calls `POST /api/setup/complete`,\nstarts enabled pull polling, and reconciles enabled background receivers. If a\ncompletion response is lost, the console checks the authoritative setup status\nbefore showing a failure so a successful launch does not strand you in setup.\n\nAdministrators can re-run the same workflow from **Settings**. The final action is\nthen **Apply changes**, and **Close** returns without marking setup incomplete.\nExisting sources and credentials remain in place unless you explicitly change or\nremove them.",
+   "text": "The final stage reports each item as **Ready**, **Needs attention**, or **Optional**.\nIt distinguishes these outcomes instead of claiming every configuration is complete:\n\n- **Demo workspace is ready** when Synthetic demo is active;\n- **Ready for live triage** when a live source and provider are configured; or\n- **Ready with limited capabilities** when live telemetry or a live provider is\n  missing.\n\nStep 4 of 4: Review & launch, with a source and no provider.\n\nThe readiness summary (badge 1) has one row per item. In the screenshot,\n**Data sources** reads \"1 enabled source · primary: Production SIEM\" and **AI runtime**\nreads \"No provider configured · mock runtime only\", so the heading is\n**Ready with limited capabilities**. With no source, **Data sources** reads\n\"No source configured · live telemetry will not be ingested\".\n\nThe **Automation posture** row explains that adaptive investigation routing and\nrelated-case grouping are on by default. Detailed controls remain in **Settings**.\nThis posture does not change the deterministic close/escalate authority.",
    "console": []
   },
   {
@@ -943,7 +1025,7 @@
    "page": "getting-started/first-run.md",
    "anchor": "5-review-launch",
    "heading": "5. Review & launch",
-   "text": "If `GET /api/setup/status` cannot be read, the console fails closed: it shows\n**Can't verify setup state** with **Retry** instead of opening an operational page\nwhose setup state is unknown.",
+   "text": "Select **Launch Agentic SOC** (badge 2) on first run. This calls `POST /api/setup/complete`,\nstarts enabled pull polling, and reconciles enabled background receivers. If a\ncompletion response is lost, the console checks the authoritative setup status\nbefore showing a failure so a successful launch does not strand you in setup.\n\nAdministrators can re-run the same workflow from **Settings**. The final action is\nthen **Apply changes**, and **Close** returns without marking setup incomplete.\nExisting sources and credentials remain in place unless you explicitly change or\nremove them.\n\nIf `GET /api/setup/status` cannot be read, the console fails closed: it shows\n**Can't verify setup state** with **Retry** instead of opening an operational page\nwhose setup state is unknown.",
    "console": []
   },
   {
@@ -951,7 +1033,7 @@
    "page": "getting-started/first-run.md",
    "anchor": "verify-setup",
    "heading": "Verify setup",
-   "text": "After the workspace opens:\n\n- **Sources** lists the new source and its enabled state;\n- source coverage or health shows a successful poll or recent event;\n- **Unified logs** shows the expected normalized fields;\n- **Cost** is zero until a model-backed action runs; and\n- **Audit** records later state-changing actions.\n\nWarning: Do not widen scope yet\n\nValidate timestamp, native ID, rule, severity, user, host, address, and source\nprovenance with synthetic data before adding broad event patterns. Mapping\nmistakes at this stage can create misleading correlations and cases.",
+   "text": "After launch the Console opens the **Cyber Defence Center**. Until cases arrive it shows\n**No triage activity yet**, with **Connect a source** and **Start live demo**.\n\nThe first screen after launch on a fresh live workspace.\n\nAfter the workspace opens:\n\n- **Sources** lists the new source and its enabled state;\n- source coverage or health shows a successful poll or recent event;\n- **Logs** shows the expected normalized fields;\n- **Cost** is zero until a model-backed action runs; and\n- **Audit log** records later state-changing actions.\n\nWarning: Do not widen scope yet\n\nValidate timestamp, native ID, rule, severity, user, host, address, and source\nprovenance with synthetic data before adding broad event patterns. Mapping\nmistakes at this stage can create misleading correlations and cases.",
    "console": []
   },
   {
@@ -5283,7 +5365,15 @@
    "page": "getting-started/install.md",
    "anchor": "",
    "heading": "",
-   "text": "This guide applies to **Agentic SOC 0.1** and is for operators installing the recommended\nself-contained evaluation stack. It runs PostgreSQL with pgvector, Redis, the Agentic SOC\nAPI, and the nginx-served Agentic SOC Console. Your SIEM or event source remains separate\nand read-only.",
+   "text": "This guide applies to **Agentic SOC 0.1** and is for operators installing the recommended\nself-contained evaluation stack. It runs PostgreSQL with pgvector, Redis, the Agentic SOC\nAPI, and the nginx-served Agentic SOC Console. Your SIEM or event source remains separate\nand read-only.\n\nThe install takes six steps: check out the source, prepare `.env`, start the stack, verify\nthe health checks, open the Console, and (when you are done) stop the stack. First-run\nsetup in the Console follows in First-run setup.",
+   "console": []
+  },
+  {
+   "id": "getting-started/install#what-the-stack-contains:0",
+   "page": "getting-started/install.md",
+   "anchor": "what-the-stack-contains",
+   "heading": "What the stack contains",
+   "text": "`deploy/docker-compose.agnostic.yml` starts five containers on one Docker host. Only\nports `8080` (the Console) and `8088` (the API) are published to the host. Select the\ndiagram to open it full size.\n\nThe reference Compose deployment.\n\n| Container | What it does |\n| --- | --- |\n| `tlsoc-webui` | nginx serves the Console and the bundled Help Center on port `8080` and proxies `/api/` to the backend. |\n| `tlsoc-backend` | The FastAPI application: API, connectors, receivers, engines, and agents. It is also published on port `8088` for API clients and HTTP push senders. |\n| `tlsoc-postgres` | PostgreSQL with pgvector. It holds all application state on the named volume `tlsoc-pgdata`. Not published. |\n| `tlsoc-redis` | The enrichment and deduplication cache, with no persistence. Not published. |\n| `agentic-soc-updater` | The private update supervisor. It is the only container that mounts the Docker socket, and it applies only signed releases that an administrator approves. |\n\nReceiver ports such as syslog `1514` bind inside the backend container. Publish only the\nones you configure. The container names keep their compatibility identifiers.",
    "console": []
   },
   {
@@ -5291,7 +5381,7 @@
    "page": "getting-started/install.md",
    "anchor": "prerequisites",
    "heading": "Prerequisites",
-   "text": "- Docker Engine or Docker Desktop\n- Docker Compose v2 (`docker compose`)\n- enough local capacity for four containers and the state volume\n- an Anthropic or OpenAI key, or a reachable OpenAI-compatible model, for real\n  investigations\n- a least-privilege credential if you plan to add a pull source\n\nThe deterministic demo does not require a provider key. See Run the demo\nwhen infrastructure and external model calls are not part of your evaluation.",
+   "text": "- Docker Engine or Docker Desktop\n- Docker Compose v2 (`docker compose`, not the legacy `docker-compose`)\n- Git, Bash, and Python 3 on the host: `scripts/agentic-soc-compose.sh` uses Bash and\n  Python 3\n- outbound network access for the image builds (base images and the Python and npm\n  package registries) and for your model provider\n- enough local capacity for five containers, three local image builds, and the state\n  volume\n- an Anthropic or OpenAI key, or a reachable OpenAI-compatible model, for real\n  investigations\n- a least-privilege credential if you plan to add a pull source\n\nThe deterministic demo does not require a provider key. See Run the demo\nwhen infrastructure and external model calls are not part of your evaluation.",
    "console": []
   },
   {
@@ -5299,7 +5389,7 @@
    "page": "getting-started/install.md",
    "anchor": "1-check-out-version-01",
    "heading": "1. Check out version 0.1",
-   "text": "After its complete signed publication and canonical runtime acceptance succeed, use\nthe immutable `v0.1.13` Stable tag:\n\n```bash\ngit clone --branch v0.1.13 --depth 1 \\\n  https://github.com/ARYDESTROYER/Agentic-Kibana.git\ncd Agentic-Kibana\n```\n\nFor an unreleased preview, use the repository's `Testing` branch instead. The remote\nuses default `main` for accepted Stable source. Do not create or move a release tag\nlocally. Pulling `main` means pulling the current\naccepted Stable source—not the next Testing candidate—but repository protections\nand required checks must be verified independently.",
+   "text": "After its complete signed publication and canonical runtime acceptance succeed, use\nthe immutable `v0.1.13` Stable tag. Use `Testing` only for an explicitly unreleased\nevaluation.\n\n[Stable 0.1.13 (after acceptance)]\n\n```bash\ngit clone https://github.com/ARYDESTROYER/Kavach-AgenticSOC.git\ncd Kavach-AgenticSOC\ngit checkout v0.1.13\n```\n\n[Testing (unreleased preview)]\n\n```bash\ngit clone --branch Testing https://github.com/ARYDESTROYER/Kavach-AgenticSOC.git\ncd Kavach-AgenticSOC\n```\n\nKeep a full clone (no `--depth 1`). The one-time updater bootstrap\n(`scripts/bootstrap-updater.sh`) checks that the release tag's commit is contained in\n`origin/main`, which a shallow single-branch clone does not have.\n\nThe remote uses default `main` for accepted Stable source. Pulling `main` gives you the\ncurrent accepted Stable source, not the next Testing candidate. Repository protections\nand required checks must still be verified independently. Do not create or move a\nrelease tag locally.\n\nUse `v0.1.13` only when its canonical GitHub Release, plan signature, public image\ndigests, and canonical PostgreSQL Compose runtime acceptance all verify. Otherwise use a\npreviously verified Stable release, or Testing only for an explicitly unreleased\nevaluation.\n\nNote: Tags that are not installation sources (v0.1.4 to v0.1.12)",
    "console": []
   },
   {
@@ -5307,7 +5397,7 @@
    "page": "getting-started/install.md",
    "anchor": "1-check-out-version-01",
    "heading": "1. Check out version 0.1",
-   "text": "The immutable `v0.1.4` and `v0.1.5` tags are not installable releases: their\npublication attempts stopped before a canonical signed plan and public GitHub\nRelease existed. The immutable `v0.1.6`, `v0.1.7`, and `v0.1.8` publications have signed/public\nartifacts but failed canonical bootstrap acceptance at different portability\nboundaries. The immutable `v0.1.9` publication built, signed, and anonymously proved\nall three images, but its constrained supervisor could not traverse the runner-owned\nverification directory and no GitHub Release or installable plan was published. The\nimmutable `v0.1.10` workflow later timed out while its Web Console builder ran under\ntarget emulation; it also has no installable GitHub Release or canonical signed plan.\nThe immutable `v0.1.11` workflow built, signed, anonymously proved, and verified all\nthree images and the plan but failed during post-verification cleanup before its\ncanonical Release or assets were published. The immutable `v0.1.12` release then\ncompleted the entire signed/public publication, but canonical v0.1.1 bootstrap\nfailed closed before application mutation because matching absent legacy\nstate-schema labels were normalized asymmetrically. These records must never be\nused as installation sources. Use `v0.1.13`\nonly when its canonical GitHub Release, plan\nsignature, public image digests, and canonical PostgreSQL Compose runtime acceptance\nall verify. Otherwise use a\npreviously verified Stable release or Testing only for an explicitly\nunreleased evaluation.",
+   "text": "These immutable tags are publication records. They must never be used as\ninstallation sources.\n\n- `v0.1.4` and `v0.1.5`: their publication attempts stopped before a canonical\n  signed plan and public GitHub Release existed.\n- `v0.1.6`, `v0.1.7`, and `v0.1.8`: these publications have signed, public\n  artifacts but failed canonical bootstrap acceptance at different portability\n  boundaries.\n- `v0.1.9`: the publication built, signed, and anonymously proved all three images,\n  but its constrained supervisor could not traverse the runner-owned verification\n  directory, and no GitHub Release or installable plan was published.\n- `v0.1.10`: the workflow timed out while its Web Console builder ran under target\n  emulation. It has no installable GitHub Release or canonical signed plan.\n- `v0.1.11`: the workflow built, signed, anonymously proved, and verified all three\n  images and the plan, but failed during post-verification cleanup before its\n  canonical Release or assets were published.\n- `v0.1.12`: the release completed the entire signed, public publication, but\n  canonical v0.1.1 bootstrap failed closed before application mutation because\n  matching absent legacy state-schema labels were normalized asymmetrically.\n\nNote: What the 0.1.13 build changes",
    "console": []
   },
   {
@@ -5315,7 +5405,7 @@
    "page": "getting-started/install.md",
    "anchor": "1-check-out-version-01",
    "heading": "1. Check out version 0.1",
-   "text": "Version 0.1.13 retains the writable updater trust cache and least-privilege verification\nassets, and moves only architecture-neutral Console builder work to BuildKit's native\nplatform. The final nginx runtime remains target-platform-specific. It also restores\nthe runner-owned verification fixture to private mode only after verifier exit. It changes no\nschema, protocol, identity, privilege, trust predicate, or frozen-base bytes.",
+   "text": "Version 0.1.13 retains the writable updater trust cache and least-privilege\nverification assets, and moves only architecture-neutral Console builder work to\nBuildKit's native platform. The final nginx runtime remains target-platform-specific.\nIt also restores the runner-owned verification fixture to private mode only after\nverifier exit. It changes no schema, protocol, identity, privilege, trust predicate,\nor frozen-base bytes.",
    "console": []
   },
   {
@@ -5323,7 +5413,27 @@
    "page": "getting-started/install.md",
    "anchor": "2-prepare-configuration",
    "heading": "2. Prepare configuration",
-   "text": "```bash\ncp .env.example .env\n```\n\nAt minimum, set a database password and stable authentication secret. Enable the\nbuilt-in authentication layer for any shared evaluation:\n\n```dotenv\nTLSOC_PG_PASSWORD=<random-database-password>\nTLSOC_AUTH_ENABLED=true\nTLSOC_AUTH_JWT_SECRET=<stable-random-secret-at-least-32-bytes>\n\n# Choose one for non-demo investigations, or configure a compatible local model:\nTLSOC_ANTHROPIC_API_KEY=\nTLSOC_OPENAI_API_KEY=\n```\n\nGenerate random values with `openssl rand -hex 32`. Never commit `.env`.\n\nWarning: Secrets entered later in the UI\n\nIn Agentic SOC 0.1, runtime-entered source, notification, SSO, and local-model secret\nvalues live in process memory. They must be re-entered after a backend restart.\nEnvironment or an external deployment secret mechanism is the durable boot-time\npath.",
+   "text": "Run every command in this guide from the repository root.\n\n```bash\ncp .env.example .env\n```\n\nAt minimum, set a database password and stable authentication secret. Enable the\nbuilt-in authentication layer for any shared evaluation:\n\n```dotenv\nTLSOC_PG_PASSWORD=<random-database-password>\nTLSOC_AUTH_ENABLED=true\nTLSOC_AUTH_JWT_SECRET=<stable-random-secret-at-least-32-bytes>\n\n# Optional: an environment fallback administrator (see \"Choose how the first\n# administrator is created\" below).\nTLSOC_AUTH_ADMIN_USERNAME=admin\nTLSOC_AUTH_ADMIN_PASSWORD=\n\n# Choose one for non-demo investigations, or configure a compatible local model:\nTLSOC_ANTHROPIC_API_KEY=\nTLSOC_OPENAI_API_KEY=\n```\n\nGenerate random values with `openssl rand -hex 32`. Never commit `.env`.\n\nWhat each variable does:",
+   "console": [
+    "settings:models"
+   ]
+  },
+  {
+   "id": "getting-started/install#2-prepare-configuration:1",
+   "page": "getting-started/install.md",
+   "anchor": "2-prepare-configuration",
+   "heading": "2. Prepare configuration",
+   "text": "- `TLSOC_PG_PASSWORD`: always required. The PostgreSQL password; Compose refuses to\n  start without it.\n- `TLSOC_AUTH_ENABLED`: set `true` for any shared evaluation. Turns on sign-in, roles,\n  MFA, SSO, and sessions. The `.env.example` default is `false`.\n- `TLSOC_AUTH_JWT_SECRET`: needed with authentication. The session signing key, 32\n  bytes or more. Keep it stable: when it is blank, every session ends on each backend\n  restart.\n- `TLSOC_AUTH_ADMIN_USERNAME`: optional. The username of an environment fallback\n  `super_admin`.\n- `TLSOC_AUTH_ADMIN_PASSWORD`: optional. That administrator's password, hashed in\n  memory at startup and never stored.\n- `TLSOC_OPENAI_API_KEY`: recommended. The provider for the fresh-install GPT-5.6 Luna\n  role defaults and embeddings.\n- `TLSOC_ANTHROPIC_API_KEY`: optional. An alternate provider. Change the role\n  assignments in **Settings → General → Models** to use it.\n- `TLSOC_AUTH_COOKIE_SECURE`: set `true` when TLS terminates in front of the Console,\n  so the session cookie is HTTPS-only.\n\nLeave `AGENTIC_SOC_UPDATE_REPOSITORY` at the value `.env.example` ships unless you\npublish signed releases from your own fork. It names the repository whose signed\nreleases the update supervisor trusts, which is a separate identity from the clone URL.",
+   "console": [
+    "settings:models"
+   ]
+  },
+  {
+   "id": "getting-started/install#choose-how-the-first-administrator-is-created:0",
+   "page": "getting-started/install.md",
+   "anchor": "choose-how-the-first-administrator-is-created",
+   "heading": "Choose how the first administrator is created",
+   "text": "With authentication turned on (`TLSOC_AUTH_ENABLED=true`) and an empty user store, the\nfirst screen at `http://localhost:8080` depends on the administrator password\n(`TLSOC_AUTH_ADMIN_PASSWORD`) in `.env`:\n\n| Administrator password | First screen |\n| --- | --- |\n| Set | **Create your admin account**. You create a named administrator in the browser. The environment administrator also works as a fallback sign-in. |\n| Blank | The sign-in screen. The backend seeds the demonstration administrator `Admin` / `Admin@123`, and the sign-in page shows a hint with those credentials. Change that password immediately. |\n| Authentication off | No sign-in. The setup wizard opens directly. Use this only on an isolated workstation. |\n\nFor a shared deployment, set `TLSOC_AUTH_ADMIN_PASSWORD` to a unique value so the\ndemonstration account is never created, and choose a different username for your named\nadministrator. This needs no change to the Compose file, whose exact hash supervised\nupdates check. For other bootstrap options, see\nAuthentication.\n\nWarning: Secrets entered later in the UI\n\nIn Agentic SOC 0.1, runtime-entered source, notification, SSO, and local-model secret\nvalues live in process memory. They must be re-entered after a backend restart.\nEnvironment or an external deployment secret mechanism is the durable boot-time\npath.",
    "console": []
   },
   {
@@ -5331,7 +5441,7 @@
    "page": "getting-started/install.md",
    "anchor": "3-validate-and-start",
    "heading": "3. Validate and start",
-   "text": "```bash\n./scripts/agentic-soc-compose.sh config --quiet\n./scripts/agentic-soc-compose.sh up --detach --build\n./scripts/agentic-soc-compose.sh ps\n```\n\nOpen `http://localhost:8080` for a workstation evaluation. Terminate TLS at a trusted\ningress and set secure cookies before exposing the deployment beyond a trusted\nnetwork.",
+   "text": "```bash\n./scripts/agentic-soc-compose.sh config --quiet\n./scripts/agentic-soc-compose.sh up --detach --build\n./scripts/agentic-soc-compose.sh ps\n```\n\nWhat to expect:\n\n1. `config --quiet` prints nothing when the Compose file and `.env` are valid. A\n   missing `TLSOC_PG_PASSWORD` stops it with an error that names that variable.\n2. `up --detach --build` builds three local images (the backend, the Console with its\n   Help Center, and the update supervisor) and starts the stack. The first build\n   downloads base images and packages, so it takes longer than later starts.\n3. `ps` lists `tlsoc-postgres`, `tlsoc-redis`, `tlsoc-backend`, `tlsoc-webui`, and\n   `agentic-soc-updater`. The Console container starts only after the backend reports\n   healthy.\n\nOpen `http://localhost:8080` for a workstation evaluation. Terminate TLS at a trusted\ningress and set secure cookies before exposing the deployment beyond a trusted\nnetwork.",
    "console": []
   },
   {
@@ -5339,15 +5449,49 @@
    "page": "getting-started/install.md",
    "anchor": "4-verify-the-api",
    "heading": "4. Verify the API",
-   "text": "```bash\ncurl --fail http://localhost:8080/api/health/live\ncurl --fail http://localhost:8080/api/health/ready\ncurl --fail http://localhost:8080/api/health/build-info\n```\n\n- **Live** confirms the API process is running.\n- **Ready** confirms the configured application-state store can serve requests.\n- **Build info** reports the product version and build metadata without secrets.\n\nOpen **Help Center** from the bottom of the Console rail and confirm the browser\nstays on this deployment at `/docs/0.1/`. That bundled Help Center matches the\ninstalled application and remains usable without access to GitHub or the public docs\nsite.\n\nIf readiness fails, inspect the backend service logs and use the\ntroubleshooting guide.",
+   "text": "```bash\ncurl --fail http://localhost:8080/api/health/live\ncurl --fail http://localhost:8080/api/health/ready\ncurl --fail http://localhost:8080/api/health/build-info\n```\n\n- **Live** confirms the API process is running.\n- **Ready** confirms the configured application-state store can serve requests. An\n  unavailable dependency returns HTTP `503`.\n- **Build info** reports the product version and build metadata without secrets.\n\nExample: Sample responses\n\nThese responses come from a local source-run demo backend (`./scripts/run-demo.sh`,\nqueried directly on port `8088`), which keeps its state in memory. Each is\npretty-printed with `python3 -m json.tool`:",
    "console": []
   },
   {
-   "id": "getting-started/install#5-stop-the-stack:0",
+   "id": "getting-started/install#4-verify-the-api:1",
    "page": "getting-started/install.md",
-   "anchor": "5-stop-the-stack",
-   "heading": "5. Stop the stack",
+   "anchor": "4-verify-the-api",
+   "heading": "4. Verify the API",
+   "text": "```text\n$ curl -s http://127.0.0.1:8088/api/health/live | python3 -m json.tool\n{\n    \"status\": \"ok\",\n    \"service\": \"tlsoc-agentic-triage\",\n    \"version\": \"0.1.13\"\n}\n\n$ curl -s http://127.0.0.1:8088/api/health/ready | python3 -m json.tool\n{\n    \"status\": \"ready\",\n    \"ready\": true,\n    \"version\": \"0.1.13\",\n    \"store_type\": \"InMemoryESClient\",\n    \"checks\": {\n        \"state_store\": true\n    }\n}\n\n$ curl -s http://127.0.0.1:8088/api/health/build-info | python3 -m json.tool\n{\n    \"service\": \"tlsoc-agentic-triage\",\n    \"version\": \"0.1.13\",\n    \"release_channel\": \"testing\",\n    \"commit_sha\": \"4cb849a9092d115845000b64efa388e3864964d7\",\n    \"build_time\": \"2026-11-11T22:34:11+05:30\",\n    \"state_backend\": \"elasticsearch\",\n    \"ocsf_version\": \"1.4.0\",\n    \"provenance_complete\": true,\n    \"provenance_missing\": [],\n    \"provenance_advisories\": []\n}\n```\n\nOn the reference Compose stack, readiness reports `\"store_type\": \"PostgresStateStore\"`\nand build info reports `\"state_backend\": \"postgres\"`, with your own commit and build\ntime. `\"service\": \"tlsoc-agentic-triage\"` is a compatibility identifier.\n\nOpen **Help Center** from the bottom of the Console rail and confirm the browser\nstays on this deployment at `/docs/0.1/`. That bundled Help Center matches the\ninstalled application and remains usable without access to GitHub or the public docs\nsite.",
+   "console": []
+  },
+  {
+   "id": "getting-started/install#4-verify-the-api:2",
+   "page": "getting-started/install.md",
+   "anchor": "4-verify-the-api",
+   "heading": "4. Verify the API",
+   "text": "The bundled Help Center, served by the Console at /docs/0.1/.\n\nIf readiness fails, inspect the backend service logs and use the\ntroubleshooting guide:\n\n```bash\n./scripts/agentic-soc-compose.sh logs tlsoc-backend\n```",
+   "console": []
+  },
+  {
+   "id": "getting-started/install#5-open-the-console:0",
+   "page": "getting-started/install.md",
+   "anchor": "5-open-the-console",
+   "heading": "5. Open the Console",
+   "text": "Open `http://localhost:8080`. The first screen is the one your `.env` selected in\nChoose how the first administrator is created.\nCreate or sign in as the administrator, then complete the four-stage setup wizard:\n**Workspace**, **Data sources**, **AI runtime**, and **Review & launch**.\nFirst-run setup walks through every screen.\n\nA fresh install opens the Console in the dark theme, the organization default. Each user\ncan change it under **Settings → Account → Appearance**.\n\nThe header may show **Enable updates** until the update supervisor's one-time host setup\nis done. See Upgrades.",
+   "console": [
+    "settings:customization"
+   ]
+  },
+  {
+   "id": "getting-started/install#6-stop-the-stack:0",
+   "page": "getting-started/install.md",
+   "anchor": "6-stop-the-stack",
+   "heading": "6. Stop the stack",
    "text": "```bash\n./scripts/agentic-soc-compose.sh down\n```\n\nThe named PostgreSQL volume remains. Adding `--volumes` removes application state\nand is destructive.",
+   "console": []
+  },
+  {
+   "id": "getting-started/install#common-install-problems:0",
+   "page": "getting-started/install.md",
+   "anchor": "common-install-problems",
+   "heading": "Common install problems",
+   "text": "| Symptom | What to check |\n| --- | --- |\n| `config` fails and names `TLSOC_PG_PASSWORD` | Set `TLSOC_PG_PASSWORD` in `.env`. |\n| The wrapper says `.env` is missing | Run `cp .env.example .env` in the repository root. |\n| `/api/health/ready` returns HTTP `503` | The application-state store is not usable. Check `tlsoc-postgres` with `ps` and read the backend logs. |\n| The Console shows **Can't verify setup state** | The Console could not read the setup status. Select **Retry** once the backend is ready. |\n| Every sign-in ends when the backend restarts | Set a stable `TLSOC_AUTH_JWT_SECRET` and start the stack again. |",
    "console": []
   },
   {
@@ -6660,7 +6804,31 @@
    "page": "concepts/architecture.md",
    "anchor": "shipped-signal-flow",
    "heading": "Shipped signal flow",
-   "text": "[diagram omitted]\n\nPull connectors are polled per enabled source and feed. Push receivers deliver\nnormalized batches into the same correlation and case pipeline. Source identity is\nretained throughout, so the console can distinguish what the source reported, what\nthe model assessed, and what code decided.",
+   "text": "The diagram follows one security signal through 11 numbered stages, set in three bands.\nThe top band is the deterministic data plane: every enabled event, with no model call.\nThe middle band is admission and reasoning: only admitted candidates reach a model. The\nbottom band decides, records, and presents the case. The state store runs along the\nbottom. Each dashed orange outline marks untrusted data that comes from a source.\nSelect a diagram to open it full size.\n\nAgentic SOC architecture and data flow. Code decides; the model only recommends.\n\nPull connectors are polled per enabled source and feed. Push receivers deliver\nnormalized batches into the same correlation and case pipeline. Source identity is\nretained throughout, so the console can distinguish what the source reported, what\nthe model assessed, and what code decided.\n\nLong operations that the Console accepts, such as exports and bulk case work, run as\nbackground jobs: a strict-CAS job record with a renewable lease, checkpointed work, an\naudit record, and a result the Console shows. See\nBackground jobs.",
+   "console": []
+  },
+  {
+   "id": "concepts/architecture#stage-by-stage:0",
+   "page": "concepts/architecture.md",
+   "anchor": "stage-by-stage",
+   "heading": "Stage by stage",
+   "text": "1. **Connectors.** Agentic SOC reads security sources through 3 pull connectors\n   (Elasticsearch, OpenSearch, and the Wazuh indexer) with a read-only, scoped key, and\n   receives them through 16 push, queue, and object-store receivers, from webhook,\n   Splunk HEC, and syslog to Kafka, cloud queues, and object stores.\n2. **Normalise to OCSF.** Every record becomes a canonical OCSF 1.4 event that keeps its\n   source provenance. The `unmapped` and `raw_data` fields are kept, but they are always\n   treated as untrusted and fenced.\n3. **Poll and ingest.** Pull sources are read on a durable cursor per source and feed,\n   so nothing is skipped or duplicated. Push and queue batches join the same pipeline.\n4. **Correlate and score.** Deterministic code groups events into entity clusters. A\n   case signature keeps cases idempotent, so a repeat updates the existing case instead\n   of creating a copy. Each cluster gets a risk score from 0 to 100. Stages 1 to 4 never\n   call a model.\n5. **Admission gates.** The routing risk gate sends event clusters on at risk 70 or more\n   by default. Alert feeds go straight on. Anything below the floor stays a visible `$0`\n   candidate and is never dropped. The budget gate then checks the pipeline's daily AI\n   budget and caps before any model call; an over-budget case goes to a person.",
+   "console": []
+  },
+  {
+   "id": "concepts/architecture#stage-by-stage:1",
+   "page": "concepts/architecture.md",
+   "anchor": "stage-by-stage",
+   "heading": "Stage by stage",
+   "text": "6. **AI investigation.** This stage is model-backed and advisory. The router does a\n   cheap first triage. The investigator runs a ReAct loop over read-only tools: log\n   queries with the read-only key, cached enrichment, knowledge retrieval, Published\n   runbooks, and MITRE ATT&CK context. The formatter returns a verdict, a confidence,\n   and compact evidence as a recommendation only. Source-derived evidence enters every\n   prompt fenced and labelled as untrusted data.\n7. **One model gateway.** Every model call, from investigation and from chat, goes\n   through one gateway to the configured provider (Anthropic, OpenAI, Azure OpenAI,\n   Bedrock, Vertex, or an OpenAI-compatible endpoint). The gateway runs the pipeline\n   budget pre-flight, retries, and a circuit breaker, and writes one usage and cost\n   record for every call. Workspace and Case Manager chat are metered there too but sit\n   outside the daily and monthly AI budget.\n8. **Case Manager.** Deterministic code, `decide()`, compares the verdict, confidence,\n   and risk with your `AutoClosePolicy` and chooses close, escalate, or needs human. The\n   model only recommends, a runbook cannot change the policy, and needs human never\n   auto-closes.\n9. **Cases and audit.** Cases are idempotent by signature and carry notes, tasks, and\n   runbook runs. Every agent and human action is written to the append-only audit log.\n10. **Console and API.** Analysts use the React Console through the FastAPI API, with\n    sign-in, roles, and permissions, to review, approve, and close cases, and receive\n    notifications and in-app Inbox items. Workspace Chat is the one chat engine and uses\n    only read-only tools; untrusted values stay fenced there too.\n11. **State store.** The application keeps its own records apart from your source logs:\n    cases, audit log, usage ledger, cursors, configuration, users, knowledge, and\n    runbooks. Choose one backend: PostgreSQL with pgvector (the reference Compose stack),\n    Elasticsearch (an existing ELK stack), or SQLite (a single node, for evaluation).",
+   "console": []
+  },
+  {
+   "id": "concepts/architecture#reference-deployment:0",
+   "page": "concepts/architecture.md",
+   "anchor": "reference-deployment",
+   "heading": "Reference deployment",
+   "text": "The reference Compose file, `deploy/docker-compose.agnostic.yml`, runs this system as\nfive containers on one Docker host. Only ports `8080` (the Console) and `8088` (the API)\nare published.\n\nThe reference Compose deployment on one Docker host.\n\n- `tlsoc-webui` (nginx) serves the Console and the `/docs` Help Center and proxies\n  `/api/`, the event stream, and the chat stream to the backend.\n- `tlsoc-backend` runs the API, connectors, receivers, engines, and agents. HTTP push\n  senders post to `/api/ingest/` on port `8088`; other receiver ports bind\n  inside the container and are published only when you configure them.\n- `tlsoc-postgres` holds all application state on the named volume `tlsoc-pgdata`, and\n  `tlsoc-redis` is a cache without persistence. Neither is published.\n- `agentic-soc-updater` is the private update supervisor. It is the only service that\n  mounts the Docker socket, it talks to the backend only through a private control\n  socket, and it fetches signed, digest-pinned releases only when an administrator\n  approves an update.\n\nSee Install Agentic SOC to start it and\nDeployment for the other topologies.",
    "console": []
   },
   {
