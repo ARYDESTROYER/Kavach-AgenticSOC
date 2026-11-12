@@ -53,7 +53,8 @@ Which screen you see first depends on the deployment's `.env`; see
     Single sign-on & policy** shows this in its Posture row **Role-based access**: "Off:
     everyone is Super admin". The 0.1.13 Console has no switch for it; a super
     administrator turns it on by saving `{"rbac": {"enabled": true}}` through
-    `PUT /api/settings`. Keep at least one super administrator when you do.
+    `PUT /api/settings`; [Turn on role-based access](../administration/users-rbac.md#turn-on-role-based-access)
+    has the command. Keep at least one super administrator when you do.
 
 For role design, MFA, SSO, and session policy, see
 [Users and RBAC](../administration/users-rbac.md).

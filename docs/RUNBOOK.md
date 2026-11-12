@@ -73,11 +73,16 @@ machine identifier, so the effective volume name remains
 migration; changing display nomenclature does not rename stored state.
 
 ```bash
-# Backup
-docker exec tlsoc-postgres pg_dump -U tlsoc -d tlsoc -Fc > tlsoc-$(date +%F).dump
+# Backup (reads POSTGRES_USER and POSTGRES_DB inside the container, so it follows
+# TLSOC_PG_USER and TLSOC_PG_DB)
+docker exec tlsoc-postgres sh -c 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc' > tlsoc-$(date +%F).dump
 
-# Restore (into a fresh, empty db)
-docker exec -i tlsoc-postgres pg_restore -U tlsoc -d tlsoc --clean --if-exists < tlsoc-YYYY-MM-DD.dump
+# Restore into an empty database, with the backend stopped
+./scripts/agentic-soc-compose.sh stop tlsoc-backend
+docker exec tlsoc-postgres sh -c 'dropdb -U "$POSTGRES_USER" "$POSTGRES_DB"'
+docker exec tlsoc-postgres sh -c 'createdb -U "$POSTGRES_USER" "$POSTGRES_DB"'
+docker exec -i tlsoc-postgres sh -c 'pg_restore -U "$POSTGRES_USER" -d "$POSTGRES_DB" --exit-on-error' < tlsoc-YYYY-MM-DD.dump
+./scripts/agentic-soc-compose.sh start tlsoc-backend
 
 # Volume-level backup (cold): stop the backend first to quiesce writes
 ./scripts/agentic-soc-compose.sh stop tlsoc-backend

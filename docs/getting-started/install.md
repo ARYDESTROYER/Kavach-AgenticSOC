@@ -206,7 +206,7 @@ Console shows "Off: everyone is Super admin" under
 **Settings → Security & access → Single sign-on & policy**. There is no switch for it in
 the 0.1.13 Console: a super administrator turns it on by saving
 `{"rbac": {"enabled": true}}` through `PUT /api/settings`. See
-[Users and RBAC](../administration/users-rbac.md).
+[Turn on role-based access](../administration/users-rbac.md#turn-on-role-based-access).
 
 !!! warning "Secrets entered later in the UI"
 

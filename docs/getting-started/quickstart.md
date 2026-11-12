@@ -165,7 +165,7 @@ With `TLSOC_AUTH_ADMIN_PASSWORD` set, the backend does not seed the demonstratio
 create a named administrator. The environment administrator remains a fallback sign-in.
 Role-based access is off by default, so every signed-in account is treated as Super
 admin until a super administrator turns it on; see
-[Users and RBAC](../administration/users-rbac.md). Leave
+[Turn on role-based access](../administration/users-rbac.md#turn-on-role-based-access). Leave
 `AGENTIC_SOC_UPDATE_REPOSITORY` as `.env.example` ships it: it names the repository
 whose signed releases the update supervisor trusts, not the clone URL.
 

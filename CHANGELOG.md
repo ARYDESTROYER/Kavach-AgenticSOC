@@ -38,6 +38,24 @@ identity changes, and the version stays 0.1.13.
   the Console image.
 - The guides record a known 0.1.13 Console issue: in the source editor, a required index
   pattern that shows its default must be typed again before **Add source** accepts it.
+- A second pass checked every command, setting and screen label in README, INSTALL.md,
+  DEPLOY.md, the `.env.example` comments and the Help Center pages against the code, and
+  corrected what was wrong:
+  - Every `docker exec tlsoc-postgres` backup, restore and check command now reads
+    `POSTGRES_USER` and `POSTGRES_DB` inside the container, so it follows the documented
+    `TLSOC_PG_USER` and `TLSOC_PG_DB` overrides. Restores go into an empty database with
+    the backend stopped.
+  - Without a model provider key, no investigation falls back to a mock model: each
+    investigated cluster becomes a **Needs human** case naming the missing key. The
+    setup wizard's "limited mock runtime" wording is recorded as a known 0.1.13 issue.
+  - Role-based access is off by default (every signed-in account acts as Super admin), and
+    the 0.1.13 Console has no switch for it. INSTALL.md and the new **Turn on role-based
+    access** section of the Users and RBAC page give the tested `PUT /api/settings` call.
+  - Smaller corrections: the CA certificate path inside the container, override files and
+    the enrichment overlay (the update supervisor does not read them, so apply them again
+    after an update), the SSO callback behind a TLS ingress, queue receivers that consume
+    and acknowledge messages, the path D management key privileges, the Python version for
+    running from source, and several troubleshooting rows.
 
 ### Round 14 follow-up fixes
 

@@ -97,7 +97,7 @@ audit record, and a result the Console shows. See
     sign-in, roles, and permissions, to review, approve, and close cases, and receive
     notifications and in-app Inbox items. Role enforcement is off by default, so every
     signed-in account counts as Super admin until it is turned on (see
-    [Users and RBAC](../administration/users-rbac.md)). Workspace Chat is the one chat
+    [Turn on role-based access](../administration/users-rbac.md#turn-on-role-based-access)). Workspace Chat is the one chat
     engine and uses only read-only tools; untrusted values stay fenced there too.
 11. **State store.** The application keeps its own records apart from your source logs:
     cases, audit log, usage ledger, cursors, configuration, users, knowledge, and

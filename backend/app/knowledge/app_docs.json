@@ -861,7 +861,7 @@
    "page": "getting-started/quickstart.md",
    "anchor": "configure",
    "heading": "Configure",
-   "text": "With `TLSOC_AUTH_ADMIN_PASSWORD` set, the backend does not seed the demonstration\n`Admin` account, and the Console opens on **Create your admin account**, where you\ncreate a named administrator. The environment administrator remains a fallback sign-in.\nRole-based access is off by default, so every signed-in account is treated as Super\nadmin until a super administrator turns it on; see\nUsers and RBAC. Leave\n`AGENTIC_SOC_UPDATE_REPOSITORY` as `.env.example` ships it: it names the repository\nwhose signed releases the update supervisor trusts, not the clone URL.",
+   "text": "With `TLSOC_AUTH_ADMIN_PASSWORD` set, the backend does not seed the demonstration\n`Admin` account, and the Console opens on **Create your admin account**, where you\ncreate a named administrator. The environment administrator remains a fallback sign-in.\nRole-based access is off by default, so every signed-in account is treated as Super\nadmin until a super administrator turns it on; see\nTurn on role-based access. Leave\n`AGENTIC_SOC_UPDATE_REPOSITORY` as `.env.example` ships it: it names the repository\nwhose signed releases the update supervisor trusts, not the clone URL.",
    "console": []
   },
   {
@@ -919,7 +919,7 @@
    "page": "getting-started/first-run.md",
    "anchor": "1-secure-the-administrator-account",
    "heading": "1. Secure the administrator account",
-   "text": "When authentication is enabled and no user exists, Agentic SOC can bootstrap an initial\nadministrator. If the deployment presents the seeded `Admin` account, sign in, choose\n**Skip for now** on the Data sources and AI runtime stages, and launch setup: Settings\nopens only after launch. Then, before connecting real data, open\n**Settings → Security & access → Users**, create a named account with the `super_admin`\nrole, sign in with it, and delete `Admin` (or select **Reset password** on its row). Add\nsources afterwards from the **Sources** page. Never retain demo credentials on a shared\ndeployment.\n\nWhich screen you see first depends on the deployment's `.env`; see\nChoose how the first administrator is created.\n\nNote: Role-based access is off by default\n\nWith authentication on and role-based access off, every signed-in account is\ntreated as Super admin, whatever role it was given. **Settings → Security & access →\nSingle sign-on & policy** shows this in its Posture row **Role-based access**: \"Off:\neveryone is Super admin\". The 0.1.13 Console has no switch for it; a super\nadministrator turns it on by saving `{\"rbac\": {\"enabled\": true}}` through\n`PUT /api/settings`. Keep at least one super administrator when you do.\n\nFor role design, MFA, SSO, and session policy, see\nUsers and RBAC.",
+   "text": "When authentication is enabled and no user exists, Agentic SOC can bootstrap an initial\nadministrator. If the deployment presents the seeded `Admin` account, sign in, choose\n**Skip for now** on the Data sources and AI runtime stages, and launch setup: Settings\nopens only after launch. Then, before connecting real data, open\n**Settings → Security & access → Users**, create a named account with the `super_admin`\nrole, sign in with it, and delete `Admin` (or select **Reset password** on its row). Add\nsources afterwards from the **Sources** page. Never retain demo credentials on a shared\ndeployment.\n\nWhich screen you see first depends on the deployment's `.env`; see\nChoose how the first administrator is created.\n\nNote: Role-based access is off by default\n\nWith authentication on and role-based access off, every signed-in account is\ntreated as Super admin, whatever role it was given. **Settings → Security & access →\nSingle sign-on & policy** shows this in its Posture row **Role-based access**: \"Off:\neveryone is Super admin\". The 0.1.13 Console has no switch for it; a super\nadministrator turns it on by saving `{\"rbac\": {\"enabled\": true}}` through\n`PUT /api/settings`; Turn on role-based access\nhas the command. Keep at least one super administrator when you do.\n\nFor role design, MFA, SSO, and session policy, see\nUsers and RBAC.",
    "console": [
     "settings:admin_users"
    ]
@@ -4290,6 +4290,26 @@
    "console": []
   },
   {
+   "id": "administration/users-rbac#turn-on-role-based-access:0",
+   "page": "administration/users-rbac.md",
+   "anchor": "turn-on-role-based-access",
+   "heading": "Turn on role-based access",
+   "text": "Role-based access is **off by default**. With authentication on and role-based access off,\nevery signed-in account is treated as Super admin, whatever role it was given. Check the\ncurrent state in **Settings → Security & access → Single sign-on & policy**: the Posture row\n**Role-based access** reads **Off: everyone is Super admin** until you turn it on, and the\n**Roles & permissions** page shows a \"Role-based access is off\" notice.\n\nThe 0.1.13 Console has no switch for it. A super administrator turns it on by saving\n`{\"rbac\": {\"enabled\": true}}` through `PUT /api/settings` (permission `settings:manage`).\nFrom a shell that can reach the Console, with your Console address and administrator\nusername:",
+   "console": [
+    "settings:security"
+   ]
+  },
+  {
+   "id": "administration/users-rbac#turn-on-role-based-access:1",
+   "page": "administration/users-rbac.md",
+   "anchor": "turn-on-role-based-access",
+   "heading": "Turn on role-based access",
+   "text": "```bash\nCONSOLE=http://localhost:8080\nADMIN=soc-admin\nread -r -s -p \"Password for $ADMIN: \" PW; echo\nTOKEN=$(ADMIN=\"$ADMIN\" PW=\"$PW\" python3 -c 'import json, os; print(json.dumps({\"username\": os.environ[\"ADMIN\"], \"password\": os.environ[\"PW\"]}))' \\\n  | curl -s -X POST \"$CONSOLE/api/auth/login\" -H 'Content-Type: application/json' --data-binary @- \\\n  | python3 -c 'import json, sys; print(json.load(sys.stdin)[\"token\"])')\nunset PW\ncurl --fail -s -o /dev/null -w 'settings saved: HTTP %{http_code}\\n' -X PUT \"$CONSOLE/api/settings\" \\\n  -H \"Authorization: Bearer $TOKEN\" -H 'Content-Type: application/json' \\\n  -d '{\"rbac\": {\"enabled\": true}}'\nunset TOKEN\ncurl -s \"$CONSOLE/api/setup/status\" | python3 -c 'import json, sys; print(\"rbac_enabled:\", json.load(sys.stdin)[\"rbac_enabled\"])'\n```\n\nThe expected output is `settings saved: HTTP 200`, then `rbac_enabled: True`. The change\napplies from the next request.\n\n- Run it before this administrator turns on two-factor. For an account with two-factor, the\n  sign-in call returns `requires_mfa` and a `pending_token` instead of `token`; exchange\n  them at `POST /api/auth/mfa/verify` with `{\"pending_token\": \"...\", \"code\": \"...\"}`, which\n  returns `token`.\n- Give every account its intended role before you turn it on, and keep at least one super\n  administrator.",
+   "console": [
+    "settings:security"
+   ]
+  },
+  {
    "id": "administration/users-rbac#built-in-roles:0",
    "page": "administration/users-rbac.md",
    "anchor": "built-in-roles",
@@ -5463,7 +5483,7 @@
    "page": "getting-started/install.md",
    "anchor": "choose-how-the-first-administrator-is-created",
    "heading": "Choose how the first administrator is created",
-   "text": "Role-based access is off by default. With authentication on and role-based access off,\nevery signed-in account is treated as Super admin, whatever role it was given; the\nConsole shows \"Off: everyone is Super admin\" under\n**Settings → Security & access → Single sign-on & policy**. There is no switch for it in\nthe 0.1.13 Console: a super administrator turns it on by saving\n`{\"rbac\": {\"enabled\": true}}` through `PUT /api/settings`. See\nUsers and RBAC.\n\nWarning: Secrets entered later in the UI\n\nIn Agentic SOC 0.1, runtime-entered source, notification, SSO, and local-model secret\nvalues live in process memory. They must be re-entered after a backend restart.\nEnvironment or an external deployment secret mechanism is the durable boot-time\npath.",
+   "text": "Role-based access is off by default. With authentication on and role-based access off,\nevery signed-in account is treated as Super admin, whatever role it was given; the\nConsole shows \"Off: everyone is Super admin\" under\n**Settings → Security & access → Single sign-on & policy**. There is no switch for it in\nthe 0.1.13 Console: a super administrator turns it on by saving\n`{\"rbac\": {\"enabled\": true}}` through `PUT /api/settings`. See\nTurn on role-based access.\n\nWarning: Secrets entered later in the UI\n\nIn Agentic SOC 0.1, runtime-entered source, notification, SSO, and local-model secret\nvalues live in process memory. They must be re-entered after a backend restart.\nEnvironment or an external deployment secret mechanism is the durable boot-time\npath.",
    "console": [
     "settings:security"
    ]
@@ -6860,7 +6880,7 @@
    "page": "concepts/architecture.md",
    "anchor": "stage-by-stage",
    "heading": "Stage by stage",
-   "text": "8. **Case Manager.** Deterministic code, `decide()`, compares the verdict, confidence,\n   and risk with your `AutoClosePolicy` and chooses close, escalate, or needs human. The\n   model only recommends, a runbook cannot change the policy, and needs human never\n   auto-closes.\n9. **Cases and audit.** Cases are idempotent by signature and carry notes, tasks, and\n   runbook runs. Every agent and human action is written to the append-only audit log.\n10. **Console and API.** Analysts use the React Console through the FastAPI API, with\n    sign-in, roles, and permissions, to review, approve, and close cases, and receive\n    notifications and in-app Inbox items. Role enforcement is off by default, so every\n    signed-in account counts as Super admin until it is turned on (see\n    Users and RBAC). Workspace Chat is the one chat\n    engine and uses only read-only tools; untrusted values stay fenced there too.\n11. **State store.** The application keeps its own records apart from your source logs:\n    cases, audit log, usage ledger, cursors, configuration, users, knowledge, and\n    runbooks. Choose one backend: PostgreSQL with pgvector (the reference Compose stack),\n    Elasticsearch (an existing ELK stack), or SQLite (a single node, for evaluation).",
+   "text": "8. **Case Manager.** Deterministic code, `decide()`, compares the verdict, confidence,\n   and risk with your `AutoClosePolicy` and chooses close, escalate, or needs human. The\n   model only recommends, a runbook cannot change the policy, and needs human never\n   auto-closes.\n9. **Cases and audit.** Cases are idempotent by signature and carry notes, tasks, and\n   runbook runs. Every agent and human action is written to the append-only audit log.\n10. **Console and API.** Analysts use the React Console through the FastAPI API, with\n    sign-in, roles, and permissions, to review, approve, and close cases, and receive\n    notifications and in-app Inbox items. Role enforcement is off by default, so every\n    signed-in account counts as Super admin until it is turned on (see\n    Turn on role-based access). Workspace Chat is the one chat\n    engine and uses only read-only tools; untrusted values stay fenced there too.\n11. **State store.** The application keeps its own records apart from your source logs:\n    cases, audit log, usage ledger, cursors, configuration, users, knowledge, and\n    runbooks. Choose one backend: PostgreSQL with pgvector (the reference Compose stack),\n    Elasticsearch (an existing ELK stack), or SQLite (a single node, for evaluation).",
    "console": []
   },
   {

@@ -11835,3 +11835,27 @@
 - Next: two Console bugs found while capturing, both to be filed as their own tasks:
   - `SourceEditor.tsx` does not count a required field's displayed manifest default (the Elasticsearch, OpenSearch and Wazuh index patterns) as filled. INSTALL.md documents the workaround.
   - `InvestigationPanel.tsx` falls back to the code's `decision_rationale` in the advisory AI assessment card when a case has no model reasoning.
+
+### 2026-11-12 21:40Z - orchestrator - Docs refresh: command sweep and corrections (PR #140)
+- Context: the Codex review of PR #140 found the manual-upgrade backup hardcoding the `tlsoc` role and database, which three earlier reviewers missed. Under ultracode I swept the whole docs set for that class of defect before pushing.
+- Did:
+  - Sweep workflow: 8 finders and 8 skeptics, each finder covering one slice of the docs or one cross-cutting lens. It confirmed 61 findings (several duplicates) and rejected 11.
+  - I checked the two most surprising findings in code and on a throwaway auth-on backend:
+    - With no provider key, completion calls never fall back to a mock model (gateway raises "OpenAI API key not configured"; the investigator fails safe to Needs human). The setup wizard's "limited mock runtime" copy is wrong.
+    - `rbac.enabled` defaults to false, and the Console has no switch for it. The `PUT /api/settings` sequence was run and returned `settings saved: HTTP 200`, then `rbac_enabled: True`.
+  - Fix workflow: one lane per file group (README and SVGs; INSTALL.md in two halves; the Help Center pages with a corpus regeneration; DEPLOY.md and `.env.example` comments). Each lane's diff got an adversarial review, then a fix-up, then a final verifier.
+  - I added a "Turn on role-based access" section to `docs/administration/users-rbac.md`, pointed the Help Center links at it, and fixed the hardcoded Postgres commands in `docs/RUNBOOK.md` and `docs/TROUBLESHOOTING.md`. CHANGELOG `[Unreleased]` "Documentation refresh" was extended.
+  - Checkpoints 4ade686 and cb84bea were pushed when the stop hook asked.
+- Tests:
+  - check_docs passed (84 pages); test_build_docs_bundle and test_docs_theme OK.
+  - build_app_knowledge --check is current; strict run_docs_bundle and --check-only are consistent.
+  - check_version and check_ci_contract passed.
+  - Backend docs, knowledge and env tests: 893 passed.
+  - Added-line scans: 0 dashes or hidden characters, every link and anchor resolves.
+- Status: done; documentation only, version 0.1.13.
+- Next: product follow-ups, not in this PR:
+  - The setup wizard's mock-runtime copy (`webui/src/soc/pages/Wizard.tsx`).
+  - No Console switch for `rbac.enabled`.
+  - The source editor's defaulted required field (`SourceEditor.tsx`).
+  - The AI assessment card falling back to `decision_rationale` (`InvestigationPanel.tsx`).
+  - The OIDC `redirect_uri` built from the bundled nginx's plain-HTTP hop behind a TLS ingress.

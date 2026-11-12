@@ -77,7 +77,7 @@ does) or install the extension package and grant create privilege. The suite is
 performance/quality note, not an outage.
 
 **How to confirm.** Backend logs `pgvector extension ensured`;
-`docker exec tlsoc-postgres psql -U tlsoc -d tlsoc -c '\dx'` lists `vector`.
+`docker exec tlsoc-postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "\\dx"'` lists `vector`.
 
 ### A3. Chose the wrong `STATE_BACKEND`
 
