@@ -28,22 +28,35 @@ For a fully operational **Live environment**, have the following ready:
   provider key if you plan to change the role assignments.
 
 You may also launch a live workspace without a source or provider. The review stage
-labels that state **Ready with limited capabilities** and explains exactly what will
-not work until those items are added. For an evaluation with no live credentials,
-choose **Synthetic demo** instead.
+labels that state **Ready with limited capabilities**; [AI runtime](#4-ai-runtime)
+explains what happens without a provider key. For an evaluation with no live
+credentials, choose **Synthetic demo** instead.
 
 ## 1. Secure the administrator account
 
 When authentication is enabled and no user exists, Agentic SOC can bootstrap an initial
-administrator. If the deployment presents the seeded `Admin` account, replace its
-default password immediately and create named accounts before connecting real data.
-Never retain demo credentials on a shared deployment.
+administrator. If the deployment presents the seeded `Admin` account, sign in, choose
+**Skip for now** on the Data sources and AI runtime stages, and launch setup: Settings
+opens only after launch. Then, before connecting real data, open
+**Settings → Security & access → Users**, create a named account with the `super_admin`
+role, sign in with it, and delete `Admin` (or select **Reset password** on its row). Add
+sources afterwards from the **Sources** page. Never retain demo credentials on a shared
+deployment.
 
 Which screen you see first depends on the deployment's `.env`; see
 [Choose how the first administrator is created](install.md#choose-how-the-first-administrator-is-created).
 
+!!! note "Role-based access is off by default"
+
+    With authentication on and role-based access off, every signed-in account is
+    treated as Super admin, whatever role it was given. **Settings → Security & access →
+    Single sign-on & policy** shows this in its Posture row **Role-based access**: "Off:
+    everyone is Super admin". The 0.1.13 Console has no switch for it; a super
+    administrator turns it on by saving `{"rbac": {"enabled": true}}` through
+    `PUT /api/settings`. Keep at least one super administrator when you do.
+
 For role design, MFA, SSO, and session policy, see
-[Identity and access](../administration/users-rbac.md).
+[Users and RBAC](../administration/users-rbac.md).
 
 ### Create the first administrator
 
@@ -109,15 +122,17 @@ the username step.
     `TLSOC_AUTH_COOKIE_SECURE=true`.
 
 When the backend seeded the demonstration administrator, the sign-in page shows a hint
-with `Admin` / `Admin@123`. Sign in, change that password at once, and create named
-accounts.
+with `Admin` / `Admin@123`. Sign in and launch setup (Settings opens only after launch),
+then replace that account at once as
+[Secure the administrator account](#1-secure-the-administrator-account) describes.
 
 ## 2. Workspace
 
 Choose one starting mode:
 
-- **Live environment** connects your own security systems and AI provider. Polling
-  and processing begin after setup is launched.
+- **Live environment** connects your own security systems and AI provider. Pull
+  sources start polling after setup is launched, and a receiver accepts events as soon
+  as it is saved.
 - **Synthetic demo** seeds isolated sample cases, metrics, and activity and uses the
   deterministic `$0` mock runtime. It never calls a configured live provider and is
   not a connection test for a real source.
@@ -130,8 +145,10 @@ reversible and can be removed later.
 <figcaption>Step 1 of 4: Workspace.</figcaption>
 </figure>
 
-The wizard rail on the left lists the four stages. Each stage shows a check when it is
-ready, an amber triangle when it needs attention, and a circle when it is not started.
+The wizard rail on the left lists the four stages. A stage shows a check when it is
+ready and an amber triangle when it needs attention (in a live workspace, Data sources
+and AI runtime show one until a source or provider is configured). The current stage
+shows its own icon, and Review & launch shows a circle until you reach it.
 On a fresh install **Live environment** (badge 1) is already selected. Select
 **Synthetic demo** (badge 2) instead for an isolated evaluation, then select
 **Continue** (badge 3).
@@ -151,7 +168,9 @@ authentication, feed, and mapping fields supported by the selected connector.
 6. Use **Test connection** for Elasticsearch, OpenSearch, or Wazuh. The test uses
    the current draft without saving it.
 7. Save a push receiver, send a synthetic event, and inspect source health instead;
-   push and broker receivers do not have a meaningful one-shot connection test.
+   push and broker receivers do not have a meaningful one-shot connection test. For a
+   Generic Webhook or Splunk HEC receiver, set **Authentication** to `bearer` or `hmac`
+   first: the default, `none`, accepts any sender that can reach the backend.
 
 Secret values are not returned to the console. The source record stores only which
 secret field names are configured. If the source editor is open and you try to move
@@ -187,9 +206,18 @@ Fill in the top of the form:
 3. **API key (read-only)** (badge 4): a read-only key scoped to the log index pattern
    only, never `kibana_system` or the `elastic` superuser. It is stored in the secret
    store and afterwards shown only as configured.
-4. **CA certificate (PEM)**: paste a private CA certificate, select a `.pem` or `.crt`
-   file, or give a path mounted into the container such as `/certs/ca/ca.crt`. Leave it
-   blank for a public CA.
+4. **CA certificate (PEM)**: for a private CA, give the path of the CA file inside the
+   backend container, such as `/certs/ca.crt`, where `deploy/docker-compose.tlsoc.yml`
+   mounts its stack's CA. The reference stack mounts no CA file by default. Leave the
+   field blank for a public CA.
+
+!!! warning "Give a file path, not pasted certificate text"
+
+    The field also takes pasted text, and **Select a .pem / .crt file** pastes a file's
+    text into it. The 0.1.13 backend reads the value only as a file path: with pasted
+    text it cannot build the source's own connection and falls back to the shared one,
+    so **Test connection** and polling do not use your source's URL and key. Mount the
+    CA file and give its path instead.
 
 <figure markdown="span">
 [![Elasticsearch source editor in the setup wizard with the display name Production SIEM, the Elasticsearch URL https://siem.example.internal:9200 and an empty read-only API key field.](../assets/screenshots/install-04-setup-sources.webp) ](../assets/screenshots/install-04-setup-sources.webp)
@@ -266,17 +294,29 @@ The stage has three fields, each marked **not set** until a key is configured:
 - **Embedding API key**: optional. Leave it blank to reuse the OpenAI key for knowledge
   retrieval.
 
-Without a key the stage warns "A live provider is recommended": live investigations
-then use the limited mock runtime until a provider is added. The footer button reads
-**Skip for now** (badge 2) when no key is typed or configured, and **Continue**
-otherwise.
+The footer button reads **Skip for now** (badge 2) when no key is typed or configured,
+and **Continue** otherwise.
+
+Without a key the Console still runs, but no investigation can call a model: each
+cluster sent to investigation becomes a **Needs human** case whose recommended action
+names the missing key, and nothing is closed automatically. The `$0` mock model is used
+only by Demo Mode.
+
+!!! warning "Known issue in 0.1.13: the mock runtime wording"
+
+    Without a key this stage warns "A live provider is recommended" and says live
+    investigations "will use the limited mock runtime until a provider is added". That
+    wording is wrong: a live workspace never falls back to the mock model, and what
+    happens is the **Needs human** routing described above.
 
 Fresh workspaces assign `gpt-5.6-luna` to router, investigator, formatter, standup,
 chat, and overview; embeddings remain on `text-embedding-3-small`. Existing stored
-assignments are never rewritten. Per-role model selection is under
-**Settings → General → Models**; providers, self-hosted OpenAI-compatible endpoints and
-budgets are on **Analytics → Models**. In Demo Mode, the deterministic mock runtime is
-already available, so a live key is optional.
+assignments are never rewritten. An Anthropic key alone is therefore not enough: reassign
+the roles under **Settings → General → Models** after launch. Providers, self-hosted
+OpenAI-compatible endpoints and budgets are on **Analytics → Models**; a registered
+local model also has to be assigned to the roles in **Settings → General → Models**. In
+Demo Mode, the deterministic mock runtime is already available, so a live key is
+optional.
 
 Every provider call passes through the shared cost ledger. The default daily budget
 is a preflight ceiling, not a provider-side billing limit; configure provider-side
@@ -302,15 +342,19 @@ It distinguishes these outcomes instead of claiming every configuration is compl
 The readiness summary (badge 1) has one row per item. In the screenshot,
 **Data sources** reads "1 enabled source · primary: Production SIEM" and **AI runtime**
 reads "No provider configured · mock runtime only", so the heading is
-**Ready with limited capabilities**. With no source, **Data sources** reads
-"No source configured · live telemetry will not be ingested".
+**Ready with limited capabilities**. "Mock runtime only" is the known wording issue
+described under [AI runtime](#4-ai-runtime): without a provider, each cluster sent to
+investigation becomes a **Needs human** case and nothing is closed automatically. With
+no source, **Data sources** reads "No source configured · live telemetry will not be
+ingested".
 
 The **Automation posture** row explains that adaptive investigation routing and
 related-case grouping are on by default. Detailed controls remain in **Settings**.
 This posture does not change the deterministic close/escalate authority.
 
-Select **Launch Agentic SOC** (badge 2) on first run. This calls `POST /api/setup/complete`,
-starts enabled pull polling, and reconciles enabled background receivers. If a
+Select **Launch Agentic SOC** (badge 2) on first run. This calls `POST /api/setup/complete`
+and starts enabled pull polling. Receivers (push, queue, object-store and file sources)
+do not wait for launch: each starts accepting events as soon as you save it. If a
 completion response is lost, the console checks the authoritative setup status
 before showing a failure so a successful launch does not strand you in setup.
 

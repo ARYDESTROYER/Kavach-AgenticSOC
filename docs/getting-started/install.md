@@ -30,7 +30,7 @@ diagram to open it full size.
 | --- | --- |
 | `tlsoc-webui` | nginx serves the Console and the bundled Help Center on port `8080` and proxies `/api/` to the backend. |
 | `tlsoc-backend` | The FastAPI application: API, connectors, receivers, engines, and agents. It is also published on port `8088` for API clients and HTTP push senders. |
-| `tlsoc-postgres` | PostgreSQL with pgvector. It holds all application state on the named volume `tlsoc-pgdata`. Not published. |
+| `tlsoc-postgres` | PostgreSQL with pgvector. It holds the application state on the named volume `tlsoc-pgdata`. Not published. Files produced by background jobs, such as export downloads, stay inside the backend container and are lost when that container is replaced; see [Background jobs](../operations/background-jobs.md#downloadable-artifacts). |
 | `tlsoc-redis` | The enrichment and deduplication cache, with no persistence. Not published. |
 | `agentic-soc-updater` | The private update supervisor. It is the only container that mounts the Docker socket, and it applies only signed releases that an administrator approves. |
 
@@ -47,8 +47,9 @@ ones you configure. The container names keep their compatibility identifiers.
   package registries) and for your model provider
 - enough local capacity for five containers, three local image builds, and the state
   volume
-- an Anthropic or OpenAI key, or a reachable OpenAI-compatible model, for real
-  investigations
+- an OpenAI key for real investigations (fresh installs assign OpenAI GPT-5.6 Luna to
+  every completion role), or an Anthropic key or a reachable OpenAI-compatible model if
+  you will reassign the roles after setup
 - a least-privilege credential if you plan to add a pull source
 
 The deterministic demo does not require a provider key. See [Run the demo](demo.md)
@@ -141,7 +142,9 @@ TLSOC_AUTH_JWT_SECRET=<stable-random-secret-at-least-32-bytes>
 TLSOC_AUTH_ADMIN_USERNAME=admin
 TLSOC_AUTH_ADMIN_PASSWORD=
 
-# Choose one for non-demo investigations, or configure a compatible local model:
+# Fresh installs assign OpenAI GPT-5.6 Luna to every completion role, so set the
+# OpenAI key. To use Anthropic or a local model instead, set its key (or register the
+# model under Analytics → Models) and reassign the roles in Settings → General → Models.
 TLSOC_ANTHROPIC_API_KEY=
 TLSOC_OPENAI_API_KEY=
 ```
@@ -152,8 +155,10 @@ What each variable does:
 
 - `TLSOC_PG_PASSWORD`: always required. The PostgreSQL password; Compose refuses to
   start without it.
-- `TLSOC_AUTH_ENABLED`: set `true` for any shared evaluation. Turns on sign-in, roles,
-  MFA, SSO, and sessions. The `.env.example` default is `false`.
+- `TLSOC_AUTH_ENABLED`: set `true` for any shared evaluation. Turns on sign-in, MFA,
+  SSO, and sessions. Role enforcement is a separate setting, off by default (see
+  [Choose how the first administrator is created](#choose-how-the-first-administrator-is-created)).
+  The `.env.example` default is `false`.
 - `TLSOC_AUTH_JWT_SECRET`: needed with authentication. The session signing key, 32
   bytes or more. Keep it stable: when it is blank, every session ends on each backend
   restart.
@@ -168,6 +173,11 @@ What each variable does:
 - `TLSOC_AUTH_COOKIE_SECURE`: set `true` when TLS terminates in front of the Console,
   so the session cookie is HTTPS-only.
 
+Without a model provider key the Console still runs, but no investigation can call a
+model: each cluster sent to investigation becomes a **Needs human** case whose
+recommended action names the missing key, and nothing is closed automatically. The `$0`
+mock model is used only by Demo Mode.
+
 Leave `AGENTIC_SOC_UPDATE_REPOSITORY` at the value `.env.example` ships unless you
 publish signed releases from your own fork. It names the repository whose signed
 releases the update supervisor trusts, which is a separate identity from the clone URL.
@@ -181,7 +191,7 @@ first screen at `http://localhost:8080` depends on the administrator password
 | Administrator password | First screen |
 | --- | --- |
 | Set | **Create your admin account**. You create a named administrator in the browser. The environment administrator also works as a fallback sign-in. |
-| Blank | The sign-in screen. The backend seeds the demonstration administrator `Admin` / `Admin@123`, and the sign-in page shows a hint with those credentials. Change that password immediately. |
+| Blank | The sign-in screen. The backend seeds the demonstration administrator `Admin` / `Admin@123`, and the sign-in page shows a hint with those credentials. Replace that account right after you launch setup, as [First-run setup](first-run.md#1-secure-the-administrator-account) describes. |
 | Authentication off | No sign-in. The setup wizard opens directly. Use this only on an isolated workstation. |
 
 For a shared deployment, set `TLSOC_AUTH_ADMIN_PASSWORD` to a unique value so the
@@ -189,6 +199,14 @@ demonstration account is never created, and choose a different username for your
 administrator. This needs no change to the Compose file, whose exact hash supervised
 updates check. For other bootstrap options, see
 [Authentication](../administration/authentication.md).
+
+Role-based access is off by default. With authentication on and role-based access off,
+every signed-in account is treated as Super admin, whatever role it was given; the
+Console shows "Off: everyone is Super admin" under
+**Settings → Security & access → Single sign-on & policy**. There is no switch for it in
+the 0.1.13 Console: a super administrator turns it on by saving
+`{"rbac": {"enabled": true}}` through `PUT /api/settings`. See
+[Users and RBAC](../administration/users-rbac.md).
 
 !!! warning "Secrets entered later in the UI"
 
@@ -277,10 +295,10 @@ curl --fail http://localhost:8080/api/health/build-info
     and build info reports `"state_backend": "postgres"`, with your own commit and build
     time. `"service": "tlsoc-agentic-triage"` is a compatibility identifier.
 
-Open **Help Center** from the bottom of the Console rail and confirm the browser
-stays on this deployment at `/docs/0.1/`. That bundled Help Center matches the
-installed application and remains usable without access to GitHub or the public docs
-site.
+Open **Help Center** from the bottom of the Console rail, select **Browse all guides**,
+and confirm the browser stays on this deployment at `/docs/0.1/`. That bundled Help
+Center matches the installed application and remains usable without access to GitHub
+or the public docs site.
 
 <figure markdown="span">
 [![Bundled Help Center home page with the Matched to this app note, which says documentation 0.1 describes Agentic SOC 0.1.13 and is served under /docs/0.1/, above a table of guides by goal.](../assets/screenshots/help-center.webp) ](../assets/screenshots/help-center.webp)

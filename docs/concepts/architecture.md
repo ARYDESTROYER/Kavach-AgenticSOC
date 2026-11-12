@@ -75,7 +75,10 @@ audit record, and a result the Console shows. See
    queries with the read-only key, cached enrichment, knowledge retrieval, Published
    runbooks, and MITRE ATT&CK context. The formatter returns a verdict, a confidence,
    and compact evidence as a recommendation only. Source-derived evidence enters every
-   prompt fenced and labelled as untrusted data.
+   prompt fenced and labelled as untrusted data. If a model call fails, for example
+   because no provider key is configured, the investigator fails safe to a needs human
+   verdict whose recommended action names the error; it never falls back to the `$0`
+   mock model, which only Demo Mode uses.
 7. **One model gateway.** Every model call, from investigation and from chat, goes
    through one gateway to the configured provider (Anthropic, OpenAI, Azure OpenAI,
    Bedrock, Vertex, or an OpenAI-compatible endpoint). The gateway runs the pipeline
@@ -90,8 +93,10 @@ audit record, and a result the Console shows. See
    runbook runs. Every agent and human action is written to the append-only audit log.
 10. **Console and API.** Analysts use the React Console through the FastAPI API, with
     sign-in, roles, and permissions, to review, approve, and close cases, and receive
-    notifications and in-app Inbox items. Workspace Chat is the one chat engine and uses
-    only read-only tools; untrusted values stay fenced there too.
+    notifications and in-app Inbox items. Role enforcement is off by default, so every
+    signed-in account counts as Super admin until it is turned on (see
+    [Users and RBAC](../administration/users-rbac.md)). Workspace Chat is the one chat
+    engine and uses only read-only tools; untrusted values stay fenced there too.
 11. **State store.** The application keeps its own records apart from your source logs:
     cases, audit log, usage ledger, cursors, configuration, users, knowledge, and
     runbooks. Choose one backend: PostgreSQL with pgvector (the reference Compose stack),
@@ -114,7 +119,9 @@ are published.
 - `tlsoc-backend` runs the API, connectors, receivers, engines, and agents. HTTP push
   senders post to `/api/ingest/<source-id>` on port `8088`; other receiver ports bind
   inside the container and are published only when you configure them.
-- `tlsoc-postgres` holds all application state on the named volume `tlsoc-pgdata`, and
+- `tlsoc-postgres` holds the application state on the named volume `tlsoc-pgdata`;
+  files produced by background jobs, such as export downloads, stay inside the backend
+  container (see [Background jobs](../operations/background-jobs.md#downloadable-artifacts)).
   `tlsoc-redis` is a cache without persistence. Neither is published.
 - `agentic-soc-updater` is the private update supervisor. It is the only service that
   mounts the Docker socket, it talks to the backend only through a private control
@@ -139,7 +146,10 @@ model.” Below-threshold event candidates remain visible and cost nothing.
 ## Trust boundaries
 
 - Pull connectors use read-only, pattern-scoped source credentials.
-- Push receivers authenticate the sender at their transport boundary.
+- Push receivers authenticate senders only when you configure it. The Generic Webhook
+  and Splunk HEC receivers default to no authentication (`none`): choose `bearer` or
+  `hmac` on the source. Syslog over UDP or TCP has no inbound authentication, so
+  restrict who can reach its port (syslog over TLS can require client certificates).
 - Event-derived text remains untrusted, including raw and unmapped OCSF fields.
 - Model output is advisory; deterministic policy owns close or escalation.
 - Agentic SOC application state is separate from the source log store.

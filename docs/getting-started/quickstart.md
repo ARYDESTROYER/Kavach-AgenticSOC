@@ -124,8 +124,9 @@ not modified. [Install Agentic SOC](install.md) shows the full topology.
 - Docker Engine or Docker Desktop
 - Docker Compose v2 (`docker compose`)
 - Git, Bash, and Python 3 on the host (the Compose wrapper script uses Bash and Python 3)
-- an Anthropic/OpenAI key or a reachable OpenAI-compatible model, unless you keep
-  triage in Demo Mode
+- an OpenAI key (fresh installs assign OpenAI GPT-5.6 Luna to every completion role),
+  or an Anthropic key or a reachable OpenAI-compatible model with the roles reassigned
+  after setup, unless you keep triage in Demo Mode
 - a least-privilege read-only credential for each pull source
 
 ### Configure
@@ -144,7 +145,9 @@ TLSOC_AUTH_JWT_SECRET=<stable-random-secret-at-least-32-bytes>
 TLSOC_AUTH_ADMIN_USERNAME=admin
 TLSOC_AUTH_ADMIN_PASSWORD=<unique-admin-password>
 
-# Configure one provider, or register a compatible local model after setup.
+# Fresh installs assign OpenAI GPT-5.6 Luna to every completion role, so set the
+# OpenAI key. To use Anthropic or a local model instead, set its key (or register the
+# model under Analytics → Models) and reassign the roles in Settings → General → Models.
 TLSOC_ANTHROPIC_API_KEY=
 TLSOC_OPENAI_API_KEY=
 ```
@@ -152,10 +155,18 @@ TLSOC_OPENAI_API_KEY=
 Generate random values with `openssl rand -hex 32`. Do not commit `.env`. Set
 `TLSOC_AUTH_COOKIE_SECURE=true` when TLS terminates in front of the console.
 
+Without a model provider key the Console still runs, but no investigation can call a
+model: each cluster sent to investigation becomes a **Needs human** case whose
+recommended action names the missing key, and nothing is closed automatically. The `$0`
+mock model is used only by Demo Mode.
+
 With `TLSOC_AUTH_ADMIN_PASSWORD` set, the backend does not seed the demonstration
 `Admin` account, and the Console opens on **Create your admin account**, where you
 create a named administrator. The environment administrator remains a fallback sign-in.
-Leave `AGENTIC_SOC_UPDATE_REPOSITORY` as `.env.example` ships it: it names the repository
+Role-based access is off by default, so every signed-in account is treated as Super
+admin until a super administrator turns it on; see
+[Users and RBAC](../administration/users-rbac.md). Leave
+`AGENTIC_SOC_UPDATE_REPOSITORY` as `.env.example` ships it: it names the repository
 whose signed releases the update supervisor trusts, not the clone URL.
 
 ### Validate and start
@@ -179,9 +190,10 @@ curl --fail http://localhost:8080/api/health/build-info
   unavailable dependency returns HTTP `503`.
 - **Build info** reports version and build identity without exposing secrets.
 
-Open **Help Center** from the bottom of the Console rail and verify it opens the
-same-origin `/docs/0.1/` Help Center. This installed guide is the operator authority
-for the running build; public Stable/Development material is secondary.
+Open **Help Center** from the bottom of the Console rail, select **Browse all guides**,
+and verify it opens the same-origin `/docs/0.1/` Help Center. This installed guide is
+the operator authority for the running build; public Stable/Development material is
+secondary.
 
 Complete [first-run setup](first-run.md), then follow [Install Agentic SOC](install.md)
 for topology, production ingress, and provider options.
@@ -206,9 +218,11 @@ payloads at:
 POST /api/ingest/<source-id>
 ```
 
-The sender must retry non-success responses. UI-supplied source secrets are a
-runtime secret tier and must be re-entered after a backend restart; environment
-secrets remain the durable deployment tier.
+This endpoint needs no sign-in, and the Generic Webhook and Splunk HEC receivers
+default to no authentication (`none`): set the source's **Authentication** to `bearer`
+or `hmac` before you expose it. The sender must retry non-success responses.
+UI-supplied source secrets are a runtime secret tier and must be re-entered after a
+backend restart; environment secrets remain the durable deployment tier.
 
 ## Verify the workflow
 

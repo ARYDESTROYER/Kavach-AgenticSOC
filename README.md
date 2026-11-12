@@ -52,14 +52,18 @@ decision side by side, so an analyst can see exactly why it was closed or escala
 | SOC analysts | One queue of explained cases instead of thousands of raw alerts, with the evidence, an investigation trace, runbook steps and a read-only chat assistant in one place. |
 | SOC managers and shift leads | Dashboards for workload, response times and noise reduction, a shift standup, SLAs, and a cost ledger for every model call. |
 | Detection engineers | Per-rule drill-down, a rules editor with versioning and a preview that never calls a model, auto-tuning proposals, and baselines. |
-| Platform and security administrators | Read-only source access, an append-only audit log, roles, MFA and SSO, a choice of state store, and supervised signed updates. |
+| Platform and security administrators | Read-only access to your log stores, an append-only audit log, roles, MFA and SSO, a choice of state store, and supervised signed updates. |
 
 What it is not:
 
 - **Not a SIEM.** It reads from your sources and keeps its own records (cases, audit log,
   cost ledger) apart from your logs.
-- **Not an autonomous responder.** It reads your log data with a read-only key, never
-  modifies it, and never acts on your hosts. A runbook's Action steps are carried out by a person in another tool.
+- **Not an autonomous responder.** It never acts on your hosts. Pull connectors read your
+  log stores with a read-only key and never modify them. Queue receivers do consume: most
+  acknowledge or commit each message they process, and SQS, RabbitMQ and Pub/Sub then
+  remove it, so give each receiver its own queue, subscription or consumer group. The S3
+  receiver's SQS-notification mode also deletes each notification it processes. A
+  runbook's Action steps are carried out by a person in another tool.
 - **Not a model that closes cases.** See the [safety model](#safety-model).
 
 ## Key capabilities
@@ -70,8 +74,11 @@ What it is not:
   and 16 push, queue, object-store and file receivers. See [supported sources](#supported-sources).
 - **One canonical schema:** every record becomes an OCSF 1.4 event that keeps its source
   provenance. Per-source field mapping, with a mapping suggestion from a pasted sample.
-- **No skips, no duplicates:** a durable cursor per source and feed, and cases that are
-  idempotent by cluster signature.
+- **No skips, no duplicates on pull sources:** a durable cursor per pull source and feed,
+  and cases that are idempotent by cluster signature. Receivers have no durable receipt
+  inbox in 0.1, so senders and brokers must retain and retry, and how durable each
+  receiver's checkpoint is depends on the receiver. The
+  [source support matrix](docs/sources/support-matrix.md) lists each boundary.
 - **Comprehensive by default:** every enabled event is correlated and risk-scored. Only
   candidates admitted by the risk gate, your policy, caps and budget reach a model; the
   rest stay visible as `$0` candidates.
@@ -119,9 +126,10 @@ What it is not:
 - **Detection and tuning:** a rules editor with versions and rollback, one rule sheet from
   every rule name, campaigns, entity baselines, and threshold tuning that proposes changes
   for review.
-- **Identity and notifications:** six built-in roles plus custom roles, TOTP MFA, OIDC SSO
-  (Google, Microsoft or generic), session policy, and alerts by email, Resend, Slack,
-  Teams, PagerDuty, Telegram, webhook or the in-app Inbox.
+- **Identity and notifications:** six built-in roles plus custom roles (role-based access
+  is off by default), TOTP MFA, OIDC SSO (Google, Microsoft or generic), session policy,
+  and alerts by email, Resend, Slack, Teams, PagerDuty, Telegram, webhook or the in-app
+  Inbox.
 
 ### Operate
 
@@ -133,9 +141,12 @@ What it is not:
 - **Durable background jobs:** exports, bulk case work, knowledge maintenance, resets and
   storage lifecycle continue server-side with progress, cancellation and verified
   artifacts.
-- **Supervised updates:** after a one-time bootstrap, the reference PostgreSQL Compose
-  deployment can install a newer signed, digest-pinned Stable release from the Console,
-  with a verified backup, readiness checks and automatic rollback.
+- **Supervised updates:** a reference PostgreSQL Compose deployment that runs signed
+  Stable release images can, after a one-time bootstrap, install a newer signed,
+  digest-pinned Stable release from the Console. It makes a verified backup, runs
+  readiness checks and rolls the application images back automatically when the rollout
+  fails (a database restore stays a manual step). A stack built from source is upgraded
+  manually.
 - **A complete Console:** first-run setup, light and dark themes (dark by default), and a
   version-matched Help Center that works offline at `/docs/0.1/`.
 
@@ -196,7 +207,7 @@ dark theme by default. Select a thumbnail to open it full size.
 <a href="docs/assets/architecture/system-light.svg">
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/architecture/system-dark.svg">
-  <img alt="Agentic SOC architecture: security sources inside an untrusted-data fence flow through connectors, OCSF normalisation, durable-cursor ingest, deterministic correlation and risk scoring, and admission gates. Admitted candidates go to an advisory AI investigation with read-only tools; all model calls go through one gateway and cost ledger. The deterministic Case Manager decides close, escalate or needs human, and the result is recorded with an append-only audit log, shown in the Console and API with Workspace Chat, and stored in PostgreSQL with pgvector, Elasticsearch or SQLite." src="docs/assets/architecture/system-light.svg" width="1200">
+  <img alt="Agentic SOC architecture: security sources inside an untrusted-data fence flow through connectors, OCSF normalisation, ingest (a durable cursor for pull sources), deterministic correlation and risk scoring, and admission gates. Admitted candidates go to an advisory AI investigation with read-only tools; all model calls go through one gateway and cost ledger. The deterministic Case Manager decides close, escalate or needs human, and the result is recorded with an append-only audit log, shown in the Console and API with Workspace Chat, and stored in PostgreSQL with pgvector, Elasticsearch or SQLite." src="docs/assets/architecture/system-light.svg" width="1200">
 </picture>
 </a>
 
@@ -244,7 +255,7 @@ source-derived data.
 <a href="docs/assets/architecture/deployment-light.svg">
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/architecture/deployment-dark.svg">
-  <img alt="Agentic SOC reference Compose deployment on one Docker host: a browser reaches tlsoc-webui (nginx) on published port 8080, which proxies /api to tlsoc-backend on port 8088 (also published for API clients and push senders). The backend uses tlsoc-postgres with the tlsoc-pgdata volume and tlsoc-redis, neither published, and connects out read-only to security sources, model providers and enrichment. The agentic-soc-updater supervisor alone mounts the Docker socket, talks to the backend over a private control.sock volume, and fetches signed releases only for an approved update." src="docs/assets/architecture/deployment-light.svg" width="1200">
+  <img alt="Agentic SOC reference Compose deployment on one Docker host: a browser reaches tlsoc-webui (nginx) on published port 8080, which proxies /api to tlsoc-backend on port 8088 (also published for API clients and push senders). The backend uses tlsoc-postgres with the tlsoc-pgdata volume and tlsoc-redis, neither published, reads pull sources and object-store buckets read-only, consumes and acknowledges queue messages (including an S3 notification queue), and calls model providers and enrichment. The agentic-soc-updater supervisor alone mounts the Docker socket, talks to the backend over a private control.sock volume, and fetches signed releases only for an approved update." src="docs/assets/architecture/deployment-light.svg" width="1200">
 </picture>
 </a>
 
@@ -281,18 +292,18 @@ instructions. They are the project's
 
 | # | Guarantee | What it means | Where |
 | --- | --- | --- | --- |
-| 1 | Read-only source access | Pull connectors use a read-only key scoped to your log patterns, never `kibana_system` or a superuser. The application's own state uses a separate client. | `backend/app/es/client.py` |
+| 1 | Read-only source access | Pull connectors only read and search, and the application's own state uses a separate client. You supply the key: scope it to your log patterns with read access only (on Elasticsearch, the `read` and `view_index_metadata` index privileges), and never use `kibana_system`, an admin role or a superuser. The connection test does not reject an over-privileged key. | `backend/app/es/client.py`, `backend/app/connectors/elastic.py` |
 | 2 | Append-only audit | Every agent and human action is recorded in an append-only audit log. | `backend/app/audit/` |
 | 3 | Deterministic decisions | `decide()` is a pure function of verdict, confidence, risk score and policy. | `backend/app/engine/case_manager.py` |
-| 4 | No skips, no duplicates | Durable polling cursors, and cases idempotent by cluster signature. | `backend/app/engine/poller.py`, `signatures.py` |
+| 4 | No skips, no duplicates | Durable polling cursors for pull sources, and cases idempotent by cluster signature. | `backend/app/engine/poller.py`, `signatures.py` |
 | 5 | One chat engine | Workspace Chat and Case Manager chat share one read-only engine; case chat stays scoped to its case. | `backend/app/agents/chat.py` |
 | 6 | Every model call metered | One gateway, one usage and cost record per call. | `backend/app/llm/gateway.py` |
 | 7 | Aggregate, then summarise | Shift and report summaries read counts and aggregates, never raw log rows. | `backend/app/agents/standup.py` |
-| 8 | Cached enrichment | Threat-intel lookups are cached in Redis, so a repeated indicator does not spend quota again. | `backend/app/tools/enrich.py`, `cache.py` |
+| 8 | Cached enrichment | Threat-intel lookups are cached in Redis, so a repeated indicator does not spend quota again. | `backend/app/tools/enrich.py`, `backend/app/cache.py` |
 | 9 | Untrusted-data fencing | Source-derived values are fenced and labelled in every prompt. Imported knowledge stays fenced, and agent-written memory waits for human approval. | `backend/app/agents/prompts.py` |
 | 10 | Sane defaults | Runs with keys and a data scope only. Ingestion, tuning observation, campaigns and baselines are on by default; threshold changes are review-first. | `backend/app/config.py` |
 | 11 | Spine first, breadth degrades gracefully | The core pipeline is tested first. Optional breadth (enrichment, threat context, Redis) fails open, and a model, log-query or tool error routes the alert to Needs human instead of dropping it. | pipeline-wide |
-| 12 | Read-only consumer | The upstream pipeline is never modified, and the stack deploys cold. | `deploy/` |
+| 12 | Read-only consumer | Agentic SOC never changes your upstream pipeline's code or configuration, and the stack deploys cold. Queue receivers still consume what they read, and the RabbitMQ and Redis Streams receivers create a missing queue, stream or consumer group, so give each receiver its own queue, subscription or consumer group. | `deploy/` |
 
 Secrets follow the same rule: the Console shows only whether a secret is configured, never
 its value. Read the [security model](SECURITY.md) and the
@@ -391,7 +402,7 @@ screenshot and numbered highlights for every screen of the first run. Choose a p
 | Path | Best for | You need | Effort | Guide |
 | --- | --- | --- | --- | --- |
 | Local demo | A first look, demos and training | Git, Python 3.11, Node.js 22, Bash | One command; the first run installs Python and Node packages | [Quick start](#quick-start-the-demo) |
-| **Reference Compose stack** (recommended) | Evaluations and pilots with real sources; persistent PostgreSQL state | Docker Engine or Docker Desktop, Docker Compose v2, Git, Bash and Python 3 on the host, a model provider key (recommended), a read-only source credential | About a dozen short steps; the first build downloads images and packages | [INSTALL.md](INSTALL.md) |
+| **Reference Compose stack** (recommended) | Evaluations and pilots with real sources; persistent PostgreSQL state | Docker Engine or Docker Desktop, Docker Compose v2, Git, Bash and Python 3 on the host, a model provider key (needed for AI investigations), a source credential (read-only for log stores) | About a dozen short steps; the first build downloads images and packages | [INSTALL.md](INSTALL.md) |
 | Attach to an existing Elasticsearch stack | Sites that already run Elasticsearch and want the application's state in dedicated indices | The existing stack, Docker Compose v2, two scoped Elasticsearch API keys | Merge service blocks into your existing Compose file | [INSTALL.md, path D](INSTALL.md#10-path-d-attach-to-an-existing-elastic-stack) (reference: [DEPLOY.md, Mode B](DEPLOY.md#7-mode-b--existing-elk-attachment-optional)) |
 | From source | Contributors | Python 3.11, Node.js 22 | Two terminals | [Development and testing](#development-and-testing) |
 
@@ -416,11 +427,21 @@ never commit `.env`):
 | Variable | Set it to | Why |
 | --- | --- | --- |
 | `TLSOC_PG_PASSWORD` | A random value | Required. Compose refuses to start without it. |
-| `TLSOC_AUTH_ENABLED` | `true` | Turns on sign-in, roles, MFA and SSO. The template ships `false`, which leaves the Console open to anyone who can reach it. |
+| `TLSOC_AUTH_ENABLED` | `true` | Turns on sign-in, MFA and SSO. The template ships `false`, which leaves the Console open to anyone who can reach it. Role-based access stays off until you turn it on (see the note below the table). |
 | `TLSOC_AUTH_JWT_SECRET` | A stable random value of at least 32 bytes | Signs sessions. Without it, every backend restart signs everyone out. |
 | `TLSOC_AUTH_ADMIN_USERNAME`, `TLSOC_AUTH_ADMIN_PASSWORD` | Your admin name and a unique password | An environment fallback administrator. Without a password, the backend seeds the demo `Admin` / `Admin@123` account. |
-| `TLSOC_OPENAI_API_KEY` or `TLSOC_ANTHROPIC_API_KEY` | Your provider key | Live investigations. Fresh workspaces use OpenAI (GPT-5.6 Luna); with only an Anthropic key, reassign the roles in **Settings → General → Models**. Without a key, setup reports limited capabilities and the mock runtime is used. |
+| `TLSOC_OPENAI_API_KEY` or `TLSOC_ANTHROPIC_API_KEY` | Your provider key | Live investigations. Fresh workspaces use OpenAI (GPT-5.6 Luna); with only an Anthropic key, reassign the roles in **Settings → General → Models**. Without a key the Console still runs and setup reports limited capabilities, but no investigation can call a model: each cluster sent to investigation becomes a **Needs human** case whose recommended action names the missing key, and nothing is closed automatically. The `$0` mock model is used only by Demo Mode. |
 | `TLSOC_AUTH_COOKIE_SECURE` | `true` once TLS terminates in front of the Console | HTTPS-only session cookie. |
+
+> [!IMPORTANT]
+> **Role-based access is off by default.** With authentication on, every signed-in account
+> is treated as Super admin until role-based access is turned on, whatever role it was
+> given. **Settings → Security & access → Single sign-on & policy** shows the state in its
+> **Role-based access** row. The 0.1.13 Console has no switch for it: a super administrator
+> turns it on by saving `{"rbac": {"enabled": true}}` through `PUT /api/settings`
+> (permission `settings:manage`). The full command is in
+> [INSTALL.md, Accounts and roles](INSTALL.md#accounts-and-roles). Keep at least one super
+> administrator.
 
 Then open <http://localhost:8080>. With authentication on and `TLSOC_AUTH_ADMIN_PASSWORD` set,
 a fresh install asks you to create the first administrator, then opens a four-stage setup
@@ -438,7 +459,7 @@ wizard: **Workspace**, **Data sources**, **AI runtime** and **Review & launch**.
     </td>
     <td width="33%" valign="top">
       <a href="docs/assets/screenshots/install-06-setup-review.webp"><img src="docs/assets/screenshots/install-06-setup-review.webp" width="280" alt="Review and launch stage reading Ready with limited capabilities, listing workspace, data sources, AI runtime and automation posture readiness, with the Launch Agentic SOC button."></a><br>
-      <sub><b>3. Review and launch.</b> An honest readiness summary before you start.</sub>
+      <sub><b>3. Review and launch.</b> A readiness summary before you start. Its "mock runtime only" wording is wrong in 0.1.13: without a key, investigations become Needs human cases.</sub>
     </td>
   </tr>
 </table>

@@ -101,8 +101,8 @@ running cost is model API usage, which the Console meters in its cost ledger.
 | Python 3.11, Node.js 22 and npm | Paths A, E | The backend requires Python 3.11 or later |
 | `curl` and `openssl` | Path B | To check health and to generate secrets |
 | Free ports | All | `8080` and `8088` (path B), `8088` and `5173` (paths A and E). Paths A and B both use `8088`, so do not run them at the same time |
-| Outbound network | Path B build and run | Docker Hub and `ghcr.io` for base images (`pgvector/pgvector:pg16`, `redis:7-alpine`, `python:3.11` slim and alpine, `node:22-alpine`, `nginx:1.27-alpine`, `docker:27.5.1-cli`, the Sigstore cosign image), PyPI and the npm registry during the build, and your model provider's API at run time |
-| A model provider | Live investigations | An OpenAI key for the default GPT-5.6 Luna roles, another supported provider, or an OpenAI-compatible endpoint. Without one, live investigations use a limited mock runtime |
+| Outbound network | Path B build and run | Docker Hub and `ghcr.io` for base images (`pgvector/pgvector:pg16`, `redis:7-alpine`, `python:3.11` slim and alpine, `node:22-alpine`, `nginx:1.27-alpine`, `docker:27.5.1-cli`, the Sigstore cosign image), the Alpine package repository (`dl-cdn.alpinelinux.org`, for the update supervisor's `apk add`), PyPI and the npm registry during the build, and your model provider's API at run time |
+| A model provider | Live investigations | An OpenAI key for the default GPT-5.6 Luna roles, another supported provider, or an OpenAI-compatible endpoint. Without a key the Console still runs, but no investigation can call a model: each cluster sent to investigation becomes a **Needs human** case whose recommended action names the missing key, and nothing is closed automatically. Only retrieval embeddings fall back to local ones. The `$0` mock model is used only by Demo Mode |
 | A read-only source credential | Pull sources | Scoped to the log indices Agentic SOC should read. Push sources need no source credential |
 
 Version 0.1 runs **one backend replica**. It is a single-host reference deployment, not a
@@ -125,11 +125,14 @@ deterministic `$0` mock, even if you have provider keys in your environment.
    ./scripts/run-demo.sh
    ```
 
-   On the first run the script creates `backend/.venv`, installs the backend packages and runs
-   `npm install` in `webui/`. Later runs start straight away.
+   On the first run the script creates `backend/.venv`, installs the backend packages, runs
+   `npm install` in `webui/` and, if no MkDocs toolchain is found, installs the pinned Help Center
+   toolchain into `.docs-venv`. It needs internet access for this. Every run, including later
+   ones, rebuilds the bundled Help Center before the Console starts.
 
 2. Wait for the banner. It prints the Console address and the demo sign-in. Both services bind to
-   `127.0.0.1` only, so they are not reachable from your network.
+   `127.0.0.1` only, so they are not reachable from your network. The banner can appear before the
+   Help Center build finishes, so the Console address can take a little while to answer.
 
 3. Open `http://127.0.0.1:5173` and sign in with **`Admin`** / **`Admin@123`**.
 
@@ -246,9 +249,9 @@ Then add one provider key, for example `TLSOC_OPENAI_API_KEY=<your key>`.
 | `TLSOC_EMBEDDING_API_KEY` | Optional | Embeddings for knowledge retrieval. Falls back to the OpenAI key, then to local hashing embeddings |
 | `TLSOC_AUTH_COOKIE_SECURE` | Set `true` behind TLS | Makes the session cookie HTTPS-only. Required before **Remember me** is offered over the network |
 | `TLSOC_RELEASE_CHANNEL` | Leave `testing` | Set `stable` only when you build the exact `v0.1.13` tag. A Testing build must not report itself as Stable |
-| `TLSOC_ES_URL`, `TLSOC_ES_API_KEY`, `TLSOC_ES_CA_CERT`, `TLSOC_ES_VERIFY_CERTS` | Optional | Pre-seed one Elasticsearch, OpenSearch or Wazuh pull source at boot. This is the restart-safe alternative to typing the key in the wizard |
-| `TLSOC_ABUSEIPDB_API_KEY`, `TLSOC_VIRUSTOTAL_API_KEY` | Optional | Keyed enrichment. Keyless providers run without keys; more keys go through `deploy/docker-compose.enrichment-keys.yml` |
-| `TLSOC_PG_USER`, `TLSOC_PG_DB` | Optional | Database user and name, both `tlsoc` by default |
+| `TLSOC_ES_URL`, `TLSOC_ES_API_KEY`, `TLSOC_ES_CA_CERT`, `TLSOC_ES_VERIFY_CERTS` | Optional | Pre-seed one Elasticsearch, OpenSearch or Wazuh pull source at boot. This is the restart-safe alternative to typing the key in the wizard. `TLSOC_ES_CA_CERT` is a file path inside the backend container, not a host path: for a private CA, mount the certificate with an [override file](#use-an-override-file-for-local-changes) (under `tlsoc-backend`, `volumes:` `- /absolute/host/path/ca.crt:/certs/ca.crt:ro`, with an absolute host path to a file the container user can read) and set `TLSOC_ES_CA_CERT=/certs/ca.crt` |
+| `TLSOC_ABUSEIPDB_API_KEY`, `TLSOC_VIRUSTOTAL_API_KEY` | Optional | Keyed enrichment. Keyless providers run without keys. The base Compose file also forwards the Round 3 keys listed in `.env.example` (for example `TLSOC_GREYNOISE_API_KEY` and `TLSOC_SHODAN_API_KEY`); only the twelve Round 11 keys need `deploy/docker-compose.enrichment-keys.yml` (see below) |
+| `TLSOC_PG_USER`, `TLSOC_PG_DB` | Optional | Database user and name, both `tlsoc` by default. Like the password, they apply only when the `tlsoc-pgdata` volume is first created: set them before the first `up` and do not change them afterwards |
 | `TLSOC_AUTH_TOKEN_HOURS` | Optional | Token lifetime of a sign-in without Remember me (default 12; values above 144 are reduced to 144) |
 | `TLSOC_MFA_OBFUSCATION_KEY` | Optional | Key that obfuscates TOTP secrets at rest. Generate it with `openssl rand -hex 32` |
 
@@ -282,9 +285,13 @@ Then add one provider key, for example `TLSOC_OPENAI_API_KEY=<your key>`.
   similar): no new key is needed for an unauthenticated endpoint. After launch, use
   **Analytics → Models → Add local model** and set its base URL.
 - **Round 11 enrichment providers** (CrowdSec, Google Safe Browsing, IPQualityScore and others):
-  set their `TLSOC_*` keys in `.env` and start the stack with the additive overlay:
-  `./scripts/agentic-soc-compose.sh -f deploy/docker-compose.enrichment-keys.yml up --detach`.
-  Each provider is also switched on or off in **Settings → Integrations → Enrichment**.
+  set their `TLSOC_*` keys in `.env` and add `-f deploy/docker-compose.enrichment-keys.yml` to
+  every wrapper command that creates or recreates containers, starting with step 5.5:
+  `./scripts/agentic-soc-compose.sh -f deploy/docker-compose.enrichment-keys.yml up --detach --build`.
+  A command without it (for example `up --detach` in [section 9](#9-stop-restart-and-uninstall))
+  recreates the backend without these keys, and nothing reports an error. A supervised update
+  also drops them, because it uses only the base file and its release override. Each provider
+  is also switched on or off in **Settings → Integrations → Enrichment**.
 
 [`docs/ENVIRONMENT.md`](docs/ENVIRONMENT.md) lists every variable and its mapping.
 
@@ -316,6 +323,10 @@ This builds the backend, Console and updater images from your checkout, pulls th
 Redis images, and starts all five containers. The first build downloads the base images and the
 Python and Node packages, so it takes noticeably longer than later starts.
 
+If you set Round 11 enrichment keys (section 5.3) or keep a local
+[override file](#use-an-override-file-for-local-changes), add each file with `-f` to this command
+and to every later command that creates or recreates containers.
+
 ### 5.6 Watch it come up
 
 ```bash
@@ -335,9 +346,9 @@ In the backend log, look for these lines:
 
 ```text
 Built async SQL engine (...)
-SQL state schema ensured
-pgvector extension ensured
 OWN-state backend: SQL (postgres)
+pgvector extension ensured
+SQL state schema ensured
 Application startup complete.
 ```
 
@@ -438,9 +449,12 @@ on.*
 > [!NOTE]
 > If the first screen is **Welcome back** with a hint for `Admin` / `Admin@123` instead,
 > `TLSOC_AUTH_ADMIN_PASSWORD` was empty and the backend seeded its demo super administrator. Sign
-> in with it, create your named administrator in **Settings → Security & access → Users**, sign in
-> as that account, then turn the `Admin` account off with its **Active** switch. Agentic SOC never
-> lets you remove the last active super administrator, so create the replacement first.
+> in with it and finish the setup wizard first ([section 5.11](#511-run-the-setup-wizard)). You can
+> choose **Skip for now** on the Data sources and AI runtime stages and add them later. Settings
+> opens only after **Launch Agentic SOC**. Then create your named administrator in
+> **Settings → Security & access → Users**, sign in as that account, and turn the `Admin` account
+> off with its **Active** switch. Agentic SOC never lets you remove the last active super
+> administrator, so create the replacement first.
 
 ### 5.10 Sign in
 
@@ -479,9 +493,10 @@ triangle means it needs attention), `Step N of 4` at the top right, a **Back** b
 primary button that reads **Continue**, **Skip for now** when the stage has nothing configured,
 or **Launch Agentic SOC** on the last stage. The note at the bottom of the rail is the rule for
 every secret: provider and connector secrets are write-only, and the Console only reports whether
-each one is configured. Moving between stages changes nothing by itself: a source is saved when you
-choose **Add source**, a typed provider key when you leave stage 3, and setup is completed only by
-**Launch Agentic SOC**.
+each one is configured. Moving between stages changes nothing by itself. Choosing **Synthetic demo**
+turns Demo Mode on at once (choosing **Live environment** again asks before removing it), a source
+is saved when you choose **Add source**, a typed provider key when you leave stage 3, and setup is
+completed only by **Launch Agentic SOC**.
 
 #### Stage 1: Workspace
 
@@ -491,7 +506,7 @@ choose **Add source**, a typed provider key when you leave stage 3, and setup is
 
 | # | Option or button | What it means |
 | --- | --- | --- |
-| 1 | **Live environment** | Preselected on a fresh install. Connect your own sources and an AI provider; processing starts once setup is launched. Choose it for a real evaluation or production |
+| 1 | **Live environment** | Preselected on a fresh install. Connect your own sources and an AI provider. Pull sources start polling once setup is launched, and a receiver starts accepting events as soon as it is saved. Choose it for a real evaluation or production |
 | 2 | **Synthetic demo** | Seeds isolated sample cases, metrics and activity and uses the `$0` mock runtime. It never calls a configured provider and is not a test of a real source. It can be removed later, and it makes stages 2 and 3 optional |
 | 3 | **Continue** | Moves to Data sources |
 
@@ -529,8 +544,15 @@ expands a step-by-step guide. The **Enabled**, **Primary (the agent reads from t
 | 3 | **Elasticsearch URL** (required) | The cluster's HTTP API as the backend container reaches it, for example `https://elasticsearch:9200` on a shared Docker network. `localhost` here means the backend container itself |
 | 4 | **API key (read-only)** | Paste a key that can only read your log indices ([how to mint one](#mint-a-read-only-key)). Never `elastic` or `kibana_system`. It is stored in the secret tier and only ever shown as configured. The capture leaves it empty because the example host does not exist |
 
-Below the key, **CA certificate (PEM)** takes your private CA as pasted text, a selected `.pem`
-or `.crt` file, or a path mounted into the container. Leave it blank for a public CA.
+Below the key, **CA certificate (PEM)** is for a private CA. Leave it blank for a public CA.
+For a private CA, mount the certificate into the backend container as the `TLSOC_ES_CA_CERT` row
+in [section 5.3](#53-configure-the-environment-file) shows, and type its container path, for
+example `/certs/ca.crt`.
+
+> [!WARNING]
+> **Known issue in 0.1.13:** the field also offers to take pasted PEM text or a selected `.pem` or
+> `.crt` file, but the backend passes the value to the Elasticsearch client as a file path. Pasted
+> or uploaded certificate text is not a path, so the source cannot use it. Use a mounted path.
 
 ![Elasticsearch source editor scrolled to the Verify TLS certificates switch and the Field mapping fields, with the log index pattern all-logs-* outlined.](docs/assets/screenshots/install-04b-source-index-pattern.webp)
 
@@ -581,13 +603,21 @@ event; a one-shot connection test is not meaningful for them. See
 
 ![Setup wizard AI runtime stage with empty OpenAI, Anthropic and Embedding API key fields, each marked not set, and a Skip for now button.](docs/assets/screenshots/install-05-setup-ai-runtime.webp)
 
-*Figure 11. Connect the models that investigate cases. The amber callout says that without a key,
-live investigations use the limited mock runtime.*
+*Figure 11. Connect the models that investigate cases. The amber callout recommends a live
+provider; its wording about a mock runtime is a known issue, explained below the table.*
 
 | # | Field or button | What to do |
 | --- | --- | --- |
 | 1 | **OpenAI API key** | The default runtime for the GPT-5.6 Luna completion roles and embeddings. The chip above each field reads `not set` or shows the key as configured; a key set in `.env` already counts |
 | 2 | **Skip for now** | Leaves the stage without a key. It reads **Continue** once a key is typed or already configured |
+
+> [!WARNING]
+> **Known issue in 0.1.13:** without a key, the callout says live investigations "will use the
+> limited mock runtime until a provider is added", and the review stage reads
+> `No provider configured · mock runtime only`. That wording is wrong. Without a key the Console
+> still runs, but no investigation can call a model: each cluster sent to investigation becomes a
+> **Needs human** case whose recommended action names the missing key, and nothing is closed
+> automatically. The `$0` mock model is used only by Demo Mode.
 
 **Anthropic API key** is the optional alternative for Claude models, and **Embedding API key** is
 optional (blank reuses the OpenAI key). A typed key saves when you leave the stage; if the save
@@ -608,15 +638,15 @@ limited capabilities**.*
 
 | # | Item | What it shows |
 | --- | --- | --- |
-| 1 | Readiness summary | One row per area with **Ready**, **Needs attention** or **Optional**: Workspace (`Live environment`), Data sources (`1 enabled source · primary: Production SIEM`), AI runtime (`No provider configured · mock runtime only`), and Automation posture (**On by default**: it tunes investigation routing and groups related cases, while close and escalation decisions remain deterministic) |
-| 2 | **Launch Agentic SOC** | Completes setup, starts polling of enabled pull sources and starts enabled receivers |
+| 1 | Readiness summary | One row per area with **Ready**, **Needs attention** or **Optional**: Workspace (`Live environment`), Data sources (`1 enabled source · primary: Production SIEM`), AI runtime (`No provider configured · mock runtime only`, which is wrong: see the known issue under [stage 3](#stage-3-ai-runtime)), and Automation posture (**On by default**: it tunes investigation routing and groups related cases, while close and escalation decisions remain deterministic) |
+| 2 | **Launch Agentic SOC** | Completes setup and starts polling of enabled pull sources. Push, queue, object-store and file receivers do not wait for launch: each starts accepting events as soon as you save it with **Add source** |
 
 The heading tells you where you stand:
 
 | Heading | Meaning |
 | --- | --- |
 | **Ready for live triage** | A live source and a provider are configured |
-| **Ready with limited capabilities** | Live mode, but a source or a provider is missing. You can launch and fix it later |
+| **Ready with limited capabilities** | Live mode, but a source or a provider is missing. You can launch and fix it later. Until a provider is added, each cluster sent to investigation becomes a **Needs human** case |
 | **Demo workspace is ready** | Synthetic demo was chosen |
 
 Launch is non-destructive. Administrators can re-run setup from **Settings** (its final button is
@@ -661,11 +691,48 @@ threat model is in [`SECURITY.md`](SECURITY.md) and
 
 ### Accounts and roles
 
-1. **Remove demo or seeded credentials.** If the `Admin` / `Admin@123` account exists, turn it off
-   once a named super administrator works. If you set `TLSOC_AUTH_ADMIN_PASSWORD`, keep it as a
-   break-glass secret, or remove the value from `.env` and recreate the backend
-   (`./scripts/agentic-soc-compose.sh up --detach`) once named administrators exist.
-2. **Create a named account for every person**, with the smallest role that covers the work.
+1. **Turn on role-based access.** Out of the box `rbac.enabled` is `false`, so every signed-in
+   account counts as Super admin, whatever role you assign. While that is true,
+   **Settings → Security & access → Single sign-on & policy** shows the Posture row
+   **Role-based access** as `Off: everyone is Super admin`, and
+   **Settings → Security & access → Roles & permissions** shows a **Role-based access is off**
+   callout. The 0.1.13 Console has no switch for it (a known gap). Turn it on through the settings
+   API (permission `settings:manage`) from a shell on the Docker host:
+
+   ```bash
+   CONSOLE=http://localhost:8080
+   ADMIN=soc-admin
+   read -r -s -p "Password for $ADMIN: " PW; echo
+   TOKEN=$(ADMIN="$ADMIN" PW="$PW" python3 -c 'import json, os; print(json.dumps({"username": os.environ["ADMIN"], "password": os.environ["PW"]}))' \
+     | curl -s -X POST "$CONSOLE/api/auth/login" -H 'Content-Type: application/json' --data-binary @- \
+     | python3 -c 'import json, sys; print(json.load(sys.stdin)["token"])')
+   unset PW
+   curl --fail -s -o /dev/null -w 'settings saved: HTTP %{http_code}\n' -X PUT "$CONSOLE/api/settings" \
+     -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+     -d '{"rbac": {"enabled": true}}'
+   unset TOKEN
+   curl -s "$CONSOLE/api/setup/status" | python3 -c 'import json, sys; print("rbac_enabled:", json.load(sys.stdin)["rbac_enabled"])'
+   ```
+
+   Expected output: `settings saved: HTTP 200`, then `rbac_enabled: True`. Set `ADMIN` to a super
+   administrator that has not turned on two-factor authentication: for an account with
+   two-factor, the sign-in call returns `requires_mfa` and a `pending_token` instead of `token`,
+   and the first command ends with `KeyError: 'token'` (as it also does for a wrong password). If
+   your named administrator already uses two-factor, run the command as the environment
+   administrator instead (`TLSOC_AUTH_ADMIN_USERNAME`, default `admin`, with the
+   `TLSOC_AUTH_ADMIN_PASSWORD` value from `.env`), which signs in with its password alone.
+   The change takes effect on the next request. Reload **Roles & permissions** and check that
+   the callout is gone before you hand out accounts, and always keep at least one super
+   administrator.
+2. **Remove demo or seeded credentials.** If the `Admin` / `Admin@123` account exists, turn it off
+   once a named super administrator works. If you set `TLSOC_AUTH_ADMIN_PASSWORD`, that account
+   (`TLSOC_AUTH_ADMIN_USERNAME`, default `admin`) is a super administrator that signs in with its
+   password alone. It can never enrol in, or be required to use, two-factor authentication, and it
+   has no row or **Active** switch in **Users**. Keep it only as a deliberate break-glass secret,
+   stored offline. Otherwise, once named administrators exist, remove the value from `.env` and
+   recreate the backend (`./scripts/agentic-soc-compose.sh up --detach`, with your `-f` files if
+   you use any).
+3. **Create a named account for every person**, with the smallest role that covers the work.
 
 ![Settings Users section with the accounts table and the Add user button outlined.](docs/assets/screenshots/users-rbac.webp)
 
@@ -685,7 +752,8 @@ the header shows **Demo mode** and the seeded `Admin` account). Each row shows t
 | 3 | **Role** | Pick the base role. The panel below lists what it grants. **Fine-tune with custom roles → Adjust permissions…** adds or denies single permissions on top |
 
 Below the fold, the **Security** group has **Require multi-factor authentication**; turn it on for
-privileged accounts. The six built-in roles are:
+privileged accounts. The six built-in roles are enforced only once role-based access is on
+(step 1):
 
 | Role | Intended use |
 | --- | --- |
@@ -703,17 +771,18 @@ See [Users and RBAC](docs/administration/users-rbac.md) and
 
 | Control | How |
 | --- | --- |
-| **MFA** | Each person enrols in **Settings → Account → Security & two-factor**. Require it per account in the user dialog |
+| **Role-based access** | Off by default, so every signed-in account counts as Super admin. Turn it on with the command in [Accounts and roles](#accounts-and-roles) step 1, then check that **Settings → Security & access → Single sign-on & policy** shows **Role-based access** as **Enforced** |
+| **MFA** | Each person enrols in **Settings → Account → Security & two-factor**. Require it per account in the user dialog. The environment administrator can never enrol ([Accounts and roles](#accounts-and-roles) step 2) |
 | **Stable secrets** | Keep `TLSOC_AUTH_JWT_SECRET` (and `TLSOC_MFA_OBFUSCATION_KEY` if set) unchanged across restarts, outside Git, in a protected secret backup |
 | **TLS at a trusted ingress** | Put a TLS-terminating reverse proxy in front of port 8080 (example below). The Console itself serves plain HTTP |
-| **Secure cookies** | With TLS in place, set `TLSOC_AUTH_COOKIE_SECURE=true` in `.env` and run `./scripts/agentic-soc-compose.sh up --detach` |
+| **Secure cookies** | With TLS in place, set `TLSOC_AUTH_COOKIE_SECURE=true` in `.env` and run `./scripts/agentic-soc-compose.sh up --detach` (with your `-f` files, if any) |
 | **Restrict ports** | Allow port 8080 only from your ingress. Port 8088 is published for direct API access and HTTP push senders: firewall it to the hosts that need it, or block it. PostgreSQL and Redis are not published |
 | **Client addresses in the audit log** | The audit log trusts `X-Forwarded-For` only from proxies in `TRUSTED_PROXIES` (default `tlsoc-webui`). To record real client addresses behind your ingress, add it through an [override file](#use-an-override-file-for-local-changes) (see [`DEPLOY.md`](DEPLOY.md) section 3.2) |
 | **Session policy** | Review idle and absolute limits and Remember me in **Settings → Security & access → Single sign-on & policy** |
 | **Model spend** | The pipeline's daily AI budget is on by default ($10 a day, blocking when exceeded, with over-budget cases routed to a person). Workspace and Case Manager chat are outside that budget; set **Settings → General → Chat assistant**'s optional daily chat cap if you need one. Always add a budget at the provider as a second boundary |
 | **Least-privilege sources** | Read-only, pattern-scoped credentials for every source ([section 7](#7-connect-your-first-real-source-safely)) |
 | **Backups** | Back up PostgreSQL and `.env` separately, and test a restore (below) |
-| **Audit forwarding** | Export the append-only audit log from **Audit log → Export** to an independently protected destination |
+| **Audit forwarding** | Export the append-only audit log from **Audit log → Export** to an independently protected destination. The export runs as a background job; download its file soon, because job files are lost when the backend container is recreated ([Back up and restore](#back-up-and-restore)) |
 
 <details>
 <summary>Example: nginx as the TLS ingress in front of port 8080</summary>
@@ -743,17 +812,31 @@ server {
 }
 ```
 
-For SSO, register `https://soc.example.com/api/auth/sso/callback` with your identity provider.
-
 </details>
+
+> [!WARNING]
+> **Single sign-on behind a TLS ingress, known issue in 0.1.13:** the backend builds the SSO
+> callback address from the request it receives from `tlsoc-webui`, which reaches it over plain
+> HTTP. Behind the ingress above it therefore sends `http://soc.example.com/api/auth/sso/callback`
+> to the identity provider, although the provider editor's **Callback URL** field shows the
+> `https://` address. A provider registered with the `https://` callback rejects the sign-in with a
+> redirect URI mismatch, and this ingress does not serve plain HTTP. To check, open
+> `https://soc.example.com/api/auth/sso/authorize?provider=<id>` and read the `redirect_uri`
+> parameter of the returned `auth_url`. If it starts with `http://`, SSO cannot complete behind
+> this ingress in 0.1.13: use password sign-in with MFA, and keep a local administrator account.
 
 ### Back up and restore
 
-The `tlsoc-pgdata` volume holds all application state. Dump it with the database tools in the
-PostgreSQL container (replace `tlsoc` if you changed `TLSOC_PG_USER` or `TLSOC_PG_DB`):
+The `tlsoc-pgdata` volume holds the application's database (cases, audit log, users, settings and
+knowledge). Files produced by background jobs, such as data exports and audit exports, are kept
+inside the backend container and are lost when it is recreated, so download them promptly.
+
+Dump the database with the tools in the PostgreSQL container. The single quotes matter: the
+command reads the container's own `POSTGRES_USER` and `POSTGRES_DB`, which Compose sets from
+`TLSOC_PG_USER` and `TLSOC_PG_DB`, so it works whatever `.env` sets:
 
 ```bash
-docker exec tlsoc-postgres pg_dump -U tlsoc tlsoc > tlsoc-backup-$(date +%F).sql
+docker exec tlsoc-postgres sh -c 'pg_dump -U "$POSTGRES_USER" "$POSTGRES_DB"' > tlsoc-backup-$(date +%F).sql
 ```
 
 Restore only into an empty database on a stack running the same version. The backend creates
@@ -763,9 +846,9 @@ then:
 
 ```bash
 ./scripts/agentic-soc-compose.sh stop tlsoc-backend
-docker exec tlsoc-postgres dropdb -U tlsoc tlsoc
-docker exec tlsoc-postgres createdb -U tlsoc tlsoc
-docker exec -i tlsoc-postgres psql -U tlsoc -d tlsoc -v ON_ERROR_STOP=1 < tlsoc-backup-YYYY-MM-DD.sql
+docker exec tlsoc-postgres sh -c 'dropdb -U "$POSTGRES_USER" "$POSTGRES_DB"'
+docker exec tlsoc-postgres sh -c 'createdb -U "$POSTGRES_USER" "$POSTGRES_DB"'
+docker exec -i tlsoc-postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1' < tlsoc-backup-YYYY-MM-DD.sql
 ./scripts/agentic-soc-compose.sh start tlsoc-backend
 ```
 
@@ -783,17 +866,33 @@ and the checkout stays clean. For example, `$HOME/agentic-soc/local.compose.yml`
 services:
   tlsoc-backend:
     environment:
-      - TRUSTED_PROXIES=tlsoc-webui,10.0.0.5   # add your ingress address
+      - TRUSTED_PROXIES=tlsoc-webui,10.0.0.5   # add the address your ingress connects from
     ports:
-      - "1514:1514/udp"   # syslog UDP, only if you configure a syslog source
-      - "1514:1514/tcp"   # syslog TCP
+      - "1514:1514/udp"   # syslog UDP: set the syslog source's Port to 1514
+      - "1514:1514/tcp"   # syslog TCP: same port
 ```
 
-Pass it with `-f` on every command that creates or recreates containers:
+- **`TRUSTED_PROXIES`:** if the ingress runs on the Docker host itself, as in the nginx example
+  above, the Console's proxy sees its connections arrive from the Compose network's gateway, not
+  from `127.0.0.1` or the host's LAN address. List that gateway instead. Print it with
+  `docker network inspect tlsoc-agentic-soc_default --format '{{(index .IPAM.Config 0).Gateway}}'`,
+  then sign in through the ingress and check that the audit log records your own address.
+- **Ports:** the container port on the right must equal the syslog source's **Port**, which
+  defaults to 514. To use this example, set the source's **Port** to 1514.
+
+Pass the file with `-f` on every command that creates or recreates containers, including the
+`up` commands elsewhere in this guide, which are printed without it:
 
 ```bash
 ./scripts/agentic-soc-compose.sh -f "$HOME/agentic-soc/local.compose.yml" up --detach
 ```
+
+> [!WARNING]
+> The update supervisor does not read this file. A supervised update or rollback recreates the
+> backend and the Console from the base file and the signed release pins only, which drops your
+> published syslog ports and your `TRUSTED_PROXIES` value. After every supervised update or
+> rollback, run the command above again and confirm that your syslog sources receive events (see
+> [section 8](#8-updates)).
 
 ## 7. Connect your first real source safely
 
@@ -847,10 +946,15 @@ inside the descriptor is a compatibility identifier.
 
 Add a **Generic Webhook** or **Splunk HEC** source, choose bearer or HMAC authentication, and set
 its token in the source editor's write-only secret field. The receiver accepts JSON, NDJSON, CEF,
-LEEF, GELF, syslog and key-value payloads at `/api/ingest/<source-id>`:
+LEEF, GELF, syslog and key-value payloads at `/api/ingest/<source-id>`.
+
+Find the source's ID in **Sources**: open **Columns**, tick **ID**, and read the new column (hover
+a long value to see it in full). The Console adds a short suffix to the name you typed, for
+example `my-webhook-k3f9`, and an unknown ID answers `404` with `No enabled source with that id`.
 
 ```bash
-curl -X POST http://localhost:8080/api/ingest/my-webhook \
+SOURCE_ID=my-webhook-k3f9   # replace with the ID from the Sources table
+curl -X POST "http://localhost:8080/api/ingest/$SOURCE_ID" \
   -H 'Authorization: Bearer <the token you set on the source>' \
   -H 'Content-Type: application/json' \
   -d '{"event.module":"web_auth","source.ip":"203.0.113.7","user.name":"alice"}'
@@ -883,15 +987,25 @@ Redis images and never rewrites the database. It requires:
 - a deployment running signed Stable release images, and a release that needs no database
   migration.
 
+**Your own `-f` files are not applied.** A supervised update or rollback recreates
+`tlsoc-backend` and `tlsoc-webui` from the base file and the signed release override only. Settings
+from an [override file](#use-an-override-file-for-local-changes) or the enrichment-keys overlay
+(for example `TRUSTED_PROXIES`, published receiver ports and the Round 11 enrichment keys) are
+dropped, and preflight does not report this as a blocker. After each supervised update or
+rollback, run `./scripts/agentic-soc-compose.sh -f <your file> up --detach` again (one `-f` per
+file). Do not attach the backend to extra networks in an override: preflight then reports it as
+outside the canonical Compose network.
+
 **A stack built from source** (this guide) does not carry a managed Stable identity, so it cannot
 update itself. The header shows **Enable updates** or **Updates unavailable**; select it to see
 each blocker and its remediation. Upgrade such a stack manually:
 
 ```bash
-docker exec tlsoc-postgres pg_dump -U tlsoc tlsoc > tlsoc-backup-$(date +%F).sql   # back up first
+# back up first (see "Back up and restore" in section 6)
+docker exec tlsoc-postgres sh -c 'pg_dump -U "$POSTGRES_USER" "$POSTGRES_DB"' > tlsoc-backup-$(date +%F).sql
 git fetch --tags origin
 git checkout vX.Y.Z            # the exact accepted release tag
-./scripts/agentic-soc-compose.sh up --detach --build
+./scripts/agentic-soc-compose.sh up --detach --build   # put your -f <file> options, if any, before "up"
 ```
 
 Read the release notes and
@@ -920,18 +1034,26 @@ while an update runs. The full contract is in [Upgrades and promotion](docs/oper
 Run these from the repository root. While a supervised update runs, the wrapper allows only
 read-only commands (`ps`, `logs`, `config`).
 
+> [!IMPORTANT]
+> If you started the stack with the enrichment overlay or a local override file, add the same
+> `-f` arguments, placed before `up`, to every `up` command in this guide, for example
+> `./scripts/agentic-soc-compose.sh -f deploy/docker-compose.enrichment-keys.yml -f "$HOME/agentic-soc/local.compose.yml" up --detach`.
+> Without them, Compose recreates the backend without those settings and shows no error.
+
 ```bash
 ./scripts/agentic-soc-compose.sh ps                       # status
 ./scripts/agentic-soc-compose.sh logs -f tlsoc-backend    # follow the backend log
 ./scripts/agentic-soc-compose.sh restart tlsoc-backend    # restart one service
 ./scripts/agentic-soc-compose.sh stop                     # stop the containers, keep them
 ./scripts/agentic-soc-compose.sh start                    # start them again
-./scripts/agentic-soc-compose.sh down                     # remove containers and network, keep all data
-./scripts/agentic-soc-compose.sh up --detach              # recreate from the existing images and data
+./scripts/agentic-soc-compose.sh down                     # remove containers and network, keep the database and updater volumes
+./scripts/agentic-soc-compose.sh up --detach              # recreate from the existing images and data (add your -f files)
 ```
 
 After a restart, re-enter any secret you typed into the Console (source keys, provider keys,
-notification and SSO secrets) that is not in `.env`.
+notification and SSO secrets) that is not in `.env`. `down`, and any command that recreates the
+backend, also discards background-job files you have not downloaded yet, such as data and audit
+exports.
 
 **Uninstall.** Back up first. Then remove the containers together with every named volume, and
 the images built from your checkout:
@@ -964,7 +1086,7 @@ manually.
    ```bash
    cd /path/to/your-stack        # the directory that holds the stack's docker-compose.yml
    git clone https://github.com/ARYDESTROYER/Kavach-AgenticSOC.git agentic-kibana
-   git -C agentic-kibana checkout v0.1.13   # or Testing, as in section 5.2
+   git -C agentic-kibana checkout v0.1.13   # only once the v0.1.13 GitHub Release exists (section 5.2); otherwise use Testing or stay on main
    ```
 
 2. **Mint two scoped API keys, once, with the superuser.** Never give Agentic SOC the `elastic`
@@ -975,8 +1097,11 @@ manually.
        "indices": [ { "names": ["all-logs-*"], "privileges": ["read", "view_index_metadata"] } ] } }
    ```
 
-   A management key for Agentic SOC's own indices only (the cluster privileges are needed only if
-   you will apply Storage and retention lifecycle):
+   A management key for Agentic SOC's own indices only. Keep all three cluster privileges.
+   `monitor` is needed because the readiness check (`/api/health/ready`, which is also the
+   container health check) pings the cluster with this key. `manage_index_templates` is needed
+   because the first start creates the `tlsoc-agent-*` index templates. `manage_ilm` is used by
+   Storage and retention lifecycle. None of them grants access to your log indices:
 
    ```json
    { "tlsoc_agent_mgmt": {
@@ -998,12 +1123,15 @@ manually.
 4. **Merge the services.** Copy the `tlsoc-backend` and `tlsoc-redis` services and the
    `agentic-soc-job-artifacts` volume from `agentic-kibana/deploy/docker-compose.tlsoc.yml` into
    your stack's `docker-compose.yml`. Do not change any existing service. The block reaches
-   `https://elasticsearch:9200` by container name and mounts `./certs/ca/ca.crt` read-only; its
-   `ES_URL`, `ES_CA_CERT` and `ES_VERIFY_CERTS` lines are literals, so edit them in the block if
-   your topology differs.
+   `https://elasticsearch:9200` by container name, depends on a service named `elasticsearch`,
+   and mounts the host file `./certs/ca/ca.crt` read-only at `/certs/ca.crt`. These are literals.
+   If your Elasticsearch service has another name or your CA file lives elsewhere, edit the
+   `ES_URL` and `ES_VERIFY_CERTS` lines, the `depends_on` entry and the CA line under `volumes:`
+   in the block. Check that the CA file exists before you start: Docker creates a missing host
+   path as an empty directory.
 
 5. **Add authentication to the backend.** The block maps no authentication variables. Add these
-   lines to its `environment:` list, as the reference stack does:
+   lines to its `environment:` list (the reference stack maps the same names):
 
    ```yaml
          - AUTH_ENABLED=${TLSOC_AUTH_ENABLED:-false}
@@ -1011,7 +1139,15 @@ manually.
          - AUTH_ADMIN_USERNAME=${TLSOC_AUTH_ADMIN_USERNAME:-admin}
          - AUTH_ADMIN_PASSWORD=${TLSOC_AUTH_ADMIN_PASSWORD:-}
          - AUTH_COOKIE_SECURE=${TLSOC_AUTH_COOKIE_SECURE:-false}
+         - AUTH_TOKEN_HOURS=${TLSOC_AUTH_TOKEN_HOURS:-12}
+         - MFA_OBFUSCATION_KEY=${TLSOC_MFA_OBFUSCATION_KEY:-}
+         - SSO_CLIENT_SECRETS=${TLSOC_SSO_CLIENT_SECRETS:-{}}
+         - NOTIFICATION_SECRETS=${TLSOC_NOTIFICATION_SECRETS:-{}}
    ```
+
+   Set `TLSOC_MFA_OBFUSCATION_KEY` before anyone enrols two-factor, and do not add or change it
+   afterwards: when it is blank the MFA key is derived from `TLSOC_AUTH_JWT_SECRET`, and a later
+   change makes every enrolled authenticator fail.
 
 6. **Add the Console.** The block has no Web UI. This service is the reference stack's
    `tlsoc-webui`, adapted to the merged layout. Keep the name `tlsoc-webui`: its nginx proxies
@@ -1047,7 +1183,9 @@ manually.
    ```
 
 8. **Verify** from the host (the block publishes port 8088), then open the Console and follow
-   sections [5.8](#58-open-the-console) to [5.12](#512-what-you-see-after-launch):
+   sections [5.8](#58-open-the-console) to [5.12](#512-what-you-see-after-launch). Role-based
+   access is off on this shape too: turn it on as in [Accounts and roles](#accounts-and-roles)
+   step 1, with `CONSOLE` set to the host port you gave `tlsoc-webui`.
 
    ```bash
    curl --fail http://localhost:8088/api/health/ready
@@ -1068,7 +1206,7 @@ with Demo Mode, use [path A](#4-path-a-try-the-demo-on-a-workstation).
 
 ```bash
 cd backend
-python3 -m venv .venv
+python3.11 -m venv .venv          # Python 3.11, as CI uses; the pinned packages do not install on 3.13 or later
 . .venv/bin/activate
 pip install -r requirements-dev.txt
 mkdir -p data
@@ -1083,8 +1221,10 @@ python -m uvicorn app.main:app --host 127.0.0.1 --port 8088
 A direct run reads the **unprefixed** variable names; the `TLSOC_*` names exist only for Compose.
 Provider keys are `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` and so on. Without Redis, the log warns
 `Redis unavailable ...; using in-memory cache fallback`, which is expected. The command above
-creates a new JWT secret on every start, so sessions end at each restart; export a fixed value to
-keep them. `backend/data/` is ignored by Git.
+creates a new JWT secret each time you run it. Sessions then end, and because the MFA key is
+derived from the JWT secret, any authenticator enrolled in this database also stops working. To
+keep both, export a fixed `AUTH_JWT_SECRET` (and, if you enrol two-factor, a fixed
+`MFA_OBFUSCATION_KEY`). `backend/data/` is ignored by Git.
 
 **Terminal 2: the Console on `localhost:5173`, proxying `/api` to the API**
 
@@ -1095,13 +1235,13 @@ BACKEND_URL=http://127.0.0.1:8088 npm run dev
 ```
 
 Open `http://localhost:5173`; the first-run flow from [section 5.9](#59-create-the-first-administrator)
-applies. Before you open a pull request, run the gates from [`CONTRIBUTING.md`](CONTRIBUTING.md),
-starting from the repository root:
+applies. Before you open a pull request, run the gates from [`CONTRIBUTING.md`](CONTRIBUTING.md)
+and the matching CI lanes, starting from the repository root:
 
 ```bash
 (cd backend && . .venv/bin/activate && python -m pytest -q)   # offline: fake Elasticsearch, mock model
 (cd webui && npm run build)                                    # Help Center bundle, type check, Vite build
-(cd webui && npm run lint && npm test)
+(cd webui && npm run lint -- --max-warnings=0 && npm run gates && npm run test:strict)
 ```
 
 [`AGENTS.md`](AGENTS.md) is the project's architecture and rules reference, including the 12
@@ -1109,13 +1249,16 @@ non-negotiables that every change must keep.
 
 ## 12. Troubleshooting
 
+Where a fix says `up --detach`, run it through the wrapper with the same `-f` files you started
+the stack with ([section 9](#9-stop-restart-and-uninstall)).
+
 | Symptom | Likely cause | Fix |
 | --- | --- | --- |
 | The wrapper stops with `.env is missing` | No `.env` in the repository root | `cp .env.example .env` and configure it ([5.3](#53-configure-the-environment-file)) |
 | Compose stops with `set TLSOC_PG_PASSWORD in .env` | The database password is empty | Set `TLSOC_PG_PASSWORD` |
 | `build provenance is not an immutable release revision` | Not a Git checkout, or tracked files are modified | Build from a clean clone; keep local changes in an [override file](#use-an-override-file-for-local-changes) |
 | `Bind for 0.0.0.0:8080 failed: port is already allocated` (or 8088) | Another service, often the demo script, holds the port | Stop it, then run `up --detach` again |
-| `tlsoc-backend` never becomes healthy; `/api/health/ready` answers 503 | The state store probe fails | Read `./scripts/agentic-soc-compose.sh logs tlsoc-backend`, and check `docker exec tlsoc-postgres pg_isready` |
+| `tlsoc-backend` never becomes healthy; `/api/health/ready` answers 503 | The state store probe fails | Read the backend log (`./scripts/agentic-soc-compose.sh logs tlsoc-backend`, or `docker logs tlsoc-backend` on path D). On path B, check `docker exec tlsoc-postgres sh -c 'pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"'`. On path D, check that the management key has the `monitor` cluster privilege and `write` on `tlsoc-agent-*` |
 | `password authentication failed` after you changed `TLSOC_PG_PASSWORD` | PostgreSQL keeps the password set when the volume was first created | Put the original value back. Only on a throwaway install, reset with `down --volumes` (deletes all data) |
 | No sign-in screen, the Console opens straight into setup | `TLSOC_AUTH_ENABLED` is not `true` | Set it and run `./scripts/agentic-soc-compose.sh up --detach` |
 | The sign-in page hints `Admin` / `Admin@123` | Auth is on, the user store was empty and `TLSOC_AUTH_ADMIN_PASSWORD` was empty, so the demo admin was seeded | Sign in, create a named super administrator, then turn `Admin` off ([5.9](#59-create-the-first-administrator)) |
@@ -1123,18 +1266,20 @@ non-negotiables that every change must keep.
 | **Remember me** is greyed out: `Available when the console is served over HTTPS` | Secure cookies are off | Serve the Console over TLS and set `TLSOC_AUTH_COOKIE_SECURE=true` |
 | `Can't verify setup state` with **Retry** | `/api/setup/status` cannot be read through the proxy | Check `curl -fsS http://localhost:8080/api/setup/status`, fix the backend, then **Retry** |
 | **Add source** fails: `Please complete required fields: Log index pattern` | Known 0.1.13 issue: the displayed default is not counted | Clear the field and type the pattern |
-| **Test connection** fails | Wrong URL (for example `localhost`, which is the backend container itself), wrong or under-scoped key, or an untrusted private CA | Use a URL the backend container can reach, a read-only key scoped to the pattern, and the CA PEM |
+| **Test connection** fails | Wrong URL (for example `localhost`, which is the backend container itself), wrong or under-scoped key, or an untrusted private CA | Use a URL the backend container can reach, a read-only key scoped to the pattern and, for a private CA, the container path of a mounted CA file ([5.3](#53-configure-the-environment-file)) |
 | Connection passes but no cases appear | Field mapping does not match the data, or the correlation threshold is not met | Check mapping against a real document; see [No cases appear](docs/TROUBLESHOOTING.md#h-no-cases-appear) |
-| A source stops after a backend restart | Its key was typed into the Console and lived in memory | Enter it again, or move it to `.env` |
+| A source stops after a backend restart | Its key was typed into the Console and lived in memory | Enter it again after each restart. For one Elasticsearch, OpenSearch or Wazuh pull source, `TLSOC_ES_URL` and `TLSOC_ES_API_KEY` in `.env` are the restart-safe alternative ([5.3](#53-configure-the-environment-file)). The shipped Compose files have no `.env` variable for other sources' secrets |
 | Setup will not leave **AI runtime** | A typed key could not be saved | Restore the backend connection and retry the same button |
-| Investigations use the mock runtime | No provider key is configured | Add `TLSOC_OPENAI_API_KEY` (or another provider) to `.env` and run `up --detach` |
+| New cases are **Needs human**, and their recommended action names a missing key (for example `OpenAI API key not configured`) | No provider key is configured. No investigation can call a model, so each cluster sent to investigation goes to a person and nothing is closed automatically. The `$0` mock model is used only by Demo Mode | Add `TLSOC_OPENAI_API_KEY` (or another provider) to `.env` and run `up --detach` |
 | The health pill reads **Degraded**, `Knowledge corpus empty` | The knowledge corpus is empty, often because the provider rejects the key | Fix the provider key first; see [Troubleshooting](docs/operations/troubleshooting.md#the-knowledge-corpus-is-empty-or-auto-close-has-stopped) |
 | Saving a change answers `503 audit_unavailable` | The audit log cannot be written, so the change is refused | Check the state store's health and free space |
-| The Console shows a 502 for `/api` | The backend is not healthy or not named `tlsoc-backend` | Check `ps` and the backend log |
-| Syslog or socket receivers get nothing | The listener port is not published | Publish it in an [override file](#use-an-override-file-for-local-changes) and firewall it |
+| The Console shows a 502 for `/api` | The backend container is not running or not healthy | Check `ps` and the backend log |
+| `tlsoc-webui` keeps restarting and its log shows `host not found in upstream "tlsoc-backend:8088"` | No running container named `tlsoc-backend` is on the Console's network | Keep the backend service and container named `tlsoc-backend`, start it, then start `tlsoc-webui` again |
+| Syslog or socket receivers get nothing | The listener port is not published, the source's **Port** differs from the published container port, or a supervised update dropped your override | Publish the source's **Port** in an [override file](#use-an-override-file-for-local-changes), run `up --detach` with it again, and firewall it |
+| An `auditor` or analyst account can manage users, sources or settings | Role-based access is off, so every signed-in account counts as Super admin | Turn it on as in [Accounts and roles](#accounts-and-roles) step 1 |
 | A webhook sender gets `401` | The sender's credential does not match the receiver's bearer or HMAC setting | Match the token or HMAC secret; re-enter it after a restart |
 | `a supervised update is active; mutating Compose commands are temporarily blocked` | An update job is running | Wait until it finishes; inspection commands still work |
-| `source builds are blocked while a signed release override is active` | The updater installed a signed release | Follow the supervised-release recovery in [Upgrades](docs/operations/upgrades.md) |
+| `source builds are blocked while a signed release override is active` | The updater installed a signed release | Returning to a source build is a recovery operation. Make an application export (**Settings → Organization → Data export**) and a verified PostgreSQL backup, stop the stack through the wrapper, move `.agentic-soc-runtime/active-release.compose.yml` to a retained `.disabled` file, then build from source. Do not delete the updater state or backup volume, and run the updater bootstrap again before you use one-click updates. See [`updater/README.md`](updater/README.md) |
 
 The full guides are [Troubleshooting](docs/operations/troubleshooting.md) in the Help Center and
 the longer [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md).
