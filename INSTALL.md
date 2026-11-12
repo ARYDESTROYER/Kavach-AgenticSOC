@@ -98,7 +98,7 @@ running cost is model API usage, which the Console meters in its cost ledger.
 | Docker Compose v2 | Paths B, D | The `docker compose` plugin, not the legacy `docker-compose` binary |
 | Git | Paths A, B, D, E | The wrapper stamps each build with the checkout's commit and date. The updater bootstrap refuses to run without Git |
 | Python 3 | Path B | Runs the wrapper's lifecycle guard on the host |
-| Python 3.11, Node.js 22 and npm | Paths A, E | The backend requires Python 3.11 or later |
+| Python 3.11, Node.js 22 and npm | Paths A, E | The backend needs Python 3.11 or 3.12. The pinned packages (for example pydantic-core 2.16.3 and orjson 3.10.1) do not install on Python 3.13 or later. Path A's script creates `backend/.venv` with whatever `python3` is on your PATH, so if that is 3.13 or later, run `python3.11 -m venv backend/.venv` from the repository root first (remove a `backend/.venv` that a failed run left behind) |
 | `curl` and `openssl` | Path B | To check health and to generate secrets |
 | Free ports | All | `8080` and `8088` (path B), `8088` and `5173` (paths A and E). Paths A and B both use `8088`, so do not run them at the same time |
 | Outbound network | Path B build and run | Docker Hub and `ghcr.io` for base images (`pgvector/pgvector:pg16`, `redis:7-alpine`, `python:3.11` slim and alpine, `node:22-alpine`, `nginx:1.27-alpine`, `docker:27.5.1-cli`, the Sigstore cosign image), the Alpine package repository (`dl-cdn.alpinelinux.org`, for the update supervisor's `apk add`), PyPI and the npm registry during the build, and your model provider's API at run time |
@@ -241,7 +241,7 @@ Then add one provider key, for example `TLSOC_OPENAI_API_KEY=<your key>`.
 | Variable | Required | What it does |
 | --- | --- | --- |
 | `TLSOC_PG_PASSWORD` | **Yes** | PostgreSQL password. Compose refuses to start without it and builds the backend's database URL from it, so use a hex value (no `@`, `:` or `/`). PostgreSQL applies it only when the `tlsoc-pgdata` volume is first created |
-| `TLSOC_AUTH_ENABLED` | **Yes, set `true`** | Turns on sign-in, the six roles, MFA and SSO. The template ships `false`, which leaves the Console open to anyone who can reach it, with every caller treated as a super administrator |
+| `TLSOC_AUTH_ENABLED` | **Yes, set `true`** | Turns on sign-in, MFA and SSO. The six roles are enforced only after you also turn on role-based access ([Accounts and roles](#accounts-and-roles) step 1); until then every signed-in account counts as Super admin. The template ships `false`, which leaves the Console open to anyone who can reach it, with every caller treated as a super administrator |
 | `TLSOC_AUTH_JWT_SECRET` | **Yes, with auth** | Signs sessions. Keep it stable: if it is empty or changes, every restart signs everyone out. Supervised updates need at least 32 characters (`openssl rand -hex 32` gives 64). When `TLSOC_MFA_OBFUSCATION_KEY` is blank, the MFA key is derived from it |
 | `TLSOC_AUTH_ADMIN_PASSWORD` | Recommended | Password of an environment break-glass super administrator named by `TLSOC_AUTH_ADMIN_USERNAME` (default `admin`). It is hashed in memory at startup and never stored. Setting it also stops the backend from seeding the demo `Admin` / `Admin@123` account, so the Console opens on **Create your admin account** |
 | `TLSOC_OPENAI_API_KEY` | Recommended | Default provider: fresh workspaces assign GPT-5.6 Luna to every completion role and use OpenAI for embeddings |
@@ -697,7 +697,9 @@ threat model is in [`SECURITY.md`](SECURITY.md) and
    **Role-based access** as `Off: everyone is Super admin`, and
    **Settings → Security & access → Roles & permissions** shows a **Role-based access is off**
    callout. The 0.1.13 Console has no switch for it (a known gap). Turn it on through the settings
-   API (permission `settings:manage`) from a shell on the Docker host:
+   API (permission `settings:manage`) from a Bash shell on the Docker host. In zsh, the macOS
+   default, type `bash` first, because zsh's `read -p` reads from a coprocess instead of showing
+   a prompt:
 
    ```bash
    CONSOLE=http://localhost:8080
@@ -822,8 +824,9 @@ server {
 > `https://` address. A provider registered with the `https://` callback rejects the sign-in with a
 > redirect URI mismatch, and this ingress does not serve plain HTTP. To check, open
 > `https://soc.example.com/api/auth/sso/authorize?provider=<id>` and read the `redirect_uri`
-> parameter of the returned `auth_url`. If it starts with `http://`, SSO cannot complete behind
-> this ingress in 0.1.13: use password sign-in with MFA, and keep a local administrator account.
+> parameter of the returned `auth_url`. The value is URL-encoded: if it starts with `http%3A%2F%2F`
+> (`http://`) rather than `https%3A%2F%2F`, SSO cannot complete behind this ingress in 0.1.13: use
+> password sign-in with MFA, and keep a local administrator account.
 
 ### Back up and restore
 
@@ -889,9 +892,10 @@ Pass the file with `-f` on every command that creates or recreates containers, i
 
 > [!WARNING]
 > The update supervisor does not read this file. A supervised update or rollback recreates the
-> backend and the Console from the base file and the signed release pins only, which drops your
-> published syslog ports and your `TRUSTED_PROXIES` value. After every supervised update or
-> rollback, run the command above again and confirm that your syslog sources receive events (see
+> backend and the Console from the base file and the signed release pins only, which drops
+> everything this file sets, such as your published syslog ports, your `TRUSTED_PROXIES` value and
+> a mounted CA certificate. After every supervised update or rollback, run the command above again
+> and confirm that your syslog sources receive events and your pull sources still connect (see
 > [section 8](#8-updates)).
 
 ## 7. Connect your first real source safely
@@ -990,7 +994,8 @@ Redis images and never rewrites the database. It requires:
 **Your own `-f` files are not applied.** A supervised update or rollback recreates
 `tlsoc-backend` and `tlsoc-webui` from the base file and the signed release override only. Settings
 from an [override file](#use-an-override-file-for-local-changes) or the enrichment-keys overlay
-(for example `TRUSTED_PROXIES`, published receiver ports and the Round 11 enrichment keys) are
+(for example `TRUSTED_PROXIES`, published receiver ports, a mounted CA certificate and the
+Round 11 enrichment keys) are
 dropped, and preflight does not report this as a blocker. After each supervised update or
 rollback, run `./scripts/agentic-soc-compose.sh -f <your file> up --detach` again (one `-f` per
 file). Do not attach the backend to extra networks in an override: preflight then reports it as
@@ -1185,7 +1190,8 @@ manually.
 8. **Verify** from the host (the block publishes port 8088), then open the Console and follow
    sections [5.8](#58-open-the-console) to [5.12](#512-what-you-see-after-launch). Role-based
    access is off on this shape too: turn it on as in [Accounts and roles](#accounts-and-roles)
-   step 1, with `CONSOLE` set to the host port you gave `tlsoc-webui`.
+   step 1, with `CONSOLE` set to the Console's address on this host, for example
+   `http://localhost:8080` for the port mapping in step 6.
 
    ```bash
    curl --fail http://localhost:8088/api/health/ready
@@ -1261,7 +1267,7 @@ the stack with ([section 9](#9-stop-restart-and-uninstall)).
 | `tlsoc-backend` never becomes healthy; `/api/health/ready` answers 503 | The state store probe fails | Read the backend log (`./scripts/agentic-soc-compose.sh logs tlsoc-backend`, or `docker logs tlsoc-backend` on path D). On path B, check `docker exec tlsoc-postgres sh -c 'pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"'`. On path D, check that the management key has the `monitor` cluster privilege and `write` on `tlsoc-agent-*` |
 | `password authentication failed` after you changed `TLSOC_PG_PASSWORD` | PostgreSQL keeps the password set when the volume was first created | Put the original value back. Only on a throwaway install, reset with `down --volumes` (deletes all data) |
 | No sign-in screen, the Console opens straight into setup | `TLSOC_AUTH_ENABLED` is not `true` | Set it and run `./scripts/agentic-soc-compose.sh up --detach` |
-| The sign-in page hints `Admin` / `Admin@123` | Auth is on, the user store was empty and `TLSOC_AUTH_ADMIN_PASSWORD` was empty, so the demo admin was seeded | Sign in, create a named super administrator, then turn `Admin` off ([5.9](#59-create-the-first-administrator)) |
+| The sign-in page hints `Admin` / `Admin@123` | Auth is on, the user store was empty and `TLSOC_AUTH_ADMIN_PASSWORD` was empty, so the demo admin was seeded | Sign in, launch setup (Settings opens only after launch), create a named super administrator, then turn `Admin` off ([5.9](#59-create-the-first-administrator)) |
 | Everyone is signed out after each restart | `TLSOC_AUTH_JWT_SECRET` is empty or changed | Set a stable value of at least 32 characters |
 | **Remember me** is greyed out: `Available when the console is served over HTTPS` | Secure cookies are off | Serve the Console over TLS and set `TLSOC_AUTH_COOKIE_SECURE=true` |
 | `Can't verify setup state` with **Retry** | `/api/setup/status` cannot be read through the proxy | Check `curl -fsS http://localhost:8080/api/setup/status`, fix the backend, then **Retry** |

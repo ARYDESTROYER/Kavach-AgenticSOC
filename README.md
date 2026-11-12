@@ -303,7 +303,7 @@ instructions. They are the project's
 | 9 | Untrusted-data fencing | Source-derived values are fenced and labelled in every prompt. Imported knowledge stays fenced, and agent-written memory waits for human approval. | `backend/app/agents/prompts.py` |
 | 10 | Sane defaults | Runs with keys and a data scope only. Ingestion, tuning observation, campaigns and baselines are on by default; threshold changes are review-first. | `backend/app/config.py` |
 | 11 | Spine first, breadth degrades gracefully | The core pipeline is tested first. Optional breadth (enrichment, threat context, Redis) fails open, and a model, log-query or tool error routes the alert to Needs human instead of dropping it. | pipeline-wide |
-| 12 | Read-only consumer | Agentic SOC never changes your upstream pipeline's code or configuration, and the stack deploys cold. Queue receivers still consume what they read, and the RabbitMQ and Redis Streams receivers create a missing queue, stream or consumer group, so give each receiver its own queue, subscription or consumer group. | `deploy/` |
+| 12 | Read-only consumer | Agentic SOC never changes your upstream pipeline's code or configuration, and the stack deploys cold. Queue receivers still consume what they read, and some create a missing queue, stream or consumer group on the broker, so give each receiver its own queue, subscription or consumer group. | `deploy/` |
 
 Secrets follow the same rule: the Console shows only whether a secret is configured, never
 its value. Read the [security model](SECURITY.md) and the

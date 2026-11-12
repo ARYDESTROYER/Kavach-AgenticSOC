@@ -208,8 +208,11 @@ Fill in the top of the form:
    store and afterwards shown only as configured.
 4. **CA certificate (PEM)**: for a private CA, give the path of the CA file inside the
    backend container, such as `/certs/ca.crt`, where `deploy/docker-compose.tlsoc.yml`
-   mounts its stack's CA. The reference stack mounts no CA file by default. Leave the
-   field blank for a public CA.
+   mounts its stack's CA. The reference stack mounts no CA file by default: mount one
+   through a Compose override file that you pass to `./scripts/agentic-soc-compose.sh`
+   with `-f`, not by editing `deploy/docker-compose.agnostic.yml`, whose exact hash
+   supervised updates check. A supervised update does not read your override file, so
+   apply it again afterwards. Leave the field blank for a public CA.
 
 !!! warning "Give a file path, not pasted certificate text"
 

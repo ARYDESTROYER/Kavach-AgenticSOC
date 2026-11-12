@@ -75,10 +75,12 @@ audit record, and a result the Console shows. See
    queries with the read-only key, cached enrichment, knowledge retrieval, Published
    runbooks, and MITRE ATT&CK context. The formatter returns a verdict, a confidence,
    and compact evidence as a recommendation only. Source-derived evidence enters every
-   prompt fenced and labelled as untrusted data. If a model call fails, for example
-   because no provider key is configured, the investigator fails safe to a needs human
-   verdict whose recommended action names the error; it never falls back to the `$0`
-   mock model, which only Demo Mode uses.
+   prompt fenced and labelled as untrusted data. If the investigator's model call fails,
+   for example because no provider key is configured, it fails safe to a needs human
+   verdict whose recommended action names the error. A failed router call only defaults
+   to the uncertain bucket, and a failed formatter call keeps the investigator's draft
+   verdict. None of these calls falls back to the `$0` mock model, which only Demo Mode
+   uses.
 7. **One model gateway.** Every model call, from investigation and from chat, goes
    through one gateway to the configured provider (Anthropic, OpenAI, Azure OpenAI,
    Bedrock, Vertex, or an OpenAI-compatible endpoint). The gateway runs the pipeline

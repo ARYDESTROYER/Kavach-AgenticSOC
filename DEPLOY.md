@@ -143,12 +143,12 @@ Optional for Mode A:
   `TLSOC_AWS_SECRET_ACCESS_KEY` / `TLSOC_AWS_REGION` for AWS Bedrock (stdlib SigV4, no
   `boto3`); `TLSOC_VERTEX_PROJECT` / `_LOCATION` / `_API_KEY` for Google Vertex. Any
   OpenAI-compatible endpoint (vLLM/Ollama/OpenRouter/Together/Groq) needs no new key —
-  set the model's `base_url` in Settings → Models. See `docs/ENVIRONMENT.md` §2.6.
+  set the model's `base_url` in **Analytics → Models**. See `docs/ENVIRONMENT.md` §2.6.
 - **Local / self-hosted models — LiteLLM-compatible (Round 9, optional):** a
   self-hosted LiteLLM proxy / vLLM / Ollama / LM Studio endpoint reuses the
   `openai_compatible` provider path and needs **no new key at all** if it's
-  unauthenticated — just set the model's `base_url` in **Settings → Models → "Add
-  local model"** (`POST /api/llm/models/custom`). If your endpoint *does* require a
+  unauthenticated: just set the model's `base_url` in **Analytics → Models → Add local
+  model** (`POST /api/llm/models/custom`). If your endpoint *does* require a
   key, the optional secret is `litellm_api_key` (env `LITELLM_API_KEY`), with three
   supply paths: (a) set `TLSOC_LITELLM_API_KEY` in `.env` **and** add a matching
   `- LITELLM_API_KEY=${TLSOC_LITELLM_API_KEY:-}` line to the `tlsoc-backend`
@@ -251,8 +251,8 @@ The setup workspace has four stages:
    alternate provider key if you will change the role assignments. Keys are write-only:
    setup shows configured state, never the value. Newly typed keys save through
    `POST /api/setup/secrets` whenever you leave this stage; a failed save keeps you
-   on the stage. Model registration, per-role assignment, and budgets remain in
-   **Settings → Models** after launch.
+   on the stage. After launch, model registration and budgets stay on
+   **Analytics → Models**, and per-role assignment in **Settings → General → Models**.
 4. **Review & launch** — reports **Ready**, **Needs attention**, or **Optional**
    for the workspace, sources, and AI runtime. A live workspace without a source or
    provider may launch, but is explicitly labelled **Ready with limited
@@ -322,7 +322,8 @@ With `TLSOC_AUTH_ENABLED=true` (§9), every API call below and in §3.7 except
 challenged for two-factor (with role-based access on, one allowed to manage sources),
 then send it as `Authorization: Bearer $TOKEN`, as the calls below do. With auth off,
 skip this step; the empty header is ignored. You can also set the source token in the
-source editor's write-only field instead.
+source editor's write-only field instead. Set `ADMIN` to that account's username; a wrong
+name or password, or a two-factor challenge, ends the command with `KeyError: 'token'`:
 
 ```bash
 CONSOLE=http://localhost:8080
@@ -415,7 +416,12 @@ FROM registry.example/tlsoc-backend-core:0.1.13
 RUN pip install --no-cache-dir confluent-kafka boto3   # only what you need
 ```
 
-…then point the `tlsoc-backend` service's `image:`/`build:` at it and rebuild.
+…then put the change in a Compose override file (like the syslog ports above), not in
+`deploy/docker-compose.agnostic.yml`: under `tlsoc-backend`, set `image:` to a new local tag
+and `build:` `context:` to the absolute path of the folder that holds this Dockerfile, then
+run `./scripts/agentic-soc-compose.sh -f <override> up -d --build`. This is for source builds
+only: once a signed release is installed, the wrapper refuses `--build`, and you must stop
+passing this override, because its `image:` would replace the signed release image.
 
 ### 3.7 Verify
 
@@ -425,16 +431,13 @@ curl -s http://localhost:8088/api/health
 #   -> {"status":"ok","version":"...","es_connected":...,"store_type":"...","setup_complete":...}
 ```
 
-> **Reading `store_type` and `es_connected` correctly.** `store_type` is always
-> `type(state.es).__name__` — `RealESClient` or `InMemoryESClient`, the **log-surface
-> ES client class** — it **never** reports which `STATE_BACKEND` you chose. In
-> **Mode A** (Postgres/SQLite own-state) **with no Elasticsearch/OpenSearch/Wazuh
-> pull source wired**, `store_type:InMemoryESClient` is **expected and benign**, not
-> a Postgres/SQLite outage. `es_connected` is the pull-source connection — `false`
-> until you add and test one, also expected at this point. `store_type` only matters
-> for durability when `STATE_BACKEND=elasticsearch` (Mode B): there, `RealESClient`
-> means own-state writes land in real Elasticsearch, while `InMemoryESClient` means
-> the ES connection failed and data is not durable.
+> **Reading `store_type` and `es_connected` correctly.** Both describe the suite's own state
+> store, not a log source. `store_type` is `PostgresStateStore` in Mode A (`SQLiteStateStore`
+> for a SQLite state backend) and `RealESClient` in Mode B, where `InMemoryESClient` means no
+> Elasticsearch key was configured or the client could not be built, so data is not durable.
+> `es_connected` is a compatibility alias for `state_store_connected`: whether the selected
+> state backend passed its write probe. `false` is never expected on a healthy stack, with or
+> without a pull source; test log sources with **Test connection** instead.
 
 ```bash
 # Service status + logs:
@@ -1013,7 +1016,9 @@ Then `./scripts/agentic-soc-compose.sh up -d` to apply.
   them**. To stop the seed, set `TLSOC_AUTH_ADMIN_PASSWORD` (the backend then never
   seeds `Admin`), or add `AUTH_SEED_ADMIN=false` to the `tlsoc-backend` `environment:`
   list of a Compose override file (§3.6; in Mode B, the merge block). The
-  `AUTH_SEED_ADMIN_USERNAME` and `AUTH_SEED_ADMIN_PASSWORD` lines go there too.
+  `AUTH_SEED_ADMIN_USERNAME` and `AUTH_SEED_ADMIN_PASSWORD` lines go there too. Decide this
+  before the first start with auth on (the `up -d` above): the seed runs only while the user
+  store is empty, and with an override file that command needs the same `-f` (§3.6).
 - **6 roles:** `super_admin` · `soc_manager` · `analyst_tier2` · `analyst_tier1` ·
   `responder` · `auditor`. **Role-based access is off by default**
   (`Preferences.rbac.enabled` is `false`): with auth on and RBAC off, every signed-in
@@ -1029,25 +1034,9 @@ Then `./scripts/agentic-soc-compose.sh up -d` to apply.
   on two-factor (for an account with two-factor, the sign-in call returns
   `requires_mfa` and a `pending_token` instead of `token`; the second step is
   `POST /api/auth/mfa/verify` with `{"pending_token": ..., "code": ...}`, which
-  returns `token`). Set `ADMIN` to that account's username:
-
-  ```bash
-  CONSOLE=http://localhost:8080
-  ADMIN=soc-admin
-  read -r -s -p "Password for $ADMIN: " PW; echo
-  TOKEN=$(ADMIN="$ADMIN" PW="$PW" python3 -c 'import json, os; print(json.dumps({"username": os.environ["ADMIN"], "password": os.environ["PW"]}))' \
-    | curl -s -X POST "$CONSOLE/api/auth/login" -H 'Content-Type: application/json' --data-binary @- \
-    | python3 -c 'import json, sys; print(json.load(sys.stdin)["token"])')
-  unset PW
-  curl --fail -s -o /dev/null -w 'settings saved: HTTP %{http_code}\n' -X PUT "$CONSOLE/api/settings" \
-    -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-    -d '{"rbac": {"enabled": true}}'
-  unset TOKEN
-  curl -s "$CONSOLE/api/setup/status" | python3 -c 'import json, sys; print("rbac_enabled:", json.load(sys.stdin)["rbac_enabled"])'
-  ```
-
-  Expected output: `settings saved: HTTP 200`, then `rbac_enabled: True`. It takes
-  effect on the next request; keep at least one super administrator.
+  returns `token`). [`INSTALL.md`](INSTALL.md#accounts-and-roles) gives the tested command and
+  its expected output. It takes effect on the next request; keep at least one super
+  administrator.
 - **Env fallback admin** (optional, separate from the seed):
   `TLSOC_AUTH_ADMIN_USERNAME` + `TLSOC_AUTH_ADMIN_PASSWORD` (plaintext, hashed in
   memory at startup, never stored; granted super_admin), or a boot-time map
