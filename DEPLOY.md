@@ -59,9 +59,9 @@ because it already carries the final SemVer.
 > here to deploy.
 
 > **Just want a guided demo?** See **[`DEMO.md`](DEMO.md)** — `./scripts/run-demo.sh`
-> brings the suite up locally with **auth enabled** (login + RBAC + MFA + SSO live)
-> and the seeded `Admin` / `Admin@123` super_admin, then walks every headline
-> feature in order.
+> brings the suite up locally with **auth enabled** (login + MFA + SSO live; role-based
+> access stays off until you turn it on, see §9.1) and the seeded `Admin` / `Admin@123`
+> super_admin, then walks every headline feature in order.
 
 ---
 
@@ -88,9 +88,10 @@ backend choice is independent of where logs come from.
   `docker-compose`).
 - **Recommended for full live triage:** an OpenAI key for the fresh-install GPT-5.6
   Luna completion defaults, or another supported provider key plus explicit role
-  reassignment. The deployment can launch with the built-in `mock` runtime, but
-  setup truthfully labels that live state as limited. Synthetic demo always forces
-  the isolated `$0` mock runtime.
+  reassignment. Without a key the Console still runs, but no investigation can call
+  a model: each cluster sent to investigation becomes a **Needs human** case whose
+  recommended action names the missing key, and nothing is closed automatically.
+  The `$0` mock model is used only by Demo Mode (the synthetic demo workspace).
 - **For a PULL log source** (Elasticsearch / OpenSearch / Wazuh): a **read-only**
   credential (an ES-compatible API key) and the cluster URL. PUSH sources
   (webhook/HEC/syslog/Kafka/…) need no log-source credential at all.
@@ -124,8 +125,10 @@ For Mode A you must fill in:
 
 - **`TLSOC_PG_PASSWORD`** — required; the Postgres password. The compose file
   refuses to start without it.
-- **At least one LLM key** — `TLSOC_ANTHROPIC_API_KEY` and/or
-  `TLSOC_OPENAI_API_KEY`.
+- **At least one LLM key**: `TLSOC_OPENAI_API_KEY` for the default GPT-5.6 Luna
+  roles, or another provider's key (for example `TLSOC_ANTHROPIC_API_KEY`) plus a role
+  reassignment in **Settings → General → Models** after launch. The stack starts
+  without one, but investigations then go to a person (see §2).
 
 Optional for Mode A:
 
@@ -140,16 +143,17 @@ Optional for Mode A:
   `TLSOC_AWS_SECRET_ACCESS_KEY` / `TLSOC_AWS_REGION` for AWS Bedrock (stdlib SigV4, no
   `boto3`); `TLSOC_VERTEX_PROJECT` / `_LOCATION` / `_API_KEY` for Google Vertex. Any
   OpenAI-compatible endpoint (vLLM/Ollama/OpenRouter/Together/Groq) needs no new key —
-  set the model's `base_url` in Settings → Models. See `docs/ENVIRONMENT.md` §2.6.
+  set the model's `base_url` in **Analytics → Models**. See `docs/ENVIRONMENT.md` §2.6.
 - **Local / self-hosted models — LiteLLM-compatible (Round 9, optional):** a
   self-hosted LiteLLM proxy / vLLM / Ollama / LM Studio endpoint reuses the
   `openai_compatible` provider path and needs **no new key at all** if it's
-  unauthenticated — just set the model's `base_url` in **Settings → Models → "Add
-  local model"** (`POST /api/llm/models/custom`). If your endpoint *does* require a
+  unauthenticated: just set the model's `base_url` in **Analytics → Models → Add local
+  model** (`POST /api/llm/models/custom`). If your endpoint *does* require a
   key, the optional secret is `litellm_api_key` (env `LITELLM_API_KEY`), with three
   supply paths: (a) set `TLSOC_LITELLM_API_KEY` in `.env` **and** add a matching
   `- LITELLM_API_KEY=${TLSOC_LITELLM_API_KEY:-}` line to the `tlsoc-backend`
-  `environment:` block yourself — **the agnostic compose does not forward it yet**;
+  `environment:` list of a Compose override file (see §3.6), because **the agnostic
+  compose does not forward it** and its base file must not be edited;
   (b) push it at runtime through the "Add local model" dialog; or (c) omit it
   entirely and let the gateway fall back to `OPENAI_API_KEY`. See
   `docs/ENVIRONMENT.md` §2.6.
@@ -161,9 +165,8 @@ Optional for Mode A:
   `TLSOC_PULSEDIVE_API_KEY`, `TLSOC_SPUR_API_KEY`, `TLSOC_XFORCE_API_KEY`/`_PASSWORD`,
   `TLSOC_URLSCAN_API_KEY`, `TLSOC_HIBP_API_KEY`, `TLSOC_HONEYPOT_ACCESS_KEY`,
   `TLSOC_ABUSECH_AUTH_KEY`. Toggle each in Settings → Enrichment. See
-  `docs/ENVIRONMENT.md` §2.7. (When running under Compose, add the matching unprefixed
-  `- AZURE_OPENAI_API_KEY=${TLSOC_AZURE_OPENAI_API_KEY:-}` line to the `tlsoc-backend`
-  `environment:` block for each provider you enable.)
+  `docs/ENVIRONMENT.md` §2.7. (The agnostic Compose file already forwards every key
+  listed here and the cloud provider keys above; set only the `TLSOC_*` value in `.env`.)
 - `TLSOC_EMBEDDING_API_KEY` — embeddings for RAG (falls back to the OpenAI key,
   then to local hashing embeddings).
 - `TLSOC_PG_USER` / `TLSOC_PG_DB` (default `tlsoc` / `tlsoc`), `TLSOC_REDIS_URL`,
@@ -248,8 +251,8 @@ The setup workspace has four stages:
    alternate provider key if you will change the role assignments. Keys are write-only:
    setup shows configured state, never the value. Newly typed keys save through
    `POST /api/setup/secrets` whenever you leave this stage; a failed save keeps you
-   on the stage. Model registration, per-role assignment, and budgets remain in
-   **Settings → Models** after launch.
+   on the stage. After launch, model registration and budgets stay on
+   **Analytics → Models**, and per-role assignment in **Settings → General → Models**.
 4. **Review & launch** — reports **Ready**, **Needs attention**, or **Optional**
    for the workspace, sources, and AI runtime. A live workspace without a source or
    provider may launch, but is explicitly labelled **Ready with limited
@@ -258,6 +261,13 @@ The setup workspace has four stages:
    deterministic close/escalate authority is unchanged. **Launch Agentic SOC**
    calls `POST /api/setup/complete`, which flips `setup_complete`, starts pull
    polling, and reconciles enabled receivers.
+
+> **Known 0.1.13 wording issue.** Without a provider key, the **AI runtime** stage
+> says "live investigations will use the limited mock runtime until a provider is
+> added" and its **Review & launch** row says "mock runtime only". That wording is
+> wrong: no live investigation uses the mock model. Each cluster sent to
+> investigation becomes a **Needs human** case whose recommended action names the
+> missing key, and nothing is closed automatically (see §2).
 
 The first-run app does not fail open. If `GET /api/setup/status` is unavailable,
 it shows **Can't verify setup state** with **Retry** rather than exposing the
@@ -306,12 +316,32 @@ The receiver verifies auth, parses (JSON/NDJSON/CEF/LEEF/syslog/GELF/kv —
 auto-detected), normalises to OCSF, and the events flow into the **same**
 correlate → case pipeline the poller feeds.
 
+With `TLSOC_AUTH_ENABLED=true` (§9), every API call below and in §3.7 except
+`/api/ingest/...` and the health checks needs a session; without one it answers
+`401 authentication required`. Get a token once with an account that is not
+challenged for two-factor (with role-based access on, one allowed to manage sources),
+then send it as `Authorization: Bearer $TOKEN`, as the calls below do. With auth off,
+skip this step; the empty header is ignored. You can also set the source token in the
+source editor's write-only field instead. Set `ADMIN` to that account's username; a wrong
+name or password, or a two-factor challenge, ends the command with `KeyError: 'token'`:
+
+```bash
+CONSOLE=http://localhost:8080
+ADMIN=soc-admin
+read -r -s -p "Password for $ADMIN: " PW; echo
+TOKEN=$(ADMIN="$ADMIN" PW="$PW" python3 -c 'import json, os; print(json.dumps({"username": os.environ["ADMIN"], "password": os.environ["PW"]}))' \
+  | curl -s -X POST "$CONSOLE/api/auth/login" -H 'Content-Type: application/json' --data-binary @- \
+  | python3 -c 'import json, sys; print(json.load(sys.stdin)["token"])')
+unset PW
+```
+
 Set the per-source auth secret (bearer token / HMAC key) via the secrets endpoint
 — it goes to the **secret tier (in memory), never to the persisted config**:
 
 ```bash
 # Set a bearer token for a source whose id is "my-webhook":
 curl -X POST http://localhost:8080/api/sources/my-webhook/secrets \
+  -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"token": "REPLACE_WITH_A_LONG_RANDOM_SECRET"}'
 
@@ -328,17 +358,22 @@ directly.)
 
 **Listener / queue / object-store receivers** run as background drivers inside the
 backend container. **For socket-based receivers (e.g. syslog) you must publish the
-listener port** by editing the `ports:` of `tlsoc-backend` in
-`deploy/docker-compose.agnostic.yml` (the file ships with the lines commented):
+listener port** in a Compose override file, not in `deploy/docker-compose.agnostic.yml`
+(its bytes are pinned by `deploy/update-base-v1.sha256`). Keep the override outside the
+checkout, for example `$HOME/agentic-soc/local.compose.yml`:
 
 ```yaml
+services:
+  tlsoc-backend:
     ports:
-      - "8088:8088"
       - "1514:1514/udp"   # syslog UDP
       - "1514:1514/tcp"   # syslog TCP
 ```
 
-Then `./scripts/agentic-soc-compose.sh up -d` to apply.
+Then run `./scripts/agentic-soc-compose.sh -f "$HOME/agentic-soc/local.compose.yml" up -d`,
+and pass the same `-f` on every later command that creates or recreates containers. A
+supervised update recreates the backend from the base file and its release override
+only, so run that command again after an update.
 
 For encrypted Syslog, set the source protocol to `tls`, mount the server certificate
 and private key into the backend container, and configure their **container paths** as
@@ -381,7 +416,12 @@ FROM registry.example/tlsoc-backend-core:0.1.13
 RUN pip install --no-cache-dir confluent-kafka boto3   # only what you need
 ```
 
-…then point the `tlsoc-backend` service's `image:`/`build:` at it and rebuild.
+…then put the change in a Compose override file (like the syslog ports above), not in
+`deploy/docker-compose.agnostic.yml`: under `tlsoc-backend`, set `image:` to a new local tag
+and `build:` `context:` to the absolute path of the folder that holds this Dockerfile, then
+run `./scripts/agentic-soc-compose.sh -f <override> up -d --build`. This is for source builds
+only: once a signed release is installed, the wrapper refuses `--build`, and you must stop
+passing this override, because its `image:` would replace the signed release image.
 
 ### 3.7 Verify
 
@@ -391,28 +431,25 @@ curl -s http://localhost:8088/api/health
 #   -> {"status":"ok","version":"...","es_connected":...,"store_type":"...","setup_complete":...}
 ```
 
-> **Reading `store_type` and `es_connected` correctly.** `store_type` is always
-> `type(state.es).__name__` — `RealESClient` or `InMemoryESClient`, the **log-surface
-> ES client class** — it **never** reports which `STATE_BACKEND` you chose. In
-> **Mode A** (Postgres/SQLite own-state) **with no Elasticsearch/OpenSearch/Wazuh
-> pull source wired**, `store_type:InMemoryESClient` is **expected and benign**, not
-> a Postgres/SQLite outage. `es_connected` is the pull-source connection — `false`
-> until you add and test one, also expected at this point. `store_type` only matters
-> for durability when `STATE_BACKEND=elasticsearch` (Mode B): there, `RealESClient`
-> means own-state writes land in real Elasticsearch, while `InMemoryESClient` means
-> the ES connection failed and data is not durable.
+> **Reading `store_type` and `es_connected` correctly.** Both describe the suite's own state
+> store, not a log source. `store_type` is `PostgresStateStore` in Mode A (`SQLiteStateStore`
+> for a SQLite state backend) and `RealESClient` in Mode B, where `InMemoryESClient` means no
+> Elasticsearch key was configured or the client could not be built, so data is not durable.
+> `es_connected` is a compatibility alias for `state_store_connected`: whether the selected
+> state backend passed its write probe. `false` is never expected on a healthy stack, with or
+> without a pull source; test log sources with **Test connection** instead.
 
 ```bash
 # Service status + logs:
 ./scripts/agentic-soc-compose.sh ps
 ./scripts/agentic-soc-compose.sh logs -f tlsoc-backend
 
-# The wizard's "Test connection" (or directly):
-curl -s -X POST http://localhost:8088/api/connectors/test -H 'Content-Type: application/json' -d '{}'
+# The wizard's "Test connection" (or directly; $TOKEN as in §3.6 when auth is on):
+curl -s -X POST http://localhost:8088/api/connectors/test -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d '{}'
 
 # After a poll, the first cases:
-curl -s -X POST http://localhost:8088/api/poll
-curl -s http://localhost:8088/api/cases
+curl -s -X POST http://localhost:8088/api/poll -H "Authorization: Bearer $TOKEN"
+curl -s http://localhost:8088/api/cases -H "Authorization: Bearer $TOKEN"
 ```
 
 ---
@@ -476,11 +513,22 @@ curl -s http://localhost:8088/api/health
 **Backups.**
 
 - *Postgres state backend (Mode A):* dump the database (the `tlsoc-pgdata` named
-  volume holds everything):
+  volume holds everything). The commands read the role and database names from the
+  container's own `POSTGRES_USER` and `POSTGRES_DB` (set from `TLSOC_PG_USER` and
+  `TLSOC_PG_DB`), so they work whatever `.env` sets:
   ```bash
-  docker exec tlsoc-postgres pg_dump -U tlsoc tlsoc > tlsoc-backup-$(date +%F).sql
-  # restore:
-  cat tlsoc-backup-YYYY-MM-DD.sql | docker exec -i tlsoc-postgres psql -U tlsoc -d tlsoc
+  docker exec tlsoc-postgres sh -c 'pg_dump -U "$POSTGRES_USER" "$POSTGRES_DB"' > tlsoc-backup-$(date +%F).sql
+  ```
+  Restore only into an empty database on a stack running the same version, with the
+  backend stopped: the backend creates its schema at startup and keeps writing, so a
+  dump piped into the live database fails on existing tables and leaves mixed state.
+  Rehearse the restore in an isolated environment first, then:
+  ```bash
+  ./scripts/agentic-soc-compose.sh stop tlsoc-backend
+  docker exec tlsoc-postgres sh -c 'dropdb -U "$POSTGRES_USER" "$POSTGRES_DB"'
+  docker exec tlsoc-postgres sh -c 'createdb -U "$POSTGRES_USER" "$POSTGRES_DB"'
+  docker exec -i tlsoc-postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1' < tlsoc-backup-YYYY-MM-DD.sql
+  ./scripts/agentic-soc-compose.sh start tlsoc-backend
   ```
 - *sqlite backend:* back up the `.db` file (copy the bind-mount / volume path you
   set in `STATE_DB_URL`).
@@ -834,7 +882,9 @@ values into `.env`. Then bring up the backend:
 
 ```bash
 docker compose up -d --build tlsoc-backend tlsoc-redis
-docker exec tlsoc-backend curl -fsS http://localhost:8088/api/health ; echo
+curl -fsS http://localhost:8088/api/health ; echo   # from the host; the block publishes 8088
+# or inside the container (the image has no curl):
+docker exec tlsoc-backend python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8088/api/health').read().decode())"
 ```
 
 ### 7.3 Capability-aware own-state lifecycle
@@ -910,9 +960,11 @@ plugin part of the supported release.
   and own that plugin's separate session/proxy boundary; it is not part of the
   supported production posture.
 - **Restrict the `:8088` backend port.** The compose files publish `8088:8088`
-  for direct API access / debugging. In production, remove that mapping (the UI
-  reaches the backend over the internal Docker network at
-  `http://tlsoc-backend:8088`) or firewall it to trusted hosts only.
+  for direct API access / debugging. The UI reaches the backend over the internal
+  Docker network at `http://tlsoc-backend:8088`, so in production firewall the port
+  to trusted hosts only. In Mode B you may instead remove the mapping from the merge
+  block; in Mode A firewall it rather than editing `deploy/docker-compose.agnostic.yml`,
+  whose bytes the updater pins.
 - **Network policy for push receivers.** Only publish the listener ports you
   actually use (e.g. syslog `1514`), and firewall them to your forwarders.
   Require auth on HTTP push (`POST /api/ingest/{id}` with a per-source bearer/HMAC
@@ -931,7 +983,8 @@ plugin part of the supported release.
 API auth ships **disabled by default** — the no-auth deployment (network /
 reverse-proxy as the trust boundary) is fully supported and unchanged out of the
 box. Enable it per-deploy to get a **login screen, persisted multi-user accounts,
-6-role RBAC, MFA (TOTP), and SSO (OIDC)**. See `SECURITY.md` for the full posture.
+6-role RBAC, MFA (TOTP), and SSO (OIDC)**; role enforcement is a separate switch,
+off by default (§9.1). See `SECURITY.md` for the full posture.
 
 > All knobs below use the `.env` `TLSOC_*` names. The **agnostic compose maps
 > them** onto the backend's unprefixed names (`AUTH_ENABLED`, `AUTH_JWT_SECRET`,
@@ -940,12 +993,16 @@ box. Enable it per-deploy to get a **login screen, persisted multi-user accounts
 
 ### 9.1 Enable auth + RBAC
 
-In `.env`:
+Set these in `.env`. Generate the secret in a shell with `openssl rand -hex 32` and
+paste the printed value: Compose does not run commands, so never write `$(...)` in
+`.env`.
 
 ```bash
 TLSOC_AUTH_ENABLED=true
-TLSOC_AUTH_JWT_SECRET=$(openssl rand -hex 32)   # STABLE — else sessions die on restart
-TLSOC_AUTH_COOKIE_SECURE=true                    # REQUIRED behind TLS
+# Keep this value stable, or every restart signs everyone out.
+TLSOC_AUTH_JWT_SECRET=<the 64 hex characters printed by openssl rand -hex 32>
+# Required behind TLS.
+TLSOC_AUTH_COOKIE_SECURE=true
 ```
 
 Then `./scripts/agentic-soc-compose.sh up -d` to apply.
@@ -956,13 +1013,30 @@ Then `./scripts/agentic-soc-compose.sh up -d` to apply.
   removing the *last* super_admin to avoid lockout). The seed is controlled by
   backend `Secrets` fields (`auth_seed_admin` / `auth_seed_admin_username` /
   `auth_seed_admin_password`), but **neither compose file nor `.env.example` maps
-  them today** — to disable seeding or change the seeded username/password, add the
-  corresponding `AUTH_SEED_ADMIN*` line(s) directly to the `tlsoc-backend`
-  `environment:` block yourself.
+  them**. To stop the seed, set `TLSOC_AUTH_ADMIN_PASSWORD` (the backend then never
+  seeds `Admin`), or add `AUTH_SEED_ADMIN=false` to the `tlsoc-backend` `environment:`
+  list of a Compose override file (§3.6; in Mode B, the merge block). The
+  `AUTH_SEED_ADMIN_USERNAME` and `AUTH_SEED_ADMIN_PASSWORD` lines go there too. Decide this
+  before the first start with auth on (the `up -d` above): the seed runs only while the user
+  store is empty, and with an override file that command needs the same `-f` (§3.6).
 - **6 roles:** `super_admin` · `soc_manager` · `analyst_tier2` · `analyst_tier1` ·
-  `responder` · `auditor`. Enforced **server-side** (every `/api` route is gated by
+  `responder` · `auditor`. **Role-based access is off by default**
+  (`Preferences.rbac.enabled` is `false`): with auth on and RBAC off, every signed-in
+  account is treated as Super admin. **Settings → Security & access → Single sign-on &
+  policy** shows this in the Posture row **Role-based access** ("Off: everyone is
+  Super admin"), and the Roles page shows a "Role-based access is off" callout. Once
+  RBAC is on, roles are enforced **server-side** (every `/api` route is gated by
   `require_permission`, deny-by-default + a CI coverage test) **and** in the UI
   (`<Can>` guards). When auth is OFF, every user is treated as `super_admin`.
+- **Turn RBAC on.** The 0.1.13 Console has no switch for it (a known gap). Save
+  `{"rbac": {"enabled": true}}` through `PUT /api/settings` (permission
+  `settings:manage`), signed in as a super administrator before that account turns
+  on two-factor (for an account with two-factor, the sign-in call returns
+  `requires_mfa` and a `pending_token` instead of `token`; the second step is
+  `POST /api/auth/mfa/verify` with `{"pending_token": ..., "code": ...}`, which
+  returns `token`). [`INSTALL.md`](INSTALL.md#accounts-and-roles) gives the tested command and
+  its expected output. It takes effect on the next request; keep at least one super
+  administrator.
 - **Env fallback admin** (optional, separate from the seed):
   `TLSOC_AUTH_ADMIN_USERNAME` + `TLSOC_AUTH_ADMIN_PASSWORD` (plaintext, hashed in
   memory at startup, never stored; granted super_admin), or a boot-time map
@@ -978,7 +1052,7 @@ recovery codes**. Login becomes two-phase (password → 6-digit code).
 ```bash
 # Optional: key used to obfuscate the per-user TOTP secret at rest.
 # Blank -> derived from TLSOC_AUTH_JWT_SECRET.
-TLSOC_MFA_OBFUSCATION_KEY=$(openssl rand -hex 32)
+TLSOC_MFA_OBFUSCATION_KEY=<paste the output of openssl rand -hex 32>
 ```
 
 > This is stdlib **obfuscation, not a KMS** — a documented hardening TODO (see

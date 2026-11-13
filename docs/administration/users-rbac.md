@@ -8,6 +8,44 @@ description: Manage Agentic SOC users, built-in roles, custom roles, and least-p
 Agentic SOC 0.1 provides local users, six built-in roles, custom roles, and deny-wins
 permission overrides. RBAC is enforced only when authentication and RBAC are enabled.
 
+## Turn on role-based access
+
+Role-based access is **off by default**. With authentication on and role-based access off,
+every signed-in account is treated as Super admin, whatever role it was given. Check the
+current state in **Settings → Security & access → Single sign-on & policy**: the Posture row
+**Role-based access** reads **Off: everyone is Super admin** until you turn it on, and the
+**Roles & permissions** page shows a "Role-based access is off" notice.
+
+The 0.1.13 Console has no switch for it. A super administrator turns it on by saving
+`{"rbac": {"enabled": true}}` through `PUT /api/settings` (permission `settings:manage`).
+From a shell that can reach the Console, with your Console address and administrator
+username:
+
+```bash
+CONSOLE=http://localhost:8080
+ADMIN=soc-admin
+read -r -s -p "Password for $ADMIN: " PW; echo
+TOKEN=$(ADMIN="$ADMIN" PW="$PW" python3 -c 'import json, os; print(json.dumps({"username": os.environ["ADMIN"], "password": os.environ["PW"]}))' \
+  | curl -s -X POST "$CONSOLE/api/auth/login" -H 'Content-Type: application/json' --data-binary @- \
+  | python3 -c 'import json, sys; print(json.load(sys.stdin)["token"])')
+unset PW
+curl --fail -s -o /dev/null -w 'settings saved: HTTP %{http_code}\n' -X PUT "$CONSOLE/api/settings" \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"rbac": {"enabled": true}}'
+unset TOKEN
+curl -s "$CONSOLE/api/setup/status" | python3 -c 'import json, sys; print("rbac_enabled:", json.load(sys.stdin)["rbac_enabled"])'
+```
+
+The expected output is `settings saved: HTTP 200`, then `rbac_enabled: True`. The change
+applies from the next request.
+
+- Run it before this administrator turns on two-factor. For an account with two-factor, the
+  sign-in call returns `requires_mfa` and a `pending_token` instead of `token`; exchange
+  them at `POST /api/auth/mfa/verify` with `{"pending_token": "...", "code": "..."}`, which
+  returns `token`.
+- Give every account its intended role before you turn it on, and keep at least one super
+  administrator.
+
 ## Built-in roles
 
 | Role | Intended use | Default access summary |

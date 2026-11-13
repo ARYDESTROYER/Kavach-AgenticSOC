@@ -11820,3 +11820,42 @@
   - A prefix account created before this fix can still read a long account's older chat rows.
   - Chat's `audit_search` matches an actor exactly, so it misses a long account's new rows.
   - A short legacy name with a control character cannot sign in on this build; its older chat rows were recorded under the cleaned name.
+
+### 2026-11-12 19:10Z - orchestrator - Documentation refresh: README, INSTALL.md, screenshots and diagrams
+- Context: the operator asked for a high-quality repository documentation update: a standard README, a proper architecture diagram and a full installation guide with detailed, highlighted screenshots. Branch `claude/docs-refresh` from `Testing` at `4cb849a`.
+- Did: one workflow (10 agents: capture, diagrams, three writers, three reviewers, a fix pass and a final verifier).
+  - 25 real WebP screenshots (2880x1800) went into `docs/assets/screenshots/`, taken with numbered amber highlights. The first-run screens came from a fresh install with auth on and no users: create admin, the optional second factor, two-step sign-in, all four setup stages and the view after launch. Synthetic values only and no secret typed. The product views came from the seeded demo.
+  - Four hand-drawn SVGs went into `docs/assets/architecture/`: the system data flow in 11 stages and the Compose deployment, each in light and dark.
+  - `README.md` is rewritten. `INSTALL.md` is new, with five paths (A demo, B Compose, C hardening, D existing Elastic, E source).
+  - The Help Center pages install, first-run, quickstart and architecture are updated, and the knowledge corpus is regenerated (907 chunks).
+  - The orchestrator added seven README-only screenshots to `mkdocs.yml` `exclude_docs`, which keeps about 1.1 MB out of the Console image, and wrote the CHANGELOG line.
+  - Review found 33 issues, all fixed except two: badge overlap on three first-run shots (the first-run instance is spent) and a truncated demo session id prefix in `audit-log.webp` (throwaway, unusable).
+- Tests: check_docs passed (84 pages). test_build_docs_bundle and test_docs_theme are OK. build_app_knowledge --check is current. The strict run_docs_bundle build and --check-only are consistent (app 0.1.13, docs 0.1). check_version passed. test_app_knowledge, test_chat_golden_set, test_docs_round12_records and test_distribution_contract: 827 passed. The dash, hidden-character, link and anchor scan of the six text deliverables found 0 problems.
+- Status: done. Documentation only: no code, default, wire identifier, dependency or release identity changed, and the version stays 0.1.13.
+- Next: two Console bugs found while capturing, both to be filed as their own tasks:
+  - `SourceEditor.tsx` does not count a required field's displayed manifest default (the Elasticsearch, OpenSearch and Wazuh index patterns) as filled. INSTALL.md documents the workaround.
+  - `InvestigationPanel.tsx` falls back to the code's `decision_rationale` in the advisory AI assessment card when a case has no model reasoning.
+
+### 2026-11-12 21:40Z - orchestrator - Docs refresh: command sweep and corrections (PR #140)
+- Context: the Codex review of PR #140 found the manual-upgrade backup hardcoding the `tlsoc` role and database, which three earlier reviewers missed. Under ultracode I swept the whole docs set for that class of defect before pushing.
+- Did:
+  - Sweep workflow: 8 finders and 8 skeptics, each finder covering one slice of the docs or one cross-cutting lens. It confirmed 61 findings (several duplicates) and rejected 11.
+  - I checked the two most surprising findings in code and on a throwaway auth-on backend:
+    - With no provider key, completion calls never fall back to a mock model (gateway raises "OpenAI API key not configured"; the investigator fails safe to Needs human). The setup wizard's "limited mock runtime" copy is wrong.
+    - `rbac.enabled` defaults to false, and the Console has no switch for it. The `PUT /api/settings` sequence was run and returned `settings saved: HTTP 200`, then `rbac_enabled: True`.
+  - Fix workflow: one lane per file group (README and SVGs; INSTALL.md in two halves; the Help Center pages with a corpus regeneration; DEPLOY.md and `.env.example` comments). Each lane's diff got an adversarial review, then a fix-up, then a final verifier.
+  - I added a "Turn on role-based access" section to `docs/administration/users-rbac.md`, pointed the Help Center links at it, and fixed the hardcoded Postgres commands in `docs/RUNBOOK.md` and `docs/TROUBLESHOOTING.md`. CHANGELOG `[Unreleased]` "Documentation refresh" was extended.
+  - Checkpoints 4ade686 and cb84bea were pushed when the stop hook asked.
+- Tests:
+  - check_docs passed (84 pages); test_build_docs_bundle and test_docs_theme OK.
+  - build_app_knowledge --check is current; strict run_docs_bundle and --check-only are consistent.
+  - check_version and check_ci_contract passed.
+  - Backend docs, knowledge and env tests: 893 passed.
+  - Added-line scans: 0 dashes or hidden characters, every link and anchor resolves.
+- Status: done; documentation only, version 0.1.13.
+- Next: product follow-ups, not in this PR:
+  - The setup wizard's mock-runtime copy (`webui/src/soc/pages/Wizard.tsx`).
+  - No Console switch for `rbac.enabled`.
+  - The source editor's defaulted required field (`SourceEditor.tsx`).
+  - The AI assessment card falling back to `decision_rationale` (`InvestigationPanel.tsx`).
+  - The OIDC `redirect_uri` built from the bundled nginx's plain-HTTP hop behind a TLS ingress.
