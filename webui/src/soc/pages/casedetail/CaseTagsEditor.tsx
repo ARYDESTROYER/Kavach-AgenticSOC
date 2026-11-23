@@ -68,6 +68,10 @@ export const CaseTagsEditor: React.FC<CaseTagsEditorProps> = ({ c, canTag, onCas
   // field says so instead of letting an Add fail.
   const tagsFull = tags.length >= CASE_TAG_MAX_COUNT;
   const tagsFullId = React.useId();
+  const titleId = React.useId();
+  // The editor opens on its "New tag" field (T, "Edit tags"), never on a tag's Remove
+  // button, where the next Enter or Space would delete a tag.
+  const inputRef = React.useRef<HTMLInputElement | null>(null);
 
   return (
     <div className="space-y-2" data-testid="case-detail-tags">
@@ -100,8 +104,21 @@ export const CaseTagsEditor: React.FC<CaseTagsEditorProps> = ({ c, canTag, onCas
               {tags.length ? 'Edit tags' : 'Add a tag'}
             </Button>
           </PopoverTrigger>
-          <PopoverContent align="start" className="w-72 space-y-3">
-            <p className="text-sm font-semibold text-foreground">Tags</p>
+          <PopoverContent
+            align="start"
+            className="w-72 space-y-3"
+            aria-labelledby={titleId}
+            onOpenAutoFocus={(event) => {
+              const field = inputRef.current;
+              if (field && !field.disabled) {
+                event.preventDefault();
+                field.focus();
+              }
+            }}
+          >
+            <p id={titleId} className="text-sm font-semibold text-foreground">
+              Tags
+            </p>
             {tags.length ? (
               <ul className="flex flex-wrap gap-1.5" aria-label="Case tags">
                 {tags.map((tag) => (
@@ -142,6 +159,7 @@ export const CaseTagsEditor: React.FC<CaseTagsEditorProps> = ({ c, canTag, onCas
             >
               <div className="flex items-center gap-2">
                 <Input
+                  ref={inputRef}
                   value={tagDraft}
                   onChange={(event) => setTagDraft(event.target.value)}
                   placeholder={tagsFull ? undefined : 'Add a tag'}

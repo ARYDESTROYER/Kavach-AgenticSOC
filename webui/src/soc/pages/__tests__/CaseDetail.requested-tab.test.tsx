@@ -437,6 +437,63 @@ describe('CaseDetail: a section of a tab, from a rewritten retired-tab link (Rou
     await waitFor(() => expect(readsOf(CASE.case_id, 'stages')).toBe(1));
   });
 
+  it('holds the section at the top of the lane while the content above it loads, until the analyst scrolls', async () => {
+    // jsdom has no layout: the section sits `sectionOffset` px into the lane, and the lane's
+    // ResizeObserver is driven by hand (a disconnected one is never called again).
+    const observers: Array<{ callback: ResizeObserverCallback; targets: Element[]; live: boolean }> = [];
+    class ControlledResizeObserver {
+      private readonly entry: { callback: ResizeObserverCallback; targets: Element[]; live: boolean };
+      constructor(callback: ResizeObserverCallback) {
+        this.entry = { callback, targets: [], live: true };
+        observers.push(this.entry);
+      }
+      observe(target: Element) {
+        this.entry.targets.push(target);
+      }
+      unobserve() {}
+      disconnect() {
+        this.entry.live = false;
+      }
+    }
+    vi.stubGlobal('ResizeObserver', ControlledResizeObserver);
+    let sectionOffset = 300;
+    const rect = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      const lane = this.closest<HTMLElement>('[data-testid="case-detail-scroll"]');
+      if (this.dataset.section === 'threat-context' && lane) {
+        return DOMRect.fromRect({ x: 0, y: sectionOffset - lane.scrollTop, width: 600, height: 400 });
+      }
+      return DOMRect.fromRect({ x: 0, y: 0, width: 600, height: 400 });
+    });
+    try {
+      render(<Host tab="investigation" section="threat-context" />);
+      await loaded();
+      const lane = screen.getByTestId('case-detail-scroll');
+      // Placed once the tab is on screen.
+      await waitFor(() => expect(lane.scrollTop).toBe(300));
+      const laneObservers = () =>
+        observers.filter((o) => o.live && o.targets.some((target) => target.parentElement === lane));
+      expect(laneObservers()).toHaveLength(1);
+      const resize = () => act(() => laneObservers().forEach((o) => o.callback([], {} as ResizeObserver)));
+
+      // The AI assessment above it arrives and grows: the section is placed again, so a late
+      // load never leaves the link above its section.
+      sectionOffset = 520;
+      resize();
+      expect(lane.scrollTop).toBe(520);
+
+      // The analyst takes over the lane: the hold ends and a later load leaves it alone.
+      fireEvent.wheel(lane);
+      expect(laneObservers()).toHaveLength(0);
+      lane.scrollTop = 100;
+      sectionOffset = 700;
+      resize();
+      expect(lane.scrollTop).toBe(100);
+    } finally {
+      rect.mockRestore();
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('ignores a section that is not on the requested tab', async () => {
     render(<Host tab="overview" section="threat-context" />);
     await loaded();

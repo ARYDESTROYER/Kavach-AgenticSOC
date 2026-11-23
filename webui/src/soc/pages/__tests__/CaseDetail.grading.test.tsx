@@ -142,7 +142,7 @@ describe('CaseDetail: feedback-into-close (two separate POSTs, #3)', () => {
 
     // The DERIVED agree/override badge proves the grading section wired the
     // verdict ↔ disposition diff (true_positive matches true_positive → agree).
-    await screen.findByText(/Matches AI verdict/i);
+    await screen.findByText(/Your classification agrees with the AI/i);
 
     const submit = within(dialog).getByRole('button', { name: /^close case/i });
     await waitFor(() => expect(submit).not.toBeDisabled());
@@ -206,7 +206,7 @@ describe('CaseDetail: feedback-into-close (two separate POSTs, #3)', () => {
 
     renderWithProviders(<CaseDetail caseId="case-91" onClose={vi.fn()} />);
     const dialog = await openCloseDialogAndPick(/False positive/i);
-    await within(dialog).findByText(/Settles the AI's hand-off/i);
+    await within(dialog).findByText(/settles the AI's hand-off/i);
     const submit = within(dialog).getByRole('button', { name: /^close case/i });
     await waitFor(() => expect(submit).not.toBeDisabled());
     fireEvent.click(submit);
@@ -280,14 +280,14 @@ describe('CaseDetail: feedback-into-close (two separate POSTs, #3)', () => {
 
     renderWithProviders(<CaseDetail caseId="case-91" onClose={vi.fn()} />);
     const dialog = await openCloseDialogAndPick(/True positive/i);
-    await screen.findByText(/Matches AI verdict/i);
+    await screen.findByText(/Your classification agrees with the AI/i);
 
     // Open and close the rating disclosure, then flip to an OVERRIDE.
     const rate = within(dialog).getByRole('button', { name: /rate the ai/i });
     fireEvent.click(rate);
     fireEvent.click(rate);
     fireEvent.click(within(dialog).getByRole('radio', { name: /False positive/i }));
-    await within(dialog).findByText(/Overrides AI verdict/i);
+    await within(dialog).findByText(/Your classification overrides the AI/i);
 
     // D4.3: an override needs a note before it can go.
     const submit = within(dialog).getByRole('button', { name: /^close case/i });

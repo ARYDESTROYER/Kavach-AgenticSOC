@@ -21,7 +21,7 @@ import type {
   IocReputation,
   ThreatContextPanel as ThreatContextPanelData,
 } from '@/lib/types';
-import { humanizeAge, humanizeToken } from '@/lib/format';
+import { DASH, humanizeAge, humanizeToken } from '@/lib/format';
 import { cn } from '@/lib/cn';
 
 import { Badge } from '@/ui/badge';
@@ -74,7 +74,7 @@ function scalarLabel(value: unknown): string {
   if (typeof value === 'string') return humanizeToken(value);
   if (typeof value === 'number' && Number.isFinite(value)) return String(value);
   if (typeof value === 'boolean') return value ? 'Yes' : 'No';
-  return String(value ?? '\u2014');
+  return String(value ?? DASH);
 }
 
 export type IocVerdictKind = 'malicious' | 'no_detections' | 'not_checked';
@@ -119,7 +119,7 @@ export function iocVerdict(ioc: IocReputation): {
 /** A tactic token as sentence-case words ("initial-access" → "Initial access"). */
 function tacticWords(tactic: string): string {
   const words = String(tactic || '').replace(/[_-]+/g, ' ').trim().toLowerCase();
-  return words ? words.charAt(0).toUpperCase() + words.slice(1) : '\u2014';
+  return words ? words.charAt(0).toUpperCase() + words.slice(1) : DASH;
 }
 
 /** A sub-section heading under the "Threat context" section (h3, no icon, D8.5). */
@@ -221,18 +221,21 @@ export const ThreatContextPanel: React.FC<{
       assetAttrs.length === 0);
   return (
     <div
-      className="divide-y divide-border/60"
+      className="space-y-6"
       data-case-panel="threat-context"
       data-presentation="case-manager"
     >
-      {/* Flat, divider-led sections (CM-8): no card-in-card. Every field of both earlier
+      {/* Flat sections (CM-8): no card-in-card. Since Round 15 this is ONE section of the
+          Investigation tab, whose sections the hairlines divide, so its own parts are set
+          apart by space and an h3 alone: a hairline here would read as a sibling of
+          "Decision" and "Threat context". Every field of both earlier
           layouts is kept: summary, AI verdict, risk, malicious-indicator flag, the
           assembled time, each technique's id/name/every tactic/description/link, each
           indicator's value/type/verdict/score/source/country, the clustering story and
           the asset context. Log-derived values stay plain text nodes (#9). */}
       {/* The summary leads without a heading of its own: the section is "Threat context".
           The AI verdict and the risk are the header's and the facts rail's (D8.4). */}
-      <section aria-label="Threat summary" className="pb-5">
+      <section aria-label="Threat summary">
         {panel.summary ? (
           <p className="whitespace-pre-wrap text-sm leading-relaxed text-foreground/90">{panel.summary}</p>
         ) : (
@@ -255,7 +258,7 @@ export const ThreatContextPanel: React.FC<{
         ) : null}
       </section>
 
-      <section aria-labelledby="threat-mitre-title" className="py-5" data-testid="threat-mitre">
+      <section aria-labelledby="threat-mitre-title" data-testid="threat-mitre">
         <FlatHeading id="threat-mitre-title" count={techniques.length}>
           MITRE ATT&amp;CK techniques
         </FlatHeading>
@@ -296,7 +299,7 @@ export const ThreatContextPanel: React.FC<{
         )}
       </section>
 
-      <section aria-labelledby="threat-ioc-title" className="py-5" data-testid="threat-ioc">
+      <section aria-labelledby="threat-ioc-title" data-testid="threat-ioc">
         <FlatHeading id="threat-ioc-title" count={iocs.length}>
           Indicator reputation
         </FlatHeading>
@@ -360,14 +363,14 @@ export const ThreatContextPanel: React.FC<{
       </section>
 
       {clustering?.available ? (
-        // The diagram draws its own top/bottom rules; inside this divider-led stack the
-        // dividers already separate it, so its own rules are dropped here.
-        <div className="py-5 [&>section]:border-y-0 [&>section]:py-0">
+        // The diagram draws its own top/bottom rules; inside this section its parts are
+        // set apart by space, so its own rules are dropped here.
+        <div className="[&>section]:border-y-0 [&>section]:py-0">
           <ClusterFormationDiagram data={clustering} />
         </div>
       ) : null}
 
-      <section aria-labelledby="threat-asset-title" className="pt-5">
+      <section aria-labelledby="threat-asset-title">
         <FlatHeading id="threat-asset-title">
           Asset context
         </FlatHeading>
@@ -419,7 +422,7 @@ export const ThreatContextPanel: React.FC<{
       </section>
 
       {!anySection ? (
-        <p className="pt-5 text-xs text-muted-foreground">
+        <p className="text-xs text-muted-foreground">
           Threat context is enabled but produced no sections for this case.
         </p>
       ) : null}

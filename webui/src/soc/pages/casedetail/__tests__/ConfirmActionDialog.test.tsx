@@ -68,7 +68,7 @@ function Harness(
         currentDisposition="none"
         reason=""
         onReasonChange={vi.fn()}
-        verdict={over.verdict ?? 'NEEDS_HUMAN'}
+        verdict={'verdict' in over ? over.verdict : 'NEEDS_HUMAN'}
         confidence={0.75}
         grading={grading}
         onGradingChange={setGrading}
@@ -233,6 +233,9 @@ describe('Round 15 close dialog: the note rule (D4.3)', () => {
     expect(within(dialog).getByText(DISAGREEMENT_NOTE_REASON)).toBeInTheDocument();
     expect(note).toHaveAccessibleDescription(`${DISAGREEMENT_NOTE_REASON} ${DURABLE_CONTEXT_NOTE}`);
     expect(screen.getByTestId('confirm-action-status')).toHaveTextContent(DISAGREEMENT_NOTE_MISSING);
+    // The note keeps its own prompt: "What did the AI miss?" is the rating's question, asked
+    // once, so the override does not ask it twice.
+    expect(note).toHaveAttribute('placeholder', 'Add context for the next analyst…');
 
     fireEvent.click(within(dialog).getByRole('button', { name: 'Close case' }));
     expect(onSubmit).not.toHaveBeenCalled();
@@ -283,12 +286,21 @@ describe('Round 15 close dialog: Rate the AI (D4.4)', () => {
     expect(screen.getByLabelText(/what did the ai miss/i)).toBeInTheDocument();
   });
 
+  it('offers no rating on a case the AI never assessed (no grade would be posted)', () => {
+    for (const verdict of [null, '', 'none']) {
+      const { unmount } = render(<Harness startOpen verdict={verdict} />);
+      expect(screen.getByRole('radiogroup')).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /rate the ai/i })).toBeNull();
+      unmount();
+    }
+  });
+
   it('shows the derived agreement as text, outside the disclosure', () => {
     render(<Harness startOpen verdict="TRUE_POSITIVE" />);
     fireEvent.click(screen.getByRole('radio', { name: /^true positive/i }));
-    expect(screen.getByTestId('confirm-action-compare')).toHaveTextContent('Matches AI verdict');
+    expect(screen.getByTestId('confirm-action-compare')).toHaveTextContent('Your classification agrees with the AI');
     fireEvent.click(screen.getByRole('radio', { name: /^benign/i }));
-    expect(screen.getByTestId('confirm-action-compare')).toHaveTextContent('Overrides AI verdict (True positive → Benign)');
+    expect(screen.getByTestId('confirm-action-compare')).toHaveTextContent('Your classification overrides the AI (True positive → Benign)');
   });
 });
 

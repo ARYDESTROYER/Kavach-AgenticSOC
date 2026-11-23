@@ -73,6 +73,8 @@ export interface FilterBarSearch {
   placeholder?: string;
   /** Placeholder below 768px ("Search cases"). Defaults to `label`. */
   compactPlaceholder?: string;
+  /** The page's shortcut to this field (`aria-keyshortcuts`, for example "/"). */
+  keyShortcuts?: string;
 }
 
 /** Where a filter control is drawn: in the bar (compact, fixed width) or in a menu or sheet (full width). */
@@ -256,6 +258,7 @@ export const FilterBar = React.forwardRef<HTMLDivElement, FilterBarProps>(
           onChange={(event) => search.onChange(event.target.value)}
           placeholder={compact ? search.compactPlaceholder ?? search.label : search.placeholder ?? search.label}
           aria-label={search.label}
+          aria-keyshortcuts={search.keyShortcuts}
           className="h-8 pl-9"
         />
       </div>

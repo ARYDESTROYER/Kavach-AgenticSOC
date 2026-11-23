@@ -142,6 +142,16 @@ describe('FilterBar', () => {
     expect(within(popup).getByRole('group', { name: 'Time' })).toBeInTheDocument();
   });
 
+  it("names the search field's page shortcut when it has one (Round 15, the Case Manager's /)", () => {
+    mockViewport(false);
+    const { rerender } = render(
+      <FilterBar aria-label="Queue filters" search={{ value: '', onChange: vi.fn(), label: 'Search cases', keyShortcuts: '/' }} />,
+    );
+    expect(screen.getByRole('searchbox', { name: 'Search cases' })).toHaveAttribute('aria-keyshortcuts', '/');
+    rerender(<FilterBar aria-label="Queue filters" search={{ value: '', onChange: vi.fn(), label: 'Search cases' }} />);
+    expect(screen.getByRole('searchbox', { name: 'Search cases' })).not.toHaveAttribute('aria-keyshortcuts');
+  });
+
   it('removes a chip and moves focus to the next chip, then the search when none is left', () => {
     mockViewport(false);
     render(<Harness />);
@@ -316,6 +326,6 @@ describe('FilterBar', () => {
   it('never shows an em dash in its own copy', () => {
     mockViewport(false);
     const { container } = render(<Harness />);
-    expect(container.textContent).not.toMatch(/[—–]/);
+    expect(container.textContent).not.toMatch(/[\u2014\u2013]/);
   });
 });

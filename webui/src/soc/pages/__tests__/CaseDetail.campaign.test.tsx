@@ -1,5 +1,5 @@
 /**
- * CaseDetail — campaign membership chip (#51).
+ * CaseDetail: campaign membership chip (#51).
  *
  * The case→campaign linkage (`campaignsApi.forCase` + the exported `CampaignChip`) was
  * fully built but never mounted, so an operator viewing a case could not see which
@@ -10,7 +10,7 @@
  *      home since Round 15, D8.4; name = plain text, #9);
  *   2. clicking the chip deep-links to the Campaigns surface via `onNavigate('campaigns')`;
  *   3. an uncampaigned case (or a disabled/erroring campaigns feature) renders NO chip
- *      (fail-quiet). A campaign is advisory only (#3/#4) — it never closes/escalates/
+ *      (fail-quiet). A campaign is advisory only (#3/#4): it never closes/escalates/
  *      re-clusters the case, so the chip is purely informational.
  *
  * Like CaseDetail.header-actions.test.tsx this is a live mount over a mocked `@/lib/api`; the
@@ -80,7 +80,7 @@ import type { Campaign } from '../Campaigns.api';
 
 const CAMPAIGN: Campaign = {
   id: 'camp-xyz',
-  name: 'Lateral movement — 10.0.0.5',
+  name: 'Lateral movement, 10.0.0.5',
   status: 'open',
   case_ids: ['case-88', 'case-90'],
   case_count: 2,
@@ -104,7 +104,7 @@ function renderCase(onNavigate?: Navigate) {
   );
 }
 
-describe('CaseDetail — campaign membership chip (#51)', () => {
+describe('CaseDetail: campaign membership chip (#51)', () => {
   beforeEach(() => {
     forCaseMock.mockReset();
   });
@@ -119,7 +119,7 @@ describe('CaseDetail — campaign membership chip (#51)', () => {
     );
     // The chip renders the campaign name as PLAIN text (#9), fetched for THIS case.
     expect(
-      await screen.findByText(/part of campaign: lateral movement — 10\.0\.0\.5/i),
+      await screen.findByText(/part of campaign: lateral movement, 10\.0\.0\.5/i),
     ).toBeInTheDocument();
     expect(forCaseMock).toHaveBeenCalledWith('case-88');
   });

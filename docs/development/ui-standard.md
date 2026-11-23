@@ -651,7 +651,11 @@ narrative.
 
 **Case tab bodies.** Every tab body is flat: sections divided by one hairline, each under
 a plain `text-base` heading (no icon, no card, no tinted panel), with a section's
-secondary detail behind a disclosure rather than a nested card. A fact has one home: a
+secondary detail behind a disclosure rather than a nested card. The parts of one section
+(Threat context's MITRE techniques, indicator reputation, clustering and asset context)
+are set apart by space under a smaller heading, never by a second hairline that would
+read as a sibling section. A link to a section holds it at the top of the pane while the
+content above it loads, and lets go when the analyst scrolls. A fact has one home: a
 tab never repeats the verdict, confidence, risk, status or owner the header and rail
 already show. The **Overview** is the brief: the runbook's Next step card (open cases),
 the Summary, What happened (the trigger sentence and the six-stage story), Key entities,
@@ -674,8 +678,9 @@ focus to the control that opened it, or, when that control left with its row, to
 row that took its place ("Close & next" lands on the next case's row). The close
 dialog asks "what was it" once: one list of disposition radio rows, opened empty, with
 the AI verdict as a hint beside it (never a default). The relation to the AI verdict is
-derived and shown as text after a choice ("Matches AI verdict", "Overrides AI verdict
-(X → Y)", "Settles the AI's hand-off"), never asked. From a 40rem dialog the
+derived and shown as text after a choice ("Your classification agrees with the AI",
+"Your classification overrides the AI (X → Y)", "Your classification settles the AI's
+hand-off"), never asked. From a 40rem dialog the
 classification sits on the left and what was done on the right: open runbook steps and
 their reason, Actions taken (toggle chips from a fixed vocabulary, at most eight, "No
 action needed" exclusive), the note (required only on an override, because it is kept as

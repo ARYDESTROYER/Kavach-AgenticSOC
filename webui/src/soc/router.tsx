@@ -581,12 +581,18 @@ export const RouterProvider: React.FC<{ children: React.ReactNode }> = ({ childr
           // The echo of this router's own navigate changes nothing. Any other same-page
           // change (Case Manager row A → row B, Back from a report to the list, a pasted
           // link) changes only the query: the hash decides the durable options, durable
-          // in-memory ones (a severity drill-through) stay, one-shot requests go. A
-          // rewritten link keeps the section its old address named.
+          // in-memory ones (a severity drill-through) stay, one-shot requests go.
           if (!own) {
             setOpts((current) => {
               const kept = samePageOpts(next, current, hash, true);
-              return route.redirected && route.opts?.section ? { ...kept, section: route.opts.section } : kept;
+              // Round 15 (D8.3): a Case Manager section request lives in memory and is
+              // one-shot. A rewritten retired-tab link carries the section its old address
+              // named; any other change drops it, so Back to a case never replays it.
+              if (next !== 'case_manager') return kept;
+              if (route.redirected && route.opts?.section) return { ...kept, section: route.opts.section };
+              if (!kept?.section) return kept;
+              const { section: _section, ...rest } = kept;
+              return Object.keys(rest).length ? rest : undefined;
             });
           }
           return prev;

@@ -118,7 +118,7 @@ const settle = () =>
 const starterReads = () => calls.filter((call) => call.url.split('?')[0] === '/api/chat/starters');
 const streamBodies = () => calls.filter((call) => call.url === '/api/chat/stream').map((call) => call.body);
 
-describe('Case Manager chat — case chips on the real path', () => {
+describe('Case Manager chat: case chips on the real path', () => {
   it('reads the chips for this case and sends one in the case chat as a starter, never to Workspace history', async () => {
     const user = userEvent.setup();
     await renderCaseManagerChat();

@@ -1,8 +1,8 @@
 /**
- * CaseDetail — keyboard and focus details from the Round 12 review of the Case Manager:
+ * CaseDetail: keyboard and focus details from the Round 12 review of the Case Manager:
  *
  * - a single-letter shortcut never fires while a letter-consuming control has focus
- *   (a Select's typeahead, a menu, a radio group) — "c" on a filter used to pick
+ *   (a Select's typeahead, a menu, a radio group): "c" on a filter used to pick
  *   Critical AND open the Close dialog;
  * - the Details sheet opens on its heading (no help tip opening by itself) and closes
  *   back to the Details button, not <body>;
@@ -16,7 +16,7 @@ import userEvent from '@testing-library/user-event';
 const CASE = {
   case_id: 'c-key-1',
   case_number: 'CASE-2026-0400',
-  title: 'ip:198.51.100.42 — Entra ID Protection: password spray against many accounts in a short window',
+  title: 'ip:198.51.100.42 · Entra ID Protection: password spray against many accounts in a short window',
   status: 'open',
   verdict: 'NEEDS_HUMAN',
   risk_score: 55,

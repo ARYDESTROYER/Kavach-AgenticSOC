@@ -156,6 +156,15 @@ describe('CaseDetail header: one primary action, Take action and More options', 
     await user.click(screen.getByRole('button', { name: /^Take action/i }));
     const menu = await screen.findByRole('menu');
     expect(within(menu).getByRole('menuitem', { name: /^Escalate/ })).toHaveAttribute('aria-keyshortcuts', 'E');
+    // Take action holds every OTHER verb (D8.2): the primary (Close case here) is the
+    // header button and is not repeated in the menu, whose verbs follow the plan's order.
+    expect(within(menu).queryByRole('menuitem', { name: /^Close case/ })).toBeNull();
+    const verbs = within(menu)
+      .getAllByRole('menuitem')
+      .map((item) => item.textContent ?? '')
+      .filter((text) => /^(Escalate|Acknowledge|Mark resolved|Put on hold)/.test(text))
+      .map((text) => text.replace(/[A-Z]$/, ''));
+    expect(verbs).toEqual(['Escalate', 'Acknowledge & investigate', 'Mark resolved', 'Put on hold']);
     // "Ask about this case" names the Chat tab's new shortcut (five tabs: Alt+5).
     expect(within(menu).getByRole('menuitem', { name: /Ask about this case/ })).toHaveTextContent('Alt 5');
   });

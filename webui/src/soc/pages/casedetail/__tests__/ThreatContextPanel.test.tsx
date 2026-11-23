@@ -1,5 +1,5 @@
 /**
- * ThreatContextPanel — asset-context guard (Round-6 finding #19).
+ * ThreatContextPanel: asset-context guard (Round-6 finding #19).
  *
  * `criticality` is a top-level asset field rendered separately from `attributes`, so an
  * asset that carries ONLY a criticality must still render the asset card (not the empty
@@ -16,7 +16,7 @@ expect.extend(toHaveNoViolations);
 
 const CASE = { case_id: 'c1', verdict: 'true_positive', risk_score: 50 } as unknown as Case;
 
-/** Mirrors GET /cases/{id}/threat-context — including its live score/sources shape. */
+/** Mirrors GET /cases/{id}/threat-context: including its live score/sources shape. */
 const BACKEND_REAL_PANEL = {
   case_id: 'c1',
   summary: 'The IAM role was assumed from a known Tor exit node.',
@@ -70,7 +70,7 @@ const BACKEND_REAL_PANEL = {
   },
 } as unknown as ThreatContextPanelData;
 
-describe('ThreatContextPanel — asset context', () => {
+describe('ThreatContextPanel: asset context', () => {
   it('renders a criticality-only asset instead of the empty state (#19)', () => {
     const panel = { asset_context: { criticality: 'high' } } as unknown as ThreatContextPanelData;
     render(
@@ -91,7 +91,7 @@ describe('ThreatContextPanel — asset context', () => {
   });
 });
 
-describe('ThreatContextPanel — MITRE technique links (#32)', () => {
+describe('ThreatContextPanel: MITRE technique links (#32)', () => {
   it('gives each technique link a distinct, purposeful accessible name', () => {
     const panel = {
       mitre_techniques: [
@@ -102,7 +102,7 @@ describe('ThreatContextPanel — MITRE technique links (#32)', () => {
     render(
       <ThreatContextPanel c={CASE} panel={panel} loading={false} error={null} onRetry={vi.fn()} />,
     );
-    // Not several identical "MITRE" links — each names its technique id.
+    // Not several identical "MITRE" links: each names its technique id.
     expect(
       screen.getByRole('link', { name: /Open MITRE ATT&CK T1110 in a new tab/i }),
     ).toBeInTheDocument();
@@ -112,7 +112,7 @@ describe('ThreatContextPanel — MITRE technique links (#32)', () => {
   });
 });
 
-describe('ThreatContextPanel — Related cases + Evidence dedup (Round-7 D1b)', () => {
+describe('ThreatContextPanel: Related cases + Evidence dedup (Round-7 D1b)', () => {
   it('does not render Related cases or Evidence sections (they live on the Overview tab)', () => {
     const panel = {
       summary: 'suspicious brute force burst',
@@ -132,7 +132,7 @@ describe('ThreatContextPanel — Related cases + Evidence dedup (Round-7 D1b)', 
   });
 });
 
-describe('ThreatContextPanel — error state (#33)', () => {
+describe('ThreatContextPanel: error state (#33)', () => {
   it('renders the shared LoadError (coerced message + Retry) instead of a hand-rolled Alert', () => {
     const onRetry = vi.fn();
     render(
@@ -168,7 +168,10 @@ describe('ThreatContextPanel: the flat sections layout', () => {
       '[data-case-panel="threat-context"][data-presentation="case-manager"]',
     );
     expect(panel).not.toBeNull();
-    expect(panel).toHaveClass('divide-y');
+    // Round 15 (D8.3): one section of the Investigation tab. The tab's hairlines divide its
+    // sections; the parts of this one are set apart by space, so none reads as a sibling.
+    expect(panel).toHaveClass('space-y-6');
+    expect(panel).not.toHaveClass('divide-y');
     const mitre = screen.getByTestId('threat-mitre');
     expect(within(mitre).getByRole('heading', { name: /MITRE ATT&CK techniques/i })).toBeInTheDocument();
     const ioc = screen.getByTestId('threat-ioc');

@@ -1,7 +1,7 @@
 /**
- * TimelinePanel — the clean "what happened" narrative (task 5 split).
+ * TimelinePanel: the clean "what happened" narrative (task 5 split).
  *
- * The Timeline tab now holds ONLY the six-stage <StageTimeline> narrative — no AI
+ * The Timeline tab now holds ONLY the six-stage <StageTimeline> narrative: no AI
  * assessment, no DecisionCard, no ReAct trace (those moved to <InvestigationPanel>).
  * Verifies the "what happened" header + the stage story render, and that the
  * loading/error states pass through.
@@ -114,7 +114,7 @@ const LIVE_SIX_STAGE_STORY: TimelineStagesResponse = {
   ],
 };
 
-describe('TimelinePanel — the "what happened" narrative', () => {
+describe('TimelinePanel: the "what happened" narrative', () => {
   it('renders the stage story, leaving its "What happened" heading to the Overview section', () => {
     render(
       <TimelinePanel

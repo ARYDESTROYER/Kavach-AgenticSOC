@@ -295,6 +295,11 @@ const CASE_SECTIONS: Readonly<Record<string, CaseTab>> = {
   'related-cases': 'overview',
 };
 
+/** How long a requested section is held in place while the content above it loads. */
+const SECTION_HOLD_MS = 2500;
+/** What the analyst does in the lane that ends the hold (they took over the scroll). */
+const SECTION_HOLD_RELEASE = ['wheel', 'touchstart', 'pointerdown', 'keydown'] as const;
+
 /* --------------------------------------------------------------- component -- */
 
 type CaseDetailPresentation = 'sheet' | 'embedded';
@@ -533,18 +538,18 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
   // Round 3: triage chips (#12), eager so the overview header is honest on open.
   const [triage, setTriage] = React.useState<TriageChips | null>(null);
 
-  // Round 3: typed ReAct timeline (#12), lazy on the Timeline tab (powers the
-  // DecisionCard's policy clause + the collapsible full trace).
+  // Round 3: typed ReAct timeline (#12), lazy on the Investigation tab (powers the
+  // DecisionCard's policy clause and the collapsible full trace).
   const [timeline, setTimeline] = React.useState<TimelineResponse | null>(null);
   const [timelineLoading, setTimelineLoading] = React.useState(false);
   const [timelineError, setTimelineError] = React.useState<unknown>(null);
 
-  // Six-stage narrative, lazy on the Timeline tab.
+  // Six-stage narrative, lazy on the Overview tab ("What happened", Round 15 D8.3).
   const [stages, setStages] = React.useState<TimelineStagesResponse | null>(null);
   const [stagesLoading, setStagesLoading] = React.useState(false);
   const [stagesError, setStagesError] = React.useState<unknown>(null);
 
-  // Round 3: collaboration thread (#4), lazy on the Thread tab.
+  // Round 3: collaboration thread (#4), lazy on the Collaboration tab.
   const [thread, setThread] = React.useState<ThreadMessage[] | null>(null);
   const [threadLoading, setThreadLoading] = React.useState(false);
   const [threadError, setThreadError] = React.useState<unknown>(null);
@@ -620,22 +625,71 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
     if (tab !== 'investigation') setTraceRequest(null);
     setSectionRequest((current) => (current && CASE_SECTIONS[current.section] !== tab ? null : current));
   }, [tab]);
-  // Bring the requested section into view once its tab is on screen, then forget it.
+  // Bring the requested section into view once its tab is on screen, then forget it. The
+  // sections above it fill in after the first paint (the runbook's Next step card, the
+  // summary, the AI assessment), so the section is HELD at the top of the lane while the
+  // content settles (SECTION_HOLD_MS), and let go at once when the analyst scrolls, clicks
+  // or types in the lane: a late load never leaves the link above its section.
   const caseShown = Boolean(c);
   React.useEffect(() => {
     if (!sectionRequest || !caseShown || CASE_SECTIONS[sectionRequest.section] !== tab) return undefined;
     const { section, tick, focus } = sectionRequest;
-    const frame = window.requestAnimationFrame(() => {
-      const lane = panelScrollRef.current;
-      const target = lane?.querySelector<HTMLElement>(`[data-section="${section}"]`);
-      if (!lane || !target) return;
-      const top = lane.scrollTop + target.getBoundingClientRect().top - lane.getBoundingClientRect().top;
-      if (typeof lane.scrollTo === 'function') lane.scrollTo({ top, behavior: reduceMotion ? 'auto' : 'smooth' });
+    const lane = panelScrollRef.current;
+    if (!lane) return undefined;
+    let placed = false;
+    let observer: ResizeObserver | null = null;
+    let holdTimer: number | undefined;
+    // Where the lane was last sent: a smooth scroll still on its way there is left alone.
+    let sentTo = -1;
+    const align = (smooth: boolean): boolean => {
+      const target = lane.querySelector<HTMLElement>(`[data-section="${section}"]`);
+      if (!target) return false;
+      const top = Math.max(0, lane.scrollTop + target.getBoundingClientRect().top - lane.getBoundingClientRect().top);
+      if (Math.abs(top - lane.scrollTop) < 1 || Math.abs(top - sentTo) < 1) return true;
+      sentTo = top;
+      if (typeof lane.scrollTo === 'function') lane.scrollTo({ top, behavior: smooth ? 'smooth' : 'auto' });
       else lane.scrollTop = top;
-      if (focus) target.querySelector<HTMLElement>('[data-section-title]')?.focus({ preventScroll: true });
+      return true;
+    };
+    let removeListeners = () => {};
+    const release = () => {
+      observer?.disconnect();
+      observer = null;
+      window.clearTimeout(holdTimer);
+      removeListeners();
       setSectionRequest((current) => (current?.tick === tick ? null : current));
+    };
+    const place = () => {
+      if (!align(!placed && !reduceMotion)) return;
+      if (!placed) {
+        placed = true;
+        if (focus) lane.querySelector<HTMLElement>(`[data-section="${section}"] [data-section-title]`)?.focus({ preventScroll: true });
+      }
+    };
+    const frame = window.requestAnimationFrame(() => {
+      place();
+      // Content above (or the section itself, still loading) changing size re-places it.
+      if (typeof ResizeObserver === 'function') {
+        observer = new ResizeObserver(() => place());
+        for (const child of Array.from(lane.children)) observer.observe(child);
+      }
+      // The analyst took over the lane: the request is done.
+      const onIntent = () => release();
+      for (const type of SECTION_HOLD_RELEASE) lane.addEventListener(type, onIntent, { passive: true });
+      removeListeners = () => {
+        for (const type of SECTION_HOLD_RELEASE) lane.removeEventListener(type, onIntent);
+      };
+      holdTimer = window.setTimeout(() => {
+        place();
+        release();
+      }, SECTION_HOLD_MS);
     });
-    return () => window.cancelAnimationFrame(frame);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      observer?.disconnect();
+      window.clearTimeout(holdTimer);
+      removeListeners();
+    };
   }, [sectionRequest, caseShown, tab, reduceMotion]);
   const traceRequestHandled = React.useCallback((tick: number) => {
     setTraceRequest((current) => (current?.tick === tick ? null : current));
@@ -798,13 +852,13 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
     setActivityLoading(false);
     setActivityError(null);
     // Threat context is lazy-loaded and guarded by `threat === null`; resetting it
-    // (and its error) here is what makes the Threat tab refetch for the newly-opened
-    // case instead of showing the previous case's IOC/MITRE data.
+    // (and its error) here is what makes Investigation's Threat context refetch for the
+    // newly-opened case instead of showing the previous case's IOC/MITRE data.
     setThreat(null);
     setThreatError(null);
     setThreatLoading(false);
-    // The active tab is kept across case switches: an analyst browsing the queue on the
-    // Timeline stays on the Timeline (Defender's ↑/↓ behaviour).
+    // The active tab is kept across case switches: an analyst browsing the queue on
+    // Investigation stays on Investigation (Defender's Up/Down behaviour).
     void loadCase();
   }, [open, id, loadCase]);
 
@@ -1634,7 +1688,9 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
   if (!open) return null;
 
   const actionPlan = actionPlanForStatus(c?.status);
-  const permittedLifecycleActions = permittedForShortcuts;
+  // Take action holds every OTHER verb (D8.2): the primary contextual action is the
+  // header button, so the menu never repeats it.
+  const permittedLifecycleActions = permittedForShortcuts.filter((action) => action.key !== actionPlan.primary.key);
   const outcome = c ? caseOutcome(c) : null;
   const busy = loading || acting || !shownIsCurrent;
   const canPrimary = hasPermission(
@@ -2181,8 +2237,8 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
                     ) : null}
                     <TabsContent value="investigation" className="mt-0">
                       <TabPanelMotion>
-                        {/* Decision first, then the AI assessment, inputs, evidence, and the
-                            collapsed full trace (CM-6). */}
+                        {/* The AI assessment, the decision, threat context, the inputs and
+                            the collapsed full trace (Round 15, D8.3). */}
                         <InvestigationPanel
                           c={c}
                           rationale={rationale}

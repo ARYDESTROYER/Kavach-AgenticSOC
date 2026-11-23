@@ -1,11 +1,11 @@
 /**
- * StageTimeline — the six-stage narrative of how one alert became a case.
+ * StageTimeline: the six-stage narrative of how one alert became a case.
  *
  * Consumes `GET /api/cases/{id}/stages` (the `TimelineStage` shape) and renders it as
  * a vertical, chronological story: input → correlate → risk → triage → investigate →
  * decide. Each stage shows a one-line TRUSTED headline + state chips at a glance, and
  * expands to its chronological steps. Deterministic stages (correlate/risk/decide)
- * carry a "deterministic" badge — the trust signal (#3 made visible).
+ * carry a "deterministic" badge: the trust signal (#3 made visible).
  *
  * SECURITY (#9): a step with `trusted === false` (raw source/log/tool payload) renders
  * its body ONLY inside an escaped <CodeBlock>; trusted prose renders as plain text.
@@ -81,7 +81,7 @@ function storyTime(ts?: string | null): string {
 }
 
 // Colour carries VALUE, never the stage kind (CM-6): every stage marker is neutral except
-// the risk stage, which takes the band of its own score — so a Risk 7 case is never red.
+// the risk stage, which takes the band of its own score: so a Risk 7 case is never red.
 // No glow shadows; sentence-case titles in the foreground colour.
 const BAND_DOT: Record<ScoreBand, string> = {
   low: 'bg-low',
@@ -290,7 +290,7 @@ const RiskDerivation: React.FC<{ stage: TimelineStage }> = ({ stage }) => {
 /**
  * One evidence step under a stage. Untrusted source/log material stays FENCED in a
  * CodeBlock (#9), whose own header carries the step label, the untrusted marker and the
- * copy control — one flat block, never a box inside a box with an empty header bar (CM-8).
+ * copy control: one flat block, never a box inside a box with an empty header bar (CM-8).
  */
 const StoryStep: React.FC<{ step: StageStep }> = ({ step }) => {
   const label = step.label || humanizeToken(step.kind) || 'Detail';

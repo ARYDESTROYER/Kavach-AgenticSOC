@@ -79,7 +79,7 @@ export const SignalMeter: React.FC<{
 
 /**
  * The severity-token bar color for a 0-100 risk FACTOR. Uses the ONE palette ladder
- * (`scoreBand` — 74/48/22) so a factor bar shares cut-points with every other
+ * (`scoreBand`: 74/48/22) so a factor bar shares cut-points with every other
  * risk-coloured element. Literal class strings so the Tailwind JIT emits them.
  */
 const FACTOR_BAR_COLOR: Record<ScoreBand, string> = {

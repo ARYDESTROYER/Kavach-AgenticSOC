@@ -199,11 +199,15 @@ export function deriveAgreement(
   };
 }
 
-/** Human-facing text for the derived agreement (null when not comparable). */
+/**
+ * Human-facing text for the derived agreement (null when not comparable), in the close
+ * dialog's voice (SPEC D4.4: "Your classification agrees with the AI"). The Needs human
+ * verdict reads "Needs human review", the Console's word for it.
+ */
 export function agreementText(a: GradingAgreement): string | null {
-  if (a.kind === 'match') return 'Matches AI verdict';
-  if (a.kind === 'override') return `Overrides AI verdict (${a.fromLabel} → ${a.toLabel})`;
-  if (a.kind === 'resolved') return `Settles the AI's hand-off (Needs human → ${a.toLabel})`;
+  if (a.kind === 'match') return 'Your classification agrees with the AI';
+  if (a.kind === 'override') return `Your classification overrides the AI (${a.fromLabel} → ${a.toLabel})`;
+  if (a.kind === 'resolved') return `Your classification settles the AI's hand-off (Needs human review → ${a.toLabel})`;
   return null;
 }
 

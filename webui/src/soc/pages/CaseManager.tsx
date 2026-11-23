@@ -2145,6 +2145,8 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
                           label: 'Search case queue',
                           placeholder: 'Search cases',
                           compactPlaceholder: 'Search cases',
+                          // `/` focuses this field from anywhere in the queue.
+                          keyShortcuts: '/',
                         }}
                         filters={[
                           {
@@ -2218,6 +2220,17 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
                   </div>
                 </div>
 
+                {/* The selection count for assistive technology, in a live region that is
+                    always mounted: the bulk bar below mounts WITH the first selection, too
+                    late for a region inside it to announce that one. */}
+                {canBulk ? (
+                  <p className="sr-only" aria-live="polite" data-testid="case-selection-status">
+                    {selectedCount
+                      ? `${selectedCount.toLocaleString()} case${selectedCount === 1 ? '' : 's'} selected.`
+                      : ''}
+                  </p>
+                ) : null}
+
                 {/* The bulk bar (D8.1): only with a selection, a running bulk job or its
                     result. A role with no bulk action never has one. */}
                 {canBulk && (selectedCount > 0 || trackedJob || bulkOutcome) ? (
@@ -2230,8 +2243,8 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
                   >
                     {selectedCount > 0 ? (
                       <div className="flex min-h-7 flex-wrap items-center gap-x-2 gap-y-1">
-                        <span className="text-xs font-medium tabular-nums text-foreground" aria-live="polite">
-                          {selectedCount} selected
+                        <span className="text-xs font-medium tabular-nums text-foreground">
+                          {selectedCount.toLocaleString()} selected
                         </span>
                         {total > selectedCount && total > visibleCases.length ? (
                           <Button

@@ -1,5 +1,5 @@
 /**
- * Regression test for BUG-3 — duplicate close (X) control in the case-detail Sheet.
+ * Regression test for BUG-3: duplicate close (X) control in the case-detail Sheet.
  *
  * shadcn `SheetContent` ALWAYS renders its own built-in close X (accessible name
  * "Close", at right-4 top-4). CaseDetail previously ALSO hand-rolled a second
@@ -29,7 +29,7 @@ vi.mock('@/lib/clipboard', () => ({ copyText: clipboardMocks.copyText }));
 // Mock the typed api client BEFORE importing the component (which pulls it in).
 vi.mock('@/lib/api', () => {
   const ok = (value: unknown) => vi.fn().mockResolvedValue(value);
-  // A minimal OPEN case — an open-ish status yields a footer "Close case" action.
+  // A minimal OPEN case: an open-ish status yields a footer "Close case" action.
   const openCase = {
     case_id: 'case-001',
     case_number: 'TLSOC-001',
@@ -81,7 +81,7 @@ function renderWithProviders(node: React.ReactNode) {
   );
 }
 
-describe('CaseDetail — single panel-dismiss control (BUG-3)', () => {
+describe('CaseDetail: single panel-dismiss control (BUG-3)', () => {
   beforeEach(() => {
     clipboardMocks.copyText.mockClear();
   });
@@ -95,7 +95,7 @@ describe('CaseDetail — single panel-dismiss control (BUG-3)', () => {
     });
 
     // Exactly one panel-dismiss control: the built-in SheetContent close X, whose
-    // accessible name is exactly "Close". The removed header X had the same name —
+    // accessible name is exactly "Close". The removed header X had the same name : 
     // before the fix this matched TWO buttons.
     const dismiss = screen.getAllByRole('button', { name: /^close$/i });
     expect(dismiss).toHaveLength(1);
@@ -152,7 +152,6 @@ describe('CaseDetail — single panel-dismiss control (BUG-3)', () => {
     const menu = await screen.findByRole('menu');
     for (const label of [
       'Escalate',
-      'Close case',
       'Acknowledge & investigate',
       'Mark resolved',
       'Put on hold',
@@ -168,6 +167,10 @@ describe('CaseDetail — single panel-dismiss control (BUG-3)', () => {
       expect(within(menu).getByRole('menuitem', { name: label })).toBeInTheDocument();
     }
     expect(within(menu).queryByRole('menuitem', { name: /playbook/i })).not.toBeInTheDocument();
+    // Close case is this open case's primary action, the header button: the menu holds
+    // every OTHER verb (D8.2), and C still opens the close dialog.
+    expect(within(menu).queryByRole('menuitem', { name: 'Close case' })).not.toBeInTheDocument();
+    expect(screen.getByTestId('case-primary-action')).toHaveTextContent('Close case');
     // The link items live in More options (D8.2), not in Take action.
     expect(within(menu).queryByRole('menuitem', { name: 'Open in new tab' })).not.toBeInTheDocument();
     expect(within(menu).queryByRole('menuitem', { name: 'Timeline' })).not.toBeInTheDocument();

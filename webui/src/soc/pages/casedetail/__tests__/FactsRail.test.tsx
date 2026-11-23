@@ -158,7 +158,7 @@ describe('FactsRail', () => {
     expect(record).not.toHaveTextContent('$0.0123');
     cleanup();
 
-    // The server answers `token_cost: null` for a viewer without the grant: no "—" row.
+    // The server answers `token_cost: null` for a viewer without the grant: no empty-value row.
     renderRail({ ...FULL, token_cost: null } as unknown as Case);
     expect(screen.getByTestId('facts-record')).not.toHaveTextContent('Investigation cost');
     cleanup();
@@ -237,6 +237,12 @@ describe('FactsRail', () => {
 
     // Once an analyst classified the case, the bar no longer reads against it.
     renderRail();
+    expect(screen.queryByTestId('facts-auto-close-bar')).toBeNull();
+    cleanup();
+
+    // Nor once the case ended on its own: today's bar is not the one it was closed against.
+    renderRail({ ...open, status: 'closed' } as unknown as Case);
+    expect(screen.getByTestId('facts-outcome')).toHaveTextContent('AI verdict: False positive (82%)');
     expect(screen.queryByTestId('facts-auto-close-bar')).toBeNull();
   });
 

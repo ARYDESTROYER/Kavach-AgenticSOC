@@ -59,7 +59,7 @@ async function renderResolved() {
   await waitFor(() => expect(document.querySelector('[data-case-title]')).toHaveTextContent(/password spray/));
 }
 
-describe('actionPlanForStatus — terminal states mirror the server guard', () => {
+describe('actionPlanForStatus: terminal states mirror the server guard', () => {
   it('resolved: Close is the primary, Set disposition and Reopen are in the overflow', () => {
     const plan = actionPlanForStatus('resolved');
     expect(plan.primary.key).toBe('close_disposition');

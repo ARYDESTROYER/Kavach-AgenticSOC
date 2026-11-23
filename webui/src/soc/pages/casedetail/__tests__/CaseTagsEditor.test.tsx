@@ -44,6 +44,14 @@ function renderEditor(onCaseChange = vi.fn(), c: Case = CASE) {
 describe('case tag editor', () => {
   beforeEach(() => vi.mocked(api.caseTags).mockReset());
 
+  it('opens on the New tag field, never on a Remove button where Enter would delete a tag', async () => {
+    const input = renderEditor();
+    await waitFor(() => expect(input).toHaveFocus());
+    expect(screen.getByRole('button', { name: 'Remove tag existing' })).not.toHaveFocus();
+    // The editor is a named dialog.
+    expect(screen.getByRole('dialog', { name: 'Tags' })).toBeInTheDocument();
+  });
+
   it('refuses a tag over 40 characters with a message and never cuts or sends it', () => {
     const input = renderEditor();
     expect(input).not.toHaveAttribute('maxlength');

@@ -109,6 +109,21 @@ describe('a link to a retired case tab (D8.3)', () => {
     expect(probe()).toBe('case_manager|{"caseId":"case-2","tab":"investigation","section":"threat-context"}');
   });
 
+  it('drops the section on the next address change, so Back to a case never replays it', () => {
+    mount('#/case_manager?caseId=case-1');
+    act(() => {
+      window.location.hash = '#/case_manager?caseId=case-2&tab=timeline';
+      window.dispatchEvent(new HashChangeEvent('hashchange'));
+    });
+    expect(probe()).toBe('case_manager|{"caseId":"case-2","tab":"overview","section":"what-happened"}');
+    // Back or Forward to another case on the same tab: the request was one-shot.
+    act(() => {
+      window.location.hash = '#/case_manager?caseId=case-3&tab=overview';
+      window.dispatchEvent(new HashChangeEvent('hashchange'));
+    });
+    expect(probe()).toBe('case_manager|{"caseId":"case-3","tab":"overview"}');
+  });
+
   it('never writes a section into a Case Manager address', () => {
     expect(pageHash('case_manager', { caseId: 'case-1', tab: 'overview', section: 'what-happened' })).toBe(
       '#/case_manager?caseId=case-1&tab=overview',

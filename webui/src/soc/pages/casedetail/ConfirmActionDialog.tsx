@@ -227,7 +227,10 @@ export const ConfirmActionDialog: React.FC<ConfirmActionDialogProps> = ({
   const notePersists = pending ? (pending.wireAction ?? pending.key) === 'close' : false;
 
   const hasDisposition = Boolean(pending?.fields.includes('disposition'));
-  const hasGrading = Boolean(pending?.fields.includes('grading'));
+  // There is something to rate only when the AI gave a verdict: on a case it never
+  // assessed the orchestrator posts no grade, so stars there would be dropped unseen.
+  const aiVerdict = String(verdict ?? '').trim().toLowerCase();
+  const hasGrading = Boolean(pending?.fields.includes('grading')) && Boolean(aiVerdict) && aiVerdict !== 'none';
   const hasActionsTaken = Boolean(pending?.fields.includes('actions_taken') && onActionsTakenChange);
   const hasOpenSteps = openSteps.length > 0;
   const showScreenshots = Boolean(renderScreenshots && pending && (hasDisposition || isTerminalAction(pending)));
@@ -334,7 +337,9 @@ export const ConfirmActionDialog: React.FC<ConfirmActionDialogProps> = ({
         ref={noteRef}
         id="confirm-action-note"
         rows={wide ? 4 : 3}
-        placeholder={noteRequired ? 'What did you see that the AI did not?' : 'Add context for the next analyst…'}
+        // One prompt for the note in every case: on an override the line under the field says
+        // why it is required, and "What did the AI miss?" stays the rating's own question.
+        placeholder="Add context for the next analyst…"
         value={note}
         required={noteRequired || undefined}
         aria-invalid={noteError ? true : undefined}

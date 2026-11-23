@@ -1,5 +1,5 @@
 /**
- * StageTimeline — the six-stage narrative renderer.
+ * StageTimeline: the six-stage narrative renderer.
  *
  * Verifies the headline/state render, the deterministic trust marker, skipped stages,
  * and the #9 rule that an UNTRUSTED step body is fenced (never leaked as prose), in the
@@ -193,7 +193,7 @@ describe('StageTimeline', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Risk factors' }));
     const table = screen.getByRole('table', { name: 'Risk score factor calculation' });
-    expect(table).toHaveTextContent('Volume20/100—');
+    expect(table).toHaveTextContent('Volume20/100\u2014');
     expect(screen.getByText(/supplies factor values and the final score/i)).toHaveTextContent(
       'Exact arithmetic cannot be reconstructed from the available data.',
     );

@@ -89,7 +89,7 @@ describe('deriveAgreement: the full 3×6 map', () => {
     const a = deriveAgreement('NEEDS_HUMAN', 'false_positive');
     expect(a).toEqual({ kind: 'resolved', toLabel: 'False positive' });
     expect(a).not.toHaveProperty('assessment');
-    expect(agreementText(a)).toBe("Settles the AI's hand-off (Needs human → False positive)");
+    expect(agreementText(a)).toBe("Your classification settles the AI's hand-off (Needs human review → False positive)");
   });
 
   it('is none when verdict OR disposition is missing (hide badge)', () => {
@@ -110,8 +110,8 @@ describe('deriveAgreement: the full 3×6 map', () => {
 
   it('builds the override text with humanized from → to labels', () => {
     const a = deriveAgreement('FALSE_POSITIVE', 'true_positive');
-    expect(agreementText(a)).toBe('Overrides AI verdict (False positive → True positive)');
-    expect(agreementText(deriveAgreement('TRUE_POSITIVE', 'true_positive'))).toBe('Matches AI verdict');
+    expect(agreementText(a)).toBe('Your classification overrides the AI (False positive → True positive)');
+    expect(agreementText(deriveAgreement('TRUE_POSITIVE', 'true_positive'))).toBe('Your classification agrees with the AI');
     expect(agreementText(deriveAgreement('TRUE_POSITIVE', 'duplicate'))).toBeNull();
   });
 });
@@ -119,14 +119,14 @@ describe('deriveAgreement: the full 3×6 map', () => {
 /* ------------------------------------- 2. agreement text and the rating body --- */
 
 describe('AgreementLine: the derived agreement as text (D4.4)', () => {
-  it('renders "Overrides AI verdict (X → Y)" on a mismatch', () => {
+  it('renders "Your classification overrides the AI (X → Y)" on a mismatch', () => {
     render(<AgreementLine verdict="FALSE_POSITIVE" disposition="true_positive" />);
-    expect(screen.getByText('Overrides AI verdict (False positive → True positive)')).toBeInTheDocument();
+    expect(screen.getByText('Your classification overrides the AI (False positive → True positive)')).toBeInTheDocument();
   });
 
-  it('renders "Matches AI verdict" on a match, with the AI line beside it', () => {
+  it('renders "Your classification agrees with the AI" on a match, with the AI line beside it', () => {
     render(<AgreementLine verdict="TRUE_POSITIVE" disposition="true_positive" aiLine="AI verdict: True positive (80%)" />);
-    expect(screen.getByText('Matches AI verdict')).toBeInTheDocument();
+    expect(screen.getByText('Your classification agrees with the AI')).toBeInTheDocument();
     expect(screen.getByText('AI verdict: True positive (80%)')).toBeInTheDocument();
   });
 

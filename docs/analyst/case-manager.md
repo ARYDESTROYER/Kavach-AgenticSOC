@@ -156,7 +156,9 @@ Beside every tab, the **facts rail** lists what is known about the case in one p
 eight sections:
 
 - **Outcome**: the outcome of record (the analyst's classification, with who classified
-  it and when), the AI verdict and confidence with the auto-close bar, how they relate,
+  it and when), the AI verdict and confidence (read against today's auto-close bar while
+  the case is open; once it ended, Investigation's Decision names the bar it was decided
+  against), how they relate,
   who decided, and the objection window;
 - **Signal**: the risk score (its recorded factors behind **Show risk factors**), the
   severity and whether the source reported it, the priority, impact and urgency;
@@ -310,8 +312,9 @@ Closing or resolving a case asks what the case was once: the **disposition**. Th
 dialog lists the dispositions as one list with a one-line definition each (press 1 to 6
 to pick one); none is chosen in advance, so the choice is always yours, not a copy of
 the AI verdict, which is shown beside the list as a hint. Once you pick, a line under
-the list says how your call relates to the AI's: "Matches AI verdict", "Overrides AI
-verdict (False positive → True positive)", or "Settles the AI's hand-off". On a wide
+the list says how your call relates to the AI's: "Your classification agrees with the
+AI", "Your classification overrides the AI (False positive → True positive)", or "Your
+classification settles the AI's hand-off". On a wide
 screen the classification is on the left and what you did is on the right:
 
 - **Actions taken** (optional): what you did about the case, chosen from a fixed list

@@ -1,5 +1,5 @@
 /**
- * CaseChatPanel (ChatTab) + its lazy CaseChat body — the case-scoped entry point to the ONE chat engine (#5,
+ * CaseChatPanel (ChatTab) + its lazy CaseChat body: the case-scoped entry point to the ONE chat engine (#5,
  * SPEC §4.6, §10.8), ported from the pre-revamp ChatPanel embed suite:
  *
  *   1. every turn carries THIS case id and is never saved to personal history
@@ -165,7 +165,7 @@ async function renderTab(props: Partial<React.ComponentProps<typeof ChatTab>> = 
 
 const streamBodies = () => calls.filter((call) => call.url === '/api/chat/stream').map((call) => call.body);
 
-describe('ChatTab — the case-scoped chat', () => {
+describe('ChatTab: the case-scoped chat', () => {
   it('names the case by the number its header shows, and still scopes turns by its id', async () => {
     // Round 13 polish: the status line read "Scoped to case-f0a80e8d…" under a header
     // that says CASE-000086.

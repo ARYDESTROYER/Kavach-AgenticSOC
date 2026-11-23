@@ -1,10 +1,10 @@
 /**
- * CaseDetail — the Chat tab's shell (chat revamp SPEC §4.6, §10.8, §10.10).
+ * CaseDetail: the Chat tab's shell (chat revamp SPEC §4.6, §10.8, §10.10).
  *
  * Only the frame lives here: Case Manager's padded rail (the Overview dashboard and
  * Investigate open the same workspace in a sheet). The chat itself (`./CaseChat`: the shared engine, context,
- * transcript and composer) is a `React.lazy` boundary, so opening a case — from the
- * dashboard, Case Manager or Scans — never downloads the chat chunks unless the
+ * transcript and composer) is a `React.lazy` boundary, so opening a case: from the
+ * dashboard, Case Manager or Scans: never downloads the chat chunks unless the
  * analyst opens this tab. Radix Tabs unmounts inactive panels, so the import starts
  * on the first visit to the tab and is cached afterwards.
  *

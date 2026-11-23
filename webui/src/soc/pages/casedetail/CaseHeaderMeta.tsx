@@ -120,6 +120,7 @@ export const CaseHeaderMeta: React.FC<CaseHeaderMetaProps> = ({
   // Once the case ended, its outcome of record replaces the status (never both).
   const showOutcome = outcome.terminal && outcome.source !== 'pending';
   const [assigningSelf, setAssigningSelf] = React.useState(false);
+  const ownerTitleId = React.useId();
 
   const assignToMe = React.useCallback(async () => {
     if (!currentUser) return;
@@ -191,8 +192,10 @@ export const CaseHeaderMeta: React.FC<CaseHeaderMetaProps> = ({
             </span>
           </button>
         </PopoverTrigger>
-        <PopoverContent align="start" className="w-72 space-y-3">
-          <p className="text-sm font-semibold text-foreground">Owner</p>
+        <PopoverContent align="start" className="w-72 space-y-3" aria-labelledby={ownerTitleId}>
+          <p id={ownerTitleId} className="text-sm font-semibold text-foreground">
+            Owner
+          </p>
           <AssigneePicker
             c={c}
             users={users}

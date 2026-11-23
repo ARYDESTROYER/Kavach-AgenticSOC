@@ -220,7 +220,10 @@ export const FactsRail: React.FC<FactsRailProps> = ({
   const objectionOpen =
     typeof c.objection_window_expires_at === 'string' && Date.parse(c.objection_window_expires_at) > Date.now();
   // After a person classified the case, the AI's confidence is the AI's, at assessment.
-  const barLine = c.verdict && !humanSettled ? autoCloseBarLine(fpPolicy, c.verdict) : null;
+  // The bar is TODAY's policy, so it reads only against an open case: once the case ended,
+  // the decision record (Investigation) names the bar it was decided against, and today's
+  // ("auto-close off") beside "Auto-closed as false positive" would contradict it.
+  const barLine = c.verdict && !humanSettled && !outcome.terminal ? autoCloseBarLine(fpPolicy, c.verdict) : null;
   const displayId = caseDisplayId(c);
 
   return (

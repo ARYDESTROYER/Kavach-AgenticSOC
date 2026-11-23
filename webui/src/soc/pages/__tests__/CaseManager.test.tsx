@@ -1120,9 +1120,15 @@ describe('CaseManager', () => {
     );
     expect(rowButton('Multiple failed logins')).toHaveAttribute('tabindex', '0');
 
+    // The live region is mounted before the first selection, so that one is announced
+    // too (the bulk bar mounts WITH it, too late for a region inside it).
+    const selectionStatus = screen.getByTestId('case-selection-status');
+    expect(selectionStatus).toHaveAttribute('aria-live', 'polite');
+    expect(selectionStatus).toHaveTextContent(/^$/);
     fireEvent.keyDown(list, { key: 'x' });
     expect(screen.getByRole('checkbox', { name: 'Select CASE-2026-0091' })).toHaveAttribute('aria-checked', 'true');
     expect(screen.getByText('1 selected')).toBeInTheDocument();
+    expect(selectionStatus).toHaveTextContent('1 case selected.');
 
     fireEvent.keyDown(list, { key: 'ArrowUp' });
     await waitFor(() =>
@@ -1138,6 +1144,8 @@ describe('CaseManager', () => {
   it('focuses the queue search with /', async () => {
     render(<CaseManager />);
     await screen.findByTestId('embedded-case-detail');
+    // The field names its shortcut, as the shortcuts dialog does.
+    expect(screen.getByRole('searchbox', { name: 'Search case queue' })).toHaveAttribute('aria-keyshortcuts', '/');
     fireEvent.keyDown(document.body, { key: '/' });
     expect(screen.getByRole('searchbox', { name: 'Search case queue' })).toHaveFocus();
   });

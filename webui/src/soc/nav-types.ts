@@ -30,7 +30,7 @@ export type NavOpts = {
   tag?: string;
   /**
    * Severity-band drill-through (Round-6 #38): a coarse band the destination Cases view
-   * seeds its severity filter from — one of `critical | high | medium | low | info`
+   * seeds its severity filter from: one of `critical | high | medium | low | info`
    * (matching the Cases severity dropdown + `severityBand`). Lets the Overview
    * Critical/High KPI + the open-by-severity rows deep-link to a severity-filtered list.
    * On Logs (Round 14, SPEC §4.6.6) it is a durable hash key: "Severity is High".
@@ -40,9 +40,9 @@ export type NavOpts = {
   noiseOutcome?: 'auto_cleared' | 'escalated' | 'closed';
   window?: number;
   tab?: string;
-  /** Settings section id — serialized to `#/settings?s=<section>`. */
+  /** Settings section id: serialized to `#/settings?s=<section>`. */
   section?: string;
-  /** In-section card anchor — serialized to `&a=<anchor>` for a scroll+highlight. */
+  /** In-section card anchor: serialized to `&a=<anchor>` for a scroll+highlight. */
   anchor?: string;
   /*
    * Chat revamp deep links (SPEC §10.7). Additive and validated: the router
@@ -58,7 +58,7 @@ export type NavOpts = {
   /** Chat: a `console_map` topic id ("Ask about this"); never free text, in memory only. */
   topic?: string;
   /**
-   * Chat: the command palette's "Ask AI: <text>" — the analyst's own words, prefilled
+   * Chat: the command palette's "Ask AI: <text>": the analyst's own words, prefilled
    * into a new chat's composer (never sent automatically; at most 2,000 characters).
    * In memory only: the router never writes it to the hash, so a refresh or a shared
    * link never carries free text.
@@ -84,7 +84,7 @@ export type NavOpts = {
   reportId?: string;
   /** Logs: an exact query to pre-fill (untrusted text, bounded, control/bidi-free). */
   logQuery?: string;
-  /** Logs: window bounds — `now`, `now-<n>[mhdw]` or an ISO-8601 timestamp. */
+  /** Logs: window bounds: `now`, `now-<n>[mhdw]` or an ISO-8601 timestamp. */
   from?: string;
   to?: string;
   /** Logs: the source to browse. */
