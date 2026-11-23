@@ -3778,6 +3778,17 @@ class AppState:
         except Exception as exc:  # noqa: BLE001 — never break enable on a capability pass
             logger.debug("demo initial capability pass failed: %s", exc)
 
+        # Round 15 (SPEC D3.12): the Demo audit rows of the seeded human work (the
+        # acknowledgements, closes, comments and assignments the seeded cases credit to
+        # the Demo SOC team), so Team activity counts what the cases show. Never blocks
+        # enable.
+        try:
+            from .engine.demo_generator import seed_demo_team_activity
+
+            await seed_demo_team_activity(demo_stack.audit, list(seeded_counter_cases), now_millis=now_ms)
+        except Exception as exc:  # noqa: BLE001 - seeded rows never block enable
+            logger.warning("demo team activity seeding failed: %s", exc)
+
         # Commit the fully-built stack. Only the Demo switch is written, onto the LIVE
         # settings read inside the write lock: a real settings save that landed while
         # the stack was seeding (and has already written its ``settings.updated`` row)

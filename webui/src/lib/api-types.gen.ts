@@ -7023,6 +7023,57 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/team/activity": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Team Activity */
+        get: operations["team_activity_api_team_activity_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/team/people": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Team People */
+        get: operations["team_people_api_team_people_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/team/people/{username}/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Team Person Events */
+        get: operations["team_person_events_api_team_people__username__events_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/terminology": {
         parameters: {
             query?: never;
@@ -11627,6 +11678,60 @@ export interface components {
             /** Source */
             source?: Record<string, never>;
         };
+        /** PersonActivity */
+        PersonActivity: {
+            /**
+             * Ack Samples
+             * @default 0
+             */
+            ack_samples: number;
+            /**
+             * Active
+             * @default true
+             */
+            active: boolean;
+            /** Bulk */
+            bulk: {
+                [key: string]: number;
+            };
+            /** Closed By */
+            closed_by: {
+                [key: string]: number;
+            };
+            /** Counts */
+            counts: {
+                [key: string]: number;
+            };
+            /** Daily */
+            daily: components["schemas"]["TeamDay"][];
+            /**
+             * Display Name
+             * @default
+             */
+            display_name: string;
+            /**
+             * Key
+             * @description The normalised username; empty for Not attributed.
+             */
+            key: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "account" | "environment" | "demo" | "deleted" | "unattributed";
+            /** Last Active */
+            last_active?: string | null;
+            /** Median Ack Seconds */
+            median_ack_seconds?: number | null;
+            reviews: components["schemas"]["TeamReviews"];
+            /**
+             * Role
+             * @default
+             */
+            role: string;
+            /** Username */
+            username: string;
+        };
         /** PingEvent */
         PingEvent: {
             /**
@@ -14598,6 +14703,225 @@ export interface components {
             status?: string | null;
             /** Title */
             title?: string | null;
+        };
+        /**
+         * TeamActivity
+         * @description One window of Team activity (SPEC D3.10).
+         */
+        TeamActivity: {
+            /**
+             * Auth Enabled
+             * @default true
+             */
+            auth_enabled: boolean;
+            /** Days */
+            days: string[];
+            /**
+             * Demo
+             * @default false
+             */
+            demo: boolean;
+            /**
+             * Exact
+             * @default true
+             */
+            exact: boolean;
+            /** Generated At */
+            generated_at: string;
+            /** Partial Reason */
+            partial_reason?: ("row_limit" | "store_limit") | null;
+            /** People */
+            people: components["schemas"]["PersonActivity"][];
+            /**
+             * Rbac Enabled
+             * @default false
+             */
+            rbac_enabled: boolean;
+            /**
+             * Scanned Rows
+             * @default 0
+             */
+            scanned_rows: number;
+            team: components["schemas"]["TeamTotals"];
+            /** Timezone */
+            timezone: string;
+            window: components["schemas"]["TeamWindow"];
+        };
+        /** TeamDay */
+        TeamDay: {
+            /** Counts */
+            counts: {
+                [key: string]: number;
+            };
+            /** Date */
+            date: string;
+        };
+        /** TeamEvent */
+        TeamEvent: {
+            /** Case Id */
+            case_id?: string | null;
+            /** Case Number */
+            case_number?: string | null;
+            /**
+             * Detail
+             * @default
+             */
+            detail: string;
+            /** Kind */
+            kind: string;
+            /** Label */
+            label: string;
+            /** Ts */
+            ts: string;
+        };
+        /** TeamEvents */
+        TeamEvents: {
+            /** Events */
+            events: components["schemas"]["TeamEvent"][];
+            /**
+             * Exact
+             * @default true
+             */
+            exact: boolean;
+            /** Next Cursor */
+            next_cursor?: string | null;
+            /** Partial Reason */
+            partial_reason?: ("row_limit" | "store_limit") | null;
+            /** Total */
+            total: number;
+            /** Username */
+            username: string;
+            window: components["schemas"]["TeamWindow"];
+        };
+        /** TeamPeople */
+        TeamPeople: {
+            /**
+             * Auth Enabled
+             * @default true
+             */
+            auth_enabled: boolean;
+            /**
+             * Demo
+             * @default false
+             */
+            demo: boolean;
+            /** People */
+            people: components["schemas"]["TeamPerson"][];
+        };
+        /** TeamPerson */
+        TeamPerson: {
+            /**
+             * Active
+             * @default true
+             */
+            active: boolean;
+            /**
+             * Display Name
+             * @default
+             */
+            display_name: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "account" | "environment" | "demo";
+            /**
+             * Role
+             * @default
+             */
+            role: string;
+            /** Username */
+            username: string;
+        };
+        /** TeamReviews */
+        TeamReviews: {
+            /**
+             * Agreed
+             * @default 0
+             */
+            agreed: number;
+            /**
+             * Agreement Rate
+             * @description Agreed over answered, only from 30 answered reviews.
+             */
+            agreement_rate?: number | null;
+            /**
+             * Answered
+             * @default 0
+             */
+            answered: number;
+            /**
+             * Completed
+             * @default 0
+             */
+            completed: number;
+            /**
+             * Disagreed
+             * @default 0
+             */
+            disagreed: number;
+            /**
+             * Time Spent Median Ms
+             * @description Median time spent on the review card, measured in the Console.
+             */
+            time_spent_median_ms?: number | null;
+            /**
+             * Time To Review Median Seconds
+             * @description Median time from the case being picked for review to the review.
+             */
+            time_to_review_median_seconds?: number | null;
+            /**
+             * Unsure
+             * @default 0
+             */
+            unsure: number;
+        };
+        /** TeamTotals */
+        TeamTotals: {
+            /**
+             * Ack Samples
+             * @default 0
+             */
+            ack_samples: number;
+            /**
+             * Ack Status
+             * @default measured
+             * @enum {string}
+             */
+            ack_status: "measured" | "too_many_cases" | "unavailable";
+            /** Bulk */
+            bulk: {
+                [key: string]: number;
+            };
+            /** Closed By */
+            closed_by: {
+                [key: string]: number;
+            };
+            /** Counts */
+            counts: {
+                [key: string]: number;
+            };
+            /** Daily */
+            daily: components["schemas"]["TeamDay"][];
+            /** Median Ack Seconds */
+            median_ack_seconds?: number | null;
+            /**
+             * People Active
+             * @default 0
+             */
+            people_active: number;
+            reviews: components["schemas"]["TeamReviews"];
+        };
+        /** TeamWindow */
+        TeamWindow: {
+            /** End */
+            end: string;
+            /** Label */
+            label: string;
+            /** Start */
+            start?: string | null;
+            /** Token */
+            token: string;
         };
         /**
          * TerminologyBody
@@ -25707,6 +26031,93 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["UpdateStatus"];
+                };
+            };
+        };
+    };
+    team_activity_api_team_activity_get: {
+        parameters: {
+            query?: {
+                /** @description A time window: today, yesterday, now-7d, or a date range. */
+                window?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TeamActivity"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    team_people_api_team_people_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TeamPeople"];
+                };
+            };
+        };
+    };
+    team_person_events_api_team_people__username__events_get: {
+        parameters: {
+            query?: {
+                window?: string | null;
+                cursor?: string | null;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                username: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TeamEvents"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

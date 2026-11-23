@@ -33,6 +33,7 @@ const PRIMARY_SURFACES = [
   "soc/pages/Settings.tsx",
   "soc/pages/Sources.tsx",
   "soc/pages/Standup.tsx",
+  "soc/pages/TeamActivity.tsx",
   "soc/pages/Tuning.tsx",
   "soc/pages/Workspace.tsx",
   "soc/components/UnifiedLogsSheet.tsx",

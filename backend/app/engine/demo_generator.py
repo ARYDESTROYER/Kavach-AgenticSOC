@@ -1753,6 +1753,129 @@ def demo_runbook_audit_rows(run: Any, case: Any) -> list[dict[str, Any]]:
     return rows
 
 
+# --------------------------------------------------------------------------- #
+# Round 15 (SPEC D3.12): the Demo audit rows of the seeded human case work
+# --------------------------------------------------------------------------- #
+#: The lifecycle verb (and its structured action) a seeded person's status move records.
+_DEMO_TEAM_MOVES: dict[str, tuple[str, str]] = {
+    CaseStatus.INVESTIGATING.value: ("acknowledge", "case.acknowledged"),
+    CaseStatus.CLOSED.value: ("close", "case.closed"),
+    CaseStatus.RESOLVED.value: ("resolve", "case.resolved"),
+    CaseStatus.ESCALATED.value: ("escalate", "case.escalated"),
+    CaseStatus.ON_HOLD.value: ("hold", "case.held"),
+}
+#: A seeded assignment was taken this many minutes after its case was opened.
+_DEMO_ASSIGN_MINUTES = (1, 9)
+
+
+def demo_team_activity_audit_rows(cases: Iterable[Case], *, now_millis: int) -> list[dict[str, Any]]:
+    """The Demo audit rows of the seeded human work, oldest first, as keyword arguments
+    of ``record_strict``: the rows the live routes write for the same work (SPEC
+    D3.12), dated when the seeded work happened and by the person the case credits, so
+    Team activity in Demo Mode counts what the seeded cases show.
+
+    For each status move a person on the Demo SOC team (:data:`DEMO_SOC_ANALYSTS`) made
+    in ``status_history`` (acknowledged, closed with the case's disposition, resolved,
+    escalated, put on hold), one lifecycle row (``case.acknowledged`` and so on) with
+    the live row's positional summary and structured ``changes``; each comment such a
+    person wrote, one ``case.commented`` row; each case such a person owns, one
+    ``case.assigned`` row by its owner a few minutes after the case was opened. Rows by
+    anyone else (the triage automation, the agent, the system) are not written. Never
+    later than ``now_millis``. Pure."""
+    from ..constants import (
+        CASE_ASSIGNED_AUDIT_ACTION,
+        CASE_COMMENTED_AUDIT_ACTION,
+        ActionType,
+    )
+    from ..models import AuditChange, AuditTarget
+
+    team = {name.lower(): name for name in DEMO_SOC_ANALYSTS}
+    now = datetime.fromtimestamp(now_millis / 1000, tz=timezone.utc)
+    rows: list[tuple[datetime, int, dict[str, Any]]] = []
+
+    def add(moment: datetime, fields: dict[str, Any]) -> None:
+        rows.append((min(moment, now), len(rows), fields))
+
+    for case in cases:
+        case_id = str(getattr(case, "case_id", "") or "")
+        if not case_id:
+            continue
+        number = str(getattr(case, "case_number", "") or "")
+        target = AuditTarget(type="case", id=case_id, label=number or case_id)
+        raw_disposition = getattr(case, "disposition", None)
+        disposition = getattr(raw_disposition, "value", raw_disposition)
+        acknowledged = False
+        for entry in getattr(case, "status_history", None) or []:
+            person = team.get(str(getattr(entry, "by", "") or "").strip().lower())
+            move = _DEMO_TEAM_MOVES.get(str(getattr(entry, "to_status", "") or ""))
+            if person is None or move is None:
+                continue
+            verb, action = move
+            before, after = str(entry.from_status or "?"), str(entry.to_status)
+            at = min(_demo_moment(entry.at, now_millis), now)
+            changes = [AuditChange(field="status", before=before, after=after)]
+            if verb == "acknowledge" and not acknowledged:
+                changes.append(AuditChange(field="acknowledged_at", after=_demo_iso(at)))
+                acknowledged = True
+            if verb == "close" and disposition:
+                changes.append(AuditChange(field="disposition", before=None, after=str(disposition)))
+            add(at, {
+                "ts": _demo_iso(at), "action_type": ActionType.STATUS, "surface": "case",
+                "actor": person, "actor_type": "human", "action": action, "outcome": "success",
+                "case_id": case_id, "target": target, "changes": changes,
+                "result_summary": f"action={verb} status {before}\u2192{after} disposition={disposition or 'none'}",
+            })
+        for comment in getattr(case, "comments", None) or []:
+            person = team.get(str(getattr(comment, "author", "") or "").strip().lower())
+            if person is None:
+                continue
+            at = min(_demo_moment(comment.ts, now_millis), now)
+            add(at, {
+                "ts": _demo_iso(at), "action_type": ActionType.COLLAB, "surface": "case",
+                "actor": person, "actor_type": "human", "action": CASE_COMMENTED_AUDIT_ACTION,
+                "outcome": "success", "case_id": case_id, "target": target,
+                "result_summary": "comment added",
+            })
+        owner = team.get(str(getattr(case, "assignee", "") or "").strip().lower())
+        if owner is not None:
+            rng = random.Random(f"demo-assign:{case_id}")
+            low, high = _DEMO_ASSIGN_MINUTES
+            at = min(_demo_moment(case.created_at, now_millis) + timedelta(minutes=rng.randint(low, high)), now)
+            add(at, {
+                "ts": _demo_iso(at), "action_type": ActionType.COLLAB, "surface": "case",
+                "actor": owner, "actor_type": "human", "action": CASE_ASSIGNED_AUDIT_ACTION,
+                "outcome": "success", "case_id": case_id, "target": target,
+                "changes": [AuditChange(field="assignee", before=None, after=owner)],
+                "result_summary": f"assigned to {owner}",
+            })
+    rows.sort(key=lambda item: (item[0], item[1]))
+    return [fields for _at, _order, fields in rows]
+
+
+async def seed_demo_team_activity(audit: Any, cases: Iterable[Case], *, now_millis: int) -> int:
+    """Append :func:`demo_team_activity_audit_rows` to the Demo audit (SPEC D3.12).
+    Returns the rows written. A failed row is logged and the rest are still written;
+    it never raises, so seeding never blocks Demo Mode."""
+    import logging
+
+    log = logging.getLogger("tlsoc.engine.demo_generator")
+    if audit is None:
+        return 0
+    try:
+        planned = demo_team_activity_audit_rows(list(cases), now_millis=now_millis)
+    except Exception as exc:  # noqa: BLE001 - seeded rows never block Demo Mode
+        log.warning("demo team activity rows not planned: %s", exc)
+        return 0
+    written = 0
+    for fields in planned:
+        try:
+            await audit.record_strict(**fields)
+            written += 1
+        except Exception as exc:  # noqa: BLE001 - one row never blocks the rest
+            log.warning("demo team activity row for case %s not written: %s", str(fields.get("case_id"))[:80], exc)
+    return written
+
+
 async def seed_demo_runbook_runs(
     store: Any, cases: list[Case], catalog: Any, *, prefs: Preferences, seed: int, now_millis: int,
     audit: Any = None,

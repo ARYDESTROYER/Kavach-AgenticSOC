@@ -3,8 +3,9 @@
  * grouped panels).
  *
  * A read-only posture group (authentication, role-based access and single sign-on, each
- * a status row), then the admin session policy and OIDC providers (rendered by the
- * embedded `SecuritySsoInner`), controlled by Settings' single save. The SELF-SERVICE MFA
+ * a status row), the Team activity switch (Round 15), then the admin session policy and
+ * OIDC providers (rendered by the embedded `SecuritySsoInner`), controlled by Settings'
+ * single save. The SELF-SERVICE MFA
  * lives separately under Account > Security & two-factor.
  */
 
@@ -16,6 +17,7 @@ import { SecuritySsoInner } from '@/soc/pages/Security';
 import { roleLabel } from '@/soc/pages/Roles.api';
 
 import { SettingRow, SettingsGroup, SettingsSection, type SecProps } from './primitives';
+import { TeamActivitySettingsGroup } from './team-activity';
 
 export function OrgSecuritySection({
   prefs,
@@ -63,6 +65,9 @@ export function OrgSecuritySection({
           }
         />
       </SettingsGroup>
+
+      {/* Round 15 (SPEC D3.4): the Team activity page switch, saved with the page. */}
+      <TeamActivitySettingsGroup prefs={prefs} update={update} />
 
       {/* Session policy and OIDC providers, controlled by the Settings save. */}
       <SecuritySsoInner prefs={prefs} update={update} configured={configured} embedded />

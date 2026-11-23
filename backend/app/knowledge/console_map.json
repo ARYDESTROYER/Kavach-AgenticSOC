@@ -412,6 +412,29 @@
       "owned_keys": []
     },
     {
+      "id": "page:team",
+      "kind": "page",
+      "label": "Team activity",
+      "crumb": [
+        "Analytics",
+        "Team activity"
+      ],
+      "page": "team",
+      "opts": {},
+      "requires": "team:view",
+      "blurb": "",
+      "keywords": [
+        "team activity",
+        "analyst work",
+        "work done",
+        "daily work",
+        "per person",
+        "what each analyst did",
+        "track the team"
+      ],
+      "owned_keys": []
+    },
+    {
       "id": "page:effectiveness",
       "kind": "page",
       "label": "Agent effectiveness",
@@ -1338,12 +1361,14 @@
         "keep me signed in",
         "session length",
         "session lifetime",
-        "remembered device"
+        "remembered device",
+        "team activity"
       ],
       "owned_keys": [
         "sso",
         "session_policy",
-        "mfa"
+        "mfa",
+        "team_activity"
       ]
     },
     {
@@ -2095,6 +2120,33 @@
         "review",
         "step approvals",
         "cadence"
+      ],
+      "owned_keys": []
+    },
+    {
+      "id": "settings:security.security-team-activity",
+      "kind": "settings_card",
+      "label": "Team activity page",
+      "crumb": [
+        "Settings",
+        "Security & access",
+        "Single sign-on & policy",
+        "Team activity page"
+      ],
+      "page": "settings",
+      "opts": {
+        "section": "security",
+        "anchor": "security-team-activity"
+      },
+      "requires": "settings:manage",
+      "blurb": "",
+      "keywords": [
+        "team activity",
+        "analyst work",
+        "who did what",
+        "per-person",
+        "monitoring",
+        "daily work"
       ],
       "owned_keys": []
     },

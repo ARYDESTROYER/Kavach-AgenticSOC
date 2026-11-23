@@ -63,6 +63,8 @@ const CURATED_SECTIONS: ReadonlySet<string> = new Set([
   'sso',
   'mfa',
   'rbac',
+  // Round 15 (SPEC D3.4): the Security section's "Team activity" group is its one editor.
+  'team_activity',
   'threshold_automation',
   'case_id_format',
   // `caps` (per-case caps + emergency kill switch) and `rag` (suppression) both have

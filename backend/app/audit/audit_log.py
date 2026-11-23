@@ -259,12 +259,18 @@ class AuditLogger(AuditRepository):
         limit: int = 50,
         cursor: Any = None,
         track_total: int = AUDIT_TRACK_TOTAL,
+        count: bool = True,
     ) -> AuditSearchPage:
         """One page through a point-in-time snapshot (``search_after`` on ``ts`` then
         ``_shard_doc``), so "Load more" never skips or repeats a row while new rows
         arrive. Without point-in-time support the page falls back to ``from`` paging
         inside the first 10,000 rows. The first page opens the snapshot; a later page
-        whose snapshot has expired raises :class:`AuditCursorExpired`."""
+        whose snapshot has expired raises :class:`AuditCursorExpired`.
+
+        ``count=False`` (Round 15, SPEC D3.6) sends ``track_total_hits: false``, so a
+        reader that streams every page (Team activity) does not pay for a total it never
+        shows; the page then answers its own rows as a lower bound (``gte``). An
+        offset-paged read that reaches the 10,000-row limit marks the page ``truncated``."""
         from .query import to_es_query
 
         size = max(1, min(int(limit or 50), 1000))
@@ -281,7 +287,7 @@ class AuditLogger(AuditRepository):
         body: dict[str, Any] = {
             "query": to_es_query(predicate),
             "size": size + 1,
-            "track_total_hits": int(track_total) if track_total else True,
+            "track_total_hits": (int(track_total) if track_total else True) if count else False,
         }
         offset = 0
         if pit_id:
@@ -297,7 +303,7 @@ class AuditLogger(AuditRepository):
                 offset = 0
             if offset >= AUDIT_TRACK_TOTAL:
                 return AuditSearchPage(hits=[], total=offset, relation="gte", exhausted=True,
-                                       start={"offset": offset})
+                                       start={"offset": offset}, truncated=True)
             body["sort"] = [{"ts": {"order": direction}}]
             body["from"] = offset
             body["size"] = min(size + 1, AUDIT_TRACK_TOTAL - offset)
@@ -332,14 +338,20 @@ class AuditLogger(AuditRepository):
                 "es", str(hit.get("_id") or ""), str(hit.get("_index") or ""),
                 dict(source) if isinstance(source, dict) else {}, position,
             ))
-        if not pit_id and offset + len(hits) >= AUDIT_TRACK_TOTAL:
+        # An offset read stops at the 10,000-row limit whether or not more rows match, so
+        # a read that reaches it cannot say it saw every row.
+        truncated = bool(not pit_id and offset + len(hits) >= AUDIT_TRACK_TOTAL)
+        if truncated:
             more = False
-        total, relation = _total_of(resp, len(hits))
+        if count:
+            total, relation = _total_of(resp, len(hits))
+        else:
+            total, relation = len(hits), "gte"
         start: dict[str, Any] = (
             {"pit": live_pit, "after": state.get("after")} if pit_id else {"offset": offset}
         )
         return AuditSearchPage(hits=hits, total=total, relation=relation, exhausted=not more,
-                               start=start)
+                               start=start, truncated=truncated)
 
     async def count_matching(self, predicate: Any, *, cap: int) -> tuple[int, str]:
         """Exact up to ``cap`` (``track_total_hits: cap``), then ``(cap, "gte")``."""
