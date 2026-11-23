@@ -1,13 +1,12 @@
 /**
- * InvestigationPanel — the "Investigation" tab (task 5 split).
+ * InvestigationPanel: the "Investigation" tab (Round 15, D8.3).
  *
- * Task 5 moved the "what happened" six-stage narrative out to the sibling
- * <TimelinePanel>, so this panel is the investigation proper, in its one Case Manager
- * layout (Round 15, D8.7 removed the unused 'default' one): the decision first, then the
- * AI assessment, its evidence and policy inputs one disclosure away, and the collapsed
- * trace, which opening lazy-loads when the parent hasn't fetched it yet. A request to open
- * the trace (the audit log's "Open case trace", closing QA integ-06) opens it and brings
- * it into view once, and lands focus that had dropped on the trace heading.
+ * The investigation proper, in its one layout: the AI assessment (the model's reading
+ * only, G17), the decision with its authority sentence once, the Threat context section
+ * (the retired tab), the inputs and the collapsed trace, which opening lazy-loads when the
+ * parent hasn't fetched it yet. A request to open the trace (the audit log's "Open case
+ * trace", closing QA integ-06) opens it and brings it into view once, and lands focus that
+ * had dropped on the trace heading.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { act, render, screen, fireEvent, waitFor, within } from '@testing-library/react';
@@ -29,7 +28,7 @@ const CASE = {
 
 const RATIONALE = {
   case_id: 'c1',
-  reasoning: 'Repeated failed logons then a success from a new ASN — credential stuffing.',
+  reasoning: 'Repeated failed logons then a success from a new ASN: credential stuffing.',
 } as unknown as CaseRationale;
 
 const decisionSpan: TraceSpan = {
@@ -114,15 +113,21 @@ describe('InvestigationPanel: the decision-first layout (Round 12, CM-6)', () =>
     expect(screen.getByTestId('investigation-decision-line')).not.toHaveClass('font-mono');
   });
 
-  it('leads with the decision, then the AI assessment, with the trace collapsed and counted', () => {
-    const { container } = renderCm();
-    const decision = screen.getByTestId('investigation-decision');
+  it('reads AI assessment, decision, threat context, inputs, then the collapsed, counted trace', () => {
+    const { container } = renderCm({ threatContext: <p>Threat context body</p> });
     const assessment = screen.getByTestId('investigation-assessment');
+    const decision = screen.getByTestId('investigation-decision');
+    const threat = screen.getByTestId('investigation-threat-context');
     const trace = screen.getByTestId('investigation-trace');
-    expect(decision.compareDocumentPosition(assessment) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(assessment.compareDocumentPosition(trace) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    const follows = (a: Element, b: Element) => Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(follows(assessment, decision)).toBe(true);
+    expect(follows(decision, threat)).toBe(true);
+    expect(follows(threat, trace)).toBe(true);
     expect(within(decision).getByRole('heading', { name: 'Decision' })).toBeInTheDocument();
-    expect(within(decision).getByText('Escalated')).toBeInTheDocument();
+    // The retired Threat context tab is a section a link can scroll to.
+    expect(threat).toHaveAttribute('data-section', 'threat-context');
+    expect(within(threat).getByRole('heading', { name: 'Threat context' })).toHaveAttribute('data-section-title');
+    expect(within(threat).getByText('Threat context body')).toBeInTheDocument();
 
     // Sentence case, never tracked capitals.
     expect(screen.getByRole('heading', { name: 'AI assessment' })).toBeInTheDocument();
@@ -137,6 +142,40 @@ describe('InvestigationPanel: the decision-first layout (Round 12, CM-6)', () =>
     // Per-step tool, model, cost and tokens are kept in the compact trace.
     expect(screen.getAllByText('es_query').length).toBeGreaterThan(0);
     expect(screen.getByText('gpt-5.6-luna')).toBeInTheDocument();
+  });
+
+  it('G17: the AI assessment is the model reading only, never the code decision text', () => {
+    const code = 'No confident close decision; routing to human (fail-safe).';
+    // No reasoning, no summary: the decision text never stands in for the AI.
+    const { unmount } = renderCm({
+      c: { ...CASE, summary: '' } as Case,
+      rationale: { case_id: 'c1', reasoning: '', decision_rationale: code } as unknown as CaseRationale,
+    });
+    const assessment = screen.getByTestId('investigation-assessment');
+    expect(assessment).not.toHaveTextContent(code);
+    expect(screen.getByTestId('investigation-assessment-text')).toHaveTextContent(
+      'No assessment text was recorded for this investigation.',
+    );
+    // The code's text is still on the page, as the Decision's line.
+    expect(screen.getByTestId('investigation-decision-line')).toHaveTextContent(code);
+    unmount();
+
+    // With the investigation's own summary, that is what the assessment shows.
+    const { unmount: unmountSummary } = renderCm({
+      c: { ...CASE, summary: 'Impossible travel between two countries.' } as Case,
+      rationale: { case_id: 'c1', reasoning: '', decision_rationale: code } as unknown as CaseRationale,
+    });
+    expect(screen.getByTestId('investigation-assessment-text')).toHaveTextContent('Impossible travel between two countries.');
+    expect(screen.getByTestId('investigation-assessment')).not.toHaveTextContent(code);
+    unmountSummary();
+
+    // A case the AI never assessed (no verdict): its system summary is not the AI's.
+    renderCm({
+      c: { ...CASE, verdict: undefined, summary: 'Candidate awaiting analysis: queued.' } as unknown as Case,
+      rationale: { case_id: 'c1', decision_rationale: code } as unknown as CaseRationale,
+    });
+    expect(screen.getByTestId('investigation-assessment-text')).toHaveTextContent('The AI has not assessed this case.');
+    expect(screen.getByTestId('investigation-assessment')).not.toHaveTextContent('Candidate awaiting analysis');
   });
 
   it('filters the trace by actor and jumps to the decision step', async () => {
@@ -154,13 +193,57 @@ describe('InvestigationPanel: the decision-first layout (Round 12, CM-6)', () =>
     );
   });
 
-  it('colours risk by its own band: Risk 7 is never red', () => {
-    renderCm({ c: { ...CASE, risk_score: 7, severity_band: 'critical' } as Case });
+  it('repeats none of the header and rail facts: no risk score, confidence or status chip', () => {
+    renderCm({ c: { ...CASE, risk_score: 7, confidence: 0.9 } as Case });
     const assessment = screen.getByTestId('investigation-assessment');
-    expect(assessment).toHaveAttribute('data-risk-band', 'low');
-    expect(assessment.className).not.toContain('critical');
-    expect(screen.getByTestId('investigation-risk')).toHaveClass('text-low-text');
-    expect(screen.getByTestId('investigation-risk')).not.toHaveClass('text-critical-text');
+    // Risk is code's, not the model's; it lives in the facts rail's Signal (D8.4).
+    expect(assessment).not.toHaveTextContent(/risk score/i);
+    expect(assessment).not.toHaveTextContent('90%');
+    expect(screen.queryByTestId('investigation-risk')).toBeNull();
+    expect(within(screen.getByTestId('investigation-decision')).queryByText('Escalated')).toBeNull();
+  });
+
+  it('says the authority sentence once, with the auto-close reading', () => {
+    renderCm({
+      c: { ...CASE, verdict: 'false_positive', status: 'needs_human', decision_by: 'system', confidence: 0.6 } as Case,
+      fpPolicy: { enabled: true, min_confidence: 0.85, max_risk_score: 30 },
+    });
+    expect(screen.getByTestId('investigation-authority')).toHaveTextContent(
+      /close or escalate decision is made by deterministic code/i,
+    );
+    expect(screen.getAllByText(/made by deterministic code against the operator policy/i)).toHaveLength(1);
+    expect(screen.getByTestId('investigation-auto-close')).toHaveTextContent('Below the 0.85 auto-close confidence bar');
+  });
+
+  it('shows the findings and the reproduce query in the AI assessment', () => {
+    renderCm({
+      c: {
+        ...CASE,
+        evidence: [
+          { summary: 'Three failed logons from 203.0.113.9.', query: 'event.outcome:failure' },
+          { summary: 'No match in the threat feed. Clean.', query: '' },
+        ],
+        reproduce_query: 'source.ip:203.0.113.9',
+      } as unknown as Case,
+    });
+    const findings = screen.getByTestId('investigation-findings');
+    expect(within(findings).getByText('Found')).toBeInTheDocument();
+    expect(within(findings).getByText('Clear')).toBeInTheDocument();
+    expect(within(findings).getByText('event.outcome:failure')).toBeInTheDocument();
+    expect(screen.getByText('Reproduce query')).toBeInTheDocument();
+    expect(screen.getByText('source.ip:203.0.113.9')).toBeInTheDocument();
+  });
+
+  it('lists the automation applied under the decision, never as a status change', () => {
+    renderCm({
+      c: {
+        ...CASE,
+        automation_actions: [{ action: 'tag', detail: 'tag=vpn', rule_id: 'r1', at: '2026-10-28T13:00:00Z' }],
+      } as unknown as Case,
+    });
+    const decision = screen.getByTestId('investigation-decision');
+    expect(within(decision).getByTestId('automation-applied')).toHaveTextContent('Tagged');
+    expect(within(decision).getByText(/never changes the lifecycle status/i)).toBeInTheDocument();
   });
 
   it('a human close reads "Analyst resolved" and demotes the AI recommendation', () => {
@@ -181,10 +264,9 @@ describe('InvestigationPanel: the decision-first layout (Round 12, CM-6)', () =>
     const decision = screen.getByTestId('investigation-decision');
     expect(within(decision).getByRole('heading', { name: 'Analyst resolved' })).toBeInTheDocument();
     expect(decision).toHaveTextContent('Closed as false positive by aryan.');
-    expect(screen.getByTestId('investigation-ai-line')).toHaveTextContent('AI verdict: Needs human review (75%)');
-    expect(screen.getByText('AI recommendation at triage')).toBeInTheDocument();
+    expect(screen.getByTestId('investigation-authority')).toHaveTextContent(/closed by an analyst/i);
+    // The recommendation and the AI verdict are the Overview's and the header's (D8.4).
     expect(screen.queryByText('Recommended action')).toBeNull();
-    expect(screen.getByText('AI confidence at assessment')).toBeInTheDocument();
   });
 
   it('keeps every earlier datum one disclosure away (evidence, policy inputs, grading)', () => {
@@ -198,6 +280,11 @@ describe('InvestigationPanel: the decision-first layout (Round 12, CM-6)', () =>
   it('no longer renders the "what happened" stage narrative (it is a section of the Overview)', () => {
     renderCm();
     expect(screen.queryByText('What happened')).toBeNull();
+  });
+
+  it('renders no Threat context section when the caller passes none', () => {
+    renderCm();
+    expect(screen.queryByTestId('investigation-threat-context')).toBeNull();
   });
 
   it('lazy-loads the trace when it opens and none is loaded yet, and never re-reads a loaded one', () => {

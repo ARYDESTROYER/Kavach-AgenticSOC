@@ -1,6 +1,6 @@
 /**
- * BulkCloseDialog + DispositionPicker (Round 12, D15 / CM-7): every terminal path —
- * including bulk close — captures the outcome. The picker opens EMPTY (G1), the submit
+ * BulkCloseDialog + DispositionPicker (Round 12, D15 / CM-7): every terminal path
+ * (including bulk close) captures the outcome. The picker opens EMPTY (G1), the submit
  * stays disabled until a person chooses, and the payload is declared.
  */
 import { describe, expect, it, vi } from 'vitest';
@@ -28,6 +28,18 @@ describe('BulkCloseDialog', () => {
       disposition_declared: true,
       note: 'scanner noise',
     });
+  });
+
+  it('keeps its shape and says screenshots are added on each case (Round 15, D4.6)', () => {
+    const { rerender } = render(<BulkCloseDialog action="close" count={3} onCancel={vi.fn()} onSubmit={vi.fn()} />);
+    expect(screen.getByTestId('bulk-close-screenshots-note')).toHaveTextContent(
+      'Screenshots are added on each case, in its Collaboration tab.',
+    );
+    expect(screen.getByRole('combobox', { name: 'Resolution (optional)' })).toBeInTheDocument();
+    rerender(<BulkCloseDialog action="close" count={1} onCancel={vi.fn()} onSubmit={vi.fn()} />);
+    expect(screen.getByTestId('bulk-close-screenshots-note')).toHaveTextContent(
+      'Screenshots are added on the case, in its Collaboration tab.',
+    );
   });
 
   it('opens with focus inside the required disposition group (scrolled into view), not the Resolution select', async () => {
@@ -75,7 +87,7 @@ describe('DispositionPicker', () => {
     for (const radio of screen.getAllByRole('radio')) expect(radio).not.toBeChecked();
   });
 
-  it('number keys 1–6 choose an option', () => {
+  it('number keys 1 to 6 choose an option', () => {
     const onChange = vi.fn();
     render(<DispositionPicker value="" onChange={onChange} />);
     fireEvent.keyDown(document, { key: '2' });

@@ -175,27 +175,32 @@ about that value (see [Workspace Chat](chat.md#ask-ai-from-other-pages)).
 
 | Tab | Purpose |
 | --- | --- |
-| Overview | The runbook's Next step card when one is attached to an open case; decision brief; conditional latest-run Investigation inputs; source, agent, and code provenance; entities; attack story; status history; and **What happened**, the six-stage input-to-decision narrative (Risk Assigned reconstructs the arithmetic from persisted factor values and current weights, flags a historical-weight mismatch honestly, and pulses only the final marker) |
+| Overview | The case's brief, top to bottom: the runbook's Next step card when one is attached to an open case; **Summary**, the AI's assessment in two or three sentences with its recommended action (the recommendation it made at triage once the case ended); **What happened**, why the detection fired and the six-stage input-to-decision story (Risk Assigned reconstructs the arithmetic from persisted factor values and current weights, flags a historical-weight mismatch honestly, and pulses only the final marker); **Key entities**, the primary entity with its scope, type and enrichment, to copy or ask about; **Related cases**; and the signature's anomaly baseline when it has one |
 | Runbook | The runbook on the case: its strip, progress, Next step card, phases and steps, and Other tasks (see [Work the runbook](#work-the-runbook)) |
-| Investigation | The deterministic decision first, then the AI assessment, detailed Investigation inputs, evidence, recommendation, reproduction query, the collapsible full trace, and **Threat context**: IOC reputation, MITRE ATT&CK mapping, and the redacted persisted alert → correlation cluster → opened case explanation |
-| Collaboration | Case thread, reactions, activity, assignment, and handoff context; case tasks are in the Runbook tab under Other tasks |
+| Investigation | **AI assessment**: the model's reasoning, what it found and ruled out, the reproduction query, and the full assessment evidence one click away. **Decision**: what decided the case and why, with the authority sentence, the auto-close reading and any automation applied (the policy inputs one click away). Then **Threat context** (IOC reputation, MITRE ATT&CK mapping, and the redacted persisted alert → correlation cluster → opened case explanation), the detailed Investigation inputs, the collapsible full trace, and earlier gradings of the AI |
+| Collaboration | **Discussion**, the case thread with reactions; **Files**, the screenshots on the case; **Tasks**, a pointer to the Runbook tab's Other tasks; and **History**, every lifecycle change with who made it, when, and the actions taken, with the full activity feed behind **Show all activity**. The owner is changed in the case header, not here |
 | Chat | Case-scoped use of the shared AI Analyst chat engine; its transcript stays when you switch tabs. Asked about the runbook, it names the same next step as the Next step card, by the same rule |
 
 Each fact has one home, so a figure shown in the header or the rail is not repeated in
-a tab. The Overview visualization is explanatory, not a second scoring engine. It
-renders the score, confidence, and factors already recorded on the case. If a factor was
+a tab. The risk views (the rail's risk factors and the Risk Assigned stage under What
+happened) are explanatory, not a second scoring engine. They render the score,
+confidence, and factors already recorded on the case. If a factor was
 not persisted, the UI does not manufacture a contribution to make the chart look full.
 
-**Investigation inputs** is also an evidence projection, not a feature-enabled list.
-It appears only when the latest investigation run recorded applicable context. The
-summary distinguishes approved operator **memory consulted**, indexed **RAG knowledge
-retrieved**, **runbook references retrieved**, the **runbook whose guidance the
-investigator received** (with its version; a matched runbook it never received shows as
-**Selected only** in the Investigation view), and an immutable **platform tuning**
-snapshot. The tuning record describes
-a deterministic correlation or severity-threshold change (never model fine-tuning) and
-includes its before/after values in the detailed Investigation view. **Review inputs**
-moves to that detail. Earlier-run inputs never carry into a later reinvestigation, and
+The Overview's summary is always the model's own reasoning, tagged as AI. It is never
+the deterministic decision's text: that sentence belongs to the code and is shown, as
+the code's, under Investigation's **Decision**. A case the AI did not assess shows its
+system summary instead, without the AI tag.
+
+**Investigation inputs**, on the Investigation tab, is also an evidence projection, not
+a feature-enabled list. It appears only when the latest investigation run recorded
+applicable context. It distinguishes approved operator **memory consulted**, indexed
+**RAG knowledge retrieved**, **runbook references retrieved**, the **runbook whose
+guidance the investigator received** (with its version; a matched runbook it never
+received shows as **Selected only**), and an immutable **platform tuning** snapshot.
+The tuning record describes a deterministic correlation or severity-threshold change
+(never model fine-tuning) and includes its before/after values. Earlier-run inputs
+never carry into a later reinvestigation, and
 an unavailable provenance lookup is not rendered as an empty successful run. These
 inputs may inform preprocessing or the agent assessment; deterministic case policy
 remains the final close/escalate route authority.
@@ -301,11 +306,31 @@ confirmation; server-side transition and authorization checks remain authoritati
 
 ### Close or resolve with a disposition
 
-Closing or resolving a case always records what the case was. The dialog lists the
-dispositions as cards with a one-line definition each (press 1–6 to pick one); none is
-chosen in advance, so the choice is always yours, not a copy of the AI verdict. The
-dialog shows the AI verdict for reference, takes an optional note and, where it
-applies, a resolution and grading of the AI's work. Its buttons stay in view however
+Closing or resolving a case asks what the case was once: the **disposition**. The
+dialog lists the dispositions as one list with a one-line definition each (press 1 to 6
+to pick one); none is chosen in advance, so the choice is always yours, not a copy of
+the AI verdict, which is shown beside the list as a hint. Once you pick, a line under
+the list says how your call relates to the AI's: "Matches AI verdict", "Overrides AI
+verdict (False positive → True positive)", or "Settles the AI's hand-off". On a wide
+screen the classification is on the left and what you did is on the right:
+
+- **Actions taken** (optional): what you did about the case, chosen from a fixed list
+  (No action needed, Blocked an indicator, Isolated a host, Disabled an account, Reset
+  credentials, Removed malware, Patched or hardened, Notified the owner, Escalated
+  outside the SOC, Tuned the detection, Other), up to eight. They are recorded with your
+  classification in the case history and the audit log. **No action needed** clears the
+  others.
+- **Analyst note**: optional, unless your disposition overrides the AI verdict. Then the
+  note is required ("Say why you disagree with the AI."), because it is kept as
+  precedent for later investigations; the footer says so until you write it.
+- **Screenshots** (optional): images added here go to the case's **Files** in
+  Collaboration. The close never waits for an upload.
+- **Rate the AI (optional)**, collapsed: stars for the AI's work and, on an override,
+  **What did the AI miss?**. Whether you agree with the AI is worked out from your
+  disposition, never asked, and recorded whether or not you open it. Grading is a
+  separate step after the close: a failed grading never undoes the close.
+
+Tags are edited in the facts rail, not in this dialog. Its buttons stay in view however
 long the form is.
 
 - **Close & next** (or **Resolve & next**) records the outcome and opens the next case
@@ -348,7 +373,15 @@ work show their progress.
 A bulk close or resolve records the chosen disposition on every case as that analyst's
 classification, exactly as a single close does. When some of the selected cases have
 required runbook steps open, the dialog says how many and takes one optional shared
-reason; a bulk close never fails a case for open steps. A missing permission hides that action
+reason; a bulk close never fails a case for open steps. Screenshots are not taken in
+bulk: the dialog says they are added on each case, in its Collaboration tab.
+
+**Set status** and **Set disposition** leave out the cases the AI agent closed (a
+terminal case whose first decision was the agent's automatic close): "Cases the AI agent
+closed are left out; review them instead." The form says how many of the selected
+cases that is, the confirmation after submitting repeats it, and when every selected
+case is one of them nothing is queued. Review such a case on its own instead of
+relabelling it in bulk. A missing permission hides that action
 rather than leaving an unusable menu item. In Demo Mode, bulk changes are unavailable
 because they run as background jobs, which Demo Mode does not run; open a case to change
 it.
@@ -401,7 +434,8 @@ counted as agreement or disagreement.
 The Automated scans page is gone (Round 14). It showed the same autonomous cases that
 Case Manager shows with better filters and actions. An old `#/scans` bookmark now opens
 Case Manager with **Closed by the AI agent** applied, and removing the chip shows the
-whole queue again.
+whole queue again. Bulk **Set status** and **Set disposition** leave these cases out
+(see [Select cases and run bulk work](#select-cases-and-run-bulk-work)).
 
 ## When to use the Cases page
 

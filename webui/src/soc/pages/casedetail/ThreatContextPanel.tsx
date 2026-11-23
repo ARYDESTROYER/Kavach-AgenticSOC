@@ -1,25 +1,20 @@
 /**
- * CaseDetail — Threat context panel (Coupling-D split).
+ * CaseDetail: the Threat context section (Coupling-D split).
  *
- * The threat-context tab (F11): a threat summary banner, IOC reputation, MITRE
- * ATT&CK techniques (with canonical links), and asset context. Fail-open: renders
- * empty/disabled states when the panel is off or bare. Related cases + evidence are
- * intentionally NOT repeated here — they live on the Overview tab (Round-7 dedup).
+ * Since Round 15 (SPEC D8.3) this is the "Threat context" section of the Investigation
+ * tab (it was its own tab), which owns its heading and the content rail. It holds the
+ * threat summary, MITRE ATT&CK techniques (with canonical links), IOC reputation, the
+ * clustering story and the asset context, as flat divider-led sub-sections. Fail-open:
+ * renders empty/disabled states when the panel is off or bare. Related cases and the AI
+ * verdict and risk are NOT repeated here: they live in the Overview and the facts rail.
  *
  * SECURITY (#9): every indicator, country, entity, asset attribute and summary string
- * is UNTRUSTED — rendered plain text / inside <CodeBlock>. MITRE technique NAMES are
+ * is UNTRUSTED: rendered plain text / inside <CodeBlock>. MITRE technique NAMES are
  * from the curated corpus (TRUSTED) but still rendered as plain text nodes. #3:
  * read-only projection; it never decides or mutates the case.
  */
 import * as React from 'react';
-import {
-  AlertTriangle,
-  Crosshair,
-  Globe,
-  Link2,
-  Shield,
-  Target,
-} from 'lucide-react';
+import { AlertTriangle, Globe, Link2 } from 'lucide-react';
 
 import type {
   Case,
@@ -34,11 +29,9 @@ import { LoadingState } from '@/design-system';
 
 import { EmptyState } from '@/soc/components/EmptyState';
 import { LoadError } from '@/soc/components/LoadError';
-import { AiVerdictChip, RiskBadge } from '@/soc/components/badges';
 import type { Navigate } from '@/soc/router';
 
 import { AskAi } from './AskAi';
-import { CASE_MANAGER_PANEL_PADDING } from './shared';
 import {
   ClusterFormationDiagram,
   type ClusterExplanation,
@@ -81,14 +74,14 @@ function scalarLabel(value: unknown): string {
   if (typeof value === 'string') return humanizeToken(value);
   if (typeof value === 'number' && Number.isFinite(value)) return String(value);
   if (typeof value === 'boolean') return value ? 'Yes' : 'No';
-  return String(value ?? '—');
+  return String(value ?? '\u2014');
 }
 
 export type IocVerdictKind = 'malicious' | 'no_detections' | 'not_checked';
 
 /**
  * The indicator verdict, TRI-STATE (CM-8). "Clean" was shown whenever `is_malicious`
- * was false — even when no provider answered and the confidence was 0, which reads as a
+ * was false: even when no provider answered and the confidence was 0, which reads as a
  * clean bill of health nobody issued. Now: Malicious when a provider flagged it; No
  * detections only when a named provider was actually consulted; otherwise Not checked.
  */
@@ -126,20 +119,19 @@ export function iocVerdict(ioc: IocReputation): {
 /** A tactic token as sentence-case words ("initial-access" → "Initial access"). */
 function tacticWords(tactic: string): string {
   const words = String(tactic || '').replace(/[_-]+/g, ' ').trim().toLowerCase();
-  return words ? words.charAt(0).toUpperCase() + words.slice(1) : '—';
+  return words ? words.charAt(0).toUpperCase() + words.slice(1) : '\u2014';
 }
 
+/** A sub-section heading under the "Threat context" section (h3, no icon, D8.5). */
 const FlatHeading: React.FC<{
   id: string;
-  icon: React.ComponentType<{ className?: string }>;
   count?: number;
   children: React.ReactNode;
-}> = ({ id, icon: Icon, count, children }) => (
-  <div className="mb-3 flex items-center gap-2">
-    <Icon className="h-4 w-4 text-muted-foreground" aria-hidden />
-    <h2 id={id} className="text-sm font-semibold text-foreground">
+}> = ({ id, count, children }) => (
+  <div className="mb-3 flex items-baseline gap-2">
+    <h3 id={id} className="text-sm font-semibold text-foreground">
       {children}
-    </h2>
+    </h3>
     {typeof count === 'number' && count > 0 ? (
       <span className="text-xs tabular-nums text-muted-foreground">{count}</span>
     ) : null}
@@ -158,10 +150,10 @@ export const ThreatContextPanel: React.FC<{
    * lives on the Overview tab (Round-7 dedup). Kept optional so callers can pass it.
    */
   onNavigate?: Navigate;
-}> = ({ c, panel, loading, error, onRetry }) => {
+}> = ({ panel, loading, error, onRetry }) => {
   if (loading) {
     return (
-      <div className="p-6">
+      <div>
         <LoadingState
           label="Loading threat context"
           description="Preparing IOC reputation, ATT&CK techniques, and asset context."
@@ -173,14 +165,14 @@ export const ThreatContextPanel: React.FC<{
   }
   if (error) {
     return (
-      <div className="p-6">
+      <div>
         <LoadError error={error} title="Could not load threat context" onRetry={onRetry} />
       </div>
     );
   }
   if (panel?.disabled) {
     return (
-      <div className="p-6">
+      <div>
         <EmptyState
           icon={Globe}
           title="Threat context is disabled"
@@ -191,7 +183,7 @@ export const ThreatContextPanel: React.FC<{
   }
   if (!panel) {
     return (
-      <div className="p-6">
+      <div>
         <EmptyState
           icon={Globe}
           title="No threat context"
@@ -229,7 +221,7 @@ export const ThreatContextPanel: React.FC<{
       assetAttrs.length === 0);
   return (
     <div
-      className={cn('divide-y divide-border', CASE_MANAGER_PANEL_PADDING)}
+      className="divide-y divide-border/60"
       data-case-panel="threat-context"
       data-presentation="case-manager"
     >
@@ -238,34 +230,33 @@ export const ThreatContextPanel: React.FC<{
           assembled time, each technique's id/name/every tactic/description/link, each
           indicator's value/type/verdict/score/source/country, the clustering story and
           the asset context. Log-derived values stay plain text nodes (#9). */}
-      <section aria-labelledby="threat-summary-title" className="pb-5">
-        <FlatHeading id="threat-summary-title" icon={Shield}>
-          Threat summary
-        </FlatHeading>
+      {/* The summary leads without a heading of its own: the section is "Threat context".
+          The AI verdict and the risk are the header's and the facts rail's (D8.4). */}
+      <section aria-label="Threat summary" className="pb-5">
         {panel.summary ? (
           <p className="whitespace-pre-wrap text-sm leading-relaxed text-foreground/90">{panel.summary}</p>
         ) : (
-          <p className="text-sm text-muted-foreground">No threat summary was assembled for this case.</p>
+          <p className="text-sm text-muted-foreground">No threat summary for this case.</p>
         )}
-        <div className="mt-3 flex flex-wrap items-center gap-2">
-          <AiVerdictChip verdict={c.verdict} confidence={c.confidence} />
-          <RiskBadge score={c.risk_score} />
-          {iocs.some((i) => i.is_malicious) ? (
-            <Badge variant="critical" className="gap-1">
-              <AlertTriangle className="h-3 w-3" />
-              Malicious indicator present
-            </Badge>
-          ) : null}
-          {panel.generated_at ? (
-            <span className="ml-auto text-xs text-muted-foreground">
-              Assembled {humanizeAge(panel.generated_at)}
-            </span>
-          ) : null}
-        </div>
+        {iocs.some((i) => i.is_malicious) || panel.generated_at ? (
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            {iocs.some((i) => i.is_malicious) ? (
+              <Badge variant="critical" className="gap-1">
+                <AlertTriangle className="h-3 w-3" />
+                Malicious indicator present
+              </Badge>
+            ) : null}
+            {panel.generated_at ? (
+              <span className="text-xs text-muted-foreground">
+                {panel.summary ? 'Assembled' : 'Context assembled'} {humanizeAge(panel.generated_at)}
+              </span>
+            ) : null}
+          </div>
+        ) : null}
       </section>
 
       <section aria-labelledby="threat-mitre-title" className="py-5" data-testid="threat-mitre">
-        <FlatHeading id="threat-mitre-title" icon={Shield} count={techniques.length}>
+        <FlatHeading id="threat-mitre-title" count={techniques.length}>
           MITRE ATT&amp;CK techniques
         </FlatHeading>
         {techniques.length === 0 ? (
@@ -276,7 +267,7 @@ export const ThreatContextPanel: React.FC<{
               <li key={`${technique.id}-${index}`} className="py-2.5 first:pt-0 last:pb-0">
                 <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
                   <span className="font-mono text-xs font-semibold text-foreground">{technique.id}</span>
-                  {/* Name is from the curated MITRE corpus (TRUSTED) — still a plain text node. */}
+                  {/* Name is from the curated MITRE corpus (TRUSTED): still a plain text node. */}
                   <span className="min-w-0 flex-1 text-sm font-medium text-foreground">
                     {technique.name || 'Unknown technique'}
                   </span>
@@ -306,7 +297,7 @@ export const ThreatContextPanel: React.FC<{
       </section>
 
       <section aria-labelledby="threat-ioc-title" className="py-5" data-testid="threat-ioc">
-        <FlatHeading id="threat-ioc-title" icon={Target} count={iocs.length}>
+        <FlatHeading id="threat-ioc-title" count={iocs.length}>
           Indicator reputation
         </FlatHeading>
         {iocs.length === 0 ? (
@@ -377,7 +368,7 @@ export const ThreatContextPanel: React.FC<{
       ) : null}
 
       <section aria-labelledby="threat-asset-title" className="pt-5">
-        <FlatHeading id="threat-asset-title" icon={Crosshair}>
+        <FlatHeading id="threat-asset-title">
           Asset context
         </FlatHeading>
         {assetEmpty || !asset ? (
@@ -385,42 +376,42 @@ export const ThreatContextPanel: React.FC<{
             No additional context was recorded for the case&apos;s primary entity.
           </p>
         ) : (
-          <dl className="grid gap-x-6 gap-y-2 text-sm @[40rem]/case:grid-cols-2">
+          <dl className="grid max-w-3xl grid-cols-2 gap-x-6 gap-y-3 text-sm @[40rem]/case:grid-cols-3">
             {asset.entity ? (
-              <div className="group/ask flex min-w-0 items-baseline justify-between gap-3">
+              <div className="group/ask min-w-0">
                 <dt className="text-xs text-muted-foreground">{humanizeToken(asset.entity_type || 'Entity')}</dt>
-                <dd className="flex min-w-0 items-center justify-end gap-1.5">
-                  {/* UNTRUSTED — plain text, mono. */}
-                  <span className="truncate text-right font-mono text-foreground">{asset.entity}</span>
+                <dd className="flex min-w-0 items-center gap-1.5">
+                  {/* UNTRUSTED: plain text, mono. */}
+                  <span className="truncate font-mono text-foreground">{asset.entity}</span>
                   <AskAi type={asset.entity_type} value={asset.entity} />
                 </dd>
               </div>
             ) : null}
             {asset.criticality !== undefined ? (
-              <div className="flex items-baseline justify-between gap-3">
+              <div className="min-w-0">
                 <dt className="text-xs text-muted-foreground">Criticality</dt>
-                <dd className="text-right font-mono text-foreground">{scalarLabel(asset.criticality)}</dd>
+                <dd className="truncate text-foreground">{scalarLabel(asset.criticality)}</dd>
               </div>
             ) : null}
             {asset.is_internal !== undefined ? (
-              <div className="flex items-baseline justify-between gap-3">
+              <div className="min-w-0">
                 <dt className="text-xs text-muted-foreground">Internal asset</dt>
-                <dd className="text-right text-foreground">{asset.is_internal ? 'Yes' : 'No'}</dd>
+                <dd className="text-foreground">{asset.is_internal ? 'Yes' : 'No'}</dd>
               </div>
             ) : null}
             {assetNetworks.length ? (
-              <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
                 <dt className="text-xs text-muted-foreground">Networks</dt>
-                <dd className="max-w-[70%] text-right font-mono text-foreground">
+                <dd className="break-words font-mono text-foreground">
                   {assetNetworks.map(String).join(', ')}
                 </dd>
               </div>
             ) : null}
             {assetAttrs.map(([key, value], index) => (
-              <div key={`${key}-${index}`} className="flex min-w-0 items-baseline justify-between gap-3">
+              <div key={`${key}-${index}`} className="min-w-0">
                 <dt className="text-xs text-muted-foreground">{humanizeToken(key)}</dt>
                 {/* UNTRUSTED: plain text. */}
-                <dd className="truncate text-right font-mono text-foreground">{scalarLabel(value)}</dd>
+                <dd className="truncate text-foreground" title={scalarLabel(value)}>{scalarLabel(value)}</dd>
               </div>
             ))}
           </dl>

@@ -32,7 +32,7 @@ import type { CaseOutcome } from '@/soc/components/outcome';
 import { semanticIcon } from '@/soc/components/palette';
 import type { PickableUser } from '@/soc/pages/CaseDetail.api';
 
-import { AssigneePicker } from './CollaborationPanel';
+import { AssigneePicker } from './AssigneePicker';
 import { caseDisplayId, slaReading, statusWords } from './caseFacts';
 
 const SLA_TONE: Record<string, string> = {

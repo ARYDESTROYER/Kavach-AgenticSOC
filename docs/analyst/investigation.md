@@ -48,28 +48,34 @@ model and scope before applying it to many cases.
 
 In a case:
 
-1. **Overview** separates the decision brief, signal profile, source assertion,
-   agent findings, deterministic code result, entities, and attack story. Recorded
-   risk factors are visualized without inventing factors that are not stored. When
-   applicable, **Investigation inputs** summarizes the memory consulted, RAG
-   knowledge retrieved, runbook references retrieved, the Published runbook whose
-   guidance the investigator received (with its version), and the platform
-   threshold-tuning snapshot for the latest run. When a runbook is attached to an
-   open case, its **Next step** card sits at the top of the Overview.
-2. **What happened**, a section of the Overview (the former Timeline tab), shows when
-   the six pipeline stages occurred. The visible labels are
+1. **Overview** is the case's brief: the AI's **Summary** in two or three sentences
+   with its recommended action, then **What happened**, the primary entity under **Key
+   entities**, **Related cases**, and the signature's anomaly baseline when it has one.
+   The summary is the model's own reasoning, tagged as AI, never the deterministic
+   decision's text; a case the AI did not assess shows its system summary, untagged.
+   When a runbook is attached to an open case, its **Next step** card sits at the top
+   of the Overview. Recorded risk factors are in the facts rail's **Signal** section,
+   visualized without inventing factors that are not stored.
+2. **What happened**, a section of the Overview (the former Timeline tab), says why the
+   detection fired and shows when the six pipeline stages occurred. The visible labels are
    Input, Correlate, Risk Assigned, Triage, Investigate, and Decision. Expanding
    **Risk Assigned** reconstructs the arithmetic from persisted factor values and
    current configured weights. When historical weights differ, it preserves the
    recorded score and explicitly says exact historical attribution is unavailable.
    The terminal marker alone pulses to identify the current end of the story.
-3. **Investigation** shows the agent assessment, evidence, recommended action,
-   reproduction query, detailed Investigation inputs, deterministic decision, and
-   optional full trace. Runbook passages retrieved through RAG remain distinct from
-   the runbook whose guidance the investigator received. Platform tuning records correlation or
-   severity-threshold changes, not model fine-tuning. When the narrative sentence
-   already states the verdict and confidence, duplicate verdict and confidence chips
-   are suppressed rather than shown twice.
+3. **Investigation** shows the **AI assessment** (the model's reasoning, what it found
+   and ruled out, the reproduction query, and the full assessment evidence one click
+   away), then the **Decision** (what decided the case, the authority sentence, the
+   auto-close reading and any automation applied, with the policy inputs one click
+   away), the detailed **Investigation inputs** (the memory consulted, RAG knowledge
+   retrieved, runbook references retrieved, the Published runbook whose guidance the
+   investigator received with its version, and the platform threshold-tuning snapshot
+   for the latest run), the optional full trace, and earlier gradings of the AI. The
+   assessment never falls back to the decision's text: when no assessment text was
+   recorded, it says so. The verdict and confidence are in the case header and the facts
+   rail, so they are not repeated here. Runbook passages retrieved through RAG remain
+   distinct from the runbook whose guidance the investigator received. Platform tuning
+   records correlation or severity-threshold changes, not model fine-tuning.
 4. **Threat context**, a section of the Investigation tab (formerly its own tab), adds
    enrichment, ATT&CK, related-case context, and **How this case was clustered**. That read-only diagram uses persisted facts to show Input alerts →
    Correlation cluster → Opened case. Focus or hover a node to inspect contributing

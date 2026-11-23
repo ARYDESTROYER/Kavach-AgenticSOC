@@ -31,6 +31,7 @@ import { TooltipProvider } from '@/ui/tooltip';
 import { caseOutcome } from '@/soc/components/outcome';
 import { FactsRail } from '@/soc/pages/casedetail/FactsRail';
 import { OverviewPanel } from '@/soc/pages/casedetail/OverviewPanel';
+import { AutomationApplied } from '@/soc/pages/casedetail/AutomationApplied';
 
 import { OverviewNextStep } from '../NextStepCard';
 import { OtherTasks, OtherTasksLoader, taskAuthors } from '../OtherTasks';
@@ -107,8 +108,6 @@ describe('Overview Next step card', () => {
       <TooltipProvider>
         <OverviewPanel
           c={CASE}
-          fpPolicy={null}
-          triage={null}
           runbookCard={<OverviewNextStep run={makeRun()} progress={progress()} onOpenRunbook={vi.fn()} />}
         />
       </TooltipProvider>,
@@ -118,7 +117,7 @@ describe('Overview Next step card', () => {
   });
 });
 
-describe('Overview and facts rail labels', () => {
+describe('Automation and facts rail labels', () => {
   it('names the runbook the investigator used, and labels stored data from before Round 14', () => {
     const legacy = {
       ...CASE,
@@ -126,13 +125,13 @@ describe('Overview and facts rail labels', () => {
       playbook_id: 'pb-ssh',
       automation_actions: [{ action: 'run_playbook', rule_id: 'r1', detail: 'Queued', at: '2026-10-28T13:00:00Z' }],
     } as unknown as Case;
+    // Round 15 (D8.3): "Automation applied" sits under the decision on Investigation.
     render(
       <TooltipProvider>
-        <OverviewPanel c={legacy} fpPolicy={null} triage={null} />
+        <AutomationApplied c={legacy} />
         <FactsRail c={legacy} outcome={caseOutcome(legacy)} triage={null} canViewCost={false} onCaseChange={vi.fn()} />
       </TooltipProvider>,
     );
-    fireEvent.click(screen.getByRole('button', { name: /Provenance & audit/ }));
     expect(screen.getByText('Runbook automation (before Round 14)')).toBeInTheDocument();
     // The investigator's stored runbook id is a fact of the record (Round 15, D8.4).
     expect(screen.getByTestId('facts-record')).toHaveTextContent('Runbook (before Round 14)pb-ssh');

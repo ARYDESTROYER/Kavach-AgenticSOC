@@ -1,8 +1,8 @@
 /**
  * Ask AI chips in their hosts (Round 12 WP-ASK): next to the entity values of the Cases
- * list's sibling surfaces that render without a page shell here — the unified Logs
+ * list's sibling surfaces that render without a page shell here: the unified Logs
  * table and its row detail, the Case Manager facts rail, the case header id, the case
- * Overview's primary entity and the Threat context indicators and asset — each opening a
+ * Overview's primary entity and the Threat context indicators and asset: each opening a
  * NEW Workspace chat with a TYPED reference to the right value (never free text), and
  * none shown to a viewer who cannot use chat. (The Cases list itself is exercised by
  * `Cases.askai.test.tsx`.) The hosts load the chip lazily, so the first chip of each
@@ -247,7 +247,7 @@ describe('Ask AI in the Case Manager', () => {
     const user = userEvent.setup();
     render(
       <TooltipProvider>
-        <OverviewPanel c={CASE} fpPolicy={null} triage={null} />
+        <OverviewPanel c={CASE} />
       </TooltipProvider>,
     );
     const chip = await screen.findByRole('button', { name: 'Ask AI about 203.0.113.9' });
@@ -303,7 +303,7 @@ describe('Ask AI in the Case Manager', () => {
     render(
       <TooltipProvider>
         <FactsRail c={CASE} outcome={caseOutcome(CASE)} triage={null} canViewCost={false} onCaseChange={vi.fn()} />
-        <OverviewPanel c={CASE} fpPolicy={null} triage={null} />
+        <OverviewPanel c={CASE} />
       </TooltipProvider>,
     );
     await settleLazy();

@@ -7,7 +7,7 @@
  * matches. In production an ordinary operational aside ("Backfill: confirming agent
  * FALSE_POSITIVE disposition…") became durable evidence and depressed investigator
  * confidence to just under the auto-close bar, so nothing closed. The text was
- * well-formed — its MEANING was the problem — so sanitising could never have fixed it.
+ * well-formed (its MEANING was the problem) so sanitising could never have fixed it.
  * The only real fix is telling the analyst, where they type, what the note becomes.
  *
  * This spec pins that the label is present on exactly the flows that persist the text:
@@ -35,16 +35,12 @@ function renderDialog(action: ActionKind) {
       onSubmit={noop}
       note=""
       onNoteChange={noop}
-      resolution=""
-      onResolutionChange={noop}
       priority=""
       onPriorityChange={noop}
       assignee=""
       onAssigneeChange={noop}
-      tags={[]}
-      onTagsChange={noop}
-      tagDraft=""
-      onTagDraftChange={noop}
+      actionsTaken={[]}
+      onActionsTakenChange={noop}
       disposition=""
       onDispositionChange={noop}
       reason=""
@@ -58,7 +54,7 @@ function renderDialog(action: ActionKind) {
 
 describe('analyst-comment disclosure', () => {
   it('states the note becomes durable AI-visible context', () => {
-    // Concise, factual, and about the durable/AI-read consequence — a label, not a
+    // Concise, factual, and about the durable/AI-read consequence: a label, not a
     // warning banner (no "careful"/"warning"/"danger" framing).
     expect(DURABLE_CONTEXT_NOTE).toMatch(/durable context/i);
     expect(DURABLE_CONTEXT_NOTE).toMatch(/AI reads/i);

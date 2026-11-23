@@ -10,13 +10,17 @@
  *     verb, a "More options" menu (copy link, open in new tab) and, in a narrow pane, the
  *     Details button; under it one meta row (case number, severity, status or outcome,
  *     the AI verdict, the owner, the opened age and the SLA while open);
- *   - five tabs (D8.3): Overview (with the "What happened" stage timeline that was the
- *     Timeline tab), Runbook (Round 14, second, with its progress chip; lazy), Investigation
- *     (with the Threat context that was its own tab), Collaboration and Chat. A link to a
- *     retired tab id opens the tab it became and scrolls to its section;
+ *   - five tabs (D8.3): Overview (the AI summary, the "What happened" stage timeline that
+ *     was the Timeline tab, key entities), Runbook (Round 14, second, with its progress
+ *     chip; lazy), Investigation (the AI assessment, the decision, the Threat context that
+ *     was its own tab, the inputs and the trace), Collaboration (the thread, the Files
+ *     slot, tasks and the History with the actions taken) and Chat. A link to a retired
+ *     tab id opens the tab it became and scrolls to its section;
  *   - the facts rail (D8.4) beside every tab from a 60rem pane, else in a non-blocking
  *     Details sheet;
- *   - the shared confirm-action dialog (every lifecycle action), Reinvestigate and Notify.
+ *   - the shared confirm-action dialog (every lifecycle action; a close asks the
+ *     disposition once, the actions taken and, on a disagreement with the AI, a note,
+ *     with the AI rating collapsed, D4.1 to D4.4), Reinvestigate and Notify.
  *
  * The case's runbook runs are read once here and shared by the Runbook tab, the Overview's
  * Next step card, the facts rail and the close dialog (which asks why when required steps
@@ -156,6 +160,7 @@ import {
   type ActionKind,
   type FpPolicy,
   type NotifyChannelOption,
+  type WireActionTaken,
   ACTION_PERMISSION,
   CASE_MANAGER_PANEL_PADDING,
   actionPlanForStatus,
@@ -197,6 +202,7 @@ import {
   emptyGradingDraft,
   gradingToFeedbackInput,
   isGradingDirty,
+  requiresDisagreementNote,
   type GradingDraft,
 } from './casedetail/grading';
 
@@ -285,6 +291,8 @@ function isTerminalVerb(verb: string, status?: string | null): boolean {
 const CASE_SECTIONS: Readonly<Record<string, CaseTab>> = {
   'what-happened': 'overview',
   'threat-context': 'investigation',
+  // The facts rail's "Related cases" opens the Overview's list (D8.4).
+  'related-cases': 'overview',
 };
 
 /* --------------------------------------------------------------- component -- */
@@ -311,7 +319,7 @@ const CaseDetailSurface: React.FC<{
    * before a parent's, so by the time any effect of ours could run, Radix's `FocusScope`
    * has already moved focus into the sheet and the opener is gone. The render pass that
    * first sees `open` is the last moment the opener still holds focus. Reading
-   * `document.activeElement` is a pure read — nothing is mutated — so this is safe in
+   * `document.activeElement` is a pure read (nothing is mutated) so this is safe in
    * render, and the ref deliberately is NOT cleared when `open` goes false, because the
    * close handler that consumes it runs after that render (and after unmount, since Radix
    * routes the same callback through `onUnmountAutoFocus`).
@@ -357,7 +365,7 @@ const CaseDetailSurface: React.FC<{
           }
         }}
         /**
-         * Focus RETURN on close (WCAG 2.4.3) — which Radix cannot do for this sheet.
+         * Focus RETURN on close (WCAG 2.4.3), which Radix cannot do for this sheet.
          *
          * `DialogContent` hard-wires its own `onCloseAutoFocus` to
          * `event.preventDefault(); context.triggerRef.current?.focus()`. That
@@ -369,7 +377,7 @@ const CaseDetailSurface: React.FC<{
          *
          * So the opener is captured and restored explicitly. `composeEventHandlers` runs
          * this handler BEFORE Radix's, and skips Radix's once this one has prevented the
-         * default — the same pattern the Tuning inspector already uses.
+         * default: the same pattern the Tuning inspector already uses.
          *
          * Every consumer benefits: Cases, Scans, Investigate and the dashboard all mount
          * this one surface, and every one of them opens it from state.
@@ -449,13 +457,12 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
   const requestedSection =
     requestedTab && requestedSectionId && CASE_SECTIONS[requestedSectionId] === requestedTab ? requestedSectionId : null;
   const reduceMotion = useReducedMotion();
-  const sectionId = React.useId();
   const open = Boolean(caseId && caseId.trim());
   const id = caseId || '';
 
   // Staleness guard: the LATEST requested case id. Every id-keyed loader captures its
   // own `id` in a closure and applies its result ONLY if the case has not changed
-  // mid-flight — the SAME CaseDetail instance is reused across cases (related-case
+  // mid-flight: the SAME CaseDetail instance is reused across cases (related-case
   // drill-through, reopening the sheet on a different row), so a slow response for
   // case A must never overwrite the freshly-opened case B. A lazy loader also starts
   // only for the case on screen: a callback that outlives its case (a post that lands
@@ -486,9 +493,9 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
     [onCaseChange],
   );
 
-  // Campaign membership (#51) — the cross-case campaign this case belongs to, if any.
+  // Campaign membership (#51): the cross-case campaign this case belongs to, if any.
   // Advisory only (#3/#4): a campaign is a reporting grouping that never closes /
-  // escalates / re-clusters the case. Best-effort — campaigns may be disabled.
+  // escalates / re-clusters the case. Best-effort: campaigns may be disabled.
   const [campaign, setCampaign] = React.useState<Campaign | null>(null);
   // A requested tab opens on the first paint (no Overview flash); the Runbook tab waits
   // for the viewer's grants, below.
@@ -523,10 +530,10 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
     }
   }, []);
 
-  // Round 3 — triage chips (#12), eager so the overview header is honest on open.
+  // Round 3: triage chips (#12), eager so the overview header is honest on open.
   const [triage, setTriage] = React.useState<TriageChips | null>(null);
 
-  // Round 3 — typed ReAct timeline (#12), lazy on the Timeline tab (powers the
+  // Round 3: typed ReAct timeline (#12), lazy on the Timeline tab (powers the
   // DecisionCard's policy clause + the collapsible full trace).
   const [timeline, setTimeline] = React.useState<TimelineResponse | null>(null);
   const [timelineLoading, setTimelineLoading] = React.useState(false);
@@ -537,7 +544,7 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
   const [stagesLoading, setStagesLoading] = React.useState(false);
   const [stagesError, setStagesError] = React.useState<unknown>(null);
 
-  // Round 3 — collaboration thread (#4), lazy on the Thread tab.
+  // Round 3: collaboration thread (#4), lazy on the Thread tab.
   const [thread, setThread] = React.useState<ThreadMessage[] | null>(null);
   const [threadLoading, setThreadLoading] = React.useState(false);
   const [threadError, setThreadError] = React.useState<unknown>(null);
@@ -560,7 +567,7 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
   const [rationaleLoading, setRationaleLoading] = React.useState(false);
   const [rationaleError, setRationaleError] = React.useState<unknown>(null);
 
-  // Threat context (F11) — lazy.
+  // Threat context (F11): lazy.
   const [threat, setThreat] = React.useState<ThreatContextPanelData | null>(null);
   const [threatLoading, setThreatLoading] = React.useState(false);
   const [threatError, setThreatError] = React.useState<unknown>(null);
@@ -665,11 +672,12 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
   // Pending lifecycle action (confirm dialog) + optional structured fields.
   const [pending, setPending] = React.useState<ActionDef | null>(null);
   const [note, setNote] = React.useState('');
-  const [resolution, setResolution] = React.useState('');
   const [priority, setPriority] = React.useState('');
   const [actionAssignee, setActionAssignee] = React.useState('');
-  const [actionTags, setActionTags] = React.useState<string[]>([]);
-  const [actionTagDraft, setActionTagDraft] = React.useState('');
+  // Round 15 (D4.2): what the person did about the case (fixed vocabulary). Tags left the
+  // dialog for the facts rail and the Resolution select left with the duplicate question
+  // (D4.1, D4.6).
+  const [actionsTaken, setActionsTaken] = React.useState<WireActionTaken[]>([]);
   const [actionDisposition, setActionDisposition] = React.useState('');
   // GROUND-TRUTH INTENT (G1). True only once the ANALYST has operated the disposition
   // picker in this dialog. `actionDisposition` alone cannot carry that fact: the value
@@ -685,7 +693,7 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
   const [actionReason, setActionReason] = React.useState('');
   // Round-7 #10 (feedback-into-close): the in-dialog AI-decision grading draft. Grading
   // actions (close / confirm-FP / resolve / set-disposition) POST it as a SEPARATE
-  // `caseFeedback` call after the deterministic close — never through `decide()` (#3).
+  // `caseFeedback` call after the deterministic close: never through `decide()` (#3).
   const [grading, setGrading] = React.useState<GradingDraft>(emptyGradingDraft());
   const [acting, setActing] = React.useState(false);
 
@@ -729,7 +737,7 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
   const titleRef = React.useRef<HTMLHeadingElement | null>(null);
   const headerRef = React.useRef<HTMLDivElement | null>(null);
 
-  // Notify (manual send) — F5/Wave 4. Channels come from the loaded settings.
+  // Notify (manual send): F5/Wave 4. Channels come from the loaded settings.
   const [notifyOpen, setNotifyOpen] = React.useState(false);
   const [notifyChannels, setNotifyChannels] = React.useState<NotifyChannelOption[]>([]);
   const [notifyEnabled, setNotifyEnabled] = React.useState(false);
@@ -742,7 +750,7 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
     setError(null);
     try {
       const res = await api.getCase(id);
-      if (activeIdRef.current !== id) return; // a newer case is loading — drop the stale result
+      if (activeIdRef.current !== id) return; // a newer case is loading: drop the stale result
       commitCase(res);
     } catch (e) {
       if (activeIdRef.current !== id) return;
@@ -818,7 +826,7 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
     if (open && id) void loadTriage();
   }, [open, id, loadTriage]);
 
-  // Campaign membership (#51) — fetch the campaign this case belongs to, keyed on the
+  // Campaign membership (#51): fetch the campaign this case belongs to, keyed on the
   // open case. Fail-open: a disabled/absent campaigns feature (or any error) simply
   // clears the chip. Reset to null immediately so a newly-opened case never shows the
   // previous case's campaign while the fetch is in flight. Wrapped in try/catch so a
@@ -857,7 +865,7 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
     };
   }, [open, canListUsers]);
 
-  // Typed ReAct timeline (#12) — lazy on the Investigation tab.
+  // Typed ReAct timeline (#12): lazy on the Investigation tab.
   const loadTimeline = React.useCallback(async () => {
     if (!id || activeIdRef.current !== id) return;
     setTimelineLoading(true);
@@ -876,7 +884,7 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
   // Lazy on the Investigation tab. `!timelineError` in the guard stops a failed fetch
   // from re-firing forever (the loading flag flips back to false on failure, which
   // would otherwise re-satisfy `timeline === null && !loading` and hammer the backend).
-  // The Retry affordance still works — loadTimeline clears the error before refetching.
+  // The Retry affordance still works: loadTimeline clears the error before refetching.
   React.useEffect(() => {
     if (open && tab === 'investigation' && timeline === null && !timelineLoading && !timelineError) {
       void loadTimeline();
@@ -945,7 +953,7 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
 
   // LIVE (Wave 4) refetch nudges. A `case.activity` SSE frame (only while realtime is
   // enabled AND the thread tab is mounted) asks us to refetch the AUTHORITATIVE thread
-  // / activity feed — the frame payload is never rendered (#9), it only triggers a
+  // / activity feed: the frame payload is never rendered (#9), it only triggers a
   // reload, and nothing here touches the case decision (#3). Trailing-debounced so a
   // burst of teammate/AI events collapses into one refetch instead of a fetch storm.
   const liveThreadTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -973,7 +981,7 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
   React.useEffect(() => {
     if (open && tab === 'collab') {
       // `!threadError` stops a failed thread fetch from re-firing forever (Retry still
-      // works — each loader clears its own error before refetching). The independent
+      // works: each loader clears its own error before refetching). The independent
       // activity guard prevents a failed endpoint from retry-looping or hiding the
       // other collaboration surface.
       if (thread === null && !threadLoading && !threadError) void loadThread();
@@ -992,7 +1000,7 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
     loadActivity,
   ]);
 
-  // Thread mutation handlers — each calls the API then refreshes the thread +
+  // Thread mutation handlers: each calls the API then refreshes the thread +
   // activity (so an @mention/new event shows). #3-safe: posting never touches the
   // case decision (the backend enforces this). One that lands after the queue moved on
   // refreshes nothing (the loaders start only for the case on screen) and leaves the
@@ -1079,8 +1087,10 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
     }
   }, [id]);
 
+  // The Overview's summary and the Investigation's assessment read the model's reasoning
+  // (Round 15, D8.3), so it loads with either tab (and at once in Case Manager).
   React.useEffect(() => {
-    const needsRationale = tab === 'investigation' || presentation === 'embedded';
+    const needsRationale = tab === 'investigation' || tab === 'overview' || presentation === 'embedded';
     if (open && needsRationale && rationale === null && !rationaleLoading && !rationaleError) {
       void loadRationale();
     }
@@ -1185,11 +1195,9 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
 
   const resetActionFields = React.useCallback(() => {
     setNote('');
-    setResolution('');
     setPriority('');
     setActionAssignee('');
-    setActionTags([]);
-    setActionTagDraft('');
+    setActionsTaken([]);
     setActionDisposition('');
     setDispositionDeclared(false);
     setActionReason('');
@@ -1213,7 +1221,7 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
       // someone actually chooses an outcome, and only then does the wire assert
       // `disposition_declared`. The value is not hidden: the dialog shows it as
       // read-only "Currently recorded" context under the picker (and the case page
-      // keeps its disposition badge) — it is just no longer pre-filled into the
+      // keeps its disposition badge): it is just no longer pre-filled into the
       // analyst's answer.
       setPending(a);
     },
@@ -1233,21 +1241,29 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
       // via wireAction, so the server still runs the real decide()/apply() (#3).
       const input: CaseActionInput = { action: pending.wireAction ?? pending.key };
       const trimmedNote = note.trim();
+      // D4.3: a disposition that overrides the AI verdict needs a note (the dialog asks for
+      // it; this is the same rule, so a submit without one never posts).
+      if (
+        pending.fields.includes('disposition') &&
+        !trimmedNote &&
+        requiresDisagreementNote(c?.verdict ?? null, actionDisposition)
+      ) {
+        setActing(false);
+        return;
+      }
       if (trimmedNote) input.note = trimmedNote;
-      if (pending.fields.includes('resolution') && resolution) input.resolution = resolution;
       if (pending.fields.includes('assignee') && actionAssignee.trim()) {
         input.assignee = actionAssignee.trim();
       }
       if (pending.fields.includes('priority') && priority) input.priority = priority;
-      if (pending.fields.includes('tags')) {
-        const tags = Array.from(new Set(actionTags.map((t) => t.trim()).filter(Boolean)));
-        if (tags.length) input.tags = tags;
+      if (pending.fields.includes('actions_taken') && actionsTaken.length) {
+        input.actions_taken = Array.from(new Set(actionsTaken));
       }
       if (pending.fields.includes('disposition') && actionDisposition) {
         input.disposition = actionDisposition;
         // Assert the INTENT separately from the value (G1). The backend applies the
         // disposition either way, but records it as independent analyst evidence only
-        // on this flag — so a client that echoes a stored, model-derived disposition
+        // on this flag, so a client that echoes a stored, model-derived disposition
         // cannot manufacture ground truth. Sent only when the analyst operated the
         // picker in this dialog.
         if (dispositionDeclared) input.disposition_declared = true;
@@ -1276,7 +1292,7 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
       setPending(null);
       resetActionFields();
       // Completion feedback names the outcome that was recorded (Apple §16). A close or
-      // resolve offers REOPEN for 8 s — the existing `reopen` analyst verb (#3). It is
+      // resolve offers REOPEN for 8 s: the existing `reopen` analyst verb (#3). It is
       // deliberately not called Undo: a reopen keeps the classification the analyst just
       // recorded (it stays the case's analyst outcome, and the resolved-case precedent
       // written at close stays too) until the case is closed again with a new one. The
@@ -1326,35 +1342,30 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
       void loadTriage();
       if (activity !== null) void loadActivity();
 
-      // Feedback-into-close (#10): grading the AI decision is a SEPARATE, best-effort
-      // POST from the deterministic close above — decide()/apply() ran ONLY inside
-      // `caseActionExec` (two distinct calls, #3). Fire it only for a grading action on a
-      // case that carried an AI verdict to grade (skip NEEDS-noverdict / non-grading
-      // actions); the assessment is DERIVED (agree/override) from the disposition↔verdict
-      // diff by GradingFields and kept synced in `grading`. The typeof-guard keeps
-      // callers/tests that don't wire `caseFeedback` working, and a rejected grading
-      // never surfaces as a close failure.
+      // Feedback-into-close (#10, D4.4 keeps today's rule): grading the AI decision is a
+      // SEPARATE, best-effort POST from the deterministic close above; decide()/apply()
+      // ran ONLY inside `caseActionExec` (two distinct calls, #3). It fires for a grading
+      // action on a case that carried an AI verdict: the assessment DERIVED from the
+      // disposition against the verdict (a match or an override posts one feedback entry,
+      // with or without stars), or any rating the analyst gave in "Rate the AI". It never
+      // carries `actual_outcome`: the declared disposition already labels the case. The
+      // typeof-guard keeps callers/tests that don't wire `caseFeedback` working, and a
+      // rejected grading never surfaces as a close failure.
       const gradedVerdictRaw = next.verdict ?? c?.verdict ?? '';
       const gradedVerdict = String(gradedVerdictRaw).trim().toLowerCase();
-      // The analyst explicitly stated what actually happened. That is GROUND TRUTH and
-      // it stands on its own: a case with no AI verdict has nothing to grade but its
-      // confirmed outcome is exactly as real, and dropping it here would silently throw
-      // away the one field `analyst_confirmed_outcome` can read (G1).
-      const statedOutcome = Boolean(grading.actual_outcome);
       if (
         pending.fields.includes('grading') &&
-        (statedOutcome || (gradedVerdict && gradedVerdict !== 'none')) &&
+        gradedVerdict &&
+        gradedVerdict !== 'none' &&
         typeof api.caseFeedback === 'function'
       ) {
         // Derive the agree/override assessment AT SUBMIT TIME from the disposition being
-        // committed on close ↔ the AI verdict — do NOT trust `grading.assessment`. That
-        // field is synced by an effect inside GradingFields, which is unmounted when the
-        // analyst collapses the grading section; a later disposition change would then
-        // POST a STALE assessment into the AI-eval loop.
+        // committed against the AI verdict; the dialog never asks it, so nothing stale
+        // can be posted into the AI-eval loop.
         const derived = deriveAgreement(gradedVerdictRaw, actionDisposition);
         // Only a match or an override is an agreement signal. A Needs-human hand-off the
         // analyst settled (`resolved`) or an outcome with no comparison (`none`) states no
-        // agreement, so nothing is posted unless the analyst entered a grade themselves —
+        // agreement, so nothing is posted unless the analyst entered a grade themselves:
         // otherwise every settled hand-off would count as "agree" in the Agreement metric.
         const freshAssessment =
           derived.kind === 'match' || derived.kind === 'override' ? derived.assessment : undefined;
@@ -1369,7 +1380,7 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
             if (updated && activeIdRef.current === id) commitCase(updated);
           })
           .catch((err: unknown) => {
-            // Grading stays best-effort — the close already SUCCEEDED in a separate
+            // Grading stays best-effort: the close already SUCCEEDED in a separate
             // call, so this must never be reported as a close failure (#3) and the
             // catch stays in place for genuine transport faults. But it must not be
             // SILENT either: this handler used to discard the result outright, so a
@@ -1399,7 +1410,7 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
         void runbooks.refresh();
         return;
       }
-      // A failed lifecycle action is a MUTATION failure, not a case-load failure — use a
+      // A failed lifecycle action is a MUTATION failure, not a case-load failure: use a
       // toast (like postMessage/notify) so we never mislabel it as "Could not load case".
       toast.error(e instanceof Error ? e.message : 'The action could not be completed.');
       setPending(null);
@@ -1409,10 +1420,9 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
   }, [
     pending,
     note,
-    resolution,
     priority,
     actionAssignee,
-    actionTags,
+    actionsTaken,
     actionDisposition,
     dispositionDeclared,
     actionReason,
@@ -1489,7 +1499,7 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
   // Open this case in a standalone browser tab. Both the legacy Cases sheet and the
   // embedded Case Manager understand the generic `caseId` hash query, so preserve the
   // current presentation's home instead of unexpectedly bouncing an inline analyst
-  // back to the legacy table. Read-only — opening a tab never touches the decision (#3).
+  // back to the legacy table. Read-only: opening a tab never touches the decision (#3).
   const openInNewTab = React.useCallback(() => {
     if (typeof window === 'undefined' || !id) return;
     const base = window.location.href.split('#')[0];
@@ -1682,7 +1692,7 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
         onSetDisposition={
           setDispositionAction ? () => openFromControl(setDispositionAction, takeActionTriggerRef.current) : undefined
         }
-        onShowRelated={() => setTab('overview')}
+        onShowRelated={() => openTabSection('overview', 'related-cases')}
         runbook={
           showRunbookTab
             ? {
@@ -2102,19 +2112,18 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
                       <TabPanelMotion>
                         <OverviewPanel
                           c={c}
-                          fpPolicy={fpPolicy}
-                          triage={triage}
                           rationale={rationale}
-                          rationaleLoading={rationaleLoading}
-                          rationaleError={rationaleError}
-                          onRetryRationale={loadRationale}
-                          onOpenInvestigation={() => setTab('investigation')}
-                          onOpenTab={openTabSection}
                           onNavigate={onNavigate}
-                          onSetDisposition={
-                            setDispositionAction && shownIsCurrent
-                              ? (opener) => openFromControl(setDispositionAction, opener)
-                              : undefined
+                          whatHappened={
+                            /* The six-stage story that was the Timeline tab (D8.3); its
+                               stages load when the Overview opens. */
+                            <TimelinePanel
+                              stages={stages}
+                              stagesLoading={stagesLoading}
+                              stagesError={stagesError}
+                              onRetryStages={loadStages}
+                              onOpenInvestigation={() => setTab('investigation')}
+                            />
                           }
                           runbookCard={
                             showRunbookTab && shownRun && runbookData && !caseIsTerminal(c.status) ? (
@@ -2129,29 +2138,6 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
                             ) : null
                           }
                         />
-                        {/* "What happened", the six-stage story that was the Timeline tab
-                            (Round 15, D8.3). Its stages load when Overview opens. */}
-                        <section
-                          data-section="what-happened"
-                          aria-labelledby={`${sectionId}-what-happened`}
-                          className="border-t border-border/70"
-                        >
-                          <h2
-                            id={`${sectionId}-what-happened`}
-                            data-section-title
-                            tabIndex={-1}
-                            className="px-4 pt-5 text-base font-semibold text-foreground outline-none sm:px-5 lg:px-6"
-                          >
-                            What happened
-                          </h2>
-                          <TimelinePanel
-                            stages={stages}
-                            stagesLoading={stagesLoading}
-                            stagesError={stagesError}
-                            onRetryStages={loadStages}
-                            onOpenInvestigation={() => setTab('investigation')}
-                          />
-                        </section>
                       </TabPanelMotion>
                     </TabsContent>
                     {showRunbookTab ? (
@@ -2209,31 +2195,20 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
                           onRetryTimeline={loadTimeline}
                           traceRequest={shownIsCurrent && traceRequest?.caseId === id ? traceRequest.tick : null}
                           onTraceRequestHandled={traceRequestHandled}
+                          fpPolicy={fpPolicy}
+                          threatContext={
+                            /* "Threat context", which was its own tab (D8.3); it loads when
+                               Investigation opens. */
+                            <ThreatContextPanel
+                              c={c}
+                              panel={threat}
+                              loading={threatLoading}
+                              error={threatError}
+                              onRetry={loadThreat}
+                              onNavigate={onNavigate}
+                            />
+                          }
                         />
-                        {/* "Threat context", which was its own tab (Round 15, D8.3). It loads
-                            when Investigation opens. */}
-                        <section
-                          data-section="threat-context"
-                          aria-labelledby={`${sectionId}-threat-context`}
-                          className="border-t border-border/70"
-                        >
-                          <h2
-                            id={`${sectionId}-threat-context`}
-                            data-section-title
-                            tabIndex={-1}
-                            className="px-4 pt-5 text-base font-semibold text-foreground outline-none sm:px-5 lg:px-6"
-                          >
-                            Threat context
-                          </h2>
-                          <ThreatContextPanel
-                            c={c}
-                            panel={threat}
-                            loading={threatLoading}
-                            error={threatError}
-                            onRetry={loadThreat}
-                            onNavigate={onNavigate}
-                          />
-                        </section>
                       </TabPanelMotion>
                     </TabsContent>
                     <TabsContent value="collab" className="mt-0">
@@ -2250,7 +2225,6 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
                           users={pickUsers}
                           currentUser={currentUser}
                           canComment={canComment}
-                          canWrite={canWriteCase}
                           onRetryThread={loadThread}
                           onRetryActivity={loadActivity}
                           onPost={(text) => void postMessage(text)}
@@ -2268,10 +2242,8 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
                               />
                             )
                           }
-                          onAssigned={(next) => {
-                            commitCase(next);
-                            if (activity !== null) void loadActivity();
-                          }}
+                          // The Files section (D5.12) is the WP4 kit; it is mounted here with
+                          // `renderFiles` (and the close dialog's `renderScreenshots`), WP7.
                           liveCaseId={id}
                           onLiveThread={liveRefreshThread}
                           onLiveActivity={liveRefreshActivity}
@@ -2427,17 +2399,12 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
         focusAfterSubmit={resolveDialogFocus}
         note={note}
         onNoteChange={setNote}
-        resolution={resolution}
-        onResolutionChange={setResolution}
         priority={priority}
         onPriorityChange={setPriority}
         assignee={actionAssignee}
         onAssigneeChange={setActionAssignee}
-        tags={actionTags}
-        onTagsChange={setActionTags}
-        tagDraft={actionTagDraft}
-        onTagDraftChange={setActionTagDraft}
-        caseTags={c?.tags ?? null}
+        actionsTaken={actionsTaken}
+        onActionsTakenChange={setActionsTaken}
         disposition={actionDisposition}
         onDispositionChange={declareDisposition}
         currentDisposition={c?.disposition ?? null}
@@ -2456,7 +2423,7 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
         openStepsError={openStepsError}
       />
 
-      {/* Notify (manual send) dialog — F5/Wave 4. Picks one configured channel or
+      {/* Notify (manual send) dialog: F5/Wave 4. Picks one configured channel or
           all enabled; the send is fire-and-forget and never changes the case. */}
       <Dialog open={notifyOpen} onOpenChange={setNotifyOpen}>
         <DialogContent className="max-w-md" onCloseAutoFocus={restoreTo(actionOpenerRef)}>

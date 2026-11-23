@@ -143,7 +143,9 @@ import {
   QUEUE_SEVERITIES,
   QUEUE_STATUS_OPTIONS,
   TERMINAL_STATUSES,
+  AGENT_CLOSED_LEFT_OUT,
   caseInScope,
+  isAgentClosedCase,
   matchesSearch,
   mergeQueueRow,
   queueMembership,
@@ -247,7 +249,7 @@ function readDensity(): Density {
   }
 }
 
-/** The responsive default queue width: 28% of the board, 360–520px (casemanager §4.1). */
+/** The responsive default queue width: 28% of the board, 360 to 520px (casemanager §4.1). */
 function responsiveQueueWidth(frameWidth: number): number {
   if (!frameWidth) return SPLIT_DEFAULT_QUEUE_PX;
   return Math.round(Math.min(520, Math.max(360, frameWidth * 0.28)));
@@ -875,7 +877,7 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
 
   /**
    * "N new cases · Show": re-read the window GROWN by the new cases, so they join the top
-   * and every row the analyst already loaded (with Load more) stays — the open case, its
+   * and every row the analyst already loaded (with Load more) stays: the open case, its
    * row and their place in the queue are never dropped back to the first page.
    */
   const showNewCases = React.useCallback(() => {
@@ -1000,7 +1002,7 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
         });
       }
       // Focus on the row already reads its title and id; the announcement adds only
-      // what focus does not say — where the case sits in the queue (one live region).
+      // what focus does not say: where the case sits in the queue (one live region).
       const index = visibleRef.current.findIndex((row) => row.case_id === caseId);
       if (index >= 0) announce(`Opened. ${index + 1} of ${visibleRef.current.length} loaded.`);
     },
@@ -1066,8 +1068,8 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
 
   /**
    * Keep the loaded window honest after cases change (a detail mutation, or the live
-   * `cases` topic). Membership is checked against the WHOLE view — scope, status, owner,
-   * search and severity — not just the scope:
+   * `cases` topic). Membership is checked against the WHOLE view: scope, status, owner,
+   * search and severity: not just the scope:
    *
    * - a loaded row that no longer matches leaves the window and the total;
    * - a loaded row that still matches is updated in place (keeping its read-time bands);
@@ -1461,6 +1463,22 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
     };
   }, [canListUsers]);
 
+  // Round 15 (D4.7): every case document the selection can name (the loaded window and
+  // the pages "Select all N matching" read), so bulk Set status and Set disposition can
+  // leave out the cases the AI agent closed.
+  const seenCasesRef = React.useRef<Map<string, Case>>(new Map());
+  React.useEffect(() => {
+    for (const row of rows) seenCasesRef.current.set(row.case_id, row);
+  }, [rows]);
+  const agentClosedSelected = React.useMemo(() => {
+    const out = new Set<string>();
+    for (const id of selectedIds) {
+      const known = seenCasesRef.current.get(id) ?? rowsById.get(id);
+      if (known && isAgentClosedCase(known)) out.add(id);
+    }
+    return out;
+  }, [selectedIds, rowsById]);
+
   const selectedCount = selectedIds.size;
   const visibleSelectedCount = React.useMemo(
     () => visibleCases.reduce((count, item) => count + Number(selectedIds.has(item.case_id)), 0),
@@ -1522,7 +1540,10 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
       const base = JSON.parse(queryKey) as Record<string, string>;
       for (let offset = 0; offset < Math.min(total, QUEUE_SELECT_ALL_LIMIT); offset += QUEUE_MAX_PAGE) {
         const page = await api.listCases({ ...base, limit: QUEUE_MAX_PAGE, offset });
-        for (const item of page.cases || []) ids.add(item.case_id);
+        for (const item of page.cases || []) {
+          ids.add(item.case_id);
+          seenCasesRef.current.set(item.case_id, item);
+        }
         if (!page.cases?.length) break;
       }
       setSelectedIds(ids);
@@ -1535,9 +1556,27 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
   }, [announce, queryKey, total]);
 
   const submitCaseJob = React.useCallback(
-    async (kind: BackgroundJobKind, params: Record<string, unknown>, label: string) => {
-      const targetIds = Array.from(selectedIds).sort();
-      if (targetIds.length === 0 || bulkBusy) return;
+    async (
+      kind: BackgroundJobKind,
+      params: Record<string, unknown>,
+      label: string,
+      opts: { leaveOut?: ReadonlySet<string> } = {},
+    ) => {
+      const leaveOut = opts.leaveOut ?? new Set<string>();
+      const targetIds = Array.from(selectedIds)
+        .filter((caseId) => !leaveOut.has(caseId))
+        .sort();
+      const leftOut = selectedIds.size - targetIds.length;
+      if (bulkBusy) return;
+      if (targetIds.length === 0) {
+        // Every selected case was left out: nothing to send (D4.7).
+        if (leftOut > 0) {
+          const message = `${label} not queued: the AI agent closed every selected case. Review those cases instead.`;
+          setBulkOutcome({ kind: 'warning', message });
+          toast.error(message);
+        }
+        return;
+      }
       const materialParams = { ...params, case_ids: targetIds };
       const intent = retainJobSubmissionIntent(jobIntentRef.current, kind, materialParams);
       jobIntentRef.current = intent;
@@ -1561,8 +1600,11 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
           status: job.status,
         });
         const message = `${label} queued for ${targetIds.length} case${targetIds.length === 1 ? '' : 's'}; it is running in the background.`;
-        setBulkOutcome({ kind: 'success', message: `${message} Track progress here or in Inbox.` });
-        toast.success(message, {
+        const leftOutNote = leftOut
+          ? ` ${leftOut} case${leftOut === 1 ? '' : 's'} the AI agent closed ${leftOut === 1 ? 'was' : 'were'} left out.`
+          : '';
+        setBulkOutcome({ kind: 'success', message: `${message}${leftOutNote} Track progress here or in Inbox.` });
+        toast.success(`${message}${leftOutNote}`, {
           action: { label: 'Open Inbox', onClick: () => route.navigate('inbox') },
         });
       } catch (nextError) {
@@ -1579,7 +1621,8 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
   // A `case_lifecycle` job takes the job's own params, never a single-case field (such
   // as `require_open_steps_reason`): tsc refuses one instead of the server answering 422.
   const submitLifecycle = React.useCallback(
-    (input: CaseLifecycleInput, label: string) => submitCaseJob('case_lifecycle', { ...input }, label),
+    (input: CaseLifecycleInput, label: string, opts?: { leaveOut?: ReadonlySet<string> }) =>
+      submitCaseJob('case_lifecycle', { ...input }, label, opts),
     [submitCaseJob],
   );
 
@@ -1615,16 +1658,21 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
       void submitCaseJob('case_tag', { tag: value }, 'Tag update');
       return;
     }
+    // D4.7: a case the AI agent closed is reviewed, never re-labelled in bulk, so bulk
+    // Set status and Set disposition leave such cases out (the backend verbs unchanged).
     if (action === 'status') {
-      void submitLifecycle({ action: 'set_status', status: value }, 'Status update');
+      void submitLifecycle({ action: 'set_status', status: value }, 'Status update', {
+        leaveOut: agentClosedSelected,
+      });
       return;
     }
     void submitLifecycle(
       // A person picked this value in the bulk form, so it is declared (G1).
       { action: 'set_disposition', disposition: value, disposition_declared: true },
       'Disposition update',
+      { leaveOut: agentClosedSelected },
     );
-  }, [bulkBusy, bulkFormAction, bulkFormValue, selectedIds.size, submitCaseJob, submitLifecycle]);
+  }, [agentClosedSelected, bulkBusy, bulkFormAction, bulkFormValue, selectedIds.size, submitCaseJob, submitLifecycle]);
 
   const runConfirmedBulkAction = React.useCallback(() => {
     const action = pendingBulkAction;
@@ -1684,7 +1732,7 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
       if (event.altKey || event.ctrlKey || event.metaKey) return;
       const key = event.key;
       // The row the key came from (a row's open button OR its checkbox), else the
-      // roving tab stop — never a different row than the one that has focus.
+      // roving tab stop: never a different row than the one that has focus.
       const target = event.target instanceof HTMLElement ? event.target : null;
       const fromId = target?.closest<HTMLElement>('[data-queue-row]')?.dataset.caseId;
       const focused =
@@ -1920,7 +1968,7 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
   return (
     <ProtectedRoute resource="cases" action="read">
       {/* The bleed is a MATCHED PAIR with `AppShell.CONTENT_INSET`: it widens the board back
-          out of the shell gutter to a constant 16px inset at every width. Keep `w-auto` —
+          out of the shell gutter to a constant 16px inset at every width. Keep `w-auto`:
           it is what makes a negative margin WIDEN the box rather than shift it. See
           `route-visual-standard.test.ts`, which asserts them together. */}
       <PageContainer
@@ -2629,6 +2677,14 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
               {bulkTagError ? (
                 <p id="case-manager-bulk-error" role="alert" className="text-xs font-medium text-critical-text">
                   {bulkTagError}
+                </p>
+              ) : null}
+              {bulkFormAction === 'status' || bulkFormAction === 'disposition' ? (
+                <p className="text-xs leading-4 text-muted-foreground" data-testid="case-bulk-agent-closed-note">
+                  {AGENT_CLOSED_LEFT_OUT}
+                  {agentClosedSelected.size
+                    ? ` ${agentClosedSelected.size.toLocaleString()} of the selected cases ${agentClosedSelected.size === 1 ? 'is' : 'are'} left out.`
+                    : ''}
                 </p>
               ) : null}
               <p className="text-xs leading-4 text-muted-foreground">

@@ -1,19 +1,19 @@
 /**
- * OverviewPanel — anomaly-baseline advisory embedding (#4).
+ * OverviewPanel: anomaly-baseline advisory embedding (#4).
  *
  * The `BaselineSignatureCard` warm-up/percentile panel was fully built but shipped to
- * NO user — its stated purpose was a CaseDetail embedding that was never wired. It is
+ * NO user: its stated purpose was a CaseDetail embedding that was never wired. It is
  * now mounted in the CaseDetail Overview when the case has a cluster signature AND the
  * baseline has recorded data for it. This spec pins:
  *   1. the embedded "Anomaly baseline" card renders when the case's cluster signature
  *      has baseline data (found=true), and the source-derived signature is plain text (#9);
- *   2. it FAILS QUIET — no panel when the case has no signature, when the baseline has
+ *   2. it FAILS QUIET: no panel when the case has no signature, when the baseline has
  *      no data for it (found=false / disabled), or when the fetch errors;
- *   3. advisory only (#3/#4) — the panel is read-only and never decides.
+ *   3. advisory only (#3/#4): the panel is read-only and never decides.
  *
  * The baseline fetch flows through `@/soc/Baseline.api` → `api.get('baseline/{sig}')`,
- * so we mock the low-level api client (no network). `RelatedCrossSource` (also in this
- * panel) uses `api.listCases`, mocked to an empty list.
+ * so we mock the low-level api client (no network). The Related cases section (also in
+ * this panel) uses `api.listCases`, mocked to an empty list.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, act } from '@testing-library/react';
@@ -50,7 +50,7 @@ function baseCase(extra: Partial<Case>): Case {
 
 function renderOverview(c: Case) {
   return render(
-    <OverviewPanel c={c} fpPolicy={null} triage={null} />,
+    <OverviewPanel c={c} />,
   );
 }
 
@@ -61,7 +61,7 @@ async function flush() {
   });
 }
 
-describe('OverviewPanel — anomaly-baseline advisory (#4)', () => {
+describe('OverviewPanel: anomaly-baseline advisory (#4)', () => {
   beforeEach(() => {
     getMock.mockReset();
     listCasesMock.mockReset();
@@ -92,12 +92,12 @@ describe('OverviewPanel — anomaly-baseline advisory (#4)', () => {
     getMock.mockResolvedValue({ ...WARM, found: false, buckets: 0, warm_buckets: 0, series: [] });
     renderOverview(baseCase({ cluster_signature: 'sig::never-seen' }));
 
-    // The panel itself mounts (Recommended action is always present)…
-    await screen.findByText('Recommended action');
+    // The panel itself mounts (its Summary section is always present)…
+    await screen.findByText('Summary');
     await waitFor(() => expect(getMock).toHaveBeenCalledTimes(1));
     await flush();
 
-    // …but the fail-quiet path shows nothing — never the "No baseline recorded" shell.
+    // …but the fail-quiet path shows nothing: never the "No baseline recorded" shell.
     expect(screen.queryByText('Anomaly baseline')).toBeNull();
     expect(screen.queryByText(/No baseline recorded/i)).toBeNull();
   });
@@ -106,7 +106,7 @@ describe('OverviewPanel — anomaly-baseline advisory (#4)', () => {
     getMock.mockRejectedValue(new Error('baseline disabled'));
     renderOverview(baseCase({ cluster_signature: 'sig::x' }));
 
-    await screen.findByText('Recommended action');
+    await screen.findByText('Summary');
     await waitFor(() => expect(getMock).toHaveBeenCalled());
     await flush();
 

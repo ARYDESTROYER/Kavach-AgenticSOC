@@ -1,9 +1,10 @@
 /**
- * TimelinePanel — the "what happened" narrative (task 5 split).
+ * TimelinePanel: the "what happened" narrative (task 5 split).
  *
  * The "what happened" story: ONLY the six-stage <StageTimeline> narrative (input →
  * correlate → risk → triage → investigate → decide). Since Round 15 (D8.3) it is the
- * "What happened" section of the Overview tab, which owns its heading; the AI assessment,
+ * "What happened" section of the Overview tab, which owns its heading and the content
+ * rail; the AI assessment,
  * the decision and the full ReAct trace live on <InvestigationPanel>, so the section
  * reads as one uncluttered chronological account of how one alert became a case.
  *
@@ -16,10 +17,9 @@ import * as React from 'react';
 import type { TimelineStagesResponse } from '@/soc/pages/CaseDetail.api';
 
 import { StageTimeline } from './StageTimeline';
-import { CASE_MANAGER_PANEL_PADDING } from './shared';
 
 export interface TimelinePanelProps {
-  /** FACTS — the six-stage pipeline narrative. */
+  /** FACTS: the six-stage pipeline narrative. */
   stages: TimelineStagesResponse | null;
   stagesLoading: boolean;
   stagesError: unknown;
@@ -36,11 +36,8 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
   onOpenInvestigation,
 }) => {
   return (
-    <div
-      className={CASE_MANAGER_PANEL_PADDING}
-      data-case-panel="timeline"
-      data-presentation="case-manager"
-    >
+    // No padding of its own: it is a section of the Overview, which owns the content rail.
+    <div data-case-panel="timeline" data-presentation="case-manager">
       <StageTimeline
         data={stages}
         loading={stagesLoading}

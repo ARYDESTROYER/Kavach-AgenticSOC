@@ -121,7 +121,7 @@ function renderWithProviders(node: React.ReactNode) {
   );
 }
 
-describe('CaseDetail — collaboration endpoint failures', () => {
+describe('CaseDetail: collaboration endpoint failures', () => {
   beforeEach(() => {
     postThreadMock.mockReset().mockResolvedValue(undefined);
     getThreadMock.mockReset().mockResolvedValue({
@@ -178,6 +178,11 @@ describe('CaseDetail — collaboration endpoint failures', () => {
     await waitFor(() => expect(collaborationTab).toHaveAttribute('data-state', 'active'));
     await waitFor(() => expect(getActivityMock).toHaveBeenCalledTimes(1));
 
+    // Round 15 (D8.3): the full activity feed sits under History, one click away; its
+    // control names the failure while it is closed.
+    const allActivity = await screen.findByRole('button', { name: /show all activity/i });
+    await waitFor(() => expect(allActivity).toHaveTextContent('could not load'));
+    await user.click(allActivity);
     expect(await screen.findByText('Could not load activity')).toBeInTheDocument();
     expect(screen.getByText('activity endpoint unavailable')).toBeInTheDocument();
     expect(screen.queryByText('No activity yet')).not.toBeInTheDocument();

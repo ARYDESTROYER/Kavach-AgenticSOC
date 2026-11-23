@@ -559,7 +559,7 @@ compact layouts use an explicit back-to-list path.
 A routed split workspace may reclaim the shared shell gutter down to a consistent
 16px operational inset, but it remains framed rather than touching the navigation or
 viewport edge. Inside the detail pane, header, tabs, and every tab panel share one
-responsive 16–24px content rail. Do not stack page, pane, and panel padding into
+responsive 16 to 24px content rail. Do not stack page, pane, and panel padding into
 separate 32px gutters; the resizable detail pane must spend its width on evidence.
 
 Queue rows are a divided list, not boxed cards. A row has two lines: the title and its
@@ -611,8 +611,13 @@ hover or focus, but stays visible on touch screens and once anything is selected
 Case Manager shows it always). Mixed bulk operations expose progress and per-record
 partial failures; successful records leave the selection while failures remain
 retryable. Every bulk or single path that ends a case (close, resolve) collects a
-disposition first. Permission hiding in the Console is guidance—the API must recheck
+disposition first. Permission hiding in the Console is guidance; the API must recheck
 every action.
+A bulk Set status or Set disposition leaves out the cases the AI agent closed (terminal,
+with an agent close as the first decision): the form says how many and why ("Cases the
+AI agent closed are left out; review them instead."), the confirmation repeats it, and
+a selection made only of such cases queues nothing. A bulk close says that screenshots
+are added on each case, never collected in bulk.
 
 **Case outcome.** Status answers "where is the work", the outcome answers "what was it"
 and the AI verdict answers "what did the model think"; the three never share a style
@@ -642,11 +647,41 @@ the campaign, Source with the primary entity, Related cases, Record). The record
 sections are five underline tabs (Overview, Runbook, Investigation, Collaboration, Chat;
 Alt+1 to Alt+5); the retired Timeline and Threat context tab links open the Overview's
 "What happened" and Investigation's "Threat context" sections. The tabs hold the evidence
-narrative. The title shares its row with the actions only when the whole title fits
+narrative.
+
+**Case tab bodies.** Every tab body is flat: sections divided by one hairline, each under
+a plain `text-base` heading (no icon, no card, no tinted panel), with a section's
+secondary detail behind a disclosure rather than a nested card. A fact has one home: a
+tab never repeats the verdict, confidence, risk, status or owner the header and rail
+already show. The **Overview** is the brief: the runbook's Next step card (open cases),
+the Summary, What happened (the trigger sentence and the six-stage story), Key entities,
+Related cases and the baseline. Its summary is the model's own reasoning (its first two
+or three sentences), tagged AI; it never falls back to the deterministic decision's
+text, which belongs to the code and is shown, attributed to the code, only under
+Investigation's Decision (G17). A case the AI did not assess shows its system summary,
+untagged. **Investigation** reads in order: AI assessment (reasoning, found and ruled
+out, reproduce query, the full evidence one click away), Decision (the decision line,
+the authority sentence, the auto-close reading, automation applied, the policy inputs
+one click away), Threat context, Investigation inputs, the trace and earlier gradings.
+**Collaboration** is Discussion and Files in the main column with Tasks (a pointer to
+the Runbook tab) and History in a side column from a 52rem pane (a container query,
+never the viewport); it has no owner control. History is the case's own lifecycle,
+newest first, with who, when and the actions taken; the full activity feed is one
+disclosure away and names a load failure while closed. The title shares its row with the actions only when the whole title fits
 beside them; otherwise the actions wrap below it, so the title is never squeezed. Lifecycle dialogs keep their actions in a footer that never scrolls
 away, open with focus on the field the analyst must fill (the disposition), and return
 focus to the control that opened it, or, when that control left with its row, to the
-row that took its place ("Close & next" lands on the next case's row). The confirmation
+row that took its place ("Close & next" lands on the next case's row). The close
+dialog asks "what was it" once: one list of disposition radio rows, opened empty, with
+the AI verdict as a hint beside it (never a default). The relation to the AI verdict is
+derived and shown as text after a choice ("Matches AI verdict", "Overrides AI verdict
+(X → Y)", "Settles the AI's hand-off"), never asked. From a 40rem dialog the
+classification sits on the left and what was done on the right: open runbook steps and
+their reason, Actions taken (toggle chips from a fixed vocabulary, at most eight, "No
+action needed" exclusive), the note (required only on an override, because it is kept as
+precedent, with the footer naming what is missing), the screenshots slot, and a
+collapsed "Rate the AI (optional)". There is no resolution select, no outcome select and
+no tag field in it; tags are edited in the facts rail. The confirmation
 after a close offers **Reopen**, never "Undo": reopening keeps the recorded outcome until
 the case is closed again with a new one, and the toast says so. Closing a Needs-human
 case the analyst did not grade records no AI agreement either way; a grade the analyst
@@ -674,9 +709,9 @@ provenance. Project the **latest run only** and render applicable inputs conditi
 - an immutable **platform threshold-tuning snapshot** for a correlation threshold or
   severity floor that this case traversed.
 
-Call the last item threshold tuning, not model fine-tuning. The summary belongs in the
-flat Overview evidence flow and links to detailed Investigation evidence; do not add a
-nested feature-badge card. Hide a successful empty section, preserve a stable loading
+Call the last item threshold tuning, not model fine-tuning. The section belongs in the
+flat Investigation evidence flow, after the Decision; do not add a nested feature-badge
+card or repeat it on the Overview. Hide a successful empty section, preserve a stable loading
 geometry, and distinguish an unavailable projection from “no inputs.” All displayed
 model, memory, retrieval, and operator-authored strings remain plain untrusted text.
 Close the section with the authority boundary: these inputs may inform preprocessing

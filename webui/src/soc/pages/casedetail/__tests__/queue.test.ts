@@ -10,6 +10,8 @@ import {
   QUEUE_STATUS_OPTIONS,
   caseInScope,
   compareQueueOrder,
+  firstDecisionIsAgentClose,
+  isAgentClosedCase,
   keepAdvisoryBands,
   matchesSearch,
   mergeQueueRow,
@@ -95,7 +97,7 @@ describe('scope + search helpers', () => {
   });
 });
 
-describe('queueMembership — the client mirror of the server view (live honesty)', () => {
+describe('queueMembership: the client mirror of the server view (live honesty)', () => {
   const open: Case = { case_id: 'c1', status: 'needs_human', verdict: 'NEEDS_HUMAN', severity_band: 'high', title: 'SSH brute force', assignee: 'Aryan' };
 
   it('scope, single status, owner, search and severity all decide membership', () => {
@@ -191,5 +193,34 @@ describe('keepAdvisoryBands (the case detail header guard)', () => {
   it('never carries bands across to a different case or onto a first load', () => {
     expect(keepAdvisoryBands(shown, { case_id: 'c2' }).severity_band).toBeUndefined();
     expect(keepAdvisoryBands(null, { case_id: 'c1' }).severity_band).toBeUndefined();
+  });
+});
+
+describe('agent-closed cases (Round 15, D4.7)', () => {
+  const decision = (status: string, by: string) => ({ event: 'decision', ts: '2026-11-20T10:00:00Z', status, decision_by: by });
+
+  it('reads the FIRST decision record, like the server', () => {
+    expect(firstDecisionIsAgentClose({ history: [decision('closed', 'agent')] } as unknown as Case)).toBe(true);
+    // A later re-decision never moves the anchor.
+    expect(
+      firstDecisionIsAgentClose({ history: [decision('needs_human', 'system'), decision('closed', 'agent')] } as unknown as Case),
+    ).toBe(false);
+    expect(
+      firstDecisionIsAgentClose({
+        history: [{ event: 'analyst_action', action: 'close' }, decision('closed', 'agent'), decision('escalated', 'system')],
+      } as unknown as Case),
+    ).toBe(true);
+    expect(firstDecisionIsAgentClose({ history: [] } as unknown as Case)).toBe(false);
+    expect(firstDecisionIsAgentClose({} as Case)).toBe(false);
+  });
+
+  it('counts only a case that ended', () => {
+    const history = [decision('closed', 'agent')];
+    expect(isAgentClosedCase({ status: 'closed', history } as unknown as Case)).toBe(true);
+    expect(isAgentClosedCase({ status: 'resolved', history } as unknown as Case)).toBe(true);
+    // Reopened: it is open work again, so bulk work applies to it.
+    expect(isAgentClosedCase({ status: 'open', history } as unknown as Case)).toBe(false);
+    // A person's close is not an agent close, whatever the last writer says.
+    expect(isAgentClosedCase({ status: 'closed', decision_by: 'agent', history: [decision('needs_human', 'system')] } as unknown as Case)).toBe(false);
   });
 });

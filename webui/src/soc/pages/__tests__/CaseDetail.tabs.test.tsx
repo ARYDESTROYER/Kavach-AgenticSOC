@@ -22,7 +22,11 @@
  *      in order, with Alt+1 to Alt+5.
  *   3. Each <TabsContent> renders the RIGHT panel; the merged sub-panels (StageTimeline /
  *      WhyPanel / TraceTimeline) and the retired FeedbackTab are NOT mounted in the shell.
- *   4. The two sections carry the `data-section` the router's rewrite scrolls to.
+ *   4. The stage timeline and the threat context are passed INTO the Overview and the
+ *      Investigation panels (`whatHappened`, `threatContext`), which render them as the
+ *      `data-section` the router's rewrite scrolls to (OverviewPanel.test.tsx and
+ *      InvestigationPanel.test.tsx pin the sections, and the mounted
+ *      CaseDetail.requested-tab.test.tsx the scroll).
  */
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
@@ -125,16 +129,19 @@ describe('CaseDetail: the five-tab story shell (Round 15, D8.3)', () => {
     }
   });
 
-  it('Overview carries the "What happened" section with the stages state + retry', () => {
+  it('Overview carries the "What happened" story with the stages state + retry', () => {
     const content = slice(src, '<TabsContent value="overview"', '</TabsContent>');
-    const section = slice(content, 'data-section="what-happened"', '</section>');
-    expect(section).toContain('What happened');
-    expect(section).toContain('data-section-title');
+    // The stage story is the Overview's `whatHappened` section (rendered between the
+    // summary and the key entities, D8.3).
+    const section = slice(content, 'whatHappened={', 'runbookCard={');
+    expect(section).toContain('<TimelinePanel');
     for (const prop of ['stages={stages}', 'onRetryStages={loadStages}']) {
-      expect(section, `the What happened section should receive ${prop}`).toContain(prop);
+      expect(section, `the What happened story should receive ${prop}`).toContain(prop);
     }
     // Its stage CTA still jumps to the Investigation tab.
     expect(section).toContain("onOpenInvestigation={() => setTab('investigation')}");
+    // The Overview reads the model's reasoning for its summary (G17).
+    expect(content).toContain('rationale={rationale}');
   });
 
   it('Investigation carries the rationale/timeline state and the "Threat context" section', () => {
@@ -148,10 +155,13 @@ describe('CaseDetail: the five-tab story shell (Round 15, D8.3)', () => {
       expect(content, `investigation panel should receive ${prop}`).toContain(prop);
     }
     expect(content).not.toContain('stages={stages}');
-    const section = slice(content, 'data-section="threat-context"', '</section>');
-    expect(section).toContain('Threat context');
+    // The threat context is the Investigation's `threatContext` section (D8.3).
+    const section = slice(content, 'threatContext={', '</TabPanelMotion>');
+    expect(section).toContain('<ThreatContextPanel');
     expect(section).toContain('panel={threat}');
     expect(section).toContain('onRetry={loadThreat}');
+    // The decision's auto-close reading needs the FP policy.
+    expect(content).toContain('fpPolicy={fpPolicy}');
   });
 
   it('renders every panel in its one Case Manager layout, with no presentation to choose', () => {
@@ -179,10 +189,13 @@ describe('CaseDetail: the five-tab story shell (Round 15, D8.3)', () => {
     }
   });
 
-  it('stages lazy-load on Overview, threat context on Investigation, rationale for embedded and Investigation', () => {
+  it('stages lazy-load on Overview, threat context on Investigation, rationale for both and embedded', () => {
     expect(src).toContain("tab === 'overview' && stages === null && !stagesLoading && !stagesError");
     expect(src).toContain("tab === 'investigation' && threat === null && !threatLoading && !threatError");
-    expect(src).toContain("const needsRationale = tab === 'investigation' || presentation === 'embedded'");
+    // The Overview's summary and the Investigation's assessment both read the reasoning.
+    expect(src).toContain(
+      "const needsRationale = tab === 'investigation' || tab === 'overview' || presentation === 'embedded'",
+    );
     expect(src).toContain('needsRationale && rationale === null && !rationaleLoading && !rationaleError');
     expect(src).toContain("tab === 'investigation' && timeline === null && !timelineLoading && !timelineError");
     // No lingering effect keyed on a removed tab value.

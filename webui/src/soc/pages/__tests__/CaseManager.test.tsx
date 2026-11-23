@@ -502,7 +502,7 @@ describe('CaseManager', () => {
     const REPEATED: Case = {
       case_id: 'case-repeated',
       case_number: 'CASE-2026-0100',
-      title: 'user:pnair — impossible travel',
+      title: 'user:pnair impossible travel',
       status: 'open',
       severity_band: 'medium',
       risk_score: 40,
@@ -511,7 +511,7 @@ describe('CaseManager', () => {
     };
     mocks.listCases.mockResolvedValue({ cases: [REPEATED, RESOLVED_LOW], total: 2 });
     render(<CaseManager />);
-    await screen.findByText('user:pnair — impossible travel');
+    await screen.findByText('user:pnair impossible travel');
     const row = screen.getAllByTestId('case-queue-row')[0];
     expect(within(row).queryByText('User pnair')).not.toBeInTheDocument();
     expect(within(row).getByText('CASE-2026-0100')).toBeInTheDocument();
@@ -539,7 +539,7 @@ describe('CaseManager', () => {
     const NAMED: Case = {
       case_id: 'case-named',
       case_number: 'CASE-2026-0101',
-      title: 'ip:203.0.113.77 — AUTH-ANOMALY',
+      title: 'ip:203.0.113.77 AUTH-ANOMALY',
       status: 'open',
       severity_band: 'high',
       risk_score: 70,
@@ -549,7 +549,7 @@ describe('CaseManager', () => {
     };
     mocks.listCases.mockResolvedValue({ cases: [NAMED], total: 1 });
     render(<CaseManager />);
-    await screen.findByText('ip:203.0.113.77 — AUTH-ANOMALY');
+    await screen.findByText('ip:203.0.113.77 AUTH-ANOMALY');
     const row = screen.getAllByTestId('case-queue-row')[0];
     expect(within(row).getByRole('button', { name: /IBM QRadar SIEM/ })).toBeInTheDocument();
     expect(within(row).getByRole('button', { name: /^(?!.*IP 203\.0\.113\.77)/ })).toBeInTheDocument();
@@ -589,7 +589,7 @@ describe('CaseManager', () => {
     }
 
     // Round 12 (CM-4): checkboxes are ALWAYS visible (no hover-only reveal) and stay out
-    // of the tab order — the queue is one roving tab stop; X / Space toggles selection.
+    // of the tab order: the queue is one roving tab stop; X / Space toggles selection.
     const otherCheckbox = within(otherRow).getByRole('checkbox', { name: 'Select CASE-2026-0091' });
     expect(otherCheckbox).not.toHaveClass('opacity-0');
     expect(otherCheckbox).toHaveAttribute('tabindex', '-1');
@@ -842,6 +842,86 @@ describe('CaseManager', () => {
         // A person picked it in the bulk form, so it counts as their classification (D15).
         disposition_declared: true,
       },
+    });
+  });
+
+  it('leaves the cases the AI agent closed out of bulk Set status and Set disposition (D4.7)', async () => {
+    // The first decision closed it automatically; a person reviews it instead.
+    const AUTO_CLOSED = {
+      case_id: 'case-auto-closed',
+      case_number: 'CASE-2026-0070',
+      title: 'Benign scanner sweep',
+      status: 'closed',
+      decision_by: 'agent',
+      verdict: 'FALSE_POSITIVE',
+      severity_band: 'low',
+      risk_score: 9,
+      updated_at: '2026-07-20T10:12:00Z',
+      history: [{ event: 'decision', ts: '2026-07-20T10:12:00Z', status: 'closed', decision_by: 'agent' }],
+    } as unknown as Case;
+    mocks.listCases.mockImplementation(serve([OPEN_HIGH, AUTO_CLOSED]));
+    render(<CaseManager />);
+    await screen.findByText('Multiple failed logins');
+    fireEvent.click(await screen.findByRole('radio', { name: 'All' }));
+    await screen.findByText('Benign scanner sweep');
+
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select CASE-2026-0091' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select CASE-2026-0070' }));
+    await chooseBulkAction('Set disposition');
+    let dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByTestId('case-bulk-agent-closed-note')).toHaveTextContent(
+      'Cases the AI agent closed are left out; review them instead. 1 of the selected cases is left out.',
+    );
+    fireEvent.click(within(dialog).getByRole('combobox', { name: 'Disposition' }));
+    fireEvent.click(await screen.findByRole('option', { name: 'False positive' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Set disposition' }));
+    await waitFor(() => expect(mocks.submitJob).toHaveBeenCalledTimes(1));
+    expect(mocks.submitJob.mock.calls[0][0]).toMatchObject({
+      kind: 'case_lifecycle',
+      params: { case_ids: [OPEN_HIGH.case_id], action: 'set_disposition' },
+    });
+    await waitFor(() =>
+      expect(String(mocks.toastSuccess.mock.calls.at(-1)?.[0])).toMatch(/1 case the AI agent closed was left out/),
+    );
+
+    // Only agent-closed cases selected: nothing is sent, and the bar says why.
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select CASE-2026-0091' }));
+    await chooseBulkAction('Set status');
+    dialog = await screen.findByRole('dialog');
+    fireEvent.click(within(dialog).getByRole('combobox', { name: 'New status' }));
+    fireEvent.click(await screen.findByRole('option', { name: 'On hold' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Set status' }));
+    await waitFor(() =>
+      expect(String(mocks.toastError.mock.calls.at(-1)?.[0])).toMatch(/the AI agent closed every selected case/),
+    );
+    expect(mocks.submitJob).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the other bulk work for agent-closed cases (the exclusion is Set status and Set disposition only)', async () => {
+    const AUTO_CLOSED = {
+      case_id: 'case-auto-closed',
+      case_number: 'CASE-2026-0070',
+      title: 'Benign scanner sweep',
+      status: 'closed',
+      decision_by: 'agent',
+      updated_at: '2026-07-20T10:12:00Z',
+      history: [{ event: 'decision', ts: '2026-07-20T10:12:00Z', status: 'closed', decision_by: 'agent' }],
+    } as unknown as Case;
+    mocks.listCases.mockImplementation(serve([OPEN_HIGH, AUTO_CLOSED]));
+    render(<CaseManager />);
+    await screen.findByText('Multiple failed logins');
+    fireEvent.click(await screen.findByRole('radio', { name: 'All' }));
+    await screen.findByText('Benign scanner sweep');
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select CASE-2026-0070' }));
+    await chooseBulkAction('Add tag');
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).queryByTestId('case-bulk-agent-closed-note')).toBeNull();
+    fireEvent.change(within(dialog).getByRole('textbox', { name: 'Tag to add' }), { target: { value: 'reviewed' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Add tag' }));
+    await waitFor(() => expect(mocks.submitJob).toHaveBeenCalledTimes(1));
+    expect(mocks.submitJob.mock.calls[0][0]).toMatchObject({
+      kind: 'case_tag',
+      params: { case_ids: ['case-auto-closed'] },
     });
   });
 
@@ -1526,7 +1606,7 @@ describe('CaseManager', () => {
     expect(screen.getByTestId('embedded-case-detail')).toHaveAttribute('data-case-id', 'case-0000');
     expect(screen.getByTestId('case-queue-scope')).toHaveTextContent('71 of 71 active');
     expect(screen.queryByTestId('case-queue-show-new')).not.toBeInTheDocument();
-    // One window re-read sized to the grown window — never a first-page-only read.
+    // One window re-read sized to the grown window: never a first-page-only read.
     const reads = mocks.listCases.mock.calls.slice(callsBeforeShow).map(([query]) => query as Record<string, unknown>);
     expect(reads).toContainEqual(expect.objectContaining({ offset: 0, limit: 71 }));
     expect(reads).not.toContainEqual(expect.objectContaining({ offset: 0, limit: 50 }));

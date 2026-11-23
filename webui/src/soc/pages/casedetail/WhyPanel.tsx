@@ -1,5 +1,5 @@
 /**
- * CaseDetail — "Why" panel (Coupling-D split).
+ * CaseDetail: "Why" panel (Coupling-D split).
  *
  * The explainability tab: the deterministic decision summary, the agent's reasoning
  * excerpt, the knowledge it retrieved (RAG and runbook passages), the tools/queries it
@@ -10,21 +10,21 @@
  * "Runbook" with its version, consulted or selected only; a run from before Round 14
  * keeps its stored procedure id under "Runbook (before Round 14)".
  *
+ * Round 15 (SPEC D8.5): it opens inside the Investigation tab's AI assessment ("Show full
+ * assessment evidence"), so it is flat: sections divided by hairlines with plain h3
+ * headings, no card inside the tab and no padding of its own.
+ *
  * SECURITY (#9): every model/agent/log-derived string (reasoning, snippets, tool
  * output, enrichment values, selection reasons) is UNTRUSTED: rendered plain text or
  * inside <CodeBlock>. #3: read-only projection; it never decides or mutates the case.
  */
 import * as React from 'react';
 import {
-  Activity,
   BookOpen,
   Brain,
   CheckCircle2,
   CircleDashed,
   GitBranch,
-  Globe,
-  Shield,
-  SlidersHorizontal,
   Terminal,
   User,
   Wrench,
@@ -48,8 +48,17 @@ import {
   ConfidenceBadge,
 } from '@/soc/components/badges';
 
-import { PanelCard, SectionHeading } from './shared';
 import { isRunbookSource } from './InvestigationInputs';
+
+/** One flat section of the evidence: a hairline above it, no card (D8.5). */
+const WhyBlock: React.FC<{ children: React.ReactNode }> = ({ children }) => (
+  <section className="space-y-3 border-t border-border/60 pt-5 first:border-t-0 first:pt-0">{children}</section>
+);
+
+/** A section heading (h3, no icon, D8.5). */
+const WhyHeading: React.FC<{ children: React.ReactNode }> = ({ children }) => (
+  <h3 className="text-sm font-semibold text-foreground">{children}</h3>
+);
 
 function decisionByLabel(decisionBy?: string): { text: string; isHuman: boolean } {
   const d = (decisionBy || '').toLowerCase();
@@ -80,7 +89,7 @@ export const WhyPanel: React.FC<{
 }> = ({ c, rationale, loading, error, onRetry, hideDecision = false, hideMitre = false }) => {
   if (loading) {
     return (
-      <div className="p-6">
+      <div>
         <LoadingState
           label="Loading decision rationale"
           description="Preparing reasoning, retrieved knowledge, and deterministic decision evidence."
@@ -92,14 +101,14 @@ export const WhyPanel: React.FC<{
   }
   if (error) {
     return (
-      <div className="p-6">
+      <div>
         <LoadError error={error} title="Could not load decision rationale" onRetry={onRetry} />
       </div>
     );
   }
   if (!rationale) {
     return (
-      <div className="p-6">
+      <div>
         <EmptyState
           icon={Brain}
           title="No rationale recorded yet"
@@ -137,7 +146,7 @@ export const WhyPanel: React.FC<{
   const mitre = r.mitre || [];
   const enr = r.enrichment || null;
   // Only treat enrichment as present when it carries one of the fields the card
-  // actually renders — a fail-open `{}` / `{asn: 5}` result is truthy but would
+  // actually renders: a fail-open `{}` / `{asn: 5}` result is truthy but would
   // otherwise draw a heading-only card with an empty grid.
   const hasEnr =
     !!enr &&
@@ -148,14 +157,14 @@ export const WhyPanel: React.FC<{
   const platformTuning = r.platform_tuning || [];
 
   return (
-    <div className="space-y-6 p-6">
+    <div className="space-y-5">
       {/* ------------------------------------------- decision summary */}
       {hideDecision ? null : (
-        <PanelCard>
-          <SectionHeading icon={Brain}>
+        <WhyBlock>
+          <WhyHeading>
             Decision
-          </SectionHeading>
-          <div className="mb-4 flex flex-wrap items-center gap-2">
+          </WhyHeading>
+          <div className="flex flex-wrap items-center gap-2">
             <VerdictBadge verdict={verdict} />
             <StatusBadge status={status} />
             {typeof confidence === 'number' ? (
@@ -175,38 +184,38 @@ export const WhyPanel: React.FC<{
           <Alert>
             <GitBranch className="h-4 w-4" />
             <AlertTitle>Deterministic decision</AlertTitle>
-            {/* UNTRUSTED — plain text. */}
+            {/* UNTRUSTED: plain text. */}
             <AlertDescription className="whitespace-pre-wrap">
               {r.decision_rationale
                 ? r.decision_rationale
                 : 'The close / escalate decision is made by deterministic code against the operator-configured auto-close policy, never by raw model output. No rationale string was recorded for this case.'}
             </AlertDescription>
           </Alert>
-        </PanelCard>
+        </WhyBlock>
       )}
 
       {/* ------------------------------------------- agent reasoning */}
-      <PanelCard>
-        <SectionHeading icon={Activity}>
+      <WhyBlock>
+        <WhyHeading>
           Agent reasoning
-        </SectionHeading>
+        </WhyHeading>
         {r.reasoning && r.reasoning.trim() ? (
-          /* UNTRUSTED — plain text. */
+          /* UNTRUSTED: plain text. */
           <p className="whitespace-pre-wrap text-sm text-foreground/90">{r.reasoning}</p>
         ) : (
           <p className="text-sm text-muted-foreground">
             No reasoning excerpt was recorded for this investigation.
           </p>
         )}
-      </PanelCard>
+      </WhyBlock>
 
       {/* -------------------------- selected vs actually consulted procedure */}
       {hasProcedureTrace ? (
-        <PanelCard>
-          <SectionHeading icon={GitBranch}>
+        <WhyBlock>
+          <WhyHeading>
             Investigation procedure
-          </SectionHeading>
-          <p className="mb-4 text-xs leading-relaxed text-muted-foreground">
+          </WhyHeading>
+          <p className="text-xs leading-relaxed text-muted-foreground">
             Latest-run audit facts. Selection means the router chose an input;
             consultation means the investigator actually used it.
           </p>
@@ -337,15 +346,15 @@ export const WhyPanel: React.FC<{
               ))}
             </div>
           ) : null}
-        </PanelCard>
+        </WhyBlock>
       ) : null}
 
       {/* ------------------------------------------- knowledge references */}
-      <PanelCard>
-        <SectionHeading icon={BookOpen}>
+      <WhyBlock>
+        <WhyHeading>
           Knowledge references
-        </SectionHeading>
-        <p className="mb-3 text-xs text-muted-foreground">
+        </WhyHeading>
+        <p className="text-xs text-muted-foreground">
           Reference excerpts retrieved through RAG. Runbook passages are identified
           separately; the runbook whose guidance the run received is shown above.
         </p>
@@ -397,7 +406,7 @@ export const WhyPanel: React.FC<{
                     {group.label}
                   </h4>
                   {group.items.map((k, i) => (
-                    <div key={`${group.label}-${i}`} className="rounded-md border border-border bg-muted/30 p-3">
+                    <div key={`${group.label}-${i}`} className="border-t border-border/60 pt-3 first:border-t-0 first:pt-0">
                       <Badge variant="info" className="mb-2 gap-1">
                         <BookOpen className="h-3 w-3" />
                         {/* humanizeToken('') returns the DASH glyph (truthy), so guard the
@@ -405,7 +414,7 @@ export const WhyPanel: React.FC<{
                         {k.source ? humanizeToken(k.source) : 'Knowledge reference'}
                       </Badge>
                       {k.snippet ? (
-                        /* UNTRUSTED — inside CodeBlock fence. */
+                        /* UNTRUSTED: inside CodeBlock fence. */
                         <CodeBlock value={k.snippet} wrap copyable maxHeightClassName="max-h-40" />
                       ) : null}
                       {k.document_id || typeof k.score === 'number' || k.query_groups?.length ? (
@@ -444,14 +453,14 @@ export const WhyPanel: React.FC<{
             )}
           </div>
         )}
-      </PanelCard>
+      </WhyBlock>
 
       {/* ------------------------------------------- commands the agent ran */}
-      <PanelCard>
-        <SectionHeading icon={Terminal}>
+      <WhyBlock>
+        <WhyHeading>
           Commands the agent ran
-        </SectionHeading>
-        <p className="mb-3 text-xs text-muted-foreground">
+        </WhyHeading>
+        <p className="text-xs text-muted-foreground">
           The tools / read-only queries the investigator invoked to gather evidence.
         </p>
         {tools.length === 0 ? (
@@ -464,7 +473,7 @@ export const WhyPanel: React.FC<{
         ) : (
           <div className="space-y-3">
             {tools.map((t, i) => (
-              <div key={i} className="rounded-md border border-border bg-muted/30 p-3">
+              <div key={i} className="border-t border-border/60 pt-3 first:border-t-0 first:pt-0">
                 <Badge variant="info" className="mb-2 gap-1">
                   <Wrench className="h-3 w-3" />
                   {t.tool || `Tool ${i + 1}`}
@@ -473,7 +482,7 @@ export const WhyPanel: React.FC<{
                   <CodeBlock value={t.query} wrap copyable maxHeightClassName="max-h-40" />
                 ) : null}
                 {t.summary ? (
-                  /* UNTRUSTED — plain text. */
+                  /* UNTRUSTED: plain text. */
                   <p className="mt-2 whitespace-pre-wrap text-xs text-muted-foreground">
                     {t.summary}
                   </p>
@@ -482,15 +491,15 @@ export const WhyPanel: React.FC<{
             ))}
           </div>
         )}
-      </PanelCard>
+      </WhyBlock>
 
       {/* ------------------------------------------- operator memory */}
       {memory.length ? (
-        <PanelCard>
-          <SectionHeading icon={Brain}>
+        <WhyBlock>
+          <WhyHeading>
             Operator memory consulted
-          </SectionHeading>
-          <p className="mb-3 text-xs text-muted-foreground">
+          </WhyHeading>
+          <p className="text-xs text-muted-foreground">
             Approved operator facts supplied as trusted context to this investigation.
           </p>
           <ul className="space-y-2">
@@ -499,21 +508,21 @@ export const WhyPanel: React.FC<{
                 <Badge variant="medium" className="shrink-0 gap-1">
                   <Brain className="h-3 w-3" /> Memory
                 </Badge>
-                {/* UNTRUSTED — plain text. */}
+                {/* UNTRUSTED: plain text. */}
                 <span className="whitespace-pre-wrap text-foreground/90">{m}</span>
               </li>
             ))}
           </ul>
-        </PanelCard>
+        </WhyBlock>
       ) : null}
 
       {/* ------------------------------- deterministic platform tuning */}
       {platformTuning.length ? (
-        <PanelCard>
-          <SectionHeading icon={SlidersHorizontal}>
+        <WhyBlock>
+          <WhyHeading>
             Threshold tuning applied to this path
-          </SectionHeading>
-          <p className="mb-4 text-xs leading-relaxed text-muted-foreground">
+          </WhyHeading>
+          <p className="text-xs leading-relaxed text-muted-foreground">
             This case traversed a detection threshold previously adjusted by Agentic SOC
             auto-tuning. This is threshold tuning, not model fine-tuning, and it does not
             make the final close / escalate decision.
@@ -557,32 +566,32 @@ export const WhyPanel: React.FC<{
               );
             })}
           </div>
-        </PanelCard>
+        </WhyBlock>
       ) : null}
 
       {/* ------------------------------- enrichment + a run from before Round 14 */}
       {hasEnr || (!guidance && playbook && playbook.id && playbook.consulted === true) ? (
-        <div className="grid gap-6 lg:grid-cols-2">
+        <div className="grid gap-5 @[40rem]/investigation:grid-cols-2">
           {hasEnr && enr ? (
-            <PanelCard>
-              <SectionHeading icon={Globe}>
+            <WhyBlock>
+              <WhyHeading>
                 Enrichment
-              </SectionHeading>
+              </WhyHeading>
               <div className="grid grid-cols-2 gap-3">
                 {typeof enr.reputation_score === 'number' ? (
-                  <div className="rounded-md border border-border bg-muted/30 p-3">
+                  <div className="rounded-md bg-muted/40 px-3 py-2">
                     <div className="text-xs text-muted-foreground">Reputation score</div>
-                    <div className="mt-1 text-xl font-semibold text-foreground">
+                    <div className="mt-0.5 text-base font-semibold text-foreground">
                       {Math.round(enr.reputation_score)}
                     </div>
                   </div>
                 ) : null}
                 {typeof enr.is_malicious === 'boolean' ? (
-                  <div className="rounded-md border border-border bg-muted/30 p-3">
+                  <div className="rounded-md bg-muted/40 px-3 py-2">
                     <div className="text-xs text-muted-foreground">Threat verdict</div>
                     <div
                       className={cn(
-                        'mt-1 text-xl font-semibold',
+                        'mt-0.5 text-base font-semibold',
                         enr.is_malicious ? 'text-critical' : 'text-success',
                       )}
                     >
@@ -591,40 +600,40 @@ export const WhyPanel: React.FC<{
                   </div>
                 ) : null}
                 {enr.country ? (
-                  <div className="rounded-md border border-border bg-muted/30 p-3">
+                  <div className="rounded-md bg-muted/40 px-3 py-2">
                     <div className="text-xs text-muted-foreground">Country</div>
-                    {/* UNTRUSTED — plain text. */}
-                    <div className="mt-1 text-xl font-semibold text-foreground">{enr.country}</div>
+                    {/* UNTRUSTED: plain text. */}
+                    <div className="mt-0.5 text-base font-semibold text-foreground">{enr.country}</div>
                   </div>
                 ) : null}
               </div>
-            </PanelCard>
+            </WhyBlock>
           ) : null}
           {!guidance && playbook && playbook.id && playbook.consulted === true ? (
-            <PanelCard>
-              <SectionHeading icon={BookOpen}>
+            <WhyBlock>
+              <WhyHeading>
                 Runbook consulted (before Round 14)
-              </SectionHeading>
+              </WhyHeading>
               <Badge variant="info" className="font-mono">
                 {playbook.id}{playbook.version ? ` · v${playbook.version}` : ''}
               </Badge>
               {playbook.reason ? (
-                /* UNTRUSTED — plain text. */
+                /* UNTRUSTED: plain text. */
                 <p className="mt-2 whitespace-pre-wrap text-sm text-muted-foreground">
                   {playbook.reason}
                 </p>
               ) : null}
-            </PanelCard>
+            </WhyBlock>
           ) : null}
         </div>
       ) : null}
 
       {/* ------------------------------------------- MITRE */}
       {!hideMitre && mitre.length ? (
-        <PanelCard>
-          <SectionHeading icon={Shield}>
+        <WhyBlock>
+          <WhyHeading>
             MITRE ATT&amp;CK techniques
-          </SectionHeading>
+          </WhyHeading>
           <div className="flex flex-wrap gap-2">
             {mitre.map((m, i) => (
               <Badge key={`${m}-${i}`} variant="outline" className="font-mono">
@@ -632,7 +641,7 @@ export const WhyPanel: React.FC<{
               </Badge>
             ))}
           </div>
-        </PanelCard>
+        </WhyBlock>
       ) : null}
     </div>
   );

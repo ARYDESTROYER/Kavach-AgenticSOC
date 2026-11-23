@@ -1,14 +1,14 @@
 /**
- * DispositionPicker — the investigative-outcome choice as a list of radio cards, each
+ * DispositionPicker: the investigative-outcome choice as one list of radio rows, each
  * with a one-line definition (Round 12, WP-CM; Sentinel / Splunk wording).
  *
  * GROUND TRUTH (G1): the picker opens EMPTY and stays empty until a person chooses. The
- * AI's suggestion is shown as a read-only hint beside the label — never a preselection,
- * never a click-to-apply — because a value the analyst did not choose must not be posted
+ * AI's suggestion is shown as a read-only hint beside the label: never a preselection,
+ * never a click-to-apply, because a value the analyst did not choose must not be posted
  * back as their classification (`disposition_declared` is sent only when a person
  * operated this control). "Undetermined" is an explicit choice like any other.
  *
- * Keys 1–6 pick the matching card while focus is NOT in a text field, so the dialog can
+ * Keys 1 to 6 pick the matching card while focus is NOT in a text field, so the dialog can
  * be driven from the keyboard without hunting for the list.
  *
  * SECURITY (#9): every label is a fixed enum string; nothing case-derived renders here
@@ -50,13 +50,13 @@ function isTextEntry(target: EventTarget | null): boolean {
 export interface DispositionPickerProps {
   /** The chosen value ('' while nothing is chosen). */
   value: string;
-  /** Called ONLY from an analyst interaction (click, arrow keys or a 1–6 hotkey). */
+  /** Called ONLY from an analyst interaction (click, arrow keys or a 1 to 6 hotkey). */
   onChange: (value: string) => void;
   /** The AI verdict, shown as a read-only "AI suggested" hint when it maps to a value. */
   verdict?: string | null;
-  /** The disposition already stored on the case — read-only context, never a default. */
+  /** The disposition already stored on the case: read-only context, never a default. */
   currentDisposition?: string | null;
-  /** Enable the 1–6 hotkeys (only while the owning dialog is open). Default true. */
+  /** Enable the 1 to 6 hotkeys (only while the owning dialog is open). Default true. */
   hotkeys?: boolean;
   disabled?: boolean;
   /** Id prefix so two pickers on one page never share element ids. */
@@ -125,7 +125,8 @@ export const DispositionPicker: React.FC<DispositionPickerProps> = ({
         aria-describedby={helpId}
         aria-required
         disabled={disabled}
-        className="gap-1.5"
+        // Round 15 (D8.5): one bordered list with hairline rows, not six separate cards.
+        className="gap-0 divide-y divide-border/70 overflow-hidden rounded-md border border-border"
       >
         {DISPOSITION_OPTIONS.map((option, index) => {
           const id = `${idPrefix}-${option.value}`;
@@ -135,13 +136,12 @@ export const DispositionPicker: React.FC<DispositionPickerProps> = ({
               key={option.value}
               htmlFor={id}
               className={cn(
-                'flex cursor-pointer items-start gap-3 rounded-md border px-3 py-2 transition-colors duration-fast',
-                checked
-                  ? 'border-primary bg-primary/[0.06]'
-                  : 'border-border hover:bg-muted/60',
+                'relative flex cursor-pointer items-start gap-3 px-3 py-2 transition-colors duration-fast',
+                checked ? 'bg-primary/[0.06]' : 'hover:bg-muted/50',
                 disabled && 'cursor-not-allowed opacity-60',
               )}
             >
+              {checked ? <span aria-hidden className="absolute inset-y-0 left-0 w-0.5 bg-primary" /> : null}
               <RadioGroupItem id={id} value={option.value} className="mt-0.5" />
               <span className="min-w-0 flex-1">
                 <span className="flex items-baseline justify-between gap-2">
@@ -171,8 +171,8 @@ export const DispositionPicker: React.FC<DispositionPickerProps> = ({
 };
 
 /**
- * Give a dialog's initial focus to its disposition picker — the checked option, else
- * the first — and scroll it into view. A required, empty radio group is not tabbable on
+ * Give a dialog's initial focus to its disposition picker: the checked option, else
+ * the first, and scroll it into view. A required, empty radio group is not tabbable on
  * first render (the roving group has no checked item yet), so Radix's default skipped it
  * and focused the next control, often out of view under the sticky footer (CM-3).
  * Returns false when there is no picker in `root`, so the caller keeps the default.

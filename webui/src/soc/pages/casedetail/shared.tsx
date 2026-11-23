@@ -7,10 +7,10 @@
  * from one place. Nothing here fetches, decides, or mutates a case.
  *
  * SECURITY (#9): the small components below render case-derived text (labels, values,
- * tags) as PLAIN text nodes only — never markup, never an href/CSS value.
+ * tags) as PLAIN text nodes only: never markup, never an href/CSS value.
  * #3: the action model here is pure metadata; the close/escalate decision is still
  * made server-side by `decide()`. `close_disposition` maps to the EXISTING `close`
- * verb via `wireAction` — this module never invents a backend verb.
+ * verb via `wireAction`: this module never invents a backend verb.
  */
 import * as React from 'react';
 import {
@@ -29,7 +29,6 @@ import type { components } from '@/lib/api-types.gen';
 import type { Case } from '@/lib/types';
 import { cn } from '@/lib/cn';
 
-import { Card } from '@/ui/card';
 import { isAutoClosedByAI } from '@/soc/components/badges';
 
 /** The disposition vocabulary, straight off the generated OpenAPI schema. */
@@ -46,7 +45,7 @@ export const CASE_MANAGER_PANEL_PADDING =
   'px-4 py-4 sm:px-5 sm:py-5 lg:px-6';
 
 /**
- * THE analyst-comment disclosure — shown wherever a note the analyst writes on a
+ * THE analyst-comment disclosure: shown wherever a note the analyst writes on a
  * close/confirm-FP or an AI grading is carried into `index_resolved_case`.
  *
  * Why this label exists: a comment written here is embedded into the resolved-case
@@ -54,7 +53,7 @@ export const CASE_MANAGER_PANEL_PADDING =
  * matches. In production an ordinary operational aside ("Backfill: confirming agent
  * FALSE_POSITIVE disposition…") became durable evidence and quietly depressed
  * investigator confidence just under the auto-close bar, so nothing closed. The text
- * was well-formed — its MEANING was the problem — so sanitising could never have caught
+ * was well-formed (its MEANING was the problem) so sanitising could never have caught
  * it. The only real fix is telling the analyst, where they type, what the note becomes.
  *
  * Deliberately a calm one-line LABEL, not a warning banner: notes are wanted, and the
@@ -92,16 +91,17 @@ export type ActionKind =
   // carries a disposition, so `decide()`/`apply()` still run server-side (#3).
   | 'close_disposition';
 export type ActionField =
-  | 'resolution'
-  | 'tags'
   | 'assignee'
   | 'priority'
   | 'disposition'
   | 'reason'
+  // Round 15 (SPEC D4.2): what the person did about the case, from the fixed vocabulary
+  // (`ACTIONS_TAKEN_OPTIONS`). Optional; stored on the history entry and the audit row.
+  | 'actions_taken'
   // Round-7 #10 (feedback-into-close): when present, the confirm dialog renders the
-  // in-line AI-decision grading section (`GradingSection`). It carries NO wire payload
-  // — the grading is POSTed as a SEPARATE `caseFeedback` call in `runAction`, so the
-  // deterministic close (`decide()`) is untouched (#3).
+  // collapsed "Rate the AI (optional)" disclosure (Round 15, D4.4). It carries NO wire
+  // payload: the grading is POSTed as a SEPARATE `caseFeedback` call in `runAction`, so
+  // the deterministic close (`decide()`) is untouched (#3).
   | 'grading';
 
 /** The RBAC grant an action needs: close-class moves need cases:close, the rest
@@ -126,7 +126,7 @@ export const ACTION_PERMISSION: Record<ActionKind, { resource: 'cases'; action: 
  * DECLARED binary disposition as analyst-confirmed evidence (`engine/analyst_outcomes`).
  * A value the analyst never picked is not offered here and never declared. So it is
  * pinned to the GENERATED OpenAPI schema rather than "mirroring the backend enum" by
- * hand — `as const satisfies` rejects a value that is not in the union, and
+ * hand: `as const satisfies` rejects a value that is not in the union, and
  * {@link DispositionCoverage} fails `tsc --noEmit` if the union gains a member this
  * list does not offer. Type-only import: zero runtime bytes from the generated module.
  */
@@ -146,6 +146,46 @@ type MustBeNever<T extends never> = T;
 export type DispositionCoverage = MustBeNever<
   Exclude<WireDisposition, (typeof DISPOSITION_OPTIONS)[number]['value']>
 >;
+
+/** The "actions taken" vocabulary, straight off the generated OpenAPI schema. */
+export type WireActionTaken = NonNullable<components['schemas']['CaseAction']['actions_taken']>[number];
+
+/**
+ * What a person did about a case (Round 15, SPEC D4.2), in the order the close dialog
+ * offers them. The words match the backend's `constants.CASE_ACTIONS_TAKEN_LABELS` (the
+ * case Markdown export) so a person reads the same phrase everywhere. Pinned to the
+ * generated schema like {@link DISPOSITION_OPTIONS}: `satisfies` refuses a value the
+ * server does not accept, and {@link ActionsTakenCoverage} fails `tsc --noEmit` when the
+ * server gains one this list does not offer.
+ */
+export const ACTIONS_TAKEN_OPTIONS = [
+  { value: 'no_action_needed', text: 'No action needed' },
+  { value: 'blocked_indicator', text: 'Blocked an indicator' },
+  { value: 'isolated_host', text: 'Isolated a host' },
+  { value: 'disabled_account', text: 'Disabled an account' },
+  { value: 'reset_credentials', text: 'Reset credentials' },
+  { value: 'removed_malware', text: 'Removed malware' },
+  { value: 'patched_or_hardened', text: 'Patched or hardened' },
+  { value: 'notified_owner', text: 'Notified the owner' },
+  { value: 'escalated_externally', text: 'Escalated outside the SOC' },
+  { value: 'tuned_detection', text: 'Tuned the detection' },
+  { value: 'other', text: 'Other' },
+] as const satisfies ReadonlyArray<{ value: WireActionTaken; text: string }>;
+
+/** Compile-time drift guard for {@link ACTIONS_TAKEN_OPTIONS}. */
+export type ActionsTakenCoverage = MustBeNever<
+  Exclude<WireActionTaken, (typeof ACTIONS_TAKEN_OPTIONS)[number]['value']>
+>;
+
+/** At most this many actions on one lifecycle action (`constants.CASE_ACTIONS_TAKEN_MAX`). */
+export const ACTIONS_TAKEN_MAX = 8;
+
+/** The words for one recorded action (an unknown stored value is shown as written). */
+export function actionTakenWords(value: unknown): string {
+  const token = typeof value === 'string' ? value.trim() : '';
+  if (!token) return '';
+  return ACTIONS_TAKEN_OPTIONS.find((option) => option.value === token)?.text ?? token;
+}
 
 export interface ActionDef {
   key: ActionKind;
@@ -167,7 +207,7 @@ export interface ActionDef {
 export const ALL_ACTIONS: Record<ActionKind, ActionDef> = {
   // ONE unified close flow: pick the investigative disposition (true/false
   // positive, benign, …) + an optional note, then close. Posts the EXISTING
-  // `close` verb with a `disposition` — the backend still runs decide()/apply()
+  // `close` verb with a `disposition`: the backend still runs decide()/apply()
   // (#3). Replaces the separate close / confirm-FP / set-disposition buttons.
   close_disposition: {
     key: 'close_disposition',
@@ -176,10 +216,10 @@ export const ALL_ACTIONS: Record<ActionKind, ActionDef> = {
     icon: Check,
     variant: 'default',
     confirmTitle: 'Close with a disposition',
-    confirmBody:
-      'Choose the investigative outcome, then close this case. The close/escalate decision is still made by deterministic code. This records your disposition and closes the case.',
+    // Round 15 (D4.1): one classification question, then what was done about it.
+    confirmBody: 'Say what this case was and what you did about it, then close it.',
     help: 'Pick a disposition and close the case.',
-    fields: ['disposition', 'resolution', 'tags', 'grading'],
+    fields: ['disposition', 'actions_taken', 'grading'],
   },
   escalate: {
     key: 'escalate',
@@ -243,11 +283,13 @@ export const ALL_ACTIONS: Record<ActionKind, ActionDef> = {
     variant: 'default',
     confirmTitle: 'Mark this case resolved?',
     confirmBody:
-      'Mark the case resolved: worked to completion and pending final close. Record the outcome you confirmed.',
+      'Worked to completion and pending final close. Say what this case was and what you did about it.',
     help: 'Resolved: worked to completion, pending final close.',
     // Round 12 (SPEC D15): resolving is a terminal move, so it captures the outcome like
-    // a close does — required, opened empty, sent with `disposition_declared` (G1).
-    fields: ['disposition', 'reason', 'tags', 'grading'],
+    // a close does: required, opened empty, sent with `disposition_declared` (G1). Round
+    // 15 (D4.1, D4.6): the same one question as the close, with no tags; the note is the
+    // status reason (the server stores `reason or note`).
+    fields: ['disposition', 'actions_taken', 'grading'],
   },
   deescalate: {
     key: 'deescalate',
@@ -266,12 +308,19 @@ export const ALL_ACTIONS: Record<ActionKind, ActionDef> = {
     variant: 'outline',
     confirmTitle: 'Set the investigative disposition',
     confirmBody:
-      'Record the investigative OUTCOME (true/false positive, benign, suspicious, …). This does not change the lifecycle status.',
+      'Record what this case was (true positive, false positive, benign and so on). This does not change its status.',
     help: 'Record the investigative outcome (true/false positive, benign, …).',
-    fields: ['disposition', 'reason', 'grading'],
+    // The server keeps no separate reason for a classification (no status moves), so the
+    // note is the one place for why.
+    fields: ['disposition', 'grading'],
   },
 };
 
+/**
+ * The resolution choices of the BULK close (`BulkCloseDialog`, which keeps its shape,
+ * Round 15 D4.6). The single-case close dialog no longer asks it: its options overlapped
+ * the disposition (D4.1).
+ */
 export const RESOLUTION_OPTIONS: Array<{ value: string; text: string }> = [
   { value: 'handled', text: 'Handled' },
   { value: 'benign', text: 'Benign' },
@@ -364,7 +413,7 @@ export function planCloseAction(plan: ActionPlan): ActionDef | null {
 /**
  * Adapter: was this case auto-closed by the AI? A thin `Case`-shaped wrapper over the
  * shared {@link isAutoClosedByAI} predicate (terminal status + `decision_by === 'agent'`).
- * There is no `auto_closed` STATUS in the backend — this is a read-only presentation of
+ * There is no `auto_closed` STATUS in the backend: this is a read-only presentation of
  * WHO the recorded decider was. Presentation-only (#3): the close was still made by the
  * deterministic `decide()` policy, never by this helper.
  */
@@ -448,14 +497,70 @@ export const SectionHeading: React.FC<{
   </div>
 );
 
-/* --------------------------------------------------------------- PanelCard -- */
+/* ------------------------------------------------------------ PanelSection -- */
 
 /**
- * The surface a CaseDetail panel section renders in: a top-level page Card at the
- * sanctioned 24px (`padding="md"`) rhythm. Round 15 (D8.5) retires it from the case files
- * as the tab bodies are rebuilt (no Card inside a Panel).
+ * One section of a case tab body (Round 15, SPEC D8.3, D8.5): a 16px heading over its
+ * content, divided from the section before it by a hairline. No card, no icon heading,
+ * no padding of its own (the tab body owns the one 16 to 24px content rail).
+ *
+ * `section` names a section a link can scroll to (`data-section`, the retired Timeline and
+ * Threat context tabs and the facts rail's Related cases); its heading is then focusable
+ * (`data-section-title`, tabIndex -1) so an in-page jump can move focus to it.
  */
-export const PanelCard: React.FC<React.HTMLAttributes<HTMLDivElement>> = ({
+export interface PanelSectionProps extends Omit<React.HTMLAttributes<HTMLElement>, 'title'> {
+  title: React.ReactNode;
+  /** A scroll target name (`data-section`). */
+  section?: string;
+  /** Beside the heading: a provenance tag, a count. */
+  adornment?: React.ReactNode;
+  /** At the end of the heading row: a quiet control. */
+  actions?: React.ReactNode;
+  /** One muted line under the heading. */
+  description?: React.ReactNode;
+  testId?: string;
+  /** The heading's id (generated when omitted). */
+  headingId?: string;
+}
+
+export const PanelSection: React.FC<PanelSectionProps> = ({
+  title,
+  section,
+  adornment,
+  actions,
+  description,
+  testId,
+  headingId: headingIdProp,
   className,
-  ...props
-}) => <Card elevation="none" className={cn('p-6', className)} {...props} />;
+  children,
+  ...rest
+}) => {
+  const generatedId = React.useId();
+  const headingId = headingIdProp ?? generatedId;
+  return (
+    <section
+      {...rest}
+      data-section={section}
+      data-testid={testId}
+      aria-labelledby={headingId}
+      className={cn('space-y-3 border-t border-border/60 pt-6 first:border-t-0 first:pt-0', className)}
+    >
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
+          <h2
+            id={headingId}
+            data-section-title={section ? '' : undefined}
+            tabIndex={section ? -1 : undefined}
+            className="rounded-sm text-base font-semibold text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            {title}
+          </h2>
+          {adornment}
+        </div>
+        {actions ? <div className="ml-auto flex flex-wrap items-center gap-2">{actions}</div> : null}
+      </div>
+      {description ? <p className="-mt-1.5 text-xs leading-relaxed text-muted-foreground">{description}</p> : null}
+      {children}
+    </section>
+  );
+};

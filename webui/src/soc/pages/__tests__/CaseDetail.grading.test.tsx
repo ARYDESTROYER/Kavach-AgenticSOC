@@ -1,13 +1,13 @@
 /**
- * CaseDetail — feedback-into-close (Round-7 #10, DERIVED model).
+ * CaseDetail: feedback-into-close (Round-7 #10, DERIVED model).
  *
  * The standalone Feedback tab is retired; AI-decision grading now folds INTO the close
  * dialog. On a close-with-verdict the orchestrator's `runAction` fires TWO SEPARATE api
  * calls (#3 intact):
  *
- *   1. `caseActionExec`  — the EXISTING lifecycle verb; the backend still runs the real
+ *   1. `caseActionExec`: the EXISTING lifecycle verb; the backend still runs the real
  *                          deterministic `decide()`/`apply()`.
- *   2. `caseFeedback`    — a best-effort grading POST, with the agree/override assessment
+ *   2. `caseFeedback`: a best-effort grading POST, with the agree/override assessment
  *                          DERIVED from the disposition ↔ verdict diff. It NEVER touches
  *                          `decide()`.
  *
@@ -19,7 +19,7 @@
  *   - CANCELLING the dialog issues NEITHER;
  *   - closing a NO-VERDICT case issues ONLY the action POST (grading is skipped).
  *
- * #9 is unaffected — no attacker-influenceable text is rendered by these assertions.
+ * #9 is unaffected: no attacker-influenceable text is rendered by these assertions.
  */
 import type * as React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -112,7 +112,7 @@ async function openCloseDialogAndPick(disposition: RegExp): Promise<HTMLElement>
   return dialog;
 }
 
-describe('CaseDetail — feedback-into-close (two separate POSTs, #3)', () => {
+describe('CaseDetail: feedback-into-close (two separate POSTs, #3)', () => {
   beforeEach(() => {
     caseActionExec.mockReset();
     caseFeedback.mockReset();
@@ -224,7 +224,7 @@ describe('CaseDetail — feedback-into-close (two separate POSTs, #3)', () => {
 
     renderWithProviders(<CaseDetail caseId="case-91" onClose={vi.fn()} />);
     const dialog = await openCloseDialogAndPick(/False positive/i);
-    fireEvent.click(within(dialog).getByRole('button', { name: /rate in detail/i }));
+    fireEvent.click(within(dialog).getByRole('button', { name: /rate the ai/i }));
     fireEvent.click(await within(dialog).findByRole('button', { name: 'Accuracy: 4 of 5' }));
     const submit = within(dialog).getByRole('button', { name: /^close case/i });
     await waitFor(() => expect(submit).not.toBeDisabled());
@@ -245,7 +245,7 @@ describe('CaseDetail — feedback-into-close (two separate POSTs, #3)', () => {
 
     renderWithProviders(<CaseDetail caseId="case-91" onClose={vi.fn()} />);
     const dialog = await openCloseDialogAndPick(/Duplicate/i);
-    fireEvent.click(within(dialog).getByRole('button', { name: /rate in detail/i }));
+    fireEvent.click(within(dialog).getByRole('button', { name: /rate the ai/i }));
     fireEvent.click(await within(dialog).findByRole('button', { name: 'Accuracy: 4 of 5' }));
     const submit = within(dialog).getByRole('button', { name: /^close case/i });
     await waitFor(() => expect(submit).not.toBeDisabled());
@@ -257,12 +257,12 @@ describe('CaseDetail — feedback-into-close (two separate POSTs, #3)', () => {
     expect(body).not.toHaveProperty('assessment');
   });
 
-  it('POSTs the assessment DERIVED from the FINAL disposition even if the grading section was collapsed first', async () => {
-    // Regression: the derived agree/override was previously synced into parent state by
-    // an effect INSIDE GradingFields, which unmounts when the analyst collapses the
-    // grading section. A later disposition change then never re-derived, and runAction
-    // POSTed a STALE assessment. The fix derives it AT SUBMIT from the committed
-    // disposition ↔ verdict, so a pre-submit collapse can no longer freeze it.
+  it('POSTs the assessment DERIVED from the FINAL disposition, whatever the rating disclosure did', async () => {
+    // Regression (Round 7): the derived agree/override used to be synced into parent state
+    // by an effect inside the grading section, so a section collapsed before a later
+    // disposition change POSTed a STALE assessment. Round 15 (D4.4) never asks it: it is
+    // derived AT SUBMIT from the committed disposition against the verdict, so opening and
+    // closing "Rate the AI" cannot freeze it.
     getCase.mockResolvedValue({ ...BASE_CASE, verdict: 'true_positive' });
     caseActionExec.mockResolvedValue({
       ...BASE_CASE,
@@ -279,33 +279,34 @@ describe('CaseDetail — feedback-into-close (two separate POSTs, #3)', () => {
     });
 
     renderWithProviders(<CaseDetail caseId="case-91" onClose={vi.fn()} />);
-    // Open + pick TP first: TP↔TP derives 'agree' and (section open by default) the
-    // in-GradingFields effect syncs grading.assessment = 'agree'.
     const dialog = await openCloseDialogAndPick(/True positive/i);
     await screen.findByText(/Matches AI verdict/i);
 
-    // Collapse the grading section — GradingFields (which holds the derive effect)
-    // UNMOUNTS, freezing grading.assessment at the now-stale 'agree'.
-    fireEvent.click(within(dialog).getByRole('button', { name: /grade the ai decision/i }));
-    await waitFor(() =>
-      expect(within(dialog).queryByText(/Matches AI verdict/i)).not.toBeInTheDocument(),
-    );
-
-    // Flip the disposition to an OVERRIDE (false_positive of a TP verdict). The section
-    // is unmounted, so the stale-effect model can't re-derive.
+    // Open and close the rating disclosure, then flip to an OVERRIDE.
+    const rate = within(dialog).getByRole('button', { name: /rate the ai/i });
+    fireEvent.click(rate);
+    fireEvent.click(rate);
     fireEvent.click(within(dialog).getByRole('radio', { name: /False positive/i }));
+    await within(dialog).findByText(/Overrides AI verdict/i);
 
+    // D4.3: an override needs a note before it can go.
     const submit = within(dialog).getByRole('button', { name: /^close case/i });
-    await waitFor(() => expect(submit).not.toBeDisabled());
+    fireEvent.click(submit);
+    expect(caseActionExec).not.toHaveBeenCalled();
+    fireEvent.change(within(dialog).getByLabelText(/analyst note \(required\)/i), {
+      target: { value: 'The source IP is our scanner.' },
+    });
     fireEvent.click(submit);
 
-    // The deterministic close carries the final disposition.
+    // The deterministic close carries the final disposition and the note.
     await waitFor(() => expect(caseActionExec).toHaveBeenCalledTimes(1));
-    expect(caseActionExec.mock.calls[0][1].disposition).toBe('false_positive');
+    expect(caseActionExec.mock.calls[0][1]).toMatchObject({
+      disposition: 'false_positive',
+      note: 'The source IP is our scanner.',
+    });
 
-    // The grading POST must carry the assessment DERIVED AT SUBMIT from the FINAL
-    // disposition (false_positive) ↔ verdict (true_positive) = 'disagree' — NOT the stale
-    // 'agree' frozen when the section unmounted.
+    // The grading POST carries the assessment DERIVED AT SUBMIT from the FINAL disposition
+    // (false_positive) against the verdict (true_positive) = 'disagree'.
     await waitFor(() => expect(caseFeedback).toHaveBeenCalledTimes(1));
     expect(caseFeedback.mock.calls[0][1].assessment).toBe('disagree');
   });
@@ -317,7 +318,7 @@ describe('CaseDetail — feedback-into-close (two separate POSTs, #3)', () => {
     const dialog = await openCloseDialogAndPick(/True positive/i);
 
     // Cancel routes through `closeAction` (setPending(null)) and triggers NO POST at
-    // all — neither the deterministic action nor the grading feedback.
+    // all: neither the deterministic action nor the grading feedback.
     fireEvent.click(within(dialog).getByRole('button', { name: /cancel/i }));
 
     expect(caseActionExec).not.toHaveBeenCalled();
@@ -328,7 +329,7 @@ describe('CaseDetail — feedback-into-close (two separate POSTs, #3)', () => {
     // The catch used to discard the result outright, so a rejected grading was
     // invisible: the case closed, the toast said nothing, and the analyst walked away
     // believing their ground truth had been recorded. The catch stays (a grading
-    // failure must never read as a close failure, #3) — but it must SAY so.
+    // failure must never read as a close failure, #3), but it must SAY so.
     const { ApiError } = await import('@/lib/api');
     getCase.mockResolvedValue({ ...BASE_CASE, verdict: 'true_positive' });
     caseActionExec.mockResolvedValue({
@@ -351,7 +352,7 @@ describe('CaseDetail — feedback-into-close (two separate POSTs, #3)', () => {
     const message = String(toastMock.error.mock.calls[0][0]);
     expect(message).toMatch(/grading was rejected/i);
     expect(message).toMatch(/not a valid enumeration member/i);
-    // The CLOSE still succeeded — it is a separate call and must not be reported as
+    // The CLOSE still succeeded: it is a separate call and must not be reported as
     // failed. The terminal footer proves the lifecycle action landed.
     await screen.findByRole('button', { name: /reopen/i });
   });
@@ -377,41 +378,53 @@ describe('CaseDetail — feedback-into-close (two separate POSTs, #3)', () => {
     expect(toastMock.error).not.toHaveBeenCalled();
   });
 
-  it('POSTs the stated outcome even when the case carries NO verdict to grade', async () => {
-    // A confirmed outcome stands on its own: there is nothing to grade on a case the
-    // agent never judged, but "what actually happened" is exactly as real — and it is
-    // the only field `analyst_confirmed_outcome` can read.
-    getCase.mockResolvedValue({ ...BASE_CASE, verdict: undefined });
-    caseActionExec.mockResolvedValue({
-      ...BASE_CASE,
-      verdict: undefined,
-      status: 'closed',
-      disposition: 'false_positive',
-    });
-    caseFeedback.mockResolvedValue({ ...BASE_CASE, status: 'closed' });
+  it('never sets actual_outcome from the disposition (D4.4): the declared disposition is the label', async () => {
+    // The close's grade carries the derived assessment only. A feedback label would pin
+    // ground truth against a later reclassification, which the declared disposition
+    // (`explicit_analyst_disposition`) already records.
+    getCase.mockResolvedValue({ ...BASE_CASE, verdict: 'false_positive' });
+    caseActionExec.mockResolvedValue({ ...BASE_CASE, verdict: 'false_positive', status: 'closed', disposition: 'benign' });
+    caseFeedback.mockResolvedValue(null);
 
     renderWithProviders(<CaseDetail caseId="case-91" onClose={vi.fn()} />);
-    const dialog = await openCloseDialogAndPick(/False positive/i);
-
-    // Pick the confirmed outcome in the grading section (the 2nd combobox: the
-    // disposition picker is the 1st).
-    const outcome = within(dialog).getByLabelText(/what actually happened/i);
-    fireEvent.click(outcome);
-    fireEvent.click(await screen.findByRole('option', { name: /^false positive: /i }));
-
+    const dialog = await openCloseDialogAndPick(/^Benign/i);
+    expect(within(dialog).queryByLabelText(/what actually happened/i)).toBeNull();
     const submit = within(dialog).getByRole('button', { name: /^close case/i });
     await waitFor(() => expect(submit).not.toBeDisabled());
     fireEvent.click(submit);
 
     await waitFor(() => expect(caseFeedback).toHaveBeenCalledTimes(1));
-    expect(caseFeedback.mock.calls[0][1].actual_outcome).toBe('false_positive');
-    // No AI verdict, nothing to compare: the stated outcome carries no assessment, and the
-    // backend's Agreement rate counts only grades that do (Round 12 final review).
-    expect(caseFeedback.mock.calls[0][1]).not.toHaveProperty('assessment');
+    const [, body] = caseFeedback.mock.calls[0];
+    expect(body).toMatchObject({ assessment: 'agree' });
+    expect(body).not.toHaveProperty('actual_outcome');
+  });
+
+  it('sends the actions taken with the close (D4.2), and nothing when none were chosen', async () => {
+    getCase.mockResolvedValue({ ...BASE_CASE, verdict: 'true_positive' });
+    caseActionExec.mockResolvedValue({ ...BASE_CASE, verdict: 'true_positive', status: 'closed', disposition: 'true_positive' });
+    caseFeedback.mockResolvedValue(null);
+
+    renderWithProviders(<CaseDetail caseId="case-91" onClose={vi.fn()} />);
+    const dialog = await openCloseDialogAndPick(/True positive/i);
+    const group = within(dialog).getByRole('group', { name: /actions taken/i });
+    fireEvent.click(within(group).getByRole('button', { name: 'Blocked an indicator' }));
+    fireEvent.click(within(group).getByRole('button', { name: 'Reset credentials' }));
+    const submit = within(dialog).getByRole('button', { name: /^close case/i });
+    await waitFor(() => expect(submit).not.toBeDisabled());
+    fireEvent.click(submit);
+
+    await waitFor(() => expect(caseActionExec).toHaveBeenCalledTimes(1));
+    expect(caseActionExec.mock.calls[0][1]).toMatchObject({
+      action: 'close',
+      actions_taken: ['blocked_indicator', 'reset_credentials'],
+    });
+    // Tags and the resolution left the dialog (D4.1, D4.6): never sent from it.
+    expect(caseActionExec.mock.calls[0][1]).not.toHaveProperty('tags');
+    expect(caseActionExec.mock.calls[0][1]).not.toHaveProperty('resolution');
   });
 
   it('closing a NO-VERDICT case issues ONLY the action POST (grading skipped)', async () => {
-    // No AI verdict to grade — the second POST must be suppressed.
+    // No AI verdict to grade: the second POST must be suppressed.
     getCase.mockResolvedValue({ ...BASE_CASE, verdict: undefined });
     caseActionExec.mockResolvedValue({
       ...BASE_CASE,
@@ -427,7 +440,7 @@ describe('CaseDetail — feedback-into-close (two separate POSTs, #3)', () => {
     await waitFor(() => expect(submit).not.toBeDisabled());
     fireEvent.click(submit);
 
-    // The close resolves and re-renders the footer to the terminal (Reopen) state — a
+    // The close resolves and re-renders the footer to the terminal (Reopen) state: a
     // signal that runAction's whole continuation (incl. the grading guard) ran. With no
     // verdict the feedback POST is skipped; only the deterministic action POST fired.
     await screen.findByRole('button', { name: /reopen/i });
@@ -444,12 +457,12 @@ describe('CaseDetail — feedback-into-close (two separate POSTs, #3)', () => {
  * "a disposition is mandatory" guard was already satisfied before the analyst had
  * chosen anything, and (b) a bare Close → Confirm posted the model's own answer back as
  * if a human had given it. The backend then recorded it as `explicit_analyst_disposition`
- * — the exact closed loop where the tuner "confirms" the verdicts it is meant to audit.
+ * (the exact closed loop where the tuner "confirms" the verdicts it is meant to audit).
  *
  * Two things are pinned here: the picker opens EMPTY on an already-dispositioned case,
  * and the wire carries `disposition_declared` only once the analyst has picked.
  */
-describe('CaseDetail — the disposition picker never answers for the analyst (G1)', () => {
+describe('CaseDetail: the disposition picker never answers for the analyst (G1)', () => {
   beforeEach(() => {
     caseActionExec.mockReset();
     caseFeedback.mockReset();
@@ -458,7 +471,7 @@ describe('CaseDetail — the disposition picker never answers for the analyst (G
     toastMock.warning.mockReset();
   });
 
-  /** A case the AGENT already dispositioned — apply() mapped verdict → disposition. */
+  /** A case the AGENT already dispositioned: apply() mapped verdict → disposition. */
   const AGENT_DISPOSITIONED = {
     ...BASE_CASE,
     status: 'escalated',
@@ -485,7 +498,7 @@ describe('CaseDetail — the disposition picker never answers for the analyst (G
     expect(within(dialog).getByRole('button', { name: /^close case/i })).toBeDisabled();
     expect(caseActionExec).not.toHaveBeenCalled();
 
-    // The information the pre-seed used to carry is still there — as READ-ONLY
+    // The information the pre-seed used to carry is still there: as READ-ONLY
     // context describing the picker, not as its value.
     const help = within(dialog).getByText(/currently recorded: true positive/i);
     expect(picker).toHaveAttribute('aria-describedby', help.id);
@@ -497,7 +510,7 @@ describe('CaseDetail — the disposition picker never answers for the analyst (G
     caseFeedback.mockResolvedValue({ ...AGENT_DISPOSITIONED, status: 'closed' });
 
     renderWithProviders(<CaseDetail caseId="case-91" onClose={vi.fn()} />);
-    // Re-affirming the model's own value is a legitimate analyst statement — the gate
+    // Re-affirming the model's own value is a legitimate analyst statement: the gate
     // is on INTENT, not on the value differing. So pick the SAME disposition the agent
     // had already written and prove the flag rides along.
     const dialog = await openCloseDialogAndPick(/True positive/i);

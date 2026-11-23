@@ -1,12 +1,34 @@
 /**
- * Case facts — small, pure helpers shared by the Case Manager queue, the case header
+ * Case facts: small, pure helpers shared by the Case Manager queue, the case header
  * meta row and the facts rail (Round 12, WP-CM).
  *
  * Nothing here fetches, decides or mutates (#3). Every value derived from a case is
  * returned as PLAIN DATA for the caller to render as a text node (#9).
  */
-import type { Case, SlaPolicy } from '@/lib/types';
+import type { Case, CaseRationale, SlaPolicy } from '@/lib/types';
 import { humanizeAge, humanizeToken } from '@/lib/format';
+
+/** The AI ran on this case: it carries a verdict (a candidate or a policy close does not). */
+export function aiAssessed(c: Pick<Case, 'verdict'>): boolean {
+  const v = String(c.verdict ?? '').trim().toLowerCase();
+  return Boolean(v) && v !== 'none';
+}
+
+/**
+ * The AI's own reading of a case (Round 15, G17): the model's reasoning excerpt, else
+ * the summary the investigation wrote when the AI assessed the case. NEVER the code's
+ * `decision_rationale` (that is the Decision's line), and never a system summary of a
+ * case the AI did not assess (a candidate awaiting analysis, an analyst-policy close).
+ * Empty when there is none. Plain data (#9).
+ */
+export function aiAssessmentText(
+  c: Pick<Case, 'verdict' | 'summary'>,
+  rationale: Pick<CaseRationale, 'reasoning'> | null | undefined,
+): string {
+  const reasoning = rationale?.reasoning?.trim();
+  if (reasoning) return reasoning;
+  return aiAssessed(c) ? c.summary?.trim() || '' : '';
+}
 
 /** The case's human-facing id (template display id, else the raw id). */
 export function caseDisplayId(c: Pick<Case, 'case_id' | 'case_number'>): string {
@@ -68,7 +90,7 @@ export function millis(iso: unknown): number | null {
   return Number.isNaN(ms) ? null : ms;
 }
 
-/** "12m", "3h", "2d" — a compact duration for SLA phrases. */
+/** "12m", "3h", "2d": a compact duration for SLA phrases. */
 export function shortDuration(ms: number): string {
   const abs = Math.abs(ms);
   const minutes = Math.round(abs / 60_000);
@@ -83,7 +105,7 @@ export interface CaseClock {
   label: string;
   /** ISO instant. */
   at: string;
-  /** "3h ago" — relative age. */
+  /** "3h ago": relative age. */
   relative: string;
 }
 
@@ -125,7 +147,7 @@ export interface SlaReading {
  * The advisory SLA reading for a case (response clock until acknowledged, then the
  * resolution clock until terminal). Returns null when the policy is off, has no target
  * for the case's priority, or runs on business hours (the console does not model the
- * business calendar, so it states nothing rather than a wrong countdown). ADVISORY ONLY —
+ * business calendar, so it states nothing rather than a wrong countdown). ADVISORY ONLY:
  * never read by `decide()` (#3).
  */
 export function slaReading(
