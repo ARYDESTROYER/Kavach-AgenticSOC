@@ -37,6 +37,7 @@ import {
 import type {
   ConfiguredStatus,
   ConnectorManifest,
+  ModelConfig,
   SecretsUpdate,
   SetupStatus,
   SourceInstance,
@@ -116,7 +117,7 @@ const STEPS: Array<{
     key: 'runtime',
     title: 'Connect an AI runtime',
     shortTitle: 'AI runtime',
-    description: 'Add a provider credential for live investigations, or use the mock runtime.',
+    description: 'Add a provider key so the AI agent can investigate cases.',
     icon: KeyRound,
   },
   {
@@ -141,6 +142,8 @@ export default function Wizard({ onComplete, onExit }: WizardProps) {
   const [finishError, setFinishError] = React.useState<unknown>(null);
   const [finishing, setFinishing] = React.useState(false);
   const [status, setStatus] = React.useState<SetupStatus | null>(null);
+  // The default investigation provider (authenticated settings read), for "Add a key for".
+  const [defaultProvider, setDefaultProvider] = React.useState<string>();
   const [connectors, setConnectors] = React.useState<ConnectorManifest[]>([]);
   const [sources, setSources] = React.useState<SourceInstance[]>([]);
   const [sourceEditorOpen, setSourceEditorOpen] = React.useState(false);
@@ -205,6 +208,11 @@ export default function Wizard({ onComplete, onExit }: WizardProps) {
     } finally {
       setLoading(false);
     }
+    // Optional: without it the key notice leaves out the provider sentence.
+    Promise.resolve()
+      .then(() => api.getSettings())
+      .then((s) => setDefaultProvider((s.prefs.investigator_model as ModelConfig).provider))
+      .catch(() => undefined);
   }, []);
 
   React.useEffect(() => {
@@ -272,8 +280,10 @@ export default function Wizard({ onComplete, onExit }: WizardProps) {
   );
 
   const configured: ConfiguredStatus = status?.configured ?? {};
-  const hasProvider =
-    Boolean(configured.anthropic_api_key) || Boolean(configured.openai_api_key);
+  // Round 15 (SPEC D2.1): whether the default investigation models can be called, from
+  // the server, never from which keys happen to be set.
+  const hasProvider = Boolean(status && status.ai_runtime_ready);
+  const provider = (status && status.ai_runtime_provider) || defaultProvider;
   const hasKeyDraft = Object.values(keyValues).some((value) => value.trim());
   const enabledSources = sources.filter((source) => source.enabled !== false);
 
@@ -290,30 +300,23 @@ export default function Wizard({ onComplete, onExit }: WizardProps) {
     setKeysNotice(null);
     try {
       const result = await api.updateSecrets(body);
-      setStatus((previous) =>
-        previous
-          ? {
-              ...previous,
-              configured: { ...previous.configured, ...result.configured },
-            }
-          : { setup_complete: false, configured: result.configured },
-      );
+      // The write answer is authoritative (configured booleans and, since Round 15, the
+      // readiness of the default models): applied now and again after the status read,
+      // which can be eventually consistent and briefly return the old values.
+      const { configured: saved, ai_runtime_ready, ai_runtime_provider } = result;
+      const patch = (previous: SetupStatus | null): SetupStatus => ({
+        ...(previous || { setup_complete: false }),
+        configured: { ...(previous && previous.configured), ...saved },
+        ...(ai_runtime_ready == null ? null : { ai_runtime_ready, ai_runtime_provider }),
+      });
+      setStatus(patch);
       setKeyValues({});
       try {
         await refreshStatus();
       } catch {
         setKeysNotice('Keys were saved. Live status will refresh after setup.');
       }
-      // Preserve the authoritative write response even if the subsequent status read
-      // is eventually consistent and briefly returns the old boolean.
-      setStatus((previous) =>
-        previous
-          ? {
-              ...previous,
-              configured: { ...previous.configured, ...result.configured },
-            }
-          : { setup_complete: false, configured: result.configured },
-      );
+      setStatus(patch);
       return true;
     } catch (error) {
       setKeysError(error);
@@ -548,6 +551,8 @@ export default function Wizard({ onComplete, onExit }: WizardProps) {
                     <KeysStep
                       headingRef={headingRef}
                       configured={configured}
+                      ready={hasProvider}
+                      provider={provider}
                       values={keyValues}
                       demoMode={demoMode}
                       error={keysError}
@@ -563,6 +568,8 @@ export default function Wizard({ onComplete, onExit }: WizardProps) {
                       demoMode={demoMode}
                       sources={sources}
                       configured={configured}
+                      ready={hasProvider}
+                      provider={provider}
                     />
                   ) : null}
 
@@ -1292,9 +1299,28 @@ const KEY_FIELDS: KeyField[] = [
   },
 ];
 
+/**
+ * Provider family token (`llm/readiness.py`), its label and, when it is not
+ * `<token>_api_key`, its configured-boolean key. Kept short: this page is first paint.
+ */
+const PROVIDERS = [
+  ['openai', 'OpenAI'],
+  ['anthropic', 'Anthropic'],
+  ['openai_compatible', 'OpenAI-compatible endpoint', 'litellm_api_key'],
+  ['azure', 'Azure OpenAI', 'azure_openai_api_key'],
+  ['bedrock', 'Amazon Bedrock', 'aws_access_key_id'],
+  ['vertex', 'Google Vertex AI'],
+];
+const providerLabel = (token?: string) => (PROVIDERS.find((p) => p[0] === token) || [])[1];
+const DEFAULT_MODELS = 'the default models';
+const configuredProviders = (configured: ConfiguredStatus) =>
+  PROVIDERS.filter((p) => configured[p[2] || p[0] + '_api_key']).map((p) => p[1]);
+
 function KeysStep({
   headingRef,
   configured,
+  ready,
+  provider,
   values,
   demoMode,
   error,
@@ -1303,14 +1329,19 @@ function KeysStep({
 }: {
   headingRef: React.RefObject<HTMLHeadingElement>;
   configured: ConfiguredStatus;
+  /** The default investigation models can be called (`ai_runtime_ready`). */
+  ready: boolean;
+  /** Their provider family, when known. */
+  provider?: string;
   values: Record<string, string>;
   demoMode: boolean;
   error: unknown;
   notice: string | null;
   onChange: (key: string, value: string) => void;
 }) {
-  const anyConfigured =
-    Boolean(configured.anthropic_api_key) || Boolean(configured.openai_api_key);
+  // A key is set but the default models cannot use it (an Anthropic key for OpenAI models).
+  const keyPresent = configuredProviders(configured).length > 0;
+  const label = providerLabel(provider);
   return (
     <div>
       <StepHeading
@@ -1319,10 +1350,10 @@ function KeysStep({
         description="Add at least one provider for live reasoning. Model selection, budgets, and routing stay configurable in Settings after launch."
       />
 
-      <Alert variant={demoMode ? 'info' : anyConfigured ? 'success' : 'warning'} className="mb-6">
+      <Alert variant={demoMode ? 'info' : ready ? 'success' : 'warning'} className="mb-6">
         {demoMode ? (
           <FlaskConical className="h-4 w-4" aria-hidden />
-        ) : anyConfigured ? (
+        ) : ready ? (
           <CheckCircle2 className="h-4 w-4" aria-hidden />
         ) : (
           <TriangleAlert className="h-4 w-4" aria-hidden />
@@ -1330,16 +1361,20 @@ function KeysStep({
         <AlertTitle>
           {demoMode
             ? 'Mock runtime available'
-            : anyConfigured
+            : ready
               ? 'Live provider configured'
-              : 'A live provider is recommended'}
+              : keyPresent
+                ? 'Your key does not match the default models'
+                : 'No usable AI provider yet'}
         </AlertTitle>
         <AlertDescription>
           {demoMode
             ? 'Demo investigations run against the deterministic mock runtime at no inference cost. A live key is optional.'
-            : anyConfigured
+            : ready
               ? 'New credentials replace only the provider you update; existing secret values are never shown.'
-              : 'You can continue without a key, but live investigations will use the limited mock runtime until a provider is added.'}
+              : keyPresent
+                ? `${label ? `The default investigation models use ${label}. ` : ''}Add a key for ${label || DEFAULT_MODELS}, or choose other models in Settings → Models after launch.`
+                : 'You can continue without a key. Until you add one, the AI agent investigates nothing: new cases wait for a person as Needs human review.'}
         </AlertDescription>
       </Alert>
 
@@ -1388,14 +1423,17 @@ function ReviewStep({
   demoMode,
   sources,
   configured,
+  ready: hasProvider,
+  provider,
 }: {
   headingRef: React.RefObject<HTMLHeadingElement>;
   demoMode: boolean;
   sources: SourceInstance[];
   configured: ConfiguredStatus;
+  /** The default investigation models can be called (`ai_runtime_ready`). */
+  ready: boolean;
+  provider?: string;
 }) {
-  const hasProvider =
-    Boolean(configured.anthropic_api_key) || Boolean(configured.openai_api_key);
   const enabledSources = sources.filter((source) => source.enabled !== false);
   const disabledSourceCount = sources.length - enabledSources.length;
   const primary = enabledSources.find((source) => source.is_primary);
@@ -1454,15 +1492,12 @@ function ReviewStep({
           state={hasProvider ? 'ready' : demoMode ? 'optional' : 'warning'}
           detail={
             hasProvider
-              ? `Configured: ${[
-                  configured.anthropic_api_key ? 'Anthropic' : null,
-                  configured.openai_api_key ? 'OpenAI' : null,
-                ]
-                  .filter(Boolean)
-                  .join(', ')}`
+              ? `Configured: ${
+                  configuredProviders(configured).join(', ') || providerLabel(provider) || DEFAULT_MODELS
+                }`
               : demoMode
                 ? 'Deterministic mock runtime · no inference cost'
-                : 'No provider configured · mock runtime only'
+                : 'No usable provider · cases wait for a person'
           }
         />
         <div className="flex items-start gap-4 py-6">

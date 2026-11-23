@@ -582,6 +582,10 @@ async def setup_status(
         # public path is needed. Nothing secret: an on/off flag, a duration, and
         # whether THIS request's transport would refuse a remembered session.
         "remember_me": _remember_me_status(state, request),
+        # Round 15 (SPEC D2.2): whether the AI agent can call the default investigation
+        # models at all. One boolean only: this route is public, so it never names the
+        # provider (the authenticated POST /setup/secrets answer does).
+        "ai_runtime_ready": await _ai_runtime_ready(state),
         "setup_complete": p.setup_complete,
         "needs_user": bool(auth_enabled and user_count == 0),
         "auth_enabled": auth_enabled,
@@ -608,6 +612,17 @@ async def setup_status(
         ),
         "state_backend": state_backend,
     }
+
+
+async def _ai_runtime_ready(state: AppState) -> bool:
+    """Round 15 (SPEC D2.1): ``llm.readiness``, never failing the public status read."""
+    from ..llm.readiness import ai_runtime_status_for
+
+    try:
+        return bool((await ai_runtime_status_for(state))["ready"])
+    except Exception as exc:  # noqa: BLE001 (the public status never fails on it)
+        logger.warning("AI runtime readiness could not be computed: %s", exc)
+        return False
 
 
 # NOTE: the legacy PUBLIC ``POST /api/setup/init-admin`` was REMOVED (H4 / FINDING
@@ -740,7 +755,22 @@ async def setup_secrets(
                     f"the other {'keys were' if len(others) > 1 else 'key was'} not changed: "
                     f"{', '.join(sorted(others))}."
                 ) from exc
-    return {"ok": True, "configured": state.secrets.configured_status()}
+    # Round 15 (SPEC D2.2): the wizard patches the readiness of the default
+    # investigation models from this answer, since the status read that follows can be
+    # briefly stale. Authenticated, so it also names the provider family (a fixed token).
+    from ..llm.readiness import ai_runtime_status_for
+
+    try:
+        runtime = await ai_runtime_status_for(state)
+    except Exception as exc:  # noqa: BLE001 (the keys are saved; readiness is advisory)
+        logger.warning("AI runtime readiness could not be computed: %s", exc)
+        runtime = {"ready": False, "provider": "mock"}
+    return {
+        "ok": True,
+        "configured": state.secrets.configured_status(),
+        "ai_runtime_ready": bool(runtime["ready"]),
+        "ai_runtime_provider": runtime["provider"],
+    }
 
 
 @router.post("/setup/complete")
@@ -2000,6 +2030,61 @@ def _reject_out_of_range_auto_close_review(body: Any) -> None:
         )
 
 
+# --------------------------------------------------------------------------- #
+# Round 15 (SPEC D1.3): role-based access through PUT /api/settings
+# --------------------------------------------------------------------------- #
+#: The ``rbac`` fields other than ``enabled`` a settings save may change, given the
+#: role-management grant and a fresh sign-in. ``rbac_grants_version`` is a stamp the
+#: validator keeps, not something a person edits.
+_RBAC_MATRIX_FIELDS = frozenset({"roles", "resources", "custom_roles", "denies", "default_role"})
+
+
+class _RbacEditAuthorityNeeded(Exception):
+    """Raised by the settings transform when the body changes the role matrix and the
+    caller's authority for that has not been checked yet (the check is asynchronous and
+    the transform is not)."""
+
+
+def _guard_rbac_settings_change(current: Preferences, validated: Preferences, *,
+                                authorized: bool) -> None:
+    """Compare the validated merged ``rbac`` block with the stored one.
+
+    A changed ``rbac.enabled`` answers ``409 rbac_switch_moved``: the switch lives on
+    Roles & permissions and ``PUT /api/rbac``, which is Super admin only and asks for a
+    strict fresh sign-in. Any other changed ``rbac`` field needs ``roles:manage`` and a
+    fresh sign-in (:func:`_require_rbac_edit_authority`), as editing a role on Roles &
+    permissions does. Compared after validation, so ``1`` or ``"true"`` for a stored
+    ``true`` is no change. The Console never sends ``rbac`` here (it is a curated
+    section), so no Console save is affected."""
+    before, after = current.rbac, validated.rbac
+    if bool(after.enabled) != bool(before.enabled):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "rbac_switch_moved",
+                "message": (
+                    "Turn role-based access on or off in Roles & permissions, "
+                    "or with PUT /api/rbac."
+                ),
+            },
+        )
+    if authorized:
+        return
+    fields = set(_RBAC_MATRIX_FIELDS)
+    if before.model_dump(mode="json", include=fields) != after.model_dump(mode="json", include=fields):
+        raise _RbacEditAuthorityNeeded()
+
+
+async def _require_rbac_edit_authority(request: Request, state: AppState) -> None:
+    """``roles:manage`` (the route gate's core, which writes the Access denied row on a
+    refusal) and a fresh sign-in. Both are no-ops with sign-in off."""
+    from .deps import _enforce
+    from .routes_rbac import require_strict_fresh_sign_in
+
+    await _enforce(request, "roles", "manage")
+    await require_strict_fresh_sign_in(request, state)
+
+
 @router.put("/settings")
 async def put_settings(
     body: dict[str, Any],
@@ -2058,26 +2143,41 @@ async def put_settings(
         # Demo Mode is managed ONLY by the /api/demo/* endpoints — never via this path.
         merged["demo"] = current.demo.model_dump(mode="json")
         try:
-            return Preferences.model_validate(merged)
+            validated = Preferences.model_validate(merged)
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(status_code=422, detail=f"Invalid settings: {exc}") from exc
+        # Round 15 (SPEC D1.3): the role-based access switch moved to PUT /api/rbac, and
+        # the role matrix needs the role-management grant and a fresh sign-in.
+        _guard_rbac_settings_change(current, validated, authorized=rbac_authority["checked"])
+        return validated
 
     # The legacy one-line summary keeps naming the top-level keys the body sent (never
     # their values, #10); the structured ``changes`` carry what actually changed.
     changed = sorted(str(k) for k in body.keys()) if isinstance(body, dict) else []
     body_sources = body.get("sources") if isinstance(body, dict) else None
-    old_prefs, prefs = await audited_prefs_write(
-        state,
-        transform=_apply,
-        actor=current_username(request) or "",
-        context=audit_context(request),
-        summary=("updated settings: " + ", ".join(changed))[:500] if changed else "updated settings",
-        # A connector field its manifest marks secret is withheld whole, for the stored
-        # sources and any the body brings.
-        secret_fields=_source_secret_paths(
-            [*state.prefs.sources, *(body_sources if isinstance(body_sources, list) else [])]
-        ),
-    )
+    rbac_authority = {"checked": False}
+    while True:
+        try:
+            old_prefs, prefs = await audited_prefs_write(
+                state,
+                transform=_apply,
+                actor=current_username(request) or "",
+                context=audit_context(request),
+                summary=("updated settings: " + ", ".join(changed))[:500] if changed else "updated settings",
+                # A connector field its manifest marks secret is withheld whole, for the
+                # stored sources and any the body brings.
+                secret_fields=_source_secret_paths(
+                    [*state.prefs.sources, *(body_sources if isinstance(body_sources, list) else [])]
+                ),
+            )
+            break
+        except _RbacEditAuthorityNeeded:
+            # Asked once, before the edit's action row (the transform runs on the
+            # snapshot first); then the save is tried again with the authority held.
+            if rbac_authority["checked"]:  # pragma: no cover - the guard never asks twice
+                raise
+            await _require_rbac_edit_authority(request, state)
+            rbac_authority["checked"] = True
     # #10 / G6 R5: record an immutable version snapshot for every rule this save CHANGED
     # (detection / correlation / case-automation) so DetectionRulesHome edits populate the
     # ledger + rollback UI. Best-effort; a versioning glitch never fails the save.

@@ -1026,6 +1026,17 @@ export interface SetupStatus {
   user_count?: number;
   seeded_default?: boolean;
   configured: ConfiguredStatus;
+  /**
+   * Round 15 (SPEC D2.1): whether the default investigation models (router and
+   * investigator) can be called with the credentials the backend holds.
+   */
+  ai_runtime_ready?: boolean;
+  /**
+   * Their provider family (`openai`, `anthropic`, `openai_compatible`, `azure`, `bedrock`,
+   * `vertex`, `mock`). Only the authenticated `POST /api/setup/secrets` answer carries it;
+   * the wizard patches it in after saving a key.
+   */
+  ai_runtime_provider?: string;
   data_view_pattern?: string;
   entity_mapping?: {
     source_ip_field?: string;

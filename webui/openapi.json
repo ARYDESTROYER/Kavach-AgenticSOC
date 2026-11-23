@@ -8898,6 +8898,151 @@
         "title": "RagImportRequest",
         "type": "object"
       },
+      "RbacStatus": {
+        "description": "The state of role-based access, as ``GET /api/rbac`` reports it.",
+        "properties": {
+          "auth_enabled": {
+            "description": "Whether sign-in is on. Without it roles have no effect.",
+            "title": "Auth Enabled",
+            "type": "boolean"
+          },
+          "blockers": {
+            "description": "Why the caller may not change it: auth_off, not_super_admin, read_only_settings.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Blockers",
+            "type": "array"
+          },
+          "caller_role": {
+            "default": "",
+            "description": "The caller's stored role, even while role-based access is off (empty with sign-in off).",
+            "title": "Caller Role",
+            "type": "string"
+          },
+          "can_change": {
+            "description": "Whether the caller may turn it on or off now (no blockers).",
+            "title": "Can Change",
+            "type": "boolean"
+          },
+          "enabled": {
+            "description": "Whether role-based access is on (``rbac.enabled``).",
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "role_counts": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "integer"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Active accounts per stored role (environment accounts included). Only for a caller holding users:manage; null otherwise.",
+            "title": "Role Counts"
+          },
+          "super_admin_count": {
+            "default": 0,
+            "description": "Active Super admin accounts: persisted ones, plus the environment administrator when it is configured and no persisted user has its name.",
+            "title": "Super Admin Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "enabled",
+          "auth_enabled",
+          "can_change"
+        ],
+        "title": "RbacStatus",
+        "type": "object"
+      },
+      "RbacUpdate": {
+        "additionalProperties": false,
+        "description": "``PUT /api/rbac``: the requested state. A JSON boolean only.",
+        "properties": {
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "enabled"
+        ],
+        "title": "RbacUpdate",
+        "type": "object"
+      },
+      "RbacUpdateResult": {
+        "description": "The answer to ``PUT /api/rbac``: the new state and whether it changed.",
+        "properties": {
+          "auth_enabled": {
+            "description": "Whether sign-in is on. Without it roles have no effect.",
+            "title": "Auth Enabled",
+            "type": "boolean"
+          },
+          "blockers": {
+            "description": "Why the caller may not change it: auth_off, not_super_admin, read_only_settings.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Blockers",
+            "type": "array"
+          },
+          "caller_role": {
+            "default": "",
+            "description": "The caller's stored role, even while role-based access is off (empty with sign-in off).",
+            "title": "Caller Role",
+            "type": "string"
+          },
+          "can_change": {
+            "description": "Whether the caller may turn it on or off now (no blockers).",
+            "title": "Can Change",
+            "type": "boolean"
+          },
+          "changed": {
+            "description": "False when role-based access was already in the requested state.",
+            "title": "Changed",
+            "type": "boolean"
+          },
+          "enabled": {
+            "description": "Whether role-based access is on (``rbac.enabled``).",
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "role_counts": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "integer"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Active accounts per stored role (environment accounts included). Only for a caller holding users:manage; null otherwise.",
+            "title": "Role Counts"
+          },
+          "super_admin_count": {
+            "default": 0,
+            "description": "Active Super admin accounts: persisted ones, plus the environment administrator when it is configured and no persisted user has its name.",
+            "title": "Super Admin Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "enabled",
+          "auth_enabled",
+          "can_change",
+          "changed"
+        ],
+        "title": "RbacUpdateResult",
+        "type": "object"
+      },
       "ReactionBody": {
         "properties": {
           "emoji": {
@@ -26925,6 +27070,68 @@
           }
         },
         "summary": "Rag Stats"
+      }
+    },
+    "/api/rbac": {
+      "get": {
+        "description": "Whether role-based access is on and whether the caller may change it.",
+        "operationId": "get_rbac_api_rbac_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RbacStatus"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Rbac",
+        "tags": [
+          "rbac"
+        ]
+      },
+      "put": {
+        "description": "Turn role-based access on or off (module doc, rules 1 to 7).",
+        "operationId": "put_rbac_api_rbac_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RbacUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RbacUpdateResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Put Rbac",
+        "tags": [
+          "rbac"
+        ]
       }
     },
     "/api/releases/upstream": {

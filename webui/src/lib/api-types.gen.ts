@@ -4880,6 +4880,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/rbac": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Rbac
+         * @description Whether role-based access is on and whether the caller may change it.
+         */
+        get: operations["get_rbac_api_rbac_get"];
+        /**
+         * Put Rbac
+         * @description Turn role-based access on or off (module doc, rules 1 to 7).
+         */
+        put: operations["put_rbac_api_rbac_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/releases/upstream": {
         parameters: {
             query?: never;
@@ -11441,6 +11465,109 @@ export interface components {
             text: string;
             /** Title */
             title: string;
+        };
+        /**
+         * RbacStatus
+         * @description The state of role-based access, as ``GET /api/rbac`` reports it.
+         */
+        RbacStatus: {
+            /**
+             * Auth Enabled
+             * @description Whether sign-in is on. Without it roles have no effect.
+             */
+            auth_enabled: boolean;
+            /**
+             * Blockers
+             * @description Why the caller may not change it: auth_off, not_super_admin, read_only_settings.
+             */
+            blockers?: string[];
+            /**
+             * Caller Role
+             * @description The caller's stored role, even while role-based access is off (empty with sign-in off).
+             * @default
+             */
+            caller_role: string;
+            /**
+             * Can Change
+             * @description Whether the caller may turn it on or off now (no blockers).
+             */
+            can_change: boolean;
+            /**
+             * Enabled
+             * @description Whether role-based access is on (``rbac.enabled``).
+             */
+            enabled: boolean;
+            /**
+             * Role Counts
+             * @description Active accounts per stored role (environment accounts included). Only for a caller holding users:manage; null otherwise.
+             */
+            role_counts?: {
+                [key: string]: number;
+            } | null;
+            /**
+             * Super Admin Count
+             * @description Active Super admin accounts: persisted ones, plus the environment administrator when it is configured and no persisted user has its name.
+             * @default 0
+             */
+            super_admin_count: number;
+        };
+        /**
+         * RbacUpdate
+         * @description ``PUT /api/rbac``: the requested state. A JSON boolean only.
+         */
+        RbacUpdate: {
+            /** Enabled */
+            enabled: boolean;
+        };
+        /**
+         * RbacUpdateResult
+         * @description The answer to ``PUT /api/rbac``: the new state and whether it changed.
+         */
+        RbacUpdateResult: {
+            /**
+             * Auth Enabled
+             * @description Whether sign-in is on. Without it roles have no effect.
+             */
+            auth_enabled: boolean;
+            /**
+             * Blockers
+             * @description Why the caller may not change it: auth_off, not_super_admin, read_only_settings.
+             */
+            blockers?: string[];
+            /**
+             * Caller Role
+             * @description The caller's stored role, even while role-based access is off (empty with sign-in off).
+             * @default
+             */
+            caller_role: string;
+            /**
+             * Can Change
+             * @description Whether the caller may turn it on or off now (no blockers).
+             */
+            can_change: boolean;
+            /**
+             * Changed
+             * @description False when role-based access was already in the requested state.
+             */
+            changed: boolean;
+            /**
+             * Enabled
+             * @description Whether role-based access is on (``rbac.enabled``).
+             */
+            enabled: boolean;
+            /**
+             * Role Counts
+             * @description Active accounts per stored role (environment accounts included). Only for a caller holding users:manage; null otherwise.
+             */
+            role_counts?: {
+                [key: string]: number;
+            } | null;
+            /**
+             * Super Admin Count
+             * @description Active Super admin accounts: persisted ones, plus the environment administrator when it is configured and no persisted user has its name.
+             * @default 0
+             */
+            super_admin_count: number;
         };
         /** ReactionBody */
         ReactionBody: {
@@ -21769,6 +21896,59 @@ export interface operations {
                 };
                 content: {
                     "application/json": Record<string, never>;
+                };
+            };
+        };
+    };
+    get_rbac_api_rbac_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RbacStatus"];
+                };
+            };
+        };
+    };
+    put_rbac_api_rbac_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RbacUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RbacUpdateResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

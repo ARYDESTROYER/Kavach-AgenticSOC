@@ -1109,8 +1109,15 @@ export const api = {
       ),
   },
   setupStatus: () => request<SetupStatus>('GET', 'setup/status'),
+  // Round 15 (SPEC D2.2): the answer also says whether the default investigation models
+  // can now be called, and their provider family.
   updateSecrets: (secrets: SecretsUpdate) =>
-    request<{ ok: boolean; configured: Record<string, boolean> }>('POST', 'setup/secrets', {
+    request<{
+      ok: boolean;
+      configured: Record<string, boolean>;
+      ai_runtime_ready?: boolean;
+      ai_runtime_provider?: string;
+    }>('POST', 'setup/secrets', {
       body: secrets,
     }),
   completeSetup: () =>
