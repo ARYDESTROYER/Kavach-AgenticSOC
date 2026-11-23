@@ -812,6 +812,18 @@ async def _case_runbook_runs(state: AppState, case_ids: list[str]) -> dict[str, 
     return out
 
 
+async def _auto_close_review_group(state: AppState) -> dict[str, list[Any]]:
+    """Round 15 (SPEC D6.4): the auto-close review ledger as the ``auto_close_review``
+    group of the automation scope: one row per sampled case (ids, the rule, times,
+    states and the review's codes; the note stays on the case's grade). Absent when the
+    state has no ledger; a ledger outage raises so the scope fails rather than export
+    without it."""
+    store = getattr(state, "auto_close_review", None)
+    if store is None:
+        return {}
+    return {"auto_close_review": await store.export_rows()}
+
+
 def _case_id_of(row: Any) -> str:
     value = getattr(row, "case_id", None)
     if value is None and isinstance(row, dict):
@@ -872,17 +884,16 @@ async def _collect_scope(
             key=lambda job: str(getattr(job, "id", "")),
         )
         rule_versions = list(await state.rule_versions.list_strict())
-        groups = _limit_grouped_rows({
+        grouped_rows = {
             "proposals": proposals,
             "tuning": tuning,
             "campaigns": list(campaigns),
             "batch_jobs": batch_jobs,
             "rule_versions": rule_versions,
-        }, limit)
-        total = (
-            len(proposals) + len(tuning) + int(campaign_total) + len(batch_jobs)
-            + len(rule_versions)
-        )
+        }
+        grouped_rows.update(await _auto_close_review_group(state))
+        groups = _limit_grouped_rows(grouped_rows, limit)
+        total = sum(len(rows) for rows in grouped_rows.values()) - len(campaigns) + int(campaign_total)
         count = sum(len(rows) for rows in groups.values())
         return groups, _manifest(count, total)
 
@@ -950,6 +961,7 @@ async def _collect_segment_page(
             ),
             "rule_versions": list(await state.rule_versions.list_strict()),
         }
+        grouped.update(await _auto_close_review_group(state))
     elif scope == "knowledge":
         grouped = await _knowledge_catalog_groups(state)
     else:

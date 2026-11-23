@@ -264,6 +264,11 @@ class DemoStack:
         # stack is active.
         from ..stores.runbook_runs import RunbookRunStore
         self.runbook_runs = RunbookRunStore(self.kv)
+        # Round 15 (SPEC D6.4, §3.2): Demo automatic closes are sampled for review into
+        # a Demo ledger on the Demo KV, gone when Demo Mode ends. ``AppState.
+        # auto_close_review`` serves it while the stack is active.
+        from ..stores.auto_close_review import AutoCloseReviewStore
+        self.auto_close_review = AutoCloseReviewStore(self.kv)
         self.inbox = InboxStore(self.kv)
         self.shift_handoff = ShiftHandoffStore(self.kv)
         # Durable raw-alert-by-severity ingest counters backing the demo's
@@ -400,7 +405,20 @@ class DemoStack:
         # global singleton (isolation boundary). Without this the pipeline's
         # ``_emit_step`` would fall back to ``get_event_bus()`` and leak demo frames.
         pipeline.event_bus = self.event_bus
+        # Round 15 (SPEC D6.3): the Demo sampler (Demo ledger, Demo audit, Demo bus).
+        pipeline.review_sampler = self._build_review_sampler()
         return pipeline
+
+    def _build_review_sampler(self):
+        """The Demo pipeline's auto-close review sampler: it writes only to this
+        stack's ledger, audit and bus, so nothing it does survives Demo Mode."""
+        from .auto_close_review import ReviewSampler
+
+        return ReviewSampler(
+            store=lambda: self.auto_close_review,
+            audit=lambda: self.audit,
+            bus=lambda: self.event_bus,
+        )
 
     async def runbook_catalog(self) -> tuple[Any, ...]:
         """The Demo pipeline's matchable runbook catalog: the real library's (built-ins

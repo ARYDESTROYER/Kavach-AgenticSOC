@@ -905,6 +905,154 @@
         "title": "AutoClosePolicy",
         "type": "object"
       },
+      "AutoCloseReviewMetrics": {
+        "description": "The Agent effectiveness \"Auto-close review\" module (D6.12) over the cases sampled\nin ``window``. Never a composite score.",
+        "properties": {
+          "agreement": {
+            "$ref": "#/components/schemas/ReviewAgreement"
+          },
+          "by_day": {
+            "items": {
+              "$ref": "#/components/schemas/ReviewDayRow"
+            },
+            "title": "By Day",
+            "type": "array"
+          },
+          "by_rule": {
+            "items": {
+              "$ref": "#/components/schemas/ReviewRuleRow"
+            },
+            "title": "By Rule",
+            "type": "array"
+          },
+          "daily_cap": {
+            "title": "Daily Cap",
+            "type": "integer"
+          },
+          "eligible": {
+            "$ref": "#/components/schemas/ReviewEligible"
+          },
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "expired": {
+            "title": "Expired",
+            "type": "integer"
+          },
+          "expiry_days": {
+            "title": "Expiry Days",
+            "type": "integer"
+          },
+          "generated_at": {
+            "title": "Generated At",
+            "type": "string"
+          },
+          "ledger_complete": {
+            "title": "Ledger Complete",
+            "type": "boolean"
+          },
+          "missed_threats": {
+            "$ref": "#/components/schemas/ReviewMissedThreats"
+          },
+          "pending": {
+            "title": "Pending",
+            "type": "integer"
+          },
+          "per_rule_daily_cap": {
+            "title": "Per Rule Daily Cap",
+            "type": "integer"
+          },
+          "reviewed": {
+            "title": "Reviewed",
+            "type": "integer"
+          },
+          "sample_rate": {
+            "title": "Sample Rate",
+            "type": "number"
+          },
+          "sampled": {
+            "title": "Sampled",
+            "type": "integer"
+          },
+          "statement": {
+            "title": "Statement",
+            "type": "string"
+          },
+          "time_spent_ms": {
+            "$ref": "#/components/schemas/ReviewDuration"
+          },
+          "time_to_review_ms": {
+            "$ref": "#/components/schemas/ReviewDuration"
+          },
+          "unsure": {
+            "title": "Unsure",
+            "type": "integer"
+          },
+          "window": {
+            "$ref": "#/components/schemas/ReviewMetricsWindow"
+          }
+        },
+        "required": [
+          "window",
+          "enabled",
+          "sample_rate",
+          "daily_cap",
+          "per_rule_daily_cap",
+          "expiry_days",
+          "sampled",
+          "reviewed",
+          "pending",
+          "expired",
+          "unsure",
+          "agreement",
+          "missed_threats",
+          "by_rule",
+          "time_spent_ms",
+          "time_to_review_ms",
+          "by_day",
+          "eligible",
+          "ledger_complete",
+          "statement",
+          "generated_at"
+        ],
+        "title": "AutoCloseReviewMetrics",
+        "type": "object"
+      },
+      "AutoCloseReviewSummary": {
+        "description": "The Review scope badge: pending reviews, disagreeing reviews whose case is still\nclosed, today's sample against the daily cap.",
+        "properties": {
+          "daily_cap": {
+            "title": "Daily Cap",
+            "type": "integer"
+          },
+          "disagreed_open": {
+            "title": "Disagreed Open",
+            "type": "integer"
+          },
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "pending": {
+            "title": "Pending",
+            "type": "integer"
+          },
+          "sampled_today": {
+            "title": "Sampled Today",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "enabled",
+          "pending",
+          "disagreed_open",
+          "sampled_today",
+          "daily_cap"
+        ],
+        "title": "AutoCloseReviewSummary",
+        "type": "object"
+      },
       "AvatarBody": {
         "description": "Thin set/clear of just the avatar (empty string clears it).",
         "properties": {
@@ -10168,6 +10316,374 @@
         "title": "ResetBody",
         "type": "object"
       },
+      "ReviewAgreement": {
+        "properties": {
+          "agreed": {
+            "title": "Agreed",
+            "type": "integer"
+          },
+          "disagreed": {
+            "title": "Disagreed",
+            "type": "integer"
+          },
+          "interval": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "number"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Interval"
+          },
+          "minimum": {
+            "title": "Minimum",
+            "type": "integer"
+          },
+          "rate": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rate"
+          },
+          "reviews": {
+            "title": "Reviews",
+            "type": "integer"
+          },
+          "statement": {
+            "title": "Statement",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "ok",
+              "insufficient"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "agreed",
+          "disagreed",
+          "reviews",
+          "minimum",
+          "statement"
+        ],
+        "title": "ReviewAgreement",
+        "type": "object"
+      },
+      "ReviewBody": {
+        "additionalProperties": false,
+        "description": "A person's review of an automatic close. ``classification`` is their own\nanswer, asked before the AI verdict is compared. The optional ratings are stars\n(above 0, at most 1). ``elapsed_ms`` is the time from opening the review card to\nsubmitting it, measured by the Console.",
+        "properties": {
+          "accuracy": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "maximum": 1.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Accuracy"
+          },
+          "action_appropriateness": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "maximum": 1.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Action Appropriateness"
+          },
+          "classification": {
+            "enum": [
+              "true_positive",
+              "false_positive",
+              "benign",
+              "unsure"
+            ],
+            "title": "Classification",
+            "type": "string"
+          },
+          "elapsed_ms": {
+            "anyOf": [
+              {
+                "maximum": 86400000.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Elapsed Ms"
+          },
+          "note": {
+            "default": "",
+            "maxLength": 1000,
+            "title": "Note",
+            "type": "string"
+          },
+          "reasoning_quality": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "maximum": 1.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reasoning Quality"
+          }
+        },
+        "required": [
+          "classification"
+        ],
+        "title": "ReviewBody",
+        "type": "object"
+      },
+      "ReviewDayRow": {
+        "properties": {
+          "day": {
+            "title": "Day",
+            "type": "string"
+          },
+          "eligible": {
+            "title": "Eligible",
+            "type": "integer"
+          },
+          "sampled": {
+            "title": "Sampled",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "day",
+          "eligible",
+          "sampled"
+        ],
+        "title": "ReviewDayRow",
+        "type": "object"
+      },
+      "ReviewDuration": {
+        "properties": {
+          "median": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Median"
+          },
+          "reviews": {
+            "default": 0,
+            "title": "Reviews",
+            "type": "integer"
+          }
+        },
+        "title": "ReviewDuration",
+        "type": "object"
+      },
+      "ReviewEligible": {
+        "properties": {
+          "complete": {
+            "title": "Complete",
+            "type": "boolean"
+          },
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "count",
+          "complete"
+        ],
+        "title": "ReviewEligible",
+        "type": "object"
+      },
+      "ReviewMetricsWindow": {
+        "properties": {
+          "end": {
+            "title": "End",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "start": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Start"
+          },
+          "token": {
+            "title": "Token",
+            "type": "string"
+          },
+          "tz": {
+            "title": "Tz",
+            "type": "string"
+          }
+        },
+        "required": [
+          "token",
+          "label",
+          "tz",
+          "end"
+        ],
+        "title": "ReviewMetricsWindow",
+        "type": "object"
+      },
+      "ReviewMissedThreat": {
+        "properties": {
+          "case_id": {
+            "title": "Case Id",
+            "type": "string"
+          },
+          "case_number": {
+            "default": "",
+            "title": "Case Number",
+            "type": "string"
+          },
+          "completed_at": {
+            "default": "",
+            "title": "Completed At",
+            "type": "string"
+          },
+          "rule": {
+            "default": "",
+            "title": "Rule",
+            "type": "string"
+          }
+        },
+        "required": [
+          "case_id"
+        ],
+        "title": "ReviewMissedThreat",
+        "type": "object"
+      },
+      "ReviewMissedThreats": {
+        "properties": {
+          "cases": {
+            "items": {
+              "$ref": "#/components/schemas/ReviewMissedThreat"
+            },
+            "title": "Cases",
+            "type": "array"
+          },
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "count"
+        ],
+        "title": "ReviewMissedThreats",
+        "type": "object"
+      },
+      "ReviewResult": {
+        "description": "The recorded review: ``agrees`` (None for unsure), whether the caller may\nreopen the case (``cases:close``), and the ledger id when the case was sampled.",
+        "properties": {
+          "agrees": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agrees"
+          },
+          "can_reopen": {
+            "default": false,
+            "title": "Can Reopen",
+            "type": "boolean"
+          },
+          "review_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Review Id"
+          },
+          "sampled": {
+            "default": false,
+            "title": "Sampled",
+            "type": "boolean"
+          }
+        },
+        "title": "ReviewResult",
+        "type": "object"
+      },
+      "ReviewRuleRow": {
+        "properties": {
+          "agreed": {
+            "title": "Agreed",
+            "type": "integer"
+          },
+          "disagreed": {
+            "title": "Disagreed",
+            "type": "integer"
+          },
+          "reviewed": {
+            "title": "Reviewed",
+            "type": "integer"
+          },
+          "rule": {
+            "title": "Rule",
+            "type": "string"
+          },
+          "sampled": {
+            "title": "Sampled",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "rule",
+          "sampled",
+          "reviewed",
+          "agreed",
+          "disagreed"
+        ],
+        "title": "ReviewRuleRow",
+        "type": "object"
+      },
       "RevokeOthersBody": {
         "properties": {
           "notify": {
@@ -18740,6 +19256,25 @@
         "summary": "Set Sso Provider Secret"
       }
     },
+    "/api/auto-close-review/summary": {
+      "get": {
+        "description": "The Review scope badge (D6.12). Pending entries whose case already carries its\nreview are repaired in the ledger and not counted.",
+        "operationId": "auto_close_review_summary_api_auto_close_review_summary_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AutoCloseReviewSummary"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Auto Close Review Summary"
+      }
+    },
     "/api/baseline/config": {
       "get": {
         "description": "Read ``Preferences.baseline`` (the anomaly-baseline policy). Read-only, no\nsecrets — the baseline block carries only tuning knobs (#10).",
@@ -19548,6 +20083,22 @@
               ],
               "title": "Closed By"
             }
+          },
+          {
+            "in": "query",
+            "name": "review",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Review"
+            }
           }
         ],
         "responses": {
@@ -20229,6 +20780,56 @@
           }
         },
         "summary": "Case Reinvestigate"
+      }
+    },
+    "/api/cases/{case_id}/review": {
+      "post": {
+        "description": "Record a person's review of a case the AI agent closed automatically (D6.6).",
+        "operationId": "record_auto_close_review_api_cases__case_id__review_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "case_id",
+            "required": true,
+            "schema": {
+              "title": "Case Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReviewBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Record Auto Close Review"
       }
     },
     "/api/cases/{case_id}/run-playbook": {
@@ -24929,6 +25530,54 @@
           }
         },
         "summary": "Metrics Auto Close Health Recorded"
+      }
+    },
+    "/api/metrics/auto-close-review": {
+      "get": {
+        "description": "The Agent effectiveness module (D6.12) over the cases sampled in ``window`` (a\n``time_windows`` token, default the last 30 days, in the operator zone).",
+        "operationId": "auto_close_review_metrics_api_metrics_auto_close_review_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "window",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 200,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Window"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AutoCloseReviewMetrics"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Auto Close Review Metrics"
       }
     },
     "/api/metrics/breakdown": {

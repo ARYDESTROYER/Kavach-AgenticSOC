@@ -6632,6 +6632,56 @@ async def _scan_case_queue(
     return [found[case_id] for case_id in page_ids if case_id in found], total
 
 
+# --------------------------------------------------------------------------- #
+# Round 15 (SPEC D6.12, WP5): the Case Manager's Review scope, ``GET /api/cases?review=``.
+# The ledger (``routes_auto_close_review.review_queue_cases``) names the cases; they are
+# read by id (``_queue_cases_by_id``: ES ``terms``, SQL ``IN``), the other queue filters
+# run on them in Python, then they are sorted, paged and counted here. Review behaves
+# like All for the status options.
+# --------------------------------------------------------------------------- #
+async def _review_case_queue(
+    state: AppState,
+    *,
+    review: str,
+    statuses: tuple[str, ...] | None,
+    surface: str | None,
+    entity: str | None,
+    terms: list[str],
+    assignee: str,
+    severity: str | None,
+    verdict: str | None,
+    rule: str | None,
+    closed_by: str | None,
+    lo: int | None,
+    hi: int | None,
+    sort_field: str,
+    sort_order: str,
+    limit: int,
+    offset: int,
+) -> tuple[list[Case], int]:
+    """One Review scope page and its exact total over the ledger's cases."""
+    from .routes_auto_close_review import review_queue_cases
+
+    try:
+        rows = await review_queue_cases(state, review)
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001 - a partial queue must never pass as exact
+        logger.warning("review queue read failed: %s", exc)
+        raise HTTPException(
+            status_code=503, detail="Could not read the review queue right now; try again.",
+        ) from exc
+    matched = _queue_page_matches(
+        rows, statuses=statuses, surface=surface, entity=entity, terms=terms,
+        assignee_key=assignee.casefold(), verdict=verdict, severity=severity, lo=lo, hi=hi,
+        sort_field=sort_field, prefs=state.execution_prefs, rule=rule, closed_by=closed_by,
+    )
+    by_id = {str(row.case_id): row for row in rows}
+    ordered = sorted(matched, key=lambda item: item[0], reverse=sort_order == "desc")
+    page = ordered[offset: offset + limit] if limit > 0 else []
+    return [by_id[case_id] for _key, case_id in page if case_id in by_id], len(matched)
+
+
 @router.get("/cases", response_model=CaseListResponse)
 async def list_cases(
     status: str | None = None,
@@ -6659,6 +6709,9 @@ async def list_cases(
     # terminal-close owner (``CASE_QUEUE_CLOSED_BY``; the ``#/scans`` redirect, D27).
     rule: str | None = None,
     closed_by: str | None = None,
+    # Round 15 (SPEC D6.12): the Review scope (``pending``, ``completed``, ``disagreed``
+    # or ``expired`` auto-close reviews), echoed as ``review_applied``.
+    review: str | None = None,
     state: AppState = Depends(get_state),
     _=Depends(require_permission("cases", "read")),
     request: Request = None,  # type: ignore[assignment]
@@ -6746,6 +6799,15 @@ async def list_cases(
                 f"expected one of {list(CASE_QUEUE_CLOSED_BY)}"
             ),
         )
+    # Round 15 (SPEC D6.12): the Review scope; any other value is a 400.
+    from .routes_auto_close_review import REVIEW_QUEUE_STATES
+
+    review_filter = str(review or "").strip().lower() or None
+    if review_filter and review_filter not in REVIEW_QUEUE_STATES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"unknown review '{review_filter}'; expected one of {list(REVIEW_QUEUE_STATES)}",
+        )
     queue_scan = bool(
         search_terms or assignee_filter or severity_filter or verdict_filter
         or rule_filter is not None or closed_by_filter
@@ -6753,7 +6815,7 @@ async def list_cases(
     )
     extended = (
         sort_field is not None or sort_order is not None or status_group is not None
-        or queue_scan
+        or queue_scan or review_filter is not None
     )
 
     if status_group is not None:
@@ -6806,7 +6868,35 @@ async def list_cases(
         )
 
     window_total_exact: bool | None = None
-    if queue_scan:
+    if review_filter:
+        from ..utils import relative_to_millis_strict
+        from ..stores.base import status_group_statuses, window_bounds_proven
+
+        lo = relative_to_millis_strict(from_) if from_ else None
+        hi = relative_to_millis_strict(to) if to else None
+        if from_ or to:
+            window_total_exact = window_bounds_proven(from_, to, lo, hi)
+        review_statuses = (str(status),) if status else status_group_statuses(status_group)
+        cases, total = await _review_case_queue(
+            state,
+            review=review_filter,
+            statuses=review_statuses,
+            surface=surface,
+            entity=entity,
+            terms=search_terms,
+            assignee=assignee_filter,
+            severity=severity_filter,
+            verdict=verdict_filter,
+            rule=rule_filter,
+            closed_by=closed_by_filter,
+            lo=lo,
+            hi=hi,
+            sort_field=applied_sort_field,
+            sort_order=applied_sort_order,
+            limit=applied_limit,
+            offset=applied_offset,
+        )
+    elif queue_scan:
         from ..utils import relative_to_millis_strict
         from ..stores.base import status_group_statuses, window_bounds_proven
 
@@ -6905,6 +6995,8 @@ async def list_cases(
         body["rule_applied"] = rule_filter
     if closed_by_filter:
         body["closed_by_applied"] = closed_by_filter
+    if review_filter:
+        body["review_applied"] = review_filter
     return JSONResponse(body)
 
 

@@ -207,6 +207,8 @@ RunbookCatalogProvider = Callable[[], Awaitable[Any]]
 #: Attaches the matching runbook to a case the pipeline left needing a person (the
 #: post-investigation trigger of §4.10.4). Never awaited for its result.
 RunbookAttacher = Callable[[Case], Awaitable[Any]]
+# Round 15 (SPEC D6.3): ``engine.auto_close_review.ReviewSampler`` in production.
+ReviewSamplerHook = Callable[[Case, Preferences], Awaitable[Any]]
 
 
 def builtin_runbook_catalog() -> tuple[Any, ...]:
@@ -287,6 +289,7 @@ class InvestigationPipeline:
         fixture_sink: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
         runbook_catalog: RunbookCatalogProvider | None = None,
         runbook_attacher: RunbookAttacher | None = None,
+        review_sampler: ReviewSamplerHook | None = None,
     ) -> None:
         self._es = es
         # The agent's read-only log surface. Defaults to wrapping ``es`` in an
@@ -315,6 +318,12 @@ class InvestigationPipeline:
         # case needs a person. Post-settable, like ``notifier`` and ``automation``.
         # None → no attachment (direct constructions and tests).
         self.runbook_attacher = runbook_attacher
+        # Round 15 (SPEC D6.3): the auto-close review sampler, called once per run
+        # after every other post-decision hook, for a terminal case the agent decided.
+        # It reads the decided case and never changes it (#3). Post-settable, like
+        # ``runbook_attacher``; None (the replay stack, direct constructions) samples
+        # nothing.
+        self.review_sampler = review_sampler
         # Operator MEMORY store (durable trusted facts auto-injected into every
         # investigation). None → no memory injected (today's behaviour).
         self._memory = memory
@@ -595,6 +604,26 @@ class InvestigationPipeline:
             await attacher(case)
         except Exception as exc:  # noqa: BLE001 - attachment never affects the case path
             logger.warning("runbook attachment skipped for %s: %s", case.case_id, exc)
+
+    async def _maybe_sample_review(self, case: Case, prefs: Preferences) -> None:
+        """The auto-close review sample (Round 15 SPEC D6.3): hands a terminal case the
+        agent decided to ``review_sampler``, which picks a small random, capped share
+        of them for a person to review. Runs after ``apply()``, the save and every other
+        post-decision hook, so it only reads a decided case (#3). A no-op without a
+        sampler (the replay stack) and for any other case. Never raises."""
+        sampler = self.review_sampler
+        if sampler is None:
+            return
+        try:
+            from ..constants import TERMINAL_CASE_STATUSES
+
+            if case.decision_by != DecisionBy.AGENT:
+                return
+            if not case.status or case.status.value not in TERMINAL_CASE_STATUSES:
+                return
+            await sampler(case, prefs)
+        except Exception as exc:  # noqa: BLE001 - sampling never affects the case path
+            logger.warning("auto-close review sampling skipped for %s: %s", case.case_id, exc)
 
     async def _maybe_index_resolved(self, case: Case) -> None:
         """Best-effort: index a terminal (closed/resolved) case into the RAG corpus
@@ -1246,6 +1275,10 @@ class InvestigationPipeline:
             # save (#3). A send (or failure) can never block, delay, or alter the case
             # — create_task detaches it and notify() swallows all errors internally.
             self._maybe_notify(case)
+            # Round 15 (SPEC D6.3): the random auto-close review sample, AFTER every
+            # hook above, only for a terminal case the agent decided. It never writes
+            # to the case and never feeds the decision (#3); a failure is logged.
+            await self._maybe_sample_review(case, prefs)
             return case
         except Exception as exc:  # noqa: BLE001 — never drop an alert
             logger.exception("Pipeline failed for cluster %s; failing to human", cluster.signature)

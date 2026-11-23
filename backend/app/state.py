@@ -556,6 +556,77 @@ class AppState:
         self._demo_runbook_runs = (demo, store)
         return store
 
+    # ------------------------------------------------------------------ #
+    # Round 15 auto-close review (SPEC D6.3, D6.4, §3.2). The ledger is built lazily
+    # over the shared KV and rebound when ``_wire()`` swaps the KV; Demo Mode has its
+    # own ledger on the Demo stack's KV.
+    # ------------------------------------------------------------------ #
+    @property
+    def real_auto_close_review(self):
+        """The REAL auto-close review ledger (``stores.auto_close_review``), whatever
+        Demo Mode shows (the cases reset clears it)."""
+        store = getattr(self, "_real_auto_close_review_store", None)
+        kv = getattr(self, "_kv", None)
+        if store is None or store.kv is not kv:
+            from .stores.auto_close_review import AutoCloseReviewStore
+
+            store = AutoCloseReviewStore(kv)
+            self._real_auto_close_review_store = store
+        return store
+
+    @property
+    def auto_close_review(self):
+        """The auto-close review ledger for the active real/Demo boundary (SPEC §3.2):
+        Demo cases are sampled and reviewed in the Demo stack's ledger."""
+        demo = self._demo
+        if demo is None:
+            return self.real_auto_close_review
+        store = getattr(demo, "auto_close_review", None)
+        if store is not None:
+            return store
+        cached = getattr(self, "_demo_auto_close_review", None)
+        if cached is not None and cached[0] is demo:
+            return cached[1]
+        from .stores.auto_close_review import AutoCloseReviewStore
+
+        store = AutoCloseReviewStore(demo.kv)
+        self._demo_auto_close_review = (demo, store)
+        return store
+
+    async def _seed_demo_auto_close_reviews(self, demo_stack, cases, seed: int, now_ms: int) -> int:
+        """Seed the Demo auto-close review sample (SPEC D6.13) into ``demo_stack``'s
+        ledger, case store and audit, when the review is on. Never raises."""
+        try:
+            from .engine.auto_close_review import operator_zone
+            from .engine.demo_generator import seed_demo_auto_close_reviews
+
+            dprefs = demo_stack._demo_prefs()  # noqa: SLF001 - same module owner
+            config = dprefs.auto_close_review
+            if not config.enabled:
+                return 0
+            return await seed_demo_auto_close_reviews(
+                demo_stack.auto_close_review, cases,
+                save=demo_stack.cases.save, audit=demo_stack.audit,
+                seed=seed, now_millis=now_ms, tz=operator_zone(dprefs),
+                expiry_days=int(config.expiry_days),
+            )
+        except Exception as exc:  # noqa: BLE001 - a seeded review never blocks enable
+            logger.warning("demo auto-close review seeding failed: %s", exc)
+            return 0
+
+    def _real_review_sampler(self):
+        """The real pipeline's ``review_sampler`` (SPEC D6.3): the real ledger, the
+        control audit and the process realtime bus, each read when a case is sampled so
+        a ``_wire()`` rebuild is followed."""
+        from .engine.auto_close_review import ReviewSampler
+        from .realtime import get_event_bus
+
+        return ReviewSampler(
+            store=lambda: self.real_auto_close_review,
+            audit=lambda: self._real_audit,
+            bus=get_event_bus,
+        )
+
     @property
     def legacy_procedures(self):
         """Read-only access to the retired procedure namespaces (one release): the
@@ -1277,6 +1348,9 @@ class AppState:
             migrated_procedures=migrated_procedures,
         )
         self._real_pipeline.automation = self.automation
+        # Round 15 (SPEC D6.3): the auto-close review sample, after every other
+        # post-decision hook. Real cases, the real ledger and the control audit.
+        self._real_pipeline.review_sampler = self._real_review_sampler()
         # (The realtime EventBus is now injected at pipeline CONSTRUCTION above — Round 5
         # Coupling-F — instead of this post-hoc setter. The bus is the module-global
         # singleton, best-effort + #3/#11-safe, and a no-op when realtime is off.)
@@ -3602,6 +3676,11 @@ class AppState:
             )
         except Exception as exc:  # noqa: BLE001 - a seeded run never blocks enable
             logger.warning("demo runbook seeding failed: %s", exc)
+
+        # Round 15 (SPEC D6.13): about six seeded automatic closes sampled for review
+        # (three pending, two agreeing, one disagreeing) in the Demo ledger, with their
+        # grades, history events and Demo audit rows. Never blocks enable.
+        await self._seed_demo_auto_close_reviews(demo_stack, list(seeded_counter_cases), new_demo.seed, now_ms)
 
         # Seed one coherent, deterministic 24h funnel delta. The transient benign batch
         # contributes inbound volume only. Every seeded case in the current dashboard
