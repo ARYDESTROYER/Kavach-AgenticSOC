@@ -128,6 +128,9 @@ const PAGE_KEYWORDS: Record<string, string[]> = {
   memory: ['operator memory', 'facts', 'remember'],
   personas: ['agents', 'roster', 'personas'],
   metrics: ['analytics', 'posture', 'mttr', 'mtta', 'false positive rate', 'mitre coverage'],
+  // Round 15 (SPEC D3.1): per-person work counts. 'who did what' stays the Audit log's
+  // (a record of every action); these words name the team's daily work.
+  team: ['team activity', 'analyst work', 'work done', 'daily work', 'per person', 'what each analyst did', 'track the team'],
   effectiveness: ['agent health', 'precedent', 'auto-close health', 'agent improvement'],
   cost: ['spend', 'tokens', 'budget', 'usage', 'ledger', 'price'],
   models: ['llm', 'model catalog', 'providers', 'pricing'],

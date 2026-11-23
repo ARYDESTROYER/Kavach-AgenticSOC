@@ -461,8 +461,9 @@ export const SETTINGS_SECTIONS_META: SectionMeta[] = [
     help: 'Sign-in through your identity provider, and how long sessions last before people sign in again.',
     icon: ShieldCheck,
     perm: SETTINGS_MANAGE,
-    keywords: ['security', 'sso', 'oidc', 'single sign-on', 'google', 'microsoft', 'session policy', 'token', 'idle', 'access ttl', 'csrf', 'rate limit', 'remember me', 'stay signed in', 'keep me signed in', 'session length', 'session lifetime', 'remembered device'],
-    ownedKeys: ['sso', 'session_policy', 'mfa'],
+    keywords: ['security', 'sso', 'oidc', 'single sign-on', 'google', 'microsoft', 'session policy', 'token', 'idle', 'access ttl', 'csrf', 'rate limit', 'remember me', 'stay signed in', 'keep me signed in', 'session length', 'session lifetime', 'remembered device', 'team activity'],
+    // Round 15 (SPEC D3.4): the Team activity switch is owned here too.
+    ownedKeys: ['sso', 'session_policy', 'mfa', 'team_activity'],
   },
   {
     id: 'admin_sessions',
@@ -637,6 +638,8 @@ export const SETTING_ANCHORS: readonly SettingAnchor[] = [
   // Integrations › Runbooks
   { section: 'runbooks', anchor: 'runbooks-cases', label: 'Runbooks on cases', keywords: ['auto attach', 'attach', 'fallback', 'generic incident', 'no runbook', 'fallback runbook'] },
   { section: 'runbooks', anchor: 'runbooks-publishing', label: 'Publishing and review', keywords: ['publish', 'approver', 'distinct approver', 'review', 'step approvals', 'cadence'] },
+  // Security & access › Single sign-on & policy (Round 15, SPEC D3.4)
+  { section: 'security', anchor: 'security-team-activity', label: 'Team activity page', keywords: ['team activity', 'analyst work', 'who did what', 'per-person', 'monitoring', 'daily work'] },
   // Organization › Advanced
   { section: 'advanced', anchor: 'advanced-caps', label: 'Per-case caps', keywords: ['caps', 'budget', 'max tokens', 'max cost', 'concurrency'] },
   { section: 'advanced', anchor: 'advanced-killswitch', label: 'Kill switch', keywords: ['kill switch', 'pause', 'stop', 'disable'] },

@@ -32,7 +32,7 @@ describe('ROUTES registry', () => {
     // The DESIGN_STANDARD deep-link contract: these ids must remain routable.
     const EXPECTED = [
       'overview', 'dashboard', 'dashboards', 'cases', 'case_manager', 'investigate', 'chat',
-      'intelligence', 'metrics', 'effectiveness', 'models', 'scans', 'standup', 'catalog', 'runbooks', 'playbooks', 'personas',
+      'intelligence', 'metrics', 'team', 'effectiveness', 'models', 'scans', 'standup', 'catalog', 'runbooks', 'playbooks', 'personas',
       'approvals', 'knowledge', 'memory', 'sources', 'cost', 'inbox', 'account',
       'sessions', 'settings', 'security', 'roles', 'users', 'audit', 'admin_sessions',
       'logs', 'campaigns', 'tuning', 'batchjobs', 'baseline',

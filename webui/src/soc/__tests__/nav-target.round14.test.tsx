@@ -48,7 +48,12 @@ import { RouterProvider } from '../router';
 import { TooltipProvider } from '@/ui/tooltip';
 import { CommandPalette } from '../components/CommandPalette';
 
-const withoutMetricsView = (resource: string, action: string) => !(resource === 'metrics' && action === 'view');
+// Round 15: Team activity (`team:view`) is the Analytics row's second page. This viewer
+// holds neither grant, the role a SOC analyst has by default.
+const withoutMetricsView = (resource: string, action: string) =>
+  !(resource === 'metrics' && action === 'view') && !(resource === 'team' && action === 'view');
+// A viewer who may read Team activity but not Metrics (a custom role).
+const teamButNoMetrics = (resource: string, action: string) => !(resource === 'metrics' && action === 'view');
 const row = (id: PageId): NavItem => {
   const item = NAV_ITEMS.find((i) => i.id === id);
   if (!item) throw new Error(`no nav row ${id}`);
@@ -67,8 +72,11 @@ describe('navTarget', () => {
   });
 
   it('opens the first visible child page when the target is hidden', () => {
-    // Metrics and Agent effectiveness both need metrics:view; Cost is the first child left.
+    // Metrics and Agent effectiveness both need metrics:view and Team activity team:view;
+    // Cost is the first child left.
     expect(navTarget(row('analytics'), withoutMetricsView)).toBe('cost');
+    // With team:view, Team activity is the first child left (Round 15, SPEC D3.1).
+    expect(navTarget(row('analytics'), teamButNoMetrics)).toBe('team');
     // The Overview row's first child is the Cyber Defence Center, which opens `overview`.
     expect(navTarget(row('overview'), withoutMetricsView)).toBe('overview');
   });

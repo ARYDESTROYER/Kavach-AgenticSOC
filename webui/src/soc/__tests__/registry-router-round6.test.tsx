@@ -125,7 +125,9 @@ describe('registry — Analytics children RBAC gates match their backend routes'
     // Round 14 roles-11: the server refuses the spend summary without cost:view, so the
     // navigation, the palette and app help never offer the Cost page to such a role.
     expect(child('cost')?.perm).toEqual({ resource: 'cost', action: 'view' });
-    expect(FEATURES.find((f) => f.id === 'cost' && f.hidden)?.perm).toEqual({ resource: 'cost', action: 'view' });
+    // Round 15 (SPEC §3.1): the hidden copy of the Cost child is gone; the child's gate is
+    // the only one (no hidden entry repeats a visible child's id).
+    expect(FEATURES.find((f) => f.id === 'cost' && f.hidden)).toBeUndefined();
     // GET /api/llm/models is auth-only.
     expect(child('models')?.perm).toBeUndefined();
   });

@@ -8660,6 +8660,115 @@
         "title": "OverviewRequest",
         "type": "object"
       },
+      "PersonActivity": {
+        "properties": {
+          "ack_samples": {
+            "default": 0,
+            "title": "Ack Samples",
+            "type": "integer"
+          },
+          "active": {
+            "default": true,
+            "title": "Active",
+            "type": "boolean"
+          },
+          "bulk": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Bulk",
+            "type": "object"
+          },
+          "closed_by": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Closed By",
+            "type": "object"
+          },
+          "counts": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Counts",
+            "type": "object"
+          },
+          "daily": {
+            "items": {
+              "$ref": "#/components/schemas/TeamDay"
+            },
+            "title": "Daily",
+            "type": "array"
+          },
+          "display_name": {
+            "default": "",
+            "title": "Display Name",
+            "type": "string"
+          },
+          "key": {
+            "description": "The normalised username; empty for Not attributed.",
+            "title": "Key",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "account",
+              "environment",
+              "demo",
+              "deleted",
+              "unattributed"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "last_active": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Active"
+          },
+          "median_ack_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Median Ack Seconds"
+          },
+          "reviews": {
+            "$ref": "#/components/schemas/TeamReviews"
+          },
+          "role": {
+            "default": "",
+            "title": "Role",
+            "type": "string"
+          },
+          "username": {
+            "title": "Username",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "username",
+          "kind",
+          "counts",
+          "closed_by",
+          "bulk",
+          "daily",
+          "reviews"
+        ],
+        "title": "PersonActivity",
+        "type": "object"
+      },
       "PingEvent": {
         "additionalProperties": false,
         "properties": {
@@ -14568,6 +14677,461 @@
           }
         },
         "title": "TaskPatchBody",
+        "type": "object"
+      },
+      "TeamActivity": {
+        "description": "One window of Team activity (SPEC D3.10).",
+        "properties": {
+          "auth_enabled": {
+            "default": true,
+            "title": "Auth Enabled",
+            "type": "boolean"
+          },
+          "days": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Days",
+            "type": "array"
+          },
+          "demo": {
+            "default": false,
+            "title": "Demo",
+            "type": "boolean"
+          },
+          "exact": {
+            "default": true,
+            "title": "Exact",
+            "type": "boolean"
+          },
+          "generated_at": {
+            "title": "Generated At",
+            "type": "string"
+          },
+          "partial_reason": {
+            "anyOf": [
+              {
+                "enum": [
+                  "row_limit",
+                  "store_limit"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Partial Reason"
+          },
+          "people": {
+            "items": {
+              "$ref": "#/components/schemas/PersonActivity"
+            },
+            "title": "People",
+            "type": "array"
+          },
+          "rbac_enabled": {
+            "default": false,
+            "title": "Rbac Enabled",
+            "type": "boolean"
+          },
+          "scanned_rows": {
+            "default": 0,
+            "title": "Scanned Rows",
+            "type": "integer"
+          },
+          "team": {
+            "$ref": "#/components/schemas/TeamTotals"
+          },
+          "timezone": {
+            "title": "Timezone",
+            "type": "string"
+          },
+          "window": {
+            "$ref": "#/components/schemas/TeamWindow"
+          }
+        },
+        "required": [
+          "window",
+          "timezone",
+          "days",
+          "people",
+          "team",
+          "generated_at"
+        ],
+        "title": "TeamActivity",
+        "type": "object"
+      },
+      "TeamDay": {
+        "properties": {
+          "counts": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Counts",
+            "type": "object"
+          },
+          "date": {
+            "title": "Date",
+            "type": "string"
+          }
+        },
+        "required": [
+          "date",
+          "counts"
+        ],
+        "title": "TeamDay",
+        "type": "object"
+      },
+      "TeamEvent": {
+        "properties": {
+          "case_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Case Id"
+          },
+          "case_number": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Case Number"
+          },
+          "detail": {
+            "default": "",
+            "title": "Detail",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "ts": {
+            "title": "Ts",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ts",
+          "kind",
+          "label"
+        ],
+        "title": "TeamEvent",
+        "type": "object"
+      },
+      "TeamEvents": {
+        "properties": {
+          "events": {
+            "items": {
+              "$ref": "#/components/schemas/TeamEvent"
+            },
+            "title": "Events",
+            "type": "array"
+          },
+          "exact": {
+            "default": true,
+            "title": "Exact",
+            "type": "boolean"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          },
+          "partial_reason": {
+            "anyOf": [
+              {
+                "enum": [
+                  "row_limit",
+                  "store_limit"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Partial Reason"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          },
+          "username": {
+            "title": "Username",
+            "type": "string"
+          },
+          "window": {
+            "$ref": "#/components/schemas/TeamWindow"
+          }
+        },
+        "required": [
+          "username",
+          "window",
+          "events",
+          "total"
+        ],
+        "title": "TeamEvents",
+        "type": "object"
+      },
+      "TeamPeople": {
+        "properties": {
+          "auth_enabled": {
+            "default": true,
+            "title": "Auth Enabled",
+            "type": "boolean"
+          },
+          "demo": {
+            "default": false,
+            "title": "Demo",
+            "type": "boolean"
+          },
+          "people": {
+            "items": {
+              "$ref": "#/components/schemas/TeamPerson"
+            },
+            "title": "People",
+            "type": "array"
+          }
+        },
+        "required": [
+          "people"
+        ],
+        "title": "TeamPeople",
+        "type": "object"
+      },
+      "TeamPerson": {
+        "properties": {
+          "active": {
+            "default": true,
+            "title": "Active",
+            "type": "boolean"
+          },
+          "display_name": {
+            "default": "",
+            "title": "Display Name",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "account",
+              "environment",
+              "demo"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "role": {
+            "default": "",
+            "title": "Role",
+            "type": "string"
+          },
+          "username": {
+            "title": "Username",
+            "type": "string"
+          }
+        },
+        "required": [
+          "username",
+          "kind"
+        ],
+        "title": "TeamPerson",
+        "type": "object"
+      },
+      "TeamReviews": {
+        "properties": {
+          "agreed": {
+            "default": 0,
+            "title": "Agreed",
+            "type": "integer"
+          },
+          "agreement_rate": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Agreed over answered, only from 30 answered reviews.",
+            "title": "Agreement Rate"
+          },
+          "answered": {
+            "default": 0,
+            "title": "Answered",
+            "type": "integer"
+          },
+          "completed": {
+            "default": 0,
+            "title": "Completed",
+            "type": "integer"
+          },
+          "disagreed": {
+            "default": 0,
+            "title": "Disagreed",
+            "type": "integer"
+          },
+          "time_spent_median_ms": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Median time spent on the review card, measured in the Console.",
+            "title": "Time Spent Median Ms"
+          },
+          "time_to_review_median_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Median time from the case being picked for review to the review.",
+            "title": "Time To Review Median Seconds"
+          },
+          "unsure": {
+            "default": 0,
+            "title": "Unsure",
+            "type": "integer"
+          }
+        },
+        "title": "TeamReviews",
+        "type": "object"
+      },
+      "TeamTotals": {
+        "properties": {
+          "ack_samples": {
+            "default": 0,
+            "title": "Ack Samples",
+            "type": "integer"
+          },
+          "ack_status": {
+            "default": "measured",
+            "enum": [
+              "measured",
+              "too_many_cases",
+              "unavailable"
+            ],
+            "title": "Ack Status",
+            "type": "string"
+          },
+          "bulk": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Bulk",
+            "type": "object"
+          },
+          "closed_by": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Closed By",
+            "type": "object"
+          },
+          "counts": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Counts",
+            "type": "object"
+          },
+          "daily": {
+            "items": {
+              "$ref": "#/components/schemas/TeamDay"
+            },
+            "title": "Daily",
+            "type": "array"
+          },
+          "median_ack_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Median Ack Seconds"
+          },
+          "people_active": {
+            "default": 0,
+            "title": "People Active",
+            "type": "integer"
+          },
+          "reviews": {
+            "$ref": "#/components/schemas/TeamReviews"
+          }
+        },
+        "required": [
+          "counts",
+          "closed_by",
+          "bulk",
+          "daily",
+          "reviews"
+        ],
+        "title": "TeamTotals",
+        "type": "object"
+      },
+      "TeamWindow": {
+        "properties": {
+          "end": {
+            "title": "End",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "start": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Start"
+          },
+          "token": {
+            "title": "Token",
+            "type": "string"
+          }
+        },
+        "required": [
+          "token",
+          "label",
+          "end"
+        ],
+        "title": "TeamWindow",
         "type": "object"
       },
       "TerminologyBody": {
@@ -31407,6 +31971,167 @@
         "summary": "Update Status",
         "tags": [
           "system-updates"
+        ]
+      }
+    },
+    "/api/team/activity": {
+      "get": {
+        "operationId": "team_activity_api_team_activity_get",
+        "parameters": [
+          {
+            "description": "A time window: today, yesterday, now-7d, or a date range.",
+            "in": "query",
+            "name": "window",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 64,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A time window: today, yesterday, now-7d, or a date range.",
+              "title": "Window"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TeamActivity"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Team Activity",
+        "tags": [
+          "team"
+        ]
+      }
+    },
+    "/api/team/people": {
+      "get": {
+        "operationId": "team_people_api_team_people_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TeamPeople"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Team People",
+        "tags": [
+          "team"
+        ]
+      }
+    },
+    "/api/team/people/{username}/events": {
+      "get": {
+        "operationId": "team_person_events_api_team_people__username__events_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "username",
+            "required": true,
+            "schema": {
+              "title": "Username",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "window",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 64,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Window"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 2048,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TeamEvents"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Team Person Events",
+        "tags": [
+          "team"
         ]
       }
     },

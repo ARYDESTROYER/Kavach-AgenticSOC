@@ -66,6 +66,7 @@ import {
   BookMarked,
   BookOpenText,
   FileText,
+  UserCheck,
 } from 'lucide-react';
 
 /* -------------------------------------------------------------------------- */
@@ -85,6 +86,7 @@ export type PageId =
   | 'intelligence'
   | 'analytics'
   | 'metrics'
+  | 'team'
   | 'effectiveness'
   | 'models'
   | 'scans'
@@ -392,6 +394,9 @@ export const FEATURES: FeatureNode[] = [
       // roles-11). `models` stays ungated: GET /api/llm/models is auth-only, so gating
       // it would hide a page the principal can actually read.
       { id: 'metrics', label: 'Metrics', icon: BarChart3, perm: METRICS_VIEW },
+      // Round 15 (SPEC D3.1, D3.2): per-person work counts from the audit log, for a
+      // SOC manager (and, read only, an auditor). GET /api/team/* needs `team:view`.
+      { id: 'team', label: 'Team activity', icon: UserCheck, perm: { resource: 'team', action: 'view' } },
       {
         id: 'effectiveness',
         label: 'Agent effectiveness',
@@ -476,41 +481,14 @@ export const FEATURES: FeatureNode[] = [
     navPlacement: 'footer',
   },
 
-  /* ---- Hidden-but-routable consolidated sub-pages ---------------------- *
-   * Round-2 W4 / Round-3 disclosure: these keep their PageId + App.renderPage
-   * arm (deep-linkable) but are NOT rail items. Some duplicate a rail id (e.g.
-   * they also appear as a child above); the derivation de-dupes PAGE_IDS. The
-   * `group` here is only a bookkeeping home — hidden features never enter a rail
-   * group. Order mirrors the old HIDDEN_ROUTE_IDS list for stability.            */
-  { id: 'dashboard', label: 'Cyber Defence Center', icon: Gauge, group: 'overview', hidden: true },
-  { id: 'investigate', label: 'Entity investigation', icon: SearchIcon, group: 'triage', hidden: true },
-  { id: 'cost', label: 'Cost', icon: DollarSign, group: 'analytics', hidden: true, perm: COST_VIEW },
-  { id: 'models', label: 'Models', icon: Cpu, group: 'analytics', hidden: true },
-  { id: 'standup', label: 'Standup', icon: CalendarDays, group: 'overview', hidden: true },
-  {
-    id: 'knowledge',
-    label: 'Knowledge corpus',
-    icon: BookOpen,
-    group: 'intelligence',
-    hidden: true,
-    perm: RAG_READ,
-  },
-  {
-    id: 'runbooks',
-    label: 'Runbooks',
-    icon: BookMarked,
-    group: 'intelligence',
-    hidden: true,
-    perm: RUNBOOKS_READ,
-  },
-  {
-    id: 'memory',
-    label: 'Operator memory',
-    icon: Brain,
-    group: 'intelligence',
-    hidden: true,
-    perm: MEMORY_READ,
-  },
+  /* ---- Hidden-but-routable pages ------------------------------------------ *
+   * Ids that keep a route and a PageId (deep links, redirects) but no rail item and
+   * no visible child of the same id. Round 15 (SPEC §3.1): the hidden copies of
+   * visible children (dashboard, investigate, cost, models, standup, knowledge,
+   * runbooks, memory, personas, roles, users) are gone: `PAGE_IDS` already holds every
+   * child id and `navLabel` resolves children first, so they added only entry bytes.
+   * The `group` here is only a bookkeeping home; hidden features never enter a rail
+   * group.                                                                     */
   // Round 14 (D44): the two retired destinations stay routable for one release as
   // redirects to `#/runbooks` (router PAGE_REDIRECTS). Their label is the page they open.
   {
@@ -529,24 +507,16 @@ export const FEATURES: FeatureNode[] = [
     hidden: true,
     perm: RUNBOOKS_READ,
   },
-  {
-    id: 'personas',
-    label: 'Agent personas',
-    icon: UsersIcon,
-    group: 'intelligence',
-    hidden: true,
-  },
   // Round-5 Sett-B: the six formerly-standalone admin/account homes
   // (account/sessions/security/roles/users/admin_sessions) collapsed INTO Settings
   // sections. Their PageIds stay registered (deep-link back-compat) but the router
   // (SETTINGS_REDIRECTS) rewrites `#/<id>` → `#/settings?s=<sectionId>` — the standalone
-  // App.renderPage arms are no longer the primary home. Keeping them here keeps
-  // `isPageId('roles')` true so the redirect fires instead of a 404-to-Overview.
+  // App.renderPage arms are no longer the primary home. Keeping them registered keeps
+  // `isPageId('account')` true so the redirect fires instead of a 404-to-Overview
+  // (`roles` and `users` are Settings children above, so they stay registered there).
   { id: 'account', label: 'Account', icon: Settings, group: 'platform', hidden: true },
   { id: 'sessions', label: 'Sessions', icon: MonitorSmartphone, group: 'platform', hidden: true },
   { id: 'security', label: 'Security', icon: ShieldCheck, group: 'platform', hidden: true },
-  { id: 'roles', label: 'Roles', icon: KeyRound, group: 'platform', hidden: true },
-  { id: 'users', label: 'Users', icon: UsersIcon, group: 'platform', hidden: true },
   { id: 'admin_sessions', label: 'Admin sessions', icon: MonitorSmartphone, group: 'platform', hidden: true },
 ];
 
@@ -615,6 +585,7 @@ const Campaigns = React.lazy(() => import('./pages/Campaigns'));
 const Tuning = React.lazy(() => import('./pages/Tuning'));
 const BatchJobs = React.lazy(() => import('./pages/BatchJobs'));
 const BaselineStats = React.lazy(() => import('./pages/Baseline'));
+const TeamActivity = React.lazy(() => import('./pages/TeamActivity'));
 const Docs = React.lazy(() => import('./pages/Docs'));
 
 /** The context a route render thunk may read (never `onNavigate` — pages use `useNavigate`). */
@@ -722,6 +693,7 @@ export const ROUTES: Record<PageId, RouteDef> = {
   tuning: { element: Tuning },
   batchjobs: { element: BatchJobs },
   baseline: { element: BaselineStats },
+  team: { element: TeamActivity },
   docs: { element: Docs },
 
   /* ---- Host-tab leaves: route THROUGH the host with a forced tab (see rule above) --- */

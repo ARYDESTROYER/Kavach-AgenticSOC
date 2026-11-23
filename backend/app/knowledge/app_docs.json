@@ -178,6 +178,17 @@
    "path": "analyst/analytics/",
    "tier": "guide"
   },
+  "analyst/team-activity.md": {
+   "title": "Team activity",
+   "description": "See what each person on the SOC team did, per day, counted from the audit log.",
+   "nav": [
+    "Use the product",
+    "User and analyst guide",
+    "Team activity"
+   ],
+   "path": "analyst/team-activity/",
+   "tier": "guide"
+  },
   "analyst/kpi-glossary.md": {
    "title": "KPI glossary",
    "description": "Exact definitions of the Overview and Analytics KPIs, including the Active Risk Index, risk score, AI-verdict false positive rate, MTTD, MTTA, MTTR, dwell, SLA attainment, noise reduction stages, auto-closed cases, and AI spend.",
@@ -3100,6 +3111,88 @@
    "console": [
     "page:cost"
    ]
+  },
+  {
+   "id": "analyst/team-activity#:0",
+   "page": "analyst/team-activity.md",
+   "anchor": "",
+   "heading": "",
+   "text": "**Team activity** shows what each person did, per day: the cases they acknowledged,\nclosed, reopened and escalated, their comments, assignments and screenshots, the\nauto-close reviews they completed, the runbook steps they finished and their sign-ins.\nOpen **Analytics → Team activity** (`#/team`). Every count comes from the audit log, so\nit is the same record the **Audit log** page reads.\n\nThe page is meant for the person who runs the team. It shows counts with their context\nand nothing else: there is no ranking, no \"top performer\" and no score. The table is\nordered by name, and you can sort any column.",
+   "console": [
+    "page:team"
+   ]
+  },
+  {
+   "id": "analyst/team-activity#who-can-open-it:0",
+   "page": "analyst/team-activity.md",
+   "anchor": "who-can-open-it",
+   "heading": "Who can open it",
+   "text": "Reading the page needs the `team:view` permission. A **SOC manager** holds it by default\nso they can track the team, and an **Auditor** holds it so they can read it. Analysts\nand responders do not. A Super admin holds every permission.\n\nWhile role-based access is off, every signed-in account is treated as a Super admin and\nso holds every permission. Team activity is stricter: until role-based access is on,\nonly an account whose role is Super admin, SOC manager or Auditor can open it, and the\npage shows a warning that says so with a link to **Roles & permissions**. Anyone else\nwho opens the page is refused, and the refusal is written to the audit log.\n\nWith sign-in off, no work can be attributed to a person, so the page says \"Sign-in is\noff, so work cannot be attributed to people.\" instead of showing counts.",
+   "console": []
+  },
+  {
+   "id": "analyst/team-activity#turn-the-page-off:0",
+   "page": "analyst/team-activity.md",
+   "anchor": "turn-the-page-off",
+   "heading": "Turn the page off",
+   "text": "An administrator can turn the page off in **Settings → Single sign-on & policy → Team\nactivity** (the **Team activity page** switch, on by default). While it is off nobody\ncan open the page, and the page names the switch. The setting is saved with the rest of\nthe page and its change is written to the audit log.",
+   "console": []
+  },
+  {
+   "id": "analyst/team-activity#read-the-page:0",
+   "page": "analyst/team-activity.md",
+   "anchor": "read-the-page",
+   "heading": "Read the page",
+   "text": "The header holds the range: **Today**, **Yesterday**, **Last 7 days** or **Last 30\ndays**, or a **Custom range** of whole days, at most 92 of them. A day is a calendar day\nin the operator time zone (the time zone of the SLA policy, set in Settings); the help\ntip beside the title names it. Last 7 and 30 days count today and the days before it\nfrom local midnight.\n\nBelow the header:\n\n- **One strip of figures**: people active (anyone with at least one counted action or\n  sign-in in the range), cases closed by people, cases acknowledged, auto-close reviews\n  completed, and the median time to acknowledge.\n- **Work per day**: the team's case work for each day of the range, stacked by kind:\n  closed, acknowledged, commented, reviewed, escalated, reopened and other case work\n  (assignments, screenshots and runbook steps). Sign-ins are not case work and are not\n  drawn. A range with no case work shows \"No case work in this window\".\n- **People**: one row per person with their counts, their reviews (\"3 of 4 agreed\"),\n  their median time to acknowledge and when they were last active. Select a row to open\n  that person's sheet. **Download CSV** saves the table as a spreadsheet; a name that\n  starts like a formula is written as text.",
+   "console": []
+  },
+  {
+   "id": "analyst/team-activity#what-each-count-means:0",
+   "page": "analyst/team-activity.md",
+   "anchor": "what-each-count-means",
+   "heading": "What each count means",
+   "text": "| Count | What is counted |\n|---|---|\n| Acknowledged | An Acknowledge action on a case. |\n| Closed | An action that moved a case to Closed (Close, Confirm false positive, or Set status to Closed), split by the disposition it was closed with: true positive, false positive, benign, duplicate or other. |\n| Reopened, Escalated | The Reopen and Escalate actions. |\n| Commented | A comment or a case thread message written by the person. |\n| Assigned | An owner change the person made. |\n| Screenshots added | A screenshot attached to a case. |\n| Reviews | An auto-close review the person recorded: agreed, disagreed or unsure. |\n| Runbook steps done | A runbook step the person marked done. |\n| Sign-ins | A successful sign-in. |\n\nEach count of acknowledged, closed, reopened, escalated and assigned cases also says how\nmany of its actions came from a bulk action (one action over many selected cases), so\none click on 200 cases does not read like 200 separate decisions.\n\n**Median time to acknowledge** uses the same rule as the Metrics page: for each case\nwhose first acknowledgement by a person fell in the range, the time from the case being\ndetected (or created) to that acknowledgement, credited to whoever made it. It is\nmeasured from up to 5,000 cases; with more, the page says the median was not measured\nrather than guessing.",
+   "console": []
+  },
+  {
+   "id": "analyst/team-activity#what-each-count-means:1",
+   "page": "analyst/team-activity.md",
+   "anchor": "what-each-count-means",
+   "heading": "What each count means",
+   "text": "**Reviews** always read \"N of M agreed\", where M counts the reviews that agreed or\ndisagreed (an unsure review is not an answer). An agreement rate is added only from 30\nanswered reviews, because fewer would say more than the reviews can. The person sheet\nalso shows the median **time spent reviewing** (measured while the review card was open)\nand, separately, the median **time to review** (from the case being picked for review to\nthe review).",
+   "console": []
+  },
+  {
+   "id": "analyst/team-activity#a-persons-sheet:0",
+   "page": "analyst/team-activity.md",
+   "anchor": "a-persons-sheet",
+   "heading": "A person's sheet",
+   "text": "The sheet shows the person's counts for the range, their closes by disposition and how\nmany came from bulk actions, their reviews, a table per day and their events, newest\nfirst, with a link to each case. **Load more** reads the next 50 events. A viewer who can\nread the Audit log also gets **Open in Audit log**, which opens that person's records.\n\nAn event names what was done (\"Closed a case\"), the case and a short detail built from\nthe record's structured fields: the disposition, the actions taken and a review's answer.\nFree text from a record (a reason a person typed) is not shown here.",
+   "console": []
+  },
+  {
+   "id": "analyst/team-activity#who-appears-on-the-page:0",
+   "page": "analyst/team-activity.md",
+   "anchor": "who-appears-on-the-page",
+   "heading": "Who appears on the page",
+   "text": "- **Accounts**: every active account appears, with zeros when it did nothing in the range.\n- **Environment account**: an account set in the deployment's environment, with no\n  saved user record (the environment administrator, for example).\n- **Demo analyst**: one of the Demo SOC team, while Demo Mode is on.\n- **Deleted account**: a name the audit log holds for an account that no longer exists.\n  Its history stays, because the audit log is never changed.\n- **Not attributed**: work recorded before sign-in attribution, or with sign-in off, when\n  the record names no person (\"analyst\", \"default\" or nobody). It is listed last and has\n  no events.\n\nPeople are matched without regard to letter case, so \"Admin\" and \"admin\" are one person.",
+   "console": []
+  },
+  {
+   "id": "analyst/team-activity#privacy:0",
+   "page": "analyst/team-activity.md",
+   "anchor": "privacy",
+   "heading": "Privacy",
+   "text": "The page never shows an IP address, a browser, a session or a settings change: those stay\nin the Audit log, which needs `audit:view`. The counts are kept as long as the audit log\nkeeps its records. Opening the page writes one **Team activity viewed** record per viewer\nevery 10 minutes, and opening a person's events one per viewer and person, so the audit\nlog shows who looked at whose work. Nothing on this page is ever sent to an AI model, and\nnothing here changes a case or the automatic close or escalate decision.",
+   "console": []
+  },
+  {
+   "id": "analyst/team-activity#limits:0",
+   "page": "analyst/team-activity.md",
+   "anchor": "limits",
+   "heading": "Limits",
+   "text": "- A range holds at most 92 days.\n- One read counts at most 250,000 audit rows. A busier range shows \"Counts are lower\n  bounds\" and the counts are at least the figures shown; choose a shorter range for exact\n  counts. The same caveat appears when the audit store can only be read in part.\n- Answers are kept for 60 seconds, so an action may take up to a minute to show. Use\n  refresh after that.\n- Lifecycle and comment records are written just after the change they describe. If the\n  audit store is down at that moment, the case changes but its record, and so its count\n  here, is missing.\n- Before this release, assignments and tag changes made from the Console were recorded\n  without the person's name; they are counted under Not attributed.\n- Demo Mode: the page counts the Demo work only (the seeded cases' acknowledgements,\n  closes, comments, assignments and reviews), with real sign-ins, and says \"Demo Mode:\n  showing Demo work.\"",
+   "console": []
   },
   {
    "id": "analyst/kpi-glossary#:0",

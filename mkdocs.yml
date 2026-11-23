@@ -138,6 +138,7 @@ nav:
           - Collaboration: analyst/collaboration.md
           - Campaigns: analyst/campaigns.md
           - Analytics: analyst/analytics.md
+          - Team activity: analyst/team-activity.md
           - KPI glossary: analyst/kpi-glossary.md
       - Automation:
           - Overview: automation/index.md

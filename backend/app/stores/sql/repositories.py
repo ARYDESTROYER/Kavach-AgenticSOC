@@ -1520,8 +1520,15 @@ class SqlAuditRepository(AuditRepository):
         limit: int = 50,
         cursor: Any = None,
         track_total: int = 10_000,
+        count: bool = True,
     ) -> AuditSearchPage:
         """Keyset page on ``(ts, id)`` (both orders) with an exact total.
+
+        ``count=False`` (Round 15, SPEC D3.6) skips the ``COUNT`` of the matching rows,
+        which this store otherwise runs on every page: a reader that streams every page
+        inside one snapshot (Team activity) never shows a total, so a fold over N rows
+        no longer counts all of them N/1,000 times. The page then answers its own rows
+        as a lower bound (``relation`` ``gte``).
 
         ``cursor`` is ``{"ts": <ts>, "id": <row id>, "hw": <time>}`` of the last row
         already shown. ``hw`` is the read's snapshot: the newest row time when its
@@ -1556,13 +1563,15 @@ class SqlAuditRepository(AuditRepository):
             rows = list((await session.execute(stmt)).scalars().all())
             total = int((await session.execute(
                 select(func.count()).select_from(AuditRow).where(where)
-            )).scalar() or 0)
+            )).scalar() or 0) if count else 0
         more = len(rows) > size
         hw = state["hw"]
         hits = [
             AuditHit("sql", int(row.id), None, dict(row.doc or {}), {"ts": row.ts, "id": int(row.id), "hw": hw})
             for row in rows[:size]
         ]
+        if not count:
+            return AuditSearchPage(hits=hits, total=len(hits), relation="gte", exhausted=not more, start=state)
         return AuditSearchPage(hits=hits, total=total, relation="eq", exhausted=not more, start=state)
 
     @staticmethod
