@@ -283,6 +283,36 @@ Analytics view remains authoritative for the complete definitions and cohort tab
 The shared `ComparisonMetric` and `MetricDefinition` components keep values and
 evidence states consistent between the two surfaces.
 
+## Auto-close review
+
+**Agent effectiveness** also has an **Auto-close review** module, read from
+`GET /api/metrics/auto-close-review` (`metrics:view`) for the page's range. A small random
+sample of the cases the AI agent closed automatically goes to a person to classify (see
+[Auto-close review](../automation/auto-close-review.md)); the module counts the cases
+**sampled** in the range:
+
+- **Sampled**, **Reviewed**, **Pending** and **Expired**;
+- agreement as "N of M agreed", with a rate and its Wilson 95% interval only once there are
+  at least 30 reviews ("Not enough reviews yet" before that), and an Unsure answer counted
+  apart;
+- the threats reviewers found: cases the agent closed as false positives that a reviewer
+  said were true positives, each linked to its case;
+- the rules sampled most (the top 10), with how many of each were reviewed and agreed;
+- the median **time spent reviewing** (measured by the review card) and, separately, the
+  median **time to review** (from picked to recorded);
+- how many automatic closes there were, by the day of their first decision, beside how
+  many were sampled.
+
+The module always says: "Agreement describes the sampled cases only, unweighted. It is not
+an estimate of auto-close precision." The daily and per-rule caps make some days' closes
+more likely to be picked than others, and the figure is never combined into a score. When
+the review record no longer holds the oldest samples of a long range, or not every case
+could be read, the counts say "at least".
+
+Review grades are ground truth for tuning and precedent, but they are left out of the
+analyst feedback quality figures and the observed-outcome comparisons above, so a stream of
+reviews of easy automatic closes cannot read as an improvement.
+
 ## Noise reduction
 
 The noise-reduction view combines durable ingest counts with case outcomes. Its

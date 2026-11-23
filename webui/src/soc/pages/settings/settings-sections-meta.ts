@@ -265,7 +265,7 @@ export const SETTINGS_SECTIONS_META: SectionMeta[] = [
     blurb: 'Correlation, risk weights, asset criticality, escalation, auto-close and cross-source links.',
     help: 'How events become cases and how risky a case is. The close or escalate decision is always made by code against the auto-close policy here, and new detections use these settings once you save them.',
     icon: Workflow,
-    keywords: ['correlation', 'risk', 'weights', 'escalation', 'auto-close', 'autonomy', 'false positive', 'cross-source', 'entity', 'asset criticality', 'asset', 'cidr', 'crown jewel'],
+    keywords: ['correlation', 'risk', 'weights', 'escalation', 'auto-close', 'autonomy', 'false positive', 'cross-source', 'entity', 'asset criticality', 'asset', 'cidr', 'crown jewel', 'auto-close review'],
     // Both the legacy `fp_auto_close` scalar AND the live `auto_close` policy block are
     // owned here (Round-5 R1 moves the auto-close editor onto `prefs.auto_close`).
     // `asset_networks`/`asset_criticality` are owned here too (Round-6: the Asset
@@ -281,6 +281,7 @@ export const SETTINGS_SECTIONS_META: SectionMeta[] = [
       'cross_source_correlation',
       'asset_networks',
       'asset_criticality',
+      'auto_close_review',
     ],
   },
   {

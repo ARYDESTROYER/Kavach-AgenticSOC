@@ -144,6 +144,7 @@ nav:
           - Detection rules: automation/rules.md
           - Tuning and baselines: automation/tuning-baselines.md
           - Approvals: automation/approvals.md
+          - Auto-close review: automation/auto-close-review.md
           - Page moved (approvals and runbooks): automation/playbooks-approvals.md
       - Threat intelligence:
           - Knowledge and memory: intelligence/knowledge-memory.md

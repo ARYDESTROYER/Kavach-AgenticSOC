@@ -188,6 +188,16 @@ async def reset_service(
             cleared.append(f"kv:runbook_runs:{removed_runs}")
         else:
             failed.append("kv:runbook_runs")
+    # Round 15 (SPEC D6.4): the auto-close review ledger names cases, so the cases tier
+    # (and the sources tier) empties it. Factory is skipped: the wholesale KV purge
+    # covers it.
+    if scope != ResetScope.FACTORY:
+        attempted.append("kv:auto_close_review")
+        removed_reviews, reviews_ok = await _clear_auto_close_review(app_state)
+        if reviews_ok:
+            cleared.append(f"kv:auto_close_review:{removed_reviews}")
+        else:
+            failed.append("kv:auto_close_review")
     # Frozen replay fixtures hold each member event's complete raw record — strictly
     # more log content than the Case it came from retained — so a cases/sources reset
     # that left them behind would keep raw records for cases the operator just deleted.
@@ -504,6 +514,25 @@ async def _clear_runbook_runs(app_state: Any) -> tuple[int, bool]:
     except Exception as exc:  # noqa: BLE001 - reported; the cases reset continues
         logger.warning("runbook run clear failed (%s); cleared %d so far", exc, removed)
         return removed, False
+
+
+async def _clear_auto_close_review(app_state: Any) -> tuple[int, bool]:
+    """Empty the REAL auto-close review ledger (Round 15 SPEC D6.4; one strict
+    compare-and-set document, ``stores.auto_close_review``). Returns ``(entries
+    removed, ok)``; best-effort like the rest of the cases tier."""
+    kv = getattr(app_state, "kv", None)
+    if kv is None:
+        return 0, False
+    try:
+        store = getattr(app_state, "real_auto_close_review", None)
+        if store is None:
+            from ..stores.auto_close_review import AutoCloseReviewStore
+
+            store = AutoCloseReviewStore(kv)
+        return await store.clear(), True
+    except Exception as exc:  # noqa: BLE001 - reported; the cases reset continues
+        logger.warning("auto-close review ledger clear failed (%s); continuing", exc)
+        return 0, False
 
 
 def _clear_live_tail(app_state: Any) -> bool:

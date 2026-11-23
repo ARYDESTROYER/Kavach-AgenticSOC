@@ -233,6 +233,17 @@
    "path": "automation/approvals/",
    "tier": "guide"
   },
+  "automation/auto-close-review.md": {
+   "title": "Auto-close review",
+   "description": "A small random sample of the cases the AI agent closed automatically goes to a person, whose answer is kept as independent ground truth.",
+   "nav": [
+    "Use the product",
+    "Automation",
+    "Auto-close review"
+   ],
+   "path": "automation/auto-close-review/",
+   "tier": "guide"
+  },
   "automation/playbooks-approvals.md": {
    "title": "This page has moved",
    "description": "Approvals and response procedures now have their own pages.",
@@ -3110,6 +3121,22 @@
    ]
   },
   {
+   "id": "analyst/analytics#auto-close-review:0",
+   "page": "analyst/analytics.md",
+   "anchor": "auto-close-review",
+   "heading": "Auto-close review",
+   "text": "**Agent effectiveness** also has an **Auto-close review** module, read from\n`GET /api/metrics/auto-close-review` (`metrics:view`) for the page's range. A small random\nsample of the cases the AI agent closed automatically goes to a person to classify (see\nAuto-close review); the module counts the cases\n**sampled** in the range:\n\n- **Sampled**, **Reviewed**, **Pending** and **Expired**;\n- agreement as \"N of M agreed\", with a rate and its Wilson 95% interval only once there are\n  at least 30 reviews (\"Not enough reviews yet\" before that), and an Unsure answer counted\n  apart;\n- the threats reviewers found: cases the agent closed as false positives that a reviewer\n  said were true positives, each linked to its case;\n- the rules sampled most (the top 10), with how many of each were reviewed and agreed;\n- the median **time spent reviewing** (measured by the review card) and, separately, the\n  median **time to review** (from picked to recorded);\n- how many automatic closes there were, by the day of their first decision, beside how\n  many were sampled.",
+   "console": []
+  },
+  {
+   "id": "analyst/analytics#auto-close-review:1",
+   "page": "analyst/analytics.md",
+   "anchor": "auto-close-review",
+   "heading": "Auto-close review",
+   "text": "The module always says: \"Agreement describes the sampled cases only, unweighted. It is not\nan estimate of auto-close precision.\" The daily and per-rule caps make some days' closes\nmore likely to be picked than others, and the figure is never combined into a score. When\nthe review record no longer holds the oldest samples of a long range, or not every case\ncould be read, the counts say \"at least\".\n\nReview grades are ground truth for tuning and precedent, but they are left out of the\nanalyst feedback quality figures and the observed-outcome comparisons above, so a stream of\nreviews of easy automatic closes cannot read as an improvement.",
+   "console": []
+  },
+  {
    "id": "analyst/analytics#noise-reduction:0",
    "page": "analyst/analytics.md",
    "anchor": "noise-reduction",
@@ -3581,6 +3608,88 @@
    "anchor": "safety-model",
    "heading": "Safety model",
    "text": "Agent tools are assigned safety tiers, and investigation tools are read-only. Runbook\nAction and Record steps are done by a person in another system; Agentic SOC records them\nand never performs them. Closing a case or approving a proposal is never an autonomous\ntool action.\n\nSee Detection and rules, Tuning and baselines,\nCases and Runbooks.",
+   "console": []
+  },
+  {
+   "id": "automation/auto-close-review#:0",
+   "page": "automation/auto-close-review.md",
+   "anchor": "",
+   "heading": "",
+   "text": "The AI agent closes some cases automatically when its verdict clears the auto-close bars\n(see Deterministic decisions). Nobody looks at\nthose cases by default, which is the point of closing them, but it also means nobody\nchecks them. The **auto-close review** sends a small, random, capped sample of them to a\nperson to classify. The answer is recorded as independent ground truth, and the case\nitself stays exactly as the decision left it unless that person reopens it.",
+   "console": []
+  },
+  {
+   "id": "automation/auto-close-review#how-cases-are-picked:0",
+   "page": "automation/auto-close-review.md",
+   "anchor": "how-cases-are-picked",
+   "heading": "How cases are picked",
+   "text": "Picking happens once, right after the agent closes a case and after every other step\nthat follows a decision (runbook attachment, automation, the knowledge index and\nnotifications). Only a case the agent closed automatically is considered: a case routed\nto a person, a case closed by an analyst rule policy, and a case whose first decision\nwas not an automatic close are never picked.\n\n- **A fixed score per case.** Each case gets a score from 0 to 1 computed from its\n  case id, which the server creates. The same case always gets the same score, and\n  nothing in an alert can steer it. A case is picked when its score is below the share\n  you set.\n- **A daily cap.** At most this many cases are picked in one day, counted in the SLA\n  time zone (Settings, SLA, priority and suppression).\n- **A cap per rule.** At most this many cases of one detection rule are picked in a day,\n  so one noisy rule cannot fill the day's sample.\n- **Once per case.** A case is picked at most once while its entry is kept. The record\n  keeps the 2,000 newest picked cases; after an old entry is dropped, a case that is\n  reopened and closed again could be picked again.\n- **No backfill.** Picking starts with the first automatic close after an upgrade.",
+   "console": []
+  },
+  {
+   "id": "automation/auto-close-review#how-cases-are-picked:1",
+   "page": "automation/auto-close-review.md",
+   "anchor": "how-cases-are-picked",
+   "heading": "How cases are picked",
+   "text": "Every pick writes an **Auto-close review requested** row to the audit log in Agent\nactivity, with the score, the share, the day's counts and the rule. If the audit log or\nthe review record cannot be written, the case is not picked and nothing about the case\nchanges.",
+   "console": []
+  },
+  {
+   "id": "automation/auto-close-review#settings:0",
+   "page": "automation/auto-close-review.md",
+   "anchor": "settings",
+   "heading": "Settings",
+   "text": "Open **Settings → Detection** and find **Auto-close review**, beside the auto-close bars.\nChanging it needs `settings:manage`.\n\n| Setting | Default | Range |\n|---|---|---|\n| Send automatic closes for review | On | On or off |\n| Share of automatic closes picked | 5% | 0 to 50% |\n| Most picked in a day | 10 | 0 to 200 |\n| Most of one rule in a day | 3 | 1 to 50 |\n| Days before a review expires | 7 | 1 to 30 |\n\nA value outside its range is refused when you save it. An expired review is still shown\nand can still be recorded; it only stops counting as pending.",
+   "console": [
+    "settings:detection"
+   ]
+  },
+  {
+   "id": "automation/auto-close-review#reviewing-a-case:0",
+   "page": "automation/auto-close-review.md",
+   "anchor": "reviewing-a-case",
+   "heading": "Reviewing a case",
+   "text": "Picked cases wait in the Case Manager's **Review** scope, with the number still pending\nbeside it. A picked case shows a band under its header: \"Picked at random for auto-close\nreview. Classify it yourself, then compare with the AI.\" Choose **Start review**.\n\n1. **What was it?** Choose True positive, False positive, Benign or Unsure. Nothing is\n   chosen for you.\n2. Add a note if you like. The note is kept as precedent for future investigations,\n   like any grading comment, and is always treated as untrusted text.\n3. Optionally rate the AI's accuracy, reasoning and recommended action.\n4. Choose **Compare with the AI**. Only now does the card show the AI verdict and whether\n   your answer agrees with it. Your answer is locked from this point.\n5. Choose **Record review**.\n\nThe card measures the time from opening it to recording the review, so a manager can see\nreviews that took seconds. It is not a full blind review: the rest of the case page still\nshows the AI verdict.\n\nYou can also review an agent-closed case that was not picked, with **Review this\nauto-close** in **Take action**. That review is recorded as an ordinary grade.\n\nRecording a review needs `cases:write`. It never changes the case's status, who decided\nit or its disposition. Each case in the sample can be reviewed once; a second attempt\nanswers that the review is already recorded.",
+   "console": []
+  },
+  {
+   "id": "automation/auto-close-review#when-you-disagree-with-the-ai:0",
+   "page": "automation/auto-close-review.md",
+   "anchor": "when-you-disagree-with-the-ai",
+   "heading": "When you disagree with the AI",
+   "text": "The review is always recorded. What happens next depends on your permissions:\n\n- With `cases:close` you are offered **Reopen case** and **Reopen and escalate**. The\n  second is two steps; if the escalation fails, the case stays reopened and the card\n  says so. Nothing is ever reopened automatically.\n- Without `cases:close` the card says \"Someone who can close cases has been asked to look\n  at this.\" Each person who can close cases gets one Inbox item in the Assignment\n  category (at most 200 people). Someone who turned Assignment off in their Inbox\n  settings gets none.",
+   "console": []
+  },
+  {
+   "id": "automation/auto-close-review#what-a-review-feeds:0",
+   "page": "automation/auto-close-review.md",
+   "anchor": "what-a-review-feeds",
+   "heading": "What a review feeds",
+   "text": "A review grade is independent ground truth. It is used by:\n\n- the analyst-confirmed outcome of the case;\n- the threshold tuner;\n- the precedent corpus (a false positive review can therefore help promote precedent;\n  a true positive review makes the rule's precedent conflicting, which blocks promotion);\n- the ground-truth supply figures.\n\nIt is kept out of the views that measure agreement with the AI agent, because the sample\nis drawn only from automatic closes and would shift those views without any change in\nthe agent:\n\n- the analyst feedback quality figures on Metrics;\n- the observed-outcome comparisons on Agent effectiveness;\n- the agent reopen rate, for a reopen made from the review card of a case in the sample.\n\nThe grade is marked in two places, the grade itself and a history event on the case, so\nit is recognised even after a rollback to an older build drops the grade's own marker.",
+   "console": []
+  },
+  {
+   "id": "automation/auto-close-review#where-the-results-show:0",
+   "page": "automation/auto-close-review.md",
+   "anchor": "where-the-results-show",
+   "heading": "Where the results show",
+   "text": "- **Agent effectiveness** has an **Auto-close review** module for the page's range: how\n  many cases were sampled, reviewed, pending and expired; how many reviews agreed with\n  the AI (\"N of M agreed\"); an agreement rate with its 95% interval once there are at\n  least 30 reviews, and \"Not enough reviews yet\" before that; the threats reviewers found\n  (they said true positive on an automatic false positive close), with links to the\n  cases; the rules sampled most; the median time spent reviewing and the median time from\n  picked to reviewed; and how many automatic closes there were, by the day of their first\n  decision. It always says: \"Agreement describes the sampled cases only, unweighted. It is\n  not an estimate of auto-close precision.\" The daily caps mean each day's cases are not\n  equally likely to be picked, so no rate here describes every automatic close.\n- **Case Manager**: the Review scope (pending, with links to completed, disagreed and\n  expired reviews), and the review's result in the case's Outcome facts\n  (\"Reviewed: false positive\", \"Review disagreed: true positive\").\n- **Team activity** counts the reviews each person completed, with how many agreed and\n  the time they spent.\n- The **audit log** has an **Auto-close review recorded** row per review, by the person\n  who recorded it. Its summary carries ids and codes only, never the note.",
+   "console": []
+  },
+  {
+   "id": "automation/auto-close-review#demo-mode:0",
+   "page": "automation/auto-close-review.md",
+   "anchor": "demo-mode",
+   "heading": "Demo Mode",
+   "text": "In Demo Mode the sample, the reviews and their audit rows live in the Demo stores and are\ngone when Demo Mode ends. A fresh Demo starts with six picked cases: three pending, two\nreviewed and agreeing, and one reviewed and disagreeing, by the Demo analysts.",
+   "console": []
+  },
+  {
+   "id": "automation/auto-close-review#data-reset-and-export:0",
+   "page": "automation/auto-close-review.md",
+   "anchor": "data-reset-and-export",
+   "heading": "Data, reset and export",
+   "text": "The review record is one document in the application's own state, with no new index,\ntable or migration. A cases reset empties it, a factory reset removes it, and the data\nexport lists every entry (ids, the rule, times, states and the review's answer; the note\nstays on the case's grade).\n\nA rollback to an older build resets the five review settings to their defaults when the\nolder build saves its settings.",
    "console": []
   },
   {
@@ -7155,6 +7264,14 @@
    "anchor": "what-automation-may-do",
    "heading": "What automation may do",
    "text": "After the deterministic decision and case save, approved automation can:\n\n- add tags;\n- record recommendations;\n- send notifications;\n- request human approval; or\n- attach a Published runbook to the case.\n\nIt cannot change the close/escalate truth table. A runbook is guidance and a checklist,\nnot policy. Automatic closes never read runbook steps, and closing a case by hand with\nrequired steps open asks for a reason but is never blocked.",
+   "console": []
+  },
+  {
+   "id": "concepts/deterministic-decisions#auto-close-review-never-decides:0",
+   "page": "concepts/deterministic-decisions.md",
+   "anchor": "auto-close-review-never-decides",
+   "heading": "Auto-close review never decides",
+   "text": "A small random sample of automatic closes is sent to a person for review (see\nAuto-close review). The sample is picked after the\ndecision is applied, saved and followed by every other post-decision step, and only reads\nthe decided case. Recording a review adds one grade to the case and never changes its\nstatus, who decided it or its disposition; the review settings are never read by the\ndecision. Only a person can reopen a reviewed case, with the ordinary reopen action.",
    "console": []
   },
   {

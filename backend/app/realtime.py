@@ -98,6 +98,7 @@ CHAT_TURN_EVENT = "chat.turn"        # the caller's own chat turn lifecycle, top
 CHAT_READ_EVENT = "chat.read"        # the caller read a conversation's answer, topic chat
 CASE_CHANGED_EVENT = "case.changed"  # a case was saved (created or updated), topic cases
 CASE_RUNBOOK_EVENT = "case.runbook"  # a case's runbook run changed (progress only), topic runbooks
+CASE_REVIEW_EVENT = "case.review"  # an auto-close review was picked or recorded, topics cases:{id}, cases
 OVERFLOW_EVENT = "overflow"          # bus control frame: this subscriber dropped events
 
 SSE_EVENT_TYPES: frozenset[str] = frozenset({
@@ -109,6 +110,7 @@ SSE_EVENT_TYPES: frozenset[str] = frozenset({
     CHAT_READ_EVENT,
     CASE_CHANGED_EVENT,
     CASE_RUNBOOK_EVENT,
+    CASE_REVIEW_EVENT,
     OVERFLOW_EVENT,
 })
 

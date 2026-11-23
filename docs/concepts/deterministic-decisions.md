@@ -117,6 +117,15 @@ It cannot change the close/escalate truth table. A runbook is guidance and a che
 not policy. Automatic closes never read runbook steps, and closing a case by hand with
 required steps open asks for a reason but is never blocked.
 
+## Auto-close review never decides
+
+A small random sample of automatic closes is sent to a person for review (see
+[Auto-close review](../automation/auto-close-review.md)). The sample is picked after the
+decision is applied, saved and followed by every other post-decision step, and only reads
+the decided case. Recording a review adds one grade to the case and never changes its
+status, who decided it or its disposition; the review settings are never read by the
+decision. Only a person can reopen a reviewed case, with the ordinary reopen action.
+
 ## Failure behavior
 
 Missing provider credentials, provider errors, tool failures, invalid model output,
@@ -138,6 +147,7 @@ the action.
 
 ## Related pages
 
+- [Auto-close review](../automation/auto-close-review.md)
 - [Architecture](architecture.md)
 - [State, audit, and cost](state-audit-cost.md)
 - [Create your first case](../getting-started/first-case.md)

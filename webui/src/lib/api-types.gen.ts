@@ -731,6 +731,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/auto-close-review/summary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Auto Close Review Summary
+         * @description The Review scope badge (D6.12). Pending entries whose case already carries its
+         *     review are repaired in the ledger and not counted.
+         */
+        get: operations["auto_close_review_summary_api_auto_close_review_summary_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/baseline/config": {
         parameters: {
             query?: never;
@@ -1458,6 +1479,26 @@ export interface paths {
          *     updated Case. 400 (NEUTRAL) if no events remain to rebuild the cluster.
          */
         post: operations["case_reinvestigate_api_cases__case_id__reinvestigate_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/cases/{case_id}/review": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Record Auto Close Review
+         * @description Record a person's review of a case the AI agent closed automatically (D6.6).
+         */
+        post: operations["record_auto_close_review_api_cases__case_id__review_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3612,6 +3653,27 @@ export interface paths {
          *     ``decide()`` (#3).
          */
         get: operations["metrics_auto_close_health_recorded_api_metrics_auto_close_health_recorded_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/metrics/auto-close-review": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Auto Close Review Metrics
+         * @description The Agent effectiveness module (D6.12) over the cases sampled in ``window`` (a
+         *     ``time_windows`` token, default the last 30 days, in the operator zone).
+         */
+        get: operations["auto_close_review_metrics_api_metrics_auto_close_review_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -7676,6 +7738,66 @@ export interface components {
             false_positive?: components["schemas"]["VerdictAutoClose"];
             needs_human?: components["schemas"]["VerdictAutoClose"];
             true_positive?: components["schemas"]["VerdictAutoClose"];
+        };
+        /**
+         * AutoCloseReviewMetrics
+         * @description The Agent effectiveness "Auto-close review" module (D6.12) over the cases sampled
+         *     in ``window``. Never a composite score.
+         */
+        AutoCloseReviewMetrics: {
+            agreement: components["schemas"]["ReviewAgreement"];
+            /** By Day */
+            by_day: components["schemas"]["ReviewDayRow"][];
+            /** By Rule */
+            by_rule: components["schemas"]["ReviewRuleRow"][];
+            /** Daily Cap */
+            daily_cap: number;
+            eligible: components["schemas"]["ReviewEligible"];
+            /** Enabled */
+            enabled: boolean;
+            /** Expired */
+            expired: number;
+            /** Expiry Days */
+            expiry_days: number;
+            /** Generated At */
+            generated_at: string;
+            /** Ledger Complete */
+            ledger_complete: boolean;
+            missed_threats: components["schemas"]["ReviewMissedThreats"];
+            /** Pending */
+            pending: number;
+            /** Per Rule Daily Cap */
+            per_rule_daily_cap: number;
+            /** Reviewed */
+            reviewed: number;
+            /** Sample Rate */
+            sample_rate: number;
+            /** Sampled */
+            sampled: number;
+            /** Statement */
+            statement: string;
+            time_spent_ms: components["schemas"]["ReviewDuration"];
+            time_to_review_ms: components["schemas"]["ReviewDuration"];
+            /** Unsure */
+            unsure: number;
+            window: components["schemas"]["ReviewMetricsWindow"];
+        };
+        /**
+         * AutoCloseReviewSummary
+         * @description The Review scope badge: pending reviews, disagreeing reviews whose case is still
+         *     closed, today's sample against the daily cap.
+         */
+        AutoCloseReviewSummary: {
+            /** Daily Cap */
+            daily_cap: number;
+            /** Disagreed Open */
+            disagreed_open: number;
+            /** Enabled */
+            enabled: boolean;
+            /** Pending */
+            pending: number;
+            /** Sampled Today */
+            sampled_today: number;
         };
         /**
          * AvatarBody
@@ -11962,6 +12084,157 @@ export interface components {
             /** Scope */
             scope: string;
         };
+        /** ReviewAgreement */
+        ReviewAgreement: {
+            /** Agreed */
+            agreed: number;
+            /** Disagreed */
+            disagreed: number;
+            /** Interval */
+            interval?: {
+                [key: string]: number;
+            } | null;
+            /** Minimum */
+            minimum: number;
+            /** Rate */
+            rate?: number | null;
+            /** Reviews */
+            reviews: number;
+            /** Statement */
+            statement: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "ok" | "insufficient";
+        };
+        /**
+         * ReviewBody
+         * @description A person's review of an automatic close. ``classification`` is their own
+         *     answer, asked before the AI verdict is compared. The optional ratings are stars
+         *     (above 0, at most 1). ``elapsed_ms`` is the time from opening the review card to
+         *     submitting it, measured by the Console.
+         */
+        ReviewBody: {
+            /** Accuracy */
+            accuracy?: number | null;
+            /** Action Appropriateness */
+            action_appropriateness?: number | null;
+            /**
+             * Classification
+             * @enum {string}
+             */
+            classification: "true_positive" | "false_positive" | "benign" | "unsure";
+            /** Elapsed Ms */
+            elapsed_ms?: number | null;
+            /**
+             * Note
+             * @default
+             */
+            note: string;
+            /** Reasoning Quality */
+            reasoning_quality?: number | null;
+        };
+        /** ReviewDayRow */
+        ReviewDayRow: {
+            /** Day */
+            day: string;
+            /** Eligible */
+            eligible: number;
+            /** Sampled */
+            sampled: number;
+        };
+        /** ReviewDuration */
+        ReviewDuration: {
+            /** Median */
+            median?: number | null;
+            /**
+             * Reviews
+             * @default 0
+             */
+            reviews: number;
+        };
+        /** ReviewEligible */
+        ReviewEligible: {
+            /** Complete */
+            complete: boolean;
+            /** Count */
+            count: number;
+        };
+        /** ReviewMetricsWindow */
+        ReviewMetricsWindow: {
+            /** End */
+            end: string;
+            /** Label */
+            label: string;
+            /** Start */
+            start?: string | null;
+            /** Token */
+            token: string;
+            /** Tz */
+            tz: string;
+        };
+        /** ReviewMissedThreat */
+        ReviewMissedThreat: {
+            /** Case Id */
+            case_id: string;
+            /**
+             * Case Number
+             * @default
+             */
+            case_number: string;
+            /**
+             * Completed At
+             * @default
+             */
+            completed_at: string;
+            /**
+             * Rule
+             * @default
+             */
+            rule: string;
+        };
+        /** ReviewMissedThreats */
+        ReviewMissedThreats: {
+            /** Cases */
+            cases?: components["schemas"]["ReviewMissedThreat"][];
+            /** Count */
+            count: number;
+        };
+        /**
+         * ReviewResult
+         * @description The recorded review: ``agrees`` (None for unsure), whether the caller may
+         *     reopen the case (``cases:close``), and the ledger id when the case was sampled.
+         */
+        ReviewResult: {
+            /** Agrees */
+            agrees?: boolean | null;
+            /**
+             * Can Reopen
+             * @default false
+             */
+            can_reopen: boolean;
+            /** Review Id */
+            review_id?: string | null;
+            /**
+             * Sampled
+             * @default false
+             */
+            sampled: boolean;
+        };
+        /** ReviewRuleRow */
+        ReviewRuleRow: {
+            /** Agreed */
+            agreed: number;
+            /** Disagreed */
+            disagreed: number;
+            /** Reviewed */
+            reviewed: number;
+            /** Rule */
+            rule: string;
+            /** Sampled */
+            sampled: number;
+        };
         /** RevokeOthersBody */
         RevokeOthersBody: {
             /**
@@ -16134,6 +16407,26 @@ export interface operations {
             };
         };
     };
+    auto_close_review_summary_api_auto_close_review_summary_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AutoCloseReviewSummary"];
+                };
+            };
+        };
+    };
     get_baseline_config_api_baseline_config_get: {
         parameters: {
             query?: never;
@@ -16624,6 +16917,7 @@ export interface operations {
                 verdict?: string | null;
                 rule?: string | null;
                 closed_by?: string | null;
+                review?: string | null;
             };
             header?: never;
             path?: never;
@@ -17102,6 +17396,41 @@ export interface operations {
                 };
                 content: {
                     "application/json": Record<string, never>;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    record_auto_close_review_api_cases__case_id__review_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                case_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReviewBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewResult"];
                 };
             };
             /** @description Validation Error */
@@ -20283,6 +20612,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": Record<string, never>;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    auto_close_review_metrics_api_metrics_auto_close_review_get: {
+        parameters: {
+            query?: {
+                window?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AutoCloseReviewMetrics"];
                 };
             };
             /** @description Validation Error */

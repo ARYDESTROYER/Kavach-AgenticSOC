@@ -81,6 +81,9 @@ const CURATED_SECTIONS: ReadonlySet<string> = new Set([
   // second editor here would save the real settings through the page save instead, so the
   // two would show different values for one switch in Demo Mode.
   'enrichment',
+  // Round 15 (SPEC D6.2): the Detection section's "Auto-close review" group is its one
+  // editor.
+  'auto_close_review',
 ]);
 
 /**
