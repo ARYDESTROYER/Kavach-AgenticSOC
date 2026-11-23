@@ -200,6 +200,8 @@ describe('Wizard onboarding fixes', () => {
     renderWizard(onComplete);
 
     await user.click(await screen.findByRole('button', { name: /Review & launch/i }));
+    // The review stage loads on demand (Round 15, SPEC §3.1): wait for it before launch.
+    await screen.findByRole('heading', { name: /Ready with limited capabilities/i });
     const launch = screen.getByRole('button', { name: /Launch Agentic SOC/i });
     const sourcesButton = screen.getByRole('button', { name: /Data sources/i });
     fireEvent.click(launch);
