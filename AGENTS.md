@@ -973,10 +973,14 @@ cp .env.example .env   # set TLSOC_PG_PASSWORD + at least one LLM key
 
 ## 10. Current status & roadmap
 
-**Round 14 is the newest work** (one console grammar, a Dashboards library, an audit log you
-can use, rule drill-down and one Runbooks feature that replaces playbooks). It is built on
-branch `claude/round14` (from `1cf20a7`, after Round 13 merged into `Testing`) and heads to
-`Testing` through a pull request; see the Round 14 bullet in the round summary below and
+**Round 15 is the newest work** (a Console switch for role-based access, honest setup-wizard
+copy, a Team activity page, screenshots on cases, a random review of automatically closed cases
+and a cleaner Case Manager). It is in progress on branch `claude/round15` (from `c4227bd` on
+`Testing`) and heads to `Testing` through a pull request; see
+`docs/research/2026-11-round15/SPEC.md`. Round 14 (one console grammar, a Dashboards library, an audit log you
+can use, rule drill-down and one Runbooks feature that replaces playbooks) was built on
+branch `claude/round14` (from `1cf20a7`, after Round 13 merged into `Testing`) and merged into
+`Testing`; see the Round 14 bullet in the round summary below and
 `docs/research/2026-10-round14/SPEC.md`, whose §11 "As built" records what shipped, the
 contract resolutions and the known limitations. Round 13 (chat: dynamic $0 starters, anchored
 follow-ups, conversation titles from the first answer, a neater chat) merged into `Testing`

@@ -11865,3 +11865,10 @@
 - Did: started a seven-reader mapping workflow (RBAC and wizard, activity data, Case Manager UI, close flow, review sampling, attachment storage, platform constraints) with a completeness critic.
 - Status: in progress.
 - Next: write the Round 15 SPEC from the maps, then implement in work packages with adversarial reviews.
+
+### 2026-11-23 11:30Z - orchestrator - Round 15 SPEC drafted from the code maps
+- Context: Round 15 (RBAC switch, wizard copy, Team activity, screenshots on cases, auto-close review, Case Manager redesign).
+- Did: the seven-reader mapping workflow and its completeness critic finished; the maps are committed under `docs/research/2026-11-round15/understand/`. Wrote `docs/research/2026-11-round15/SPEC.md` with decisions D1 to D8 (switch on Roles & permissions through a new `PUT /api/rbac` with fresh sign-in, stored Super admin only, and `PUT /api/settings` refusing an `rbac.enabled` change; truthful wizard readiness; Team activity under Analytics behind a new `team:view` for SOC managers and auditors, an exact audit fold with structured case-work actions and an attribution fix; a one-question close with actions taken; KV-only screenshots with stdlib validation; a deterministic, capped auto-close review recorded as independent ground truth with a rollback-safe marker; a five-tab Case Manager with one home per fact) and work packages WP1 to WP8. AGENTS.md and HANDOFF.md name Round 15 as the newest round.
+- Tests: docs records tests pass (52).
+- Status: in progress; an adversarial review of the SPEC against the code is running.
+- Next: fold the review corrections into the SPEC, then run WP1 (foundation) in the main tree.
