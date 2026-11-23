@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import hashlib
 import json
 import logging
@@ -14,7 +16,7 @@ from urllib.parse import quote_plus
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .. import __version__
 from ..audit.changes import diff_changes
@@ -31,6 +33,7 @@ from ..auth.session_limits import (
 )
 from ..build_identity import build_identity_advisories, build_stamp
 from ..config import (
+    AUTO_CLOSE_REVIEW_BOUNDS,
     CAPS_MINIMUMS,
     Preferences,
     SourceInstance,
@@ -39,7 +42,16 @@ from ..config import (
 )
 from ..connectors.registry import get_registry
 from ..constants import (
+    BULK_RUN_ID_PREFIX,
+    CASE_ACTIONS_TAKEN_LABELS,
+    CASE_ACTIONS_TAKEN_MAX,
+    CASE_ASSIGNED_AUDIT_ACTION,
+    CASE_COMMENTED_AUDIT_ACTION,
+    CASE_GRADED_AUDIT_ACTION,
+    CASE_LIFECYCLE_AUDIT_ACTIONS,
+    CASE_TAGGED_AUDIT_ACTION,
     ActionType,
+    CaseActionTaken,
     CaseStatus,
     DecisionBy,
     Disposition,
@@ -93,6 +105,7 @@ from ..llm.pricing import (
 )
 from ..models import (
     AUDIT_MAX_CHANGES,
+    AuditChange,
     AuditTarget,
     Case,
     CaseComment,
@@ -1935,6 +1948,58 @@ def _reject_out_of_range_remember_me(body: Any) -> None:
             )
 
 
+def _reject_out_of_range_auto_close_review(body: Any) -> None:
+    """422 on an out-of-range or malformed ``auto_close_review`` value that arrived in
+    a REQUEST BODY (Round 15 SPEC D6.2).
+
+    ``AutoCloseReviewConfig`` REPAIRS a stored document on load (clamping
+    ``sample_rate`` into 0 to 0.5 and each cap into its range, replacing a malformed
+    value with its default) so one bad number can never reset the whole configuration.
+    That repair is the wrong answer for a live edit: an operator who asks for a 60%
+    sample must not silently get 50%. Like :func:`_reject_out_of_range_caps` it inspects
+    the BODY, never the merged document, so an already-stored value stays loadable. The
+    bounds are :data:`~app.config.AUTO_CLOSE_REVIEW_BOUNDS`, the table the repair reads,
+    so the two can never drift."""
+    if not isinstance(body, dict):
+        return
+    block = body.get("auto_close_review")
+    if block is None:
+        return
+    if not isinstance(block, dict):
+        raise HTTPException(
+            status_code=422,
+            detail="Invalid settings: auto_close_review must be an object",
+        )
+    if "enabled" in block and not isinstance(block["enabled"], bool):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Invalid settings: auto_close_review.enabled must be true or false "
+                f"(received {block['enabled']!r})"
+            ),
+        )
+    for name, (lo, hi, integer) in AUTO_CLOSE_REVIEW_BOUNDS.items():
+        if name not in block:
+            continue
+        raw = block[name]
+        numeric = not isinstance(raw, bool) and isinstance(raw, (int, float))
+        finite = numeric and math.isfinite(float(raw))
+        whole = finite and (isinstance(raw, int) or float(raw).is_integer())
+        if finite and (whole or not integer) and lo <= float(raw) <= hi:
+            continue
+        if integer:
+            expected = f"a whole number from {int(lo)} to {int(hi)}"
+        else:
+            expected = f"a number from {lo:g} to {hi:g}"
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Invalid settings: auto_close_review.{name} must be {expected} "
+                f"(received {raw!r})"
+            ),
+        )
+
+
 @router.put("/settings")
 async def put_settings(
     body: dict[str, Any],
@@ -1983,6 +2048,7 @@ async def put_settings(
         # document before any `ge=` constraint can fire. See `_reject_out_of_range_caps`.
         _reject_out_of_range_caps(body)
         _reject_out_of_range_remember_me(body)
+        _reject_out_of_range_auto_close_review(body)
         # Round 14 (SPEC §4.10.19): a retired runbook key the body CHANGES
         # (``rag.use_runbooks``, ``playbooks.enabled``) is carried onto its successor
         # under ``runbooks`` before the merge; validation rewrites the retired key as a
@@ -6866,7 +6932,11 @@ async def get_case(
     return JSONResponse(_withhold_case_spend(jsonable_encoder(banded)))
 
 
-class CaseAction(BaseModel):
+class _CaseActionFields(BaseModel):
+    # The fields a single-case action and a bulk action share (Round 15 split them so
+    # ``CaseAction.review_via`` stays single-case only, SPEC D6.9). No docstring, so
+    # the generated ``CaseAction`` schema keeps its exact description.
+    #
     # Lifecycle/disposition actions. Original: close | reopen | escalate |
     # confirm_fp | acknowledge. Added (F8): hold | resume | resolve |
     # set_disposition | deescalate | set_status.
@@ -6932,6 +7002,19 @@ class CaseAction(BaseModel):
         title="Refuse the close when required runbook steps are open and no reason is given",
         description="The Console sets it to show its close dialog; the default never blocks a close.",
     )
+    # Round 15 (SPEC D4.2): what the person did about the case, from a fixed vocabulary
+    # (``constants.CASE_ACTIONS_TAKEN``). Optional and additive: stored on the
+    # ``analyst_action`` history entry and in the audit row's ``changes``, shown in the
+    # case Markdown export; never model text and never read by ``decide()`` (#3).
+    actions_taken: list[CaseActionTaken] | None = Field(
+        default=None,
+        max_length=CASE_ACTIONS_TAKEN_MAX,
+        title="What was done about the case",
+        description=(
+            f"At most {CASE_ACTIONS_TAKEN_MAX} values from the fixed vocabulary; an unknown "
+            "value answers 422 and a repeated value is kept once."
+        ),
+    )
 
     @field_validator("open_steps_reason")
     @classmethod
@@ -6940,6 +7023,27 @@ class CaseAction(BaseModel):
             return None
         text = " ".join(str(value).split())
         return text or None
+
+    @field_validator("actions_taken")
+    @classmethod
+    def _dedupe_actions_taken(cls, value: list[str] | None) -> list[str] | None:
+        if value is None:
+            return None
+        return list(dict.fromkeys(value))
+
+
+class CaseAction(_CaseActionFields):
+    # Round 15 (SPEC D6.9): an action taken from an auto-close review ("Reopen case",
+    # "Reopen and escalate"). Recorded on the ``analyst_action`` history entry and in
+    # the audit row's ``changes`` ONLY: it never sets the internal ``via=`` parameter of
+    # ``_perform_case_action`` (so it can never fake the bulk marker or skip the open
+    # steps check) and the open-steps logic never reads it. Any other value answers
+    # 422; bulk bodies do not accept it.
+    review_via: Literal["auto_close_review"] | None = Field(
+        default=None,
+        title="The action was taken from an auto-close review",
+        description='"auto_close_review" or null; recorded on the history entry and the audit row only.',
+    )
 
 
 # Lifecycle status reached by each action. ``None`` = the action does not move the
@@ -7138,6 +7242,74 @@ def _request_audit_context(request: Request | None) -> Any:
     return audit_context(request)
 
 
+# Round 15 (SPEC D7.3): the bulk marker of the audit rows a bulk JOB writes through the
+# single-case collaboration routes (``case_assign`` and ``case_tag`` call ``case_assign``
+# and ``case_tags`` directly, with no request). Carried in a context variable, never a
+# route or query parameter, so no client can mark its own rows as bulk; only the job
+# runner sets it, around one item, through :func:`_bulk_audit_run`.
+_BULK_AUDIT_RUN: contextvars.ContextVar[str] = contextvars.ContextVar("case_bulk_audit_run", default="")
+
+
+@contextlib.contextmanager
+def _bulk_audit_run(run_id: str):
+    """Stamp ``run_id`` (``bulk-<job_id>``) on every case-work audit row written inside
+    the block, in this task only. A value without the bulk prefix stamps nothing."""
+    value = run_id if isinstance(run_id, str) and run_id.startswith(BULK_RUN_ID_PREFIX) else ""
+    token = _BULK_AUDIT_RUN.set(value)
+    try:
+        yield
+    finally:
+        _BULK_AUDIT_RUN.reset(token)
+
+
+def _bulk_run_id(batch_id: str = "") -> str | None:
+    """The ``run_id`` of a case-work audit row (SPEC D7.3): the bulk action's existing
+    ``batch_id`` when one was passed, else the bulk job's marker, else ``None`` (a
+    single action is never bulk)."""
+    for value in (batch_id, _BULK_AUDIT_RUN.get()):
+        if isinstance(value, str) and value.startswith(BULK_RUN_ID_PREFIX):
+            return value
+    return None
+
+
+def _case_audit_fields(case: Any, context: Any = None, *, batch_id: str = "") -> dict[str, Any]:
+    """The structured fields of a human case-work audit row (Round 15 SPEC D7.1): the
+    case as its ``target`` (labelled by its number), the request context when the row
+    has one (``audit_context(request).record_fields()``: client, session, role, request
+    id; a job has none) and the bulk ``run_id`` (D7.3). ``action_type``, ``surface`` and
+    ``result_summary`` are the caller's, unchanged."""
+    case_id = str(getattr(case, "case_id", "") or "")
+    label = str(getattr(case, "case_number", "") or "") or case_id
+    fields: dict[str, Any] = {"target": AuditTarget(type="case", id=case_id, label=label)}
+    record = getattr(context, "record_fields", None)
+    if callable(record):
+        try:
+            fields.update({k: v for k, v in record().items() if v is not None})
+        except Exception as exc:  # noqa: BLE001 (the row is written without it)
+            logger.debug("case audit context unavailable: %s", exc)
+    run_id = _bulk_run_id(batch_id)
+    if run_id:
+        fields["run_id"] = run_id
+    return fields
+
+
+def _case_work_actor(user: Any, fallback: str | None) -> str:
+    """The audit actor of a human case-work row (Round 15 SPEC D7.2): the verified
+    principal when the request has one, else the body or caller value (a job passes
+    ``job.actor``, verified at submit), else ``"analyst"`` (sign-in off)."""
+    return str(getattr(user, "username", "") or "") or (fallback or "").strip() or "analyst"
+
+
+def _change_value(value: Any) -> Any:
+    """An enum's value, a datetime's ISO text, anything else as is (``AuditChange``
+    stores a value that is not text as canonical JSON text)."""
+    if hasattr(value, "value"):
+        return value.value
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    return value
+
+
 async def _perform_case_action(
     case_id: str, body: CaseAction, actor: str, state: AppState, batch_id: str = "",
     via: str | None = None, context: Any = None,
@@ -7176,6 +7348,10 @@ async def _perform_case_action(
     previous_tags = list(case.tags or [])
 
     prev_status = case.status
+    # Round 15 (SPEC D7.1): the values the audit row's ``changes`` compare against.
+    prev_disposition = case.disposition
+    prev_acknowledged_at = case.acknowledged_at
+    prev_assignee = case.assignee or ""
 
     # Resolve the lifecycle target.
     target = _ACTION_STATUS[body.action]
@@ -7336,13 +7512,46 @@ async def _perform_case_action(
     if assigned is not None:
         # A new owner set by this action: its time, for the "my cases" starter.
         entry["assignee"] = assigned
+    # Round 15 (SPEC D4.2, D6.9): what the person did, from the fixed vocabulary, and
+    # whether they acted from an auto-close review. Both new keys on a NEW entry only
+    # (#2); ``review_via`` is recorded and never read by the close logic above.
+    if body.actions_taken:
+        entry["actions_taken"] = list(body.actions_taken)
+    review_via = getattr(body, "review_via", None)
+    if review_via:
+        entry["review_via"] = review_via
     case.history.append(entry)
     await state.cases.save(case)
+    # Round 15 (SPEC D7.1): the row's structured fields. ``action_type``, ``surface`` and
+    # the positional ``result_summary`` below stay byte-identical.
+    changes: list[AuditChange] = []
+    if case.status != prev_status:
+        changes.append(AuditChange(field="status", before=_change_value(prev_status),
+                                   after=case.status.value))
+    if case.disposition != prev_disposition:
+        changes.append(AuditChange(field="disposition", before=_change_value(prev_disposition),
+                                   after=_change_value(case.disposition)))
+    if classified_disposition:
+        changes.append(AuditChange(field=CLASSIFIED_DISPOSITION_KEY, after=classified_disposition))
+    if prev_acknowledged_at is None and case.acknowledged_at is not None:
+        changes.append(AuditChange(field="acknowledged_at",
+                                   after=_change_value(case.acknowledged_at)))
+    if assigned is not None:
+        changes.append(AuditChange(field="assignee", before=prev_assignee or None, after=assigned))
+    if merged_tags is not None and list(merged_tags) != previous_tags:
+        changes.append(AuditChange(field="tags", before=previous_tags, after=list(merged_tags)))
+    if body.actions_taken:
+        changes.append(AuditChange(field="actions_taken", after=list(body.actions_taken)))
+    if review_via:
+        changes.append(AuditChange(field="review_via", after=review_via))
     # Append-only audit of the lifecycle transition (#2) — best-effort.
     try:
         await state.audit.record(
             action_type=ActionType.STATUS, surface="case", actor=actor, case_id=case_id,
             actor_type="human", outcome="success",
+            action=CASE_LIFECYCLE_AUDIT_ACTIONS.get(body.action),
+            changes=changes or None,
+            **_case_audit_fields(case, context, batch_id=batch_id),
             result_summary=(
                 f"action={body.action} status {prev_status.value if prev_status else '?'}"
                 f"→{case.status.value} disposition={case.disposition.value if case.disposition else 'none'}"
@@ -7437,12 +7646,20 @@ async def _perform_case_action(
     return _case_view(case, state)
 
 
-class BulkCaseAction(CaseAction):
+class BulkCaseAction(_CaseActionFields):
     """A :class:`CaseAction` applied to many cases at once. ``ids`` is the set of
     target case ids; the action/payload fields are inherited verbatim so a bulk move
-    is IDENTICAL to N single-case moves."""
+    is IDENTICAL to N single-case moves. The one exception is ``review_via`` (Round 15
+    SPEC D6.9): a review is about one case, so a bulk body that sends it answers 422."""
 
     ids: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _refuse_review_via(cls, data: Any) -> Any:
+        if isinstance(data, dict) and data.get("review_via") is not None:
+            raise ValueError("review_via is accepted on a single-case action only")
+        return data
 
 
 @router.post("/cases/bulk")
@@ -7581,8 +7798,9 @@ async def case_feedback(
     await state.cases.save(case)
     await state.audit.record(
         action_type=ActionType.FEEDBACK, surface="case", actor=actor,
-        actor_type="human", outcome="success",
+        actor_type="human", outcome="success", action=CASE_GRADED_AUDIT_ACTION,
         case_id=case_id,
+        **_case_audit_fields(case, _request_audit_context(request)),
         result_summary=f"assessment={entry.assessment} outcome={entry.actual_outcome} "
                        f"accuracy={entry.accuracy}",
     )
@@ -7607,21 +7825,30 @@ async def case_comment(
 ) -> dict[str, Any]:
     # RBAC: commenting needs cases:comment. No-op when auth off; ``request`` is None
     # only for direct in-process test calls, where RBAC would be a no-op anyway.
+    user = None
     if request is not None:
         from .deps import _enforce
 
-        await _enforce(request, "cases", "comment")
+        user = await _enforce(request, "cases", "comment")
+    # Round 15 (SPEC D7.2): the audit actor is the verified principal when the request
+    # has one, never a name the body claims; the body value only without sign-in.
+    actor = _case_work_actor(user, body.author)
     case = await state.cases.get(case_id)
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
     if not body.body.strip():
         raise HTTPException(status_code=400, detail="comment body is required")
-    case.comments.append(CaseComment(author=body.author, body=body.body.strip()[:4000]))
+    # The stored author follows the same rule as the audit actor, so a signed-in user
+    # cannot post a comment the case shows as someone else's. Without sign-in the body
+    # value is stored exactly as before.
+    author = str(getattr(user, "username", "") or "") or body.author
+    case.comments.append(CaseComment(author=author, body=body.body.strip()[:4000]))
     case.updated_at = iso_now()
     await state.cases.save(case)
     await state.audit.record(
-        action_type=ActionType.COLLAB, surface="case", actor=body.author or "analyst",
-        actor_type="human", outcome="success",
+        action_type=ActionType.COLLAB, surface="case", actor=actor,
+        actor_type="human", outcome="success", action=CASE_COMMENTED_AUDIT_ACTION,
+        **_case_audit_fields(case, _request_audit_context(request)),
         case_id=case_id, result_summary="comment added",
     )
     return _case_view(case, state, spend=await _case_spend_visible(request))
@@ -7636,10 +7863,14 @@ async def case_tags(
 ) -> dict[str, Any]:
     # RBAC: editing tags needs cases:write. No-op when auth off; ``request`` is None
     # only for direct in-process test calls, where RBAC would be a no-op anyway.
+    user = None
     if request is not None:
         from .deps import _enforce
 
-        await _enforce(request, "cases", "write")
+        user = await _enforce(request, "cases", "write")
+    # Round 15 (SPEC D7.2): the verified principal, else the body or caller value (the
+    # ``case_tag`` job passes ``job.actor``, verified at submit).
+    actor = _case_work_actor(user, body.analyst)
     case = await state.cases.get(case_id)
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
@@ -7649,9 +7880,15 @@ async def case_tags(
     case.tags = _merge_case_tags(case.tags, body.tags, replace=True)
     case.updated_at = iso_now()
     await state.cases.save(case)
+    tag_changes = (
+        [AuditChange(field="tags", before=previous_tags, after=list(case.tags or []))]
+        if list(case.tags or []) != previous_tags else None
+    )
     await state.audit.record(
-        action_type=ActionType.COLLAB, surface="case", actor=body.analyst or "analyst",
-        actor_type="human", outcome="success",
+        action_type=ActionType.COLLAB, surface="case", actor=actor,
+        actor_type="human", outcome="success", action=CASE_TAGGED_AUDIT_ACTION,
+        changes=tag_changes,
+        **_case_audit_fields(case, _request_audit_context(request)),
         case_id=case_id, result_summary=f"tags set ({len(case.tags)})",
     )
     # Round 14 (SPEC §4.10.4): a tag change is a re-evaluation trigger (a runbook may
@@ -7672,14 +7909,20 @@ async def case_assign(
 ) -> dict[str, Any]:
     # RBAC: reassigning needs cases:assign. No-op when auth off; ``request`` is None
     # only for direct in-process test calls, where RBAC would be a no-op anyway.
+    user = None
     if request is not None:
         from .deps import _enforce
 
-        await _enforce(request, "cases", "assign")
+        user = await _enforce(request, "cases", "assign")
+    # Round 15 (SPEC D7.2): the verified principal, else the body or caller value (the
+    # ``case_assign`` job passes ``job.actor``, verified at submit). It is the audit actor
+    # and the ``analyst`` of the "assigned" history entry.
+    actor = _case_work_actor(user, body.analyst)
     case = await state.cases.get(case_id)
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
     new_owner = body.assignee.strip()[:80]
+    previous_owner = case.assignee or ""
     changed = _owner_changed(case.assignee, new_owner)
     if changed:
         case.assignee = new_owner
@@ -7691,11 +7934,16 @@ async def case_assign(
     # or a bulk assign over cases the person already holds) keeps the earlier time.
     if changed:
         case.history.append({"ts": case.updated_at, "event": "assigned", "assignee": case.assignee,
-                             "analyst": body.analyst or "analyst"})
+                             "analyst": actor})
     await state.cases.save(case)
     await state.audit.record(
-        action_type=ActionType.COLLAB, surface="case", actor=body.analyst or "analyst",
-        actor_type="human", outcome="success",
+        action_type=ActionType.COLLAB, surface="case", actor=actor,
+        actor_type="human", outcome="success", action=CASE_ASSIGNED_AUDIT_ACTION,
+        changes=(
+            [AuditChange(field="assignee", before=previous_owner or None, after=case.assignee or None)]
+            if changed else None
+        ),
+        **_case_audit_fields(case, _request_audit_context(request)),
         case_id=case_id, result_summary=f"assigned to {case.assignee or '(unassigned)'}",
     )
     return _case_view(case, state, spend=await _case_spend_visible(request))
@@ -7797,7 +8045,30 @@ def _case_markdown(case) -> str:
                 f"- _{f.ts}_ {f.analyst or 'analyst'}: {f.assessment} "
                 f"(outcome {f.actual_outcome or '—'}, accuracy {f.accuracy})"
             )
+    # Round 15 (SPEC D4.2): what people did about the case, from the fixed vocabulary
+    # recorded on each lifecycle action (never model text).
+    taken = _case_actions_taken_lines(case)
+    if taken:
+        lines += ["", "## Actions taken"]
+        lines += taken
     return "\n".join(lines)
+
+
+def _case_actions_taken_lines(case) -> list[str]:
+    """One Markdown line per lifecycle action that recorded what was done, oldest
+    first: ``- _<ts>_ **<analyst>** (<action>): Blocked an indicator, Isolated a host``.
+    A value outside the vocabulary (a hand-edited history) is shown as stored."""
+    out: list[str] = []
+    for entry in case.history or []:
+        if not isinstance(entry, dict) or entry.get("event") != "analyst_action":
+            continue
+        values = entry.get("actions_taken")
+        if not isinstance(values, list) or not values:
+            continue
+        words = ", ".join(CASE_ACTIONS_TAKEN_LABELS.get(str(v), str(v)) for v in values)
+        action = str(entry.get("action") or "").replace("_", " ")
+        out.append(f"- _{entry.get('ts') or ''}_ **{entry.get('analyst') or 'analyst'}** ({action}): {words}")
+    return out
 
 
 @router.post("/cases/{case_id}/investigate")
@@ -7855,7 +8126,7 @@ async def case_reinvestigate(
     case_id: str,
     body: ReinvestigateRequest | None = None,
     state: AppState = Depends(get_state),
-    _=Depends(require_permission("cases", "reinvestigate")),
+    principal=Depends(require_permission("cases", "reinvestigate")),
     request: Request = None,  # type: ignore[assignment]
 ) -> dict[str, Any]:
     """Manually re-run the SHARED investigation pipeline on a stored case (force).
@@ -7900,7 +8171,9 @@ async def case_reinvestigate(
         # stays in Agent activity, as before; the person is named in the summary.
         actor_type="agent", outcome="success",
         result_summary=(
-            f"manual reinvestigation requested by {body.analyst or 'analyst'}"
+            # Round 15 (SPEC D7.2): the verified principal when the request has one,
+            # else the body value; only this name changes, the row stays the agent's.
+            f"manual reinvestigation requested by {_case_work_actor(principal, body.analyst)}"
             + (f"; model override={body.model}" if body.model else "")
         ),
     )

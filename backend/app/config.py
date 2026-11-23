@@ -3822,6 +3822,144 @@ class NotificationConfig(BaseModel):
 
 
 # --------------------------------------------------------------------------- #
+# Round 15 (SPEC D3.4, D6.2): Team activity and the auto-close review sample.
+# --------------------------------------------------------------------------- #
+def _repair_float(raw: Any) -> float | None:
+    """A stored number, repaired: finite ints, floats and numeric strings parse; bools,
+    non-finite values and anything else return ``None`` (the caller substitutes its
+    default). Never raises."""
+    if isinstance(raw, bool):
+        return None
+    if isinstance(raw, (int, float)):
+        value = float(raw)
+    elif isinstance(raw, str):
+        try:
+            value = float(raw.strip())
+        except (TypeError, ValueError, OverflowError):
+            return None
+    else:
+        return None
+    return value if math.isfinite(value) else None
+
+
+class TeamActivityConfig(BaseModel):
+    """The Team activity page (Round 15 SPEC D3.4): one switch, on by default (#10).
+
+    Off, the team routes answer ``409 team_activity_off`` and the page says which
+    switch turned it off. Reading the page also needs ``team:view`` (and, while
+    role-based access is off, a stored role of Super admin, SOC manager or Auditor).
+    A stored value is REPAIRED, never rejected (the ``chat_agent`` convention), so one
+    malformed flag can never reset the rest of the configuration. Presentation and
+    access only: it never feeds ``decide()`` (#3)."""
+
+    enabled: bool = Field(default=True, description="Show the Team activity page.")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _repair(cls, data: Any) -> Any:
+        if isinstance(data, TeamActivityConfig):
+            return data
+        if not isinstance(data, Mapping):
+            if data is not None:
+                logger.warning("Preferences.team_activity was %s; using defaults", type(data).__name__)
+            return {}
+        out: dict[str, Any] = dict(data)
+        if "enabled" in out:
+            repaired = _remember_repair_bool(out["enabled"], True)
+            if repaired is not out["enabled"]:
+                logger.warning(
+                    "Preferences.team_activity.enabled=%r is not true or false; repaired to %r",
+                    out["enabled"], repaired,
+                )
+            out["enabled"] = repaired
+        return out
+
+
+class AutoCloseReviewConfig(BaseModel):
+    """The random auto-close review sample (Round 15 SPEC D6.1, D6.2).
+
+    A deterministic, seeded, capped sample of the cases the AI agent closed
+    automatically is queued for a person to classify; their answer becomes independent
+    ground truth. On by default at 5% and 10 a day (#10). The sampler runs strictly
+    AFTER ``CaseManager.apply()`` and the save: none of these values is ever read by
+    ``decide()`` or changes a case's status, decider or disposition (#3).
+
+    Stored values are REPAIRED on load (clamped into the declared range; a malformed
+    value becomes the field default), so one bad number can never reset the whole
+    configuration. A live settings WRITE is validated strictly instead:
+    ``routes._reject_out_of_range_auto_close_review`` answers an out-of-range or
+    malformed value in the request body with 422, so an operator never gets a value
+    they did not type. The bounds are :data:`AUTO_CLOSE_REVIEW_BOUNDS`."""
+
+    enabled: bool = Field(
+        default=True,
+        description="Send a small random sample of automatically closed cases to a person for review.",
+    )
+    sample_rate: float = Field(
+        default=0.05, ge=0.0, le=0.5,
+        description="The share of automatic closes picked for review, from 0 to 0.5.",
+    )
+    daily_cap: int = Field(
+        default=10, ge=0, le=200,
+        description="The most cases picked for review in one day (in the operator time zone).",
+    )
+    per_rule_daily_cap: int = Field(
+        default=3, ge=1, le=50,
+        description="The most cases of one detection rule picked for review in one day.",
+    )
+    expiry_days: int = Field(
+        default=7, ge=1, le=30,
+        description="Days a picked case waits for its review before it is shown as expired.",
+    )
+
+    #: ``(low, high, is_integer)`` per numeric field, the one table the load repair and
+    #: the write rejection both read (kept equal to the field constraints by a test).
+    _BOUNDS: ClassVar[dict[str, tuple[float, float, bool]]] = {
+        "sample_rate": (0.0, 0.5, False),
+        "daily_cap": (0, 200, True),
+        "per_rule_daily_cap": (1, 50, True),
+        "expiry_days": (1, 30, True),
+    }
+
+    @model_validator(mode="before")
+    @classmethod
+    def _repair(cls, data: Any) -> Any:
+        if isinstance(data, AutoCloseReviewConfig):
+            return data
+        if not isinstance(data, Mapping):
+            if data is not None:
+                logger.warning("Preferences.auto_close_review was %s; using defaults", type(data).__name__)
+            return {}
+        out: dict[str, Any] = dict(data)
+        if "enabled" in out:
+            out["enabled"] = _remember_repair_bool(out["enabled"], True)
+        for name, (lo, hi, integer) in cls._BOUNDS.items():
+            if name not in out:
+                continue
+            raw = out[name]
+            default = cls.model_fields[name].default
+            value = _repair_float(raw)
+            if value is None:
+                repaired: float | int = default
+            else:
+                clamped = min(max(value, float(lo)), float(hi))
+                repaired = int(clamped) if integer else clamped
+            if repaired != raw or isinstance(raw, (bool, str)):
+                logger.warning(
+                    "Preferences.auto_close_review.%s=%r is invalid or outside %s..%s; repaired "
+                    "to %r (the rest of the stored configuration is preserved)",
+                    name, raw, lo, hi, repaired,
+                )
+            out[name] = repaired
+        return out
+
+
+#: The inclusive range of every numeric ``auto_close_review`` field, and whether it is a
+#: whole number: ``{name: (low, high, is_integer)}`` (SPEC D6.2).
+AUTO_CLOSE_REVIEW_BOUNDS: dict[str, tuple[float, float, bool]] = dict(AutoCloseReviewConfig._BOUNDS)
+
+
+# --------------------------------------------------------------------------- #
 # Autopilot posture (overhaul) — one sensitivity dial that scales the three cost/
 # aggression knobs. ``balanced`` is the concrete out-of-the-box default and its bounds
 # match the field-level defaults above (risk floor 70 / daily $10 / per-tick cap 25),
@@ -4393,6 +4531,14 @@ class Preferences(BaseModel):
     # observability fixes, and a flat precedent window is an outage waiting to happen.
     # None of it feeds ``case_manager.decide()`` (#3).
     precedent: PrecedentConfig = Field(default_factory=PrecedentConfig)
+
+    # --- Round 15 (SPEC D3.4, D6.2). Both ON by default (#10); both repaired on load,
+    # never rejected (see their ``_repair`` validators), and a live write out of range
+    # answers 422 in ``put_settings``. Neither feeds ``case_manager.decide()`` (#3). ---
+    # The Team activity page (per-person work counts from the audit log).
+    team_activity: TeamActivityConfig = Field(default_factory=TeamActivityConfig)
+    # The random, capped sample of automatic closes sent to a person for review.
+    auto_close_review: AutoCloseReviewConfig = Field(default_factory=AutoCloseReviewConfig)
 
     # --- Autopilot posture (overhaul) ---
     # One sensitivity dial that scales the three cost/aggression knobs

@@ -7870,11 +7870,17 @@ export interface components {
          * BulkCaseAction
          * @description A :class:`CaseAction` applied to many cases at once. ``ids`` is the set of
          *     target case ids; the action/payload fields are inherited verbatim so a bulk move
-         *     is IDENTICAL to N single-case moves.
+         *     is IDENTICAL to N single-case moves. The one exception is ``review_via`` (Round 15
+         *     SPEC D6.9): a review is about one case, so a bulk body that sends it answers 422.
          */
         BulkCaseAction: {
             /** Action */
             action: string;
+            /**
+             * What was done about the case
+             * @description At most 8 values from the fixed vocabulary; an unknown value answers 422 and a repeated value is kept once.
+             */
+            actions_taken?: ("no_action_needed" | "blocked_indicator" | "isolated_host" | "disabled_account" | "reset_credentials" | "removed_malware" | "patched_or_hardened" | "notified_owner" | "escalated_externally" | "tuned_detection" | "other")[] | null;
             /**
              * Analyst
              * @default analyst
@@ -8122,6 +8128,11 @@ export interface components {
             /** Action */
             action: string;
             /**
+             * What was done about the case
+             * @description At most 8 values from the fixed vocabulary; an unknown value answers 422 and a repeated value is kept once.
+             */
+            actions_taken?: ("no_action_needed" | "blocked_indicator" | "isolated_host" | "disabled_account" | "reset_credentials" | "removed_malware" | "patched_or_hardened" | "notified_owner" | "escalated_externally" | "tuned_detection" | "other")[] | null;
+            /**
              * Analyst
              * @default analyst
              */
@@ -8167,6 +8178,11 @@ export interface components {
             require_open_steps_reason: boolean;
             /** Resolution */
             resolution?: string | null;
+            /**
+             * The action was taken from an auto-close review
+             * @description "auto_close_review" or null; recorded on the history entry and the audit row only.
+             */
+            review_via?: "auto_close_review" | null;
             /** Status */
             status?: string | null;
             /** Tags */
@@ -10341,10 +10357,20 @@ export interface components {
              */
             comment: string;
             /**
+             * Origin
+             * @default
+             */
+            origin: string;
+            /**
              * Reasoning Quality
              * @default 0
              */
             reasoning_quality: number;
+            /**
+             * Review Id
+             * @default
+             */
+            review_id: string;
             /**
              * Time Saved Minutes
              * @default 0

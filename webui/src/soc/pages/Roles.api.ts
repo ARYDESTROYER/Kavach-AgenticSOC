@@ -129,7 +129,7 @@ export const rolesApi = {
  * the backend vocabulary but were missing from this mirror, so the editor grid and
  * the role-permission summary never showed them.) Round 14 (SPEC §3.7): the retired
  * `playbooks` resource is gone, `runbooks` gains `run` and `publish`, and `audit`
- * gains `export`.
+ * gains `export`. Round 15 (SPEC D3.2): `team` with `view` (the Team activity page).
  */
 export const RESOURCE_ACTIONS: Record<string, string[]> = {
   cases: ['read', 'write', 'close', 'assign', 'comment', 'reinvestigate'],
@@ -145,6 +145,7 @@ export const RESOURCE_ACTIONS: Record<string, string[]> = {
   system_updates: ['read', 'apply', 'rollback'],
   audit: ['view', 'export'],
   metrics: ['view'],
+  team: ['view'],
   notifications: ['read', 'manage'],
   branding: ['read', 'manage'],
   sessions: ['read', 'manage'],

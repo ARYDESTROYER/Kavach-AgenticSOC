@@ -7,6 +7,7 @@ the policy boundaries (Section 6.4) are defined exactly once.
 from __future__ import annotations
 
 from enum import Enum
+from typing import Literal, get_args
 
 # --------------------------------------------------------------------------- #
 # Elasticsearch indices OWNED by the backend (Section 7).
@@ -341,6 +342,97 @@ RUNBOOK_RUNS_LEDGER_KEY_PREFIX = "ledger:"
 # a system actor.
 RUNBOOK_SELECTOR_ACTOR = "runbook_selector"
 RUNBOOK_MIGRATION_ACTOR = "runbook_migration"
+
+# --------------------------------------------------------------------------- #
+# Round 15 KV namespaces (SPEC §3.4, D5.1, D6.4). Same zero-migration KV pattern as
+# every namespace above (#12): no new ES index, SQL table or migration, and every
+# document a fixed, namespace-prefixed set of at most six top-level fields with its
+# payload in opaque JSON (or the base64 content field).
+#
+# * ``case_files``: screenshots on a case (``case:<case_id>`` index, write-once
+#   ``blob:<file_id>`` and ``thumb:<file_id>`` content, optional ``usage`` totals).
+#   Never on the ``Case`` document, never read by a model (#7, #9).
+# * ``auto_close_review``: the one strict-CAS ``ledger`` document of the random
+#   auto-close review sample. Human workflow only: never read by ``decide()`` (#3).
+# --------------------------------------------------------------------------- #
+CASE_FILES_NS = "case_files"
+AUTO_CLOSE_REVIEW_NS = "auto_close_review"
+
+# Round 15 (SPEC D6.7, D6.9): the one token that marks an auto-close review. It is the
+# ``FeedbackEntry.origin`` of a review grade, the ``event`` of the case history entry
+# that names it (``{event, review_id, feedback_ts, analyst, ts, agrees}``), and the only
+# value ``CaseAction.review_via`` accepts.
+AUTO_CLOSE_REVIEW_ORIGIN = "auto_close_review"
+AUTO_CLOSE_REVIEW_EVENT = "auto_close_review"
+REVIEW_VIA_AUTO_CLOSE_REVIEW = "auto_close_review"
+
+# Round 15 (SPEC D4.2): what a person did about a case, as a fixed vocabulary. Optional
+# on a lifecycle action (``CaseAction.actions_taken``), at most
+# :data:`CASE_ACTIONS_TAKEN_MAX` values, an unknown value answers 422. Stored on the
+# ``analyst_action`` history entry and in the structured audit row's ``changes``;
+# shown in the case Markdown export. Plain data a person chose: never model text, and
+# never read by ``decide()`` (#3).
+CaseActionTaken = Literal[
+    "no_action_needed",
+    "blocked_indicator",
+    "isolated_host",
+    "disabled_account",
+    "reset_credentials",
+    "removed_malware",
+    "patched_or_hardened",
+    "notified_owner",
+    "escalated_externally",
+    "tuned_detection",
+    "other",
+]
+CASE_ACTIONS_TAKEN: tuple[str, ...] = get_args(CaseActionTaken)
+CASE_ACTIONS_TAKEN_MAX = 8
+#: The words the case Markdown export uses for each value (sentence case, plain).
+CASE_ACTIONS_TAKEN_LABELS: dict[str, str] = {
+    "no_action_needed": "No action needed",
+    "blocked_indicator": "Blocked an indicator",
+    "isolated_host": "Isolated a host",
+    "disabled_account": "Disabled an account",
+    "reset_credentials": "Reset credentials",
+    "removed_malware": "Removed malware",
+    "patched_or_hardened": "Patched or hardened",
+    "notified_owner": "Notified the owner",
+    "escalated_externally": "Escalated outside the SOC",
+    "tuned_detection": "Tuned the detection",
+    "other": "Other",
+}
+
+# Round 15 (SPEC D7.1): the structured audit ``action`` each human case-work row now
+# carries. ``action_type``, ``surface`` and ``result_summary`` of these rows stay
+# byte-identical; the read API's event families map onto them
+# (``audit.query.EVENT_FAMILY_ALIASES``) so a filter by the old family still finds the
+# new rows.
+CASE_LIFECYCLE_AUDIT_ACTIONS: dict[str, str] = {
+    "acknowledge": "case.acknowledged",
+    "close": "case.closed",
+    "confirm_fp": "case.fp_confirmed",
+    "resolve": "case.resolved",
+    "reopen": "case.reopened",
+    "escalate": "case.escalated",
+    "deescalate": "case.deescalated",
+    "hold": "case.held",
+    "resume": "case.resumed",
+    "set_disposition": "case.disposition_set",
+    "set_status": "case.status_set",
+}
+CASE_ASSIGNED_AUDIT_ACTION = "case.assigned"
+CASE_TAGGED_AUDIT_ACTION = "case.tagged"
+CASE_COMMENTED_AUDIT_ACTION = "case.commented"
+CASE_GRADED_AUDIT_ACTION = "case.graded"
+CASE_COLLAB_AUDIT_ACTIONS: tuple[str, ...] = (
+    CASE_ASSIGNED_AUDIT_ACTION,
+    CASE_TAGGED_AUDIT_ACTION,
+    CASE_COMMENTED_AUDIT_ACTION,
+)
+#: A bulk action's audit rows carry ``run_id = "<prefix><id>"`` (SPEC D7.3): the
+#: existing ``batch_id`` of ``POST /api/cases/bulk`` and the ``bulk-<job_id>`` of the
+#: ``case_lifecycle``, ``case_assign`` and ``case_tag`` jobs. Legacy rows are never bulk.
+BULK_RUN_ID_PREFIX = "bulk-"
 
 # --------------------------------------------------------------------------- #
 # Invisible / reordering code points (chat revamp SPEC §7.6 + BLOCKS.md amendment 4).

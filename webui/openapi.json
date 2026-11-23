@@ -1165,11 +1165,40 @@
         "type": "object"
       },
       "BulkCaseAction": {
-        "description": "A :class:`CaseAction` applied to many cases at once. ``ids`` is the set of\ntarget case ids; the action/payload fields are inherited verbatim so a bulk move\nis IDENTICAL to N single-case moves.",
+        "description": "A :class:`CaseAction` applied to many cases at once. ``ids`` is the set of\ntarget case ids; the action/payload fields are inherited verbatim so a bulk move\nis IDENTICAL to N single-case moves. The one exception is ``review_via`` (Round 15\nSPEC D6.9): a review is about one case, so a bulk body that sends it answers 422.",
         "properties": {
           "action": {
             "title": "Action",
             "type": "string"
+          },
+          "actions_taken": {
+            "anyOf": [
+              {
+                "items": {
+                  "enum": [
+                    "no_action_needed",
+                    "blocked_indicator",
+                    "isolated_host",
+                    "disabled_account",
+                    "reset_credentials",
+                    "removed_malware",
+                    "patched_or_hardened",
+                    "notified_owner",
+                    "escalated_externally",
+                    "tuned_detection",
+                    "other"
+                  ],
+                  "type": "string"
+                },
+                "maxItems": 8,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "At most 8 values from the fixed vocabulary; an unknown value answers 422 and a repeated value is kept once.",
+            "title": "What was done about the case"
           },
           "analyst": {
             "default": "analyst",
@@ -1851,6 +1880,35 @@
             "title": "Action",
             "type": "string"
           },
+          "actions_taken": {
+            "anyOf": [
+              {
+                "items": {
+                  "enum": [
+                    "no_action_needed",
+                    "blocked_indicator",
+                    "isolated_host",
+                    "disabled_account",
+                    "reset_credentials",
+                    "removed_malware",
+                    "patched_or_hardened",
+                    "notified_owner",
+                    "escalated_externally",
+                    "tuned_detection",
+                    "other"
+                  ],
+                  "type": "string"
+                },
+                "maxItems": 8,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "At most 8 values from the fixed vocabulary; an unknown value answers 422 and a repeated value is kept once.",
+            "title": "What was done about the case"
+          },
           "analyst": {
             "default": "analyst",
             "title": "Analyst",
@@ -1947,6 +2005,18 @@
               }
             ],
             "title": "Resolution"
+          },
+          "review_via": {
+            "anyOf": [
+              {
+                "const": "auto_close_review"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "\"auto_close_review\" or null; recorded on the history entry and the audit row only.",
+            "title": "The action was taken from an auto-close review"
           },
           "status": {
             "anyOf": [
@@ -6574,10 +6644,20 @@
             "title": "Comment",
             "type": "string"
           },
+          "origin": {
+            "default": "",
+            "title": "Origin",
+            "type": "string"
+          },
           "reasoning_quality": {
             "default": 0.0,
             "title": "Reasoning Quality",
             "type": "number"
+          },
+          "review_id": {
+            "default": "",
+            "title": "Review Id",
+            "type": "string"
           },
           "time_saved_minutes": {
             "default": 0,

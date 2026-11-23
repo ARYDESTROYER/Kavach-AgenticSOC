@@ -455,8 +455,11 @@ Read as six deliverables:
   `analyst_confirmed_outcome`, the threshold tuner, the precedent corpus, `ground_truth_supply`
   (FP reviews can promote precedent; documented). **Excluded** from `feedback_stats`, the
   `agent_improvement` comparisons, and `_agent_reopen_summary` (a reopen whose same-timestamp
-  `analyst_action` history entry carries `review_via`). Never a `PROVENANCE_COUNT_KEYS` entry,
-  never a `PrecedentWindowConfig` field.
+  `analyst_action` history entry carries `review_via`, honoured only when the case carries a
+  ledger-backed `auto_close_review` history event recorded at or before the reopen; amended
+  after the WP1 review, since `review_via` is a marker the caller sends, so a marker on an
+  unsampled case or on an ordinary reopen does not hide that reopen). Never a
+  `PROVENANCE_COUNT_KEYS` entry, never a `PrecedentWindowConfig` field.
 - **D6.9 Disagreement** ([rb] H1, L8, L9; [rs] 11).
   - The review is always recorded. A reviewer with `cases:close` is offered **Reopen case** and
     **Reopen and escalate** (two calls: `reopen`, then `escalate`; if the second fails, the case

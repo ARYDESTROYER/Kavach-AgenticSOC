@@ -12,6 +12,10 @@ The coalescing map is process-local and bounded (10,000 keys, least recently wri
 evicted first); a restart, or another replica, may therefore write one extra row for
 a filter set. That limit is documented with the audit log.
 
+Round 15 (SPEC D3.10): the recorder is parameterised by the row's action, surface and
+window, and a second instance (:data:`TEAM_RECORDER`) writes one ``team.viewed`` row
+per viewer and view per ten minutes for the Team activity page.
+
 The row's summary is a plain sentence in the Console's words ("Searched the audit
 log: People and settings, last 7 days."), because the inspector shows it as the
 record's header sentence and the list as its Summary (SPEC §4.5.2, AU-7: shown as
@@ -46,6 +50,12 @@ COALESCE_SECONDS = 300.0
 COALESCE_MAX_KEYS = 10_000
 #: The structured action of a view row (category Access and identity).
 VIEW_ACTION = "audit.viewed"
+#: Round 15 (SPEC D3.10): reading the Team activity page writes one ``team.viewed``
+#: row (Access and identity) per viewer and view per ten minutes, through a second
+#: recorder (:data:`TEAM_RECORDER`).
+TEAM_VIEW_ACTION = "team.viewed"
+TEAM_VIEW_SURFACE = "team"
+TEAM_COALESCE_SECONDS = 600.0
 
 
 # --------------------------------------------------------------------------- #
@@ -226,13 +236,24 @@ def record_open_summary(record_id: str, filters: "AuditFilters | None" = None) -
 
 
 class ViewRecorder:
-    """The coalescing map and the dropped-row counter (one per process)."""
+    """The coalescing map and the dropped-row counter (one per process and view kind).
+
+    ``action``, ``surface`` and ``action_type`` name the row it writes, and ``window``
+    is how long one viewer's row for one view stands for every later read of it. The
+    defaults are the audit log's own (``audit.viewed`` on ``audit``, five minutes);
+    Round 15 (SPEC D3.10) adds a second instance for the Team activity page
+    (:data:`TEAM_RECORDER`) rather than a second implementation."""
 
     def __init__(self, *, clock: Callable[[], float] = time.monotonic,
-                 window: float = COALESCE_SECONDS, max_keys: int = COALESCE_MAX_KEYS) -> None:
+                 window: float = COALESCE_SECONDS, max_keys: int = COALESCE_MAX_KEYS,
+                 action: str = VIEW_ACTION, surface: str = "audit",
+                 action_type: ActionType = ActionType.AUDIT_VIEW) -> None:
         self._clock = clock
         self._window = window
         self._max_keys = max_keys
+        self.action = action
+        self.surface = surface
+        self.action_type = action_type
         self._seen: OrderedDict[str, float] = OrderedDict()
         self._pending: set[str] = set()
         self.dropped = 0
@@ -274,11 +295,11 @@ class ViewRecorder:
         self._pending.add(key)
         try:
             await audit.record_strict(
-                action_type=ActionType.AUDIT_VIEW,
-                surface="audit",
+                action_type=self.action_type,
+                surface=self.surface,
                 actor=actor,
                 actor_type="human",
-                action=VIEW_ACTION,
+                action=self.action,
                 outcome="success",
                 result_summary=summary,
                 tool_input=dict(view),
@@ -289,7 +310,7 @@ class ViewRecorder:
             )
         except Exception as exc:  # noqa: BLE001 (viewing is a read; never fail it)
             self.dropped += 1
-            logger.warning("audit_view row dropped (%d so far): %s", self.dropped, exc)
+            logger.warning("%s row dropped (%d so far): %s", self.action, self.dropped, exc)
             return False
         finally:
             self._pending.discard(key)
@@ -313,6 +334,12 @@ def _context_value(context: Any, name: str) -> Any:
 
 
 RECORDER = ViewRecorder()
+#: Round 15 (SPEC D3.10): the Team activity page's view rows, coalesced per viewer and
+#: view for ten minutes. Best-effort and written to ``state.control_audit`` like
+#: :data:`RECORDER`'s.
+TEAM_RECORDER = ViewRecorder(
+    window=TEAM_COALESCE_SECONDS, action=TEAM_VIEW_ACTION, surface=TEAM_VIEW_SURFACE,
+)
 
 
 def dropped_count() -> int:

@@ -11879,3 +11879,10 @@
 - Tests: docs records tests pass.
 - Status: in progress.
 - Next: WP1 foundation in the main tree.
+
+### 2026-11-23 15:50Z - orchestrator - Round 15 WP1 foundation done
+- Context: Round 15 WP1, the shared backend foundation every feature package builds on (SPEC §4.2).
+- Did: structured `case.*` audit actions with target, request context and outcome on lifecycle, collab and feedback rows (result summaries byte-identical); attribution from the verified principal for comments, tags and assignments (and the stored comment author); bulk `run_id` from the existing batch id through a private contextvar; a family alias table so the legacy Audit filters `status`, `collab` and `feedback` still match new rows on all three stores; catalog entries for all 24 Round 15 actions on both sides; a parameterised view recorder; `CaseAction.actions_taken` (fixed vocabulary) and `review_via` (a Literal kept away from the internal `via`); `FeedbackEntry.origin` and `review_id` with `engine/review_origin.is_review_grade`; review grades excluded from `feedback_stats`, the effectiveness comparisons and the reopen rate (a reopen is hidden only with a ledger-backed review event); rated-only star averages with rated counts and "Not rated" on Metrics; `team:view` for SOC managers and auditors; the `team_activity` and `auto_close_review` settings with clamps and write rejection; a shared carry-over so a reinvestigation keeps the owner, comments, grades, status trail, acknowledgement and an analyst disposition, re-reading the stored case so work done during the run survives. Two adversarial reviews found seven defects; all fixed and tested.
+- Tests: backend 12,702 collected: 12,673 passed, 24 skipped, 5 sandbox-only environment failures (55 of 55 pass with the proxy and AWS variables unset); audit catalog Vitest 171 passed; Metrics Vitest 58 passed; lint, check:types, tsc and ruff fatal clean; `decide()` unchanged (MD5 212873cd...).
+- Status: done.
+- Next: Wave 2 (WP2 to WP6) in isolated worktrees from this commit.

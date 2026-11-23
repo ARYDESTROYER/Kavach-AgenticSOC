@@ -1528,10 +1528,15 @@ class SocMetricsTool(ChatTool):
         fb = feedback_stats(windowed)
         dist = fb.get("outcome_distribution") or {}
         graded = int(fb.get("graded_cases") or 0)
+        # Round 15 (SPEC D4.5): an average is taken over the grades that rated it, so
+        # with no rating it is "not rated", never a 0% the analysts never gave.
+        accuracy_rated = int(fb.get("accuracy_rated") or 0)
         artifacts = [Artifact(id="a1", kind="kpis", title="Analyst feedback", title_trusted=True, data={"items": [
             kpi("graded", "Graded cases", graded),
             kpi("agreement", "Agreement with the AI", ratio_to_pct(fb.get("agreement_rate")) if graded else None, "percent"),
-            kpi("accuracy", "Average accuracy", ratio_to_pct(fb.get("avg_accuracy")) if graded else None, "percent"),
+            kpi("accuracy", "Average accuracy",
+                ratio_to_pct(fb.get("avg_accuracy")) if graded and accuracy_rated else None, "percent",
+                context="not rated" if graded and not accuracy_rated else None),
             kpi("time_saved", "Time saved", fb.get("time_saved_minutes"), "minutes"),
         ]}, provenance="code")]
         if dist:
@@ -1539,7 +1544,12 @@ class SocMetricsTool(ChatTool):
                                       data=categories(list(dist.items()), dimension="outcome"), provenance="code"))
         observation = {k: fb.get(k) for k in (
             "graded_cases", "feedback_count", "agreement_rate", "avg_accuracy", "avg_reasoning_quality",
-            "avg_action_appropriateness", "time_saved_minutes", "outcome_distribution")}
+            "avg_action_appropriateness", "time_saved_minutes", "outcome_distribution",
+            "accuracy_rated", "reasoning_quality_rated", "action_appropriateness_rated")}
+        # A sub-score nobody rated reads "not rated" (its average is a placeholder 0.0).
+        for name in ("accuracy", "reasoning_quality", "action_appropriateness"):
+            if not int(fb.get(f"{name}_rated") or 0):
+                observation[f"avg_{name}"] = "not rated"
         summary = f"{_headed('Analyst feedback', mw.label)}: {fmt_int(graded)} graded cases"
         if graded:
             summary += f", agreement {fmt_pct(fb.get('agreement_rate'), ratio=True)}"

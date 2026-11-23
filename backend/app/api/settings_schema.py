@@ -108,6 +108,10 @@ _SECTION_TITLES: dict[str, str] = {
     # Chat revamp (SPEC §4.2). Sentence case on purpose: it is the same name the
     # curated Settings section and the Help Center use.
     "chat_agent": "Chat assistant",
+    # Round 15 (SPEC D3.4, D6.2): the names the curated Settings groups use, so a
+    # settings audit row names the group the person saved in.
+    "team_activity": "Team activity",
+    "auto_close_review": "Auto-close review",
 }
 
 
