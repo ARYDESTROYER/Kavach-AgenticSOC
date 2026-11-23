@@ -11859,3 +11859,9 @@
   - The source editor's defaulted required field (`SourceEditor.tsx`).
   - The AI assessment card falling back to `decision_rationale` (`InvestigationPanel.tsx`).
   - The OIDC `redirect_uri` built from the bundled nginx's plain-HTTP hop behind a TLS ingress.
+
+### 2026-11-23 09:00Z - orchestrator - Round 15 start: RBAC switch, wizard copy, team activity, Case Manager
+- Context: the operator asked for (1) a Console switch for role-based access, (2) the setup wizard's mock-runtime wording fixed, (3) user activity tracking for an appropriate role, (4) a navigation page where an admin tracks analysts' daily work, (5) a stronger Case Manager close flow with screenshots on cases and a random post-close review of automatically closed cases to collect analyst feedback, and (6) a cleaner Case Manager design. Branch `claude/round15` from `Testing` at `c4227bd`; PR into `Testing`.
+- Did: started a seven-reader mapping workflow (RBAC and wizard, activity data, Case Manager UI, close flow, review sampling, attachment storage, platform constraints) with a completeness critic.
+- Status: in progress.
+- Next: write the Round 15 SPEC from the maps, then implement in work packages with adversarial reviews.
