@@ -1,7 +1,8 @@
 /**
- * The auto-close review card (Round 15 SPEC D6.6, D6.9, D6.11). A kit: WP7 mounts it in
- * the case workspace (the pending band's Start review, and Review this auto-close on an
- * agent-closed case). Lazy with its host, never in the entry chunk.
+ * The auto-close review card (Round 15 SPEC D6.6, D6.9, D6.11). Mounted in the case
+ * workspace's review sheet (`ReviewSheet`), opened by Start review on a pending sample and
+ * by Review this auto-close on any other agent-closed case. Its own lazy chunk, never in
+ * the entry chunk.
  *
  * Not a full blind review, but the reviewer answers first: "What was it?" has no
  * preselected answer, and the AI verdict is shown only after "Compare with the AI". Once
@@ -15,7 +16,7 @@
  * fixed copy; the note is plain text the person typed (#9).
  */
 import * as React from 'react';
-import { Star } from 'lucide-react';
+import { ChevronDown, Star } from 'lucide-react';
 
 import { api, ApiError } from '@/lib/api';
 import { recordReview } from '@/lib/api-reviews';
@@ -29,6 +30,8 @@ import { Textarea } from '@/ui/textarea';
 import { SegmentedControl } from '@/soc/components/SegmentedControl';
 import { aiVerdictLine, canonicalVerdict } from '@/soc/components/outcome';
 
+import { REVIEW_BAND_TEXT } from './review-plan';
+
 /** The answers, in the order the card offers them. */
 export const REVIEW_CHOICES: ReadonlyArray<{ value: ReviewClassification; label: string }> = [
   { value: 'true_positive', label: 'True positive' },
@@ -40,9 +43,8 @@ export const REVIEW_CHOICES: ReadonlyArray<{ value: ReviewClassification; label:
 /** The note's limit (the server's `ReviewBody.note`). */
 export const REVIEW_NOTE_MAX = 1000;
 
-/** The band copy for a pending sample (D6.12). */
-export const REVIEW_BAND_TEXT =
-  'Picked at random for auto-close review. Classify it yourself, then compare with the AI.';
+/** The band copy for a pending sample (D6.12), kept with the pure review plan. */
+export { REVIEW_BAND_TEXT };
 
 /** The AI verdicts each answer agrees with (the server's `classification_agrees`). */
 const AGREES_WITH: Record<string, string> = {
@@ -273,16 +275,17 @@ export function ReviewCard({
         <p className="text-xs text-muted-foreground">Your note is kept as precedent for future investigations.</p>
       </div>
       <div>
-        <Button
+        {/* The close dialog's disclosure grammar (`RateTheAi`): a chevron and the same words. */}
+        <button
           type="button"
-          variant="ghost"
-          size="sm"
           aria-expanded={rateOpen}
           aria-controls={rateId}
           onClick={() => setRateOpen((open) => !open)}
+          className="inline-flex items-center gap-1.5 rounded-sm text-xs font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
-          {rateOpen ? 'Hide the AI rating' : 'Rate the AI (optional)'}
-        </Button>
+          <ChevronDown className={cn('h-3.5 w-3.5 transition-transform', rateOpen && 'rotate-180')} aria-hidden />
+          Rate the AI (optional)
+        </button>
         <div id={rateId} hidden={!rateOpen} className={rateOpen ? 'mt-2 space-y-1' : undefined}>
           <StarRating label="Accuracy" value={stars.accuracy} onChange={(v) => setStars((s) => ({ ...s, accuracy: v }))} />
           <StarRating

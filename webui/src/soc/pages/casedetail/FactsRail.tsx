@@ -6,7 +6,9 @@
  * with ONE home, in eight sections divided by hairlines (no icon headings):
  *
  *   Outcome   the outcome of record, who classified it, the AI verdict and confidence
- *             (with the auto-close bar), who decided, the objection window
+ *             (with the auto-close bar), who decided, the objection window, and the
+ *             auto-close review (Round 15, D8.4): who reviewed it and when, or that the
+ *             sample is waiting (when no band says so) or expired
  *   Signal    the risk meter (its factors one click away), severity and its provenance,
  *             priority, impact and urgency
  *   Runbook   the runbook on the case (Round 14, §4.10.11): phases with counts
@@ -29,6 +31,7 @@ import * as React from 'react';
 import { Bot } from 'lucide-react';
 
 import type { Case, SlaPolicy } from '@/lib/types';
+import type { CaseReviewState } from '@/lib/types-reviews';
 import type { CaseRunbooks, PhaseId } from '@/lib/types-runbooks';
 import { cn } from '@/lib/cn';
 import { DASH, fmtMoney, formatTimestamp, humanizeAge, humanizeToken } from '@/lib/format';
@@ -44,6 +47,7 @@ import {
   classificationEntry,
   confidencePercent,
   dispositionWords,
+  latestReview,
   verdictWords,
   type CaseOutcome,
 } from '@/soc/components/outcome';
@@ -165,7 +169,27 @@ export interface FactsRailProps {
   /** The campaign the case belongs to, if any (advisory, #3/#4). */
   campaign?: Campaign | null;
   onOpenCampaign?: () => void;
+  /**
+   * Round 15 (D8.4): the case's auto-close review state. `bandShown` when the pending
+   * band is on screen (it is then that fact's one home, so the rail does not repeat it).
+   */
+  review?: { state: CaseReviewState | null; bandShown: boolean };
   className?: string;
+}
+
+/** The rail's review line for a case that has no review result yet, or null. */
+export function reviewStatusLine(review: FactsRailProps['review']): string | null {
+  const state = review?.state;
+  if (!state || !state.agent_closed) return null;
+  if (state.state === 'pending' && !review?.bandShown) {
+    return 'Picked at random for auto-close review. Waiting for a person.';
+  }
+  if (state.state === 'expired') {
+    return state.expires_at
+      ? `Picked at random for auto-close review. The review expired ${humanizeAge(state.expires_at)}.`
+      : 'Picked at random for auto-close review. The review expired.';
+  }
+  return null;
 }
 
 export const FactsRail: React.FC<FactsRailProps> = ({
@@ -184,9 +208,13 @@ export const FactsRail: React.FC<FactsRailProps> = ({
   onTagsOpenChange,
   campaign,
   onOpenCampaign,
+  review,
   className,
 }) => {
   const entry = classificationEntry(c);
+  // A recorded review (the outcome reads as it) names who reviewed it and when.
+  const reviewed = outcome.source === 'review' ? latestReview(c) : null;
+  const reviewLine = reviewed ? null : reviewStatusLine(review);
   const recordedDisposition = (() => {
     const value = typeof c.disposition === 'string' ? c.disposition.trim().toLowerCase() : '';
     return value && value !== 'none' ? value : null;
@@ -239,13 +267,27 @@ export const FactsRail: React.FC<FactsRailProps> = ({
             {entry?.at ? <> · {humanizeAge(entry.at)}</> : null}
           </p>
         ) : null}
+        {reviewed ? (
+          <p data-testid="facts-review" className="text-xs text-muted-foreground">
+            Auto-close review
+            {reviewed.entry.analyst ? <> by <span className="text-foreground">{reviewed.entry.analyst}</span></> : null}
+            {reviewed.entry.ts ? <> · {humanizeAge(reviewed.entry.ts)}</> : null}
+          </p>
+        ) : reviewLine ? (
+          <p data-testid="facts-review" className="text-xs text-muted-foreground">
+            {reviewLine}
+          </p>
+        ) : null}
         {outcome.aiLine ? (
           <div className="flex items-start gap-1.5 text-xs text-muted-foreground">
             <Bot className="mt-0.5 size-3.5 shrink-0 text-primary" aria-hidden />
             <div className="min-w-0 space-y-0.5">
               <p>
                 {outcome.aiLine}
-                {agreementWords(outcome.agreement) ? ` · ${agreementWords(outcome.agreement)}` : ''}
+                {/* A review's agreement is its headline ("Review disagreed: ..."). */}
+                {outcome.source !== 'review' && agreementWords(outcome.agreement)
+                  ? ` · ${agreementWords(outcome.agreement)}`
+                  : ''}
               </p>
               {barLine ? <p data-testid="facts-auto-close-bar">{barLine}</p> : null}
             </div>

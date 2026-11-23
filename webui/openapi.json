@@ -2633,6 +2633,74 @@
         "title": "CaseListResponse",
         "type": "object"
       },
+      "CaseReviewState": {
+        "description": "One case's place in the auto-close review (Round 15, D6.12, D8.2): what the case\nworkspace needs to show the pending band, choose its primary action and offer\n\"Review this auto-close\". ``state`` is the case's sample entry (``pending``,\n``completed`` or ``expired``, computed on read) or ``none`` when it was never\nsampled. ``agent_closed`` is the review endpoint's own rule (terminal, first\ndecision record an agent close), and ``can_record`` says whether that endpoint\nwould accept a review now, the caller's grants aside: a sampled case whose review\nis recorded answers 409, and so does a case that is not (or no longer) closed by\nthe agent.",
+        "properties": {
+          "agent_closed": {
+            "title": "Agent Closed",
+            "type": "boolean"
+          },
+          "can_record": {
+            "title": "Can Record",
+            "type": "boolean"
+          },
+          "case_id": {
+            "title": "Case Id",
+            "type": "string"
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At"
+          },
+          "review_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Review Id"
+          },
+          "sampled_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sampled At"
+          },
+          "state": {
+            "enum": [
+              "none",
+              "pending",
+              "completed",
+              "expired"
+            ],
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "case_id",
+          "agent_closed",
+          "state",
+          "can_record"
+        ],
+        "title": "CaseReviewState",
+        "type": "object"
+      },
       "CaseRunbooks": {
         "description": "``GET /api/cases/{case_id}/runbooks`` (SPEC §4.10.15a): the case's runs with\nevidence redacted per viewer by the lookup grants, progress per run, the newer\npublished version per run, the free-form case tasks (\"Other tasks\") and the case\ndocument's CAS revision. ``role_labels`` maps every role the runs' steps name\n(``approval_role``, ``owner_role`` and a pending approval's ``required_role``) to\nthe label a person knows it by (\"soc_manager\" to \"SOC manager\"; a custom role read\nthe way the Console reads a token), for the approval wording (SPEC §3.1,\n§4.10.11).",
         "properties": {
@@ -22030,6 +22098,44 @@
       }
     },
     "/api/cases/{case_id}/review": {
+      "get": {
+        "description": "One case's auto-close review state (D6.12, D8.2), read by the case workspace.\nA pending entry whose case already carries its review reads as completed (and the\nledger is repaired, as the summary does). Nothing here changes the case (#3).",
+        "operationId": "case_review_state_api_cases__case_id__review_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "case_id",
+            "required": true,
+            "schema": {
+              "title": "Case Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CaseReviewState"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Case Review State"
+      },
       "post": {
         "description": "Record a person's review of a case the AI agent closed automatically (D6.6).",
         "operationId": "record_auto_close_review_api_cases__case_id__review_post",

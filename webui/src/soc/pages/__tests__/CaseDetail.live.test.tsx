@@ -73,6 +73,9 @@ describe('CaseDetail live SSE wiring (Wave 4 dead-code fix)', () => {
     // A live frame is a NUDGE → refetch handler fires; payload is never rendered (#9).
     call.opts.onEvent?.({ type: 'case.activity' });
     expect(onLiveActivity).toHaveBeenCalledTimes(1);
+    // Round 15 (WP7): the frame goes with the nudge, so the caller can tell a screenshot
+    // frame (`ref.file_id`) from a thread one on this one stream.
+    expect(onLiveActivity).toHaveBeenCalledWith(expect.objectContaining({ type: 'case.activity' }));
     // A non-activity frame must NOT trigger a refetch.
     call.opts.onEvent?.({ type: 'inapp' });
     expect(onLiveActivity).toHaveBeenCalledTimes(1);

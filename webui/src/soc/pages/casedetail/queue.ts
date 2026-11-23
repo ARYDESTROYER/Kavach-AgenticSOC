@@ -11,7 +11,21 @@
 import type { Case } from '@/lib/types';
 import { severityBand } from '@/soc/components/badges';
 
-export type QueueScope = 'active' | 'mine' | 'all';
+export type QueueScope = 'active' | 'mine' | 'review' | 'all';
+/**
+ * The Review scope's queues (Round 15, SPEC D6.12): `GET /api/cases?review=`. Pending is
+ * the default; "Show completed reviews" switches to completed; disagreed and expired are
+ * deep links (`#/case_manager?review=disagreed`).
+ */
+export type QueueReview = 'pending' | 'completed' | 'disagreed' | 'expired';
+export const QUEUE_REVIEW_STATES: readonly QueueReview[] = ['pending', 'completed', 'disagreed', 'expired'];
+
+/** A route's `review` key as a Review queue, or null. */
+export function asQueueReview(value: unknown): QueueReview | null {
+  return typeof value === 'string' && (QUEUE_REVIEW_STATES as readonly string[]).includes(value)
+    ? (value as QueueReview)
+    : null;
+}
 export type QueueSort = 'updated_desc' | 'risk_desc' | 'created_desc' | 'title_asc';
 
 /** How many rows one queue page fetches. */
@@ -56,6 +70,8 @@ const SORTS: Record<QueueSort, { sort_field: string; sort_order: 'asc' | 'desc' 
 
 export interface QueueQueryInput {
   scope: QueueScope;
+  /** The Review scope's queue (ignored for the other scopes; pending when unset). */
+  review?: QueueReview | null;
   /** The signed-in analyst (Mine); ignored for the other scopes. */
   username?: string | null;
   search: string;
@@ -71,7 +87,10 @@ export interface QueueQueryInput {
  */
 export function queueQuery(input: QueueQueryInput): Record<string, string> {
   const query: Record<string, string> = { ...SORTS[input.sort] };
-  const activeOnly = input.scope !== 'all';
+  // The Review scope behaves like All for the status options (D6.12): the reviewed
+  // cases are ones the agent closed, so an active-only group would always be empty.
+  const activeOnly = input.scope === 'active' || input.scope === 'mine';
+  if (input.scope === 'review') query.review = input.review ?? 'pending';
   const status = input.status && !(activeOnly && TERMINAL_STATUSES.has(input.status)) ? input.status : null;
   if (status) query.status = status;
   else if (activeOnly) query.status_group = 'active';
@@ -85,7 +104,8 @@ export function queueQuery(input: QueueQueryInput): Record<string, string> {
 /** Whether a case belongs in a scope (used to keep live updates honest). */
 export function caseInScope(c: Case, scope: QueueScope, username?: string | null): boolean {
   const status = String(c.status || '').toLowerCase();
-  if (scope === 'all') return true;
+  // Review membership is the ledger's, which only the server reads (D6.12).
+  if (scope === 'all' || scope === 'review') return true;
   if (TERMINAL_STATUSES.has(status)) return false;
   if (scope === 'mine') {
     return Boolean(username) && String(c.assignee || '').trim().toLowerCase() === String(username).toLowerCase();
@@ -237,11 +257,27 @@ export function keepAdvisoryBands(previous: Case | null, next: Case): Case {
 }
 
 /** The queue heading for a scope. */
-export function scopeHeading(scope: QueueScope): string {
+export function scopeHeading(scope: QueueScope, review: QueueReview | null = null): string {
   if (scope === 'mine') return 'My cases';
   if (scope === 'all') return 'All cases';
+  if (scope === 'review') return REVIEW_HEADING[review ?? 'pending'];
   return 'Active cases';
 }
+
+const REVIEW_HEADING: Readonly<Record<QueueReview, string>> = {
+  pending: 'Auto-close reviews waiting',
+  completed: 'Completed auto-close reviews',
+  disagreed: 'Auto-close reviews that disagreed',
+  expired: 'Expired auto-close reviews',
+};
+
+/** The word the Review scope's footer line counts in (short: it shares the line with a link). */
+const REVIEW_NOUN: Readonly<Record<QueueReview, string>> = {
+  pending: 'waiting',
+  completed: 'reviewed',
+  disagreed: 'disagreed',
+  expired: 'expired',
+};
 
 /** "23 of 253 active · 50 loaded": the scope line (in the list footer) states loaded against total. */
 export function scopeSummary(
@@ -249,8 +285,16 @@ export function scopeSummary(
   loaded: number,
   total: number,
   position: number | null,
+  review: QueueReview | null = null,
 ): string {
-  const noun = scope === 'all' ? 'cases' : scope === 'mine' ? 'assigned to you' : 'active';
+  const noun =
+    scope === 'all'
+      ? 'cases'
+      : scope === 'mine'
+        ? 'assigned to you'
+        : scope === 'review'
+          ? REVIEW_NOUN[review ?? 'pending']
+          : 'active';
   const lead =
     position !== null
       ? `${position.toLocaleString()} of ${total.toLocaleString()} ${noun}`

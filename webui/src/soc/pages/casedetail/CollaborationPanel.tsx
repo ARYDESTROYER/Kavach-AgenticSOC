@@ -4,9 +4,9 @@
  * The people side of a case (#4), in four sections divided by hairlines:
  *
  *   Discussion  the case thread (AI is a first-class author but can only RECOMMEND)
- *   Files       the screenshots on the case (D5.12): a slot the caller fills with the
- *               WP4 gallery and drop zone (`renderFiles`), given this tab as the scope a
- *               pasted image is caught in; nothing renders while it is empty
+ *   Files       the screenshots on the case (D5.12): the caller's gallery and drop zone
+ *               (`renderFiles`, the lazy `CaseFiles`), given this tab as the scope a
+ *               pasted image is caught in, with its count beside the heading
  *   Tasks       Round 14 (D36): a pointer to the Runbook tab's "Other tasks", or the tasks
  *               themselves for a viewer with no Runbook tab (`tasksSection`)
  *   History     the lifecycle with who, when and the actions taken, from the case's own
@@ -25,6 +25,7 @@ import * as React from 'react';
 import { ArrowRight, ChevronDown } from 'lucide-react';
 
 import type { Case } from '@/lib/types';
+import type { StreamEvent } from '@/lib/useEventStream';
 import { cn } from '@/lib/cn';
 
 import { Button } from '@/ui/button';
@@ -79,13 +80,17 @@ export const CollaborationThreadTab: React.FC<{
    * Files section.
    */
   renderFiles?: (pasteScope: React.RefObject<HTMLElement | null>) => React.ReactNode;
+  /** Beside the Files heading: the screenshot count ("2 of 20"). */
+  filesAdornment?: React.ReactNode;
   /**
    * Optional LIVE wiring (Wave 4): when set, the thread + activity feed subscribe to
    * the per-case SSE room and nudge the caller to refetch on a `case.activity` frame
-   * (realtime is still default-OFF on the backend → polling fallback otherwise).
+   * (realtime is still default-OFF on the backend → polling fallback otherwise). The
+   * thread's nudge carries its frame, so one naming a screenshot refreshes the Files
+   * section instead (Round 15).
    */
   liveCaseId?: string;
-  onLiveThread?: () => void;
+  onLiveThread?: (event?: StreamEvent) => void;
   onLiveActivity?: () => void;
 }> = ({
   c,
@@ -109,6 +114,7 @@ export const CollaborationThreadTab: React.FC<{
   onOpenTasks,
   tasksSection,
   renderFiles,
+  filesAdornment,
   liveCaseId,
   onLiveThread,
   onLiveActivity,
@@ -197,7 +203,7 @@ export const CollaborationThreadTab: React.FC<{
           </PanelSection>
 
           {files ? (
-            <PanelSection title="Files" section="files" testId="collaboration-files">
+            <PanelSection title="Files" section="files" testId="collaboration-files" adornment={filesAdornment}>
               {files}
             </PanelSection>
           ) : null}

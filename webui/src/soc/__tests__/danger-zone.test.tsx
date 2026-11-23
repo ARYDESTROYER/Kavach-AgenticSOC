@@ -103,6 +103,13 @@ describe('DangerZone', () => {
     expect(screen.getByRole('button', { name: 'Factory reset' })).toBeInTheDocument();
   });
 
+  it('says the cases tier removes the screenshots on cases and the review sample (Round 15)', async () => {
+    renderDangerZone();
+    await waitFor(() => expect(screen.getByTestId('danger-zone')).toBeInTheDocument());
+    const cases = screen.getByTestId('danger-zone').querySelector('[data-settings-tier="cases"]') as HTMLElement;
+    expect(within(cases).getByText('Screenshots on cases and the auto-close review sample')).toBeInTheDocument();
+  });
+
   it('arms the destructive button ONLY on the exact confirm token (cases tier)', async () => {
     renderDangerZone();
     await screen.findByTestId('danger-zone');

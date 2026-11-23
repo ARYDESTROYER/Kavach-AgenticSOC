@@ -49,8 +49,13 @@ makes every automatic close or escalate decision.
 
 ## Queue scope and ordering
 
-Choose **Active** for non-terminal work, **Mine** for active cases assigned to you, and
-**All** to include resolved and closed records. Scope, status, severity, search, and
+Choose **Active** for non-terminal work, **Mine** for active cases assigned to you,
+**Review** for the cases the AI agent closed that were picked for an
+[auto-close review](../automation/auto-close-review.md), and **All** to include resolved
+and closed records. **Review** shows how many reviews are waiting and is offered while the
+review is on or while reviews are still waiting; it lists the waiting reviews, and **Show
+completed reviews** at the foot of the list switches to the recorded ones. A link can open it on one queue:
+`#/case_manager?review=pending`, `completed`, `disagreed` or `expired`. Scope, status, severity, search, and
 sort are answered by the server over every matching case, not by filtering a loaded
 page in the browser, so an old open case is never missing from Active. The scope line at
 the foot of the list always states how many cases are loaded out of the exact total, for
@@ -141,12 +146,19 @@ the full title is on hover) and one primary action chosen for the case's state:
 | Escalated | **Mark resolved** |
 | Resolved | **Close case**, its final close |
 | Closed | **Reopen** |
+| Closed by the AI agent and waiting for its auto-close review | **Start review** (Reopen is in **Take action**) |
+| Closed by the AI agent, no review waiting | **Reopen** (**Review this auto-close** is in **Take action**) |
 
 **Take action** holds every other command, and **More options** holds **Copy link** and
 **Open in new tab**. **C** opens the close dialog whenever the case can be closed, even
 when Close case is not the primary action. On a resolved or closed case, **Take action**
 still offers **Set disposition**, so an outcome that reads **Outcome not recorded** can be
-recorded without reopening the case. When the title is long, the actions move to their
+recorded without reopening the case. A case the AI agent closed is reviewed instead of
+relabelled: **Review this auto-close** takes the place of Set disposition, and a case
+picked for review shows a band under its header ("Picked at random for auto-close review.
+Classify it yourself, then compare with the AI.") with **Start review** as its primary
+action. Both open the review in a side sheet; the case stays readable beside it, and
+recording the review never changes the case unless you reopen it. When the title is long, the actions move to their
 own line rather than squeezing it. Its second line holds the facts every tab needs: the
 case number with a copy button, the severity, the status of an open case or the outcome of
 one that ended, the AI verdict, the owner (select to reassign; this is the one place to
@@ -159,7 +171,8 @@ eight sections:
   it and when), the AI verdict and confidence (read against today's auto-close bar while
   the case is open; once it ended, Investigation's Decision names the bar it was decided
   against), how they relate,
-  who decided, and the objection window;
+  who decided, the objection window and, on a case the AI agent closed, its auto-close
+  review (who reviewed it and when, or that the review expired);
 - **Signal**: the risk score (its recorded factors behind **Show risk factors**), the
   severity and whether the source reported it, the priority, impact and urgency;
 - **Runbook**: the runbook, its version, its progress, and its phases with their counts
@@ -182,6 +195,12 @@ about that value (see [Workspace Chat](chat.md#ask-ai-from-other-pages)).
 | Investigation | **AI assessment**: the model's reasoning, what it found and ruled out, the reproduction query, and the full assessment evidence one click away. **Decision**: what decided the case and why, with the authority sentence, the auto-close reading and any automation applied (the policy inputs one click away). Then **Threat context** (IOC reputation, MITRE ATT&CK mapping, and the redacted persisted alert → correlation cluster → opened case explanation), the detailed Investigation inputs, the collapsible full trace, and earlier gradings of the AI |
 | Collaboration | **Discussion**, the case thread with reactions; **Files**, the screenshots on the case; **Tasks**, a pointer to the Runbook tab's Other tasks; and **History**, every lifecycle change with who made it, when, and the actions taken, with the full activity feed behind **Show all activity**. The owner is changed in the case header, not here |
 | Chat | Case-scoped use of the shared AI Analyst chat engine; its transcript stays when you switch tabs. Asked about the runbook, it names the same next step as the Next step card, by the same rule |
+
+In **Files**, add screenshots by dropping them, pasting while the Collaboration tab has
+focus, or choosing them (PNG, JPEG or WebP; each is resized to fit 2 MB). Anyone who can
+comment on cases can add them; the person who added one, or anyone who can close cases,
+can delete it. Select a screenshot to see it full size, step through the others, or
+download it. The list updates when a teammate adds or deletes one.
 
 Each fact has one home, so a figure shown in the header or the rail is not repeated in
 a tab. The risk views (the rail's risk factors and the Risk Assigned stage under What

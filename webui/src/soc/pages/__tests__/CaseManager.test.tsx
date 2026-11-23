@@ -36,7 +36,14 @@ const mocks = vi.hoisted(() => ({
   resolveDialogFocus: null as null | ((opener: HTMLElement | null, andNext: boolean) => HTMLElement | null),
   // Round 14: the runbook progress endpoint behind the queue chip and the bulk close note.
   getRunbookProgress: vi.fn(),
+  // Round 15 (D6.12): the review summary behind the Review scope's count, the case ids
+  // each review queue holds (the stand-in ledger), and what the detail was handed.
+  reviewSummary: vi.fn(),
+  reviewSets: {} as Record<string, string[]>,
+  detailReview: { refreshKey: 0, onReviewChange: null as null | (() => void) },
 }));
+
+vi.mock('@/lib/api-reviews', () => ({ getAutoCloseReviewSummary: mocks.reviewSummary }));
 
 vi.mock('@/lib/api-runbooks', async () => {
   const actual = await vi.importActual<typeof import('@/lib/api-runbooks')>('@/lib/api-runbooks');
@@ -140,6 +147,8 @@ vi.mock('../CaseDetail', () => ({
     onAdvance,
     resolveDialogFocus,
     requestedTab,
+    reviewRefreshKey,
+    onReviewChange,
   }: {
     caseId: string;
     presentation: string;
@@ -148,8 +157,11 @@ vi.mock('../CaseDetail', () => ({
     onAdvance?: () => void;
     resolveDialogFocus?: (opener: HTMLElement | null, andNext: boolean) => HTMLElement | null;
     requestedTab?: string | null;
+    reviewRefreshKey?: number;
+    onReviewChange?: () => void;
   }) => {
     mocks.resolveDialogFocus = resolveDialogFocus ?? null;
+    mocks.detailReview = { refreshKey: reviewRefreshKey ?? 0, onReviewChange: onReviewChange ?? null };
     return (
     <section
       data-testid="embedded-case-detail"
@@ -246,6 +258,8 @@ function serve(dataset: Case[]) {
     // Round 14 (SPEC §4.6.1): `closed_by` matches terminal cases by who closed them, the
     // engine's vocabulary (`case_aggregate.closed_by`).
     if (query.closed_by) rows = rows.filter((c) => closerOf(c) === query.closed_by);
+    // Round 15 (D6.12): the Review scope's cases are the ledger's.
+    if (query.review) rows = rows.filter((c) => (mocks.reviewSets[String(query.review)] ?? []).includes(c.case_id));
     if (typeof query.q === 'string' && query.q.trim()) {
       const terms = query.q.toLowerCase().split(/\s+/).filter(Boolean);
       rows = rows.filter((c) => {
@@ -297,6 +311,12 @@ describe('CaseManager', () => {
     window.localStorage.clear();
     mocks.navigate.mockReset();
     mocks.routeOpts = undefined;
+    // The review is off and nothing waits: the queue offers no Review scope.
+    mocks.reviewSummary
+      .mockReset()
+      .mockResolvedValue({ enabled: false, pending: 0, disagreed_open: 0, sampled_today: 0, daily_cap: 10 });
+    mocks.reviewSets = {};
+    mocks.detailReview = { refreshKey: 0, onReviewChange: null };
     mocks.username = 'analyst.one';
     mocks.demoActive = false;
     mocks.permissions = new Set([
@@ -2024,6 +2044,181 @@ describe('CaseManager', () => {
     // One footer holds both, after the list (outside the scrolling rows).
     expect(scope.parentElement).toContainElement(more);
     expect(screen.getByRole('list', { name: 'Cases' })).not.toContainElement(scope);
+  });
+
+  describe('the Review scope (Round 15, SPEC D6.12; WP7)', () => {
+    const PENDING_A: Case = {
+      case_id: 'case-review-a',
+      case_number: 'CASE-2026-0201',
+      title: 'Scanner sweep auto-closed',
+      status: 'closed',
+      decision_by: 'agent',
+      verdict: 'FALSE_POSITIVE',
+      severity_band: 'low',
+      risk_score: 10,
+      updated_at: '2026-07-20T08:00:00Z',
+      history: [{ event: 'decision', status: 'closed', decision_by: 'agent', ts: '2026-07-20T07:00:00Z' }],
+    } as unknown as Case;
+    const PENDING_B: Case = { ...PENDING_A, case_id: 'case-review-b', case_number: 'CASE-2026-0202', title: 'Health probe auto-closed' };
+    const DONE: Case = { ...PENDING_A, case_id: 'case-review-done', case_number: 'CASE-2026-0203', title: 'Reviewed backup job' };
+    const REVIEW_CASES = [...CASES, PENDING_A, PENDING_B, DONE];
+
+    beforeEach(() => {
+      mocks.listCases.mockImplementation(serve(REVIEW_CASES));
+      mocks.getCase.mockImplementation(async (id: string) => {
+        const item = REVIEW_CASES.find((candidate) => candidate.case_id === id);
+        if (!item) throw new Error('Case not found');
+        return item;
+      });
+      mocks.reviewSets = {
+        pending: [PENDING_A.case_id, PENDING_B.case_id],
+        completed: [DONE.case_id],
+        disagreed: [],
+        expired: [],
+      };
+      mocks.reviewSummary.mockResolvedValue({ enabled: true, pending: 2, disagreed_open: 0, sampled_today: 1, daily_cap: 10 });
+    });
+
+    it('is offered with its waiting count only while the review is on or cases wait', async () => {
+      render(<CaseManager />);
+      const scope = await screen.findByRole('radiogroup', { name: 'Case queue scope' });
+      const review = await within(scope).findByRole('radio', { name: /^Review\W+2 waiting$/ });
+      expect(review).toBeInTheDocument();
+      expect(within(scope).getAllByRole('radio').map((radio) => radio.textContent)).toEqual([
+        'Active',
+        'Mine',
+        'Review, 2 waiting',
+        'All',
+      ]);
+      // The count is a quiet badge beside the word, not part of it.
+      expect(within(review).getByText('2')).toHaveClass('tabular-nums');
+    });
+
+    it('is not offered while the review is off and nothing waits', async () => {
+      mocks.reviewSummary.mockResolvedValue({ enabled: false, pending: 0, disagreed_open: 0, sampled_today: 0, daily_cap: 10 });
+      render(<CaseManager />);
+      await screen.findByText('Suspicious S3 bucket exfiltration');
+      await waitFor(() => expect(mocks.reviewSummary).toHaveBeenCalled());
+      const scope = screen.getByRole('radiogroup', { name: 'Case queue scope' });
+      expect(within(scope).queryByRole('radio', { name: /Review/ })).toBeNull();
+    });
+
+    it('lists the waiting reviews from the server, carries the key, and switches to completed from the footer', async () => {
+      const user = userEvent.setup();
+      render(<CaseManager />);
+      await user.click(await screen.findByRole('radio', { name: /^Review\W+2 waiting$/ }));
+      expect(await screen.findByRole('heading', { level: 2, name: 'Auto-close reviews waiting' })).toBeInTheDocument();
+      expect(await screen.findByText('Scanner sweep auto-closed')).toBeInTheDocument();
+      expect(screen.getByText('Health probe auto-closed')).toBeInTheDocument();
+      await waitFor(() => expect(screen.queryByText('Suspicious S3 bucket exfiltration')).toBeNull());
+      const last = mocks.listCases.mock.calls.at(-1)?.[0] as Record<string, unknown>;
+      expect(last).toMatchObject({ review: 'pending' });
+      expect(last).not.toHaveProperty('status_group');
+      expect(mocks.navigate).toHaveBeenLastCalledWith('case_manager', expect.objectContaining({ review: 'pending' }));
+      expect(screen.getByTestId('case-queue-scope')).toHaveTextContent('2 waiting · 2 loaded');
+
+      // Opening a case keeps the review key in the address.
+      await user.click(screen.getByText('Health probe auto-closed'));
+      expect(mocks.navigate).toHaveBeenLastCalledWith('case_manager', { caseId: PENDING_B.case_id, review: 'pending' });
+
+      await user.click(screen.getByRole('button', { name: 'Show completed reviews' }));
+      expect(await screen.findByText('Reviewed backup job')).toBeInTheDocument();
+      expect(mocks.listCases.mock.calls.at(-1)?.[0]).toMatchObject({ review: 'completed' });
+      expect(mocks.navigate).toHaveBeenLastCalledWith('case_manager', { caseId: PENDING_B.case_id, review: 'completed' });
+      expect(screen.getByRole('button', { name: 'Show waiting reviews' })).toBeInTheDocument();
+    });
+
+    it('opens on a review deep link, and offers the closed statuses there (Review behaves like All)', async () => {
+      const user = userEvent.setup();
+      mocks.routeOpts = { review: 'completed' } as never;
+      render(<CaseManager />);
+      expect(await screen.findByRole('heading', { level: 2, name: 'Completed auto-close reviews' })).toBeInTheDocument();
+      expect(await screen.findByText('Reviewed backup job')).toBeInTheDocument();
+      expect(screen.getByRole('radio', { name: /^Review/ })).toBeChecked();
+      await user.click(screen.getByRole('button', { name: /Filters/ }));
+      await user.click(await screen.findByRole('combobox', { name: 'Status filter' }));
+      expect(await screen.findByRole('option', { name: 'Closed' })).toBeInTheDocument();
+    });
+
+    it('says what the queue is for when nothing waits, and that the review is off when it is', async () => {
+      const user = userEvent.setup();
+      mocks.reviewSets.pending = [];
+      mocks.reviewSummary.mockResolvedValue({ enabled: false, pending: 0, disagreed_open: 0, sampled_today: 0, daily_cap: 10 });
+      mocks.routeOpts = { review: 'pending' } as never;
+      render(<CaseManager />);
+      expect(await screen.findByText('No reviews waiting')).toBeInTheDocument();
+      expect(await screen.findByText('Auto-close review is off. Turn it on in Settings, under Detection.')).toBeInTheDocument();
+      // The footer still leads to the completed reviews.
+      await user.click(screen.getByRole('button', { name: 'Show completed reviews' }));
+      expect(await screen.findByText('Reviewed backup job')).toBeInTheDocument();
+    });
+
+    it('re-reads the count, the window and the open case on a case.review frame', async () => {
+      const user = userEvent.setup();
+      render(<CaseManager />);
+      await user.click(await screen.findByRole('radio', { name: /^Review\W+2 waiting$/ }));
+      await user.click(await screen.findByText('Scanner sweep auto-closed'));
+      await waitFor(() => expect(screen.getByTestId('embedded-case-detail')).toHaveAttribute('data-case-id', PENDING_A.case_id));
+      const summaries = mocks.reviewSummary.mock.calls.length;
+      const listed = mocks.listCases.mock.calls.length;
+      const before = mocks.detailReview.refreshKey;
+
+      // The first sample was reviewed elsewhere.
+      mocks.reviewSets.pending = [PENDING_B.case_id];
+      mocks.reviewSummary.mockResolvedValue({ enabled: true, pending: 1, disagreed_open: 0, sampled_today: 1, daily_cap: 10 });
+      act(() => {
+        mocks.streamOnEvent?.({ type: 'case.review', data: { case_id: PENDING_A.case_id, review_id: 'acr-1', state: 'completed' } });
+      });
+      await waitFor(() => expect(mocks.reviewSummary.mock.calls.length).toBeGreaterThan(summaries));
+      await waitFor(() => expect(mocks.listCases.mock.calls.length).toBeGreaterThan(listed));
+      expect(mocks.detailReview.refreshKey).toBe(before + 1);
+      expect(await screen.findByRole('radio', { name: /^Review\W+1 waiting$/ })).toBeInTheDocument();
+      await waitFor(() => expect(screen.queryByText('Scanner sweep auto-closed')).toBeNull());
+    });
+
+    it('ignores a case.changed frame for a case the Review scope has not loaded', async () => {
+      const user = userEvent.setup();
+      render(<CaseManager />);
+      await user.click(await screen.findByRole('radio', { name: /^Review\W+2 waiting$/ }));
+      await screen.findByText('Scanner sweep auto-closed');
+      mocks.getCase.mockClear();
+      const listed = mocks.listCases.mock.calls.length;
+      act(() => {
+        mocks.streamOnEvent?.({ type: 'case.changed', data: { case_id: OPEN_CRITICAL.case_id, created: true } });
+      });
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 800));
+      });
+      expect(mocks.getCase).not.toHaveBeenCalled();
+      expect(mocks.listCases.mock.calls.length).toBe(listed);
+      expect(screen.queryByTestId('case-queue-show-new')).toBeNull();
+    });
+
+    it('re-reads the count and the window when the open case records its review', async () => {
+      const user = userEvent.setup();
+      render(<CaseManager />);
+      await user.click(await screen.findByRole('radio', { name: /^Review\W+2 waiting$/ }));
+      await user.click(await screen.findByText('Health probe auto-closed'));
+      await waitFor(() => expect(mocks.detailReview.onReviewChange).not.toBeNull());
+      const summaries = mocks.reviewSummary.mock.calls.length;
+      const listed = mocks.listCases.mock.calls.length;
+      act(() => mocks.detailReview.onReviewChange?.());
+      await waitFor(() => expect(mocks.reviewSummary.mock.calls.length).toBeGreaterThan(summaries));
+      await waitFor(() => expect(mocks.listCases.mock.calls.length).toBeGreaterThan(listed));
+    });
+
+    it('drops the review key when another scope is chosen', async () => {
+      const user = userEvent.setup();
+      render(<CaseManager />);
+      await user.click(await screen.findByRole('radio', { name: /^Review\W+2 waiting$/ }));
+      await screen.findByText('Scanner sweep auto-closed');
+      mocks.navigate.mockClear();
+      await user.click(screen.getByRole('radio', { name: 'Active' }));
+      expect(mocks.navigate).toHaveBeenCalledTimes(1);
+      expect(mocks.navigate.mock.calls[0][1] ?? {}).not.toHaveProperty('review');
+      expect(await screen.findByText('Suspicious S3 bucket exfiltration')).toBeInTheDocument();
+      expect(mocks.listCases.mock.calls.at(-1)?.[0]).not.toHaveProperty('review');
+    });
   });
 });
 

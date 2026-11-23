@@ -1561,7 +1561,13 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /**
+         * Case Review State
+         * @description One case's auto-close review state (D6.12, D8.2), read by the case workspace.
+         *     A pending entry whose case already carries its review reads as completed (and the
+         *     ledger is repaired, as the summary does). Nothing here changes the case (#3).
+         */
+        get: operations["case_review_state_api_cases__case_id__review_get"];
         put?: never;
         /**
          * Record Auto Close Review
@@ -8695,6 +8701,37 @@ export interface components {
             total: number;
             /** Window Total Exact */
             window_total_exact?: boolean | null;
+        };
+        /**
+         * CaseReviewState
+         * @description One case's place in the auto-close review (Round 15, D6.12, D8.2): what the case
+         *     workspace needs to show the pending band, choose its primary action and offer
+         *     "Review this auto-close". ``state`` is the case's sample entry (``pending``,
+         *     ``completed`` or ``expired``, computed on read) or ``none`` when it was never
+         *     sampled. ``agent_closed`` is the review endpoint's own rule (terminal, first
+         *     decision record an agent close), and ``can_record`` says whether that endpoint
+         *     would accept a review now, the caller's grants aside: a sampled case whose review
+         *     is recorded answers 409, and so does a case that is not (or no longer) closed by
+         *     the agent.
+         */
+        CaseReviewState: {
+            /** Agent Closed */
+            agent_closed: boolean;
+            /** Can Record */
+            can_record: boolean;
+            /** Case Id */
+            case_id: string;
+            /** Expires At */
+            expires_at?: string | null;
+            /** Review Id */
+            review_id?: string | null;
+            /** Sampled At */
+            sampled_at?: string | null;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "none" | "pending" | "completed" | "expired";
         };
         /**
          * CaseRunbooks
@@ -18210,6 +18247,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": Record<string, never>;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    case_review_state_api_cases__case_id__review_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                case_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CaseReviewState"];
                 };
             };
             /** @description Validation Error */
