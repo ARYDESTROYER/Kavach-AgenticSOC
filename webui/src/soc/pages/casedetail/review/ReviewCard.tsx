@@ -16,7 +16,7 @@
  * fixed copy; the note is plain text the person typed (#9).
  */
 import * as React from 'react';
-import { Star } from 'lucide-react';
+import { ChevronDown, Star } from 'lucide-react';
 
 import { api, ApiError } from '@/lib/api';
 import { recordReview } from '@/lib/api-reviews';
@@ -275,16 +275,17 @@ export function ReviewCard({
         <p className="text-xs text-muted-foreground">Your note is kept as precedent for future investigations.</p>
       </div>
       <div>
-        <Button
+        {/* The close dialog's disclosure grammar (`RateTheAi`): a chevron and the same words. */}
+        <button
           type="button"
-          variant="ghost"
-          size="sm"
           aria-expanded={rateOpen}
           aria-controls={rateId}
           onClick={() => setRateOpen((open) => !open)}
+          className="inline-flex items-center gap-1.5 rounded-sm text-xs font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
-          {rateOpen ? 'Hide the AI rating' : 'Rate the AI (optional)'}
-        </Button>
+          <ChevronDown className={cn('h-3.5 w-3.5 transition-transform', rateOpen && 'rotate-180')} aria-hidden />
+          Rate the AI (optional)
+        </button>
         <div id={rateId} hidden={!rateOpen} className={rateOpen ? 'mt-2 space-y-1' : undefined}>
           <StarRating label="Accuracy" value={stars.accuracy} onChange={(v) => setStars((s) => ({ ...s, accuracy: v }))} />
           <StarRating

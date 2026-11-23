@@ -53,8 +53,8 @@ Choose **Active** for non-terminal work, **Mine** for active cases assigned to y
 **Review** for the cases the AI agent closed that were picked for an
 [auto-close review](../automation/auto-close-review.md), and **All** to include resolved
 and closed records. **Review** shows how many reviews are waiting and is offered while the
-review is on or any wait; it lists the waiting reviews, and **Show completed reviews** at
-the foot of the list switches to the recorded ones. A link can open it on one queue:
+review is on or while reviews are still waiting; it lists the waiting reviews, and **Show
+completed reviews** at the foot of the list switches to the recorded ones. A link can open it on one queue:
 `#/case_manager?review=pending`, `completed`, `disagreed` or `expired`. Scope, status, severity, search, and
 sort are answered by the server over every matching case, not by filtering a loaded
 page in the browser, so an old open case is never missing from Active. The scope line at

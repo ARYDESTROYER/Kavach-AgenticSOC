@@ -236,6 +236,16 @@ def review_events(case: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
+def review_marker_note(case: dict[str, Any]) -> str:
+    """Which path kept the review grade excluded after N-1's full save, for the results:
+    the grade's own marker (N-1 knows ``origin``) or the history event alone (N-1 dropped
+    the unknown fields, the case the rollback-safe marker exists for, D6.7)."""
+    grades = [g for g in (case.get("feedback") or []) if isinstance(g, dict)]
+    if grades and all(g.get("origin") == REVIEW_EVENT for g in grades):
+        return "release-n again: the review grade kept its own marker through N-1's save"
+    return "release-n again: N-1's save dropped the grade's marker; the history event alone kept it excluded"
+
+
 def check(condition: bool, message: str) -> None:
     if not condition:
         raise LaneFailure(message)
@@ -655,6 +665,7 @@ class Lane:
         self.assert_screenshot_served(boot)
         self.stop(boot)
         self.results.append("release-n again: the runbook settings survived the round trip")
+        self.results.append(review_marker_note(case))
         self.results.append("release-n again: the review grade stays excluded; the screenshot lists and serves")
 
     # ----- synthetic future data (forward_contract) -------------------- #

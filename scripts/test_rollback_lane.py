@@ -199,6 +199,12 @@ def _reviewed_case(*, marker: bool = True, event: bool = True, comment: bool = F
     return doc
 
 
+def inspect_source(obj: object) -> str:
+    import inspect
+
+    return inspect.getsource(obj)
+
+
 def _bare_lane() -> "lane.Lane":
     """A Lane without its set-up (no work directory, no database)."""
     instance = lane.Lane.__new__(lane.Lane)
@@ -329,6 +335,14 @@ class Round15PlantTests(unittest.TestCase):
         )
         with self.assertRaises(lane.LaneFailure):
             instance.assert_screenshot_served(_FakeBoot("release-n-again", not_png))  # type: ignore[arg-type]
+
+    def test_the_results_say_which_marker_kept_the_grade_excluded(self) -> None:
+        dropped = lane.review_marker_note(_reviewed_case(marker=False))
+        kept = lane.review_marker_note(_reviewed_case(marker=True))
+        self.assertIn("history event alone", dropped)
+        self.assertIn("kept its own marker", kept)
+        self.assertNotEqual(dropped, kept)
+        self.assertIn("review_marker_note(case)", inspect_source(lane.Lane.phase_return))
 
     def test_each_phase_carries_its_plant_unconditionally(self) -> None:
         """phase_n plants before it stops, phase_previous makes the full save, and

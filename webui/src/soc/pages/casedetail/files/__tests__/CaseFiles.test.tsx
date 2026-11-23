@@ -146,6 +146,29 @@ describe('CaseFiles', () => {
     expect(await within(dialog).findByRole('heading', { name: 'Login page' })).toBeInTheDocument();
   });
 
+  it('gives focus back to the thumbnail of the screenshot it showed last when it closes', async () => {
+    // The lightbox opens from a thumbnail, not a DialogTrigger, so Radix alone would leave
+    // focus on the page body when it closes (WCAG 2.4.3).
+    const api = apiFor([entry('f1', { caption: 'Login page' }), entry('f2', { caption: 'Error page' })]);
+    render(<CaseFiles caseId="case-1" api={api} />);
+    const first = await screen.findByRole('button', { name: 'Open Login page' });
+    first.focus();
+    fireEvent.click(first);
+    let dialog = await screen.findByRole('dialog');
+    fireEvent.keyDown(dialog, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await waitFor(() => expect(first).toHaveFocus());
+
+    // Stepped to the second screenshot: Close returns to that one's thumbnail.
+    fireEvent.click(first);
+    dialog = await screen.findByRole('dialog');
+    fireEvent.click(within(dialog).getByRole('button', { name: /Next/ }));
+    await within(dialog).findByRole('heading', { name: 'Error page' });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Close' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Open Error page' })).toHaveFocus());
+  });
+
   it('downloads through the shared saver with the server file name', async () => {
     const api = apiFor([entry('f1', { caption: 'Login page' })]);
     render(<CaseFiles caseId="case-1" api={api} />);
@@ -265,6 +288,10 @@ describe('CaseFiles', () => {
     await waitFor(() => expect(upload).toHaveBeenCalledTimes(1));
     expect(upload.mock.calls[0][1]).toMatchObject({ caption: 'Fresh', filename: 'a.png' });
     await waitFor(() => expect(api.list).toHaveBeenCalledTimes(2));
+    // The finished upload leaves the visible list but is still announced.
+    const status = screen.getByTestId('case-files-status');
+    const done = await within(status).findByText('a.png: added to the case');
+    expect(done).toHaveClass('sr-only');
   });
 
   it('has no accessibility violations', async () => {

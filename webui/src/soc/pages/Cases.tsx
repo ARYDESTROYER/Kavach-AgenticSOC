@@ -2410,12 +2410,22 @@ const BulkActionBar: React.FC<{
 }) => {
   const locked = busy || Boolean(unavailableReason);
   // D4.7: the help text both bulk relabelling menus carry, with the count when it applies.
+  const leftOutText = `${AGENT_CLOSED_LEFT_OUT}${
+    agentClosedCount
+      ? ` ${agentClosedCount.toLocaleString()} of the selected cases ${agentClosedCount === 1 ? 'is' : 'are'} left out.`
+      : ''
+  }`;
+  // Shown at the foot of each menu, where a pointer user reads it. A listbox announces
+  // only its options, so the same words describe each menu's trigger for a screen reader
+  // (`leftOutNoteId`), and the copy inside the listbox is hidden from assistive technology.
+  const leftOutNoteId = React.useId();
   const leftOutNote = (
-    <p className="px-2 pb-1.5 pt-1 text-xs leading-4 text-muted-foreground" data-testid="cases-bulk-agent-closed-note">
-      {AGENT_CLOSED_LEFT_OUT}
-      {agentClosedCount
-        ? ` ${agentClosedCount.toLocaleString()} of the selected cases ${agentClosedCount === 1 ? 'is' : 'are'} left out.`
-        : ''}
+    <p
+      aria-hidden
+      className="px-2 pb-1.5 pt-1 text-xs leading-4 text-muted-foreground"
+      data-testid="cases-bulk-agent-closed-note"
+    >
+      {leftOutText}
     </p>
   );
   const [assignOpen, setAssignOpen] = React.useState(false);
@@ -2595,6 +2605,9 @@ const BulkActionBar: React.FC<{
             </PopoverContent>
           </Popover>
 
+          <span id={leftOutNoteId} className="sr-only">
+            {leftOutText}
+          </span>
           {/* Set status (cases:write) */}
           <Select value="" onValueChange={(v) => v && onSetStatus(v)} disabled={locked}>
             {/* The icon sits beside the label, outside the clamped span: the trigger's
@@ -2602,6 +2615,7 @@ const BulkActionBar: React.FC<{
             <SelectTrigger
               className="h-8 w-[9.5rem] justify-start gap-1.5 [&>svg:last-child]:ml-auto"
               aria-label="Set status for selected cases"
+              aria-describedby={leftOutNoteId}
             >
               <SlidersHorizontal className="size-4 shrink-0" aria-hidden />
               <span className="text-sm">Set status</span>
@@ -2622,6 +2636,7 @@ const BulkActionBar: React.FC<{
             <SelectTrigger
               className="h-8 w-[10.5rem] justify-start gap-1.5 [&>svg:last-child]:ml-auto"
               aria-label="Set disposition for selected cases"
+              aria-describedby={leftOutNoteId}
             >
               <CircleSlash className="size-4 shrink-0" aria-hidden />
               <span className="text-sm">Set disposition</span>

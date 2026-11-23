@@ -195,6 +195,14 @@ describe('Cases bulk relabelling leaves out the cases the AI agent closed (D4.7)
     expect(submitJobMock.mock.calls[0][0].params.case_ids).toEqual(['case-001']);
   });
 
+  it('tells a screen reader the rule on each menu trigger, since a listbox reads only its options', async () => {
+    const bar = await select('TLSOC-001', 'TLSOC-002');
+    const words = 'Cases the AI agent closed are left out; review them instead. 1 of the selected cases is left out.';
+    for (const name of ['Set status for selected cases', 'Set disposition for selected cases']) {
+      expect(within(bar).getByRole('combobox', { name })).toHaveAccessibleDescription(words);
+    }
+  });
+
   it('leaves the other bulk actions as they were', async () => {
     const bar = await select('TLSOC-001', 'TLSOC-002');
     fireEvent.click(within(bar).getByRole('button', { name: 'Acknowledge' }));

@@ -9,6 +9,9 @@
  *   - The close dialog offers "Add screenshots" (the dialog as its paste scope) to a
  *     viewer who holds `cases:comment`, the grant the upload route checks, and not to one
  *     who does not; the server's own `can_upload` and `can_delete` gate the gallery.
+ *   - A pasted image anywhere in the Collaboration tab (the thread's composer included)
+ *     is added once; with the close dialog open over the tab, the dialog takes it, and
+ *     the tab does not add it a second time.
  */
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
@@ -63,10 +66,42 @@ vi.mock('@/soc/pages/CaseDetail.api', async (importOriginal) => {
   };
 });
 
+// The canvas re-encode needs a real browser; the upload path is what these tests read.
+vi.mock('@/soc/pages/casedetail/files/image-encode', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../casedetail/files/image-encode')>();
+  return {
+    ...actual,
+    prepareScreenshot: vi.fn(async () => ({
+      image: { blob: new Blob(['x'], { type: 'image/png' }), type: 'image/png', width: 4, height: 3 },
+      thumbnail: null,
+    })),
+    blobToBase64: vi.fn(async () => 'eA=='),
+  };
+});
+
 vi.mock('@/lib/api-case-files', () => ({
   listCaseFiles: vi.fn(() => Promise.resolve(env.listing)),
   deleteCaseFile: vi.fn(),
-  uploadCaseFile: vi.fn(),
+  uploadCaseFile: vi.fn(async (caseId: string, body: { filename: string }) => ({
+    file: {
+      id: `up-${body.filename}`,
+      case_id: caseId,
+      position: 1,
+      content_type: 'image/png',
+      bytes: 1,
+      width: 4,
+      height: 3,
+      sha256: 'd'.repeat(64),
+      caption: '',
+      filename: body.filename,
+      uploaded_by: 't1',
+      uploaded_at: '2026-11-23T10:20:00Z',
+      has_thumbnail: false,
+      deleted: false,
+      can_delete: true,
+    },
+    deduplicated: false,
+  })),
   fetchCaseFileBlob: vi.fn(() => Promise.resolve({ blob: new Blob(['x'], { type: 'image/png' }), filename: 'x.png' })),
 }));
 
@@ -112,7 +147,7 @@ vi.mock('@/soc/auth', () => {
   };
 });
 
-import { listCaseFiles } from '@/lib/api-case-files';
+import { listCaseFiles, uploadCaseFile } from '@/lib/api-case-files';
 import { getThread } from '@/soc/pages/CaseDetail.api';
 import { CaseDetail } from '@/soc/pages/CaseDetail';
 
@@ -166,7 +201,12 @@ beforeEach(() => {
   env.streams = [];
   env.listing = listing(1);
   vi.mocked(listCaseFiles).mockClear();
+  vi.mocked(uploadCaseFile).mockClear();
   vi.mocked(getThread).mockClear();
+});
+
+const pastedImage = (name: string) => ({
+  clipboardData: { files: [new File([new Uint8Array(3)], name, { type: 'image/png' })], items: [] },
 });
 
 async function openCollaboration() {
@@ -235,6 +275,24 @@ describe('the Collaboration Files section', () => {
     }
   });
 
+  it('adds an image pasted anywhere in the tab, the thread composer included, once', async () => {
+    await openCollaboration();
+    await screen.findByText('Shot 1');
+    // The thread's composer: a text field of the tab, outside the Files section.
+    const tab = document.querySelector<HTMLElement>('[data-case-panel="collaboration"]')!;
+    const files = screen.getByTestId('collaboration-files');
+    const composer = within(tab).getAllByRole('textbox').find((el) => !files.contains(el))!;
+    await act(async () => {
+      fireEvent.paste(composer, pastedImage('from-composer.png'));
+    });
+    await waitFor(() => expect(uploadCaseFile).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(uploadCaseFile).mock.calls[0][0]).toBe('c-files-1');
+    expect(vi.mocked(uploadCaseFile).mock.calls[0][1]).toMatchObject({ filename: 'from-composer.png' });
+    // The Files section reads its list again once the upload lands.
+    await waitFor(() => expect(listCaseFiles).toHaveBeenCalledTimes(2));
+    expect(uploadCaseFile).toHaveBeenCalledTimes(1);
+  });
+
   it('opens no stream of its own: the files kit rides on the thread stream', () => {
     const dir = path.resolve(__dirname, '..', 'casedetail', 'files');
     for (const name of readdirSync(dir).filter((n) => /\.tsx?$/.test(n))) {
@@ -256,6 +314,23 @@ describe('the close dialog', () => {
     const zone = await within(dialog).findByTestId('close-screenshots');
     expect(within(zone).getByRole('button', { name: 'Add screenshots' })).toBeEnabled();
     expect(within(dialog).getByTestId('confirm-action-screenshots')).toHaveTextContent('Screenshots (optional)');
+  });
+
+  it('takes a paste inside the dialog once, even with the Collaboration tab open behind it', async () => {
+    await openCollaboration();
+    await screen.findByText('Shot 1');
+    fireEvent.click(screen.getByTestId('case-primary-action'));
+    const dialog = await screen.findByTestId('confirm-action-dialog');
+    await within(dialog).findByTestId('close-screenshots');
+    const note = within(dialog).getAllByRole('textbox').at(-1)!;
+    await act(async () => {
+      fireEvent.paste(note, pastedImage('in-dialog.png'));
+    });
+    await waitFor(() => expect(uploadCaseFile).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(uploadCaseFile).mock.calls[0][1]).toMatchObject({ filename: 'in-dialog.png' });
+    expect(await within(dialog).findByText('in-dialog.png: added to the case')).toBeInTheDocument();
+    // The tab behind the dialog never caught it: one upload, not two.
+    expect(uploadCaseFile).toHaveBeenCalledTimes(1);
   });
 
   it('offers none to a viewer without cases:comment', async () => {

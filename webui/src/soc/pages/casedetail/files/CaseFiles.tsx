@@ -11,7 +11,9 @@
  * `<img src>` to the API), shown through object URLs, and every object URL is revoked
  * when it is no longer shown. The lightbox is a Radix dialog that always has a
  * DialogTitle: the caption when there is one, else a visually hidden "Screenshot N of
- * M". Captions, filenames and names are text a person typed: text nodes only (#9).
+ * M". It opens from a thumbnail, not a DialogTrigger, so it returns focus itself: to the
+ * thumbnail of the screenshot it showed last (WCAG 2.4.3). Captions, filenames and names
+ * are text a person typed: text nodes only (#9).
  */
 import * as React from 'react';
 import { ChevronLeft, ChevronRight, Download, ImageOff, Loader2, Trash2 } from 'lucide-react';
@@ -38,7 +40,7 @@ const STATUS_WORDS: Record<string, string> = {
   queued: 'waiting',
   preparing: 'preparing',
   uploading: 'uploading',
-  done: 'added',
+  done: 'added to the case',
 };
 
 /** "812 KB", "1.4 MB": a stored size in plain words. */
@@ -109,6 +111,7 @@ function FileThumb({ caseId, entry, index, total, onOpen, fetcher }: ThumbProps)
         type="button"
         onClick={onOpen}
         aria-label={`Open ${title}`}
+        data-file-id={entry.id}
         className={cn(
           'flex aspect-video w-full items-center justify-center overflow-hidden rounded-md border border-border bg-muted/40',
           'transition-colors hover:border-primary',
@@ -150,11 +153,21 @@ interface LightboxProps {
   onIndexChange: (index: number | null) => void;
   onDelete: (entry: CaseFileEntry) => void;
   fetcher: typeof fetchCaseFileBlob;
+  /**
+   * Where focus goes when the lightbox closes, given the id of the screenshot it showed
+   * last; null leaves focus where it is (a delete confirmation is taking it).
+   */
+  focusOnClose: (entryId: string | null) => HTMLElement | null;
 }
 
-function Lightbox({ caseId, files, index, onIndexChange, onDelete, fetcher }: LightboxProps) {
+function Lightbox({ caseId, files, index, onIndexChange, onDelete, fetcher, focusOnClose }: LightboxProps) {
   const open = index !== null && index >= 0 && index < files.length;
   const entry = open ? files[index as number] : null;
+  // The screenshot shown last: by the time the lightbox has closed, `entry` is null.
+  const lastShownRef = React.useRef<string | null>(null);
+  React.useEffect(() => {
+    if (entry) lastShownRef.current = entry.id;
+  }, [entry]);
   const { url, failed } = useCaseFileUrl(caseId, entry?.id ?? null, 'full', fetcher);
   const [downloading, setDownloading] = React.useState(false);
   const [downloadError, setDownloadError] = React.useState<string | null>(null);
@@ -190,6 +203,13 @@ function Lightbox({ caseId, files, index, onIndexChange, onDelete, fetcher }: Li
     <Dialog open={open} onOpenChange={(next) => !next && onIndexChange(null)}>
       <DialogContent
         className="max-w-5xl"
+        // Radix gives focus back to a DialogTrigger, and this dialog has none (it opens
+        // from a thumbnail): without this, closing it would leave focus on the page body.
+        onCloseAutoFocus={(event) => {
+          event.preventDefault();
+          const target = focusOnClose(lastShownRef.current);
+          if (target && target.isConnected) target.focus();
+        }}
         onKeyDown={(event) => {
           if (event.key === 'ArrowRight') {
             event.preventDefault();
@@ -321,6 +341,25 @@ export function CaseFiles({
   // Under a host's section heading, focus returns to that heading (else to this root).
   const deleteReturnRef = React.useRef<HTMLElement | null>(null);
   const ownHeading = heading === 'own';
+  // Set when the lightbox hands over to the delete confirmation, which takes focus.
+  const deletingFromLightbox = React.useRef(false);
+  // The heading that names this list: its own, or the host's section title.
+  const listHeading = React.useCallback((): HTMLElement | null => {
+    if (ownHeading) return headingRef.current;
+    const root = rootRef.current;
+    return root?.closest('[data-section]')?.querySelector<HTMLElement>('[data-section-title]') ?? root;
+  }, [ownHeading]);
+  // Closing the lightbox returns to the thumbnail of the screenshot it showed last, else
+  // (that screenshot is gone) to the list's heading.
+  const lightboxReturn = React.useCallback(
+    (entryId: string | null): HTMLElement | null => {
+      if (deletingFromLightbox.current) return null;
+      const thumbs = rootRef.current?.querySelectorAll<HTMLElement>('[data-file-id]') ?? [];
+      const thumb = Array.from(thumbs).find((el) => el.dataset.fileId === entryId);
+      return thumb ?? listHeading();
+    },
+    [listHeading],
+  );
 
   React.useEffect(() => {
     const controller = new AbortController();
@@ -435,12 +474,21 @@ export function CaseFiles({
       ) : null}
 
       {/* The live region is always in the page, so the first status is announced too
-          (a region inserted together with its text often is not). */}
+          (a region inserted together with its text often is not). A finished upload
+          leaves the visible list (its thumbnail shows it) but stays for a screen reader,
+          so "added to the case" is announced as well (WCAG 4.1.3). */}
       <div aria-live="polite" data-testid="case-files-status">
-        {active.length ? (
-          <ul className="flex flex-col gap-1 text-xs">
-            {active.map((item) => (
-              <li key={item.key} className={cn('truncate', item.status === 'error' ? 'text-critical-text' : 'text-muted-foreground')}>
+        {uploader.items.length ? (
+          <ul className={cn('flex flex-col gap-1 text-xs', !active.length && 'sr-only')}>
+            {uploader.items.map((item) => (
+              <li
+                key={item.key}
+                className={cn(
+                  'truncate',
+                  item.status === 'done' && 'sr-only',
+                  item.status === 'error' ? 'text-critical-text' : 'text-muted-foreground',
+                )}
+              >
                 {item.status === 'error'
                   ? `${item.name}: ${item.message ?? 'not added.'}`
                   : `${item.name}: ${STATUS_WORDS[item.status]}`}
@@ -463,7 +511,10 @@ export function CaseFiles({
               entry={entry}
               index={index}
               total={files.length}
-              onOpen={() => setOpenIndex(index)}
+              onOpen={() => {
+                deletingFromLightbox.current = false;
+                setOpenIndex(index);
+              }}
               fetcher={fetcher}
             />
           ))}
@@ -476,17 +527,15 @@ export function CaseFiles({
         index={openIndex}
         onIndexChange={setOpenIndex}
         onDelete={(entry) => {
-          if (!ownHeading) {
-            const root = rootRef.current;
-            deleteReturnRef.current =
-              root?.closest('[data-section]')?.querySelector<HTMLElement>('[data-section-title]') ?? root;
-          }
+          if (!ownHeading) deleteReturnRef.current = listHeading();
+          deletingFromLightbox.current = true;
           // One modal at a time: the lightbox closes before the confirmation opens.
           setOpenIndex(null);
           setDeleteError(null);
           setPendingDelete(entry);
         }}
         fetcher={fetcher}
+        focusOnClose={lightboxReturn}
       />
 
       <ConfirmDialog
