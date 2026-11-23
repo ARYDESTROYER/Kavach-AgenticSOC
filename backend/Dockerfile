@@ -4,7 +4,7 @@
 #   full (default/final) — every connector client advertised by the built-in registry.
 #   core                 — pull + stdlib/Redis receivers only; explicitly opt in with
 #                          ``docker build --target core ...``.
-FROM python:3.11.15-slim-bookworm@sha256:b18992999dbe963a45a8a4da40ac2b1975be1a776d939d098c647482bcad5cba AS runtime-base
+FROM python:3.15.2-slim-bookworm@sha256:96599df822d0e1c6bb700014a05c7f3c8cabc6e0f7ff3c4f9f69cee033b4b5d9 AS runtime-base
 
 ARG TLSOC_VERSION=unknown
 ARG TLSOC_RELEASE_CHANNEL=testing
