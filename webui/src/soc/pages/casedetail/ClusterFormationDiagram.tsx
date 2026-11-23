@@ -292,7 +292,7 @@ export function ClusterFormationDiagram({ data }: { data: ClusterExplanation | n
       ) : null}
 
       {data.limitations ? (
-        <p className="mt-3 text-2xs leading-relaxed text-muted-foreground">{data.limitations}</p>
+        <p className="mt-3 text-xs leading-relaxed text-muted-foreground">{data.limitations}</p>
       ) : null}
     </section>
   );

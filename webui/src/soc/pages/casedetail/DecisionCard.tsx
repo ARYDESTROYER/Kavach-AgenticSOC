@@ -1,22 +1,22 @@
 /**
- * DecisionCard — the SINGLE, most-prominent, pinned deterministic-decision card
+ * DecisionCard: the SINGLE, most-prominent, pinned deterministic-decision card
  * (Round-7 #9a / DESIGN_DIRECTION "3-lane separation").
  *
  * This is the DETERMINISTIC DECISION lane made visible: the authority for whether a
  * case closes / escalates is `case_manager.decide()` (#3), evaluated against the
- * operator-configured AutoClosePolicy — never raw model output. This card pins that
+ * operator-configured AutoClosePolicy, never raw model output. This card pins that
  * result at the end of the case story: the verdict / status / confidence inputs, WHO
  * the recorded decider was (a human analyst vs the Automated pipeline), the exact
  * matched policy clause (thresholds `decide()` compared against), the deterministic
  * rationale string, and the FP objection window when one is pending.
  *
  * The exact `policy_clause` is read off the terminal `decision` TraceSpan in the
- * `timeline` prop (its payload_ref) via the shared `decisionPayload()` helper — the
+ * `timeline` prop (its payload_ref) via the shared `decisionPayload()` helper: the
  * clause does not live on the `Case` or the rationale. When the timeline is absent
  * the card degrades to the case / rationale fields and hides the clause block.
  *
  * SECURITY (#9): the deterministic rationale + any status/verdict tokens are our own
- * or backend-derived controlled strings, rendered as PLAIN text nodes only — never
+ * or backend-derived controlled strings, rendered as PLAIN text nodes only, never
  * markup, never an href/CSS value. This card only READS; it never decides or mutates.
  */
 import * as React from 'react';
@@ -36,10 +36,10 @@ import {
   isAutoClosedByAI,
 } from '@/soc/components/badges';
 import { decisionPayload } from '@/soc/components/TraceTimeline';
-// motion.dev (lazy — part of the CaseDetail chunk, under its MotionProvider): the
+// motion.dev (lazy, part of the CaseDetail chunk, under its MotionProvider): the
 // restrained "verdict lands" one-shot that reinforces the #3 "computed, not guessed"
 // trust story. Reduced motion (MotionConfig reducedMotion="user") drops the scale,
-// keeps the fade — never a loop.
+// keeps the fade, never a loop.
 import { motion, verdictLandVariants } from '@/soc/components/motion';
 
 /* ------------------------------------------------------------------ helpers -- */
@@ -54,7 +54,7 @@ function terminalDecisionSpan(timeline: TimelineResponse | null): TraceSpan | nu
 /** The decision owner that means "an operator's rule-level declaration closed this". */
 const ANALYST_POLICY = 'analyst_policy';
 
-/** Who the recorded decider was — a human analyst vs the automated pipeline.
+/** Who the recorded decider was: a human analyst vs the automated pipeline.
  *
  *  `analyst_policy` is checked FIRST and explicitly: it contains the substring
  *  "analyst", so the generic heuristic below would credit a person for a case no
@@ -128,7 +128,7 @@ export const DecisionCard: React.FC<DecisionCardProps> = ({ c, rationale, timeli
   const decider = decidedBy(decisionByRaw);
   const escalate = d.escalate === true;
 
-  // The DETERMINISTIC rationale string (our own / backend copy) — plain text (#9).
+  // The DETERMINISTIC rationale string (our own / backend copy): plain text (#9).
   const rationaleText = rationale?.decision_rationale || span?.summary || '';
 
   // The FP objection deadline: prefer the span payload, else the flat case field.
@@ -156,8 +156,8 @@ export const DecisionCard: React.FC<DecisionCardProps> = ({ c, rationale, timeli
           <ShieldCheck className="h-4 w-4 text-low" />
         </span>
         <div className="mr-auto">
-          <h3 className="text-sm font-semibold tracking-tight text-foreground">Deterministic decision</h3>
-          <p className="text-xs text-muted-foreground">The close / escalate authority (#3)</p>
+          <h3 className="text-sm font-semibold text-foreground">Deterministic decision</h3>
+          <p className="text-xs text-muted-foreground">The close or escalate authority</p>
         </div>
         {/* Routing authority, not the closer: a person may still have closed the case
             (shown under "Decided by"), so the badge never reads as a contradiction. */}
@@ -197,7 +197,7 @@ export const DecisionCard: React.FC<DecisionCardProps> = ({ c, rationale, timeli
         </p>
       ) : null}
 
-      {/* Why a close leaned on institutional history — auditable and reversible. */}
+      {/* Why a close leaned on institutional history: auditable and reversible. */}
       {precedent?.qualifies ? (
         <p className="mt-3 rounded-md border border-border bg-card px-3 py-2 text-xs text-muted-foreground">
           {`Analyst-confirmed precedent was promoted for this investigation:
@@ -209,7 +209,7 @@ export const DecisionCard: React.FC<DecisionCardProps> = ({ c, rationale, timeli
       ) : null}
 
       {/* ------------------------------------------------ outcome badge row */}
-      {/* "Verdict lands" — a one-shot scale-settle on mount (never a loop). */}
+      {/* "Verdict lands": a one-shot scale-settle on mount (never a loop). */}
       <motion.div
         className="mt-3 flex flex-wrap items-center gap-2"
         variants={verdictLandVariants}
@@ -252,7 +252,7 @@ export const DecisionCard: React.FC<DecisionCardProps> = ({ c, rationale, timeli
             Policy clause evaluated
           </div>
           {clause.note ? (
-            /* TRUSTED policy note (our own copy) — plain text node. */
+            /* TRUSTED policy note (our own copy): plain text node. */
             <p className="text-xs text-foreground/90">{clause.note}</p>
           ) : (
             <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">
@@ -285,7 +285,7 @@ export const DecisionCard: React.FC<DecisionCardProps> = ({ c, rationale, timeli
 
       {/* ------------------------------------------ deterministic rationale */}
       {rationaleText ? (
-        /* Controlled deterministic prose — plain text (#9). */
+        /* Controlled deterministic prose: plain text (#9). */
         <p className="mt-3 whitespace-pre-wrap text-sm text-foreground/90">{rationaleText}</p>
       ) : null}
 

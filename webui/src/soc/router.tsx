@@ -27,7 +27,7 @@ import {
   isSafeCaseResultStatus,
   isSafeCaseResultTag,
 } from './case-result-route';
-import { isCaseTab } from './case-tabs';
+import { isCaseTab, LEGACY_CASE_TABS } from './case-tabs';
 
 export type { PageId } from './nav';
 
@@ -223,12 +223,14 @@ function hashKeys(page: PageId): Readonly<Record<string, Check>> {
   // The engine's closer values (the `closed_by` filter of GET /api/cases); `#/scans` uses `agent`.
   // `tab` opens one of the case detail's tabs, validated against the same CASE_TABS the
   // page renders (./case-tabs): the audit log's "Open case trace" opens `investigation`,
-  // a case-chat toast `chat`.
+  // a case-chat toast `chat`. A retired tab id (`timeline`, `threat`) is accepted too and
+  // rewritten by {@link redirectRoute}. `review` is the auto-close review queue (Round 15).
   if (page === 'case_manager') {
     return {
       caseId: isSafeCaseId,
       closedBy: re(/^(agent|analyst|analyst_policy|system)$/),
-      tab: isCaseTab,
+      tab: (value) => isCaseTab(value) || hasOwn(LEGACY_CASE_TABS, value),
+      review: re(/^(pending|completed|disagreed|expired)$/),
     };
   }
   if (page === 'metrics') return { tab: (value) => METRICS_TAB(value) || hasOwn(METRICS_TAB_PAGES, value) };
@@ -263,8 +265,8 @@ export function pageHash(page: PageId, opts?: NavOpts): string {
   const validated = { ...DEEP_LINK_KEYS[page] };
   if (page === 'cases') validated.rule = ruleValue;
   if (page === 'case_manager') {
-    const { closedBy, tab } = hashKeys(page);
-    Object.assign(validated, { closedBy, tab });
+    const { closedBy, tab, review } = hashKeys(page);
+    Object.assign(validated, { closedBy, tab, review });
   }
   for (const [key, valid] of Object.entries(validated)) {
     const value = values[key];
@@ -308,6 +310,12 @@ export function redirectRoute(page: PageId, opts?: NavOpts): { page: PageId; opt
   if (page === 'dashboards' && opts?.board === LANDING_BOARD_ID) return { page: 'overview', redirected: true };
   if (page === 'metrics' && opts?.tab && hasOwn(METRICS_TAB_PAGES, opts.tab)) {
     return { page: METRICS_TAB_PAGES[opts.tab], redirected: true };
+  }
+  // A retired case tab (Round 15, D8.3) opens the tab it became, on the section it is now
+  // (an in-memory request: the hash keeps the case and names the new tab).
+  if (page === 'case_manager' && opts?.tab && hasOwn(LEGACY_CASE_TABS, opts.tab)) {
+    const [tab, section] = LEGACY_CASE_TABS[opts.tab];
+    return { page, opts: { ...opts, tab, section }, redirected: true };
   }
   return { page, opts, redirected: false };
 }
@@ -574,7 +582,19 @@ export const RouterProvider: React.FC<{ children: React.ReactNode }> = ({ childr
           // change (Case Manager row A → row B, Back from a report to the list, a pasted
           // link) changes only the query: the hash decides the durable options, durable
           // in-memory ones (a severity drill-through) stay, one-shot requests go.
-          if (!own) setOpts((current) => samePageOpts(next, current, hash, true));
+          if (!own) {
+            setOpts((current) => {
+              const kept = samePageOpts(next, current, hash, true);
+              // Round 15 (D8.3): a Case Manager section request lives in memory and is
+              // one-shot. A rewritten retired-tab link carries the section its old address
+              // named; any other change drops it, so Back to a case never replays it.
+              if (next !== 'case_manager') return kept;
+              if (route.redirected && route.opts?.section) return { ...kept, section: route.opts.section };
+              if (!kept?.section) return kept;
+              const { section: _section, ...rest } = kept;
+              return Object.keys(rest).length ? rest : undefined;
+            });
+          }
           return prev;
         }
         // Back/forward/direct navigation to a different page carries only durable

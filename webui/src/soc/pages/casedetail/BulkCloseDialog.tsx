@@ -1,5 +1,5 @@
 /**
- * BulkCloseDialog — close or resolve one or many cases WITH a disposition (Round 12,
+ * BulkCloseDialog: close or resolve one or many cases WITH a disposition (Round 12,
  * SPEC D15 / §3.2; SecOps parity: a bulk close requires a reason).
  *
  * Every terminal path captures the investigative outcome: the Case Manager bulk
@@ -259,12 +259,12 @@ export const BulkCloseDialog: React.FC<BulkCloseDialogProps> = ({
                 </p>
               </div>
             ) : null}
-            {count > 1 ? (
-              <p className="text-xs leading-relaxed text-muted-foreground">
-                The selected case IDs are snapshotted when you submit; later selection changes
-                do not alter the job.
-              </p>
-            ) : null}
+            {/* Round 15 (D4.6): this dialog keeps its shape and takes no screenshots. */}
+            <p className="text-xs leading-relaxed text-muted-foreground" data-testid="bulk-close-screenshots-note">
+              {count > 1
+                ? 'The selected case IDs are snapshotted when you submit; later selection changes do not alter the job. Screenshots are added on each case, in its Collaboration tab.'
+                : 'Screenshots are added on the case, in its Collaboration tab.'}
+            </p>
           </div>
           <DialogFooter className="shrink-0 border-t border-border bg-card px-6 py-4">
             <Button variant="ghost" onClick={onCancel} disabled={busy}>

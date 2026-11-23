@@ -1,39 +1,32 @@
 /**
- * FactsRail — the case's facts, visible beside EVERY tab (Round 12, CM-6 /
- * casemanager.md §4.1 "Facts rail").
+ * FactsRail: the case's facts, visible beside EVERY tab (Round 12, CM-6; Round 15,
+ * SPEC D8.4).
  *
- * The evidence narrative belongs in the tabs; the facts about the case belong here,
- * each with ONE home: the outcome of record (analyst classification, AI verdict and the
- * agreement between them), the signal profile, the triage bands, ownership and tags,
- * every lifecycle clock and the SLA, where the case came from, the primary entity, the
- * campaign, related cases, and the record (decided by, cost, build, notifications,
- * classification and verdict history), and from Round 14 the runbook on the case (its
- * phases with counts; a phase opens the Runbook tab there). Several of these had no home in the Case
- * Manager before (tags, detection source, origin surface, source id, urgency, the SLA
- * clocks, notifications sent, who classified the case and when, the verdict history).
+ * The evidence narrative belongs in the tabs; the facts about the case belong here, each
+ * with ONE home, in eight sections divided by hairlines (no icon headings):
  *
- * On a pane of 60rem or wider it is a column beside the tab content; narrower panes
+ *   Outcome   the outcome of record, who classified it, the AI verdict and confidence
+ *             (with the auto-close bar), who decided, the objection window
+ *   Signal    the risk meter (its factors one click away), severity and its provenance,
+ *             priority, impact and urgency
+ *   Runbook   the runbook on the case (Round 14, §4.10.11): phases with counts
+ *   Times     detected, opened, acknowledged, closed, updated, and the SLA
+ *   Tags      the editable tags, and the campaign the case belongs to
+ *   Source    where the case came from, its detection rules and the primary entity
+ *   Related   the related cases
+ *   Record    the case number (Ask AI), the Sample mark, cost, build, profile, runbook,
+ *             classification and AI verdict history, notifications
+ *
+ * The owner's one editable home is the header's meta row, so the rail does not repeat it.
+ * On a pane of 60rem or wider the rail is a column beside the tab content; narrower panes
  * open the same component in a non-blocking side sheet from the header's "Details".
  *
  * SECURITY (#9): every case-derived value (names, ids, rule ids, entity, tags, source
  * names) is a plain text node or an InlineCode fence. #3: read-only except the existing
- * owner picker; nothing here decides or changes status, verdict or disposition.
+ * tag editor; nothing here decides or changes status, verdict or disposition.
  */
 import * as React from 'react';
-import {
-  Bell,
-  BookCheck,
-  Bot,
-  Clock,
-  Crosshair,
-  Database,
-  GitBranch,
-  History,
-  Scale,
-  ShieldCheck,
-  Tag as TagIcon,
-  Users,
-} from 'lucide-react';
+import { Bot } from 'lucide-react';
 
 import type { Case, SlaPolicy } from '@/lib/types';
 import type { CaseRunbooks, PhaseId } from '@/lib/types-runbooks';
@@ -44,11 +37,8 @@ import { caseLabel } from '@/lib/format-values';
 import { Badge } from '@/ui/badge';
 import { Button } from '@/ui/button';
 
-import {
-  SeverityBadge,
-  isAutoClosedByAI,
-  severityBand,
-} from '@/soc/components/badges';
+import { SeverityBadge, isAutoClosedByAI, severityBand } from '@/soc/components/badges';
+import { DemoBadge, isDemoCase } from '@/soc/components/DemoBadge';
 import {
   agreementWords,
   classificationEntry,
@@ -62,33 +52,29 @@ import { RuleLink, RuleSheetHost } from '@/soc/components/RuleLink';
 import { ProvenanceTag, severityProvenance } from '@/soc/components/ProvenanceTag';
 import { scoreBand } from '@/soc/components/palette';
 import { RunbookRail } from '@/soc/runbooks/run/RunbookRail';
-import type { PickableUser, TriageChips } from '@/soc/pages/CaseDetail.api';
+import type { TriageChips } from '@/soc/pages/CaseDetail.api';
+import { CampaignChip } from '@/soc/pages/Campaigns';
+import type { Campaign } from '@/soc/pages/Campaigns.api';
 
 import { AskAi } from './AskAi';
-import { AssigneePicker } from './CollaborationPanel';
+import { CaseTagsEditor } from './CaseTagsEditor';
 import { SignalProfile } from './SignalProfile';
 import { confidenceCalibration, type FpPolicy } from './shared';
-import {
-  caseClocks,
-  caseTags,
-  entityTypeLabel,
-  severityVersusRiskNote,
-  slaReading,
-} from './caseFacts';
+import { caseClocks, caseDisplayId, entityTypeLabel, severityVersusRiskNote, slaReading } from './caseFacts';
 
 const FIELD_LABEL = 'text-xs font-medium text-muted-foreground';
 
-const RailSection: React.FC<{
-  title: string;
-  icon: React.ComponentType<{ className?: string }>;
-  testId?: string;
-  children: React.ReactNode;
-}> = ({ title, icon: Icon, testId, children }) => (
-  <section aria-label={title} data-testid={testId} className="space-y-2.5 border-t border-border/60 pt-4 first:border-t-0 first:pt-0">
-    <h3 className="flex items-center gap-2 text-sm font-semibold text-foreground">
-      <Icon className="h-4 w-4 text-muted-foreground" aria-hidden />
-      {title}
-    </h3>
+/** One rail section: a 13px heading over its facts, divided from the next by a hairline. */
+const RailSection: React.FC<{ title: string; testId?: string; children: React.ReactNode }> = ({
+  title,
+  testId,
+  children,
+}) => (
+  <section
+    data-testid={testId}
+    className="space-y-2.5 border-t border-border/60 py-4 first:border-t-0 first:pt-0 last:pb-0"
+  >
+    <h3 className="text-sm font-semibold text-foreground">{title}</h3>
     {children}
   </section>
 );
@@ -124,6 +110,7 @@ function classificationHistory(c: Case): Array<{ disposition: string; by?: strin
     if (!entry || entry.event !== 'analyst_action') continue;
     const action = typeof entry.action === 'string' ? entry.action : '';
     const declared = typeof entry.classified_disposition === 'string' ? entry.classified_disposition.trim() : '';
+    // A stored `confirm_fp` entry (an older Console's verb) still reads as a classification.
     if (!declared && action !== 'set_disposition' && action !== 'confirm_fp') continue;
     out.push({
       disposition: declared || (action === 'confirm_fp' ? 'false_positive' : 'recorded'),
@@ -134,15 +121,22 @@ function classificationHistory(c: Case): Array<{ disposition: string; by?: strin
   return out;
 }
 
+/** "Auto-close bar 90% · FP auto-close enabled at this bar", when the policy is known. */
+function autoCloseBarLine(fpPolicy: FpPolicy | undefined, verdict?: string | null): string | null {
+  const calibration = confidenceCalibration(fpPolicy ?? null, verdict ?? undefined);
+  if (typeof calibration.threshold !== 'number') return null;
+  const bar = confidencePercent(calibration.threshold);
+  if (bar === null) return null;
+  return `Auto-close bar ${bar}%${calibration.note ? ` · ${calibration.note}` : ''}`;
+}
+
 export interface FactsRailProps {
   c: Case;
   outcome: CaseOutcome;
   triage: TriageChips | null;
   slaPolicy?: SlaPolicy | null;
-  /** The FP auto-close policy, so the AI confidence is shown against its bar. */
+  /** The FP auto-close policy, so the AI confidence is read against its bar. */
   fpPolicy?: FpPolicy;
-  users: PickableUser[];
-  canAssign: boolean;
   /**
    * Whether the viewer holds `cost:view`. Without it the Record section leaves the
    * investigation cost out (the server answers `token_cost: null` for that viewer too).
@@ -163,6 +157,14 @@ export interface FactsRailProps {
     failed: boolean;
     onOpenPhase: (phase: PhaseId | null) => void;
   };
+  /** The viewer may edit the tags (`cases:write`) on the case on screen. */
+  canTag?: boolean;
+  /** The tag editor popover, controlled so T and "Edit tags" can open it. */
+  tagsOpen?: boolean;
+  onTagsOpenChange?: (open: boolean) => void;
+  /** The campaign the case belongs to, if any (advisory, #3/#4). */
+  campaign?: Campaign | null;
+  onOpenCampaign?: () => void;
   className?: string;
 }
 
@@ -172,13 +174,16 @@ export const FactsRail: React.FC<FactsRailProps> = ({
   triage,
   slaPolicy,
   fpPolicy,
-  users,
-  canAssign,
   canViewCost,
   onCaseChange,
   onSetDisposition,
   onShowRelated,
   runbook,
+  canTag = false,
+  tagsOpen = false,
+  onTagsOpenChange,
+  campaign,
+  onOpenCampaign,
   className,
 }) => {
   const entry = classificationEntry(c);
@@ -187,8 +192,7 @@ export const FactsRail: React.FC<FactsRailProps> = ({
     return value && value !== 'none' ? value : null;
   })();
   const humanSettled = outcome.source === 'analyst' || outcome.source === 'analyst_policy';
-  const severity =
-    severityBand(triage?.severity?.band ?? c.severity_band) ?? severityBand(c.risk_score);
+  const severity = severityBand(triage?.severity?.band ?? c.severity_band) ?? severityBand(c.risk_score);
   const severitySource = triage?.severity?.source ?? c.severity_source;
   const riskVal = typeof triage?.risk?.value === 'number' ? triage.risk.value : c.risk_score;
   const riskBand = typeof riskVal === 'number' ? scoreBand(riskVal) : null;
@@ -200,7 +204,6 @@ export const FactsRail: React.FC<FactsRailProps> = ({
     severity !== riskBand;
   const impact = triage?.impact?.band ?? c.impact_band;
   const priority = triage?.priority?.level ?? triage?.priority?.default ?? c.priority_level;
-  const tags = caseTags(c);
   const clocks = caseClocks(c);
   const sla = slaReading(c, slaPolicy);
   const ruleIds = (c.rule_ids || []).filter((r): r is string => typeof r === 'string' && !!r.trim());
@@ -211,27 +214,24 @@ export const FactsRail: React.FC<FactsRailProps> = ({
   );
   const notifications = Array.isArray(c.notifications_sent) ? c.notifications_sent : [];
   const classifications = classificationHistory(c);
-  const verdictHistory = Array.isArray(c.verdict_history)
-    ? (c.verdict_history as Array<Record<string, unknown>>)
-    : [];
+  const verdictHistory = Array.isArray(c.verdict_history) ? (c.verdict_history as Array<Record<string, unknown>>) : [];
   const appVersion = typeof c.app_version === 'string' ? c.app_version.trim() : '';
   const buildSha = typeof c.build_sha === 'string' ? c.build_sha.trim() : '';
   const objectionOpen =
-    typeof c.objection_window_expires_at === 'string' &&
-    Date.parse(c.objection_window_expires_at) > Date.now();
+    typeof c.objection_window_expires_at === 'string' && Date.parse(c.objection_window_expires_at) > Date.now();
+  // After a person classified the case, the AI's confidence is the AI's, at assessment.
+  // The bar is TODAY's policy, so it reads only against an open case: once the case ended,
+  // the decision record (Investigation) names the bar it was decided against, and today's
+  // ("auto-close off") beside "Auto-closed as false positive" would contradict it.
+  const barLine = c.verdict && !humanSettled && !outcome.terminal ? autoCloseBarLine(fpPolicy, c.verdict) : null;
+  const displayId = caseDisplayId(c);
 
   return (
-    <aside
-      aria-label="Case facts"
-      data-testid="case-facts-rail"
-      className={cn('space-y-4 text-sm', className)}
-    >
-      <RailSection title="Outcome" icon={Scale} testId="facts-outcome">
+    <aside aria-label="Case facts" data-testid="case-facts-rail" className={cn('text-sm', className)}>
+      <RailSection title="Outcome" testId="facts-outcome">
         <p data-testid="facts-outcome-headline" className="font-medium text-foreground">
           {outcome.headline}
         </p>
-        {/* The outcome badge itself lives in the header meta row; the rail adds who and
-            when, the agreement with the AI and the objection window. */}
         {outcome.source === 'analyst' && (entry?.by || entry?.at) ? (
           <p className="text-xs text-muted-foreground">
             Classified
@@ -240,20 +240,22 @@ export const FactsRail: React.FC<FactsRailProps> = ({
           </p>
         ) : null}
         {outcome.aiLine ? (
-          <p className="flex items-start gap-1.5 text-xs text-muted-foreground">
+          <div className="flex items-start gap-1.5 text-xs text-muted-foreground">
             <Bot className="mt-0.5 size-3.5 shrink-0 text-primary" aria-hidden />
-            <span>
-              {outcome.aiLine}
-              {agreementWords(outcome.agreement) ? ` · ${agreementWords(outcome.agreement)}` : ''}
-            </span>
-          </p>
+            <div className="min-w-0 space-y-0.5">
+              <p>
+                {outcome.aiLine}
+                {agreementWords(outcome.agreement) ? ` · ${agreementWords(outcome.agreement)}` : ''}
+              </p>
+              {barLine ? <p data-testid="facts-auto-close-bar">{barLine}</p> : null}
+            </div>
+          </div>
         ) : null}
         {/* The disposition stored on the case when no analyst classified it (triage maps
             it from the AI verdict). Kept visible, and labelled for what it is (D15). */}
         {outcome.source !== 'analyst' && recordedDisposition ? (
           <p data-testid="facts-recorded-disposition" className="text-xs text-muted-foreground">
-            Recorded disposition:{' '}
-            <span className="text-foreground">{dispositionWords(recordedDisposition)}</span> (not
+            Recorded disposition: <span className="text-foreground">{dispositionWords(recordedDisposition)}</span> (not
             confirmed by an analyst)
           </p>
         ) : null}
@@ -262,6 +264,9 @@ export const FactsRail: React.FC<FactsRailProps> = ({
             Set disposition
           </Button>
         ) : null}
+        <dl className="space-y-1.5">
+          <Fact label="Decided by">{c.decision_by ? humanizeToken(c.decision_by) : DASH}</Fact>
+        </dl>
         {objectionOpen && !humanSettled ? (
           <p className="text-xs text-muted-foreground">
             {isAutoClosedByAI(c.status, c.decision_by) ? 'Reopen before ' : 'Objection window open until '}
@@ -270,16 +275,9 @@ export const FactsRail: React.FC<FactsRailProps> = ({
         ) : null}
       </RailSection>
 
-      <SignalProfile
-        c={c}
-        triage={triage}
-        humanSettled={humanSettled}
-        calibration={confidenceCalibration(fpPolicy ?? null, c.verdict)}
-        className="border-t border-border/60 pt-4"
-      />
-
-      <RailSection title="Triage" icon={ShieldCheck} testId="facts-triage">
-        <dl className="space-y-1.5">
+      <RailSection title="Signal" testId="facts-signal">
+        <SignalProfile c={c} triage={triage} />
+        <dl className="space-y-1.5" data-testid="facts-triage">
           <Fact label="Severity">
             {severity ? (
               <span className="inline-flex items-center gap-1">
@@ -290,35 +288,17 @@ export const FactsRail: React.FC<FactsRailProps> = ({
               DASH
             )}
           </Fact>
-          <Fact label="Impact">{chipLabel(impact)}</Fact>
           <Fact label="Priority">{chipLabel(priority)}</Fact>
+          <Fact label="Impact">{chipLabel(impact)}</Fact>
           <Fact label="Urgency">{chipLabel(c.urgency_band)}</Fact>
         </dl>
         {disagree ? (
-          <p className="text-xs leading-relaxed text-muted-foreground">
-            {severityVersusRiskNote(severitySource)}
-          </p>
+          <p className="text-xs leading-relaxed text-muted-foreground">{severityVersusRiskNote(severitySource)}</p>
         ) : null}
       </RailSection>
 
-      <RailSection title="Ownership" icon={Users} testId="facts-ownership">
-        <AssigneePicker c={c} users={users} canWrite={canAssign} onAssigned={onCaseChange} />
-        <div className="flex flex-wrap items-center gap-1.5">
-          <TagIcon className="size-3.5 text-muted-foreground" aria-hidden />
-          {tags.length ? (
-            tags.map((tag) => (
-              <Badge key={tag} variant="outline" className="max-w-[12rem] truncate font-normal">
-                {tag}
-              </Badge>
-            ))
-          ) : (
-            <span className="text-xs text-muted-foreground">No tags</span>
-          )}
-        </div>
-      </RailSection>
-
       {runbook ? (
-        <RailSection title="Runbook" icon={BookCheck} testId="facts-runbook">
+        <RailSection title="Runbook" testId="facts-runbook">
           <RunbookRail
             data={runbook.data}
             loading={runbook.loading}
@@ -328,7 +308,7 @@ export const FactsRail: React.FC<FactsRailProps> = ({
         </RailSection>
       ) : null}
 
-      <RailSection title="Times and SLA" icon={Clock} testId="facts-times">
+      <RailSection title="Times" testId="facts-times">
         <dl className="space-y-1.5">
           {clocks.map((clock) => (
             <Fact key={clock.label} label={clock.label}>
@@ -339,13 +319,32 @@ export const FactsRail: React.FC<FactsRailProps> = ({
         </dl>
       </RailSection>
 
-      <RailSection title="Source" icon={Database} testId="facts-source">
+      <RailSection title="Tags" testId="facts-tags">
+        <CaseTagsEditor
+          c={c}
+          canTag={canTag}
+          onCaseChange={onCaseChange}
+          open={tagsOpen}
+          onOpenChange={(next) => onTagsOpenChange?.(next)}
+        />
+        {campaign ? (
+          /* A generated campaign id can be very long: the chip truncates, and its full
+             name stays in its accessible name and on hover. */
+          <div className="min-w-0" title={campaign.name || campaign.id} data-testid="facts-campaign">
+            <CampaignChip campaign={campaign} onOpen={onOpenCampaign} className="inline-flex min-w-0 max-w-full" />
+          </div>
+        ) : null}
+      </RailSection>
+
+      <RailSection title="Source" testId="facts-source">
         <dl className="space-y-1.5">
           <Fact label="Source">{c.source_name || DASH}</Fact>
-          {c.source_id ? <Fact label="Source id" mono>{c.source_id}</Fact> : null}
-          {c.detection_source ? (
-            <Fact label="Detected by">{humanizeToken(c.detection_source)}</Fact>
+          {c.source_id ? (
+            <Fact label="Source id" mono>
+              {c.source_id}
+            </Fact>
           ) : null}
+          {c.detection_source ? <Fact label="Detected by">{humanizeToken(c.detection_source)}</Fact> : null}
           {c.source_surface ? <Fact label="Surface">{humanizeToken(c.source_surface)}</Fact> : null}
           {c.origin_surface ? <Fact label="Origin">{humanizeToken(c.origin_surface)}</Fact> : null}
         </dl>
@@ -367,50 +366,62 @@ export const FactsRail: React.FC<FactsRailProps> = ({
             </div>
           </div>
         ) : null}
+        {entityValue ? (
+          <div className="space-y-1" data-testid="facts-entity">
+            <span className={cn('block', FIELD_LABEL)}>Primary entity</span>
+            <div className="group/ask flex flex-wrap items-center gap-1.5">
+              <InlineCode className="break-all">{entityValue}</InlineCode>
+              {entityType ? <Badge variant="outline">{entityTypeLabel(String(entityType))}</Badge> : null}
+              {/* Round 12 WP-ASK: a NEW Workspace chat, never this case's chat (#5). */}
+              <AskAi type={String(entityType || '')} value={entityValue} />
+            </div>
+            {ruleIds[0] || c.source_name ? (
+              <p className="text-xs text-muted-foreground">
+                Seen by <span className="text-foreground">{ruleIds[0] || 'a detection'}</span>
+                {c.source_name ? (
+                  <>
+                    {' '}
+                    on <span className="text-foreground">{c.source_name}</span>
+                  </>
+                ) : null}
+              </p>
+            ) : null}
+          </div>
+        ) : null}
       </RailSection>
 
-      {entityValue ? (
-        <RailSection title="Primary entity" icon={Crosshair} testId="facts-entity">
-          <div className="group/ask flex flex-wrap items-center gap-1.5">
-            <InlineCode className="break-all">{entityValue}</InlineCode>
-            {entityType ? <Badge variant="outline">{entityTypeLabel(String(entityType))}</Badge> : null}
-            {/* Round 12 WP-ASK: a NEW Workspace chat, never this case's chat (#5). */}
-            <AskAi type={String(entityType || '')} value={entityValue} />
-          </div>
-          {ruleIds[0] || c.source_name ? (
-            <p className="text-xs text-muted-foreground">
-              Seen by <span className="text-foreground">{ruleIds[0] || 'a detection'}</span>
-              {c.source_name ? <> on <span className="text-foreground">{c.source_name}</span></> : null}
-            </p>
-          ) : null}
-        </RailSection>
-      ) : null}
-
-      {/* The campaign chip lives ONCE, in the header meta row (visible at every width);
-          the rail keeps the related-cases jump. */}
       {related.length ? (
-        <RailSection title="Related cases" icon={GitBranch} testId="facts-related">
-          {related.length ? (
-            <Button
-              type="button"
-              size="sm"
-              variant="ghost"
-              className="h-auto px-0 text-primary hover:bg-transparent hover:underline"
-              onClick={onShowRelated}
-              disabled={!onShowRelated}
-            >
-              {related.length} related case{related.length === 1 ? '' : 's'}
-            </Button>
-          ) : null}
+        <RailSection title="Related cases" testId="facts-related">
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            className="h-auto px-0 text-primary hover:bg-transparent hover:underline"
+            onClick={onShowRelated}
+            disabled={!onShowRelated}
+          >
+            {related.length} related case{related.length === 1 ? '' : 's'}
+          </Button>
         </RailSection>
       ) : null}
 
-      <RailSection title="Record" icon={History} testId="facts-record">
+      <RailSection title="Record" testId="facts-record">
         <dl className="space-y-1.5">
-          <Fact label="Decided by">{c.decision_by ? humanizeToken(c.decision_by) : DASH}</Fact>
-          {canViewCost && c.token_cost != null ? (
-            <Fact label="Investigation cost">{fmtMoney(c.token_cost)}</Fact>
+          <Fact label="Case">
+            {/* Round 12 WP-ASK: a NEW Workspace chat about this case, never this case's
+                own chat thread (#5). A case number in a custom format the question cannot
+                name falls back to the id. */}
+            <span className="group/ask inline-flex min-w-0 max-w-full items-center justify-end gap-1">
+              <span className="font-mono text-xs">{displayId}</span>
+              <AskAi kind="case" value={displayId} fallbackValue={c.case_id} />
+            </span>
+          </Fact>
+          {isDemoCase(c) ? (
+            <Fact label="Data">
+              <DemoBadge className="h-5 px-1.5 text-2xs" />
+            </Fact>
           ) : null}
+          {canViewCost && c.token_cost != null ? <Fact label="Investigation cost">{fmtMoney(c.token_cost)}</Fact> : null}
           <Fact label="Creation build">
             {appVersion || buildSha
               ? `${appVersion ? `v${appVersion}` : 'version unavailable'} · ${
@@ -426,7 +437,9 @@ export const FactsRail: React.FC<FactsRailProps> = ({
             </Fact>
           ) : c.playbook_id ? (
             /* A case investigated before Round 14 keeps its stored id (shown verbatim). */
-            <Fact label="Runbook (before Round 14)" mono>{c.playbook_id}</Fact>
+            <Fact label="Runbook (before Round 14)" mono>
+              {c.playbook_id}
+            </Fact>
           ) : null}
         </dl>
         {classifications.length ? (
@@ -467,23 +480,23 @@ export const FactsRail: React.FC<FactsRailProps> = ({
         ) : null}
         {notifications.length ? (
           <div className="space-y-1">
-            <span className={cn('flex items-center gap-1', FIELD_LABEL)}>
-              <Bell className="size-3" aria-hidden />
-              Notifications sent ({notifications.length})
-            </span>
+            <span className={cn('block', FIELD_LABEL)}>Notifications sent ({notifications.length})</span>
             <ol className="space-y-1 text-xs">
-              {[...notifications].reverse().slice(0, 5).map((n, index) => (
-                <li key={`${n.ts ?? ''}-${index}`} className="text-foreground">
-                  {humanizeToken(String(n.type || 'channel'))}
-                  <span className="text-muted-foreground">
-                    {n.trigger ? ` · ${humanizeToken(n.trigger)}` : ''}
-                    {` · ${n.ok ? 'sent' : 'failed'}`}
-                    {/* Delivery detail is operator/provider text — plain text (#9). */}
-                    {!n.ok && n.detail ? ` (${n.detail})` : ''}
-                    {n.ts ? ` · ${humanizeAge(n.ts)}` : ''}
-                  </span>
-                </li>
-              ))}
+              {[...notifications]
+                .reverse()
+                .slice(0, 5)
+                .map((n, index) => (
+                  <li key={`${n.ts ?? ''}-${index}`} className="text-foreground">
+                    {humanizeToken(String(n.type || 'channel'))}
+                    <span className="text-muted-foreground">
+                      {n.trigger ? ` · ${humanizeToken(n.trigger)}` : ''}
+                      {` · ${n.ok ? 'sent' : 'failed'}`}
+                      {/* Delivery detail is operator or provider text, rendered as plain text (#9). */}
+                      {!n.ok && n.detail ? ` (${n.detail})` : ''}
+                      {n.ts ? ` · ${humanizeAge(n.ts)}` : ''}
+                    </span>
+                  </li>
+                ))}
             </ol>
           </div>
         ) : null}

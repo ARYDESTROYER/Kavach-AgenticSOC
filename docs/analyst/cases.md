@@ -110,13 +110,15 @@ positive"), and the AI verdict stays visible as a labelled second line.
 
 ## Work a case
 
-The canonical Case Manager detail has seven tabs. Cases no longer opens a separate
+The canonical Case Manager detail has five tabs. Cases no longer opens a separate
 sheet with another copy of the same controls.
 
-- **Overview**: a compact decision brief, risk and confidence signal profile,
-  persisted risk-factor values, source/agent/code provenance, entity context, attack story,
-  ownership, and history without duplicating the same verdict in every card. When a
-  runbook is attached to an open case, its **Next step** card sits at the top.
+- **Overview**: the AI's summary in two or three sentences, then **What happened**:
+  the input → correlate → risk assigned → triage → investigate → decision story.
+  Expanding Risk Assigned reconstructs current-weight arithmetic from persisted factors
+  and flags any historical-weight mismatch; the final stage marker pulses. Key entities,
+  related cases and any baseline follow. When a runbook is attached to an open case, its
+  **Next step** card sits at the top.
 - **Runbook**: the runbook attached to the case with its pinned version and progress,
   the Next step card, one tab per phase with its steps, and **Other tasks** (the case's
   free-form tasks). The tab shows "None" when no runbook is attached, with **Start
@@ -124,26 +126,22 @@ sheet with another copy of the same controls.
   run stays workable (its optional steps, **Reopen step**); only an abandoned run, or
   every run while runbooks are turned off in Settings, is read only. See
   [Case Manager](case-manager.md#work-the-runbook).
-- **Timeline**: the chronological input → correlate → risk assigned → triage →
-  investigate → decision story. Expanding Risk Assigned reconstructs current-weight
-  arithmetic from persisted factors and flags any historical-weight mismatch. In
-  Case Manager only, the final stage marker pulses.
-- **Investigation**: AI assessment, pinned deterministic decision, and the full
-  tool/reasoning trace.
-- **Threat context**: indicator reputation, ATT&CK context, related cases, and the persisted
-  redacted Input alerts → Correlation cluster → Opened case explanation. Focus or
-  hover its nodes for source counts, grouping, threshold/window, status, and verdict;
-  raw identifiers and payloads are excluded.
-- **Collaboration**: discussion, reactions, and activity. The case's tasks are in the
-  Runbook tab under **Other tasks**.
+- **Investigation**: the AI assessment, the decision, then **Threat context**:
+  indicator reputation, ATT&CK context, and the persisted redacted Input alerts →
+  Correlation cluster → Opened case explanation. Focus or hover its nodes for source
+  counts, grouping, threshold/window, status, and verdict; raw identifiers and payloads
+  are excluded. The investigation inputs and the full tool/reasoning trace follow.
+- **Collaboration**: discussion with reactions, files, a pointer to the tasks (in the
+  Runbook tab under **Other tasks**), and the history with who, when and the actions
+  taken.
 - **Chat**: case-scoped questions using the shared chat engine.
 
-In Case Manager, the header's **Take action** menu contains state-changing, investigative, and export
-commands: the appropriate lifecycle action, disposition, re-investigation, **Start
-runbook**, refresh, case chat, open in a new tab, JSON/Markdown export, and notification as
-permissions allow. Timeline and Investigation are visible tabs and are intentionally
-not repeated as menu actions. **Share** remains separate. Exports are available as
-JSON or a Markdown handoff report.
+In Case Manager, the header offers one primary action for the case's state, and **Take
+action** holds the other state-changing, investigative, and export commands: the
+lifecycle actions, disposition, re-investigation, **Start runbook**, refresh, case chat,
+JSON/Markdown export, and notification as permissions allow. The tabs are intentionally
+not repeated as menu actions. **More options** holds the case link. Exports are
+available as JSON or a Markdown handoff report.
 
 ## Lifecycle actions and permissions
 
@@ -192,8 +190,12 @@ audit log.
 
 ## Close the feedback loop
 
-When closing or resolving, select a disposition deliberately and grade the AI result.
-The disposition picker starts empty, so the recorded outcome is always your own choice.
+When closing or resolving, select a disposition deliberately. The disposition picker
+starts empty, so the recorded outcome is always your own choice. The dialog says
+whether your classification agrees with the AI and records that for you; when it
+overrides the AI verdict, say why in the note (required then), since the note is kept
+as precedent for future investigations. Rating the AI's accuracy and reasoning is
+optional, under **Rate the AI**.
 Confirmed false positives can produce a pending suppression proposal and can be
 indexed as prior-case context. Neither process silently changes decision policy.
 

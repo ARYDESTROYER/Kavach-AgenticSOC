@@ -68,12 +68,28 @@ vi.mock('@/soc/auth', () => ({
 import { api, ApiError } from '@/lib/api';
 import { CaseDetail } from '@/soc/pages/CaseDetail';
 
-function Host({ caseId = CASE.case_id, tab, search = false }: { caseId?: string; tab?: string | null; search?: boolean }) {
+function Host({
+  caseId = CASE.case_id,
+  tab,
+  section = null,
+  search = false,
+}: {
+  caseId?: string;
+  tab?: string | null;
+  section?: string | null;
+  search?: boolean;
+}) {
   return (
     <>
       {/* The queue's search beside the case, for a control the analyst may be typing in. */}
       {search ? <input aria-label="Search the queue" /> : null}
-      <CaseDetail caseId={caseId} presentation="embedded" onClose={() => undefined} requestedTab={tab} />
+      <CaseDetail
+        caseId={caseId}
+        presentation="embedded"
+        onClose={() => undefined}
+        requestedTab={tab}
+        requestedSection={section}
+      />
     </>
   );
 }
@@ -314,8 +330,8 @@ describe('CaseDetail: the tab a link asks for', () => {
     const { arrive } = holdSecondCase();
     rerender(<Host caseId="c-tab-2" tab="investigation" />);
     await waitFor(() => expect(selectedTab()).toHaveTextContent(/^Investigation/));
-    fireEvent.mouseDown(screen.getByRole('tab', { name: /^Timeline/ }));
-    await waitFor(() => expect(selectedTab()).toHaveTextContent(/^Timeline/));
+    fireEvent.mouseDown(screen.getByRole('tab', { name: /^Collaboration/ }));
+    await waitFor(() => expect(selectedTab()).toHaveTextContent(/^Collaboration/));
     await arrive();
 
     // Back on Investigation by hand: an ordinary visit, the trace as the analyst left it.
@@ -369,14 +385,14 @@ describe('CaseDetail: the tab a link asks for', () => {
   it('keeps the analyst’s own choice until the link or the case changes', async () => {
     const { rerender } = render(<Host tab="investigation" />);
     await loaded();
-    fireEvent.mouseDown(screen.getByRole('tab', { name: /^Timeline/ }));
-    await waitFor(() => expect(selectedTab()).toHaveTextContent(/^Timeline/));
+    fireEvent.mouseDown(screen.getByRole('tab', { name: /^Collaboration/ }));
+    await waitFor(() => expect(selectedTab()).toHaveTextContent(/^Collaboration/));
     // The same request re-rendered changes nothing.
     rerender(<Host tab="investigation" />);
-    expect(selectedTab()).toHaveTextContent(/^Timeline/);
+    expect(selectedTab()).toHaveTextContent(/^Collaboration/);
     // The queue opened another case without a tab: the analyst's tab stays.
     rerender(<Host caseId="c-tab-2" tab={null} />);
-    expect(selectedTab()).toHaveTextContent(/^Timeline/);
+    expect(selectedTab()).toHaveTextContent(/^Collaboration/);
     // A link to a case's trace applies again.
     rerender(<Host caseId="c-tab-3" tab="investigation" />);
     await waitFor(() => expect(selectedTab()).toHaveTextContent(/^Investigation/));
@@ -394,14 +410,107 @@ describe('CaseDetail: the tab a link asks for', () => {
   });
 });
 
+describe('CaseDetail: a section of a tab, from a rewritten retired-tab link (Round 15, D8.3)', () => {
+  it('opens Investigation on its Threat context section without opening the trace', async () => {
+    render(<Host tab="investigation" section="threat-context" />);
+    await loaded();
+    expect(selectedTab()).toHaveTextContent(/^Investigation/);
+    const section = document.querySelector('[data-section="threat-context"]') as HTMLElement;
+    expect(section).not.toBeNull();
+    expect(within(section).getByRole('heading', { name: 'Threat context' })).toBeInTheDocument();
+    // Threat context loads when Investigation opens.
+    await waitFor(() => expect(readsOf(CASE.case_id, 'threat-context')).toBe(1));
+    // The link asked for the section, not the trace: the trace stays as it was.
+    const trace = await screen.findByTestId('investigation-trace');
+    await pastTheBeat();
+    expect(within(trace).getByRole('button', { name: /Show trace/ })).toBeInTheDocument();
+    // A link's request scrolls only; it never takes focus from the queue.
+    expect(document.activeElement).not.toBe(within(section).getByRole('heading', { name: 'Threat context' }));
+  });
+
+  it('opens Overview on What happened, and reads its stages there', async () => {
+    render(<Host tab="overview" section="what-happened" />);
+    await loaded();
+    expect(selectedTab()).toHaveTextContent(/^Overview/);
+    const section = document.querySelector('[data-section="what-happened"]') as HTMLElement;
+    expect(within(section).getByRole('heading', { name: 'What happened' })).toBeInTheDocument();
+    await waitFor(() => expect(readsOf(CASE.case_id, 'stages')).toBe(1));
+  });
+
+  it('holds the section at the top of the lane while the content above it loads, until the analyst scrolls', async () => {
+    // jsdom has no layout: the section sits `sectionOffset` px into the lane, and the lane's
+    // ResizeObserver is driven by hand (a disconnected one is never called again).
+    const observers: Array<{ callback: ResizeObserverCallback; targets: Element[]; live: boolean }> = [];
+    class ControlledResizeObserver {
+      private readonly entry: { callback: ResizeObserverCallback; targets: Element[]; live: boolean };
+      constructor(callback: ResizeObserverCallback) {
+        this.entry = { callback, targets: [], live: true };
+        observers.push(this.entry);
+      }
+      observe(target: Element) {
+        this.entry.targets.push(target);
+      }
+      unobserve() {}
+      disconnect() {
+        this.entry.live = false;
+      }
+    }
+    vi.stubGlobal('ResizeObserver', ControlledResizeObserver);
+    let sectionOffset = 300;
+    const rect = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      const lane = this.closest<HTMLElement>('[data-testid="case-detail-scroll"]');
+      if (this.dataset.section === 'threat-context' && lane) {
+        return DOMRect.fromRect({ x: 0, y: sectionOffset - lane.scrollTop, width: 600, height: 400 });
+      }
+      return DOMRect.fromRect({ x: 0, y: 0, width: 600, height: 400 });
+    });
+    try {
+      render(<Host tab="investigation" section="threat-context" />);
+      await loaded();
+      const lane = screen.getByTestId('case-detail-scroll');
+      // Placed once the tab is on screen.
+      await waitFor(() => expect(lane.scrollTop).toBe(300));
+      const laneObservers = () =>
+        observers.filter((o) => o.live && o.targets.some((target) => target.parentElement === lane));
+      expect(laneObservers()).toHaveLength(1);
+      const resize = () => act(() => laneObservers().forEach((o) => o.callback([], {} as ResizeObserver)));
+
+      // The AI assessment above it arrives and grows: the section is placed again, so a late
+      // load never leaves the link above its section.
+      sectionOffset = 520;
+      resize();
+      expect(lane.scrollTop).toBe(520);
+
+      // The analyst takes over the lane: the hold ends and a later load leaves it alone.
+      fireEvent.wheel(lane);
+      expect(laneObservers()).toHaveLength(0);
+      lane.scrollTop = 100;
+      sectionOffset = 700;
+      resize();
+      expect(lane.scrollTop).toBe(100);
+    } finally {
+      rect.mockRestore();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('ignores a section that is not on the requested tab', async () => {
+    render(<Host tab="overview" section="threat-context" />);
+    await loaded();
+    expect(selectedTab()).toHaveTextContent(/^Overview/);
+    expect(readsOf(CASE.case_id, 'threat-context')).toBe(0);
+  });
+});
+
 describe('CaseDetail: the next case while a read for the one it replaces is still running', () => {
   // A read for the replaced case is dropped when it lands, so it never clears the next
   // case's loading state. The switch itself clears it, or the next case's read would
   // wait forever on one that will never report.
   it.each([
     { tab: 'investigation', read: 'timeline' },
-    { tab: 'timeline', read: 'stages' },
-    { tab: 'threat', read: 'threat-context' },
+    // Round 15 (D8.3): the stages load on Overview, threat context on Investigation.
+    { tab: 'overview', read: 'stages' },
+    { tab: 'investigation', read: 'threat-context' },
     { tab: 'collab', read: 'thread' },
   ])('reads the $read of the next case once on the $tab tab', async ({ tab, read }) => {
     titledCases();

@@ -540,19 +540,21 @@ cohort; use job counts, case history, and Audit for exact accountability.
 ### Case detail + lifecycle
 
 Opening a case loads the **stored** case by id (`GET /api/cases/{id}`) — it does
-**not** re-investigate. `CaseDetail` renders **seven tabs**: **Overview** (a compact
+**not** re-investigate. `CaseDetail` renders **five tabs** (Round 15): **Overview** (a compact
 decision brief, signal profile, persisted risk-factor values, source/agent/code
 provenance, conditional latest-run Investigation inputs, entities, attack story,
 ownership, history, and a **Next step** card for the case's runbook), **Runbook** (the
 runbook runs on the case, with its progress as the tab count; §12; shown with
-`runbooks:read`), **Timeline** (the
-"what happened" narrative with Risk Assigned and Decision — see §11), **Investigation** (the AI assessment,
-input evidence, pinned deterministic `DecisionCard`, and full agent trace — see §11),
-**Threat context** (§12's threat-context panel), **Collaboration** (§18's threads; tasks
-now sit on the Runbook tab under **Other tasks**), and **Chat** (a case-scoped chat
-follow-up, §5). Alt+1 to Alt+7 move between them.
+`runbooks:read`), **Investigation** (the AI assessment, input evidence, pinned
+deterministic `DecisionCard`, and full agent trace, see §11), **Collaboration** (§18's
+threads; tasks now sit on the Runbook tab under **Other tasks**), and **Chat** (a
+case-scoped chat follow-up, §5). The Overview also holds **What happened** (the former
+Timeline tab: the narrative with Risk Assigned and Decision, see §11), and Investigation
+holds **Threat context** (the former Threat context tab, §12's panel); a link to the
+retired `timeline` or `threat` tab opens that section. Alt+1 to Alt+5 move between the
+tabs.
 
-The **Threat context** tab includes **How this case was clustered**, a read-only
+The **Threat context** section of the Investigation tab includes **How this case was clustered**, a read-only
 projection of persisted facts: Input alerts → Correlation cluster → Opened case. Hover or
 focus a node for source counts, grouping, threshold/window, current status/verdict, and
 bounded related-case links. Alert references are stable one-way hashes and are

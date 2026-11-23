@@ -1,7 +1,7 @@
 /**
  * Case Manager visual-dialect gates (Round 12, CM-8 acceptance):
  *   - no tracked capitals (`uppercase tracking-*`) anywhere in `casedetail/*`;
- *   - the IOC verdict is tri-state — "Clean" never renders, least of all when no
+ *   - the IOC verdict is tri-state: "Clean" never renders, least of all when no
  *     provider answered (source unavailable / confidence 0);
  *   - AI-authored thread messages render Markdown safely (no raw `**`), human text stays
  *     plain (#9);
@@ -35,6 +35,25 @@ describe('casedetail sentence case', () => {
     expect(offenders).toEqual([]);
   });
 
+  it('never tightens tracking in the case files (Round 15, D8.5: the size steps carry it)', () => {
+    const files = [
+      ...readdirSync(DIR)
+        .filter((name) => /\.(tsx|ts)$/.test(name))
+        .map((name) => path.join(DIR, name)),
+      path.resolve(process.cwd(), 'src/soc/pages/CaseDetail.tsx'),
+      path.resolve(process.cwd(), 'src/soc/pages/CaseManager.tsx'),
+    ];
+    const offenders: string[] = [];
+    for (const file of files) {
+      readFileSync(file, 'utf8')
+        .split('\n')
+        .forEach((line, index) => {
+          if (/\btracking-tight(er)?\b/.test(line)) offenders.push(`${path.basename(file)}:${index + 1}`);
+        });
+    }
+    expect(offenders).toEqual([]);
+  });
+
   it('has no tracked or forced capitals on the Collaboration tab (thread, composer, activity)', () => {
     // The Collaboration tab renders these shared components; D16 / SYNTHESIS-ux §3.6
     // forbid tracked caps there ("NEW MESSAGE", "INVESTIGATION IN PROGRESS").
@@ -64,28 +83,24 @@ describe('IOC verdict is tri-state', () => {
     expect(iocVerdict(ioc({})).label).toBe('Not checked');
   });
 
-  it('never renders "Clean" in either presentation', () => {
+  it('never renders "Clean"', () => {
     const panel = {
       case_id: 'c1',
       summary: 'One indicator, no provider answered.',
       ioc_reputation: [ioc({ is_malicious: false, score: 0 })],
       mitre_techniques: [],
     } as unknown as ThreatPanelData;
-    for (const presentation of ['default', 'case-manager'] as const) {
-      const { unmount } = render(
-        <ThreatContextPanel
-          c={{ case_id: 'c1', verdict: 'NEEDS_HUMAN' } as Case}
-          panel={panel}
-          loading={false}
-          error={null}
-          onRetry={vi.fn()}
-          presentation={presentation}
-        />,
-      );
-      expect(screen.queryByText('Clean')).toBeNull();
-      expect(screen.getByText('Not checked')).toBeInTheDocument();
-      unmount();
-    }
+    render(
+      <ThreatContextPanel
+        c={{ case_id: 'c1', verdict: 'NEEDS_HUMAN' } as Case}
+        panel={panel}
+        loading={false}
+        error={null}
+        onRetry={vi.fn()}
+      />,
+    );
+    expect(screen.queryByText('Clean')).toBeNull();
+    expect(screen.getByText('Not checked')).toBeInTheDocument();
   });
 });
 
@@ -145,7 +160,7 @@ describe('Timeline colour follows the value', () => {
   });
 
   it('a Risk 7 stage is low (not red) and nothing glows', () => {
-    const { container } = render(<StageTimeline data={data(7)} presentation="case-manager" />);
+    const { container } = render(<StageTimeline data={data(7)} />);
     const marker = container.querySelector('[data-stage-marker="risk"]');
     expect(marker?.className).toContain('bg-low');
     expect(marker?.className).not.toContain('bg-critical');
@@ -156,7 +171,7 @@ describe('Timeline colour follows the value', () => {
   });
 
   it('a Risk 90 stage is critical', () => {
-    const { container } = render(<StageTimeline data={data(90)} presentation="case-manager" />);
+    const { container } = render(<StageTimeline data={data(90)} />);
     expect(container.querySelector('[data-stage-marker="risk"]')?.className).toContain('bg-critical');
   });
 });

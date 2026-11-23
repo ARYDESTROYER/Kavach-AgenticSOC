@@ -1,5 +1,8 @@
 /**
- * "Automation applied" names a runbook attach in runbook words (Round 14, SPEC §4.10.16):
+ * "Automation applied", under the decision on the Investigation tab since Round 15 (SPEC
+ * D8.3; it was in the Overview's "Provenance & audit" disclosure).
+ *
+ * It names a runbook attach in runbook words (Round 14, SPEC §4.10.16):
  * since Round 14 the stored `run_playbook` action is the rule editor's "Attach a runbook"
  * and records whether it attached one (`engine/threshold_automation.py`), so its badge
  * says what happened; a record from before Round 14 keeps its legacy name (SPEC §3.1).
@@ -9,20 +12,12 @@
  * "Partly sent" with the reason when it did not all go (`_maybe_notify`), so "Notified" is
  * shown only for a send.
  */
-import { fireEvent, render, screen } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
-
-vi.mock('@/lib/api', () => ({
-  api: {
-    listCases: vi.fn().mockResolvedValue({ cases: [] }),
-    get: vi.fn().mockResolvedValue({ found: false }),
-  },
-}));
+import { render, screen } from '@testing-library/react';
+import { describe, expect, it } from 'vitest';
 
 import type { AutomationActionRecord, Case } from '@/lib/types';
-import { TooltipProvider } from '@/ui/tooltip';
 
-import { OverviewPanel } from '../OverviewPanel';
+import { AutomationApplied } from '../AutomationApplied';
 
 const CASE = {
   case_id: 'case-1',
@@ -39,12 +34,7 @@ const CASE = {
 } as unknown as Case;
 
 function showActions(actions: AutomationActionRecord[]) {
-  render(
-    <TooltipProvider>
-      <OverviewPanel c={{ ...CASE, automation_actions: actions } as Case} fpPolicy={null} triage={null} triageLoading={false} />
-    </TooltipProvider>,
-  );
-  fireEvent.click(screen.getByRole('button', { name: /Provenance & audit/ }));
+  render(<AutomationApplied c={{ ...CASE, automation_actions: actions } as Case} />);
 }
 
 const record = (detail: string): AutomationActionRecord => ({
@@ -76,7 +66,7 @@ describe('Automation applied names a runbook attach in runbook words', () => {
 
   it('lists attaching a runbook among what automation may do, and never says "playbook"', () => {
     showActions([record('attach_runbook=brute-force attached=True'), { action: 'tag', detail: 'tag=vpn' }]);
-    const about = screen.getByText(/automation can tag, recommend, notify, attach a runbook, queue a/);
+    const about = screen.getByText(/It can tag, recommend, notify,\s+attach a runbook, queue a/);
     expect(screen.getByText('Tagged')).toBeInTheDocument();
     const EM_DASH = String.fromCharCode(0x2014);
     for (const text of [about.textContent ?? '', 'Runbook attached', 'Runbook not attached', 'Runbook automation (before Round 14)']) {
@@ -159,5 +149,12 @@ describe('Automation applied says whether a notification went out', () => {
     for (const label of ['Notified', 'Not notified', 'Partly notified']) {
       expect(label.includes(EM_DASH)).toBe(false);
     }
+  });
+});
+
+describe('Automation applied renders nothing when automation did not act', () => {
+  it('is empty without records', () => {
+    const { container } = render(<AutomationApplied c={CASE} />);
+    expect(container).toBeEmptyDOMElement();
   });
 });

@@ -1,146 +1,74 @@
 /**
- * CaseDetail — Overview panel (task 7c redesign).
+ * CaseDetail: the Overview tab (Round 15, SPEC D8.3).
  *
- * A clean, scannable case briefing, top to bottom:
- *   1. DECISION SUMMARY — verdict headline + one-sentence summary, recommended action,
- *      and auto-close note. The embedded Case Manager presents this as a flat dashboard
- *      band with an accessible signal profile (risk / confidence / recorded risk-factor
- *      bars); the default sheet retains its familiar card + compact chip row. Lifecycle
- *      controls live outside this read-only panel.
- *   2. PROVENANCE ROW — three peer columns that keep WHO-said-what obvious:
- *      SOURCE SAYS (SIEM facts) · AGENT FOUND (the AI findings) · CODE DECIDED
- *      (the deterministic route). A delta cue bridges source severity vs. our risk band
- *      when they disagree. The default sheet keeps the pinned deterministic
- *      <DecisionCard>; the embedded Case Manager consolidates the same unique authority
- *      facts into CODE DECIDED so it does not repeat verdict/confidence/risk/result (#3).
- *   3. ENTITY ROW — PRIMARY ENTITY (value + scope + reputation/geo + copy) · MINI ATTACK
- *      STORY (rule fired → agent searched → intel checked → case-manager routed) ·
- *      ENTITY RELATIONSHIP (entity → rule → surface).
- *   4. EVIDENCE — an evidence checklist table + a "reproduce investigation" panel.
- *   5. COLLAPSIBLES — related cases + provenance & audit (status timeline, automation,
- *      run/cost meta), folded away by default.
+ * The case's brief, and nothing the header or the facts rail already shows. Top to
+ * bottom, in flat sections divided by hairlines:
  *
- * SECURITY (#9): every case-derived value (title, summary, entity, IPs, rules, queries,
- * evidence, tags, source ids, enrichment) is UNTRUSTED — rendered as plain text or
- * inside <CodeBlock>/<InlineCode>/badges, never as markup or a CSS/href value.
- * #3: this panel is read-only; it never decides or mutates the case — both the default
- * <DecisionCard> and embedded authority lane only PROJECT the recorded result.
+ *   1. RUNBOOK   the runbook's Next step card, when one is attached to an open case
+ *                (Round 14, §4.10.11; read only here).
+ *   2. SUMMARY   the AI's summary in two or three sentences (the lead of the model's
+ *                reasoning, never the code's decision text, G17), with its recommended
+ *                action (or, once the case ended, the recommendation it made at triage).
+ *                A case the AI did not assess shows its system summary, untagged.
+ *   3. WHAT HAPPENED  why the detection fired and the six-stage story of how one alert
+ *                became this case (the stage timeline that was the Timeline tab; the
+ *                caller passes it in, `whatHappened`). A link to the retired Timeline tab
+ *                lands here (`data-section="what-happened"`).
+ *   4. KEY ENTITIES  the primary entity with its scope, type and enrichment, to copy or
+ *                ask about.
+ *   5. RELATED CASES  cases grouped with this one across sources (never merged) and the
+ *                source breakdown, when any (the facts rail's Related cases link lands
+ *                here, `data-section="related-cases"`).
+ *   6. BASELINE  the anomaly baseline of the case's signature, when it has one.
+ *
+ * Moved out (one home per fact, D8.4): the outcome headline and the AI verdict (the
+ * header and the rail's Outcome), severity, rules and source (the rail's Signal and
+ * Source), the decision, its authority sentence, the auto-close reading and the
+ * automation applied (Investigation's Decision), the agent's findings and the reproduce
+ * queries (Investigation's AI assessment), MITRE (Investigation's Threat context), the
+ * investigation inputs (Investigation) and the status timeline (Collaboration's History).
+ *
+ * SECURITY (#9): every case-derived value (summary, recommendation, trigger sentence,
+ * entity, enrichment, related titles, source ids) is UNTRUSTED, rendered as plain text or
+ * inside an InlineCode fence, never as markup or a CSS/href value. #3: read only; it
+ * never decides or mutates the case.
  */
 import * as React from 'react';
-import {
-  Activity,
-  AlertTriangle,
-  ArrowRight,
-  Bell,
-  BellOff,
-  BookOpen,
-  Bot,
-  Check,
-  CheckCircle2,
-  ChevronDown,
-  Copy,
-  Crosshair,
-  Database,
-  GitBranch,
-  Globe,
-  History,
-  Info,
-  Link2,
-  Lock,
-  Search,
-  Shield,
-  ShieldCheck,
-  Tag,
-  Target,
-  Zap,
-} from 'lucide-react';
+import { AlertTriangle, Check, ChevronDown, Copy, Link2 } from 'lucide-react';
 
 import { api } from '@/lib/api';
 import type { Case, CaseRationale } from '@/lib/types';
-import { DASH, fmtMoney, fmtPercent, formatTimestamp, humanizeAge, humanizeToken } from '@/lib/format';
+import { humanizeToken } from '@/lib/format';
 import { copyText } from '@/lib/clipboard';
 import { cn } from '@/lib/cn';
 
 import { Badge } from '@/ui/badge';
-import { Button } from '@/ui/button';
 import { Alert, AlertTitle, AlertDescription } from '@/ui/alert';
-import { Skeleton } from '@/ui/skeleton';
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/ui/collapsible';
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/ui/tooltip';
 
-import { scoreBand, type ScoreBand } from '@/soc/components/palette';
-import { EmptyState } from '@/soc/components/EmptyState';
-import { CodeBlock, InlineCode } from '@/soc/components/CodeBlock';
-import {
-  VerdictBadge,
-  StatusBadge,
-  DispositionBadge,
-  ConfidenceBadge,
-  isAutoClosedByAI,
-  SeverityBadge,
-  severityBand,
-} from '@/soc/components/badges';
-import { ProvenanceTag, severityProvenance, type Provenance } from '@/soc/components/ProvenanceTag';
-import { RuleLink, RuleSheetHost } from '@/soc/components/RuleLink';
-import { notifyDelivery } from '@/soc/components/caseActivityText';
-import { caseLabel } from '@/lib/format-values';
-import { AskAi } from './AskAi';
-import { DecisionCard } from './DecisionCard';
-import {
-  aiHeadline,
-  caseOutcome,
-  dispositionWords,
-  isHumanClosed,
-  type CaseOutcome,
-} from '@/soc/components/outcome';
-import { riskFactorBarColor } from './SignalProfile';
-
-// Re-exported for existing importers: the factor bars now live in the facts rail.
-export { riskFactorBarColor };
-import { InvestigationInputs } from './InvestigationInputs';
+import { InlineCode } from '@/soc/components/CodeBlock';
+import { ProvenanceTag } from '@/soc/components/ProvenanceTag';
+import { isTerminalStatus } from '@/soc/components/outcome';
 import { BaselineSignatureCard } from '@/soc/components/BaselineGauge';
-import type { TriageChips } from '@/soc/pages/CaseDetail.api';
 import { baselineApi, type BaselineSignature } from '@/soc/Baseline.api';
 import type { Navigate } from '@/soc/router';
 
-import {
-  type FpPolicy,
-  type ScoreTone,
-  CASE_MANAGER_PANEL_PADDING,
-  MetaItem,
-  PanelCard,
-  SectionHeading,
-  type CasePanelPresentation,
-  confidenceCalibration,
-  verdictHeadline,
-} from './shared';
+import { AskAi } from './AskAi';
+import { aiAssessed, aiAssessmentText } from './caseFacts';
+import { riskFactorBarColor } from './SignalProfile';
+import { CASE_MANAGER_PANEL_PADDING, PanelSection } from './shared';
 
-const RULED_OUT_RE =
-  /\b(no\s+(match|evidence|sign|indicat|hit|result)|not\s+(malicious|found|present|observed)|ruled\s+out|clean|benign|negative|nothing\s+(found|suspicious)|false\s+positive|cleared)\b/i;
+// Re-exported for existing importers: the factor bars live in the facts rail.
+export { riskFactorBarColor };
 
-function isRuledOut(summary?: string): boolean {
-  return !!summary && RULED_OUT_RE.test(summary);
-}
+/** At most this many sentences of the AI summary lead the Overview (D8.3). */
+const SUMMARY_SENTENCES = 3;
 
-/** Title-case a lowercase band token for prose ("high" → "High"). */
-function titleBand(band: string): string {
-  return band ? band.charAt(0).toUpperCase() + band.slice(1) : band;
-}
-
-/** Compact display label for a band/level token ("high" → "High", "p1" → "P1"). */
-function chipLabel(token?: string | null): string {
-  const t = (token || '').trim();
-  if (!t) return DASH;
-  if (/^p\d$/i.test(t)) return t.toUpperCase();
-  return t.charAt(0).toUpperCase() + t.slice(1).toLowerCase();
-}
-
-/** The first sentence of a longer body (falls back to the trimmed whole). */
-function firstSentence(text?: string): string {
-  if (!text) return '';
-  const trimmed = text.trim();
-  const m = trimmed.match(/^.*?[.!?](\s|$)/);
-  return (m ? m[0] : trimmed).trim();
+/** The first `max` sentences of a longer text (falls back to the trimmed whole). */
+export function leadSentences(text: string | null | undefined, max = SUMMARY_SENTENCES): string {
+  const trimmed = (text || '').replace(/\s+/g, ' ').trim();
+  if (!trimmed) return '';
+  // A sentence ends at . ! or ? followed by a space, so "62.5" or "10.0.0.5" never split.
+  return trimmed.split(/(?<=[.!?])\s+/).slice(0, max).join(' ').trim();
 }
 
 /** Compare two prose sentences ignoring case, spacing and trailing punctuation. */
@@ -155,104 +83,6 @@ function isPrivateIp(ip: string): boolean {
   );
 }
 
-/**
- * The full one-line auto-close note (brief) + a compact tag (CODE DECIDED). Returns null
- * when no FP policy is configured. `line`/`tag` are our own controlled copy (#9).
- */
-function autoCloseSummary(
-  policy: FpPolicy,
-  c: Case,
-): { line: string; tag: string } | null {
-  if (!policy || typeof policy.min_confidence !== 'number') return null;
-  // Round 12 (D15): a case a PERSON closed is not "held for a human" or "eligible for
-  // auto-close" — the policy sentence would contradict the analyst's own action.
-  if (isHumanClosed(c)) return null;
-  const v = (c.verdict || '').toLowerCase();
-  const isFp = v.includes('false') || v === 'fp' || v.includes('benign');
-  if (!policy.enabled) {
-    // This sentence describes the CURRENT false-positive auto-close policy. It is
-    // relevant only to a case actually assessed as false-positive/benign and still
-    // needing (or having received) human handling. Never attach it to true-positive
-    // or NEEDS_HUMAN verdicts, and do not contradict an already-recorded AI close.
-    // Presentation only — no policy or lifecycle decision changes here.
-    if (!isFp || isAutoClosedByAI(c.status, c.decision_by)) return null;
-    return {
-      line: 'False-positive auto-close is disabled',
-      tag: 'Disabled · held for review',
-    };
-  }
-  if (!isFp) {
-    return {
-      line: 'NEEDS_HUMAN and true-positive verdicts never auto-close. The auto-close bar applies to false positives only.',
-      tag: 'Held for a human',
-    };
-  }
-  const conf = typeof c.confidence === 'number' ? c.confidence : null;
-  const risk = typeof c.risk_score === 'number' ? c.risk_score : null;
-  const confOk = conf !== null && conf >= policy.min_confidence;
-  const riskOk =
-    typeof policy.max_risk_score !== 'number' || (risk !== null && risk <= policy.max_risk_score);
-  const bar = policy.min_confidence.toFixed(2);
-  if (confOk && riskOk) {
-    return {
-      line: `Eligible for auto-close: confidence is at/above the ${bar} bar and risk is within the policy ceiling.`,
-      tag: 'Eligible for auto-close',
-    };
-  }
-  if (!confOk) {
-    return { line: `Below the ${bar} auto-close confidence bar, so it is held for a human.`, tag: 'Held for a human' };
-  }
-  return {
-    line: 'Above the confidence bar, but risk exceeds the auto-close ceiling, so it is held for a human.',
-    tag: 'Held for a human',
-  };
-}
-
-/* ------------------------------------------------------------- small pieces -- */
-
-/** A sentence-case section title + optional provenance legend + a quiet divider. */
-const SectionLabel: React.FC<{
-  children: React.ReactNode;
-  provenance?: React.ReactNode;
-  testId?: string;
-  quiet?: boolean;
-}> = ({ children, provenance, testId, quiet = false }) => (
-  <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
-    <span data-testid={testId} className={SECTION_TITLE}>
-      {children}
-    </span>
-    {provenance ? <span className="flex items-center gap-1">{provenance}</span> : null}
-    {!quiet ? <span aria-hidden="true" className="h-px flex-1 bg-border" /> : null}
-  </div>
-);
-
-/**
- * Case Manager shares the dashboard's single-canvas surface grammar: content is
- * grouped by hairline dividers instead of being boxed into independent cards.
- * These classes only ever decorate the embedded presentation; the legacy sheet
- * continues to use the normal PanelCard surface unchanged.
- */
-const EMBEDDED_FLAT_SECTION =
-  'rounded-none border-x-0 border-b-0 border-t border-border/70 bg-transparent px-0 py-5 shadow-none';
-const EMBEDDED_FLAT_COLUMN =
-  'rounded-none border-0 bg-transparent p-0 shadow-none';
-const EMBEDDED_MAJOR_SECTION = 'border-t border-border/60 pt-6';
-
-/**
- * Case Manager lays its three-lane rows out against the PANE width (the queue split is
- * resizable), not the viewport: lanes sit side by side only when each has room, and
- * stack otherwise. The `@container/overview` lives on the panel root.
- */
-const CM_THREE_LANES = 'gap-6 @[42rem]/overview:grid-cols-3 @[56rem]/overview:gap-8';
-
-/**
- * The two label tiers of the Overview, in sentence case (no tracked capitals): a
- * section title reads in the foreground; a field label is a quiet muted caption so
- * the value beside or beneath it stays the loudest thing.
- */
-const SECTION_TITLE = 'text-sm font-semibold text-foreground';
-const FIELD_LABEL = 'text-xs font-medium text-muted-foreground';
-
 /** Entity-type label in sentence case that keeps well-known acronyms intact. */
 function entityTypeLabel(type: string): string {
   const t = type.trim().toLowerCase();
@@ -262,15 +92,9 @@ function entityTypeLabel(type: string): string {
   return humanizeToken(type);
 }
 
-/** One compact chip in the DECISION BRIEF strip: a small label over a bold value. */
-const BriefChip: React.FC<{ label: string; value: string }> = ({ label, value }) => (
-  <div className="flex flex-col gap-0.5">
-    <span className={FIELD_LABEL}>{label}</span>
-    <span className="text-sm font-semibold text-foreground">{value}</span>
-  </div>
-);
+const FIELD_LABEL = 'text-xs font-medium text-muted-foreground';
 
-/** A dependency-free "copy this value" chip (#9-safe — copies a plain string). */
+/** A dependency-free "copy this value" chip (#9-safe: copies a plain string). */
 const CopyChip: React.FC<{ value: string; label: string }> = ({ value, label }) => {
   const [copied, setCopied] = React.useState(false);
   const timer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -290,167 +114,20 @@ const CopyChip: React.FC<{ value: string; label: string }> = ({ value, label }) 
       aria-label={copied ? 'Copied' : label}
       className="inline-flex items-center gap-1 rounded-md border border-border bg-card px-2 py-1 text-2xs font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
     >
-      {copied ? (
-        <Check className="h-3 w-3 text-success" aria-hidden />
-      ) : (
-        <Copy className="h-3 w-3" aria-hidden />
-      )}
+      {copied ? <Check className="h-3 w-3 text-success" aria-hidden /> : <Copy className="h-3 w-3" aria-hidden />}
       {copied ? 'Copied' : 'Copy'}
     </button>
-  );
-};
-
-/** One of the three provenance columns (SOURCE SAYS / AGENT FOUND / CODE DECIDED). */
-const ProvenanceColumn: React.FC<{
-  title: string;
-  kind: Provenance;
-  icon: React.ComponentType<{ className?: string }>;
-  children: React.ReactNode;
-  compact?: boolean;
-}> = ({ title, kind, icon: Icon, children, compact = false }) => (
-  <PanelCard
-    data-overview-surface={compact ? 'flat-column' : undefined}
-    className={cn('flex min-w-0 flex-col', compact && EMBEDDED_FLAT_COLUMN)}
-  >
-    <div className="mb-3 flex items-center gap-2">
-      <Icon className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden />
-      <h3 className={cn('flex-1', SECTION_TITLE)}>{title}</h3>
-      <ProvenanceTag kind={kind} />
-    </div>
-    <div className="space-y-3">{children}</div>
-  </PanelCard>
-);
-
-/**
- * One inspectable Agent-found fact. The visible row stays as compact as the
- * dashboard-style provenance column, while the disclosure gives the analyst the
- * exact persisted evidence behind the count. A real button is used (instead of a
- * hover-only span) so keyboard and touch operators can inspect the same detail.
- */
-const AgentFindingMetric: React.FC<{
-  icon: React.ComponentType<{ className?: string }>;
-  label: React.ReactNode;
-  detail: React.ReactNode;
-  tone?: string;
-}> = ({ icon: Icon, label, detail, tone = 'text-muted-foreground' }) => (
-  <Tooltip>
-    <TooltipTrigger asChild>
-      <button
-        type="button"
-        className="group flex w-full items-start gap-2 rounded-sm py-0.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-      >
-        <Icon
-          className={cn('mt-0.5 h-4 w-4 shrink-0 transition-colors group-hover:text-foreground', tone)}
-          aria-hidden
-        />
-        <span className="text-foreground/90 underline-offset-4 group-hover:underline">{label}</span>
-      </button>
-    </TooltipTrigger>
-    <TooltipContent side="top" align="start" className="max-w-[min(28rem,calc(100vw-2rem))] p-3">
-      <div className="space-y-1.5 text-xs leading-relaxed text-popover-foreground">{detail}</div>
-    </TooltipContent>
-  </Tooltip>
-);
-
-/** A labelled, default-closed disclosure for the lower-value sections. */
-const CollapsibleSection: React.FC<{
-  label: string;
-  icon: React.ComponentType<{ className?: string }>;
-  defaultOpen?: boolean;
-  children: React.ReactNode;
-}> = ({ label, icon: Icon, defaultOpen = false, children }) => {
-  const [open, setOpen] = React.useState(defaultOpen);
-  return (
-    <Collapsible open={open} onOpenChange={setOpen}>
-      <CollapsibleTrigger className="flex w-full items-center gap-2 rounded-md py-1 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-        <Icon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden />
-        <span className={SECTION_TITLE}>{label}</span>
-        <span aria-hidden="true" className="h-px flex-1 bg-border" />
-        <ChevronDown
-          className={cn('h-4 w-4 shrink-0 text-muted-foreground transition-transform', open && 'rotate-180')}
-          aria-hidden
-        />
-      </CollapsibleTrigger>
-      <CollapsibleContent>
-        <div className="space-y-6 pt-4">{children}</div>
-      </CollapsibleContent>
-    </Collapsible>
-  );
-};
-
-/* ------------------------------------------------------- status timeline -- */
-
-/** Append-only lifecycle transition trail (F8). `by`/`reason` are operator/agent
- *  text — rendered as plain text (#9). Renders nothing when empty. */
-const StatusTimeline: React.FC<{
-  history?: Case['status_history'];
-  statusReason?: string;
-  flat?: boolean;
-}> = ({ history, statusReason, flat = false }) => {
-  const entries = Array.isArray(history) ? history : [];
-  if (!entries.length && !statusReason) return null;
-  // Newest last (chronological), reversed for newest-first display.
-  const ordered = [...entries].reverse();
-  return (
-    <PanelCard
-      data-overview-surface={flat ? 'flat-section' : undefined}
-      className={cn(flat && EMBEDDED_FLAT_SECTION)}
-    >
-      <SectionHeading icon={History}>Status timeline</SectionHeading>
-      {statusReason ? (
-        <p className="mb-3 text-xs text-muted-foreground">
-          {/* UNTRUSTED status reason — plain text. */}
-          Current reason: <span className="text-foreground/90">{statusReason}</span>
-        </p>
-      ) : null}
-      {ordered.length ? (
-        <ol className="relative space-y-4 border-l border-border pl-5">
-          {ordered.map((e, i) => (
-            <li key={`${e.at}-${i}`} className="relative">
-              <span
-                aria-hidden="true"
-                className={cn(
-                  'absolute -left-[1.4rem] top-1 h-2.5 w-2.5 rounded-full border-2 bg-primary',
-                  flat ? 'border-background' : 'border-card',
-                )}
-              />
-              <div className="flex flex-wrap items-center gap-2">
-                {e.from_status ? <StatusBadge status={e.from_status} /> : null}
-                <span className="text-xs text-muted-foreground">{DASH}</span>
-                <StatusBadge status={e.to_status} />
-                <span className="text-xs text-muted-foreground">
-                  {e.at ? humanizeAge(e.at) : ''}
-                  {e.by ? <> · {humanizeToken(e.by)}</> : null}
-                </span>
-              </div>
-              {e.reason ? (
-                <p className="mt-1 text-xs text-muted-foreground">
-                  {/* UNTRUSTED — plain text. */}
-                  {e.reason}
-                </p>
-              ) : null}
-            </li>
-          ))}
-        </ol>
-      ) : (
-        <EmptyState icon={History} compact title="No lifecycle transitions recorded yet" />
-      )}
-    </PanelCard>
   );
 };
 
 /* ----------------------------------------- related cases + source breakdown */
 
 /**
- * Cross-source linkage panel (F6). Renders RELATED cases (never merged) + a source
- * breakdown when present. All case-derived text is UNTRUSTED → plain text. Renders
- * nothing when no cross-source data is present.
+ * Cross-source linkage (F6): the RELATED cases (never merged), the source breakdown and
+ * the cross-source group. Case-derived text is UNTRUSTED: plain text. Renders nothing
+ * when there is no cross-source data.
  */
-const RelatedCrossSource: React.FC<{ c: Case; onNavigate?: Navigate; flat?: boolean }> = ({
-  c,
-  onNavigate,
-  flat = false,
-}) => {
+const RelatedCases: React.FC<{ c: Case; onNavigate?: Navigate }> = ({ c, onNavigate }) => {
   const relatedIds = React.useMemo(
     () =>
       (Array.isArray(c.related_case_ids) ? c.related_case_ids : []).filter(
@@ -477,9 +154,7 @@ const RelatedCrossSource: React.FC<{ c: Case; onNavigate?: Navigate; flat?: bool
         if (cancelled) return;
         const map: Record<string, string> = {};
         for (const rc of res.cases) {
-          if (relatedIds.includes(rc.case_id)) {
-            map[rc.case_id] = rc.title || rc.case_number || rc.case_id;
-          }
+          if (relatedIds.includes(rc.case_id)) map[rc.case_id] = rc.title || rc.case_number || rc.case_id;
         }
         setTitles(map);
       })
@@ -491,203 +166,81 @@ const RelatedCrossSource: React.FC<{ c: Case; onNavigate?: Navigate; flat?: bool
 
   if (!relatedIds.length && !breakdown.length && !c.cross_source_cluster_id) return null;
 
-  const openRelated = (rid: string) => {
-    if (onNavigate) onNavigate('cases', { caseId: rid });
-  };
-
   return (
-    <div className={cn('grid gap-6 lg:grid-cols-2', flat && 'xl:gap-8')}>
-      <PanelCard
-        data-overview-surface={flat ? 'flat-column' : undefined}
-        className={cn(flat && EMBEDDED_FLAT_COLUMN)}
-      >
-        <SectionHeading icon={GitBranch}>Related cases</SectionHeading>
-        {relatedIds.length ? (
-          <>
-            <p className="mb-3 text-xs text-muted-foreground">
-              Grouped by a shared entity across sources within the cross-source window. These are
-              RELATED. They are never merged into this case.
-            </p>
-            <ul className="space-y-2">
-              {relatedIds.map((rid) => (
-                <li key={rid} className="flex items-center gap-2">
-                  <Link2 className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden />
-                  <button
-                    type="button"
-                    onClick={() => openRelated(rid)}
-                    disabled={!onNavigate}
-                    className={cn(
-                      'truncate rounded-sm text-left text-sm',
-                      onNavigate
-                        ? 'text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring'
-                        : 'cursor-default text-foreground',
-                    )}
-                    title={titles[rid] || rid}
-                  >
-                    {/* UNTRUSTED title / id — plain text. */}
-                    {titles[rid] || rid}
-                  </button>
-                </li>
-              ))}
-            </ul>
-          </>
-        ) : (
-          <EmptyState icon={GitBranch} compact title="No related cases" />
-        )}
-        {c.cross_source_cluster_id ? (
-          <p className="mt-3 text-xs text-muted-foreground">
-            Cross-source group{' '}
-            {/* UNTRUSTED id — plain text, mono. */}
-            <span className="font-mono text-foreground/80">{c.cross_source_cluster_id}</span>
-          </p>
-        ) : null}
-      </PanelCard>
-
-      <PanelCard
-        data-overview-surface={flat ? 'flat-column' : undefined}
-        className={cn(flat && EMBEDDED_FLAT_COLUMN)}
-      >
-        <SectionHeading icon={Globe}>Source breakdown</SectionHeading>
-        {breakdown.length ? (
-          <dl className="divide-y divide-border">
-            {breakdown.map(([sid, count]) => (
-              <div
-                key={sid}
-                className="flex items-center justify-between gap-3 py-2.5 first:pt-0 last:pb-0"
-              >
-                {/* UNTRUSTED source id — plain text, truncated. */}
-                <dt className="min-w-0 truncate font-mono text-xs text-foreground" title={sid}>
-                  {sid}
-                </dt>
-                <dd className="shrink-0">
-                  <Badge variant="outline" className="tabular-nums">
-                    {count}
-                  </Badge>
-                </dd>
-              </div>
-            ))}
-          </dl>
-        ) : (
-          <p className="text-sm text-muted-foreground">Single source.</p>
-        )}
-      </PanelCard>
-    </div>
-  );
-};
-
-/* ----------------------------------------------- threshold automation (F10) */
-
-type AutomationMeta = { label: string; icon: React.ComponentType<{ className?: string }>; tone: ScoreTone };
-
-/** Map an automation action verb → label + icon + tone. */
-const AUTOMATION_META: Record<string, AutomationMeta> = {
-  tag: { label: 'Tagged', icon: Tag, tone: 'info' },
-  recommend: { label: 'Recommendation', icon: Info, tone: 'medium' },
-  notify: { label: 'Notified', icon: Bell, tone: 'info' },
-  // A record from before Round 14 keeps its token; the label is Console-authored.
-  run_playbook: { label: 'Runbook automation (before Round 14)', icon: BookOpen, tone: 'low' },
-  request_approval: { label: 'Proposed (needs approval)', icon: Lock, tone: 'high' },
-};
-
-/** What an "Attach a runbook" action records (`engine/threshold_automation.py`). */
-const ATTACH_RUNBOOK_DETAIL = /^attach_runbook=(.*) attached=(True|False)$/s;
-
-/**
- * The badge of an automation record. A `notify` record says whether the notification went
- * out: its detail notes "Not sent" or "Partly sent" with the reason when it did not all go
- * (`notifyDelivery`, the reading the case activity uses), so the badge never claims a send
- * that did not happen.
- *
- * A `run_playbook` record keeps its stored token (the naming contract). Since Round 14 the
- * action is the rule editor's "Attach a runbook" and records whether it attached one; a
- * record from before Round 14 keeps its legacy name (SPEC §3.1).
- */
-function automationMeta(action: string, detail: unknown): AutomationMeta | undefined {
-  if (action === 'notify') {
-    const { delivery } = notifyDelivery(detail);
-    if (delivery === 'not_sent') return { label: 'Not notified', icon: BellOff, tone: 'high' };
-    if (delivery === 'partly_sent') return { label: 'Partly notified', icon: Bell, tone: 'medium' };
-    return AUTOMATION_META.notify;
-  }
-  if (action !== 'run_playbook') return AUTOMATION_META[action];
-  const attach = typeof detail === 'string' ? ATTACH_RUNBOOK_DETAIL.exec(detail) : null;
-  if (!attach) return AUTOMATION_META.run_playbook;
-  return attach[2] === 'True'
-    ? { label: 'Runbook attached', icon: BookOpen, tone: 'low' }
-    : { label: 'Runbook not attached', icon: BookOpen, tone: 'info' };
-}
-
-/**
- * Shows the SAFE actions threshold automation applied to this case (F10). Renders
- * nothing when none ran. Non-binding: automation can tag / recommend / notify / queue a
- * re-investigation / draft a Proposal, but NEVER sets the case status. All detail text
- * is operator/agent-authored → plain text (#9).
- */
-const AutomationApplied: React.FC<{ c: Case; flat?: boolean }> = ({ c, flat = false }) => {
-  const actions = Array.isArray(c.automation_actions) ? c.automation_actions : [];
-  if (!actions.length) return null;
-  return (
-    <PanelCard
-      data-overview-surface={flat ? 'flat-section' : undefined}
-      className={cn(flat && EMBEDDED_FLAT_SECTION)}
+    <PanelSection
+      title="Related cases"
+      section="related-cases"
+      testId="overview-related"
+      description="Grouped with this case by a shared entity across sources, within the cross-source window. Related cases are never merged into this one."
     >
-      <SectionHeading icon={Zap}>Automation applied</SectionHeading>
-      <p className="mb-3 text-xs text-muted-foreground">
-        Threshold-automation actions taken after the deterministic decision. These are
-        non-binding: automation can tag, recommend, notify, attach a runbook, queue a
-        re-investigation, or draft a proposal, but it never changes the lifecycle status or
-        auto-closes a case.
-      </p>
-      <ul className="space-y-2">
-        {actions.map((a, i) => {
-          const meta = automationMeta(String(a.action || ''), a.detail) || {
-            label: humanizeToken(String(a.action || 'Action')),
-            icon: Zap,
-            tone: 'info' as ScoreTone,
-          };
-          const Icon = meta.icon;
-          return (
-            <li
-              key={`${a.rule_id || a.action || i}-${i}`}
-              className="flex items-start gap-2 rounded-md border border-border bg-muted/30 p-3 text-sm"
-            >
-              <Badge variant={meta.tone === 'low' ? 'success' : meta.tone} className="shrink-0 gap-1">
-                <Icon className="h-3 w-3" />
-                {meta.label}
-              </Badge>
-              <div className="min-w-0 flex-1">
-                {a.detail ? (
-                  /* UNTRUSTED — plain text. */
-                  <p className="whitespace-pre-wrap text-foreground/90">{a.detail}</p>
-                ) : null}
-                <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
-                  {a.rule_id ? <span className="font-mono">rule {a.rule_id}</span> : null}
-                  {a.proposal_id ? (
-                    <span className="font-mono">proposal {a.proposal_id}</span>
-                  ) : null}
-                  {a.at ? <span>{humanizeAge(a.at)}</span> : null}
+      <div className="grid gap-x-8 gap-y-4 @[40rem]/overview:grid-cols-[minmax(0,1fr)_minmax(0,16rem)]">
+        {relatedIds.length ? (
+          <ul className="min-w-0 space-y-1.5">
+            {relatedIds.map((rid) => (
+              <li key={rid} className="flex min-w-0 items-center gap-2">
+                <Link2 className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden />
+                <button
+                  type="button"
+                  onClick={() => onNavigate?.('case_manager', { caseId: rid })}
+                  disabled={!onNavigate}
+                  className={cn(
+                    'min-w-0 truncate rounded-sm text-left text-sm',
+                    onNavigate
+                      ? 'text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring'
+                      : 'cursor-default text-foreground',
+                  )}
+                  title={titles[rid] || rid}
+                >
+                  {/* UNTRUSTED title / id: plain text. */}
+                  {titles[rid] || rid}
+                </button>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="text-sm text-muted-foreground">No related cases.</p>
+        )}
+        <div className="min-w-0 space-y-1.5">
+          <span className={cn('block', FIELD_LABEL)}>Sources</span>
+          {breakdown.length ? (
+            <dl className="space-y-1">
+              {breakdown.map(([sid, count]) => (
+                <div key={sid} className="flex items-baseline justify-between gap-3">
+                  {/* UNTRUSTED source id: plain text, truncated. */}
+                  <dt className="min-w-0 truncate font-mono text-xs text-foreground" title={sid}>
+                    {sid}
+                  </dt>
+                  <dd className="shrink-0 text-xs tabular-nums text-muted-foreground">{count.toLocaleString()}</dd>
                 </div>
-              </div>
-            </li>
-          );
-        })}
-      </ul>
-    </PanelCard>
+              ))}
+            </dl>
+          ) : (
+            <p className="text-sm text-muted-foreground">Single source.</p>
+          )}
+          {c.cross_source_cluster_id ? (
+            <p className="text-xs text-muted-foreground">
+              Cross-source group{' '}
+              {/* UNTRUSTED id: plain text, mono. */}
+              <span className="break-all font-mono text-foreground/80">{c.cross_source_cluster_id}</span>
+            </p>
+          ) : null}
+        </div>
+      </div>
+    </PanelSection>
   );
 };
 
 /* ----------------------------------------------- anomaly baseline (advisory) */
 
 /**
- * Advisory anomaly-baseline panel (#4). When the case has a cluster signature AND the
+ * Advisory anomaly-baseline section (#4). When the case has a cluster signature AND the
  * baseline has recorded stats for it, this embeds the ready-made `BaselineSignatureCard`.
- * Fully additive + FAIL-QUIET: no signature, a disabled baseline, an unseen signature
- * (`found=false`), or a fetch error all render NOTHING. READ-ONLY / advisory (#3/#4).
- * `signature` is source-derived and the card renders it as a plain text node only (#9).
+ * FAIL-QUIET: no signature, a disabled baseline, an unseen signature (`found=false`) or a
+ * fetch error all render NOTHING. READ ONLY / advisory (#3/#4). `signature` is
+ * source-derived and the card renders it as a plain text node only (#9).
  */
-const BaselineAdvisory: React.FC<{ c: Case; flat?: boolean }> = ({ c, flat = false }) => {
-  const signature =
-    typeof c.cluster_signature === 'string' ? c.cluster_signature.trim() : '';
+const BaselineAdvisory: React.FC<{ c: Case }> = ({ c }) => {
+  const signature = typeof c.cluster_signature === 'string' ? c.cluster_signature.trim() : '';
   const [data, setData] = React.useState<BaselineSignature | null>(null);
 
   React.useEffect(() => {
@@ -712,179 +265,63 @@ const BaselineAdvisory: React.FC<{ c: Case; flat?: boolean }> = ({ c, flat = fal
   if (!signature || !data || !data.found) return null;
 
   return (
-    <PanelCard
-      data-overview-surface={flat ? 'flat-section' : undefined}
-      className={cn(flat && EMBEDDED_FLAT_SECTION)}
+    <section
+      aria-label="Anomaly baseline"
+      data-testid="overview-baseline"
+      className="border-t border-border/60 pt-6 first:border-t-0 first:pt-0"
     >
       <BaselineSignatureCard data={data} embedded />
-    </PanelCard>
+    </section>
   );
 };
 
 /* --------------------------------------------------------------- component -- */
 
-/** The case tabs the Overview can link into. */
-export type OverviewTab = 'timeline' | 'investigation' | 'threat' | 'collab' | 'chat';
-
 export const OverviewPanel: React.FC<{
   c: Case;
-  fpPolicy: FpPolicy;
-  triage: TriageChips | null;
-  triageLoading: boolean;
+  /** The latest run's rationale: the summary leads with the model's reasoning. */
   rationale?: CaseRationale | null;
-  rationaleLoading?: boolean;
-  rationaleError?: unknown;
-  onRetryRationale?: () => void;
-  onOpenInvestigation?: () => void;
-  /** Case Manager: open another tab (the attack story links into its detail). */
-  onOpenTab?: (tab: OverviewTab) => void;
   onNavigate?: Navigate;
-  presentation?: CasePanelPresentation;
   /**
-   * Opens the Set disposition dialog. Offered beside the headline when a person closed
-   * the case without recording an outcome (D15 row 3) — the honest next step.
+   * The "What happened" story (Round 15, D8.3): the stage timeline, which the caller
+   * loads when the Overview opens and passes in. Omitted: the section shows only why the
+   * detection fired.
    */
-  onSetDisposition?: (opener: HTMLElement) => void;
+  whatHappened?: React.ReactNode;
   /**
-   * Round 14 (SPEC §4.10.11): the runbook's Next step card, repeated at the top of the
-   * Overview when a runbook is attached to an open case. Read only here; its button opens
-   * the Runbook tab. Nothing in it changes the case (#3).
+   * Round 14 (SPEC §4.10.11): the runbook's Next step card, at the top of the Overview
+   * when a runbook is attached to an open case. Read only here; its button opens the
+   * Runbook tab. Nothing in it changes the case (#3).
    */
   runbookCard?: React.ReactNode;
-  /**
-   * Whether the viewer holds `cost:view`. Without it the profile line leaves the
-   * investigation cost out (the server answers `token_cost: null` for that viewer too).
-   */
-  canViewCost: boolean;
-}> = ({
-  c,
-  fpPolicy,
-  triage,
-  triageLoading,
-  rationale = null,
-  rationaleLoading = false,
-  rationaleError,
-  onRetryRationale,
-  onOpenInvestigation,
-  onOpenTab,
-  onNavigate,
-  presentation = 'default',
-  onSetDisposition,
-  runbookCard = null,
-  canViewCost,
-}) => {
-  const isCaseManager = presentation === 'case-manager';
-  const trigger = c.trigger_reason as
-    | {
-        sentence?: string;
-        observed_count?: number;
-        rule_values?: unknown[];
-        entity?: string;
-      }
-    | undefined;
-  const triggerSentence = trigger?.sentence;
-  const allEvidence = c.evidence || [];
-  const ruledOut = allEvidence.filter((e) => isRuledOut(e.summary));
-  const evidence = allEvidence.filter((e) => !isRuledOut(e.summary));
-  const mitre = c.mitre || [];
-  const ruleIds = (c.rule_ids || []).filter((r) => typeof r === 'string' && r.trim());
-  const appVersion = typeof c.app_version === 'string' ? c.app_version.trim() : '';
-  const buildSha = typeof c.build_sha === 'string' ? c.build_sha.trim() : '';
-  const buildLabel =
-    appVersion || buildSha
-      ? `${appVersion ? `v${appVersion}` : 'version unavailable'} · ${
-          buildSha
-            ? buildSha === 'unknown'
-              ? 'SHA unknown'
-              : buildSha.slice(0, 12)
-            : 'SHA unavailable'
-        }`
-      : '';
+}> = ({ c, rationale = null, onNavigate, whatHappened = null, runbookCard = null }) => {
+  const trigger = c.trigger_reason as { sentence?: string } | undefined;
+  const triggerSentence = typeof trigger?.sentence === 'string' ? trigger.sentence.trim() : '';
+  const terminal = isTerminalStatus(c.status);
 
-  const caseEnrichment =
-    c.enrichment && typeof c.enrichment === 'object'
-      ? (c.enrichment as Record<string, unknown>)
-      : null;
+  // The AI's reading, led by the model's reasoning (G17); a case the AI did not assess
+  // (a candidate, a policy close) shows its system summary, without the AI tag.
+  const aiText = aiAssessmentText(c, rationale);
+  const fromAi = Boolean(aiText) || aiAssessed(c);
+  const summary = leadSentences(aiText || (aiAssessed(c) ? '' : c.summary));
+  const recommended = (c.recommended_action || '').trim();
+  // The summary and the recommendation sometimes say the same thing: one paragraph,
+  // labelled as both, so the datum is kept and the duplicate dropped.
+  const recommendationIsSummary =
+    Boolean(recommended) && Boolean(summary) && normalizeSentence(recommended) === normalizeSentence(summary);
+
   const entityType = c.entity?.type || c.entity_type || null;
   const entityValue = c.entity?.value || '';
-
-  const relatedCount = (Array.isArray(c.related_case_ids) ? c.related_case_ids : []).filter(
-    (rid) => typeof rid === 'string' && rid && rid !== c.case_id,
-  ).length;
-
-  // ---- source-reported severity vs. our derived risk (task 6) --------------- //
-  const sevSource = triage?.severity?.source ?? c.severity_source;
-  const sevBandRaw = triage?.severity?.band ?? c.severity_band;
-  const sourceSevBand = severityBand(sevBandRaw ?? null); // normalized band | null
-  const isSourceAsserted = sevSource === 'source_asserted';
-  const sevLabel = sourceSevBand ? titleBand(sourceSevBand) : '';
-
-  const riskVal =
-    typeof triage?.risk?.value === 'number' ? triage.risk.value : c.risk_score;
-  const ourRiskBand: ScoreBand | null = typeof riskVal === 'number' ? scoreBand(riskVal) : null;
-  const riskLabel = ourRiskBand ? titleBand(ourRiskBand) : '';
-
-  // The delta cue — the source asserted a severity AND it disagrees with our risk band.
-  // `info` only exists on the 5-band severity ladder, never on the 4-band risk ladder, so
-  // an 'info' source severity would ALWAYS "disagree" with any risk band — exclude it.
-  const showSeverityDelta =
-    isSourceAsserted &&
-    !!sourceSevBand &&
-    sourceSevBand !== 'info' &&
-    !!ourRiskBand &&
-    sourceSevBand !== ourRiskBand;
-
-  const sourceFactsPresent = Boolean(
-    (isSourceAsserted && sevBandRaw) || ruleIds.length || c.source_name || triggerSentence,
-  );
-
-  // Round 12 (SPEC D15): the outcome of record. Once a person classified the case the
-  // headline is THEIR classification ("Closed as false positive"); the AI verdict stays
-  // visible as a labelled secondary line. Until then the AI assessment leads, attributed.
-  const outcome: CaseOutcome = caseOutcome(c);
-  const humanClosed = isHumanClosed(c);
-  // The terminal verb this case carries ("resolved" or "closed"), so every sentence about
-  // the human action matches the status chip and the headline (Round 12 final review).
-  const resolvedByHuman = String(c.status || '').toLowerCase() === 'resolved';
-  const terminalVerb = resolvedByHuman ? 'resolved' : 'closed';
-  // A disposition stored on the case that is a real class, not a classification: the
-  // model-derived value triage maps, or one an undeclared close applied (SPEC §7.2 D13).
-  const dispositionOnFile = (() => {
-    const value = typeof c.disposition === 'string' ? c.disposition.trim().toLowerCase() : '';
-    return value && value !== 'none' && value !== 'undetermined' ? value : null;
-  })();
-  const vHead = verdictHeadline(c.verdict);
-  const headline = outcome.source === 'pending' ? aiHeadline(c.verdict, c.status) : outcome.headline;
-  const summarySentence = firstSentence(c.summary);
-  const recommended = (c.recommended_action || '').trim();
-  const recommendationIsSummary =
-    Boolean(recommended) &&
-    normalizeSentence(recommended) === normalizeSentence(summarySentence || c.summary || '');
-  const terminal = outcome.terminal;
-
-  // The brief chip row values (triage-preferred, case-fallback).
-  const impactLevel = triage?.impact?.band ?? c.impact_band;
-  const priorityLevel = triage?.priority?.level ?? triage?.priority?.default ?? c.priority_level;
-  const briefChips: Array<{ label: string; value: string }> = [
-    { label: 'Verdict', value: c.verdict ? humanizeToken(c.verdict) : DASH },
-    { label: 'Confidence', value: fmtPercent(c.confidence) },
-    { label: 'Risk', value: typeof riskVal === 'number' ? `${Math.round(riskVal)}/100` : DASH },
-    { label: 'Impact', value: chipLabel(impactLevel) },
-    { label: 'Priority', value: chipLabel(priorityLevel) },
-    { label: 'Result', value: c.status ? humanizeToken(c.status) : DASH },
-  ];
-
-  const autoClose = autoCloseSummary(fpPolicy, c);
-
-  // Primary-entity scope (Internal / External) — best-effort, omitted when unknown.
+  // Primary-entity scope (Internal / External), best-effort, omitted when unknown.
   const entityScope: 'Internal' | 'External' | null = (() => {
     if (!entityValue) return null;
     if (entityType === 'host' || entityType === 'user') return 'Internal';
     if (entityType === 'ip') return isPrivateIp(entityValue) ? 'Internal' : 'External';
     return null;
   })();
-
-  // Enrichment KV rows for the PRIMARY ENTITY card (known scalar keys only).
+  // Enrichment rows for the primary entity (known scalar keys only).
+  const caseEnrichment =
+    c.enrichment && typeof c.enrichment === 'object' ? (c.enrichment as Record<string, unknown>) : null;
   const ENTITY_ENRICH_KEYS: Array<{ key: string; label: string; mono?: boolean }> = [
     { key: 'reputation_score', label: 'Reputation' },
     { key: 'country', label: 'Country' },
@@ -902,1007 +339,125 @@ export const OverviewPanel: React.FC<{
     }
   }
 
-  // Mini attack story — derived from case fields (no stages fetch on the Overview).
-  const storySteps: Array<{
-    label: string;
-    detail: string;
-    done: boolean;
-    icon: React.ComponentType<{ className?: string }>;
-    /** Case Manager: the tab that holds this step's full detail (no repeated facts). */
-    tab: OverviewTab;
-    link: string;
-  }> = [
-    {
-      icon: Database,
-      label: 'Detection rule fired',
-      detail: ruleIds[0] || c.source_name || 'Alert received from the source',
-      done: Boolean(ruleIds.length || triggerSentence || c.source_name),
-      tab: 'timeline',
-      link: 'See what happened on Timeline',
-    },
-    {
-      icon: Target,
-      label: 'Agent searched the logs',
-      detail: allEvidence.length
-        ? `${allEvidence.length} finding${allEvidence.length === 1 ? '' : 's'} gathered`
-        : 'No log evidence recorded',
-      done: allEvidence.length > 0,
-      tab: 'investigation',
-      link: 'See the searches on Investigation',
-    },
-    {
-      icon: Globe,
-      label: 'Reputation & intel checked',
-      detail: mitre.length
-        ? `${mitre.length} MITRE technique${mitre.length === 1 ? '' : 's'} mapped`
-        : ruledOut.length
-          ? 'Indicators checked & cleared'
-          : 'No intel matches recorded',
-      done: mitre.length > 0 || ruledOut.length > 0,
-      tab: 'threat',
-      link: 'See the intel on Threat context',
-    },
-    {
-      icon: ShieldCheck,
-      label: humanClosed ? 'Analyst resolved' : 'Case-manager routed',
-      detail: `${c.status ? humanizeToken(c.status) : 'Routed'}${c.decision_by ? ` · ${humanizeToken(c.decision_by)}` : ''}`,
-      done: Boolean(c.status || c.decision_by),
-      tab: 'investigation',
-      link: 'See the decision on Investigation',
-    },
-  ];
-
-  // Entity-relationship flow: entity → rule → surface.
-  const relationshipFlow = [
-    {
-      label: entityType ? entityTypeLabel(entityType) : 'Entity',
-      value: entityValue || DASH,
-      mono: Boolean(entityValue),
-    },
-    { label: 'Detection', value: ruleIds[0] || 'Rule', mono: Boolean(ruleIds[0]) },
-    // A source/surface NAME ("IBM QRadar SIEM") is prose, not an identifier.
-    { label: 'Surface', value: c.source_name || c.source_surface || 'Log surface', mono: false },
-  ];
-
-  // Evidence checklist rows (positive findings + ruled-out/clean checks).
-  const checklistRows: Array<{
-    check: string;
-    result: 'found' | 'clear';
-    evidence?: string;
-    impact: string;
-  }> = [
-    ...evidence.map((ev, i) => ({
-      check: ev.summary ? firstSentence(ev.summary) : `Evidence ${i + 1}`,
-      result: 'found' as const,
-      evidence: ev.query,
-      impact: 'Raises severity',
-    })),
-    ...ruledOut.map((ev, i) => ({
-      check: ev.summary ? firstSentence(ev.summary) : `Check ${i + 1}`,
-      result: 'clear' as const,
-      evidence: ev.query,
-      impact: 'Lowers severity',
-    })),
-  ];
-
-  // Reproduce-investigation queries (read-only ES/log searches + reproduce query).
-  const reproduceQueries = evidence.filter((e) => e.query);
-  const hasReproduce = reproduceQueries.length > 0 || Boolean(c.reproduce_query);
-
   return (
     <div
-      className={cn(
-        isCaseManager
-          ? cn('@container/overview space-y-6', CASE_MANAGER_PANEL_PADDING)
-          : 'space-y-6 p-6',
-      )}
-      data-case-panel={isCaseManager ? 'overview' : undefined}
-      data-presentation={isCaseManager ? 'case-manager' : undefined}
+      className={cn('@container/overview space-y-6', CASE_MANAGER_PANEL_PADDING)}
+      data-case-panel="overview"
+      data-presentation="case-manager"
     >
       {runbookCard}
-
-      {/* ============================================== 1. DECISION BRIEF */}
-      <PanelCard
-        data-testid={isCaseManager ? 'case-manager-decision-summary' : undefined}
-        data-overview-surface={isCaseManager ? 'flat-summary' : undefined}
-        className={cn(
-          isCaseManager
-            ? 'relative overflow-hidden rounded-none border-0 bg-transparent px-0 py-1 shadow-none'
-            : 'relative overflow-hidden border-l-2',
-          !isCaseManager && {
-            'border-l-critical/50': vHead.tone === 'critical',
-            'border-l-high/50': vHead.tone === 'high',
-            'border-l-medium/50': vHead.tone === 'medium',
-            'border-l-low/50': vHead.tone === 'low',
-            'border-l-info/50': vHead.tone === 'info',
-          },
-        )}
-      >
-        {isCaseManager ? (
-          <div className="min-w-0 max-w-4xl" data-outcome-source={outcome.source}>
-            {/* The outcome band (Round 12, D15). The headline is the outcome of record:
-                the analyst's classification once a person classified the case, else the
-                AI assessment, attributed with its AI tag. `text-lg`, below the case
-                title's `text-xl`: the title names WHICH case this is and must lead. */}
-            <div className="flex flex-wrap items-center gap-2">
-              <h2 className="text-lg font-semibold leading-tight tracking-tight text-foreground">
-                {headline}
-              </h2>
-              {outcome.source === 'pending' ? <ProvenanceTag kind="ai" /> : null}
-              {outcome.source === 'analyst' || outcome.source === 'analyst_policy' ? (
-                <ProvenanceTag kind="analyst" />
-              ) : null}
-            </div>
-            {outcome.source !== 'pending' && outcome.aiLine ? (
-              <p
-                data-testid="overview-ai-line"
-                className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground"
-              >
-                <Bot className="size-3.5 text-primary" aria-hidden />
-                <span>{outcome.aiLine}</span>
-                {outcome.source === 'analyst' && (outcome.by || outcome.at) ? (
-                  <span>
-                    · Classified{outcome.by ? ` by ${outcome.by}` : ''}
-                    {outcome.at ? ` ${humanizeAge(outcome.at)}` : ''}
-                  </span>
-                ) : null}
-              </p>
-            ) : null}
-            {outcome.source === 'analyst_unrecorded' && onSetDisposition ? (
-              <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                {/* What is missing is the ANALYST'S classification, not a disposition:
-                    the case can carry one (model-derived, or applied by a close that did
-                    not declare it), and the facts rail shows it as "not confirmed by an
-                    analyst". This line uses the same terms so the two never disagree. */}
-                <span data-testid="overview-unrecorded-note">
-                  No analyst classification was recorded when this case was {terminalVerb}.
-                  {dispositionOnFile
-                    ? ` The disposition on file (${dispositionWords(dispositionOnFile)}) is not confirmed by an analyst.`
-                    : null}
-                </span>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  className="h-7"
-                  data-testid="overview-set-disposition"
-                  onClick={(event) => onSetDisposition(event.currentTarget)}
-                >
-                  Set disposition
-                </Button>
-              </div>
-            ) : null}
-
-            {recommendationIsSummary && !terminal ? (
-              /* The summary and the recommendation say the same thing: one paragraph,
-                 labelled as both, so the datum is kept and the duplicate dropped. */
-              <div className="mt-4 space-y-1" data-testid="overview-summary-and-action">
-                <h3 className={FIELD_LABEL}>Summary and recommended action</h3>
-                <p className="whitespace-pre-wrap text-sm leading-relaxed text-foreground/90">
-                  {recommended}
-                </p>
-              </div>
-            ) : (
-              <>
-                {summarySentence ? (
-                  /* UNTRUSTED summary — plain text. */
-                  <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
-                    {summarySentence}
-                  </p>
-                ) : null}
-                {!terminal ? (
-                  <div className="mt-4 border-l-2 border-border py-1 pl-4">
-                    <div className="mb-1.5 flex items-center gap-2">
-                      <Activity className="h-4 w-4 text-muted-foreground" aria-hidden />
-                      <h3 className="text-sm font-semibold tracking-tight text-foreground">
-                        Recommended action
-                      </h3>
-                      <ProvenanceTag kind="ai" />
-                    </div>
-                    {/* UNTRUSTED — plain text. */}
-                    <p className="whitespace-pre-wrap text-sm leading-relaxed text-foreground/90">
-                      {recommended || DASH}
-                    </p>
-                  </div>
-                ) : null}
-              </>
-            )}
-
-            {typeof c.escalation_level === 'number' &&
-            c.escalation_level > 0 &&
-            String(c.status || '').toLowerCase() !== 'escalated' ? (
-              <div className="mt-3">
-                <Badge variant="critical" className="gap-1">
-                  <Bell className="h-3 w-3" />
-                  Escalated
-                </Badge>
-              </div>
-            ) : null}
-
-            {/* The authority sentence, ONCE. */}
-            <p data-testid="overview-authority" className="mt-3 text-xs text-muted-foreground">
-              {outcome.source === 'analyst_policy'
-                ? 'Closed by an operator rule that declared this detection benign. No model was asked.'
-                : humanClosed
-                  ? `${resolvedByHuman ? 'Resolved' : 'Closed'} by an analyst (a human lifecycle action). The deterministic policy did not ${resolvedByHuman ? 'resolve' : 'close'} this case.`
-                  : 'The close or escalate decision is made by deterministic code against the operator policy, never by this panel or by the model.'}
-            </p>
-            {autoClose ? (
-              <div className="mt-2 flex items-start gap-2 text-xs text-muted-foreground">
-                <Lock className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />
-                <span>{autoClose.line}</span>
-              </div>
-            ) : null}
-
-            {/* On a terminal case the AI's triage-time recommendation is demoted: kept,
-                retitled, and never presented as the next step. */}
-            {terminal && recommended ? (
-              <details className="group mt-4 text-sm" data-testid="overview-triage-recommendation">
-                <summary className="cursor-pointer list-none text-xs font-medium text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-                  <span className="inline-flex items-center gap-1.5">
-                    <ChevronDown className="h-3.5 w-3.5 transition-transform group-open:rotate-180" aria-hidden />
-                    AI recommendation at triage
-                  </span>
-                </summary>
-                {/* UNTRUSTED — plain text. */}
-                <p className="mt-2 whitespace-pre-wrap pl-5 text-sm leading-relaxed text-muted-foreground">
-                  {recommended}
-                </p>
-              </details>
-            ) : null}
-          </div>
-        ) : (
-          <>
-            <span className={FIELD_LABEL}>Decision brief</span>
-            {/* Verdict headline — our own controlled copy. */}
-            <h2 className="mt-1 text-2xl font-bold leading-tight tracking-tight text-foreground">
-              {headline}
-            </h2>
-            {summarySentence ? (
-              /* UNTRUSTED summary — plain text. */
-              <p className="mt-1.5 text-sm leading-relaxed text-muted-foreground">
-                {summarySentence}
-              </p>
-            ) : null}
-
-            {/* compact chip row */}
-            {triageLoading && !triage ? (
-              <Skeleton className="mt-4 h-10 w-full max-w-xl" />
-            ) : (
-              <div className="mt-4 flex flex-wrap items-stretch gap-x-6 gap-y-3">
-                {briefChips.map((chip) => (
-                  <BriefChip key={chip.label} label={chip.label} value={chip.value} />
-                ))}
-              </div>
-            )}
-
-            {/* status / disposition / escalation strip */}
-            <div className="mt-4 flex flex-wrap items-center gap-2">
-              <StatusBadge status={c.status} />
-              <DispositionBadge disposition={c.disposition ?? null} />
-              {typeof c.escalation_level === 'number' &&
-              c.escalation_level > 0 &&
-              String(c.status || '').toLowerCase() !== 'escalated' ? (
-                <Badge variant="critical" className="gap-1">
-                  <Bell className="h-3 w-3" />
-                  Escalated
-                </Badge>
-              ) : null}
-            </div>
-
-            {/* recommended action sub-panel */}
-            <div className="mt-4 rounded-lg border border-border bg-muted/30 p-4">
-              <div className="mb-2 flex items-center gap-2">
-                <Activity className="h-4 w-4 text-muted-foreground" aria-hidden />
-                <h3 className="text-sm font-semibold tracking-tight text-foreground">
-                  Recommended action
-                </h3>
-              </div>
-              {/* UNTRUSTED — plain text. */}
-              <p className="whitespace-pre-wrap text-sm text-foreground/90">
-                {c.recommended_action || DASH}
-              </p>
-              <p className="mt-2 text-xs text-muted-foreground">
-                Use the case action controls to close or escalate. The deterministic close /
-                escalate decision is always made by code, never by this panel.
-              </p>
-              {autoClose ? (
-                <div className="mt-3 flex items-start gap-2 rounded-md border border-border bg-card px-3 py-2 text-xs text-muted-foreground">
-                  <Lock className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />
-                  <span>{autoClose.line}</span>
-                </div>
-              ) : null}
-            </div>
-          </>
-        )}
-      </PanelCard>
-
-      {isCaseManager ? (
-        <InvestigationInputs
-          rationale={rationale}
-          loading={rationaleLoading}
-          error={rationaleError}
-          onRetry={onRetryRationale}
-          onReview={onOpenInvestigation}
-        />
-      ) : null}
-
-      {/* ============================================== 2. PROVENANCE ROW */}
-      <div
-        className={cn('space-y-4', isCaseManager && EMBEDDED_MAJOR_SECTION)}
-        data-case-manager-section={isCaseManager ? 'provenance' : undefined}
-      >
-        <SectionLabel testId="overview-section-label" quiet={isCaseManager}>
-          Provenance
-        </SectionLabel>
-
-        {/* delta cue — source severity vs. our risk band, only when they disagree. */}
-        {showSeverityDelta ? (
-          <div
-            data-testid="source-assessment-delta"
-            className={cn(
-              'flex flex-wrap items-center gap-x-2 gap-y-1 text-sm',
-              isCaseManager
-                ? 'rounded-sm bg-primary/5 px-3 py-2'
-                : 'rounded-md border border-primary/30 bg-primary/5 px-3 py-2',
-            )}
-          >
-            <span className="inline-flex items-center gap-1.5 text-foreground">
-              <Database className="h-3.5 w-3.5 text-info-text" aria-hidden />
-              Source severity: <span className="font-semibold">{sevLabel}</span>
-            </span>
-            <ArrowRight className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden />
-            <span className="inline-flex items-center gap-1.5 text-foreground">
-              We assess: <span className="font-semibold">{riskLabel} risk</span>
-            </span>
-          </div>
-        ) : null}
-
-        <div className={cn('grid', isCaseManager ? CM_THREE_LANES : 'gap-4 lg:grid-cols-3')}>
-          {/* SOURCE SAYS */}
-          <ProvenanceColumn
-            title="Source says"
-            kind="source"
-            icon={Database}
-            compact={isCaseManager}
-          >
-            {sourceFactsPresent ? (
-              <>
-                {isSourceAsserted && sevBandRaw ? (
-                  <div className="space-y-1">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className={FIELD_LABEL}>Reported severity</span>
-                      <SeverityBadge severity={sevBandRaw} />
-                      <ProvenanceTag kind={severityProvenance(sevSource)} />
-                    </div>
-                    <p className="text-xs text-muted-foreground">
-                      The source rated this alert {sevLabel} severity.
-                    </p>
-                  </div>
-                ) : null}
-                {ruleIds.length ? (
-                  <div className="space-y-1.5">
-                    <span className={cn('block', FIELD_LABEL)}>
-                      Detection rule{ruleIds.length === 1 ? '' : 's'}
-                    </span>
-                    <div className="flex min-w-0 flex-wrap gap-x-3 gap-y-1.5">
-                      {/* Round 14 (SPEC §4.6.5): each rule opens the rule sheet. The ids are
-                          UNTRUSTED plain text nodes inside the link (#9) and wrap anywhere so
-                          a long id never forces the card wider. One host keeps one sheet. */}
-                      <RuleSheetHost>
-                        {ruleIds.map((r, i) => (
-                          <RuleLink
-                            key={`${r}-${i}`}
-                            rule={r}
-                            origin={caseLabel(c)}
-                            className="min-w-0 max-w-full whitespace-normal text-left text-xs text-foreground [overflow-wrap:anywhere]"
-                          />
-                        ))}
-                      </RuleSheetHost>
-                    </div>
-                  </div>
-                ) : null}
-                {c.source_name ? <MetaItem label="Source" value={c.source_name} /> : null}
-                {triggerSentence ? (
-                  <div className="space-y-1">
-                    <span className={cn('block', FIELD_LABEL)}>Why it fired</span>
-                    {/* UNTRUSTED — plain text. */}
-                    <p className="text-sm leading-relaxed text-foreground/90">{triggerSentence}</p>
-                  </div>
-                ) : null}
-              </>
-            ) : (
-              <EmptyState icon={Database} compact title="No source-provided facts" />
-            )}
-          </ProvenanceColumn>
-
-          {/* AGENT FOUND */}
-          <ProvenanceColumn
-            title="Agent found"
-            kind="ai"
-            icon={Bot}
-            compact={isCaseManager}
-          >
-            {!isCaseManager ? (
-              <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-                <span className="inline-flex items-center gap-1.5">
-                  <VerdictBadge verdict={c.verdict} />
-                  <ProvenanceTag kind="ai" />
-                </span>
-                <span className="inline-flex items-center gap-1.5">
-                  <ConfidenceBadge
-                    confidence={c.confidence}
-                    {...confidenceCalibration(fpPolicy, c.verdict)}
-                  />
-                  <ProvenanceTag kind="ai" />
-                </span>
-              </div>
-            ) : null}
-            <ul className="space-y-2 text-sm">
-              {evidence.length ? (
-                <li>
-                  <AgentFindingMetric
-                    icon={CheckCircle2}
-                    tone="text-info-text"
-                    label={
-                      <>
-                        {evidence.length} matching finding{evidence.length === 1 ? '' : 's'} in the logs
-                      </>
-                    }
-                    detail={
-                      <>
-                        <p className="font-semibold">Persisted findings for this case</p>
-                        <ul className="space-y-1">
-                          {evidence.map((item, index) => (
-                            <li key={`${item.summary}-${index}`}>
-                              <span className="font-mono text-muted-foreground">{index + 1}.</span>{' '}
-                              <span>{item.summary || 'Finding recorded without a summary.'}</span>
-                              {item.event_ids?.length ? (
-                                <span className="text-muted-foreground">
-                                  {' '}· {item.event_ids.length} supporting event{item.event_ids.length === 1 ? '' : 's'}
-                                </span>
-                              ) : null}
-                            </li>
-                          ))}
-                        </ul>
-                      </>
-                    }
-                  />
-                </li>
-              ) : null}
-              {ruledOut.length ? (
-                <li>
-                  <AgentFindingMetric
-                    icon={CheckCircle2}
-                    tone="text-success"
-                    label={
-                      <>
-                        {ruledOut.length} check{ruledOut.length === 1 ? '' : 's'} came back clean, with no
-                        additional activity
-                      </>
-                    }
-                    detail={
-                      <>
-                        <p className="font-semibold">Checks recorded as clean</p>
-                        <ul className="space-y-1">
-                          {ruledOut.map((item, index) => (
-                            <li key={`${item.summary}-${index}`}>
-                              <span className="font-mono text-muted-foreground">{index + 1}.</span>{' '}
-                              <span>{item.summary || 'Clean check recorded without a summary.'}</span>
-                            </li>
-                          ))}
-                        </ul>
-                      </>
-                    }
-                  />
-                </li>
-              ) : null}
-              {relatedCount ? (
-                <li>
-                  <AgentFindingMetric
-                    icon={Link2}
-                    label={
-                      <>{relatedCount} prior analogous case{relatedCount === 1 ? '' : 's'}</>
-                    }
-                    detail={
-                      <>
-                        <p className="font-semibold">Related case IDs</p>
-                        <p className="break-all font-mono text-muted-foreground">
-                          {(c.related_case_ids || []).filter((rid) => rid && rid !== c.case_id).join(', ')}
-                        </p>
-                        <p className="text-muted-foreground">
-                          These are persisted cross-source relationships, not merged or duplicated cases.
-                        </p>
-                      </>
-                    }
-                  />
-                </li>
-              ) : null}
-              {mitre.length ? (
-                <li>
-                  <AgentFindingMetric
-                    icon={Shield}
-                    label={
-                      <>
-                        {mitre.length} MITRE technique{mitre.length === 1 ? '' : 's'} mapped. Full detail is
-                        on the Threat context tab
-                      </>
-                    }
-                    detail={
-                      <>
-                        <p className="font-semibold">Mapped technique IDs</p>
-                        <p className="break-words font-mono text-muted-foreground">{mitre.join(', ')}</p>
-                        <p className="text-muted-foreground">
-                          Open Threat context for names, tactics, reputation, and the clustering path.
-                        </p>
-                      </>
-                    }
-                  />
-                </li>
-              ) : null}
-              {!evidence.length && !ruledOut.length && !relatedCount && !mitre.length ? (
-                <li className="text-muted-foreground">
-                  No additional findings were recorded by the investigation.
-                </li>
-              ) : null}
-            </ul>
-          </ProvenanceColumn>
-
-          {/* CODE DECIDED — or, once a PERSON closed the case, ANALYST RESOLVED (D15):
-              claiming deterministic code closed a case an analyst closed contradicted the
-              Authority row beneath it. */}
-          <ProvenanceColumn
-            title={
-              isCaseManager && humanClosed
-                ? outcome.source === 'analyst_policy'
-                  ? 'Analyst policy'
-                  : 'Analyst resolved'
-                : 'Code decided'
-            }
-            kind={isCaseManager && humanClosed && outcome.source !== 'analyst_policy' ? 'analyst' : 'code'}
-            icon={ShieldCheck}
-            compact={isCaseManager}
-          >
-            {isCaseManager ? (
-              humanClosed ? (
-                /* The authority SENTENCE lives once, in the outcome band above; this lane
-                   keeps the facts behind it (who, what, when). */
-                <dl className="space-y-2.5 text-sm" data-testid="overview-analyst-lane">
-                  <div className="flex items-center justify-between gap-3">
-                    <dt className={FIELD_LABEL}>Authority</dt>
-                    <dd className="text-right text-foreground">
-                      {c.decision_by ? humanizeToken(c.decision_by) : 'Analyst'}
-                    </dd>
-                  </div>
-                  <div className="flex items-center justify-between gap-3">
-                    <dt className={FIELD_LABEL}>Outcome</dt>
-                    <dd className="text-right text-foreground">{outcome.shortLabel}</dd>
-                  </div>
-                  {outcome.source === 'analyst' && (outcome.by || outcome.at) ? (
-                    <div className="flex items-center justify-between gap-3">
-                      <dt className={FIELD_LABEL}>Classified</dt>
-                      {/* The analyst name is case data — plain text (#9). */}
-                      <dd className="text-right text-foreground">
-                        {outcome.by ? outcome.by : 'By an analyst'}
-                        {outcome.at ? <span className="text-muted-foreground"> · {humanizeAge(outcome.at)}</span> : null}
-                      </dd>
-                    </div>
-                  ) : null}
-                  <div className="flex items-center justify-between gap-3">
-                    <dt className={FIELD_LABEL}>Deterministic policy</dt>
-                    <dd className="text-right text-foreground">Not applied</dd>
-                  </div>
-                </dl>
-              ) : (
-                <>
-                  <div className="flex flex-wrap items-center justify-between gap-2 rounded-sm bg-muted/25 px-3 py-2">
-                    <span className="inline-flex items-center gap-1.5 text-xs font-medium text-foreground">
-                      <Lock className="h-3.5 w-3.5 text-success" aria-hidden />
-                      Deterministic decision authority
-                    </span>
-                    <Badge variant="success" className="font-mono">
-                      case_manager
-                    </Badge>
-                  </div>
-                  <dl className="space-y-2.5 text-sm">
-                    <div className="flex items-center justify-between gap-3">
-                      <dt className={FIELD_LABEL}>Authority</dt>
-                      <dd className="text-right text-foreground">
-                        {/* UNTRUSTED decider token — plain text. */}
-                        {c.decision_by ? humanizeToken(c.decision_by) : 'Deterministic code'}
-                      </dd>
-                    </div>
-                    {autoClose ? (
-                      <div className="flex items-center justify-between gap-3">
-                        <dt className={FIELD_LABEL}>Auto-close</dt>
-                        <dd className="text-right text-xs text-foreground/90">{autoClose.tag}</dd>
-                      </div>
-                    ) : null}
-                  </dl>
-                  {c.objection_window_expires_at &&
-                  !isAutoClosedByAI(c.status, c.decision_by) ? (
-                    <p className="text-xs text-muted-foreground">
-                      Objection window open until {formatTimestamp(c.objection_window_expires_at)}.
-                    </p>
-                  ) : null}
-                </>
-              )
-            ) : (
-              <>
-                <dl className="space-y-2.5 text-sm">
-                  <div className="flex items-center justify-between gap-3">
-                    <dt className={FIELD_LABEL}>Risk score</dt>
-                    <dd className="font-mono text-foreground tabular-nums">
-                      {typeof riskVal === 'number' ? `${Math.round(riskVal)}/100` : DASH}
-                    </dd>
-                  </div>
-                  <div className="flex items-center justify-between gap-3">
-                    <dt className={FIELD_LABEL}>Final route</dt>
-                    <dd>
-                      <StatusBadge status={c.status} />
-                    </dd>
-                  </div>
-                  <div className="flex items-center justify-between gap-3">
-                    <dt className={FIELD_LABEL}>Authority</dt>
-                    <dd className="text-right text-foreground">
-                      {/* UNTRUSTED decider token — plain text. */}
-                      {c.decision_by ? humanizeToken(c.decision_by) : 'Deterministic code'}
-                    </dd>
-                  </div>
-                  {autoClose ? (
-                    <div className="flex items-center justify-between gap-3">
-                      <dt className={FIELD_LABEL}>Auto-close</dt>
-                      <dd className="text-right text-xs text-foreground/90">{autoClose.tag}</dd>
-                    </div>
-                  ) : null}
-                </dl>
-                <p className="text-xs text-muted-foreground">
-                  The close / escalate call is made by deterministic code against the
-                  operator-configured policy, never by raw model output.
-                </p>
-              </>
-            )}
-          </ProvenanceColumn>
-        </div>
-
-        {/* The default sheet retains the pinned deterministic decision card. The embedded
-            workspace has already consolidated those same case-field projections into the
-            CODE DECIDED lane above, so rendering the card there would repeat verdict,
-            confidence, risk, and result. Exact policy clause + trace remain on Investigation. */}
-        {!isCaseManager ? <DecisionCard c={c} rationale={null} timeline={null} /> : null}
-      </div>
-
-      {/* ============================================== 3. ENTITY ROW */}
-      <div
-        className={cn('space-y-4', isCaseManager && EMBEDDED_MAJOR_SECTION)}
-        data-case-manager-section={isCaseManager ? 'entity-story' : undefined}
-      >
-        <SectionLabel testId="overview-section-label" quiet={isCaseManager}>
-          Entity &amp; story
-        </SectionLabel>
-        <div className={cn('grid', isCaseManager ? CM_THREE_LANES : 'gap-4 lg:grid-cols-3')}>
-          {/* PRIMARY ENTITY */}
-          <PanelCard
-            data-overview-surface={isCaseManager ? 'flat-column' : undefined}
-            className={cn(isCaseManager && EMBEDDED_FLAT_COLUMN)}
-          >
-            <SectionHeading icon={Crosshair}>Primary entity</SectionHeading>
-            {entityValue ? (
-              <div className="space-y-3">
-                <div className="flex flex-wrap items-center gap-2">
-                  {/* UNTRUSTED entity value — inside an InlineCode fence. */}
-                  <InlineCode className="break-all">{entityValue}</InlineCode>
-                  {entityScope ? (
-                    <Badge variant={entityScope === 'External' ? 'high' : 'outline'}>
-                      {entityScope}
-                    </Badge>
-                  ) : null}
-                  <Badge variant="outline">
-                    {entityType ? entityTypeLabel(entityType) : 'Entity'}
-                  </Badge>
-                </div>
-                {entityEnrichRows.length ? (
-                  <dl className={cn(!isCaseManager && 'divide-y divide-border')}>
-                    {entityEnrichRows.map((row, i) => (
-                      <div
-                        key={`${row.k}-${i}`}
-                        className="flex items-center justify-between gap-3 py-2 first:pt-0 last:pb-0"
-                      >
-                        <dt className={FIELD_LABEL}>{row.k}</dt>
-                        {/* UNTRUSTED enrichment value — plain text; only a true
-                            identifier (the ASN) keeps the mono face. */}
-                        <dd
-                          className={cn(
-                            'min-w-0 truncate text-right text-sm tabular-nums text-foreground',
-                            row.mono && 'font-mono',
-                          )}
-                        >
-                          {row.v}
-                        </dd>
-                      </div>
-                    ))}
-                  </dl>
-                ) : null}
-                <div className="flex flex-wrap gap-2">
-                  <CopyChip value={entityValue} label="Copy indicator" />
-                  {/* Round 12 WP-ASK: an action row, so always shown, as a labelled chip
-                      in the Copy chip's shape (with its own hover). Opens a NEW Workspace
-                      chat, never the case chat (#5). */}
-                  <AskAi type={entityType} value={entityValue} reveal={false} />
-                </div>
-              </div>
-            ) : (
-              <EmptyState icon={Crosshair} compact title="No primary entity recorded" />
-            )}
-          </PanelCard>
-
-          {/* MINI ATTACK STORY */}
-          <PanelCard
-            data-overview-surface={isCaseManager ? 'flat-column' : undefined}
-            className={cn(isCaseManager && EMBEDDED_FLAT_COLUMN)}
-          >
-            <SectionHeading icon={Activity}>Attack story</SectionHeading>
-            <ol className="relative space-y-4 border-l border-border pl-5">
-              {storySteps.map((step, i) => {
-                const StepIcon = step.icon;
-                return (
-                  <li key={i} className="relative">
-                    <span
-                      aria-hidden="true"
-                      className={cn(
-                        'absolute -left-[1.65rem] top-0.5 flex h-5 w-5 items-center justify-center rounded-full border-2 border-card',
-                        step.done ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground',
-                      )}
-                    >
-                      <StepIcon className="h-3 w-3" />
-                    </span>
-                    <p className="text-sm font-medium text-foreground">{step.label}</p>
-                    {isCaseManager && onOpenTab ? (
-                      /* Case Manager: link to the step's full detail instead of repeating
-                         the rule, source and status shown elsewhere on this page. */
-                      <button
-                        type="button"
-                        onClick={() => onOpenTab(step.tab)}
-                        className="rounded-sm text-left text-xs text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                      >
-                        {step.link}
-                      </button>
-                    ) : (
-                      /* UNTRUSTED detail (rule id / source / status) — plain text. */
-                      <p className="text-xs text-muted-foreground">{step.detail}</p>
-                    )}
-                  </li>
-                );
-              })}
-            </ol>
-          </PanelCard>
-
-          {/* ENTITY RELATIONSHIP — the default sheet only. In the Case Manager its facts
-              (entity → rule → surface) live once, in the facts rail's Primary entity. */}
-          {!isCaseManager ? (
-          <PanelCard
-            data-overview-surface={isCaseManager ? 'flat-column' : undefined}
-            className={cn(isCaseManager && EMBEDDED_FLAT_COLUMN)}
-          >
-            <SectionHeading icon={GitBranch}>Entity relationship</SectionHeading>
-            <div className="flex flex-col gap-2">
-              {relationshipFlow.map((node, i) => (
-                <React.Fragment key={node.label}>
-                  <div
-                    className={cn(
-                      'rounded-md px-3 py-2',
-                      isCaseManager ? 'bg-muted/25' : 'border border-border bg-muted/30',
-                    )}
-                  >
-                    <div className={FIELD_LABEL}>{node.label}</div>
-                    {/* UNTRUSTED value — plain text that wraps at spaces first and only
-                        splits a space-less id when it must; identifiers stay mono. */}
-                    <div
-                      className={cn(
-                        'mt-0.5 text-sm text-foreground [overflow-wrap:anywhere]',
-                        node.mono && 'font-mono',
-                      )}
-                    >
-                      {node.value}
-                    </div>
-                  </div>
-                  {i < relationshipFlow.length - 1 ? (
-                    <ArrowRight
-                      className="mx-auto h-4 w-4 rotate-90 text-muted-foreground"
-                      aria-hidden
-                    />
-                  ) : null}
-                </React.Fragment>
-              ))}
-            </div>
-          </PanelCard>
-          ) : null}
-        </div>
-      </div>
-
-      {/* anomaly baseline (advisory, #4) — fail-quiet, renders nothing when absent. */}
-      <BaselineAdvisory c={c} flat={isCaseManager} />
-
-      {/* ============================================== 4. EVIDENCE */}
-      <div
-        className={cn('space-y-4', isCaseManager && EMBEDDED_MAJOR_SECTION)}
-        data-case-manager-section={isCaseManager ? 'evidence' : undefined}
-      >
-        <SectionLabel testId="overview-section-label" quiet={isCaseManager}>
-          Evidence
-        </SectionLabel>
-        <div className={cn('grid', isCaseManager ? CM_THREE_LANES : 'gap-4 lg:grid-cols-3')}>
-          {/* EVIDENCE CHECKLIST */}
-          <PanelCard
-            data-overview-surface={isCaseManager ? 'flat-column' : undefined}
-            className={cn(
-              isCaseManager ? '@[42rem]/overview:col-span-2' : 'lg:col-span-2',
-              isCaseManager && EMBEDDED_FLAT_COLUMN,
-            )}
-          >
-            <SectionHeading icon={Search}>Evidence checklist</SectionHeading>
-            {checklistRows.length ? (
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="border-b border-border text-left">
-                      <th
-                        scope="col"
-                        className={cn('pb-2 pr-3', FIELD_LABEL)}
-                      >
-                        Check
-                      </th>
-                      <th
-                        scope="col"
-                        className={cn('pb-2 pr-3', FIELD_LABEL)}
-                      >
-                        Result
-                      </th>
-                      <th
-                        scope="col"
-                        className={cn('pb-2 pr-3', FIELD_LABEL)}
-                      >
-                        Evidence
-                      </th>
-                      <th
-                        scope="col"
-                        className={cn('pb-2', FIELD_LABEL)}
-                      >
-                        Confidence impact
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-border">
-                    {checklistRows.map((row, i) => (
-                      <tr key={i} className="align-top">
-                        {/* UNTRUSTED check subject — plain text. */}
-                        <td className="max-w-[16rem] py-2.5 pr-3 text-foreground/90">{row.check}</td>
-                        <td className="py-2.5 pr-3">
-                          <Badge variant={row.result === 'found' ? 'high' : 'success'}>
-                            {row.result === 'found' ? 'Found' : 'Clear'}
-                          </Badge>
-                        </td>
-                        <td className="py-2.5 pr-3">
-                          {row.evidence ? (
-                            /* UNTRUSTED query — inside an InlineCode fence. */
-                            <InlineCode className="break-all text-xs">{row.evidence}</InlineCode>
-                          ) : (
-                            <span className="text-muted-foreground">{DASH}</span>
-                          )}
-                        </td>
-                        <td className="py-2.5 text-xs text-muted-foreground">{row.impact}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            ) : (
-              <EmptyState
-                icon={Search}
-                compact
-                title="No evidence recorded"
-                description="No positive findings or ruled-out checks were captured for this case."
-              />
-            )}
-          </PanelCard>
-
-          {/* REPRODUCE INVESTIGATION */}
-          <PanelCard
-            data-overview-surface={isCaseManager ? 'flat-column' : undefined}
-            className={cn(isCaseManager && EMBEDDED_FLAT_COLUMN)}
-          >
-            <SectionHeading icon={Target}>Reproduce investigation</SectionHeading>
-            {hasReproduce ? (
-              <div className="space-y-3">
-                {reproduceQueries.map((e, i) => (
-                  <div key={i} className="space-y-1.5">
-                    <span className={cn('block', FIELD_LABEL)}>Search query</span>
-                    {/* UNTRUSTED query — inside a CodeBlock fence, copyable. */}
-                    <CodeBlock value={e.query} copyable wrap maxHeightClassName="max-h-40" />
-                  </div>
-                ))}
-                {c.reproduce_query ? (
-                  <div className="space-y-1.5">
-                    <span className={cn('block', FIELD_LABEL)}>Reproduce query</span>
-                    <CodeBlock
-                      value={c.reproduce_query}
-                      caption="read-only"
-                      copyable
-                      wrap
-                      maxHeightClassName="max-h-40"
-                    />
-                  </div>
-                ) : null}
-              </div>
-            ) : (
-              <EmptyState icon={Target} compact title="No reproducible query recorded" />
-            )}
-          </PanelCard>
-        </div>
-      </div>
-
-      {/* ============================================== 5. COLLAPSIBLES */}
-      {relatedCount || c.source_breakdown || c.cross_source_cluster_id ? (
-        <CollapsibleSection label="Related cases" icon={GitBranch}>
-          <RelatedCrossSource c={c} onNavigate={onNavigate} flat={isCaseManager} />
-        </CollapsibleSection>
-      ) : null}
-
-      <CollapsibleSection label="Provenance & audit" icon={History}>
-        {/* threshold automation (F10) */}
-        <AutomationApplied c={c} flat={isCaseManager} />
-        {/* status timeline (F8) */}
-        <StatusTimeline
-          history={c.status_history}
-          statusReason={c.status_reason}
-          flat={isCaseManager}
-        />
-        {/* run/cost meta — OUR processing metadata. The Case Manager shows each of these
-            once, in the facts rail (Times and SLA, Record). */}
-        {!isCaseManager ? (
-        <div className="flex flex-wrap items-center gap-x-6 gap-y-1 text-xs text-muted-foreground">
-          {c.created_at ? <span>Created {formatTimestamp(c.created_at)}</span> : null}
-          {c.updated_at ? <span>Processed {formatTimestamp(c.updated_at)}</span> : null}
-          <span
-            title={
-              buildLabel
-                ? `Creation build ${appVersion || 'unavailable'} · ${buildSha || 'unavailable'}`
-                : undefined
-            }
-          >
-            {buildLabel
-              ? `Creation build ${buildLabel}`
-              : 'Creation build provenance unavailable'}
-          </span>
-          {/* UNTRUSTED profile (runbook id / persona): plain text. A case from before
-              Round 14 keeps its stored id under a Console-authored label. */}
-          {c.runbook_id ? (
-            <span>
-              Investigator runbook {c.runbook_id}
-              {typeof c.runbook_version === 'number' ? ` v${c.runbook_version}` : ''}
-            </span>
-          ) : c.playbook_id ? (
-            <span>Runbook (before Round 14) {c.playbook_id}</span>
-          ) : null}
-          {c.agent_persona && c.agent_persona !== 'generalist' ? (
-            <span>Profile {humanizeToken(c.agent_persona)}</span>
-          ) : null}
-          {canViewCost && c.token_cost != null ? (
-            <span>Investigation cost {fmtMoney(c.token_cost)}</span>
-          ) : null}
-          {c.decision_by ? <span>Decided by {humanizeToken(c.decision_by)}</span> : null}
-        </div>
-        ) : null}
-      </CollapsibleSection>
 
       {c.error ? (
         <Alert variant="destructive">
           <AlertTriangle className="h-4 w-4" />
           <AlertTitle>Investigation error</AlertTitle>
-          {/* UNTRUSTED — plain text. */}
+          {/* UNTRUSTED: plain text. */}
           <AlertDescription className="whitespace-pre-wrap">{c.error}</AlertDescription>
         </Alert>
       ) : null}
+
+      {/* ============================================================ 1. SUMMARY */}
+      <PanelSection
+        title="Summary"
+        adornment={fromAi ? <ProvenanceTag kind="ai" /> : null}
+        testId="overview-summary"
+      >
+        <div className="max-w-3xl space-y-4">
+          {recommendationIsSummary && !terminal ? (
+            <div className="space-y-1" data-testid="overview-summary-and-action">
+              <h3 className={FIELD_LABEL}>Summary and recommended action</h3>
+              {/* UNTRUSTED: plain text. */}
+              <p className="whitespace-pre-wrap text-sm leading-relaxed text-foreground/90">{recommended}</p>
+            </div>
+          ) : (
+            <>
+              {/* UNTRUSTED summary: plain text. */}
+              <p
+                data-testid="overview-summary-text"
+                className={cn('text-sm leading-relaxed', summary ? 'text-foreground/90' : 'text-muted-foreground')}
+              >
+                {summary || 'The AI has not written a summary for this case.'}
+              </p>
+              {!terminal && recommended ? (
+                <div className="space-y-1" data-testid="overview-recommended-action">
+                  <h3 className={FIELD_LABEL}>Recommended action</h3>
+                  {/* UNTRUSTED: plain text. */}
+                  <p className="whitespace-pre-wrap text-sm leading-relaxed text-foreground/90">{recommended}</p>
+                </div>
+              ) : null}
+            </>
+          )}
+          {/* On a case that ended, the AI's triage-time recommendation is demoted: kept,
+              retitled, and never presented as the next step. */}
+          {terminal && recommended ? (
+            <details className="group text-sm" data-testid="overview-triage-recommendation">
+              <summary className="w-fit cursor-pointer list-none rounded-sm text-xs font-medium text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                <span className="inline-flex items-center gap-1.5">
+                  <ChevronDown className="h-3.5 w-3.5 transition-transform group-open:rotate-180" aria-hidden />
+                  AI recommendation at triage
+                </span>
+              </summary>
+              {/* UNTRUSTED: plain text. */}
+              <p className="mt-2 whitespace-pre-wrap pl-5 text-sm leading-relaxed text-muted-foreground">{recommended}</p>
+            </details>
+          ) : null}
+        </div>
+      </PanelSection>
+
+      {/* ====================================================== 2. WHAT HAPPENED */}
+      <PanelSection title="What happened" section="what-happened" testId="overview-what-happened">
+        {triggerSentence ? (
+          <p className="max-w-3xl text-sm leading-relaxed text-foreground/90" data-testid="overview-trigger">
+            <span className="text-muted-foreground">Why it fired: </span>
+            {/* UNTRUSTED: plain text. */}
+            {triggerSentence}
+          </p>
+        ) : null}
+        {whatHappened}
+      </PanelSection>
+
+      {/* ======================================================= 3. KEY ENTITIES */}
+      <PanelSection title="Key entities" testId="overview-entities">
+        {entityValue ? (
+          <div className="space-y-3">
+            <div className="space-y-1.5">
+              <span className={cn('block', FIELD_LABEL)}>Primary entity</span>
+              <div className="flex flex-wrap items-center gap-2">
+                {/* UNTRUSTED entity value: inside an InlineCode fence. */}
+                <InlineCode className="break-all">{entityValue}</InlineCode>
+                {entityScope ? (
+                  <Badge variant={entityScope === 'External' ? 'high' : 'outline'}>{entityScope}</Badge>
+                ) : null}
+                <Badge variant="outline">{entityType ? entityTypeLabel(entityType) : 'Entity'}</Badge>
+                <CopyChip value={entityValue} label="Copy indicator" />
+                {/* Round 12 WP-ASK: an action row, so always shown, as a labelled chip in
+                    the Copy chip's shape. Opens a NEW Workspace chat, never the case chat (#5). */}
+                <AskAi type={entityType} value={entityValue} reveal={false} />
+              </div>
+            </div>
+            {entityEnrichRows.length ? (
+              <dl className="grid max-w-3xl grid-cols-2 gap-x-6 gap-y-2 @[40rem]/overview:grid-cols-3">
+                {entityEnrichRows.map((row, i) => (
+                  <div key={`${row.k}-${i}`} className="min-w-0">
+                    <dt className={FIELD_LABEL}>{row.k}</dt>
+                    {/* UNTRUSTED enrichment value: plain text; only a true identifier (the
+                        ASN) keeps the mono face. */}
+                    <dd className={cn('truncate text-sm text-foreground', row.mono && 'font-mono')} title={row.v}>
+                      {row.v}
+                    </dd>
+                  </div>
+                ))}
+              </dl>
+            ) : null}
+          </div>
+        ) : (
+          <p className="text-sm text-muted-foreground">No primary entity was recorded for this case.</p>
+        )}
+      </PanelSection>
+
+      {/* ================================================ 4. RELATED, 5. BASELINE */}
+      <RelatedCases c={c} onNavigate={onNavigate} />
+      <BaselineAdvisory c={c} />
     </div>
   );
 };

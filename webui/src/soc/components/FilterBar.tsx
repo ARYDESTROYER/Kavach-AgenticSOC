@@ -12,7 +12,8 @@
  *  - `search`: the free-text search (`label` is its accessible name; the placeholder
  *                shortens below 768px to `compactPlaceholder`, default the label).
  *  - `filters`: the filter controls, in priority order. The first `primaryCount` (at
- *                most three) sit in the bar; the rest move behind "More filters". Each
+ *                most three) sit in the bar; the rest move behind "More filters" (named
+ *                "Filters" when `primaryCount` is 0 and every filter is behind it). Each
  *                has a visible `label` (shown in the menu and the phone sheet; the
  *                control's own accessible name should contain it) and `active` when it
  *                holds a non-default value (counted on "More filters" and "Filters").
@@ -72,6 +73,8 @@ export interface FilterBarSearch {
   placeholder?: string;
   /** Placeholder below 768px ("Search cases"). Defaults to `label`. */
   compactPlaceholder?: string;
+  /** The page's shortcut to this field (`aria-keyshortcuts`, for example "/"). */
+  keyShortcuts?: string;
 }
 
 /** Where a filter control is drawn: in the bar (compact, fixed width) or in a menu or sheet (full width). */
@@ -185,6 +188,8 @@ export const FilterBar = React.forwardRef<HTMLDivElement, FilterBarProps>(
     const primary = all.slice(0, inlineCount);
     const more = all.slice(inlineCount);
     const moreActive = more.filter((f) => f.active).length;
+    // With no filter in the bar, the popover holds them all: it is "Filters", not "More".
+    const moreLabel = inlineCount === 0 ? 'Filters' : 'More filters';
     const chipList = chips ?? [];
     const activeCount = activeCountProp ?? (chipList.length || all.filter((f) => f.active).length);
 
@@ -253,6 +258,7 @@ export const FilterBar = React.forwardRef<HTMLDivElement, FilterBarProps>(
           onChange={(event) => search.onChange(event.target.value)}
           placeholder={compact ? search.compactPlaceholder ?? search.label : search.placeholder ?? search.label}
           aria-label={search.label}
+          aria-keyshortcuts={search.keyShortcuts}
           className="h-8 pl-9"
         />
       </div>
@@ -333,11 +339,11 @@ export const FilterBar = React.forwardRef<HTMLDivElement, FilterBarProps>(
                   <PopoverTrigger asChild>
                     <Button type="button" variant="outline" size="sm" className="h-8 gap-1.5">
                       <SlidersHorizontal aria-hidden />
-                      More filters
+                      {moreLabel}
                       <ActiveCount count={moreActive} />
                     </Button>
                   </PopoverTrigger>
-                  <PopoverContent aria-label="More filters" align="start" className="w-72 space-y-3">
+                  <PopoverContent aria-label={moreLabel} align="start" className="w-72 space-y-3">
                     {more.map((filter) => (
                       <MenuFilter key={filter.id} filter={filter} />
                     ))}

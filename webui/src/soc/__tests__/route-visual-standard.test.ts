@@ -82,7 +82,7 @@ describe("Console route visual standard", () => {
     // shell gutter to a constant 16px inset at every width. Tuned independently they drift,
     // and at >=1536px the board overflows `<main class="… overflow-x-hidden">` by 8px/side.
     // jsdom cannot see either (no layout, no media queries), so the source strings ARE the
-    // proof — no other gate covers this.
+    // proof: no other gate covers this.
     expect(source("soc/AppShell.tsx")).toContain(
       "const CONTENT_INSET = 'mx-auto w-full min-w-0 px-4 py-6 sm:px-6';",
     );
@@ -103,13 +103,22 @@ describe("Console route visual standard", () => {
 
     for (const file of [
       "soc/pages/casedetail/OverviewPanel.tsx",
-      "soc/pages/casedetail/TimelinePanel.tsx",
       "soc/pages/casedetail/InvestigationPanel.tsx",
-      "soc/pages/casedetail/ThreatContextPanel.tsx",
       "soc/pages/casedetail/CollaborationPanel.tsx",
       "soc/pages/casedetail/CaseChatPanel.tsx",
     ]) {
       expect(source(file), `${file} must reuse the Case Manager content rail`).toContain(
+        "CASE_MANAGER_PANEL_PADDING",
+      );
+    }
+    // Round 15 (D8.3): the stage timeline and the threat context are SECTIONS of the
+    // Overview and Investigation tabs, which own the rail, so they never add their own
+    // (a second rail would stack 32px gutters inside the tab).
+    for (const file of [
+      "soc/pages/casedetail/TimelinePanel.tsx",
+      "soc/pages/casedetail/ThreatContextPanel.tsx",
+    ]) {
+      expect(source(file), `${file} must not add a rail of its own`).not.toContain(
         "CASE_MANAGER_PANEL_PADDING",
       );
     }

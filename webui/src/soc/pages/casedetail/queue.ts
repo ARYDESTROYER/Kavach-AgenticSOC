@@ -1,5 +1,5 @@
 /**
- * Case Manager queue — pure helpers (Round 12, CM-1).
+ * Case Manager queue: pure helpers (Round 12, CM-1).
  *
  * The queue is SERVER-backed: scope, status, severity, search, owner and sort all go to
  * `GET /api/cases` and the server pages the whole matching population. Before this the
@@ -16,7 +16,7 @@ export type QueueSort = 'updated_desc' | 'risk_desc' | 'created_desc' | 'title_a
 
 /** How many rows one queue page fetches. */
 export const QUEUE_PAGE_SIZE = 50;
-/** The server's page ceiling (`CASE_PAGE_LIMIT`) — the largest single request. */
+/** The server's page ceiling (`CASE_PAGE_LIMIT`): the largest single request. */
 export const QUEUE_MAX_PAGE = 200;
 /** "Select all matching" is a server snapshot; the durable job accepts up to 5,000 ids. */
 export const QUEUE_SELECT_ALL_LIMIT = 5000;
@@ -38,6 +38,14 @@ export const QUEUE_STATUS_OPTIONS: ReadonlyArray<{ value: string; label: string;
 ];
 
 export const QUEUE_SEVERITIES = ['critical', 'high', 'medium', 'low', 'info'] as const;
+
+/** The view menu's words for each sort (Round 15, D8.1), in menu order. */
+export const QUEUE_SORT_LABEL: Readonly<Record<QueueSort, string>> = {
+  updated_desc: 'Latest',
+  risk_desc: 'Highest risk',
+  created_desc: 'Newest',
+  title_asc: 'Title, A to Z',
+};
 
 const SORTS: Record<QueueSort, { sort_field: string; sort_order: 'asc' | 'desc' }> = {
   updated_desc: { sort_field: 'updated_at', sort_order: 'desc' },
@@ -189,7 +197,7 @@ export function windowPlacement(
 ): 'inside' | 'beyond' | 'edge' {
   const others = loaded.filter((row) => row.case_id !== c.case_id);
   if (others.length === 0 || others.length >= total) return 'inside';
-  // The boundary is the loaded row that lists LAST — not the last row on screen, which
+  // The boundary is the loaded row that lists LAST: not the last row on screen, which
   // may have been updated in place since the window was read.
   const boundary = others.reduce((last, row) => (compareQueueOrder(row, last, sort) > 0 ? row : last));
   const order = compareQueueOrder(c, boundary, sort);
@@ -235,7 +243,7 @@ export function scopeHeading(scope: QueueScope): string {
   return 'Active cases';
 }
 
-/** "23 of 253 active · 50 loaded" — the scope line always states loaded vs total. */
+/** "23 of 253 active · 50 loaded": the scope line (in the list footer) states loaded against total. */
 export function scopeSummary(
   scope: QueueScope,
   loaded: number,
@@ -249,3 +257,36 @@ export function scopeSummary(
       : `${total.toLocaleString()} ${noun}`;
   return `${lead} · ${loaded.toLocaleString()} loaded`;
 }
+
+/**
+ * Round 15 (SPEC D4.7): the case's FIRST recorded decision closed it automatically (the
+ * first `history` entry with `event: "decision"`, the anchor `metrics.decision_record`
+ * reads: it survives a reopen and a re-investigation, so a later decision never moves
+ * it). Mirrors the server's `auto_close_review.first_decision_is_agent_close`.
+ */
+export function firstDecisionIsAgentClose(c: Pick<Case, 'history'> | Case): boolean {
+  const history = (c as { history?: unknown }).history;
+  if (!Array.isArray(history)) return false;
+  const first = history.find(
+    (entry): entry is Record<string, unknown> =>
+      Boolean(entry) && typeof entry === 'object' && (entry as Record<string, unknown>).event === 'decision',
+  );
+  if (!first) return false;
+  return (
+    String(first.status ?? '').trim().toLowerCase() === 'closed' &&
+    String(first.decision_by ?? '').trim().toLowerCase() === 'agent'
+  );
+}
+
+/**
+ * Round 15 (SPEC D4.7): a case that ended and whose first decision was an automatic
+ * close. A person reviews such a case (the auto-close review) rather than re-labelling it
+ * in bulk, so the Case Manager's bulk Set status and Set disposition leave it out. The
+ * backend verbs are unchanged; this is the Console's choice of which cases to send.
+ */
+export function isAgentClosedCase(c: Pick<Case, 'status' | 'history'> | Case): boolean {
+  return TERMINAL_STATUSES.has(String(c.status ?? '').trim().toLowerCase()) && firstDecisionIsAgentClose(c);
+}
+
+/** The words the bulk Set status and Set disposition dialogs use for that rule. */
+export const AGENT_CLOSED_LEFT_OUT = 'Cases the AI agent closed are left out; review them instead.';

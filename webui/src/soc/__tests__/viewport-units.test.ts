@@ -11,8 +11,6 @@ const SOURCES = [
   ['AppShell.tsx'],
   ['components', 'NavSidebar.tsx'],
   ['pages', 'Login.tsx'],
-  ['pages', 'casedetail', 'CollaborationPanel.tsx'],
-  ['pages', 'casedetail', 'CaseChatPanel.tsx'],
   ['pages', 'Roles.tsx'],
   ['pages', 'Sources.tsx'],
 ];
@@ -30,6 +28,28 @@ describe('dynamic viewport shell contract', () => {
     expect(source).toContain('dvh');
     expect(source).not.toMatch(/\b(?:h|min-h|max-h)-screen\b/);
     expect(source).not.toContain('100vh');
+  });
+
+  it('sizes the case Chat tab from its lane, with no viewport height of its own', () => {
+    // Round 15 (D8.7): the Chat tab has one layout, the full-height lane Case Manager
+    // gives it, so the retired card's `h-[60dvh]` went with the card.
+    const source = readFileSync(path.resolve(__dirname, '..', 'pages', 'casedetail', 'CaseChatPanel.tsx'), 'utf8');
+    expect(source).toContain('h-full min-h-0');
+    expect(source).not.toMatch(/\b(?:h|min-h|max-h)-screen\b/);
+    expect(source).not.toContain('100vh');
+  });
+
+  it('sizes the case Collaboration tab from its pane, with no viewport height of its own', () => {
+    // Round 15 (D8.3): the side column (tasks and history) no longer sticks to the
+    // viewport; the tab follows the Case Manager pane through container queries, so a
+    // viewport unit there would size it against the wrong box.
+    const source = readFileSync(
+      path.resolve(__dirname, '..', 'pages', 'casedetail', 'CollaborationPanel.tsx'),
+      'utf8',
+    );
+    expect(source).toContain('@container/collab');
+    expect(source).not.toMatch(/\b(?:h|min-h|max-h)-screen\b/);
+    expect(source).not.toMatch(/\d+(?:\.\d+)?d?vh\b/);
   });
 
   it.each([
