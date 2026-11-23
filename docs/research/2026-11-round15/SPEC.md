@@ -954,8 +954,9 @@ note), `docs/releases/known-limitations.md`.
 
 ## 8. As built
 
-Filled by the orchestrator after integration: contract resolutions, per-package notes, gate
-results, entry bytes, known limitations.
+Recorded from the package reports, their independent reviews, the Journal and the code as built
+(commits `6713dfd` to `8e3e6d4` on `claude/round15`). This section describes what shipped; where
+it and §1 to §7 disagree, this section wins.
 
 ### 8.1 Contract resolutions
 
@@ -965,8 +966,8 @@ results, entry bytes, known limitations.
   ratchet §3.1 allows. The merged Wave 2 tree (`c3d7cd3`) measured 337,999 B, 759 B over the
   Round 14 budget: Wizard.tsx +693 (WP2's AI runtime copy, provider table and readiness
   logic, eager because App.tsx imports the wizard), router.tsx +475 and case-tabs.ts +71
-  (WP6's retired tab links, WP3's Team activity route), registry.tsx -558 (WP3 removed the
-  hidden duplicate `FEATURES` entries), useEventStream.ts +14 (WP5's `case.review` channel),
+  (WP6's retired tab links; only WP6 changed router.tsx), registry.tsx -558 (WP3 removed the
+  hidden duplicate `FEATURES` entries and added the Team activity child), useEventStream.ts +14 (WP5's `case.review` channel),
   +108 unmapped and +33 attribution drift. The entry package then moved the wizard's AI
   runtime and review stages into the lazy chunk `pages/wizard/RuntimeReviewSteps.tsx`,
   behind one lazy component for both stages, prefetched when the browser is idle: 329,084 B
@@ -976,6 +977,271 @@ results, entry bytes, known limitations.
   `npm run build:app`, 7,136 B under the Round 14 baseline of 336,216 B, so the baseline was
   lowered to it and those bytes cannot be spent unseen. A CI build stamps the SHA and date,
   about +46 B.
+- **Feature response models live in their routers (WP1 to WP5, WP7).** §4.2 put the response
+  models in `models.py`; none were added there (WP1 added only `FeedbackEntry.origin` and
+  `FeedbackEntry.review_id`). Each feature router defines its own: `RbacStatus` and
+  `RbacUpdateResult` in `api/routes_rbac.py`, `TeamActivity` and its parts in
+  `api/routes_team.py`, `CaseFileEntry` and the list and result models in
+  `api/routes_case_files.py`, and `ReviewResult`, `AutoCloseReviewSummary`, `CaseReviewState` and
+  `AutoCloseReviewMetrics` in `api/routes_auto_close_review.py`. There is no
+  `AutoCloseReviewEntry`: a ledger entry is `ReviewEntry` in `stores/auto_close_review.py`, kept
+  inside the opaque `acr_json`. The Console mirrors are the type-only `lib/types-rbac.ts`,
+  `types-team.ts`, `types-case-files.ts` and `types-reviews.ts`, whose types are pinned in
+  `types-reviews.pins.ts`.
+- **Case work audit rows (WP1).** As D7.1 to D7.5, plus: `case.review_request_failed` is also in
+  `system`, so a failed sampler row stays in Agent activity; `case.graded` is labelled "AI verdict
+  graded", apart from the legacy "Verdict graded"; and with sign-in on, the stored comment author
+  (not only the audit actor D7.2 names) is the verified principal. `audit/views.py` ships
+  `TEAM_RECORDER`, so WP3 did not edit `audit/*`.
+- **Re-read before a rebuild (WP1 review).** The D6.10 carry-over starts from the case as stored
+  when the rebuild begins: `InvestigationPipeline._latest_stored_case` reads it again before
+  `_assemble_case` and before `_fail_to_human_case`, keeping the first copy when that read fails
+  or finds nothing. `_fail_to_human_case` keeps `case_number`, so a failed run no longer renumbers
+  a case. The two builders that run no `apply()` append one `system` transition
+  (`_record_rebuild_transition`) when the status moved. See §8.3 for a case closed during the run.
+- **`review_via` needs a ledger-backed review (WP1 review).** A reopen leaves the reopen rate only
+  when the case carries an `auto_close_review` history event with a non-empty `review_id` recorded
+  at or before it, so a marker sent on an unsampled case or an ordinary reopen hides nothing; D6.8
+  was amended in place. D4.5 named only the chat tool; `Metrics.tsx` also shows "Not rated" when a
+  `*_rated` count is 0.
+- **Strict fresh sign-in for the switch (WP2).** `require_strict_fresh_sign_in` in
+  `api/routes_rbac.py` serves D1.2 rule 2 and the D1.3 check. The auth gate registers an unknown
+  session on first sight, so a session with no sign-in method whose `last_authn_at` is still its
+  registration time answers `401 authn_time_unknown`; a session store failure answers `401
+  reauth_required`. The route also declares `require_fresh_auth()` for the route-coverage test,
+  which changes neither the order nor the answers. Rule 5 answers `409 rbac_no_super_admin` (the
+  SPEC gave no code); the body is one JSON boolean (422 otherwise). Environment accounts are read
+  from `auth_users` and `auth_admin_password`, never through `auth_user_map()`, which hashes a
+  password per call. D1.3 applies twice: `_apply` is synchronous, so the first changed role-matrix
+  field raises `_RbacEditAuthorityNeeded`, and `put_settings` checks `roles:manage` and a fresh
+  sign-in before it applies again; no audit row is written before that check.
+- **Wizard readiness (WP2).** The helper is `ai_runtime_status(secrets, prefs, custom_models, *,
+  demo)` in `llm/readiness.py`, with `ai_runtime_status_for(state)`. D2.2 read the provider from
+  `investigator_model.provider` alone; the wizard names a provider only when the router and
+  investigator roles share it, so it never asks for a key already set, and otherwise names "the
+  default models". After a Demo or live switch it reads the sources and readiness again (WP2
+  review).
+- **One lazy component for both wizard stages (entry package).** The AI runtime and review stages
+  are one `React.lazy` component (`LaterStage` in `Wizard.tsx`, rendering `RuntimeReviewStage`
+  from `pages/wizard/RuntimeReviewSteps.tsx`), so the second stage reached shows no loader;
+  `pages/wizard/StepHeading.tsx` stays eager. The chunk is prefetched when the browser is idle (a
+  chunk-list mark, never an `import()`, as `lazy-retry.ts` requires), and a stage focuses its
+  heading when it mounts. A chunk that cannot load shows a focused "This step could not load"
+  notice with Reload for both stages until a reload, and Launch still completes setup. A source
+  guard expects `React.lazy(` exactly twice in `Wizard.tsx`.
+- **Team activity route (WP3).** §4.3 gave WP3 a `team` route in `router.tsx`; `#/team` instead
+  validates through `PAGE_IDS`, and its route sits in the registry's `ROUTES` (`registry.tsx`).
+  Only WP6 commits changed `router.tsx`, so its share in the "Entry bundle" item is WP6's tab
+  links and review key.
+- **What Team activity counts (WP3).** Actions (audit rows), not distinct cases. Closed is a
+  lifecycle row that moved a case to closed (close, confirm false positive, set status closed);
+  resolve, hold, resume, de-escalate and set disposition are not closes. Commented is the comment
+  endpoint and people's thread posts (a legacy row only as `thread post (human)`), never edits or
+  deletes; a no-op bulk assign is not counted. Sign-ins count toward people active but are not
+  charted; Other is assignments, screenshots and runbook steps. Empty-actor work from before Round
+  14 is Not attributed, which team totals include. Reviews come from WP5's rows (`tool_input`,
+  else `changes`). With sign-in off the route answers 200 with `auth_enabled: false` and runs no
+  fold. Besides the coalesced `team.viewed` row, a second key per viewer and person records whose
+  events were opened. `AuditSearchPage` gained `truncated`.
+- **Screenshot details (WP4).** The audit `changes` name a file by id, type and size, never by
+  name. The same image again answers 200 with `deduplicated: true` and writes nothing.
+  `variant=thumb` without a thumbnail serves the full image, so the gallery loads thumbnails only
+  and shows "No preview" otherwise. The server holds thumbnails to 640 px a side
+  (`MAX_THUMBNAIL_SIDE_PX`, outside the wire limits), counts a thumbnail in the 20 MiB per case,
+  and keeps at most 100 deleted entries per case. The WP4 review tightened stripping: a kept PNG
+  ancillary chunk must precede the image data with its defined length, JPEG tables and APP14 must
+  match the standard, and a WebP image must fill its canvas.
+- **Screenshot live refresh (WP4, WP7).** An add or delete publishes a `case.activity` frame (ids
+  only) on `cases:{id}`, and no `CaseActivity` entry. `components/CaseThread.tsx` gained one
+  additive prop, `onLiveActivity(event)`, so the Files section refreshes on frames naming a
+  `file_id` over the case's existing stream instead of a second `EventSource`. The lightbox has no
+  trigger, so it returns focus itself to the last-shown thumbnail (WP7 review).
+- **Recording a review (WP5).** `POST /api/cases/{id}/review` answers `{agrees, can_reopen,
+  sampled, review_id}` (the last two additive) and refuses unknown fields. An expired pick, or a
+  sampled case after the setting is off, can still be reviewed. The review holds the ledger
+  store's lock from its checks through the ledger write, so a double submission records one grade
+  and the second answers `409 review_already_recorded` (WP5 review). The history event also
+  carries `classification`, so Benign survives a ledger repair. `case.review_requested` is action
+  type `automation`, surface `auto_close_review`, actor `system`; `case.review_recorded` is
+  `feedback` on `case` by the verified person, with `review.*` fields in `changes`; neither
+  carries the note.
+- **Ledger, live channel and Inbox (WP5).** The ledger keeps `evicted_through`, the newest dropped
+  sample time, inside `acr_json`, so `ledger_complete` is exact (WP5 review); schema 1 is
+  unchanged. The `case.review` frame was never delivered until it was registered in
+  `realtime.SSE_EVENT_TYPES` and the browser's `STREAM_CHANNELS` (`lib/useEventStream.ts`), files
+  outside §4.6. `eligible_audience(state, resource, action)` in `engine/batch_inbox.py`
+  generalises `eligible_batch_audience`, now a wrapper over it; the disagreement item is muted
+  only when Assignment is switched off, since the Inbox preferences list only extra channels.
+  `engine/demo_generator.py` imports `engine.auto_close_review` (allowlisted in the §3.6 guard),
+  and `badges.tsx` renders the review headline.
+- **Per-case review state (WP7).** New read-only `GET /api/cases/{case_id}/review` (`cases:read`)
+  returns `CaseReviewState` `{case_id, agent_closed, state, can_record, review_id, sampled_at,
+  expires_at}`, `state` being `none`, `pending`, `completed` or `expired`: the summary is
+  aggregate and queue rows do not say whether one case is a pending pick. It writes no audit row;
+  its only write is the summary's ledger repair. The Console reads it through
+  `casedetail/review/useCaseReviewState.ts`, only for terminal agent-closed cases.
+- **The band carries no button; the sheet is non-modal (WP7).** `casedetail/review/ReviewBand.tsx`
+  is a `role="note"` band: **Start review** is the header primary (D8.2), one action per place.
+  The band and Start review show only when the case is terminal, its first decision record is an
+  agent close, the pick is pending and the viewer holds `cases:write` (`review-plan.ts`); other
+  agent-closed terminal cases get **Review this auto-close** while a review can be recorded, and
+  Set disposition stays hidden on them for every viewer. `ReviewSheet.tsx` opens the lazy
+  `ReviewCard` in a `Sheet` with `modal={false}`, so the case stays readable while the reviewer
+  compares; focus goes to its title and back to the opener.
+- **Review scope visibility (WP7).** The Review scope shows only when the review is on, a pick is
+  pending, or the scope is already open. `case.review` frames refresh the count, the open case and
+  the queue; in Review scope, `case.changed` frames for rows not loaded are ignored.
+  `lib/api-reviews.ts` is reached by dynamic import only (a static import added +36 B to the
+  entry's preload list).
+- **Retired tab links (WP6).** `LEGACY_CASE_TABS` maps an old id to a `[tab, section]` pair
+  (`timeline` to Overview and `what-happened`, `threat` to Investigation and `threat-context`),
+  not to a tab alone as D8.3 wrote. The section is an in-memory, one-shot request, never in the
+  hash: the router drops it on a same-page change unless the hash was just rewritten (one generic
+  line of its hash handler sits outside the `case_manager` block). CaseDetail holds the section at
+  the top of the pane for up to 2.5 s (`SECTION_HOLD_MS`) while content above it loads, and lets
+  go on a wheel, touch, pointer or key event (WP6 review). WP6a also added the router's `review`
+  key and `NavOpts.review`.
+- **Header, queue, rail and close dialog (WP6).** Take action never repeats the primary verb;
+  Share became More options; the keyboard shortcuts moved into the queue's view menu. The shared
+  `FilterBar` reads "Filters" when no filter is inline and gained `search.keyShortcuts`. The
+  confidence meter left the rail: confidence is in the AI line and an "Auto-close bar N%" line in
+  Outcome, shown only on open cases. D8.7's removal reached every case panel's unused `default`
+  layout (`TraceTimeline` keeps two). In the close dialog the override note is also required on
+  Set disposition (D4.3 keys on `deriveAgreement`), Rate the AI is hidden when the case has no AI
+  verdict, and the agreement line uses D4.4's sentences.
+- **Agent-closed cases in bulk (WP6, WP7).** D4.7 is client-side in Case Manager and Cases: the
+  Console reads each loaded case's `history` (first `decision` entry an agent close) and leaves it
+  out of bulk Set status and Set disposition. A selected case it never loaded is sent as before,
+  and the bulk API and jobs are unchanged. In Cases the help text is the triggers' accessible
+  description (WP7 review).
+- **Rollback lane plants (WP7).** As §3.7, in `scripts/rollback_lane.py`, with
+  `review_marker_note` reporting which marker kept the grade excluded: on PostgreSQL 16 the pinned
+  `45a4c31` drops the grade's own marker and the history event alone keeps it out (WP7 review).
+
+### 8.2 Per package
+
+Each package was built, then reviewed and fixed by an independent agent. Test figures are the ones
+each package reported; "5 sandbox-only" are the known environment tests that pass with the proxy
+and AWS variables unset, and the 2 router-count records waited for the merge.
+
+- **WP1 Foundation** (`6713dfd`): structured case work audit rows, principal attribution, the bulk
+  `run_id`, the event-family alias table on all three stores, the 24 catalog entries, the
+  parameterised `ViewRecorder`, `actions_taken` and `review_via`, the review-grade marker with
+  `engine/review_origin.py` and its exclusions, rated-only averages, `team:view`, the two settings
+  blocks and `_carry_case_work`. Two reviews found seven issues, fixed before the commit: the
+  failed-run case number, the in-flight re-read, the stored comment author, the forged
+  `review_via` marker, two missing tests and Metrics showing unrated as 0%. Backend: 12,673
+  passed, 24 skipped, 5 sandbox-only.
+- **WP2 RBAC switch and wizard** (`cb2c152`, review `3486a81`, merged `124ae64`):
+  `routes_rbac.py`, the D1.3 guard, `llm/readiness.py`, `RbacSwitchPanel.tsx`, Manage on the
+  Posture row, the Remember-me note, the wizard's states and review row, `users-rbac.md` (recipe
+  checked live) and `first-run.md`. The review fixed four: stale sources and readiness after a
+  Demo switch, a provider sentence that could ask for a key already set, a misnamed rule 3 test,
+  and no test that the session reads the new state at once. Backend at the review: 12,725 passed,
+  24 skipped, 7 failed (5 sandbox-only, 2 router-count records).
+- **WP3 Team activity** (`5072c1e`, review `d5d531c`, merged `458a60f`):
+  `engine/team_activity.py`, `api/routes_team.py`, the `search_page` count option, Demo audit
+  rows, the lazy page with its person sheet and CSV, the Settings group, the 11 hidden `FEATURES`
+  duplicates removed, `docs/analyst/team-activity.md`. The review fixed eight, among them a later
+  events page aging the cached counts, AI-labelled legacy posts counted as a person, empty-actor
+  legacy work dropped, and one window's counts shown under another's range. Backend at the review:
+  12,716 passed, 24 skipped, 7 failed (same).
+- **WP4 Screenshots** (`ffc4eda`, review `a231bb5`, merged `19f6e0f`): `engine/case_images.py`,
+  `stores/case_files.py`, `api/routes_case_files.py`, `delete_strict` and an ids-only factory
+  purge on both KV backends, the Elasticsearch binary mapping, the nginx location, the reset and
+  export regions, the never-to-a-model guards and the unmounted Files kit. The review fixed seven:
+  three stripping and validation gaps, focus after a delete, a late live region, a drop on a
+  disabled zone, and a sentinel that missed the resolved-case RAG chunk. Backend at the review:
+  12,922 passed, 24 skipped, 7 failed (same).
+- **WP5 Auto-close review** (`f3b5a17`, review `b5add40`, merged `bfe9971`):
+  `engine/auto_close_review.py`, `stores/auto_close_review.py`, `api/routes_auto_close_review.py`,
+  `pipeline.review_sampler` (`None` in replay), `review=` on `GET /api/cases`, the reset, export
+  and Demo seed, the Detection settings group, the Agent effectiveness module, the unmounted
+  `ReviewCard`, the review source in `outcome.ts`, `docs/automation/auto-close-review.md`. The
+  review fixed five: the undelivered `case.review` frame, a double submission, the email channel
+  mute, a just-repaired disagreement left out of the summary, and `ledger_complete`. Backend at
+  the review: 12,725 passed, 24 skipped, 7 failed (same).
+- **WP6 Case Manager** (WP6a `21f6cbf`, WP6b `97bbf1e`, review `170c0b3`, merged `2faf186`): WP6a
+  the queue band and rows, the header with one primary action, five tabs and the retired links,
+  the eight-section facts rail and the dead layouts removed; WP6b the tab bodies (G17 included),
+  Collaboration with the Files slot and History, the D4.1 to D4.6 close dialog and the bulk
+  exclusion. The review found 23 candidates: 17 fixed, 3 not real, 3 deferred (§8.3). Web suite at
+  the review: 654 files, 8,626 passed, 1 skipped, 1 expected entry-budget failure.
+- **Wave 2 merge** (`c3d7cd3`): the five branches merged with additive conflicts only; types,
+  console map and corpus regenerated; the four new routers counted (43) in `AGENTS.md` and
+  `HANDOFF.md`. Entry 337,999 B, over the budget.
+- **Entry package** (`9e1d841`, review `2ab3a39`, merged `ef7408f`): the wizard's AI runtime and
+  review stages on demand (§8.1). The review fixed five, among them a loader on the second stage
+  reached and per-file figures that were package totals. Web suite at the review: 672 files, 8,791
+  passed, 1 skipped, zero stderr; entry 329,084 B.
+- **WP8 Records and docs** (`41e9173`, merged `582d005`, before WP7): CHANGELOG, README, INSTALL,
+  DEPLOY, the API, permissions and configuration references, known limitations, upgrades, ROADMAP
+  section J, three recaptured screenshots and the corpus. `check_docs.py`: 86 pages.
+- **WP7 Integration** (`933404d`, review `b804d16`, merged `584732b`): the Files section and close
+  dialog drop zone mounted, the Review scope, band, sheet and rail result, the per-case review
+  endpoint, the Cases bulk exclusion, the cases reset tier naming screenshots and the review
+  sample, the rollback lane plants. The review fixed five: lightbox focus, unannounced uploads,
+  the Cases help text for screen readers, the review card's rating disclosure, one docs sentence.
+  Backend at the review: 13,087 passed, 24 skipped, 5 sandbox-only; rollback lane 19 offline
+  tests, both scenarios on PostgreSQL 16.
+- **Wave 3 merge** (`8e3e6d4`): entry 329,080 B and the one ratchet (§8.1 "Entry bundle"), the
+  Round 14 record pointing here, the records test pin, the stale `Field` first-paint comments
+  fixed.
+
+### 8.3 Known limitations
+
+The operator-facing limits are in `docs/releases/known-limitations.md` (the Round 15 rollback,
+screenshots, Team activity and auto-close review entries), and the backlog, including the §7
+follow-ups, is `ROADMAP.md` section "J. Round-15 deferred items". The items below agree with them
+and add what was found after WP8 wrote those pages.
+
+- **A case closed while its investigation runs is rebuilt (open decision, WP1 review).** The
+  re-read before a rebuild keeps an acknowledgement, assignment, comment, grade or tag made during
+  the run, but not a close: the run rebuilds the case and its own decision replaces the person's
+  close. The close stays on the carried status timeline, and the appended transition names it as
+  the previous status. The fix did not take the reviewer's "skip and audit" option, because
+  skipping would leave the cluster's new events on no case (#4). Whether it needs a dedicated path
+  with an audit row is open (ROADMAP J).
+- **Auto-close review (WP5, WP7).** Not a full blind review. Recording is serialised per backend
+  process. `GET /api/cases?review=` reads up to 2,000 whole cases per request, and `GET
+  /api/cases/{case_id}/review` loads the whole ledger on each open of an agent-closed case. A
+  ledger entry repaired from the history has no `elapsed_ms`. A pick on a case reopened outside
+  the review stays pending and listed, with no band or rail line saying why. In Review scope, a
+  ledger case hidden by a status filter joins after a status change only on the next `case.review`
+  frame or Refresh. The bulk exclusion is client-side only.
+- **Screenshots (WP4).** The compressed image data and colour profiles are stored as sent, and the
+  server never re-encodes (§7). The upload bounds are process-local. The Vite dev proxy answers
+  500, not 413, for a body over 3 MiB (development only).
+- **Team activity (WP3).** At most 92 days (longer is refused) and 250,000 rows (more marks the
+  answer partial), in calendar days of the SLA zone. Counts come from audit rows written after the
+  change (best effort), so a lost row is a lost count. Demo runbook step rows carry no `changes`,
+  so Demo counts no runbook steps.
+- **Case Manager and Console (WP6, WP7).** At the default 360 px queue a Critical row with an
+  owner can cut its status word (the full text is in the accessible name). The primary entity
+  shows in both Key entities and the rail's Source section. A long title wraps the header's
+  actions onto their own row. `RunbookProgressChip`, `useRunbookProgressMap` and `CaseChat`'s
+  always-true `caseManager` prop are left over. Bulk Set disposition in `Cases.tsx` does not send
+  `disposition_declared` (pre-existing, found by WP7, not yet in ROADMAP J).
+- **Setup wizard (WP2, entry package).** On first arrival the lazy stage shows its loader for one
+  frame (13 to 30 ms measured with the chunk prefetched); hiding it would need an `import()` warm,
+  which `lazy-retry.ts` forbids. Without `requestIdleCallback` there is no prefetch. The Keys-step
+  sentence "Add at least one provider for live reasoning" overlaps the new key-mismatch state.
+- **Elsewhere.** `notifications/dispatch.py::_inapp_route` keeps the channel-list mute flaw WP5
+  fixed for the disagreement item. A rollback to `45a4c31` resets `team_activity` and
+  `auto_close_review` and counts review grades as ordinary grades while it runs (§3.7). Em dashes
+  remain outside the regions the packages owned. The ROADMAP J leftover about the reset tiers not
+  naming screenshots predates WP7, which added them to the cases tier.
+- **Tests seen failing once** (each passes alone and in the default order):
+  `run-regressions.test.tsx` (WP6b), `Chat.earlier.test.tsx` (WP5), `appshell.search.test.tsx`
+  under load (WP7 review), and three Round 14 source editor tests on one of six shuffled orders,
+  which predates the entry change (entry package).
+
+### 8.4 Verification record
+
+The closing gate figures (§5.2) are recorded after the cross-cutting review of the integrated
+tree; the per-package figures are in §8.2.
+
+- Closing gates: to be recorded.
 
 ---
 

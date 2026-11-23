@@ -160,7 +160,7 @@ const HINT = 'no dist/ build present — run `vite build` first (CI/integrator d
  * budget. Per file, through the source map: Wizard.tsx +693 (WP2: the D2.3 AI runtime
  * copy, the provider table and the readiness logic, eager because App.tsx imports the
  * wizard for the first-run boot), router.tsx +475 and case-tabs.ts +71 (WP6's retired tab
- * links and WP3's Team activity route), registry.tsx -558 (WP3: the hidden duplicate
+ * links; only WP6 changed router.tsx), registry.tsx -558 (WP3: the hidden duplicate
  * FEATURES entries removed, the Team activity child added), useEventStream.ts +14 (WP5's
  * `case.review` channel), +108 unmapped, and +33 of attribution drift on files whose
  * source did not change. The entry package then moved what first paint never needs out of
