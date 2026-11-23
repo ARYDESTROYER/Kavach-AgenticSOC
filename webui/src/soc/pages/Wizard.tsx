@@ -60,6 +60,7 @@ import { isDemoActive, useDemo } from '@/soc/demo';
 import { headingOf, useReturnFocus } from '@/soc/hooks/useReturnFocus';
 import { prefetchChunks, retryingLoader } from '@/soc/lazy-retry';
 
+import type { RuntimeReviewStageProps } from './wizard/RuntimeReviewSteps';
 import { StepHeading } from './wizard/StepHeading';
 
 /**
@@ -93,9 +94,11 @@ function SourceEditorUnavailable(_props: SourceEditorProps) {
  * load on demand too (Round 15, SPEC §3.1): first paint is the workspace stage. Once the
  * browser is idle after the wizard mounts, their chunk is prefetched into the HTTP cache
  * (a prefetch, never an import, as soc/lazy-retry.ts requires), so reaching either stage
- * normally shows no wait. All their state stays here; they only render it. The open
+ * normally shows no wait. All their state stays here; they only render it. One lazy
+ * component serves both stages, so the second one reached renders at once. The open
  * retries a failed chunk once under a fresh URL (`retryingLoader`), and a chunk that
- * still cannot load shows a reload notice in the stage instead of throwing.
+ * still cannot load shows a reload notice in both stages instead of throwing (a failed
+ * module stays failed until a reload, as with the source editor).
  */
 const loadLaterSteps = retryingLoader(() => import('./wizard/RuntimeReviewSteps'));
 
@@ -104,20 +107,13 @@ const LATER_STEP_CHUNKS = '__CHUNK_LIST:src/soc/pages/wizard/RuntimeReviewSteps.
 
 type StageRef = { headingRef: React.RefObject<HTMLHeadingElement> };
 
-function lazyStep<P extends StageRef>(
-  pick: (module: typeof import('./wizard/RuntimeReviewSteps')) => React.ComponentType<P>,
-) {
-  return React.lazy(
-    (): Promise<{ default: React.ComponentType<P> }> =>
-      loadLaterSteps().then(
-        (module) => ({ default: pick(module) }),
-        () => ({ default: StepUnavailable }),
-      ),
-  );
-}
-
-const KeysStep = lazyStep((module) => module.KeysStep);
-const ReviewStep = lazyStep((module) => module.ReviewStep);
+const LaterStage = React.lazy(
+  (): Promise<{ default: React.ComponentType<RuntimeReviewStageProps> }> =>
+    loadLaterSteps().then(
+      (module) => ({ default: module.RuntimeReviewStage }),
+      () => ({ default: StepUnavailable }),
+    ),
+);
 
 function StepUnavailable({ headingRef }: StageRef) {
   return (
@@ -641,7 +637,8 @@ export default function Wizard({ onComplete, onExit }: WizardProps) {
                   ) : null}
                   {step === 2 ? (
                     <LazyStep headingRef={headingRef}>
-                      <KeysStep
+                      <LaterStage
+                        stage="runtime"
                         headingRef={headingRef}
                         configured={configured}
                         ready={hasProvider}
@@ -658,7 +655,8 @@ export default function Wizard({ onComplete, onExit }: WizardProps) {
                   ) : null}
                   {step === 3 ? (
                     <LazyStep headingRef={headingRef}>
-                      <ReviewStep
+                      <LaterStage
+                        stage="review"
                         headingRef={headingRef}
                         demoMode={demoMode}
                         sources={sources}

@@ -2,10 +2,11 @@
  * The setup wizard's AI runtime and review stages (Round 15, SPEC §3.1 and D2.3).
  *
  * A lazy chunk: first paint is the workspace stage, so these two stages, their provider
- * table, key fields and readiness rows load on demand (Wizard.tsx `KeysStep` and
- * `ReviewStep`). The wizard prefetches the chunk into the HTTP cache once the browser is
- * idle, so reaching either stage normally shows no wait. All state stays in the wizard:
- * these stages only render what it passes and report key edits back.
+ * table, key fields and readiness rows load on demand (Wizard.tsx `LaterStage`, one lazy
+ * component for both, `RuntimeReviewStage` below). The wizard prefetches the chunk into
+ * the HTTP cache once the browser is idle, so reaching either stage normally shows no
+ * wait. All state stays in the wizard: these stages only render what it passes and report
+ * key edits back.
  */
 import * as React from 'react';
 import {
@@ -296,6 +297,19 @@ export function ReviewStep({
       </div>
     </div>
   );
+}
+
+/** The stage the wizard shows, with that stage's props. */
+export type RuntimeReviewStageProps =
+  | ({ stage: 'runtime' } & KeysStepProps)
+  | ({ stage: 'review' } & ReviewStepProps);
+
+/**
+ * Both stages behind one component, so the wizard's one lazy component resolves once:
+ * whichever of the two stages is reached second renders at once, with no loading state.
+ */
+export function RuntimeReviewStage(props: RuntimeReviewStageProps) {
+  return props.stage === 'runtime' ? <KeysStep {...props} /> : <ReviewStep {...props} />;
 }
 
 function ReadinessRow({
