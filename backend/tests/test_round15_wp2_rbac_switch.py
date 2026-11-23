@@ -19,6 +19,7 @@ from fastapi.testclient import TestClient
 from app.api.deps import require_auth
 from app.api.routes import router as base_router
 from app.api.routes_rbac import router as rbac_router
+from app.api.routes_roles import router as roles_router
 from app.config import Secrets
 from app.constants import ActionType
 from app.es.fake import InMemoryESClient
@@ -60,6 +61,7 @@ def _app(secrets: Secrets, *, rbac: bool = False) -> FastAPI:
     deps = [Depends(require_auth)] if secrets.auth_enabled else []
     api.include_router(base_router, dependencies=deps)
     api.include_router(rbac_router, dependencies=deps)
+    api.include_router(roles_router, dependencies=deps)
     api.add_middleware(RequestIdMiddleware)
     return api
 
@@ -332,12 +334,43 @@ def test_rule_3_only_a_verified_super_admin_and_an_access_denied_row():
         assert _state(client).prefs.rbac.enabled is False
 
 
-def test_rule_3_holds_while_rbac_is_on_for_a_custom_role_with_every_grant():
+def test_rule_3_holds_while_rbac_is_on():
     with TestClient(_app(_secrets(), rbac=True)) as client:
         _as(client, "soc_manager")
         refused = client.put("/api/rbac", json={"enabled": False})
         assert refused.status_code == 403
         assert refused.json()["detail"]["code"] == "rbac_super_admin_only"
+        assert _state(client).prefs.rbac.enabled is True
+
+
+def test_rule_3_a_custom_role_with_every_grant_never_stands_in_for_super_admin():
+    """Only the stored role counts: an analyst whose custom role grants every permission
+    (users:manage and roles:manage among them) still may not turn role-based access off."""
+    from app.rbac.policy import RESOURCES
+
+    with TestClient(_app(_secrets(), rbac=True)) as client:
+        username = _as(client, "analyst_tier1", "power-analyst")
+        _admin(client)
+        grants = {resource: list(actions) for resource, actions in RESOURCES.items()}
+        created = client.post("/api/roles", json={"name": "everything", "grants": grants})
+        assert created.status_code in (200, 201), created.text
+        assigned = client.put(f"/api/users/{username}/roles", json={"custom_roles": ["everything"]})
+        assert assigned.status_code == 200, assigned.text
+        client.cookies.clear()
+        signed_in = client.post("/api/auth/login", json={"username": username, "password": PASSWORD})
+        assert signed_in.status_code == 200, signed_in.text
+        # The custom role really holds every grant ...
+        assert client.get("/api/users").status_code == 200
+        status = client.get("/api/rbac").json()
+        assert status["caller_role"] == "analyst_tier1"
+        assert status["blockers"] == ["not_super_admin"]
+        assert status["can_change"] is False
+        # ... and still is not a Super admin for the switch.
+        refused = client.put("/api/rbac", json={"enabled": False})
+        assert refused.status_code == 403
+        assert refused.json()["detail"]["code"] == "rbac_super_admin_only"
+        assert any(r.get("actor") == username and r["tool_input"]["route"] == "/api/rbac"
+                   and r["tool_input"]["permission"] == "role:super_admin" for r in _denials(client))
         assert _state(client).prefs.rbac.enabled is True
 
 
@@ -478,6 +511,21 @@ def test_demo_mode_writes_the_real_settings_and_the_control_audit():
                     and (r.get("target") or {}).get("id") == "rbac"]
         assert client.post("/api/demo/disable").status_code == 200
         assert state.prefs.rbac.enabled is True
+
+
+def test_the_session_reads_the_new_state_right_after_the_switch():
+    """What the Console's ``auth.refresh()`` re-reads after the switch: the same session's
+    permissions report the new state at once, without signing in again."""
+    with TestClient(_app(_secrets())) as client:
+        _admin(client)
+        assert client.get("/api/account/permissions").json()["rbac_enabled"] is False
+        assert client.put("/api/rbac", json={"enabled": True}).status_code == 200
+        after = client.get("/api/account/permissions").json()
+        assert after["rbac_enabled"] is True
+        assert after["role"] == "super_admin"
+        assert client.get("/api/auth/me").json()["user"]["role"] == "super_admin"
+        assert client.put("/api/rbac", json={"enabled": False}).status_code == 200
+        assert client.get("/api/account/permissions").json()["rbac_enabled"] is False
 
 
 def test_turning_rbac_on_enforces_the_roles_at_once():

@@ -73,8 +73,14 @@ const SOURCE = {
   ingest_mode: 'pull',
 };
 
-function settingsWith(provider: string) {
-  return { prefs: { investigator_model: { provider, model: 'm' } }, configured: {} };
+function settingsWith(provider: string, routerProvider: string = provider) {
+  return {
+    prefs: {
+      investigator_model: { provider, model: 'm' },
+      router_model: { provider: routerProvider, model: 'r' },
+    },
+    configured: {},
+  };
 }
 
 function renderWizard() {
@@ -178,6 +184,23 @@ describe('Wizard AI runtime wording (Round 15)', () => {
       ai_runtime_ready: false,
     });
     getSettingsMock.mockRejectedValue(new Error('forbidden'));
+    renderWizard();
+    await openStep(/AI runtime/i);
+    expect(
+      await screen.findByText('Add a key for the default models, or choose other models in Settings → Models after launch.'),
+    ).toBeVisible();
+    expect(screen.queryByText(/The default investigation models use/)).toBeNull();
+  });
+
+  it('leaves out the provider sentence when the router and the investigator use different providers', async () => {
+    // An Anthropic investigator with its key and an OpenAI router without one: naming
+    // Anthropic would ask for a key that is already set.
+    setupStatusMock.mockResolvedValue({
+      setup_complete: false,
+      configured: { anthropic_api_key: true },
+      ai_runtime_ready: false,
+    });
+    getSettingsMock.mockResolvedValue(settingsWith('anthropic', 'openai'));
     renderWizard();
     await openStep(/AI runtime/i);
     expect(
@@ -300,6 +323,31 @@ describe('Wizard AI runtime wording in Demo Mode (unchanged)', () => {
     getSettingsMock.mockReset().mockResolvedValue(settingsWith('openai'));
     demoStatusMock.mockReset().mockResolvedValue({ mode: 'seeded', active: true });
     authMeMock.mockReset().mockResolvedValue({ auth_enabled: false, authenticated: true, user: null });
+  });
+
+  it('reads the sources and the readiness again after switching to live', async () => {
+    // During Demo the Demo sources are listed and the mock runtime counts as usable; the
+    // live workspace has neither, so the review must not keep the Demo answer.
+    setupStatusMock.mockResolvedValue({ setup_complete: false, configured: {}, ai_runtime_ready: true });
+    listSourcesMock.mockResolvedValue({ sources: [SOURCE] });
+    const user = userEvent.setup();
+    renderWizard();
+    await waitFor(() => expect(screen.getByRole('radio', { name: /Synthetic demo/i })).toBeChecked());
+    await user.click(screen.getByRole('radio', { name: /Live environment/i }));
+
+    setupStatusMock.mockResolvedValue({ setup_complete: false, configured: {}, ai_runtime_ready: false });
+    listSourcesMock.mockResolvedValue({ sources: [] });
+    demoStatusMock.mockResolvedValue({ mode: 'off', active: false });
+    const statusReads = setupStatusMock.mock.calls.length;
+    await user.click(await screen.findByRole('button', { name: /Disable demo and switch/i }));
+    await waitFor(() => expect(setupStatusMock.mock.calls.length).toBeGreaterThan(statusReads));
+    await waitFor(() => expect(screen.getByRole('radio', { name: /Live environment/i })).toBeChecked());
+
+    await user.click(screen.getByRole('button', { name: /Review & launch/i }));
+    expect(await screen.findByRole('heading', { name: 'Ready with limited capabilities' })).toBeVisible();
+    expect(screen.getByText('No source configured · live telemetry will not be ingested')).toBeVisible();
+    expect(screen.getByText('No usable provider · cases wait for a person')).toBeVisible();
+    expect(screen.queryByRole('heading', { name: 'Ready for live triage' })).toBeNull();
   });
 
   it('keeps the true Demo copy about the mock runtime', async () => {

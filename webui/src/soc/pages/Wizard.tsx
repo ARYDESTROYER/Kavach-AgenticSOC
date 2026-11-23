@@ -208,10 +208,15 @@ export default function Wizard({ onComplete, onExit }: WizardProps) {
     } finally {
       setLoading(false);
     }
-    // Optional: without it the key notice leaves out the provider sentence.
+    // Optional: without it the key notice leaves out the provider sentence. Named only
+    // when the router and the investigator use the same provider: otherwise it may name
+    // one whose key is already set while the other role is the one that cannot be called.
     Promise.resolve()
       .then(() => api.getSettings())
-      .then((s) => setDefaultProvider((s.prefs.investigator_model as ModelConfig).provider))
+      .then(({ prefs: p }) => {
+        const a = (p.investigator_model as ModelConfig).provider;
+        setDefaultProvider(a === (p.router_model as ModelConfig).provider ? a : undefined);
+      })
       .catch(() => undefined);
   }, []);
 
@@ -251,10 +256,14 @@ export default function Wizard({ onComplete, onExit }: WizardProps) {
         } finally {
           setDemoBusy(false);
           void refreshDemo();
+          // The sources and the AI readiness both follow Demo Mode (the Demo sources;
+          // the mock runtime is usable only in Demo), so read them again before the
+          // review can show the other mode's answer.
+          await refreshStatus().catch(() => undefined);
         }
       });
     },
-    [canManageDemo, demoMode, refreshDemo, runTransition],
+    [canManageDemo, demoMode, refreshDemo, refreshStatus, runTransition],
   );
 
   const requestDemoMode = React.useCallback(
