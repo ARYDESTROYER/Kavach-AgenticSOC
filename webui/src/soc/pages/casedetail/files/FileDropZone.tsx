@@ -94,8 +94,13 @@ export function FileDropZone({
     const zone = rootRef.current;
     if (!zone) return undefined;
     const onDragOver = (event: DragEvent) => {
-      if (disabled) return;
+      // Always claimed, even while disabled: a drag the page does not claim ends in the
+      // browser's own drop, which opens the image in place of the Console.
       event.preventDefault();
+      if (disabled) {
+        if (event.dataTransfer) event.dataTransfer.dropEffect = 'none';
+        return;
+      }
       setDragging(true);
     };
     const onDragLeave = () => setDragging(false);

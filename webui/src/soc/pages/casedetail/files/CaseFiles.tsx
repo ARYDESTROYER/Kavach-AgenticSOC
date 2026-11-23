@@ -95,7 +95,10 @@ interface ThumbProps {
 }
 
 function FileThumb({ caseId, entry, index, total, onOpen, fetcher }: ThumbProps) {
-  const { url, failed } = useCaseFileUrl(caseId, entry.id, 'thumb', fetcher);
+  // The grid decodes thumbnails only (at most 640 px a side, checked by the server):
+  // without one the full image, up to 40 megapixels, would be decoded for every tile at
+  // once, so such a tile waits for the lightbox instead.
+  const { url, failed } = useCaseFileUrl(caseId, entry.has_thumbnail ? entry.id : null, 'thumb', fetcher);
   const title = screenshotTitle(entry, index, total);
   return (
     <li className="flex min-w-0 flex-col gap-1.5">
@@ -111,6 +114,11 @@ function FileThumb({ caseId, entry, index, total, onOpen, fetcher }: ThumbProps)
       >
         {url ? (
           <img src={url} alt="" className="h-full w-full object-cover" />
+        ) : !entry.has_thumbnail ? (
+          <span className="flex flex-col items-center gap-1 text-xs text-muted-foreground">
+            <ImageOff className="h-5 w-5" aria-hidden="true" />
+            No preview
+          </span>
         ) : failed ? (
           <ImageOff className="h-5 w-5 text-muted-foreground" aria-hidden="true" />
         ) : (
@@ -289,6 +297,9 @@ export function CaseFiles({ caseId, refreshKey = 0, pasteScopeRef, onCountChange
   const [deleteError, setDeleteError] = React.useState<string | null>(null);
   const [caption, setCaption] = React.useState('');
   const captionId = React.useId();
+  // Where focus lands when the delete confirmation closes: the screenshot and the
+  // lightbox it was opened from are gone by then (WCAG 2.4.3).
+  const headingRef = React.useRef<HTMLHeadingElement | null>(null);
 
   React.useEffect(() => {
     const controller = new AbortController();
@@ -334,7 +345,12 @@ export function CaseFiles({ caseId, refreshKey = 0, pasteScopeRef, onCountChange
   return (
     <section aria-labelledby={`${captionId}-heading`} className="flex flex-col gap-3" data-testid="case-files">
       <div className="flex items-baseline justify-between gap-3">
-        <h3 id={`${captionId}-heading`} className="text-sm font-semibold text-foreground">
+        <h3
+          id={`${captionId}-heading`}
+          ref={headingRef}
+          tabIndex={-1}
+          className={cn('text-sm font-semibold text-foreground', focusRing)}
+        >
           Screenshots
         </h3>
         {limits ? (
@@ -383,17 +399,21 @@ export function CaseFiles({ caseId, refreshKey = 0, pasteScopeRef, onCountChange
         </div>
       ) : null}
 
-      {active.length ? (
-        <ul className="flex flex-col gap-1 text-xs" aria-live="polite">
-          {active.map((item) => (
-            <li key={item.key} className={cn('truncate', item.status === 'error' ? 'text-critical-text' : 'text-muted-foreground')}>
-              {item.status === 'error'
-                ? `${item.name}: ${item.message ?? 'not added.'}`
-                : `${item.name}: ${STATUS_WORDS[item.status]}`}
-            </li>
-          ))}
-        </ul>
-      ) : null}
+      {/* The live region is always in the page, so the first status is announced too
+          (a region inserted together with its text often is not). */}
+      <div aria-live="polite" data-testid="case-files-status">
+        {active.length ? (
+          <ul className="flex flex-col gap-1 text-xs">
+            {active.map((item) => (
+              <li key={item.key} className={cn('truncate', item.status === 'error' ? 'text-critical-text' : 'text-muted-foreground')}>
+                {item.status === 'error'
+                  ? `${item.name}: ${item.message ?? 'not added.'}`
+                  : `${item.name}: ${STATUS_WORDS[item.status]}`}
+              </li>
+            ))}
+          </ul>
+        ) : null}
+      </div>
 
       {data && !files.length && !data.can_upload ? (
         <EmptyState compact state="no-data" title="No screenshots on this case." />
@@ -442,6 +462,7 @@ export function CaseFiles({ caseId, refreshKey = 0, pasteScopeRef, onCountChange
         confirmLabel="Delete screenshot"
         destructive
         busy={deleting}
+        returnFocusRef={headingRef}
         onConfirm={() => void confirmDelete()}
       />
     </section>

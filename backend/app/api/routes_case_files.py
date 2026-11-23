@@ -12,8 +12,8 @@ bounded at :data:`BODY_MAX_BYTES` (3 MiB) by this router's route class BEFORE Fa
 reads it (``413 case_files_body_too_large``); the Web UI's nginx gives the path the
 same bound. The image is validated and stripped of its metadata by
 ``engine.case_images`` (PNG, JPEG and WebP only, 2 MiB stored, 8,192 px a side, 40
-megapixels; a thumbnail at most 48 KiB), its SHA-256 is checked against the case's
-live screenshots (the same image again returns the existing entry, ``200``,
+megapixels; a thumbnail at most 48 KiB and 640 px a side), its SHA-256 is checked
+against the case's live screenshots (the same image again returns the existing entry, ``200``,
 ``deduplicated: true``, and writes nothing), and the case and storage bounds of
 ``stores.case_files`` apply (``409 case_files_case_full``, ``409
 case_files_storage_full``). Each caller may make :data:`UPLOADS_PER_MINUTE` uploads a
@@ -69,6 +69,7 @@ from ..engine.case_images import (
     EXTENSIONS,
     MAX_PIXELS,
     MAX_SIDE_PX,
+    MAX_THUMBNAIL_SIDE_PX,
     MIME_TYPES,
     ImageRejected,
     ValidatedImage,
@@ -510,7 +511,10 @@ async def _upload(
     if body.thumbnail_base64:
         thumb_raw, thumb_type = _decode_base64(body.thumbnail_base64, what="thumbnail")
         try:
-            thumb = validate_image(thumb_raw, declared=thumb_type, max_bytes=store.limits.max_thumbnail_bytes)
+            thumb = validate_image(
+                thumb_raw, declared=thumb_type, max_bytes=store.limits.max_thumbnail_bytes,
+                max_side=MAX_THUMBNAIL_SIDE_PX,
+            )
         except ImageRejected as exc:
             raise _rejected(exc, thumbnail=True) from exc
     try:

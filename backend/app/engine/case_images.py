@@ -8,29 +8,42 @@ and the server never decodes pixels. What it does instead, for each accepted for
   width, height, bit depth and colour type checked), consecutive ``IDAT`` chunks, a
   ``PLTE`` for a palette image, ``IEND`` last and **no byte after it**. Kept chunks:
   ``IHDR``, ``PLTE``, ``IDAT``, ``IEND``, ``tRNS``, ``gAMA``, ``cHRM``, ``sRGB``,
-  ``sBIT``, ``pHYs``, ``bKGD`` and ``iCCP`` (at most :data:`MAX_ICC_BYTES`). Every
-  other ancillary chunk is dropped (``eXIf``, ``tEXt``, ``zTXt``, ``iTXt``, ``tIME``,
-  and ``acTL``, ``fcTL``, ``fdAT``, which turns an animated PNG into its still image).
-  An unknown critical chunk is refused.
+  ``sBIT``, ``pHYs``, ``bKGD`` and ``iCCP`` (at most :data:`MAX_ICC_BYTES`). A kept
+  ancillary chunk stays only when it comes before the image data and has exactly the
+  length its kind and the colour type define (``iCCP``: a profile name and the
+  compression method first), so none of them can carry other bytes past stripping.
+  Every other ancillary chunk is dropped (``eXIf``, ``tEXt``, ``zTXt``, ``iTXt``,
+  ``tIME``, and ``acTL``, ``fcTL``, ``fdAT``, which turns an animated PNG into its
+  still image). An unknown critical chunk is refused.
 * **JPEG**: ``SOI``, then a marker walk. Kept: ``APP0`` (``JFIF`` only, rewritten
   without its embedded thumbnail), ``APP2`` only when it carries ``ICC_PROFILE`` (all
   of it at most :data:`MAX_ICC_BYTES`, else every ICC segment is dropped), ``APP14``
-  (``Adobe``), ``DQT``, ``DHT``, ``DAC``, ``DRI``, ``DNL``, one ``SOFn`` (its
-  dimensions), every ``SOS`` with its entropy-coded data, and ``EOI``. Dropped:
-  ``APP1`` (Exif and XMP), every other ``APPn`` (IPTC included) and ``COM``. A second
-  frame, a hierarchical or JPEG-LS marker, a stray restart marker, a reserved marker
-  and any byte after ``EOI`` are refused. EXIF orientation is lost for a direct API
-  upload; the Console's uploads are already orientation-normalised by the canvas.
+  (``Adobe``, cut to its 12 defined bytes), ``DQT``, ``DHT``, ``DAC``, ``DRI``,
+  ``DNL``, one ``SOFn`` (its dimensions), every ``SOS`` with its entropy-coded data,
+  and ``EOI``. The table, restart, line-count and scan header segments must have
+  exactly the structure the JPEG standard defines (a decoder refuses anything else),
+  so no kept segment carries other bytes. Dropped: ``APP1`` (Exif and XMP), every
+  other ``APPn`` (IPTC included) and ``COM``. A second frame, a hierarchical or
+  JPEG-LS marker, a stray restart marker, a reserved marker and any byte after
+  ``EOI`` are refused. EXIF orientation is lost for a direct API upload; the
+  Console's uploads are already orientation-normalised by the canvas.
 * **WebP**: ``RIFF<size>WEBP`` with the size matching the data exactly, a chunk walk.
   Simple files keep their one ``VP8 `` or ``VP8L`` chunk. Extended files (``VP8X``)
   keep ``VP8X`` (its EXIF and XMP flags cleared, and its ICC flag when the profile is
-  dropped), ``ICCP``, ``ALPH`` and the image chunk; ``EXIF``, ``XMP `` and unknown
-  chunks are dropped; an animated file (the animation flag, ``ANIM`` or ``ANMF``) is
-  refused. The RIFF size is recomputed.
+  dropped), ``ICCP``, ``ALPH`` and the image chunk, whose size must equal the
+  ``VP8X`` canvas (as decoders require); ``EXIF``, ``XMP `` and unknown chunks are
+  dropped; an animated file (the animation flag, ``ANIM`` or ``ANMF``) is refused.
+  The RIFF size is recomputed.
+
+The compressed image data itself (``IDAT``, the JPEG scans, the WebP image and alpha
+chunks) and a kept colour profile are stored as they are: checking them would mean
+decoding them.
 
 Dimensions are read from the headers only (``IHDR``, ``SOFn``, ``VP8X``, ``VP8 ``,
 ``VP8L``) and capped at :data:`MAX_SIDE_PX` a side and :data:`MAX_PIXELS` in all, so a
-decompression bomb never reaches a viewer's browser. The size cap applies to the
+decompression bomb never reaches a viewer's browser; a thumbnail, which a gallery
+shows many of at once, is capped at :data:`MAX_THUMBNAIL_SIDE_PX` a side (a few
+kilobytes of PNG can otherwise describe 40 megapixels). The size cap applies to the
 stored (stripped) bytes, whose SHA-256 is the file's content hash. Everything else
 (SVG, GIF, BMP, TIFF, HEIC, ICO, PDF, a polyglot with trailing data) is refused.
 
@@ -73,6 +86,8 @@ MAX_THUMBNAIL_BYTES = 48 * 1024
 MAX_SIDE_PX = 8192
 #: The most pixels in all (40 megapixels).
 MAX_PIXELS = 40_000_000
+#: The longest side of a thumbnail, in pixels (the Console makes them at 320 or 240).
+MAX_THUMBNAIL_SIDE_PX = 640
 #: The largest colour profile kept (PNG ``iCCP``, JPEG ``APP2``, WebP ``ICCP``).
 MAX_ICC_BYTES = 64 * 1024
 
@@ -82,6 +97,14 @@ _PNG_KEEP = frozenset({
     b"IHDR", b"PLTE", b"IDAT", b"IEND", b"tRNS", b"gAMA", b"cHRM", b"sRGB", b"sBIT",
     b"pHYs", b"bKGD", b"iCCP",
 })
+#: The exact body length of each fixed-size ancillary chunk kept (PNG specification §11.3).
+_PNG_FIXED_LENGTH: dict[bytes, int] = {b"gAMA": 4, b"cHRM": 32, b"sRGB": 1, b"pHYs": 9}
+#: Colour type -> the body length of ``sBIT`` and of ``bKGD``.
+_PNG_SBIT_LENGTH: dict[int, int] = {0: 1, 2: 3, 3: 3, 4: 2, 6: 4}
+_PNG_BKGD_LENGTH: dict[int, int] = {0: 2, 2: 6, 3: 1, 4: 2, 6: 6}
+#: Colour type -> the body length of ``tRNS`` (a palette image: one byte per palette
+#: entry at most; an image with an alpha channel has none).
+_PNG_TRNS_LENGTH: dict[int, int] = {0: 2, 2: 6}
 #: PNG colour type -> the bit depths it allows (PNG specification, table 11.1).
 _PNG_DEPTHS: dict[int, frozenset[int]] = {
     0: frozenset({1, 2, 4, 8, 16}),
@@ -178,12 +201,14 @@ def validate_image(
     *,
     declared: str | None = None,
     max_bytes: int = MAX_IMAGE_BYTES,
+    max_side: int = MAX_SIDE_PX,
 ) -> ValidatedImage:
     """Validate ``data`` and return its stripped form, or raise :class:`ImageRejected`.
 
     ``declared`` is the client's type (``image/png`` and so on); when given it must
     name the kind the magic bytes show (else ``415``). ``max_bytes`` bounds the
-    stripped bytes (``413 case_files_too_large``)."""
+    stripped bytes (``413 case_files_too_large``). ``max_side`` bounds each side
+    (at most :data:`MAX_SIDE_PX`; a thumbnail passes :data:`MAX_THUMBNAIL_SIDE_PX`)."""
     if not isinstance(data, (bytes, bytearray)) or not data:
         raise _invalid("empty file")
     data = bytes(data)
@@ -202,7 +227,7 @@ def validate_image(
         PNG: _strip_png, JPEG: _strip_jpeg, WEBP: _strip_webp,
     }[kind]
     stripped, width, height = parser(data)
-    _check_dimensions(width, height)
+    _check_dimensions(width, height, max_side=min(int(max_side), MAX_SIDE_PX))
     if len(stripped) > max_bytes:
         raise ImageRejected(
             "case_files_too_large",
@@ -218,10 +243,16 @@ def _size_label(n: int) -> str:
     return f"{n // 1024:,} KiB"
 
 
-def _check_dimensions(width: int, height: int) -> None:
+def _check_dimensions(width: int, height: int, *, max_side: int = MAX_SIDE_PX) -> None:
     if width <= 0 or height <= 0:
         raise ImageRejected(
             "case_files_dimensions", "The image has no width or height.", status=422,
+        )
+    if max_side < MAX_SIDE_PX and (width > max_side or height > max_side):
+        raise ImageRejected(
+            "case_files_dimensions",
+            f"The image is too large: at most {max_side:,} pixels a side.",
+            status=422,
         )
     if width > MAX_SIDE_PX or height > MAX_SIDE_PX or width * height > MAX_PIXELS:
         raise ImageRejected(
@@ -235,12 +266,34 @@ def _check_dimensions(width: int, height: int) -> None:
 # --------------------------------------------------------------------------- #
 # PNG
 # --------------------------------------------------------------------------- #
+def _png_ancillary_ok(ctype: bytes, body: bytes, color_type: int, palette_entries: int) -> bool:
+    """Whether a kept ancillary chunk has exactly the shape the PNG specification
+    defines for it (so it holds nothing but its own values)."""
+    length = len(body)
+    if ctype in _PNG_FIXED_LENGTH:
+        return length == _PNG_FIXED_LENGTH[ctype]
+    if ctype == b"sBIT":
+        return length == _PNG_SBIT_LENGTH.get(color_type, -1)
+    if ctype == b"bKGD":
+        return length == _PNG_BKGD_LENGTH.get(color_type, -1)
+    if ctype == b"tRNS":
+        if color_type == 3:
+            return 1 <= length <= palette_entries
+        return length == _PNG_TRNS_LENGTH.get(color_type, -1)
+    if ctype == b"iCCP":
+        # A profile name of 1 to 79 bytes, its terminator, compression method 0, data.
+        name_end = body.find(b"\x00", 0, 80)
+        return 1 <= name_end <= 79 and len(body) > name_end + 2 and body[name_end + 1] == 0
+    return False
+
+
 def _strip_png(data: bytes) -> tuple[bytes, int, int]:
     n = len(data)
     pos = len(_PNG_SIGNATURE)
     out: list[bytes] = [_PNG_SIGNATURE]
     width = height = 0
     color_type = -1
+    palette_entries = 0
     seen_ihdr = seen_plte = seen_idat = seen_iend = seen_iccp = False
     prev_idat = False
     while pos < n:
@@ -297,6 +350,7 @@ def _strip_png(data: bytes) -> tuple[bytes, int, int]:
             if length == 0 or length % 3 or length > 768:
                 raise _invalid("palette has the wrong length")
             seen_plte = True
+            palette_entries = length // 3
             out.append(chunk)
             continue
         if ctype == b"IEND":
@@ -310,6 +364,11 @@ def _strip_png(data: bytes) -> tuple[bytes, int, int]:
             raise _invalid("unknown critical chunk")
         if ctype not in _PNG_KEEP:
             continue  # metadata (text, EXIF, time) and animation chunks are dropped
+        if seen_idat or not _png_ancillary_ok(ctype, body, color_type, palette_entries):
+            # Every kept ancillary chunk belongs before the image data and has a defined
+            # length: a misplaced or oversized one (a carrier for other bytes) is dropped,
+            # as a decoder would ignore it.
+            continue
         if ctype == b"iCCP":
             if seen_iccp or length > MAX_ICC_BYTES:
                 continue
@@ -331,6 +390,44 @@ def _strip_png(data: bytes) -> tuple[bytes, int, int]:
 # --------------------------------------------------------------------------- #
 def _segment(marker: int, payload: bytes) -> bytes:
     return bytes((0xFF, marker)) + struct.pack(">H", len(payload) + 2) + payload
+
+
+def _check_jpeg_table(marker: int, payload: bytes) -> None:
+    """Refuse a table or control segment whose structure is not exactly the one ITU-T
+    T.81 defines (B.2.4): a decoder refuses it too, and a well-formed one holds
+    nothing but its own values."""
+    n = len(payload)
+    if marker == 0xDB:  # DQT: one or more (Pq/Tq, 64 or 128 bytes of values)
+        pos = 0
+        while pos < n:
+            precision, table = payload[pos] >> 4, payload[pos] & 0x0F
+            if precision > 1 or table > 3:
+                raise _invalid("bad quantisation table")
+            pos += 1 + 64 * (precision + 1)
+        if pos != n or n == 0:
+            raise _invalid("bad quantisation table")
+        return
+    if marker == 0xC4:  # DHT: one or more (Tc/Th, 16 counts, the values they count)
+        pos = 0
+        while pos < n:
+            klass, table = payload[pos] >> 4, payload[pos] & 0x0F
+            if klass > 1 or table > 3 or pos + 17 > n:
+                raise _invalid("bad Huffman table")
+            count = sum(payload[pos + 1:pos + 17])
+            if count > 256:
+                raise _invalid("bad Huffman table")
+            pos += 17 + count
+        if pos != n or n == 0:
+            raise _invalid("bad Huffman table")
+        return
+    if marker == 0xCC:  # DAC: pairs of (Tc/Tb, Cs)
+        if n == 0 or n % 2:
+            raise _invalid("bad arithmetic coding table")
+        return
+    if marker in (0xDD, 0xDC):  # DRI (restart interval), DNL (number of lines)
+        if n != 2:
+            raise _invalid("bad restart interval or line count")
+        return
 
 
 def _strip_jpeg(data: bytes) -> tuple[bytes, int, int]:
@@ -384,11 +481,15 @@ def _strip_jpeg(data: bytes) -> tuple[bytes, int, int]:
             parts.append(("sof", _segment(marker, payload)))
             continue
         if marker in _JPEG_TABLES:
+            _check_jpeg_table(marker, payload)
             parts.append(("table", _segment(marker, payload)))
             continue
         if marker == 0xDA:  # SOS, then the entropy-coded data up to the next marker
             if size is None:
                 raise _invalid("scan before the frame header")
+            # Ns, then Ns (Cs, Td/Ta) pairs, then Ss, Se and Ah/Al: exactly (B.2.3).
+            if not payload or not 1 <= payload[0] <= 4 or len(payload) != 4 + 2 * payload[0]:
+                raise _invalid("bad scan header")
             parts.append(("sos", _segment(marker, payload)))
             start = pos
             while True:
@@ -417,8 +518,10 @@ def _strip_jpeg(data: bytes) -> tuple[bytes, int, int]:
             elif marker == 0xE2 and payload.startswith(b"ICC_PROFILE\x00"):
                 icc_bytes += len(payload)
                 parts.append(("icc", _segment(marker, payload)))
-            elif marker == 0xEE and payload.startswith(b"Adobe"):
-                parts.append(("app", _segment(marker, payload)))
+            elif marker == 0xEE and payload.startswith(b"Adobe") and len(payload) >= 12:
+                # "Adobe", version, two flag words and the colour transform: 12 bytes,
+                # never anything a file appends after them.
+                parts.append(("app", _segment(marker, payload[:12])))
             continue  # Exif, XMP, IPTC and every other application segment are dropped
         if marker == 0xFE:  # COM
             continue
@@ -507,6 +610,7 @@ def _strip_webp(data: bytes) -> tuple[bytes, int, int]:
         )
     width = _u24le(first_payload[4:7]) + 1
     height = _u24le(first_payload[7:10]) + 1
+    _check_dimensions(width, height)
     kept: list[tuple[bytes, bytes]] = []
     image: bytes | None = None
     alpha = icc = False
@@ -519,7 +623,10 @@ def _strip_webp(data: bytes) -> tuple[bytes, int, int]:
             if image is not None:
                 raise _invalid("more than one image chunk")
             frame_w, frame_h = (_vp8_size if fourcc == b"VP8 " else _vp8l_size)(payload)
-            _check_dimensions(frame_w, frame_h)
+            if (frame_w, frame_h) != (width, height):
+                # A still image must fill its canvas exactly (decoders refuse anything
+                # else), so the listed dimensions are always the real ones.
+                raise _invalid("the image size does not match its canvas")
             image = fourcc
             kept.append((fourcc, payload))
             continue

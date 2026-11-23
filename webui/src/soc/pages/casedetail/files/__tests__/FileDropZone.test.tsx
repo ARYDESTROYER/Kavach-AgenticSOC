@@ -87,6 +87,16 @@ describe('FileDropZone', () => {
     expect(screen.getByText('You cannot add screenshots to this case.')).toBeInTheDocument();
   });
 
+  it('claims a drag even while disabled, so the browser never opens the image in place of the Console', () => {
+    render(<FileDropZone onFiles={vi.fn()} disabled />);
+    const zone = screen.getByTestId('file-drop-zone');
+    const dataTransfer = { files: [png], items: [], dropEffect: 'copy' };
+    const claimed = !fireEvent.dragOver(zone, { dataTransfer });
+    expect(claimed).toBe(true);
+    expect(dataTransfer.dropEffect).toBe('none');
+    expect(zone).not.toHaveAttribute('data-dragging');
+  });
+
   it('has no accessibility violations', async () => {
     const { container } = render(<FileDropZone onFiles={() => {}} />);
     expect(await axe(container)).toHaveNoViolations();

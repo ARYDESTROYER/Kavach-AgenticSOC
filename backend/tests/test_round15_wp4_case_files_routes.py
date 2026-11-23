@@ -253,6 +253,22 @@ def test_a_thumbnail_over_48_kibibytes_is_too_large(client) -> None:
     assert "Thumbnail" in r.json()["detail"]["message"]
 
 
+def test_a_thumbnail_wider_than_its_side_bound_is_refused(client) -> None:
+    """Review fix: a thumbnail is held to 640 px a side (a gallery shows twenty at once,
+    and a few kilobytes of PNG can describe 40 megapixels). Nothing is written."""
+    from app.engine.case_images import MAX_THUMBNAIL_SIDE_PX
+
+    seed_case(client)
+    wide = png(2, width=MAX_THUMBNAIL_SIDE_PX + 1, height=1)
+    r = client.post("/api/cases/case-files-1/files", json=upload_body(png(1), thumbnail_base64=b64(wide)))
+    assert r.status_code == 422 and r.json()["detail"]["code"] == "case_files_dimensions"
+    assert r.json()["detail"]["message"].startswith("Thumbnail:")
+    assert client.get("/api/cases/case-files-1/files").json()["count"] == 0
+    ok = png(3, width=MAX_THUMBNAIL_SIDE_PX, height=1)
+    assert client.post("/api/cases/case-files-1/files",
+                       json=upload_body(png(1), thumbnail_base64=b64(ok))).status_code == 201
+
+
 def test_the_body_is_bounded_before_it_is_parsed(client) -> None:
     seed_case(client)
     oversized = b'{"data_base64": "' + b"A" * rcf.BODY_MAX_BYTES + b'"}'

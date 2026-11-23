@@ -348,3 +348,137 @@ def test_module_is_stdlib_only_and_never_imports_the_decision_core() -> None:
             assert node.level == 0, "case_images imports nothing from the app"
             imported.add((node.module or "").split(".")[0])
     assert imported <= {"__future__", "hashlib", "struct", "zlib", "dataclasses", "typing"}
+
+
+# --------------------------------------------------------------------------- #
+# Review fixes: a kept chunk or segment carries nothing but its own values.
+# --------------------------------------------------------------------------- #
+_PAYLOAD = b"<html><script>alert(1)</script>SECRET-PAYLOAD" * 20
+
+
+def _types(data: bytes) -> list[bytes]:
+    pos, found = 8, []
+    while pos < len(data):
+        (length,) = struct.unpack(">I", data[pos:pos + 4])
+        found.append(data[pos + 4:pos + 8])
+        pos += 12 + length
+    return found
+
+
+@pytest.mark.parametrize("ctype, body", [
+    (b"bKGD", _PAYLOAD),
+    (b"tRNS", _PAYLOAD),
+    (b"pHYs", _PAYLOAD),
+    (b"gAMA", _PAYLOAD),
+    (b"cHRM", _PAYLOAD),
+    (b"sRGB", _PAYLOAD),
+    (b"sBIT", _PAYLOAD),
+    (b"iCCP", _PAYLOAD),  # no profile name terminator within 80 bytes
+    (b"iCCP", b"p\x00\x01" + _PAYLOAD),  # an unknown compression method
+])
+def test_png_kept_chunks_with_another_shape_are_dropped(ctype: bytes, body: bytes) -> None:
+    image = validate_image(png(chunk(ctype, body), idat()))
+    assert b"SECRET" not in image.data
+    assert ctype not in _types(image.data)
+    assert image.data == PLAIN_PNG
+
+
+def test_png_well_formed_kept_chunks_stay() -> None:
+    kept = [
+        chunk(b"gAMA", struct.pack(">I", 45455)), chunk(b"cHRM", bytes(32)), chunk(b"sRGB", b"\x00"),
+        chunk(b"sBIT", b"\x08\x08\x08"), chunk(b"pHYs", bytes(9)), chunk(b"bKGD", bytes(6)),
+        chunk(b"tRNS", bytes(6)), chunk(b"iCCP", b"sRGB\x00\x00" + zlib.compress(b"profile")),
+    ]
+    image = validate_image(png(*kept, idat()))
+    assert _types(image.data) == [b"IHDR", b"gAMA", b"cHRM", b"sRGB", b"sBIT", b"pHYs", b"bKGD", b"tRNS",
+                                  b"iCCP", b"IDAT", b"IEND"]
+
+
+def test_png_ancillary_lengths_follow_the_colour_type() -> None:
+    # Grayscale: a 2-byte background; an RGB-sized one is dropped.
+    gray = ihdr(color=0)
+    assert _types(validate_image(png(chunk(b"bKGD", bytes(2)), idat(channels=1), header=gray)).data) \
+        == [b"IHDR", b"bKGD", b"IDAT", b"IEND"]
+    assert b"bKGD" not in _types(validate_image(png(chunk(b"bKGD", bytes(6)), idat(channels=1), header=gray)).data)
+    # Palette: tRNS at most one byte per palette entry, and only after the palette.
+    palette = ihdr(color=3)
+    plte = chunk(b"PLTE", bytes(6))  # two entries
+    ok = validate_image(png(plte, chunk(b"tRNS", b"\x00\x01"), idat(channels=1), header=palette))
+    assert b"tRNS" in _types(ok.data)
+    too_long = validate_image(png(plte, chunk(b"tRNS", bytes(3)), idat(channels=1), header=palette))
+    assert b"tRNS" not in _types(too_long.data)
+    early = validate_image(png(chunk(b"tRNS", b"\x00"), plte, idat(channels=1), header=palette))
+    assert b"tRNS" not in _types(early.data)
+    # An image with an alpha channel has no tRNS at all.
+    rgba = ihdr(color=6)
+    assert b"tRNS" not in _types(validate_image(png(chunk(b"tRNS", bytes(6)), idat(channels=4), header=rgba)).data)
+
+
+def test_png_kept_chunks_after_the_image_data_are_dropped() -> None:
+    image = validate_image(png(idat(), chunk(b"pHYs", bytes(9)), chunk(b"tRNS", bytes(6))))
+    assert image.data == PLAIN_PNG
+
+
+def test_jpeg_adobe_segment_is_cut_to_its_defined_bytes() -> None:
+    adobe = b"Adobe" + b"\x00\x64\x00\x00\x00\x00\x01"
+    image = validate_image(jpeg(segment(0xEE, adobe + _PAYLOAD)))
+    assert b"SECRET" not in image.data
+    assert segment(0xEE, adobe) in image.data
+    assert b"Adobe" not in validate_image(jpeg(segment(0xEE, b"Adobe\x00"))).data
+
+
+@pytest.mark.parametrize("label, data", [
+    ("quantisation table with bytes after it", jpeg(segment(0xDB, b"\x00" + bytes(64) + _PAYLOAD))),
+    ("quantisation table cut short", jpeg(segment(0xDB, b"\x00" + bytes(40)))),
+    ("quantisation table precision", jpeg(segment(0xDB, b"\x20" + bytes(64)))),
+    ("quantisation table index", jpeg(segment(0xDB, b"\x04" + bytes(64)))),
+    ("Huffman table with bytes after it", jpeg(segment(0xC4, b"\x00" + bytes(16) + _PAYLOAD))),
+    ("Huffman table counting past its end", jpeg(segment(0xC4, b"\x00" + b"\x05" + bytes(15) + b"\x01"))),
+    ("Huffman table class", jpeg(segment(0xC4, b"\x20" + bytes(16)))),
+    ("Huffman table over 256 codes", jpeg(segment(0xC4, b"\x00" + b"\xff\xff" + bytes(14) + bytes(510)))),
+    ("restart interval length", jpeg(segment(0xDD, b"\x00\x04" + _PAYLOAD))),
+    ("arithmetic table length", jpeg(segment(0xCC, b"\x00"))),
+])
+def test_jpeg_table_segments_must_have_their_defined_structure(label: str, data: bytes) -> None:
+    err = rejected(data)
+    assert (err.code, err.status) == ("case_files_invalid_image", 422), label
+
+
+def test_jpeg_scan_header_must_have_its_defined_length() -> None:
+    tables = segment(0xDB, b"\x00" + bytes(64)) + sof() + segment(0xC4, b"\x00" + bytes(16))
+    with_payload = segment(0xDA, b"\x03\x01\x00\x02\x11\x03\x11\x00\x3f\x00" + _PAYLOAD)
+    assert rejected(b"\xff\xd8" + tables + with_payload + b"\x12\x34\xff\xd9").code == "case_files_invalid_image"
+    no_components = segment(0xDA, b"\x00\x00\x3f\x00")
+    assert rejected(b"\xff\xd8" + tables + no_components + b"\x12\xff\xd9").code == "case_files_invalid_image"
+
+
+def test_jpeg_well_formed_tables_stay() -> None:
+    two_dqt = segment(0xDB, b"\x00" + bytes(64) + b"\x11" + bytes(128))
+    dht = segment(0xC4, b"\x10" + b"\x00\x02" + bytes(14) + b"\x01\x02")
+    dri = segment(0xDD, b"\x00\x04")
+    image = validate_image(jpeg(two_dqt, dht, dri))
+    for kept in (two_dqt, dht, dri):
+        assert kept in image.data
+
+
+def test_webp_image_must_fill_its_canvas() -> None:
+    err = rejected(riff(vp8x(0, width=5000, height=4000), vp8l(width=4, height=3)))
+    assert (err.code, err.status) == ("case_files_invalid_image", 422)
+    assert "canvas" in err.message
+    assert validate_image(riff(vp8x(0, width=4, height=3), vp8l(width=4, height=3))).width == 4
+
+
+def test_a_thumbnail_is_bounded_a_side() -> None:
+    # A few kilobytes of 1-bit PNG describe 40 megapixels: a gallery of them would
+    # decode gigabytes, so a thumbnail is held to MAX_THUMBNAIL_SIDE_PX a side.
+    width, height = 8000, 5000
+    row = b"\x00" + bytes((width + 7) // 8)
+    bomb = png(chunk(b"IDAT", zlib.compress(row * height, 9)), header=ihdr(width, height, depth=1, color=0))
+    assert len(bomb) < ci.MAX_THUMBNAIL_BYTES
+    assert validate_image(bomb, max_bytes=ci.MAX_THUMBNAIL_BYTES).width == width  # fine as an image
+    err = rejected(bomb, max_bytes=ci.MAX_THUMBNAIL_BYTES, max_side=ci.MAX_THUMBNAIL_SIDE_PX)
+    assert (err.code, err.status) == ("case_files_dimensions", 422)
+    assert f"{ci.MAX_THUMBNAIL_SIDE_PX:,} pixels a side" in err.message
+    edge = ci.MAX_THUMBNAIL_SIDE_PX  # the pixels are never decoded, so a stub IDAT will do
+    assert validate_image(png(idat(), header=ihdr(edge, 2)), max_side=edge).width == edge
+    assert rejected(png(idat(), header=ihdr(2, edge + 1)), max_side=edge).code == "case_files_dimensions"

@@ -8,7 +8,8 @@ decide anything.
 * A sentinel test: a screenshot uploaded with a sentinel caption and filename, then an
   investigation, a re-investigation, a case chat turn and a standup. No prompt sent to
   the gateway and no text embedded carries either sentinel, and the ``audit_search``
-  chat tool's model-visible observation of the real audit rows carries neither.
+  chat tool's model-visible observation of the real audit rows carries neither. A close
+  then makes the case a resolved-case RAG chunk, and that chunk carries neither.
 """
 
 from __future__ import annotations
@@ -148,6 +149,19 @@ def test_captions_and_filenames_never_reach_a_prompt() -> None:
         assert chat.status_code == 200, chat.text
         assert client.get("/api/standup").status_code == 200
         assert provider.calls, "the flow made no model call, so it proves nothing"
+        # A close makes the case a resolved-case RAG chunk: the screenshot's caption and
+        # filename are never part of it, nor of the Case document it is built from.
+        closed = client.post(f"/api/cases/{case_id}/action", json={
+            "action": "close", "note": "Closed after review.", "disposition": "false_positive",
+            "disposition_declared": True,
+        })
+        assert closed.status_code == 200, closed.text
+        stored = client.portal.call(lambda: state.cases.get(case_id))
+        item = state.rag_service._resolved_case_item(stored)
+        assert item is not None, "the closed case makes no RAG chunk, so it proves nothing"
+        for sentinel in (CAPTION, FILENAME):
+            assert sentinel not in json.dumps(item, default=str)
+            assert sentinel not in stored.model_dump_json()
 
         prompts = json.dumps([call["messages"] for call in provider.calls])
         embedded = json.dumps(provider.embedded)

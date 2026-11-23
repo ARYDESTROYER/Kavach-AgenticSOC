@@ -71,10 +71,10 @@ Screenshots added to cases are stored in the `StateStore` with the rest of the
 application state (the `case_files` key-value documents), so the database dump or
 Elasticsearch snapshot above already contains them, and a restore brings them back with
 their cases. Plan for the space they take: each image is at most 2 MiB after its
-metadata is removed, plus a thumbnail of at most 48 KiB; a case holds at most 20 images
-and 20 MiB; the organisation holds at most 2 GiB in all (Demo Mode and the in-memory
-store at most 5 images a case and 64 MiB). Backup time, backup size and, on PostgreSQL,
-the updater's pre-update dump grow with them.
+metadata is removed, plus a thumbnail of at most 48 KiB and 640 pixels a side; a case
+holds at most 20 images and 20 MiB; the organisation holds at most 2 GiB in all (Demo
+Mode and the in-memory store at most 5 images a case and 64 MiB). Backup time, backup
+size and, on PostgreSQL, the updater's pre-update dump grow with them.
 
 On Elasticsearch the image content field (`case_file_data`) is mapped `binary` in the
 config index, so it is stored but not indexed. A new install creates the index with that
@@ -86,9 +86,11 @@ from a snapshot restore into a fresh index.
 
 The server checks each image's structure and removes its metadata but never decodes its
 pixels: PNG, JPEG and WebP only, by their magic bytes, at most 8,192 pixels a side and
-40 megapixels. A crafted image aimed at a browser's image decoder is not detected; the
-type allowlist, the structure check, the size limits, sign-in, the audit row and strict
-response headers are the mitigations.
+40 megapixels. Every part it keeps besides the compressed image data and a colour
+profile must have exactly the shape its format defines, so no other bytes ride along. A
+crafted image aimed at a browser's image decoder is not detected; the type allowlist,
+the structure check, the size limits, sign-in, the audit row and strict response headers
+are the mitigations.
 
 **Settings → Organization → Data export** submits a background job that can package all
 records in its selected supported safe scopes into one verified server-assembled ZIP,

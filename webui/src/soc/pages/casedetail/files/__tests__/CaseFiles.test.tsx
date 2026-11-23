@@ -177,6 +177,32 @@ describe('CaseFiles', () => {
     expect(api.remove).toHaveBeenCalledWith('case-1', 'mine');
     await waitFor(() => expect(screen.queryByText('Mine')).toBeNull());
     expect(screen.getByText('Theirs')).toBeInTheDocument();
+    // The screenshot and the lightbox are gone, so focus lands on the section heading
+    // rather than the page body (WCAG 2.4.3).
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Screenshots' })).toHaveFocus());
+  });
+
+  it('decodes only thumbnails in the grid; a screenshot without one waits for the lightbox', async () => {
+    const api = apiFor([entry('small', { caption: 'Small' }), entry('big', { caption: 'Big', has_thumbnail: false })]);
+    render(<CaseFiles caseId="case-1" api={api} />);
+    await waitFor(() => expect(created).toHaveLength(1));
+    expect(api.fetchBlob.mock.calls.map((c) => [c[1], c[2]?.variant])).toEqual([['small', 'thumb']]);
+    const tile = screen.getByRole('button', { name: 'Open Big' });
+    expect(within(tile).getByText('No preview')).toBeInTheDocument();
+    fireEvent.click(tile);
+    const dialog = await screen.findByRole('dialog');
+    await waitFor(() => expect(within(dialog).getByRole('img', { name: 'Big' })).toBeInTheDocument());
+    expect(api.fetchBlob.mock.calls.some((c) => c[1] === 'big' && c[2]?.variant === 'full')).toBe(true);
+  });
+
+  it('keeps its upload status region in the page before the first status', async () => {
+    const api = apiFor([], { can_upload: true });
+    render(<CaseFiles caseId="case-1" api={api} />);
+    await screen.findByRole('button', { name: 'Add screenshots' });
+    const region = screen.getByTestId('case-files-status');
+    expect(region).toHaveAttribute('aria-live', 'polite');
+    expect(region).toBeEmptyDOMElement();
   });
 
   it('revokes every object URL it made', async () => {
