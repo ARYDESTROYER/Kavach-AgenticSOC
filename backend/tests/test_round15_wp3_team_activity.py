@@ -241,6 +241,111 @@ def test_collaboration_thread_screenshot_and_sign_in_rows() -> None:
     assert eve["counts"]["signed_in"] == 1
 
 
+def _legacy_and_new_rows() -> list[dict[str, Any]]:
+    """Rows of every shape the audit log holds for the same kinds of work: before Round
+    14 (no actor kind, no outcome, no action), Round 14 (actor kind and outcome) and
+    Round 15 (a structured action and changes)."""
+    def at(minutes: int) -> str:
+        return _iso(NOW - timedelta(minutes=minutes))
+
+    return [
+        # Before Round 14.
+        {"ts": at(50), "action_type": "status", "surface": "case", "actor": "analyst", "case_id": "a",
+         "result_summary": "action=acknowledge status new\u2192investigating disposition=none"},
+        {"ts": at(49), "action_type": "status", "surface": "case", "actor": "Bob", "case_id": "a",
+         "result_summary": "action=close status investigating\u2192closed disposition=false_positive reason=x"},
+        {"ts": at(48), "action_type": "collab", "surface": "case", "actor": "bob", "case_id": "a",
+         "result_summary": "comment added"},
+        {"ts": at(47), "action_type": "collab", "surface": "case", "actor": "bob", "case_id": "a",
+         "result_summary": "assigned to bob"},
+        # A message posted with sign-in off names nobody: a person's work, Not attributed.
+        {"ts": at(46), "action_type": "thread_post", "surface": "case", "actor": "", "case_id": "a",
+         "result_summary": "thread post (human)"},
+        # A message labelled as the AI's names its type as the actor: never a person.
+        {"ts": at(45), "action_type": "thread_post", "surface": "case", "actor": "ai", "case_id": "a",
+         "result_summary": "thread post (ai)"},
+        {"ts": at(44), "action_type": "thread_post", "surface": "case", "actor": "bob", "case_id": "a",
+         "result_summary": "thread edit msg=1"},
+        # An agent row and a settings row with the case surface missing are never read.
+        {"ts": at(43), "action_type": "status", "surface": "settings", "actor": "bob",
+         "result_summary": "action=close status open\u2192closed disposition=none"},
+        # Round 14.
+        {"ts": at(40), "action_type": "status", "surface": "case", "actor": "BOB", "actor_type": "human",
+         "outcome": "success", "case_id": "b",
+         "result_summary": "action=reopen status closed\u2192open disposition=false_positive"},
+        {"ts": at(39), "action_type": "thread_post", "surface": "case", "actor": "bob", "actor_type": "human",
+         "outcome": "success", "case_id": "b", "result_summary": "thread post (ai)"},
+        # Round 15.
+        {"ts": at(30), "action_type": "status", "surface": "case", "actor": "bob", "actor_type": "human",
+         "outcome": "success", "case_id": "c", "action": "case.closed",
+         "changes": [{"field": "status", "before": "open", "after": "closed"},
+                     {"field": "disposition", "before": None, "after": "true_positive"}],
+         "result_summary": "action=close status open\u2192closed disposition=true_positive"},
+        {"ts": at(20), "action_type": "auth", "surface": "auth", "actor": "bob", "actor_type": "human",
+         "outcome": "success", "action": "auth.login", "result_summary": "signed in"},
+    ]
+
+
+_EXPECTED_MIXED = {
+    "bob": {"closed": 2, "reopened": 1, "commented": 1, "assigned": 1, "signed_in": 1},
+    "": {"acknowledged": 1, "commented": 1},
+}
+
+
+def _nonzero(result: dict[str, Any]) -> dict[str, dict[str, int]]:
+    return {p["key"]: {k: v for k, v in p["counts"].items() if v} for p in result["people"]}
+
+
+def test_thread_posts_count_only_as_a_person_s_message() -> None:
+    """A thread message counts as a comment only when the server recorded it as a
+    person's (``thread post (human)``): an older row that names "ai" as its actor is not
+    a person called ai, and a post labelled as the AI's is not a person's comment. A
+    message posted with sign-in off before Round 14 names nobody and is Not attributed."""
+    result = _fold(_legacy_and_new_rows()).result([])
+    assert _nonzero(result) == _EXPECTED_MIXED
+    assert "ai" not in {p["key"] for p in result["people"]}
+    assert result["people"][-1]["kind"] == "unattributed"
+
+
+def test_the_fold_reads_the_same_rows_on_every_audit_store() -> None:
+    """The read predicate selects, and the fold counts, the same rows of every shape on
+    Elasticsearch, SQL and a third-party store's bounded scan."""
+    rows = _legacy_and_new_rows()
+    window = _window("today")
+
+    async def through(repo: Any) -> dict[str, dict[str, int]]:
+        fold = ta.TeamActivityFold(window)
+        _read, reason = await routes_team._stream(  # noqa: SLF001
+            repo, ta.counted_predicate(window), fold.add_row, 1000,
+        )
+        assert reason is None
+        return _nonzero(fold.result([]))
+
+    class Third(AuditRepository):
+        async def write(self, doc: Any) -> None:  # pragma: no cover
+            pass
+
+        async def record(self, **kw: Any) -> None:  # pragma: no cover
+            pass
+
+        async def records_for_case(self, case_id: str, limit: int = 500) -> list[dict[str, Any]]:
+            return []
+
+        async def records(self, *, limit: int = 100, **kw: Any) -> list[dict[str, Any]]:
+            return list(reversed(rows))[:limit]
+
+    async def run() -> None:
+        assert await through(await _es_repo(rows)) == _EXPECTED_MIXED
+        sql, engine = await _sql_repo(rows)
+        try:
+            assert await through(sql) == _EXPECTED_MIXED
+        finally:
+            await engine.dispose()
+        assert await through(Third()) == _EXPECTED_MIXED
+
+    asyncio.run(run())
+
+
 def test_runbook_steps_count_each_step_marked_done() -> None:
     t = NOW - timedelta(minutes=5)
     rows = [
@@ -824,6 +929,60 @@ def test_a_person_s_events_list_what_the_cached_counts_counted() -> None:
         _write(client, [_lifecycle("sam", "acknowledge", "open", "investigating", ts=_recent(0), case_id="s-2")])
         events = client.get("/api/team/people/sam/events", headers=admin).json()
         assert events["total"] == 1 and [e["case_id"] for e in events["events"]] == ["s-1"]
+
+
+def test_a_later_events_page_never_ages_the_cached_counts() -> None:
+    """"Load more" reads the window its cursor fixed, which ends where the first page
+    stopped. After the cached answer expires, that page must not fold the fixed window
+    into the page's cache slot: the next read of the page would then show counts that
+    stop at the old instant for a minute."""
+    with _app() as client:
+        admin = _login(client)
+        state = _state(client)
+        _write(client, [
+            _lifecycle("lee", "acknowledge", "open", "investigating", ts=_recent(30 - i), case_id=f"l-{i}")
+            for i in range(3)
+        ])
+        first = client.get("/api/team/people/lee/events", params={"window": "today", "limit": 1}, headers=admin)
+        assert first.status_code == 200 and first.json()["next_cursor"]
+        routes_team.answer_cache(state).clear()  # the minute is over
+        _write(client, [_lifecycle("lee", "acknowledge", "open", "investigating", ts=_recent(0), case_id="l-new")])
+        more = client.get("/api/team/people/lee/events",
+                          params={"window": "today", "limit": 1, "cursor": first.json()["next_cursor"]}, headers=admin)
+        assert more.status_code == 200, more.text
+        # The later page still lists the fixed window: three events, the new one not among them.
+        assert more.json()["total"] == 3 and more.json()["events"][0]["case_id"] == "l-1"
+        counted = client.get("/api/team/activity", params={"window": "today"}, headers=admin).json()
+        lee = next(p for p in counted["people"] if p["key"] == "lee")
+        assert lee["counts"]["acknowledged"] == 4
+
+
+def test_the_off_answer_names_where_the_switch_is() -> None:
+    with _app() as client:
+        admin = _login(client)
+        state = _state(client)
+        prefs = state.prefs.model_copy(deep=True)
+        prefs.team_activity.enabled = False
+        client.portal.call(state.update_prefs, prefs)
+        message = client.get("/api/team/activity", headers=admin).json()["detail"]["message"]
+        assert "Settings, Security & access, Single sign-on & policy, Team activity" in message
+
+
+def test_the_person_view_row_names_the_person_on_one_plain_line() -> None:
+    from app.audit import views
+
+    with _app() as client:
+        admin = _login(client)
+        views.TEAM_RECORDER._seen.clear()  # noqa: SLF001
+        name = "eve\u202ex"
+        _write(client, [_lifecycle(name, "acknowledge", "open", "investigating", ts=_recent(5), case_id="e-1")])
+        response = client.get(f"/api/team/people/{name}/events", headers=admin)
+        assert response.status_code == 200, response.text
+        rows = client.portal.call(lambda: _state(client).control_audit.records(action_type="audit_view"))
+        person = [r for r in rows if r.get("action") == "team.viewed" and (r.get("tool_input") or {}).get("view") == "person"]
+        assert len(person) == 1
+        summary = person[0]["result_summary"]
+        assert "\u202e" not in summary and summary == "Viewed the Team activity of eve\ufffdx."
 
 
 def test_a_partial_read_says_so(monkeypatch) -> None:

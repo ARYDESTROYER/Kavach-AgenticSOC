@@ -45,13 +45,13 @@ const NOTE = 'text-sm text-muted-foreground';
 /**
  * The per-day table's columns, with short headers that fit the sheet. "Other" is the
  * rest of the case work (reopened, escalated, assigned, screenshots), so a day with any
- * counted work never reads as a row of zeros.
+ * counted work never reads as a row of zeros. Reviews sit beside closes (SPEC D3.5).
  */
 const DAY_COLUMNS: ReadonlyArray<readonly [string, string, readonly TeamKind[]]> = [
   ['closed', 'Closed', ['closed']],
+  ['reviewed', 'Reviews', ['reviewed']],
   ['acknowledged', 'Acknowledged', ['acknowledged']],
   ['commented', 'Commented', ['commented']],
-  ['reviewed', 'Reviews', ['reviewed']],
   ['runbook_step_done', 'Steps done', ['runbook_step_done']],
   ['other', 'Other', ['reopened', 'escalated', 'assigned', 'screenshot_added']],
   ['signed_in', 'Sign-ins', ['signed_in']],

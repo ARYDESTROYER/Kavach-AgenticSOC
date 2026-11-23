@@ -3135,7 +3135,7 @@
    "page": "analyst/team-activity.md",
    "anchor": "turn-the-page-off",
    "heading": "Turn the page off",
-   "text": "An administrator can turn the page off in **Settings → Single sign-on & policy → Team\nactivity** (the **Team activity page** switch, on by default). While it is off nobody\ncan open the page, and the page names the switch. The setting is saved with the rest of\nthe page and its change is written to the audit log.",
+   "text": "An administrator can turn the page off in **Settings → Security & access → Single sign-on\n& policy → Team activity** (the **Team activity page** switch, on by default). While it is off nobody\ncan open the page, and the page names the switch. The setting is saved with the rest of\nthe page and its change is written to the audit log.",
    "console": []
   },
   {
@@ -3151,7 +3151,7 @@
    "page": "analyst/team-activity.md",
    "anchor": "what-each-count-means",
    "heading": "What each count means",
-   "text": "| Count | What is counted |\n|---|---|\n| Acknowledged | An Acknowledge action on a case. |\n| Closed | An action that moved a case to Closed (Close, Confirm false positive, or Set status to Closed), split by the disposition it was closed with: true positive, false positive, benign, duplicate or other. |\n| Reopened, Escalated | The Reopen and Escalate actions. |\n| Commented | A comment or a case thread message written by the person. |\n| Assigned | An owner change the person made. |\n| Screenshots added | A screenshot attached to a case. |\n| Reviews | An auto-close review the person recorded: agreed, disagreed or unsure. |\n| Runbook steps done | A runbook step the person marked done. |\n| Sign-ins | A successful sign-in. |\n\nEach count of acknowledged, closed, reopened, escalated and assigned cases also says how\nmany of its actions came from a bulk action (one action over many selected cases), so\none click on 200 cases does not read like 200 separate decisions.\n\n**Median time to acknowledge** uses the same rule as the Metrics page: for each case\nwhose first acknowledgement by a person fell in the range, the time from the case being\ndetected (or created) to that acknowledgement, credited to whoever made it. It is\nmeasured from up to 5,000 cases; with more, the page says the median was not measured\nrather than guessing.",
+   "text": "| Count | What is counted |\n|---|---|\n| Acknowledged | An Acknowledge action on a case. |\n| Closed | An action that moved a case to Closed (Close, Confirm false positive, or Set status to Closed), split by the disposition it was closed with: true positive, false positive, benign, duplicate or other. |\n| Reopened, Escalated | The Reopen and Escalate actions. |\n| Commented | A comment or a case thread message written by the person. A thread message labelled as the AI's or the system's is not counted. |\n| Assigned | An owner change the person made. |\n| Screenshots added | A screenshot attached to a case. |\n| Reviews | An auto-close review the person recorded: agreed, disagreed or unsure. |\n| Runbook steps done | A runbook step the person marked done. |\n| Sign-ins | A successful sign-in. |\n\nEach count of acknowledged, closed, reopened, escalated and assigned cases also says how\nmany of its actions came from a bulk action (one action over many selected cases), so\none click on 200 cases does not read like 200 separate decisions.",
    "console": []
   },
   {
@@ -3159,7 +3159,7 @@
    "page": "analyst/team-activity.md",
    "anchor": "what-each-count-means",
    "heading": "What each count means",
-   "text": "**Reviews** always read \"N of M agreed\", where M counts the reviews that agreed or\ndisagreed (an unsure review is not an answer). An agreement rate is added only from 30\nanswered reviews, because fewer would say more than the reviews can. The person sheet\nalso shows the median **time spent reviewing** (measured while the review card was open)\nand, separately, the median **time to review** (from the case being picked for review to\nthe review).",
+   "text": "**Median time to acknowledge** uses the same rule as the Metrics page: for each case\nwhose first acknowledgement by a person fell in the range, the time from the case being\ndetected (or created) to that acknowledgement, credited to whoever made it. It is\nmeasured from up to 5,000 cases; with more, the page says the median was not measured\nrather than guessing.\n\n**Reviews** always read \"N of M agreed\", where M counts the reviews that agreed or\ndisagreed (an unsure review is not an answer). An agreement rate is added only from 30\nanswered reviews, because fewer would say more than the reviews can. The person sheet\nalso shows the median **time spent reviewing** (measured while the review card was open)\nand, separately, the median **time to review** (from the case being picked for review to\nthe review).",
    "console": []
   },
   {

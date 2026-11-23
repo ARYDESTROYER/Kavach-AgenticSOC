@@ -32,8 +32,8 @@ off, so work cannot be attributed to people." instead of showing counts.
 
 ## Turn the page off
 
-An administrator can turn the page off in **Settings → Single sign-on & policy → Team
-activity** (the **Team activity page** switch, on by default). While it is off nobody
+An administrator can turn the page off in **Settings → Security & access → Single sign-on
+& policy → Team activity** (the **Team activity page** switch, on by default). While it is off nobody
 can open the page, and the page names the switch. The setting is saved with the rest of
 the page and its change is written to the audit log.
 
@@ -66,7 +66,7 @@ Below the header:
 | Acknowledged | An Acknowledge action on a case. |
 | Closed | An action that moved a case to Closed (Close, Confirm false positive, or Set status to Closed), split by the disposition it was closed with: true positive, false positive, benign, duplicate or other. |
 | Reopened, Escalated | The Reopen and Escalate actions. |
-| Commented | A comment or a case thread message written by the person. |
+| Commented | A comment or a case thread message written by the person. A thread message labelled as the AI's or the system's is not counted. |
 | Assigned | An owner change the person made. |
 | Screenshots added | A screenshot attached to a case. |
 | Reviews | An auto-close review the person recorded: agreed, disagreed or unsure. |

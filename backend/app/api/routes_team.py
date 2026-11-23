@@ -227,7 +227,8 @@ async def _gate(request: Request, state: AppState, user: Any) -> None:
     if config is not None and not bool(getattr(config, "enabled", True)):
         raise _http(
             409, "team_activity_off",
-            "Team activity is turned off in Settings, Security and access, Team activity.",
+            "Team activity is turned off. An administrator can turn it on in Settings, Security & "
+            "access, Single sign-on & policy, Team activity.",
         )
 
 
@@ -652,6 +653,22 @@ async def team_people(
             "demo": bool(getattr(state, "demo_active", False))}
 
 
+async def _fixed_window_activity(state: AppState, user: Any, window: Any) -> _Computed:
+    """The answer a later events page checks the person and the spellings against.
+    ``window`` is the one its cursor fixed: the window's token resolved when the first
+    page was read, with the end that page stopped at."""
+    try:
+        current = ta.resolve_team_window(window.token, tz=window.tz)
+    except ta.TeamWindowError:
+        current = None
+    if current is not None and current.start == window.start and current.end >= window.end:
+        return await _activity(state, user, current)
+    return await answer_cache(state).get(
+        _cache_key(state, user, "activity", window, "fixed", window.end.isoformat()),
+        lambda: _compute_activity(state, window),
+    )
+
+
 async def _person_events(
     state: AppState, user: Any, window: Any, key: str, *, first_page: bool,
 ) -> tuple[list[dict[str, Any]], str | None, Any]:
@@ -660,8 +677,19 @@ async def _person_events(
     person's actor the window's rows recorded (``In("actor", spellings)``), so "Admin"
     and "admin" are one person here as in the counts. A first page stops where the
     cached counts stopped, so the sheet lists exactly what the person's row counts; the
-    cursor carries that end to the later pages."""
-    computed = await _activity(state, user, window)
+    cursor carries that end to the later pages.
+
+    A later page reads the window the cursor fixed, which may end before now. The
+    roster and the spellings then come from the page's own answer for the window as it
+    stands (the same start, a later or equal end, so every spelling the fixed window
+    holds is in it), and never from a fold of the fixed window stored under that answer's
+    key: that would serve counts ending at the old instant to the next page read. Only
+    when the window has moved on (``now-7d`` across midnight) is the fixed window folded,
+    under a key of its own."""
+    if first_page:
+        computed = await _activity(state, user, window)
+    else:
+        computed = await _fixed_window_activity(state, user, window)
     listed = {p.get("key") for p in computed.result.get("people", [])}
     if key not in listed:
         raise _http(404, "team_person_not_found", "Nobody by that name is on this page.")
@@ -746,7 +774,8 @@ async def team_person_events(
         })
     await _note_view(
         state, request, user, {"view": "person", "person": key},
-        f"Viewed the Team activity of {username.strip()[:160]}.",
+        # The name as the rows recorded it, one printable line (``views.plain``).
+        f"Viewed the Team activity of {views.plain(username.strip(), limit=160)}.",
     )
     return {
         "username": username.strip(),

@@ -15,7 +15,8 @@ operator time zone (``SlaPolicy.timezone``):
   positive, or Set status to Closed), split by the disposition the case was closed with
   (true positive, false positive, benign, duplicate, other);
 * ``reopened`` and ``escalated``: the Reopen and Escalate actions;
-* ``commented``: a comment or a case thread post by a person;
+* ``commented``: a comment, or a case thread post a person wrote as a person (a post
+  labelled as the AI's or the system's is not counted);
 * ``assigned``: an owner change made by the person (as the actor);
 * ``screenshot_added``: a screenshot attached to a case;
 * ``reviewed``: an auto-close review recorded (agreed, disagreed or unsure);
@@ -28,7 +29,7 @@ Each lifecycle and assignment count also says how many of its rows a bulk action
 (``run_id`` ``bulk-...``, SPEC D7.3). Rows written before Round 15 carry no structured
 ``action``: their verb is read from the fixed leading tokens of their ``result_summary``
 (``action=<verb> status <from>→<to> disposition=<d>`` for a lifecycle row, ``comment
-added`` and ``assigned to ...`` for a collaboration row, ``thread post (...)`` for a
+added`` and ``assigned to ...`` for a collaboration row, ``thread post (human)`` for a
 thread post). Only those fixed, server-written tokens are read; the free text after them
 (a reason) never is.
 
@@ -185,6 +186,9 @@ _LEGACY_LIFECYCLE_RE = re.compile(
     r"^action=([a-z_]{1,32}) status ([a-z_?]{1,32})\u2192([a-z_]{1,32}) disposition=([a-z_]{1,32})"
 )
 _STEP_STATUS_RE = re.compile(r"^steps\.(.{1,128})\.status$")
+#: The fixed lead of a case thread post a person wrote (``thread post (human)``, then
+#: optional reply and mention tokens); ``(ai)`` and ``(system)`` posts are not counted.
+_HUMAN_THREAD_POST = "thread post (human)"
 _OK_OUTCOMES = frozenset({None, "success"})
 
 
@@ -395,12 +399,29 @@ def _case_ref(doc: Mapping[str, Any]) -> tuple[str | None, str | None]:
     return case_id, number
 
 
+def _unattributed_legacy_work(doc: Mapping[str, Any]) -> bool:
+    """A legacy case-work row (no structured ``action``, no recorded ``actor_type``)
+    whose actor names nobody. Rows written before Round 14 with sign-in off can carry an
+    empty actor, which the audit table's derivation leaves without a kind; they are a
+    person's work all the same (an AI or system post names its type as the actor), so
+    they are counted under Not attributed (SPEC D3.9)."""
+    return (
+        doc.get("actor_type") is None
+        and not doc.get("action")
+        and doc.get("surface") == "case"
+        and doc.get("action_type") in _LEGACY_ACTION_TYPES
+        and person_key(doc.get("actor")) == ""
+    )
+
+
 def counted_row(doc: Mapping[str, Any]) -> bool:
     """Is ``doc`` a row a person made that succeeded (the only rows counted)?"""
     outcome, _ = audit_events.derive_outcome(doc)
     if outcome not in _OK_OUTCOMES:
         return False
     actor_type, _ = audit_events.derive_actor_type(doc)
+    if actor_type is None and _unattributed_legacy_work(doc):
+        return True
     return actor_type == "human"
 
 
@@ -497,7 +518,10 @@ def _legacy_events(doc: Mapping[str, Any], base: dict[str, Any]) -> list[WorkEve
         if summary.startswith("assigned to "):
             return [WorkEvent(kind=ASSIGNED, **base)]
         return []
-    if action_type == "thread_post" and summary.startswith("thread post ("):
+    # Only a message a person wrote as a person: the server writes the message's author
+    # type in this token, and a post labelled as the AI's or the system's is not a
+    # person's comment, whoever sent it (an older row names "ai" as its actor).
+    if action_type == "thread_post" and summary.startswith(_HUMAN_THREAD_POST):
         return [WorkEvent(kind=COMMENTED, **base)]
     return []
 

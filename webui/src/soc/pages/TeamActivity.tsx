@@ -6,8 +6,8 @@
  * (`team:view`). While role-based access is off every signed-in account holds every
  * grant, so the server also asks for a stored role of Super admin, SOC manager or Auditor
  * and the page says so in a warning (SPEC D3.3). The operator can turn the page off
- * (Settings, Single sign-on & policy, Team activity); with sign-in off nothing can be
- * attributed to a person and the page says that instead.
+ * (Settings, Security & access, Single sign-on & policy, Team activity); with sign-in
+ * off nothing can be attributed to a person and the page says that instead.
  *
  * Layout, in the Console's grammar: the header (title, help tip naming the time zone,
  * the range control, refresh, freshness), one KPI strip (people active, cases closed by
@@ -74,7 +74,7 @@ function pageHelp(timezone: string | null): string {
 
 /** Off-page wording for the server's refusals. */
 const OFF_DESCRIPTION =
-  'An administrator can turn it on in Settings, Single sign-on & policy, Team activity.';
+  'An administrator can turn it on in Settings, Security & access, Single sign-on & policy, Team activity.';
 const ROLE_FLOOR_WARNING =
   'Role-based access is off. Only Super admins, SOC managers and Auditors can open this page until it is on.';
 
@@ -153,8 +153,8 @@ function peopleColumns(): DataTableColumn<PersonActivity>[] {
       cell: (p) => <span className="truncate text-muted-foreground">{personRole(p)}</span>,
     },
     count('closed', 'Closed', 96),
-    count('acknowledged', 'Acknowledged', 136),
-    count('commented', 'Commented', 120),
+    // Review counts sit beside close counts (SPEC D3.5): closes read with the reviews
+    // beside them, so speed alone never reads as the work.
     {
       id: 'reviewed',
       header: 'Reviews',
@@ -163,6 +163,8 @@ function peopleColumns(): DataTableColumn<PersonActivity>[] {
       text: (p) => reviewsText(p.reviews),
       cell: (p) => <span className="truncate tabular-nums">{reviewsText(p.reviews)}</span>,
     },
+    count('acknowledged', 'Acknowledged', 136),
+    count('commented', 'Commented', 120),
     count('escalated', 'Escalated', 112),
     count('reopened', 'Reopened', 112),
     count('runbook_step_done', 'Runbook steps', 136),
@@ -229,6 +231,15 @@ function partialLine(data: TeamActivityData): string {
     : 'The audit log could only be read in part, so the counts are at least these.';
 }
 
+/**
+ * A lifecycle tile's context: how many of its actions came from bulk actions, "one at a
+ * time" when none did, and the range alone when there is nothing to qualify.
+ */
+function bulkContext(count: number, bulk: number, range: TeamRange): string {
+  if (!count) return rangeCaption(range);
+  return bulk ? `${fmtNumber(bulk)} in bulk actions` : 'one at a time';
+}
+
 function ackContext(data: TeamActivityData): string {
   const team = data.team;
   if (team.ack_status === 'too_many_cases') return 'too many cases to measure';
@@ -243,7 +254,13 @@ function TeamView() {
   const [range, setRange] = React.useState<TeamRange>(DEFAULT_TEAM_RANGE);
   const [nonce, setNonce] = React.useState(0);
   const windowToken = rangeWindow(range);
-  const { data, error, loading } = useTeamActivityData(windowToken, nonce);
+  const loaded = useTeamActivityData(windowToken, nonce);
+  // An answer read for another window is never shown under this one: the range control
+  // and every caption already name the new window while its counts load.
+  const fresh = loaded.readFor === windowToken;
+  const data = fresh ? loaded.data : null;
+  const error = fresh ? loaded.error : null;
+  const loading = loaded.loading || !fresh;
   const [sort, setSort] = React.useState<SortState | null>(null);
   const [openKey, setOpenKey] = React.useState<string | null>(null);
   const columns = React.useMemo(() => peopleColumns(), []);
@@ -329,8 +346,8 @@ function TeamView() {
         ) : null}
         <KpiStrip label="Team summary" data-testid="team-kpis">
           <KpiTile label="People active" value={fmtNumber(team.people_active)} context={rangeCaption(range)} />
-          <KpiTile label="Cases closed by people" value={fmtNumber(team.counts.closed)} context={team.bulk.closed ? `${fmtNumber(team.bulk.closed)} in bulk actions` : 'one at a time'} />
-          <KpiTile label="Acknowledged" value={fmtNumber(team.counts.acknowledged)} context={team.bulk.acknowledged ? `${fmtNumber(team.bulk.acknowledged)} in bulk actions` : 'one at a time'} />
+          <KpiTile label="Cases closed by people" value={fmtNumber(team.counts.closed)} context={bulkContext(team.counts.closed, team.bulk.closed, range)} />
+          <KpiTile label="Acknowledged" value={fmtNumber(team.counts.acknowledged)} context={bulkContext(team.counts.acknowledged, team.bulk.acknowledged, range)} />
           <KpiTile label="Reviews completed" value={fmtNumber(team.reviews.completed)} context={team.reviews.completed ? reviewsText(team.reviews) : 'auto-close reviews'} />
           <KpiTile
             label="Median time to acknowledge"

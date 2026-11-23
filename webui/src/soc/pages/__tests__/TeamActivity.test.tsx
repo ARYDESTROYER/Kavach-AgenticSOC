@@ -164,6 +164,9 @@ describe('Team activity', () => {
       expect(within(strip).getByText(label)).toBeInTheDocument();
     }
     expect(within(strip).getByText('7m')).toBeInTheDocument();
+    // Closes say how many came from bulk actions; acknowledgements none did.
+    expect(within(strip).getByText('1 in bulk actions')).toBeInTheDocument();
+    expect(within(strip).getByText('one at a time')).toBeInTheDocument();
     expect(screen.getByTestId('team-daily-chart')).toBeInTheDocument();
     const table = screen.getByRole('table', { name: 'People' });
     const names = within(table).getAllByRole('row').slice(1).map((row) => within(row).getAllByRole('cell')[0]?.textContent ?? '');
@@ -190,6 +193,35 @@ describe('Team activity', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Today, time range' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Last 7 days' }));
     await waitFor(() => expect(h.activity).toHaveBeenLastCalledWith('now-7d', expect.anything()));
+  });
+
+  it("never shows one window's counts under another window's range", async () => {
+    renderPage();
+    const strip = await screen.findByTestId('team-kpis');
+    expect(within(strip).getByText('today')).toBeInTheDocument();
+    let resolveWeek: (value: TeamActivity) => void = () => undefined;
+    h.activity.mockReturnValue(new Promise<TeamActivity>((resolve) => { resolveWeek = resolve; }));
+    fireEvent.click(screen.getByRole('button', { name: 'Today, time range' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Last 7 days' }));
+    // While the week loads, the page shows the loading state, not today's figures under
+    // "Last 7 days".
+    await waitFor(() => expect(screen.queryByTestId('team-kpis')).toBeNull());
+    expect(screen.getByText('Loading team activity')).toBeInTheDocument();
+    const week = data({ window: { token: 'now-7d', label: 'last 7 days', start: null, end: '2026-11-20T15:00:00+00:00' } });
+    week.team.people_active = 9;
+    resolveWeek(week);
+    const weekStrip = await screen.findByTestId('team-kpis');
+    expect(within(weekStrip).getByText('9')).toBeInTheDocument();
+    expect(within(weekStrip).getByText('last 7 days')).toBeInTheDocument();
+  });
+
+  it('puts the review counts beside the close counts (SPEC D3.5)', async () => {
+    renderPage();
+    const table = await screen.findByRole('table', { name: 'People' });
+    const headers = within(table).getAllByRole('columnheader').map((th) => th.textContent?.trim() ?? '');
+    const closed = headers.findIndex((t) => t.startsWith('Closed'));
+    expect(closed).toBeGreaterThan(-1);
+    expect(headers[closed + 1]).toMatch(/^Reviews/);
   });
 
   it('opens a person with their events, case links and the Audit log link', async () => {
@@ -229,6 +261,10 @@ describe('Team activity', () => {
     h.activity.mockRejectedValue(refusal(409, 'team_activity_off', 'Team activity is turned off.'));
     renderPage();
     expect(await screen.findByText('Team activity is turned off')).toBeInTheDocument();
+    // It names the switch where Settings shows it.
+    expect(
+      screen.getByText('An administrator can turn it on in Settings, Security & access, Single sign-on & policy, Team activity.'),
+    ).toBeInTheDocument();
   });
 
   it('shows the role floor refusal and the role-based access warning', async () => {
@@ -259,6 +295,8 @@ describe('Team activity', () => {
     expect(await screen.findByTestId('team-partial')).toHaveTextContent('250,000');
     expect(screen.getByTestId('team-demo-note')).toHaveTextContent('Demo Mode: showing Demo work.');
     expect(screen.getByText('No case work in this window')).toBeInTheDocument();
+    // No closes and no acknowledgements: their tiles name the range, never "one at a time".
+    expect(within(screen.getByTestId('team-kpis')).queryByText('one at a time')).toBeNull();
     expect(screen.queryByTestId('team-daily-chart')).toBeNull();
   });
 });
