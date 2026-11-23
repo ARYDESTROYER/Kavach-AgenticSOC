@@ -2268,6 +2268,315 @@
         "title": "CaseComment",
         "type": "object"
       },
+      "CaseFileDeleteResult": {
+        "properties": {
+          "deleted": {
+            "default": true,
+            "title": "Deleted",
+            "type": "boolean"
+          },
+          "file": {
+            "$ref": "#/components/schemas/CaseFileEntry"
+          }
+        },
+        "required": [
+          "file"
+        ],
+        "title": "CaseFileDeleteResult",
+        "type": "object"
+      },
+      "CaseFileEntry": {
+        "description": "One screenshot as the API lists it (metadata only, never the bytes).",
+        "properties": {
+          "bytes": {
+            "title": "Bytes",
+            "type": "integer"
+          },
+          "can_delete": {
+            "default": false,
+            "title": "Can Delete",
+            "type": "boolean"
+          },
+          "caption": {
+            "default": "",
+            "title": "Caption",
+            "type": "string"
+          },
+          "case_id": {
+            "title": "Case Id",
+            "type": "string"
+          },
+          "content_type": {
+            "title": "Content Type",
+            "type": "string"
+          },
+          "deleted": {
+            "default": false,
+            "title": "Deleted",
+            "type": "boolean"
+          },
+          "deleted_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deleted At"
+          },
+          "deleted_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deleted By"
+          },
+          "filename": {
+            "default": "",
+            "title": "Filename",
+            "type": "string"
+          },
+          "has_thumbnail": {
+            "default": false,
+            "title": "Has Thumbnail",
+            "type": "boolean"
+          },
+          "height": {
+            "title": "Height",
+            "type": "integer"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "position": {
+            "description": "1-based number of the screenshot on its case (upload order).",
+            "title": "Position",
+            "type": "integer"
+          },
+          "sha256": {
+            "title": "Sha256",
+            "type": "string"
+          },
+          "thumbnail_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Thumbnail Bytes"
+          },
+          "uploaded_at": {
+            "default": "",
+            "title": "Uploaded At",
+            "type": "string"
+          },
+          "uploaded_by": {
+            "default": "",
+            "title": "Uploaded By",
+            "type": "string"
+          },
+          "width": {
+            "title": "Width",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "case_id",
+          "position",
+          "content_type",
+          "bytes",
+          "width",
+          "height",
+          "sha256"
+        ],
+        "title": "CaseFileEntry",
+        "type": "object"
+      },
+      "CaseFileLimitsInfo": {
+        "properties": {
+          "accepted_types": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Accepted Types",
+            "type": "array"
+          },
+          "max_caption_chars": {
+            "title": "Max Caption Chars",
+            "type": "integer"
+          },
+          "max_case_bytes": {
+            "title": "Max Case Bytes",
+            "type": "integer"
+          },
+          "max_file_bytes": {
+            "title": "Max File Bytes",
+            "type": "integer"
+          },
+          "max_filename_chars": {
+            "title": "Max Filename Chars",
+            "type": "integer"
+          },
+          "max_files": {
+            "title": "Max Files",
+            "type": "integer"
+          },
+          "max_pixels": {
+            "title": "Max Pixels",
+            "type": "integer"
+          },
+          "max_side_px": {
+            "title": "Max Side Px",
+            "type": "integer"
+          },
+          "max_thumbnail_bytes": {
+            "title": "Max Thumbnail Bytes",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "max_files",
+          "max_case_bytes",
+          "max_file_bytes",
+          "max_thumbnail_bytes",
+          "max_side_px",
+          "max_pixels",
+          "max_caption_chars",
+          "max_filename_chars",
+          "accepted_types"
+        ],
+        "title": "CaseFileLimitsInfo",
+        "type": "object"
+      },
+      "CaseFileList": {
+        "properties": {
+          "bytes": {
+            "title": "Bytes",
+            "type": "integer"
+          },
+          "can_upload": {
+            "title": "Can Upload",
+            "type": "boolean"
+          },
+          "case_id": {
+            "title": "Case Id",
+            "type": "string"
+          },
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          },
+          "deleted": {
+            "items": {
+              "$ref": "#/components/schemas/CaseFileEntry"
+            },
+            "title": "Deleted",
+            "type": "array"
+          },
+          "files": {
+            "items": {
+              "$ref": "#/components/schemas/CaseFileEntry"
+            },
+            "title": "Files",
+            "type": "array"
+          },
+          "limits": {
+            "$ref": "#/components/schemas/CaseFileLimitsInfo"
+          }
+        },
+        "required": [
+          "case_id",
+          "files",
+          "deleted",
+          "count",
+          "bytes",
+          "can_upload",
+          "limits"
+        ],
+        "title": "CaseFileList",
+        "type": "object"
+      },
+      "CaseFileUploadBody": {
+        "additionalProperties": false,
+        "description": "One screenshot upload. ``data_base64`` is the image as base64 (a ``data:``\nURL is accepted too); ``content_type`` the type the client claims (it must match\nthe image's magic bytes). A thumbnail is optional (at most 48 KiB once decoded).",
+        "properties": {
+          "caption": {
+            "default": "",
+            "maxLength": 200,
+            "title": "Caption",
+            "type": "string"
+          },
+          "content_type": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content Type"
+          },
+          "data_base64": {
+            "maxLength": 3145728,
+            "minLength": 1,
+            "title": "Data Base64",
+            "type": "string"
+          },
+          "filename": {
+            "default": "",
+            "maxLength": 1024,
+            "title": "Filename",
+            "type": "string"
+          },
+          "thumbnail_base64": {
+            "anyOf": [
+              {
+                "maxLength": 131072,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Thumbnail Base64"
+          }
+        },
+        "required": [
+          "data_base64"
+        ],
+        "title": "CaseFileUploadBody",
+        "type": "object"
+      },
+      "CaseFileUploadResult": {
+        "properties": {
+          "deduplicated": {
+            "default": false,
+            "title": "Deduplicated",
+            "type": "boolean"
+          },
+          "file": {
+            "$ref": "#/components/schemas/CaseFileEntry"
+          }
+        },
+        "required": [
+          "file"
+        ],
+        "title": "CaseFileUploadResult",
+        "type": "object"
+      },
       "CaseIdPreviewBody": {
         "properties": {
           "prefix": {
@@ -20548,6 +20857,235 @@
           }
         },
         "summary": "Case Feedback"
+      }
+    },
+    "/api/cases/{case_id}/files": {
+      "get": {
+        "description": "The case's screenshots (metadata only, upload order), its deleted ones (their\nmetadata kept), what they take and the bounds that apply.",
+        "operationId": "list_case_files_api_cases__case_id__files_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "case_id",
+            "required": true,
+            "schema": {
+              "title": "Case Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CaseFileList"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Case Files"
+      },
+      "post": {
+        "description": "Attach one screenshot to the case (see the module docstring). Allowed on a\nclosed case; never changes the case.",
+        "operationId": "upload_case_file_api_cases__case_id__files_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "case_id",
+            "required": true,
+            "schema": {
+              "title": "Case Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CaseFileUploadBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CaseFileUploadResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Upload Case File"
+      }
+    },
+    "/api/cases/{case_id}/files/{file_id}": {
+      "delete": {
+        "description": "Delete one screenshot: its bytes go, its metadata stays as a deleted entry. The\nuploader may delete their own; a ``cases:close`` holder anyone's (a refusal\nwrites an Access denied row).",
+        "operationId": "delete_case_file_api_cases__case_id__files__file_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "case_id",
+            "required": true,
+            "schema": {
+              "title": "Case Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "file_id",
+            "required": true,
+            "schema": {
+              "title": "File Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CaseFileDeleteResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Case File"
+      }
+    },
+    "/api/cases/{case_id}/files/{file_id}/content": {
+      "get": {
+        "description": "The image bytes with strict headers (see the module docstring). A thumbnail\nis served when asked for and present, else the full image.",
+        "operationId": "get_case_file_content_api_cases__case_id__files__file_id__content_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "case_id",
+            "required": true,
+            "schema": {
+              "title": "Case Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "file_id",
+            "required": true,
+            "schema": {
+              "title": "File Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "variant",
+            "required": false,
+            "schema": {
+              "default": "full",
+              "enum": [
+                "full",
+                "thumb"
+              ],
+              "title": "Variant",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "download",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Download",
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "image/jpeg": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              },
+              "image/png": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              },
+              "image/webp": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The screenshot (or its thumbnail), as stored after validation."
+          },
+          "404": {
+            "description": "case_not_found or case_file_not_found"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "503": {
+            "description": "case_files_unavailable: the store could not be read"
+          }
+        },
+        "summary": "Get Case File Content"
       }
     },
     "/api/cases/{case_id}/forwarding": {

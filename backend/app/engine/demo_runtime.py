@@ -285,6 +285,9 @@ class DemoStack:
         # KV too, so disabling Demo Mode purges them with everything else and no demo
         # report can ever reach the tenant's library.
         self.reports = self._build_reports()
+        # Round 15 WP4 (SPEC D5.3, §3.2): screenshots on Demo cases, on the Demo KV
+        # within the Demo caps (5 a case, 64 MiB in all), gone when Demo Mode ends.
+        self.case_files = self._build_case_files()
         # How many pre-seed "already processed" events were counted (for status/tests).
         self.preseed_events = 0
         # ONE shared vector store for BOTH the pipeline RAG and the chat RAG (the old
@@ -460,6 +463,13 @@ class DemoStack:
         except ImportError:
             return None
         return ReportStore(self.kv)
+
+    def _build_case_files(self):
+        """Round 15 WP4: ``stores.case_files.CaseFileStore`` over the demo KV with the
+        in-memory caps (``MEMORY_LIMITS``), since the Demo KV lives in process memory."""
+        from ..stores.case_files import MEMORY_LIMITS, CaseFileStore
+
+        return CaseFileStore(self.kv, limits=MEMORY_LIMITS)
 
     def chat_context_extras(
         self,

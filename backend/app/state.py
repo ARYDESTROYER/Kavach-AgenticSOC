@@ -627,6 +627,54 @@ class AppState:
             bus=get_event_bus,
         )
 
+    # ------------------------------------------------------------------ #
+    # Round 15 WP4: screenshots on a case (SPEC D5.1 to D5.3, §3.2). Built lazily over
+    # the shared KV and rebound when ``_wire()`` swaps it; Demo Mode serves the Demo
+    # stack's own store (its own KV and the Demo caps).
+    # ------------------------------------------------------------------ #
+    def _case_files_in_memory(self) -> bool:
+        """True when the real KV keeps its documents in process memory (the
+        in-memory Elasticsearch fallback): screenshots then get the Demo caps."""
+        if self._is_sql_backend():
+            return False
+        from .es.fake import InMemoryESClient
+
+        return isinstance(getattr(self, "es", None), InMemoryESClient)
+
+    @property
+    def real_case_files(self):
+        """The REAL screenshot store (``stores.case_files``), whatever Demo Mode shows
+        (the cases reset clears it)."""
+        store = getattr(self, "_real_case_files_store", None)
+        kv = getattr(self, "_kv", None)
+        if store is None or store.kv is not kv:
+            from .stores.case_files import MEMORY_LIMITS, STANDARD_LIMITS, CaseFileStore
+
+            limits = MEMORY_LIMITS if self._case_files_in_memory() else STANDARD_LIMITS
+            store = CaseFileStore(kv, limits=limits)
+            self._real_case_files_store = store
+        return store
+
+    @property
+    def case_files(self):
+        """Screenshots for the active real/Demo boundary (SPEC §3.2): Demo cases have
+        Demo screenshots, on the Demo KV within the Demo caps, gone when Demo Mode
+        ends."""
+        demo = self._demo
+        if demo is None:
+            return self.real_case_files
+        store = getattr(demo, "case_files", None)
+        if store is not None:
+            return store
+        cached = getattr(self, "_demo_case_files", None)
+        if cached is not None and cached[0] is demo:
+            return cached[1]
+        from .stores.case_files import MEMORY_LIMITS, CaseFileStore
+
+        store = CaseFileStore(demo.kv, limits=MEMORY_LIMITS)
+        self._demo_case_files = (demo, store)
+        return store
+
     @property
     def legacy_procedures(self):
         """Read-only access to the retired procedure namespaces (one release): the

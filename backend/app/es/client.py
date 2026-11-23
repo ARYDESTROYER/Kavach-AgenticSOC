@@ -200,6 +200,31 @@ class RealESClient(BaseESClient):
                     return
             raise
 
+    async def get_index_mapping(self, index: str) -> dict[str, dict[str, Any]]:
+        """``GET <index>/_mapping`` through the management credential (Round 15 SPEC
+        D5.7): ``{concrete index: {"mappings": ...}}``; a missing index is absent from
+        the answer, and every other failure propagates."""
+        client = self._require_mgmt()
+        try:
+            resp = await client.indices.get_mapping(
+                index=index, ignore_unavailable=True, allow_no_indices=True,
+            )
+        except Exception as exc:  # noqa: BLE001
+            if _is_not_found(exc):
+                return {}
+            raise
+        body = resp.body if hasattr(resp, "body") else resp
+        return {
+            str(name): dict(entry) for name, entry in dict(body or {}).items()
+            if isinstance(entry, dict)
+        }
+
+    async def put_index_mapping(self, index: str, body: dict[str, Any]) -> None:
+        """``PUT <index>/_mapping`` through the management credential: purely
+        additive (Elasticsearch refuses to change an existing field's type)."""
+        client = self._require_mgmt()
+        await client.indices.put_mapping(index=index, **body)
+
     async def index_doc(
         self,
         index: str,

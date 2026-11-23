@@ -1346,6 +1346,75 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/cases/{case_id}/files": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Case Files
+         * @description The case's screenshots (metadata only, upload order), its deleted ones (their
+         *     metadata kept), what they take and the bounds that apply.
+         */
+        get: operations["list_case_files_api_cases__case_id__files_get"];
+        put?: never;
+        /**
+         * Upload Case File
+         * @description Attach one screenshot to the case (see the module docstring). Allowed on a
+         *     closed case; never changes the case.
+         */
+        post: operations["upload_case_file_api_cases__case_id__files_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/cases/{case_id}/files/{file_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Delete Case File
+         * @description Delete one screenshot: its bytes go, its metadata stays as a deleted entry. The
+         *     uploader may delete their own; a ``cases:close`` holder anyone's (a refusal
+         *     writes an Access denied row).
+         */
+        delete: operations["delete_case_file_api_cases__case_id__files__file_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/cases/{case_id}/files/{file_id}/content": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Case File Content
+         * @description The image bytes with strict headers (see the module docstring). A thumbnail
+         *     is served when asked for and present, else the full image.
+         */
+        get: operations["get_case_file_content_api_cases__case_id__files__file_id__content_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/cases/{case_id}/forwarding": {
         parameters: {
             query?: never;
@@ -8378,6 +8447,151 @@ export interface components {
             body: string;
             /** Ts */
             ts?: string;
+        };
+        /** CaseFileDeleteResult */
+        CaseFileDeleteResult: {
+            /**
+             * Deleted
+             * @default true
+             */
+            deleted: boolean;
+            file: components["schemas"]["CaseFileEntry"];
+        };
+        /**
+         * CaseFileEntry
+         * @description One screenshot as the API lists it (metadata only, never the bytes).
+         */
+        CaseFileEntry: {
+            /** Bytes */
+            bytes: number;
+            /**
+             * Can Delete
+             * @default false
+             */
+            can_delete: boolean;
+            /**
+             * Caption
+             * @default
+             */
+            caption: string;
+            /** Case Id */
+            case_id: string;
+            /** Content Type */
+            content_type: string;
+            /**
+             * Deleted
+             * @default false
+             */
+            deleted: boolean;
+            /** Deleted At */
+            deleted_at?: string | null;
+            /** Deleted By */
+            deleted_by?: string | null;
+            /**
+             * Filename
+             * @default
+             */
+            filename: string;
+            /**
+             * Has Thumbnail
+             * @default false
+             */
+            has_thumbnail: boolean;
+            /** Height */
+            height: number;
+            /** Id */
+            id: string;
+            /**
+             * Position
+             * @description 1-based number of the screenshot on its case (upload order).
+             */
+            position: number;
+            /** Sha256 */
+            sha256: string;
+            /** Thumbnail Bytes */
+            thumbnail_bytes?: number | null;
+            /**
+             * Uploaded At
+             * @default
+             */
+            uploaded_at: string;
+            /**
+             * Uploaded By
+             * @default
+             */
+            uploaded_by: string;
+            /** Width */
+            width: number;
+        };
+        /** CaseFileLimitsInfo */
+        CaseFileLimitsInfo: {
+            /** Accepted Types */
+            accepted_types: string[];
+            /** Max Caption Chars */
+            max_caption_chars: number;
+            /** Max Case Bytes */
+            max_case_bytes: number;
+            /** Max File Bytes */
+            max_file_bytes: number;
+            /** Max Filename Chars */
+            max_filename_chars: number;
+            /** Max Files */
+            max_files: number;
+            /** Max Pixels */
+            max_pixels: number;
+            /** Max Side Px */
+            max_side_px: number;
+            /** Max Thumbnail Bytes */
+            max_thumbnail_bytes: number;
+        };
+        /** CaseFileList */
+        CaseFileList: {
+            /** Bytes */
+            bytes: number;
+            /** Can Upload */
+            can_upload: boolean;
+            /** Case Id */
+            case_id: string;
+            /** Count */
+            count: number;
+            /** Deleted */
+            deleted: components["schemas"]["CaseFileEntry"][];
+            /** Files */
+            files: components["schemas"]["CaseFileEntry"][];
+            limits: components["schemas"]["CaseFileLimitsInfo"];
+        };
+        /**
+         * CaseFileUploadBody
+         * @description One screenshot upload. ``data_base64`` is the image as base64 (a ``data:``
+         *     URL is accepted too); ``content_type`` the type the client claims (it must match
+         *     the image's magic bytes). A thumbnail is optional (at most 48 KiB once decoded).
+         */
+        CaseFileUploadBody: {
+            /**
+             * Caption
+             * @default
+             */
+            caption: string;
+            /** Content Type */
+            content_type?: string | null;
+            /** Data Base64 */
+            data_base64: string;
+            /**
+             * Filename
+             * @default
+             */
+            filename: string;
+            /** Thumbnail Base64 */
+            thumbnail_base64?: string | null;
+        };
+        /** CaseFileUploadResult */
+        CaseFileUploadResult: {
+            /**
+             * Deduplicated
+             * @default false
+             */
+            deduplicated: boolean;
+            file: components["schemas"]["CaseFileEntry"];
         };
         /** CaseIdPreviewBody */
         CaseIdPreviewBody: {
@@ -17243,6 +17457,155 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
                 };
+            };
+        };
+    };
+    list_case_files_api_cases__case_id__files_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                case_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CaseFileList"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    upload_case_file_api_cases__case_id__files_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                case_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CaseFileUploadBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CaseFileUploadResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_case_file_api_cases__case_id__files__file_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                case_id: string;
+                file_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CaseFileDeleteResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_case_file_content_api_cases__case_id__files__file_id__content_get: {
+        parameters: {
+            query?: {
+                variant?: "full" | "thumb";
+                download?: boolean;
+            };
+            header?: never;
+            path: {
+                case_id: string;
+                file_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The screenshot (or its thumbnail), as stored after validation. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "image/jpeg": string;
+                    "image/png": string;
+                    "image/webp": string;
+                };
+            };
+            /** @description case_not_found or case_file_not_found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description case_files_unavailable: the store could not be read */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };

@@ -16,6 +16,14 @@ its mapping. This needs an Elasticsearch client that can read a template, read a
 mapping and add to one (``get_index_template``, ``get_index_mapping``,
 ``put_index_mapping``); through a client that cannot, bootstrap changes nothing and
 logs a warning naming the operator step (:data:`AUDIT_UPGRADE_STEP`).
+
+Round 15 (SPEC D5.7) adds one more additive mapping, on the config index: the
+screenshot content field ``case_file_data`` (base64, ``stores.case_files``) is mapped
+``binary``, stored but never indexed. A fresh install creates the config index with it
+(:data:`CONFIG_MAPPING`); an upgraded one gains it at bootstrap, before the first
+screenshot is written (:func:`extend_config_mapping`). If that cannot be done, or the
+field was already mapped dynamically as text, writes still work and each screenshot's
+base64 is indexed as text (the cost is stated in ``docs/operations/health-backup.md``).
 """
 
 from __future__ import annotations
@@ -366,6 +374,60 @@ async def extend_audit_mapping(es: Any, base: str = AUDIT_INDEX,
             )
 
 
+#: Round 15 (SPEC D5.7): the config index mapping of a fresh install. Dynamic as
+#: before (every KV namespace maps its own fixed fields), plus the screenshot content
+#: field as ``binary`` so its base64 is stored and never indexed.
+CASE_FILE_DATA_FIELD = "case_file_data"
+CONFIG_MAPPING: dict[str, Any] = {
+    "dynamic": True,
+    "properties": {CASE_FILE_DATA_FIELD: {"type": "binary"}},
+}
+
+
+async def extend_config_mapping(es: Any, index: str = CONFIG_INDEX) -> str:
+    """Give an existing config index the binary ``case_file_data`` mapping before the
+    first screenshot is written (Round 15 SPEC D5.7). Purely additive and never fails
+    the boot. Returns what happened: ``added``, ``present`` (already binary),
+    ``kept_text`` (mapped dynamically by an earlier write: left as it is, writes still
+    work), ``unsupported`` (the client cannot read or extend mappings) or ``failed``."""
+    get_mapping = getattr(es, "get_index_mapping", None)
+    put_mapping = getattr(es, "put_index_mapping", None)
+    if get_mapping is None or put_mapping is None:
+        logger.info("Config index mapping not checked: this client cannot read index mappings")
+        return "unsupported"
+    try:
+        live = await get_mapping(index)
+    except NotImplementedError:
+        logger.info("Config index mapping not checked: this client cannot read index mappings")
+        return "unsupported"
+    except Exception as exc:  # noqa: BLE001 (never fail the boot)
+        logger.warning("Config index mapping could not be read: %s", exc)
+        return "failed"
+    entry = next(iter((live or {}).values()), None) if isinstance(live, dict) else None
+    mappings = entry.get("mappings") if isinstance(entry, dict) else None
+    properties = mappings.get("properties") if isinstance(mappings, dict) else None
+    current = properties.get(CASE_FILE_DATA_FIELD) if isinstance(properties, dict) else None
+    if isinstance(current, dict):
+        if current.get("type") == "binary":
+            return "present"
+        logger.warning(
+            "Config index %s already maps %s as %s; screenshots still work, and their "
+            "content stays indexed until the index is recreated", index,
+            CASE_FILE_DATA_FIELD, current.get("type", "object"),
+        )
+        return "kept_text"
+    try:
+        await put_mapping(index, {"properties": copy.deepcopy(CONFIG_MAPPING["properties"])})
+    except NotImplementedError:
+        logger.info("Config index mapping not extended: this client cannot extend index mappings")
+        return "unsupported"
+    except Exception as exc:  # noqa: BLE001 (never fail the boot)
+        logger.warning("Config index %s mapping could not be extended: %s", index, exc)
+        return "failed"
+    logger.info("Extended config index %s mapping: added %s (binary)", index, CASE_FILE_DATA_FIELD)
+    return "added"
+
+
 async def bootstrap_indices(es: BaseESClient | None) -> None:
     """Idempotently create templates, write indices+aliases, and the single-doc
     bookkeeping indices. Safe to call on every start.
@@ -404,5 +466,10 @@ async def bootstrap_indices(es: BaseESClient | None) -> None:
 
     for single in (CONFIG_INDEX, CURSOR_INDEX):
         if not await es.index_exists(single):
-            await es.create_index(single, {"mappings": {"dynamic": True}})
+            # Round 15 (SPEC D5.7): the config index is created with the screenshot
+            # content field already mapped binary.
+            mapping = CONFIG_MAPPING if single == CONFIG_INDEX else {"dynamic": True}
+            await es.create_index(single, {"mappings": copy.deepcopy(mapping)})
             logger.info("Created bookkeeping index %s", single)
+        elif single == CONFIG_INDEX:
+            await extend_config_mapping(es)

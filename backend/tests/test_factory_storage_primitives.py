@@ -121,8 +121,8 @@ async def test_es_factory_purge_scans_past_one_page_and_preserves_exact_anchors(
     assert await kv.get_strict(BATCH_JOBS_NS, BATCH_JOBS_KEY) == expected["batch"]
     assert await kv.get_strict(UPDATE_OPERATIONS_NS, "release-hash") == expected["update"]
     assert await es.get_doc_strict(CONFIG_INDEX, CONFIG_DOC_ID) is None
-    snapshot = await kv._config_snapshot_strict()
-    assert set(snapshot) == {
+    snapshot = await kv._config_ids_strict()
+    assert snapshot == {
         EsKVStore._doc_id(JOBS_NS, JOBS_KEY),
         EsKVStore._doc_id(BATCH_JOBS_NS, BATCH_JOBS_KEY),
         EsKVStore._doc_id(UPDATE_OPERATIONS_NS, "release-hash"),

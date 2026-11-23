@@ -1987,10 +1987,46 @@ class SqlKVStore(KVStore):
             # Lost the absent-row INSERT race; the caller reloads the winning revision.
             return False
 
+    async def delete_strict(self, namespace: str, key: str) -> bool:
+        """Remove one (namespace, key) row (Round 15 SPEC D5.2). ``False`` means it was
+        already absent; a backend failure propagates."""
+        async with self._sm() as session:
+            async with session.begin():
+                result = await session.execute(
+                    delete(KVRow).where(KVRow.namespace == namespace, KVRow.key == key)
+                )
+            return int(result.rowcount or 0) == 1
+
     async def factory_purge_strict(self) -> int:
-        """Atomically purge tenant KV rows and verify protected state in-transaction."""
+        """Atomically purge tenant KV rows and verify protected state in-transaction.
+
+        Round 15 (SPEC D5.8): the census and the verification read keys only, and
+        values only for the protected rows, so a KV table holding screenshot content
+        (megabytes a row) is never loaded into memory. Column selects (never ORM
+        entities) make every read come from the database, not the session's identity
+        map."""
         jobs_pk = (JOBS_NS, JOBS_KEY)
         batch_pk = (BATCH_JOBS_NS, BATCH_JOBS_KEY)
+        keep = or_(
+            and_(KVRow.namespace == JOBS_NS, KVRow.key == JOBS_KEY),
+            and_(
+                KVRow.namespace == BATCH_JOBS_NS,
+                KVRow.key == BATCH_JOBS_KEY,
+            ),
+            KVRow.namespace == UPDATE_OPERATIONS_NS,
+        )
+
+        async def protected_values(session: Any) -> dict[tuple[str, str], Any]:
+            rows = (
+                await session.execute(
+                    select(KVRow.namespace, KVRow.key, KVRow.value).where(keep)
+                )
+            ).all()
+            return {
+                (str(namespace), str(key)): copy.deepcopy(value)
+                for namespace, key, value in rows
+            }
+
         async with self._sm() as session:
             async with session.begin():
                 if self._engine.dialect.name == "postgresql":
@@ -2003,47 +2039,31 @@ class SqlKVStore(KVStore):
                     await session.execute(
                         text("LOCK TABLE kv IN ACCESS EXCLUSIVE MODE")
                     )
-                rows = (
+                keys = (
                     await session.execute(
-                        select(KVRow).with_for_update()
+                        select(KVRow.namespace, KVRow.key).with_for_update()
                     )
-                ).scalars().all()
-                before = {
-                    (str(row.namespace), str(row.key)): copy.deepcopy(row.value)
-                    for row in rows
-                }
+                ).all()
+                before = {(str(namespace), str(key)) for namespace, key in keys}
                 if jobs_pk not in before or batch_pk not in before:
                     raise RuntimeError(
                         "factory purge requires durable Jobs and Batch fence rows"
                     )
-                protected = {
-                    key: value
-                    for key, value in before.items()
-                    if key in {jobs_pk, batch_pk}
-                    or key[0] == UPDATE_OPERATIONS_NS
-                }
-                keep = or_(
-                    and_(KVRow.namespace == JOBS_NS, KVRow.key == JOBS_KEY),
-                    and_(
-                        KVRow.namespace == BATCH_JOBS_NS,
-                        KVRow.key == BATCH_JOBS_KEY,
-                    ),
-                    KVRow.namespace == UPDATE_OPERATIONS_NS,
-                )
+                protected = await protected_values(session)
                 result = await session.execute(delete(KVRow).where(~keep))
                 await session.flush()
-                remaining = (
-                    await session.execute(select(KVRow))
-                ).scalars().all()
-                after = {
-                    (str(row.namespace), str(row.key)): copy.deepcopy(row.value)
-                    for row in remaining
+                remaining = {
+                    (str(namespace), str(key))
+                    for namespace, key in (
+                        await session.execute(select(KVRow.namespace, KVRow.key))
+                    ).all()
                 }
-                if after != protected:
-                    retained = len(set(after) - set(protected))
-                    missing = len(set(protected) - set(after))
+                after = await protected_values(session)
+                if remaining != set(protected) or after != protected:
+                    retained = len(remaining - set(protected))
+                    missing = len(set(protected) - remaining)
                     changed = sum(
-                        after[key] != protected[key]
+                        after.get(key) != protected[key]
                         for key in set(after).intersection(protected)
                     )
                     raise RuntimeError(
