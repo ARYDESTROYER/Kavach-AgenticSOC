@@ -154,6 +154,26 @@ const HINT = 'no dist/ build present — run `vite build` first (CI/integrator d
  * committed r6w-fix tree 537f5a6 (334,998 B): Wizard.tsx +958, nav-store.ts +239, nav.ts
  * +47, useDeploymentUpgrade.ts -17, Login.tsx -5, AppShell.tsx -2, NotificationBell.tsx -2.
  * The +1,024 B budget and the 400,000 B ceiling are unchanged.
+ *
+ * Round 15 (its SPEC §3.1, the entry package). The merged Wave 2 tree c3d7cd3 measured
+ * 337,999 B, 759 B over the budget, mostly Wizard.tsx +727 (WP2: the D2.3 AI runtime copy,
+ * the provider table and the readiness logic, eager because App.tsx imports the wizard for
+ * the first-run boot) and router.tsx with case-tabs.ts +537 (WP6: the retired tab links).
+ * The entry package then moved what first paint never needs out of the wizard, keeping
+ * every behaviour: the AI runtime and review stages (KeysStep, ReviewStep, ReadinessRow,
+ * KEY_FIELDS, PROVIDERS and their helpers) are the lazy chunk
+ * pages/wizard/RuntimeReviewSteps.tsx. The wizard prefetches it into the HTTP cache when
+ * the browser is idle after it mounts (a prefetch, never an import, as lazy-retry.ts
+ * requires) and loads it when either stage is reached, behind a LoadingState fallback;
+ * the stage heading takes focus once it mounts. Measured with `npm run build:app`:
+ * 329,106 B (-8,893 B), per file (each output byte mapped to its source through the
+ * source map): Wizard.tsx -6,069, SecretField.tsx -1,842 and Field.tsx -1,481 (the AI
+ * runtime stage was the entry's only importer of either), pages/wizard/StepHeading.tsx
+ * +355 (the stage heading both halves share, moved out of Wizard.tsx), +91 that the build
+ * writes without a mapping (the new chunks in the preload table and the idle warm's chunk
+ * list), and +53 of attribution drift on files whose source did not change (registry.tsx
+ * +71, main.tsx -18). The baseline, the +1,024 B budget and the 400,000 B ceiling are
+ * unchanged; whether to ratchet the baseline down is the orchestrator's call (SPEC §3.1).
  */
 const PRE_REVAMP_ENTRY_BYTES = 336_216;
 const REVAMP_ENTRY_BUDGET_BYTES = 1_024;
