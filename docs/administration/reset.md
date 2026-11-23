@@ -39,6 +39,23 @@ retired mutation seam: authenticated legacy callers receive HTTP `410 Gone` with
 The terminal job result returns bounded counts/categories reported as cleared. Review
 it rather than assuming every external dependency was affected.
 
+### Case screenshots
+
+Screenshots added to cases belong to those cases. A `cases` or `sources` reset removes
+every screenshot document: each case's list, the stored images and thumbnails, and the
+organisation's storage total. The job result names them as `kv:case_files:<n>`, where
+`n` is the number of documents removed (a list, an image, a thumbnail and the total each
+count as one). A `factory` reset removes them with the rest of the application state.
+
+Deleting an account does not remove the screenshots that person added: they are case
+evidence, and each keeps the name of the person who added it. Deleting a single
+screenshot removes its image at once; its caption, who added it and when stay on the
+case as a deleted entry.
+
+If a previous release runs a `cases` reset after a rollback, it does not know about
+screenshots and leaves them in place. The Console never shows a screenshot whose case no
+longer exists, and the next `cases` reset on this release removes them.
+
 ## Factory receipt and privacy
 
 A factory job fences new application-job admission, asks other active jobs to stop,

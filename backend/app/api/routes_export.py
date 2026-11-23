@@ -99,6 +99,8 @@ _EXCLUDED = [
     "user and session registries",
     "browser cookies and bearer tokens",
     "upstream raw log payloads",
+    # Round 15 WP4 (SPEC D5.9): screenshot bytes never enter an export.
+    "case screenshot image contents (metadata and SHA-256 are included)",
 ]
 
 
@@ -812,6 +814,70 @@ async def _case_runbook_runs(state: AppState, case_ids: list[str]) -> dict[str, 
     return out
 
 
+# --------------------------------------------------------------------------- #
+# Round 15 WP4 (SPEC D5.9): case screenshots in a cases export. Metadata only (id,
+# type, size, dimensions, SHA-256, caption, filename, who and when, deletion); the
+# image bytes are excluded (``_EXCLUDED``) and never pass through ``_plain``.
+# --------------------------------------------------------------------------- #
+CASE_FILES_CONSISTENCY: dict[str, Any] = {
+    "mode": "live_values_at_read",
+    "exact": False,
+    "detail": (
+        "Screenshot metadata is read live for each page and may reflect uploads or "
+        "deletions made during the export. Image contents are not exported."
+    ),
+}
+
+
+def export_case_file(record: Any) -> dict[str, Any]:
+    """One screenshot's metadata as an export carries it (never its bytes)."""
+    data = record.model_dump(mode="json") if hasattr(record, "model_dump") else dict(record)
+    thumb = data.get("thumb") if isinstance(data.get("thumb"), dict) else None
+    return {
+        "id": data.get("id"),
+        "type": data.get("type"),
+        "bytes": data.get("bytes"),
+        "width": data.get("width"),
+        "height": data.get("height"),
+        "sha256": data.get("sha256"),
+        "caption": data.get("caption") or "",
+        "filename": data.get("filename") or "",
+        "uploaded_by": data.get("uploaded_by") or "",
+        "uploaded_at": data.get("uploaded_at") or "",
+        "thumbnail_bytes": thumb.get("bytes") if thumb else None,
+        "deleted_at": data.get("deleted_at"),
+        "deleted_by": data.get("deleted_by"),
+    }
+
+
+async def _case_files_metadata(state: AppState, case_ids: list[str]) -> dict[str, list[dict[str, Any]]]:
+    """``case_id -> screenshot metadata`` (live and deleted entries) for the cases of
+    one page, from the active screenshot store. A case without screenshots is absent.
+    A store failure raises: the cases scope then fails rather than export cases
+    without their screenshot record."""
+    store = getattr(state, "case_files", None)
+    ids = [cid for cid in dict.fromkeys(case_ids) if cid]
+    if store is None or not ids:
+        return {}
+    found = await store.get_many(ids, concurrency=8)
+    return {
+        str(case_id): [export_case_file(entry) for entry in index.entries]
+        for case_id, index in found.items()
+        if index.entries
+    }
+
+
+def _attach_case_files(plain: Any, files: list[dict[str, Any]] | None) -> None:
+    if files and isinstance(plain, dict):
+        plain["case_files"] = _plain(files)
+
+
+def _case_files_manifest(meta: dict[str, Any], files: dict[str, list[dict[str, Any]]]) -> None:
+    if files:
+        meta["case_files"] = sum(len(entries) for entries in files.values())
+        meta["case_files_consistency"] = dict(CASE_FILES_CONSISTENCY)
+
+
 def _case_id_of(row: Any) -> str:
     value = getattr(row, "case_id", None)
     if value is None and isinstance(row, dict):
@@ -825,7 +891,8 @@ async def _collect_scope(
     if scope == "cases":
         rows, total = await state.cases.list(limit=limit, offset=0)
         runs = await _case_runbook_runs(state, [_case_id_of(row) for row in rows])
-        if not runs:
+        files = await _case_files_metadata(state, [_case_id_of(row) for row in rows])
+        if not runs and not files:
             return rows, _manifest(len(rows), total)
         # Round 14 (SPEC §4.10.18): each case carries its runbook runs as
         # ``case_runbook_runs`` (raw log rows dropped, ``export_runbook_run``).
@@ -835,11 +902,14 @@ async def _collect_scope(
             case_runs = runs.get(_case_id_of(row))
             if case_runs and isinstance(plain, dict):
                 plain["case_runbook_runs"] = case_runs
+            _attach_case_files(plain, files.get(_case_id_of(row)))
             out.append(plain)
         meta = _manifest(len(rows), total)
-        meta["case_runbook_runs"] = sum(len(r) for r in runs.values())
-        meta["case_runbook_runs_steps"] = CASE_RUNBOOK_RUNS_STEPS_SHAPE
-        meta["case_runbook_runs_consistency"] = dict(CASE_RUNBOOK_RUNS_CONSISTENCY)
+        if runs:
+            meta["case_runbook_runs"] = sum(len(r) for r in runs.values())
+            meta["case_runbook_runs_steps"] = CASE_RUNBOOK_RUNS_STEPS_SHAPE
+            meta["case_runbook_runs_consistency"] = dict(CASE_RUNBOOK_RUNS_CONSISTENCY)
+        _case_files_manifest(meta, files)
         return out, meta
 
     if scope == "audit":
@@ -910,8 +980,12 @@ async def _collect_segment_page(
         # Round 14 (SPEC §4.10.18): a case with runbook runs carries them beside its
         # record as ``case_runbook_runs`` (raw log rows dropped).
         runs = await _case_runbook_runs(state, [_case_id_of(row) for row in rows])
+        # Round 15 WP4 (SPEC D5.9): screenshot metadata beside the record, bytes never.
+        files = await _case_files_metadata(state, [_case_id_of(row) for row in rows])
         return [
-            {"record": row, **({"case_runbook_runs": runs[_case_id_of(row)]} if _case_id_of(row) in runs else {})}
+            {"record": row,
+             **({"case_runbook_runs": runs[_case_id_of(row)]} if _case_id_of(row) in runs else {}),
+             **({"case_files": files[_case_id_of(row)]} if _case_id_of(row) in files else {})}
             for row in rows
         ], next_position, total, consistency
 
@@ -1106,6 +1180,8 @@ async def _segment_envelope(
             "excluded": _EXCLUDED,
             "records": await _run_blocking(_plain, records),
         }
+        if any(isinstance(r, dict) and "case_files" in r for r in records):
+            envelope["case_files_consistency"] = dict(CASE_FILES_CONSISTENCY)
         if any(isinstance(r, dict) and "case_runbook_runs" in r for r in records):
             # The case records follow the scope's consistency above; the runs beside
             # them are read live for this page (SPEC §4.10.18).

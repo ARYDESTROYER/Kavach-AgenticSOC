@@ -8,7 +8,8 @@ each a strict SUPERSET of the previous (see the tier table in
                  KV stores (campaigns, baseline sketches, noise-reduction counters,
                  inbox, case thread/activity/tasks, batch jobs, and, since Round 14,
                  every runbook RUN: the per-case run documents and the run ledger,
-                 SPEC §4.10.6) + the in-memory live-tail rings. KEEP sources,
+                 SPEC §4.10.6, and, since Round 15, every case screenshot) + the
+                 in-memory live-tail rings. KEEP sources,
                  settings, users, RAG, secrets, cost ledger, audit and the runbook
                  LIBRARY (operator runbooks are not case state).
 * ``sources``  — the cases tier PLUS ``Preferences.sources[]`` (configured feeds) +
@@ -188,6 +189,17 @@ async def reset_service(
             cleared.append(f"kv:runbook_runs:{removed_runs}")
         else:
             failed.append("kv:runbook_runs")
+    # Round 15 WP4 (SPEC D5.9): screenshots belong to cases, so the cases tier (and
+    # therefore the sources tier) removes every document of the ``case_files``
+    # namespace: the per-case indexes, the image and thumbnail content and the storage
+    # totals. Factory is skipped, as above: the wholesale KV purge covers it.
+    if scope != ResetScope.FACTORY:
+        attempted.append("kv:case_files")
+        removed_files, files_ok = await _clear_case_files(app_state)
+        if files_ok:
+            cleared.append(f"kv:case_files:{removed_files}")
+        else:
+            failed.append("kv:case_files")
     # Frozen replay fixtures hold each member event's complete raw record — strictly
     # more log content than the Case it came from retained — so a cases/sources reset
     # that left them behind would keep raw records for cases the operator just deleted.
@@ -503,6 +515,57 @@ async def _clear_runbook_runs(app_state: Any) -> tuple[int, bool]:
                 return removed, False
     except Exception as exc:  # noqa: BLE001 - reported; the cases reset continues
         logger.warning("runbook run clear failed (%s); cleared %d so far", exc, removed)
+        return removed, False
+
+
+async def _clear_case_files(app_state: Any) -> tuple[int, bool]:
+    """Round 15 WP4: remove every document of the ``case_files`` KV namespace (case
+    screenshot indexes, content and the storage totals, ``stores.case_files``), the
+    ``runbook_runs`` way: SQL deletes the namespace's KV rows in one statement;
+    Elasticsearch pages the config index for the documents tagged
+    ``case_file_store: case_files`` (every document of the namespace carries it),
+    reading ids only (``_source: false``: content documents hold megabytes), and
+    deletes each by id. Best-effort like the rest of the cases tier: returns
+    ``(removed, ok)``."""
+    from ..constants import CASE_FILES_NS
+
+    if _is_sql(app_state):
+        try:
+            removed = await _sql_delete_all(
+                app_state, "kv", where=f"namespace = '{CASE_FILES_NS}'", strict=True,
+            )
+            return removed, True
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("case screenshot clear failed (%s); continuing", exc)
+            return 0, False
+    es = getattr(app_state, "es", None)
+    if es is None:
+        return 0, False
+    query = {"bool": {"should": [
+        {"term": {"case_file_store": CASE_FILES_NS}},
+        {"term": {"case_file_store.keyword": CASE_FILES_NS}},
+    ], "minimum_should_match": 1}}
+    removed = 0
+    try:
+        while True:
+            resp = await es.search(CONFIG_INDEX, {"size": 500, "from": 0, "query": query,
+                                                  "_source": False})
+            hits = resp.get("hits", {}).get("hits", [])
+            if not hits:
+                return removed, True
+            progress = 0
+            for hit in hits:
+                doc_id = hit.get("_id")
+                if not doc_id or not str(doc_id).startswith(f"{CASE_FILES_NS}:"):
+                    continue
+                if await es.delete_doc(CONFIG_INDEX, str(doc_id), refresh=True):
+                    removed += 1
+                    progress += 1
+            if progress == 0:
+                logger.warning("case screenshot clear made no progress on a %d-hit page", len(hits))
+                return removed, False
+    except Exception as exc:  # noqa: BLE001 - reported; the cases reset continues
+        logger.warning("case screenshot clear failed (%s); cleared %d so far", exc, removed)
         return removed, False
 
 

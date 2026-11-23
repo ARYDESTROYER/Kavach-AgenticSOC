@@ -4959,6 +4959,14 @@
    "console": []
   },
   {
+   "id": "administration/reset#case-screenshots:0",
+   "page": "administration/reset.md",
+   "anchor": "case-screenshots",
+   "heading": "Case screenshots",
+   "text": "Screenshots added to cases belong to those cases. A `cases` or `sources` reset removes\nevery screenshot document: each case's list, the stored images and thumbnails, and the\norganisation's storage total. The job result names them as `kv:case_files:`, where\n`n` is the number of documents removed (a list, an image, a thumbnail and the total each\ncount as one). A `factory` reset removes them with the rest of the application state.\n\nDeleting an account does not remove the screenshots that person added: they are case\nevidence, and each keeps the name of the person who added it. Deleting a single\nscreenshot removes its image at once; its caption, who added it and when stay on the\ncase as a deleted entry.\n\nIf a previous release runs a `cases` reset after a rollback, it does not know about\nscreenshots and leaves them in place. The Console never shows a screenshot whose case no\nlonger exists, and the next `cases` reset on this release removes them.",
+   "console": []
+  },
+  {
    "id": "administration/reset#factory-receipt-and-privacy:0",
    "page": "administration/reset.md",
    "anchor": "factory-receipt-and-privacy",
@@ -6115,25 +6123,43 @@
    "anchor": "what-to-back-up",
    "heading": "What to back up",
    "text": "- The selected `StateStore`: cases, audit, usage, configuration, cursors, users,\n  sessions, knowledge, and feature KV documents.\n- PostgreSQL roles/extensions and schema when using the standalone stack.\n- The SQLite database file only after quiescing writes or using a consistent database\n  backup mechanism.\n- Agentic SOC-owned Elasticsearch indices and their templates when using ES state.\n- Deployment configuration, CA material, JWT/MFA keys, and all external secrets in a\n  separate protected secret backup.\n- The exact application version, commit SHA, image digests, and Compose configuration.\n- The application-job artifact directory/volume when retained ZIP exports are part of\n  the recovery objective. Job metadata alone cannot recreate a pruned or missing ZIP.\n\nRedis is an optimization/cache and is not the authoritative application backup.\nUpstream logs remain in their source systems and require their own retention/backup.",
+   "console": []
+  },
+  {
+   "id": "operations/health-backup#case-screenshots-in-the-backup:0",
+   "page": "operations/health-backup.md",
+   "anchor": "case-screenshots-in-the-backup",
+   "heading": "Case screenshots in the backup",
+   "text": "Screenshots added to cases are stored in the `StateStore` with the rest of the\napplication state (the `case_files` key-value documents), so the database dump or\nElasticsearch snapshot above already contains them, and a restore brings them back with\ntheir cases. Plan for the space they take: each image is at most 2 MiB after its\nmetadata is removed, plus a thumbnail of at most 48 KiB; a case holds at most 20 images\nand 20 MiB; the organisation holds at most 2 GiB in all (Demo Mode and the in-memory\nstore at most 5 images a case and 64 MiB). Backup time, backup size and, on PostgreSQL,\nthe updater's pre-update dump grow with them.\n\nOn Elasticsearch the image content field (`case_file_data`) is mapped `binary` in the\nconfig index, so it is stored but not indexed. A new install creates the index with that\nmapping; an upgraded install adds it when the backend starts. If the field was already\nmapped as text (an image written before that start), or the mapping could not be added\n(the backend logs a warning), uploads still work, but each image's base64 is also indexed\nas text, which costs index space and indexing time until the config index is recreated\nfrom a snapshot restore into a fresh index.",
    "console": [
     "settings:data_export"
    ]
   },
   {
-   "id": "operations/health-backup#what-to-back-up:1",
+   "id": "operations/health-backup#case-screenshots-in-the-backup:1",
    "page": "operations/health-backup.md",
-   "anchor": "what-to-back-up",
-   "heading": "What to back up",
-   "text": "**Settings → Organization → Data export** submits a background job that can package all\nrecords in its selected supported safe scopes into one verified server-assembled ZIP,\nusing either the archive or internal segmented walk,\nbut it is a support/analysis artifact, not a whole-application\nbackup. Its Knowledge scope preserves sanitized operator runbooks (and, for one release,\nthe stored documents of the two retired procedure lists, as they were stored) plus safe\nbundled runbook metadata, but it omits credentials,\nusers/sessions, chat history, chat reports, collaboration state, raw upstream logs, and raw knowledge chunks,\nand has no matching import/restore endpoint. The ZIP manifest proves that the server\nemitted each scope's starting count and verified the prepared artifact, not that the\nclient received it or that it is recoverable. Only exact Elasticsearch scopes are fixed\nsnapshots; PostgreSQL honestly reports a non-exact `bounded_at_start` view.\nSegment cursors are signed and bound to the requesting operator, scope, and snapshot;\nthe server follows them and packages the envelopes into the one retained artifact.\nUse the selected state backend's\nconsistent dump or snapshot mechanism for recovery.",
+   "anchor": "case-screenshots-in-the-backup",
+   "heading": "Case screenshots in the backup",
+   "text": "The server checks each image's structure and removes its metadata but never decodes its\npixels: PNG, JPEG and WebP only, by their magic bytes, at most 8,192 pixels a side and\n40 megapixels. A crafted image aimed at a browser's image decoder is not detected; the\ntype allowlist, the structure check, the size limits, sign-in, the audit row and strict\nresponse headers are the mitigations.",
    "console": [
     "settings:data_export"
    ]
   },
   {
-   "id": "operations/health-backup#what-to-back-up:2",
+   "id": "operations/health-backup#case-screenshots-in-the-backup:2",
    "page": "operations/health-backup.md",
-   "anchor": "what-to-back-up",
-   "heading": "What to back up",
+   "anchor": "case-screenshots-in-the-backup",
+   "heading": "Case screenshots in the backup",
+   "text": "**Settings → Organization → Data export** submits a background job that can package all\nrecords in its selected supported safe scopes into one verified server-assembled ZIP,\nusing either the archive or internal segmented walk,\nbut it is a support/analysis artifact, not a whole-application\nbackup. Its Knowledge scope preserves sanitized operator runbooks (and, for one release,\nthe stored documents of the two retired procedure lists, as they were stored) plus safe\nbundled runbook metadata, but it omits credentials,\nusers/sessions, chat history, chat reports, collaboration state, raw upstream logs, and raw knowledge chunks,\nand has no matching import/restore endpoint. Its Cases scope lists each case's\nscreenshots (id, type, size, dimensions, SHA-256, caption, filename, who added it and\nwhen, and deletion) but never their image bytes, and its manifest says so. The ZIP manifest proves that the server\nemitted each scope's starting count and verified the prepared artifact, not that the\nclient received it or that it is recoverable. Only exact Elasticsearch scopes are fixed\nsnapshots; PostgreSQL honestly reports a non-exact `bounded_at_start` view.\nSegment cursors are signed and bound to the requesting operator, scope, and snapshot;\nthe server follows them and packages the envelopes into the one retained artifact.\nUse the selected state backend's\nconsistent dump or snapshot mechanism for recovery.",
+   "console": [
+    "settings:data_export"
+   ]
+  },
+  {
+   "id": "operations/health-backup#case-screenshots-in-the-backup:3",
+   "page": "operations/health-backup.md",
+   "anchor": "case-screenshots-in-the-backup",
+   "heading": "Case screenshots in the backup",
    "text": "The Jobs registry retains operational summaries, not a full copy of imported text or\nselected case IDs. Artifacts are count-pruned after the newest 50 attachments and each\ndownload re-verifies size/SHA-256. Download and independently retain an export needed\nfor recovery or evidence; an Inbox entry is not a backup.\n\nThe desired Storage & retention archive stage is also not a backup mechanism in\n0.1.13. Glacier requires an independent immutable export, manifest, checksums, and a\ntested restore path. Never transition an Elasticsearch snapshot-repository prefix to\nGlacier; every repository object must remain directly readable by Elasticsearch.",
    "console": [
     "settings:data_export"
