@@ -245,11 +245,12 @@ Every `Preferences` field has a default. Major blocks include:
 - correlation, risk, rules, baselines, campaigns, threshold tuning, and autopilot;
 - model routing, concurrency caps, batch processing, budgets, pricing overlays, and the
   chat assistant's bounds;
-- deterministic auto-close policy, analyst rule policies, case ID format, priority, and
-  SLA targets;
+- deterministic auto-close policy, the auto-close review sample, analyst rule policies,
+  case ID format, priority, and SLA targets;
 - runbooks, RAG, memory, enrichment, threat context, personas, and analyst-precedent
   promotion, window fairness, and futility reporting;
-- auth policy, MFA/SSO metadata, RBAC, sessions, notifications, and realtime events;
+- auth policy, MFA/SSO metadata, RBAC, sessions, the Team activity page, notifications,
+  and realtime events;
 - branding, terminology, themes, saved views, dashboard defaults, and the desired
   own-state storage lifecycle;
 - public release-source discovery repository, Stable/Testing refs, and cache interval.
@@ -424,6 +425,49 @@ Stored values are repaired, not rejected, but a settings write with an out-of-ra
 malformed `remember_me` value is refused with HTTP 422, so an administrator never gets a
 looser policy than the one requested. See
 [Security hardening](../operations/security.md#session-lifetimes).
+
+### Role-based access
+
+`rbac.enabled` (default `false`) decides whether roles are enforced; while it is off,
+every signed-in account is treated as Super admin. It is changed only in **Settings →
+Security & access → Roles & permissions** or with `PUT /api/rbac`, by an account whose
+stored role is Super admin after a recent sign-in. `PUT /api/settings` answers `409
+rbac_switch_moved` to a body that would change it, and changing any other `rbac` field
+(`roles`, `resources`, `custom_roles`, `denies`, `default_role`) through it needs
+`roles:manage` and a fresh sign-in. See
+[Turn on role-based access](../administration/users-rbac.md#turn-on-role-based-access).
+
+### Team activity
+
+`team_activity` has one switch, edited under **Settings → Security & access → Single
+sign-on & policy → Team activity**:
+
+| Key | Default | Meaning |
+|---|---|---|
+| `team_activity.enabled` | `true` | Show the Team activity page. Off, nobody can open it and its routes answer `409 team_activity_off` |
+
+Reading the page also needs `team:view`, and while role-based access is off a stored role
+of Super admin, SOC manager or Auditor. A malformed stored value is repaired to `true`,
+never rejected. See [Team activity](../analyst/team-activity.md).
+
+### Auto-close review
+
+`auto_close_review` controls the random review of automatic closes, edited in the
+**Auto-close review** group of **Settings → General → Detection**:
+
+| Key | Default | Range | Meaning |
+|---|---|---|---|
+| `auto_close_review.enabled` | `true` | `true`, `false` | Send a small random sample of the cases the AI agent closed automatically to a person for review |
+| `auto_close_review.sample_rate` | 0.05 | 0 to 0.5 | The share of automatic closes picked; each case has a fixed score, and the cases scoring below the rate are picked |
+| `auto_close_review.daily_cap` | 10 | 0 to 200 | The most cases picked in one day, in the SLA time zone |
+| `auto_close_review.per_rule_daily_cap` | 3 | 1 to 50 | The most cases of one detection rule picked in one day |
+| `auto_close_review.expiry_days` | 7 | 1 to 30 | Days a picked case waits before it is shown as expired (it can still be reviewed) |
+
+Stored values are repaired on load (a value out of range is clamped, a malformed one takes
+its default), but a settings write with an out-of-range or malformed value is refused
+with HTTP 422, so an administrator never gets a value they did not type. None of these
+values is read by the close or escalate decision, and a review never changes a case's
+status, decider or disposition. See [Auto-close review](../automation/auto-close-review.md).
 
 ### Discounted alert inference
 

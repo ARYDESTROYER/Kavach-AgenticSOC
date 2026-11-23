@@ -883,7 +883,7 @@
    "page": "getting-started/quickstart.md",
    "anchor": "configure",
    "heading": "Configure",
-   "text": "With `TLSOC_AUTH_ADMIN_PASSWORD` set, the backend does not seed the demonstration\n`Admin` account, and the Console opens on **Create your admin account**, where you\ncreate a named administrator. The environment administrator remains a fallback sign-in.\nRole-based access is off by default, so every signed-in account is treated as Super\nadmin until a super administrator turns it on; see\nTurn on role-based access. Leave\n`AGENTIC_SOC_UPDATE_REPOSITORY` as `.env.example` ships it: it names the repository\nwhose signed releases the update supervisor trusts, not the clone URL.",
+   "text": "With `TLSOC_AUTH_ADMIN_PASSWORD` set, the backend does not seed the demonstration\n`Admin` account, and the Console opens on **Create your admin account**, where you\ncreate a named administrator. The environment administrator remains a fallback sign-in.\nRole-based access is off by default, so every signed-in account is treated as Super\nadmin until a Super admin turns it on in **Settings → Security & access → Roles &\npermissions**; see\nTurn on role-based access. Leave\n`AGENTIC_SOC_UPDATE_REPOSITORY` as `.env.example` ships it: it names the repository\nwhose signed releases the update supervisor trusts, not the clone URL.",
    "console": []
   },
   {
@@ -4309,6 +4309,8 @@
     "settings:advanced_all",
     "settings:security",
     "settings:roles",
+    "page:team",
+    "settings:detection",
     "settings:admin_users"
    ]
   },
@@ -4328,6 +4330,8 @@
     "settings:advanced_all",
     "settings:security",
     "settings:roles",
+    "page:team",
+    "settings:detection",
     "settings:admin_users"
    ]
   },
@@ -4336,7 +4340,7 @@
    "page": "administration/settings.md",
    "anchor": "sections-new-or-moved-in-this-release",
    "heading": "Sections new or moved in this release",
-   "text": "of labelled rows (display name, client ID, the client secret, allowed domains and\n  tenants, the group claim, the default role, the group to role map, account creation\n  and the callback URL to register). Allowed domains and tenants are lists: press Enter,\n  a comma or a space to add each one, and a pasted list becomes one entry per item. A\n  group to role map line that does not read as `group=role` with one of the six roles is\n  reported when you leave the field and is not saved; the text stays as you typed it. The\n  client secret is saved on its own with **Save secret**; only whether one is set ever\n  comes back, and a failed save keeps what you typed so you can try again. The session\n  policy ends with an\n  **Access tokens** group whose one value is not enforced in this version.\n- **Security & access → Roles & permissions** says **Role-based access is off** while\n  it is: every signed-in account then counts as Super admin. It is turned on through\n  the settings API (`rbac.enabled`); there is no switch for it in the Console.\n- **Security & access → Users**: **Change roles** keeps only custom roles that still\n  exist. A custom role deleted after it was assigned grants nothing; the dialog names it\n  and removes it from the account when you save.",
+   "text": "of labelled rows (display name, client ID, the client secret, allowed domains and\n  tenants, the group claim, the default role, the group to role map, account creation\n  and the callback URL to register). Allowed domains and tenants are lists: press Enter,\n  a comma or a space to add each one, and a pasted list becomes one entry per item. A\n  group to role map line that does not read as `group=role` with one of the six roles is\n  reported when you leave the field and is not saved; the text stays as you typed it. The\n  client secret is saved on its own with **Save secret**; only whether one is set ever\n  comes back, and a failed save keeps what you typed so you can try again. The session\n  policy ends with an\n  **Access tokens** group whose one value is not enforced in this version.\n- **Security & access → Roles & permissions** opens with a **Role-based access** group:\n  its **Enforcement** row shows **On** or **Off: every signed-in account is treated as\n  Super admin**, its caption lists the active accounts per role (for an account that may\n  manage users), and its button turns role-based access on or off after a confirmation.\n  Only an account whose stored role is Super admin can use it, after a recent sign-in;\n  otherwise the button is unavailable and the reason shows under the state. The change",
    "console": [
     "settings:discounted-inference",
     "settings:runbooks",
@@ -4347,6 +4351,29 @@
     "settings:advanced_all",
     "settings:security",
     "settings:roles",
+    "page:team",
+    "settings:detection",
+    "settings:admin_users"
+   ]
+  },
+  {
+   "id": "administration/settings#sections-new-or-moved-in-this-release:3",
+   "page": "administration/settings.md",
+   "anchor": "sections-new-or-moved-in-this-release",
+   "heading": "Sections new or moved in this release",
+   "text": "is saved at once, not through the save bar, and is recorded in the audit log as a\n  settings change to **RBAC**. The **Role-based access** row in the Posture group of\n  **Single sign-on & policy** has a **Manage** button that opens it. The settings API no\n  longer changes `rbac.enabled` (`409 rbac_switch_moved`); use `PUT /api/rbac`. See\n  Turn on role-based access.\n- **Security & access → Single sign-on & policy** has a **Team activity** group after\n  Posture with one switch, **Team activity page** (on by default). Off, nobody can open\n  **Analytics → Team activity**, and its API answers `409 team_activity_off`. See\n  Team activity.\n- **General → Detection** has an **Auto-close review** group beside the auto-close\n  controls: **Send automatic closes for review** (on by default), **Share of automatic\n  closes picked** (0 to 50%, default 5%), **Most picked in a day** (0 to 200, default\n  10, per day in the SLA time zone), **Most of one rule in a day** (1 to 50, default 3)\n  and **Days before a review expires** (1 to 30, default 7). A value outside its range is\n  refused when you save. See Auto-close review.\n- **Security & access → Users**: **Change roles** keeps only custom roles that still\n  exist. A custom role deleted after it was assigned grants nothing; the dialog names it\n  and removes it from the account when you save.",
+   "console": [
+    "settings:discounted-inference",
+    "settings:runbooks",
+    "settings:knowledge.knowledge-rag",
+    "settings:general",
+    "settings:account_security",
+    "settings:case_policy",
+    "settings:advanced_all",
+    "settings:security",
+    "settings:roles",
+    "page:team",
+    "settings:detection",
     "settings:admin_users"
    ]
   },
@@ -5780,7 +5807,8 @@
    "heading": "Choose how the first administrator is created",
    "text": "With authentication turned on (`TLSOC_AUTH_ENABLED=true`) and an empty user store, the\nfirst screen at `http://localhost:8080` depends on the administrator password\n(`TLSOC_AUTH_ADMIN_PASSWORD`) in `.env`:\n\n| Administrator password | First screen |\n| --- | --- |\n| Set | **Create your admin account**. You create a named administrator in the browser. The environment administrator also works as a fallback sign-in. |\n| Blank | The sign-in screen. The backend seeds the demonstration administrator `Admin` / `Admin@123`, and the sign-in page shows a hint with those credentials. Replace that account right after you launch setup, as First-run setup describes. |\n| Authentication off | No sign-in. The setup wizard opens directly. Use this only on an isolated workstation. |\n\nFor a shared deployment, set `TLSOC_AUTH_ADMIN_PASSWORD` to a unique value so the\ndemonstration account is never created, and choose a different username for your named\nadministrator. This needs no change to the Compose file, whose exact hash supervised\nupdates check. For other bootstrap options, see\nAuthentication.",
    "console": [
-    "settings:security"
+    "settings:security",
+    "settings:roles"
    ]
   },
   {
@@ -5788,9 +5816,10 @@
    "page": "getting-started/install.md",
    "anchor": "choose-how-the-first-administrator-is-created",
    "heading": "Choose how the first administrator is created",
-   "text": "Role-based access is off by default. With authentication on and role-based access off,\nevery signed-in account is treated as Super admin, whatever role it was given; the\nConsole shows \"Off: everyone is Super admin\" under\n**Settings → Security & access → Single sign-on & policy**. There is no switch for it in\nthe 0.1.13 Console: a super administrator turns it on by saving\n`{\"rbac\": {\"enabled\": true}}` through `PUT /api/settings`. See\nTurn on role-based access.\n\nWarning: Secrets entered later in the UI\n\nIn Agentic SOC 0.1, runtime-entered source, notification, SSO, and local-model secret\nvalues live in process memory. They must be re-entered after a backend restart.\nEnvironment or an external deployment secret mechanism is the durable boot-time\npath.",
+   "text": "Role-based access is off by default. With authentication on and role-based access off,\nevery signed-in account is treated as Super admin, whatever role it was given; the\nConsole shows \"Off: everyone is Super admin\" under\n**Settings → Security & access → Single sign-on & policy**. A Super admin turns it on\nin **Settings → Security & access → Roles & permissions** with **Turn on role-based\naccess** (the Posture row's **Manage** opens it), or with `PUT /api/rbac`. See\nTurn on role-based access.\n\nIf you put a TLS proxy in front of the Console, let it accept request bodies of at least\n3 MiB (in nginx, `client_max_body_size 3m;`): a case screenshot is uploaded as one\nrequest of up to 3 MiB, and the default nginx limit of 1 MiB refuses it with HTTP 413.\nThe bundled Console proxy already allows it on that path.\n\nWarning: Secrets entered later in the UI\n\nIn Agentic SOC 0.1, runtime-entered source, notification, SSO, and local-model secret\nvalues live in process memory. They must be re-entered after a backend restart.\nEnvironment or an external deployment secret mechanism is the durable boot-time\npath.",
    "console": [
-    "settings:security"
+    "settings:security",
+    "settings:roles"
    ]
   },
   {
@@ -6713,7 +6742,39 @@
    "page": "operations/upgrades.md",
    "anchor": "changes-that-need-attention-when-upgrading-to-this-build",
    "heading": "Changes that need attention when upgrading to this build",
-   "text": "This build (the current `0.1.13` source candidate, after the Round 12, Round 13 and\nRound 14 changes) needs no database migration and no new index or table. It changes\nthese behaviours, which operators should know about before upgrading.",
+   "text": "This build (the current `0.1.13` source candidate, after the Round 12, Round 13, Round 14\nand Round 15 changes) needs no database migration and no new index or table. It changes\nthese behaviours, which operators should know about before upgrading.",
+   "console": []
+  },
+  {
+   "id": "operations/upgrades#round-15-changes:0",
+   "page": "operations/upgrades.md",
+   "anchor": "round-15-changes",
+   "heading": "Round 15 changes",
+   "text": "Round 15 keeps version `0.1.13` and adds no database migration, index or table. Case\nscreenshots and the auto-close review ledger live in two new key-value namespaces,\n`case_files` and `auto_close_review`. Read these before upgrading:",
+   "console": []
+  },
+  {
+   "id": "operations/upgrades#round-15-changes:1",
+   "page": "operations/upgrades.md",
+   "anchor": "round-15-changes",
+   "heading": "Round 15 changes",
+   "text": "- **Role-based access has its own switch.** **Settings → Security & access → Roles &\n  permissions** turns it on or off, and so does `PUT /api/rbac` (stored role Super admin\n  and a recent sign-in). `PUT /api/settings` answers `409 rbac_switch_moved` when a body\n  would change `rbac.enabled`, and any other changed `rbac` field (`roles`, `resources`,\n  `custom_roles`, `denies`, `default_role`) now needs `roles:manage` and a fresh sign-in.\n  A script that sends the whole settings document with `rbac.enabled` unchanged keeps\n  working. See Turn on role-based access.\n- **New permission `team:view`.** SOC managers and Auditors get it by default (Super\n  admins hold every grant). A stored role override that names other resources keeps it.\n  While role-based access is off, Team activity is still limited to accounts whose\n  stored role is Super admin, SOC manager or Auditor.\n- **Two new settings, on by default.** `team_activity.enabled` (the Team activity page)\n  and `auto_close_review` (5% of automatic closes, at most 10 a day and 3 per rule,\n  expiring after 7 days). The review sample starts with the first automatic close after\n  the upgrade; earlier closes are never sampled. Neither changes a case decision.\n- **Front proxy body size.** A case screenshot is uploaded as one request of up to\n  3 MiB. The bundled Web UI allows it on that path; a TLS proxy in front of the Console",
+   "console": []
+  },
+  {
+   "id": "operations/upgrades#round-15-changes:2",
+   "page": "operations/upgrades.md",
+   "anchor": "round-15-changes",
+   "heading": "Round 15 changes",
+   "text": "needs `client_max_body_size 3m` or more, or uploads fail with HTTP 413.\n- **Elasticsearch config index.** At startup the backend adds the `binary` mapping of the\n  new `case_file_data` field to the config index; there is no operator step. If it cannot,\n  it logs a warning and uploads still work, at the indexing cost described in\n  Health, backup, and restore.\n- **Audit rows for human case work.** New rows from case actions, assignments, tags,\n  comments and grades carry a structured `case.*` action, the case as target, the request\n  context and the changes; bulk actions add `run_id` `bulk-`. Their `action_type`,\n  `surface` and `result_summary` are unchanged, so existing filters and parsers keep\n  working, and older rows are not rewritten.\n- **Attribution and re-investigation.** With sign-in on, the actor of a comment, tag\n  change or assignment, and the stored comment author, are the signed-in person. Rebuilding\n  a case after a new investigation keeps its owner, comments, grades, status history,\n  acknowledgement and an analyst's disposition.\n- **Feedback statistics.** `GET /api/feedback/stats` averages each sub-score over the\n  grades that rated it and adds three `*_rated` counts; grades recorded by an auto-close\n  review are left out of it.",
+   "console": []
+  },
+  {
+   "id": "operations/upgrades#rolling-back-from-round-15:0",
+   "page": "operations/upgrades.md",
+   "anchor": "rolling-back-from-round-15",
+   "heading": "Rolling back from Round 15",
+   "text": "The previous release pinned for the rollback lane (`45a4c31`, the Round 14 build) does\nnot carry the preferences forward contract, and it rewrites the settings document without\nthe keys it does not model. After an image-only rollback and the return:\n\n- `team_activity` and `auto_close_review` read as their defaults again (both on, with the\n  default sample rate and caps). Note any values you changed before the rollback and set\n  them again after the return.\n- `rbac.enabled` is kept, because the earlier build models it, and that build changes it\n  through `PUT /api/settings` again.\n- Screenshots and the review ledger stay in the store and are not shown while the earlier\n  build runs. Its own `cases` reset does not know them and leaves them; the next `cases`\n  reset on this release removes them.\n- A grade recorded by an auto-close review loses its `origin` and `review_id` fields the\n  first time the earlier build saves that case, but the case history keeps the review\n  event, so this build still recognises it as a review grade and keeps it out of the\n  agent statistics. While the earlier build runs, its own statistics count it.\n- The structured audit fields, `actions_taken` and `review_via` on history entries stay\n  stored; the earlier build ignores them.",
    "console": []
   },
   {
@@ -7819,7 +7880,7 @@
    "page": "reference/configuration.md",
    "anchor": "durable-preferences",
    "heading": "Durable preferences",
-   "text": "Every `Preferences` field has a default. Major blocks include:\n\n- sources, feeds, OCSF field mappings, polling, and data scope;\n- correlation, risk, rules, baselines, campaigns, threshold tuning, and autopilot;\n- model routing, concurrency caps, batch processing, budgets, pricing overlays, and the\n  chat assistant's bounds;\n- deterministic auto-close policy, analyst rule policies, case ID format, priority, and\n  SLA targets;\n- runbooks, RAG, memory, enrichment, threat context, personas, and analyst-precedent\n  promotion, window fairness, and futility reporting;\n- auth policy, MFA/SSO metadata, RBAC, sessions, notifications, and realtime events;\n- branding, terminology, themes, saved views, dashboard defaults, and the desired\n  own-state storage lifecycle;\n- public release-source discovery repository, Stable/Testing refs, and cache interval.\n\n`PUT /api/settings` deep-merges a JSON object and validates the resulting complete\npreferences model. Prefer small section-specific changes and re-read after updating.\nA malformed value is rejected rather than persisted. General preference updates do\nnot provide a universal revision history in 0.1; detection rules have their own\nversion ledger and rollback endpoints.",
+   "text": "Every `Preferences` field has a default. Major blocks include:\n\n- sources, feeds, OCSF field mappings, polling, and data scope;\n- correlation, risk, rules, baselines, campaigns, threshold tuning, and autopilot;\n- model routing, concurrency caps, batch processing, budgets, pricing overlays, and the\n  chat assistant's bounds;\n- deterministic auto-close policy, the auto-close review sample, analyst rule policies,\n  case ID format, priority, and SLA targets;\n- runbooks, RAG, memory, enrichment, threat context, personas, and analyst-precedent\n  promotion, window fairness, and futility reporting;\n- auth policy, MFA/SSO metadata, RBAC, sessions, the Team activity page, notifications,\n  and realtime events;\n- branding, terminology, themes, saved views, dashboard defaults, and the desired\n  own-state storage lifecycle;\n- public release-source discovery repository, Stable/Testing refs, and cache interval.\n\n`PUT /api/settings` deep-merges a JSON object and validates the resulting complete\npreferences model. Prefer small section-specific changes and re-read after updating.\nA malformed value is rejected rather than persisted. General preference updates do\nnot provide a universal revision history in 0.1; detection rules have their own\nversion ledger and rollback endpoints.",
    "console": []
   },
   {
@@ -7933,6 +7994,32 @@
    "console": []
   },
   {
+   "id": "reference/configuration#role-based-access:0",
+   "page": "reference/configuration.md",
+   "anchor": "role-based-access",
+   "heading": "Role-based access",
+   "text": "`rbac.enabled` (default `false`) decides whether roles are enforced; while it is off,\nevery signed-in account is treated as Super admin. It is changed only in **Settings →\nSecurity & access → Roles & permissions** or with `PUT /api/rbac`, by an account whose\nstored role is Super admin after a recent sign-in. `PUT /api/settings` answers `409\nrbac_switch_moved` to a body that would change it, and changing any other `rbac` field\n(`roles`, `resources`, `custom_roles`, `denies`, `default_role`) through it needs\n`roles:manage` and a fresh sign-in. See\nTurn on role-based access.",
+   "console": []
+  },
+  {
+   "id": "reference/configuration#team-activity:0",
+   "page": "reference/configuration.md",
+   "anchor": "team-activity",
+   "heading": "Team activity",
+   "text": "`team_activity` has one switch, edited under **Settings → Security & access → Single\nsign-on & policy → Team activity**:\n\n| Key | Default | Meaning |\n|---|---|---|\n| `team_activity.enabled` | `true` | Show the Team activity page. Off, nobody can open it and its routes answer `409 team_activity_off` |\n\nReading the page also needs `team:view`, and while role-based access is off a stored role\nof Super admin, SOC manager or Auditor. A malformed stored value is repaired to `true`,\nnever rejected. See Team activity.",
+   "console": []
+  },
+  {
+   "id": "reference/configuration#auto-close-review:0",
+   "page": "reference/configuration.md",
+   "anchor": "auto-close-review",
+   "heading": "Auto-close review",
+   "text": "`auto_close_review` controls the random review of automatic closes, edited in the\n**Auto-close review** group of **Settings → General → Detection**:\n\n| Key | Default | Range | Meaning |\n|---|---|---|---|\n| `auto_close_review.enabled` | `true` | `true`, `false` | Send a small random sample of the cases the AI agent closed automatically to a person for review |\n| `auto_close_review.sample_rate` | 0.05 | 0 to 0.5 | The share of automatic closes picked; each case has a fixed score, and the cases scoring below the rate are picked |\n| `auto_close_review.daily_cap` | 10 | 0 to 200 | The most cases picked in one day, in the SLA time zone |\n| `auto_close_review.per_rule_daily_cap` | 3 | 1 to 50 | The most cases of one detection rule picked in one day |\n| `auto_close_review.expiry_days` | 7 | 1 to 30 | Days a picked case waits before it is shown as expired (it can still be reviewed) |\n\nStored values are repaired on load (a value out of range is clamped, a malformed one takes\nits default), but a settings write with an out-of-range or malformed value is refused\nwith HTTP 422, so an administrator never gets a value they did not type. None of these\nvalues is read by the close or escalate decision, and a review never changes a case's\nstatus, decider or disposition. See Auto-close review.",
+   "console": [
+    "settings:detection"
+   ]
+  },
+  {
    "id": "reference/configuration#discounted-alert-inference:0",
    "page": "reference/configuration.md",
    "anchor": "discounted-alert-inference",
@@ -7981,8 +8068,10 @@
    "page": "reference/permissions.md",
    "anchor": "authorization-modes",
    "heading": "Authorization modes",
-   "text": "Authentication and RBAC are independent switches:\n\n| Authentication | RBAC | Effective behavior |\n|---|---|---|\n| Off | Either value | API authentication/permission gates are no-ops |\n| On | Off | Every authenticated user is treated as `super_admin` |\n| On | On | The built-in or custom effective permission matrix is enforced |\n\nThe default role is `analyst_tier1`. For shared use, enable both authentication and\nRBAC; enabling authentication alone does not create role separation.",
-   "console": []
+   "text": "Authentication and RBAC are independent switches:\n\n| Authentication | RBAC | Effective behavior |\n|---|---|---|\n| Off | Either value | API authentication/permission gates are no-ops |\n| On | Off | Every authenticated user is treated as `super_admin` |\n| On | On | The built-in or custom effective permission matrix is enforced |\n\nThe default role is `analyst_tier1`. For shared use, enable both authentication and\nRBAC; enabling authentication alone does not create role separation.\n\nAuthentication is turned on in the deployment environment (`AUTH_ENABLED`). RBAC is turned\non or off in **Settings → Security & access → Roles & permissions** (the **Role-based\naccess** group) or with `PUT /api/rbac`. Only an account whose stored role is\n`super_admin` may change it, after a recent sign-in, whatever RBAC currently says, so the\n\"every account is `super_admin`\" view while RBAC is off never grants it. `PUT\n/api/settings` cannot change `rbac.enabled` (`409 rbac_switch_moved`), and changing any\nother `rbac` field through it needs `roles:manage` and a fresh sign-in. See\nTurn on role-based access.",
+   "console": [
+    "settings:roles"
+   ]
   },
   {
    "id": "reference/permissions#built-in-roles:0",
@@ -7997,11 +8086,19 @@
    "page": "reference/permissions.md",
    "anchor": "case-and-operational-grants",
    "heading": "Case and operational grants",
-   "text": "`*` means every action defined for that resource. \"None\" means no default grant.\n\n| Resource | Actions | `super_admin` | `soc_manager` | `analyst_tier2` | `analyst_tier1` | `responder` | `auditor` |\n|---|---|---|---|---|---|---|---|\n| `cases` | `read`, `write`, `close`, `assign`, `comment`, `reinvestigate` | `*` | `*` | all six | `read`, `write`, `assign`, `comment` | `read`, `write`, `assign`, `comment` | `read` |\n| `sources` | `read`, `manage` | `*` | `*` | `read` | `read` | `read` | `read` |\n| `users` | `manage` | `*` | `manage` | None | None | None | None |\n| `proposals` | `read`, `approve` | `*` | `*` | `read` | `read` | `read`, `approve` | `read` |\n| `runbooks` | `read`, `run`, `manage`, `publish` | `*` | `*` | `read`, `run` | `read`, `run` | `read`, `run` | `read` |\n| `rag` | `read`, `manage` | `*` | `*` | `read` | `read` | `read` | `read` |\n| `memory` | `read`, `manage` | `*` | `*` | `read` | `read` | `read` | `read` |\n| `cost` | `view` | `*` | `view` | `view` | `view` | `view` | `view` |\n| `metrics` | `view` | `*` | `view` | `view` | `view` | `view` | `view` |\n| `audit` | `view`, `export` | `*` | `view`, `export` | None | None | None | `view`, `export` |\n| `data_export` | `export` | `*` | `export` | None | None | None | None |\n| `system_updates` | `read`, `apply`, `rollback` | `*` | `read` | None | None | None | None |",
+   "text": "`*` means every action defined for that resource. \"None\" means no default grant.",
    "console": []
   },
   {
    "id": "reference/permissions#case-and-operational-grants:1",
+   "page": "reference/permissions.md",
+   "anchor": "case-and-operational-grants",
+   "heading": "Case and operational grants",
+   "text": "| Resource | Actions | `super_admin` | `soc_manager` | `analyst_tier2` | `analyst_tier1` | `responder` | `auditor` |\n|---|---|---|---|---|---|---|---|\n| `cases` | `read`, `write`, `close`, `assign`, `comment`, `reinvestigate` | `*` | `*` | all six | `read`, `write`, `assign`, `comment` | `read`, `write`, `assign`, `comment` | `read` |\n| `sources` | `read`, `manage` | `*` | `*` | `read` | `read` | `read` | `read` |\n| `users` | `manage` | `*` | `manage` | None | None | None | None |\n| `proposals` | `read`, `approve` | `*` | `*` | `read` | `read` | `read`, `approve` | `read` |\n| `runbooks` | `read`, `run`, `manage`, `publish` | `*` | `*` | `read`, `run` | `read`, `run` | `read`, `run` | `read` |\n| `rag` | `read`, `manage` | `*` | `*` | `read` | `read` | `read` | `read` |\n| `memory` | `read`, `manage` | `*` | `*` | `read` | `read` | `read` | `read` |\n| `cost` | `view` | `*` | `view` | `view` | `view` | `view` | `view` |\n| `metrics` | `view` | `*` | `view` | `view` | `view` | `view` | `view` |\n| `audit` | `view`, `export` | `*` | `view`, `export` | None | None | None | `view`, `export` |\n| `team` | `view` | `*` | `view` | None | None | None | `view` |\n| `data_export` | `export` | `*` | `export` | None | None | None | None |\n| `system_updates` | `read`, `apply`, `rollback` | `*` | `read` | None | None | None | None |",
+   "console": []
+  },
+  {
+   "id": "reference/permissions#case-and-operational-grants:2",
    "page": "reference/permissions.md",
    "anchor": "case-and-operational-grants",
    "heading": "Case and operational grants",
@@ -8022,6 +8119,24 @@
    "anchor": "grants-stored-before-round-14",
    "heading": "Grants stored before Round 14",
    "text": "Earlier versions had a separate `playbooks` resource. A stored grant or deny that still\nnames it keeps working, in every layer (the role overrides, the additive resource layer,\nthe denies and every custom role), and is read as its `runbooks` meaning:\n\n| Stored | Read as |\n|---|---|\n| `playbooks:read` | `runbooks:read` |\n| `playbooks:run` | `runbooks:run` |\n| `playbooks:manage` | `runbooks:manage` and `runbooks:publish` |\n| `playbooks:*` | `runbooks:*` |\n| a deny of `playbooks:manage` | a deny of `runbooks:manage` and `runbooks:publish` |\n\nOn the first load after the upgrade, a stored layer that granted `runbooks:manage` also\ngains `runbooks:publish`, and a stored deny of `runbooks:manage` also denies\n`runbooks:publish`, so no role silently loses the ability to make runbook text trusted and\nnone silently gains it. The map is then stamped (`rbac_grants_version: 2`), so an\nadministrator who later removes `runbooks:publish` keeps that choice. After that, a\n`runbooks` entry is authoritative and a `playbooks` key kept beside it changes nothing.\nThe `playbooks` resource is no longer in the role editor or in\n`GET /api/account/permissions`; `GET /api/roles/simulate` answers a question that names it\nfor its `runbooks` meaning and says so in `alias_of`.",
+   "console": []
+  },
+  {
+   "id": "reference/permissions#team-activity:0",
+   "page": "reference/permissions.md",
+   "anchor": "team-activity",
+   "heading": "Team activity",
+   "text": "`team:view` opens **Analytics → Team activity** and its API (`/api/team/*`): what each\nperson did per day, counted from the audit log. A SOC manager tracks the team and an\nauditor may read it; analysts and responders do not get it by default. A stored role\noverride that names other resources keeps the default `team` grant.\n\nWhile RBAC is off every signed-in account holds every grant, so Team activity adds a\nfloor of its own: only an account whose stored role is `super_admin`, `soc_manager` or\n`auditor` can open it (`403 team_activity_role_required`, with an Access denied row,\nfor anyone else). The page never shows an IP address, user agent, session or settings\nrow; those stay in the audit log under `audit:view`. See\nTeam activity.",
+   "console": [
+    "page:team"
+   ]
+  },
+  {
+   "id": "reference/permissions#screenshots-and-reviews-on-a-case:0",
+   "page": "reference/permissions.md",
+   "anchor": "screenshots-and-reviews-on-a-case",
+   "heading": "Screenshots and reviews on a case",
+   "text": "| Action | Grant |\n|---|---|\n| List and view a case's screenshots | `cases:read` |\n| Add a screenshot, or delete one you added | `cases:comment` |\n| Delete a screenshot someone else added | `cases:comment` and `cases:close` |\n| Record a review of a case the AI agent closed | `cases:write` |\n| Reopen a case from that review | `cases:close` |\n| The Review scope count in Case Manager | `cases:read` |\n| The review module on Agent effectiveness | `metrics:view` |\n| The Team activity switch and the review sample settings | `settings:manage` |\n\nA refused screenshot delete writes an Access denied row. See\nAuto-close review.",
    "console": []
   },
   {
@@ -8637,6 +8752,14 @@
    "console": []
   },
   {
+   "id": "releases/known-limitations#rolling-back-from-round-15-resets-two-settings:0",
+   "page": "releases/known-limitations.md",
+   "anchor": "rolling-back-from-round-15-resets-two-settings",
+   "heading": "Rolling back from Round 15 resets two settings",
+   "text": "The previous release that the rollback lane pins (`45a4c31`, the Round 14 build) predates\nthe preferences forward contract and rewrites the settings document without the keys it\ndoes not model. After an image-only rollback to it, `team_activity` and\n`auto_close_review` read as their defaults again once you return: the Team activity page\nand the review sample are on, at a 5% sample, at most 10 a day and 3 per rule. Note any\nvalues you changed and set them again after the return. Screenshots and the review ledger\nstay in the store unused while the earlier build runs, and its feedback statistics count\nreview grades as ordinary grades; this build recognises them again from the case history.\nThe steps are in Upgrades.\n\n**Required change:** none for later releases, which carry the forward contract.",
+   "console": []
+  },
+  {
    "id": "releases/known-limitations#single-replica-only:0",
    "page": "releases/known-limitations.md",
    "anchor": "single-replica-only",
@@ -8740,6 +8863,30 @@
    "anchor": "chat-suggestions-have-bounded-scope",
    "heading": "Chat suggestions have bounded scope",
    "text": "The suggested questions on a new chat follow each analyst's own visits: a first visit\nafter 8 hours or more away counts as the start of a shift, and the handoff card appears 7\nto 13 hours later. There is no configured team shift schedule. While row-level object\nscope is turned on for a role, no suggestion about cases and no \"Since …\" line is shown,\nbecause chat's case lookups do not apply that scope yet and a suggestion must never state\na count its answer would contradict. Case lists in chat answers name a case by its title\nand a short ID until the lookups return case numbers, and chat cannot yet filter cases by\nthe signed-in analyst, so the answer to \"Which of my open cases should I work on first?\"\nsays so and shows the open queue by assignee.",
+   "console": []
+  },
+  {
+   "id": "releases/known-limitations#screenshots-are-checked-not-decoded:0",
+   "page": "releases/known-limitations.md",
+   "anchor": "screenshots-are-checked-not-decoded",
+   "heading": "Screenshots are checked, not decoded",
+   "text": "The server never decodes a screenshot's pixels and has no image library. It accepts PNG,\nJPEG and WebP by their magic bytes, checks each file's structure, removes its metadata,\nand refuses an image over 2 MiB, 8,192 pixels a side or 40 megapixels. The compressed\nimage data and a colour profile are stored as sent, so a crafted image aimed at a\nbrowser's image decoder is not detected; the type allowlist, the structure check, the size\nlimits, sign-in, the audit row and strict response headers are the mitigations. The server\ndoes not re-encode or downscale either: the Console does that before it uploads, so an API\nclient must send an image that already fits. A screenshot without a thumbnail is served in\nfull for `variant=thumb`, and the Console shows **No preview** for it in the gallery.\n\nThe upload bounds of 30 a minute and 2 at once per person are kept in the backend\nprocess, like the other request bounds. A deleted screenshot keeps its caption, uploader\nand time on the case; a case keeps at most 100 such entries, the oldest dropped first.",
+   "console": []
+  },
+  {
+   "id": "releases/known-limitations#team-activity-counts-are-bounded-and-come-from-the-audit-log:0",
+   "page": "releases/known-limitations.md",
+   "anchor": "team-activity-counts-are-bounded-and-come-from-the-audit-log",
+   "heading": "Team activity counts are bounded and come from the audit log",
+   "text": "Team activity counts audit rows, not distinct cases, in calendar days of the SLA time\nzone; there are no shift-based buckets. It reads at most 92 days (`422\nteam_window_too_long`) and at most 250,000 audit rows. On Elasticsearch, a read that\ncannot hold a point in time stops at 10,000 rows, and a store without paging support stops\nat its own scan limit; the page then marks its counts as lower bounds (\"at least\") and\nsays why (`partial_reason` `row_limit` or `store_limit`). The median time to acknowledge\ncovers at most 5,000 cases and is left out above that. Answers are cached per viewer and\nwindow for 60 seconds, so a new action can take that long to appear.\n\nThe audit row of a case action, assignment, tag change or comment is still written after\nthe change (best effort), so an action whose row could not be written is not counted.\nRows written before Round 15 or with sign-in off may name no person; they are grouped as\n**Not attributed** and have no events list. Counts last as long as the audit rows do.",
+   "console": []
+  },
+  {
+   "id": "releases/known-limitations#auto-close-review-bounds:0",
+   "page": "releases/known-limitations.md",
+   "anchor": "auto-close-review-bounds",
+   "heading": "Auto-close review bounds",
+   "text": "- **Not a blind review.** The review card asks for the reviewer's own classification\n  before it shows the AI verdict, but the rest of the case page still shows the verdict\n  while a review is pending.\n- **Agreement describes the sample only.** It is unweighted and is not an estimate of\n  auto-close precision; the rate and its interval appear only from 30 reviews.\n- **No backfill and a bounded ledger.** Sampling starts with the first automatic close\n  after the upgrade. The ledger keeps the newest 2,000 picks (completed and expired ones are\n  dropped first) and the daily counts for 90 days; once a pick is dropped, a case that is\n  closed automatically again can be picked again, and the Agent effectiveness module marks\n  a window that reaches past the dropped picks as incomplete. Its count of eligible\n  automatic closes reads at most 20,000 cases and says when it could not read them all.\n- **The Review scope reads whole cases.** `GET /api/cases?review=` reads every case the\n  ledger names for that state (up to 2,000) on each request before it filters and pages\n  them.\n- **A pick on a case reopened outside the review stays pending.** It stays in the Review\n  scope and its count, and a review of it is refused with `409 review_not_agent_closed`\n  until the case is closed again.\n- **A review repaired from the case history has no time spent.** When the ledger could\n  not be updated after a review, a later read restores the entry from the case's history\n  event, which does not carry the time the reviewer spent; the audit row keeps it.\n- **One review at a time per process.** Recording a review is serialised by a lock in the\n  backend process, and the ledger by strict compare-and-set; run one backend replica.\n- **Bulk changes leave out agent-closed cases in the Console only.** Bulk Set status and\n  Set disposition in Case Manager and Cases leave out the cases the AI agent closed among\n  those the Console has loaded. A selected case the Console never loaded is sent as\n  before, and the bulk API and jobs do not refuse agent-closed cases.",
    "console": []
   },
   {

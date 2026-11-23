@@ -228,7 +228,10 @@ backend/app/
                      0.1× / write 1.25×[5m]/2×[1h], batch 0.5×; non-cache math
                      byte-identical) · batch (Round-4: `BatchProvider` SPI — Anthropic
                      Message Batches + OpenAI Batch; results UNORDERED → keyed
-                     by `custom_id`, one UsageDoc/result at 0.5× #6)
+                     by `custom_id`, one UsageDoc/result at 0.5× #6) · readiness
+                     (Round 15: `ai_runtime_status`, whether the router and investigator
+                     models can be called with the credentials held; the setup wizard's
+                     `ai_runtime_ready`; never a model call)
   tools/             base (MCP-shaped, + ToolTier safety tier) · es_query · enrich ·
                      rag (hybrid BM25+vector retrieval; import/list/get/delete +
                      stats; Round-3 TRUSTED-allowlist fencing — only built-in/verified
@@ -351,7 +354,17 @@ backend/app/
                      (process-local foreground-priority cap reserving ingest headroom) ·
                      agent_improvement (read-only aggregate comparison of the last 7
                      complete UTC days against the preceding 28; insufficient evidence
-                     stays explicit and never becomes a composite score)
+                     stays explicit and never becomes a composite score) · Round 15:
+                     team_activity (pure fold of audit rows into per-person, per-day work
+                     counts for Team activity: structured and legacy rows, people kinds,
+                     bulk counts, the acknowledge median, 92-day windows, partial flags;
+                     never imported by agents or tools, #7) · case_images (stdlib PNG,
+                     JPEG and WebP structure check and metadata strip; never decodes
+                     pixels) · auto_close_review (the seeded, capped sampler of automatic
+                     closes, the post-decision `ReviewSampler` hook, `None` in replay, and
+                     the summary and metrics folds; runs after `apply()`, never touches
+                     `decide()` #3) · review_origin (`is_review_grade`, the rollback-safe
+                     review-grade marker every statistics consumer reads)
   engine/replay/     the replay harness (Item I): text (the ONE unmeasurability +
                      limitations statement, byte-identical in every output) · params
                      (the submit contract; `extra=forbid` makes a comparison against
@@ -456,6 +469,12 @@ backend/app/
                      runbook_library (Round 14: every operator runbook version +
                      the migration marker; KV only, no new index/table) ·
                      runbook_runs (per-case runs + the monthly run ledger; KV only)
+                     · case_files (Round 15: case screenshots in the `case_files` KV
+                     namespace: a strict-CAS per-case index, write-once image and
+                     thumbnail documents, an organisation usage total; never on the Case
+                     document, never read by a model) · auto_close_review (Round 15: the
+                     strict-CAS review ledger, one `ledger` document holding a ring of
+                     2,000 picks and 90 days of daily counts)
                      · legacy_procedures (read-only decoder of the two retired
                      procedure namespaces for the migration and legacy export) ·
                      8 Round-3 KV stores (same zero-migration pattern, no new index/
@@ -586,6 +605,19 @@ backend/app/
                      steps, approvals, read-only lookups under the caller's grants, the
                      AI draft and suggestion), `POST /api/runbooks/progress` and
                      `/lookup-test`; audit-first; `case.runbook` frames on `runbooks`] ·
+                     routes_rbac [Round 15: `GET/PUT /api/rbac`, the role-based access
+                     switch: stored Super admin role, strict fresh sign-in, audited as a
+                     settings change to RBAC; `PUT /api/settings` answers `409
+                     rbac_switch_moved`] · routes_team [Round 15: `GET /api/team/activity`,
+                     `/people`, `/people/{username}/events` under `team:view`, a role floor
+                     while RBAC is off, the `team_activity` switch, 60 s per-viewer cache,
+                     coalesced `team.viewed` rows] · routes_case_files [Round 15: list,
+                     add, delete and serve case screenshots; a 3 MiB bounded route class,
+                     dedup, per-person rate bound, strict content headers, audit-first] ·
+                     routes_auto_close_review [Round 15: `POST /api/cases/{id}/review`
+                     (audit first, one grade, never the case's status or disposition),
+                     `GET /api/auto-close-review/summary`, `GET
+                     /api/metrics/auto-close-review`; `case.review` frames] ·
                      routes_reports [`/api/reports*` owner-scoped reports,
                      server-resolved add, one-call AI summary with dry-run estimate;
                      Round 12: `from-answer`, `from-conversation`, 60 items,
@@ -619,7 +651,7 @@ webui/               PRIMARY surface: standalone Vite+React+TS+Tailwind+shadcn/R
                      CaseManager (canonical detail workspace; Active/All split-pane
                      queue, persisted accessible desktop resize, selection +
                      permission-gated bulk work submitted as immutable background-job
-                     snapshots, full six-tab detail; Cases list
+                     snapshots, full five-tab detail since Round 15; Cases list
                      hands an opened row to the exact Case Manager record) + Chat
                      (searchable 264px desktop history rail/mobile Sheet, newest-first
                      durable per-user transcripts, one docked composer; Case Manager
@@ -644,7 +676,15 @@ webui/               PRIMARY surface: standalone Vite+React+TS+Tailwind+shadcn/R
                      from every rule name) · Runbooks.tsx + runbooks/** (editor/, run/,
                      shared/) + Personas.tsx + casedetail/RunbookPanel (the Runbook tab and
                      the Next step card); the Scans page is gone (`#/scans` redirects to
-                     Case Manager's Closed by the AI agent filter) +
+                     Case Manager's Closed by the AI agent filter) + Round 15:
+                     TeamActivity.tsx + team/** (range control, per-day chart, person
+                     sheet; lib/api-team.ts, lib/types-team.ts) · RbacSwitchPanel.tsx (the
+                     Role-based access group on Roles & permissions; lib/api-rbac.ts) ·
+                     casedetail/files/** (screenshot gallery and lightbox, drop zone and
+                     paste, upload queue, canvas re-encode; lib/api-case-files.ts) ·
+                     casedetail/review/ReviewCard.tsx (the auto-close review card;
+                     lib/api-reviews.ts) · effectiveness/AutoCloseReviewModule.tsx (the
+                     Agent effectiveness module) +
                      settings/* data-driven section files grouped into five panels [was a
                      2673-line god-file, now a section registry; includes Organization
                      Storage & retention capability/status/preview/apply]; components/* incl. Can RBAC

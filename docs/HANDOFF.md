@@ -513,7 +513,10 @@ backend/app/
                    Round-4: tuning · campaigns (full-set active reconciliation + durable
                    success anchor) · baseline · batch_jobs +
                    Round-5: dashboards (per-user custom-dashboard layouts) · rule_versions
-                   (detection-rule version ledger + rollback) — NO new index/table needed
+                   (detection-rule version ledger + rollback); NO new index/table needed +
+                   Round 15: case_files (case screenshots: per-case index, write-once
+                   image and thumbnail documents, usage total) · auto_close_review (the
+                   strict-CAS review ledger: a ring of 2,000 picks and 90 days of counts)
   notifications/   channel SPI · email (SMTP+SES) · resend · webhook/slack/teams · templates · dispatch ·
                    InAppChannel (Round 3 — fan-out to InboxStore, no network) · jobs
                    (one strict-CAS bounded registry, renewable leases, intent
@@ -550,7 +553,15 @@ backend/app/
                    cancellation, restart recovery, verified ZIP artifacts) ·
                    investigation_gate (process-local ingest-priority concurrency) ·
                    agent_improvement (pure aggregate complete-day quality headline +
-                   additive cost/closure/outcome/volume trends; reporting only)
+                   additive cost/closure/outcome/volume trends; reporting only) +
+                   Round 15: team_activity (pure audit-row fold for Team activity) ·
+                   case_images (stdlib image structure check and metadata strip, no
+                   pixel decode) · auto_close_review (seeded, capped sampler of automatic
+                   closes, run after `apply()`; summary and metrics folds) · review_origin
+                   (`is_review_grade`, the rollback-safe review-grade marker)
+  llm/             gateway (the one cost-ledger choke point) · providers · pricing · batch ·
+                   readiness (Round 15: whether the router and investigator models can be
+                   called with the credentials held; the wizard's `ai_runtime_ready`)
   agents/          router · investigator · formatter · chat · standup · overview · personas · pipeline
   threat/          bundled compact MITRE ATT&CK technique map (+ refresh script)
 webui/src/
@@ -564,8 +575,13 @@ webui/src/
                    canonical detail workspace; operator contract in
                    `docs/analyst/case-manager.md`),
                    CaseDetail (Round-5 split from a 4210-line god-file into ~1529 LOC +
-                   sub-components; **6 tabs**: overview | timeline | investigation | threat |
-                   collab | chat — Round 9/9b split the old Investigation tab into a
+                   sub-components; **5 tabs since Round 15**: overview | runbook |
+                   investigation | collab | chat, where Overview absorbed the Timeline,
+                   Investigation absorbed Threat context, and `tab=timeline` and
+                   `tab=threat` links open those sections; casedetail/files/** holds the
+                   screenshot kit and casedetail/review/ReviewCard.tsx the auto-close
+                   review card. Before that: 6 tabs, overview | timeline | investigation
+                   | threat | collab | chat; Round 9/9b split the old Investigation tab into a
                    "Timeline" [ONLY the what-happened narrative: input → correlate → Risk
                    Assigned → triage → investigate → Decision; current-weight reconstruction
                    from persisted factors with mismatch warning; Case Manager terminal marker
@@ -585,7 +601,10 @@ webui/src/
                    and boards + Standup), Intelligence(Knowledge corpus+Runbooks+Operator
                    memory+Agent personas; runbooks/** holds the editor, the run and the
                    shared pieces), Audit (Round 14: scopes, inspector, export), Help
-                   Center + Round-3 Models, Roles, Inbox, ... (the Scans page is gone)
+                   Center + Round-3 Models, Roles, Inbox, ... (the Scans page is gone) +
+                   Round 15: TeamActivity (+ team/**: range control, per-day chart, person
+                   sheet), RbacSwitchPanel (the Role-based access group on Roles &
+                   permissions), effectiveness/AutoCloseReviewModule (Agent effectiveness)
   soc/pages/settings/  Round-5 — one file per Settings section (general/security/models/detection/
                    cases/automation/enrichment/knowledge/keys/standup/storage/advanced/...) driven by
                    settings-sections.ts (the registry) — replaces the old god-file

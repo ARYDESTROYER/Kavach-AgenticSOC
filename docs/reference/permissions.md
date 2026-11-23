@@ -22,6 +22,15 @@ Authentication and RBAC are independent switches:
 The default role is `analyst_tier1`. For shared use, enable both authentication and
 RBAC; enabling authentication alone does not create role separation.
 
+Authentication is turned on in the deployment environment (`AUTH_ENABLED`). RBAC is turned
+on or off in **Settings → Security & access → Roles & permissions** (the **Role-based
+access** group) or with `PUT /api/rbac`. Only an account whose stored role is
+`super_admin` may change it, after a recent sign-in, whatever RBAC currently says, so the
+"every account is `super_admin`" view while RBAC is off never grants it. `PUT
+/api/settings` cannot change `rbac.enabled` (`409 rbac_switch_moved`), and changing any
+other `rbac` field through it needs `roles:manage` and a fresh sign-in. See
+[Turn on role-based access](../administration/users-rbac.md#turn-on-role-based-access).
+
 ## Built-in roles
 
 | Role ID | Intended scope |
@@ -52,6 +61,7 @@ The names describe defaults, not organizational job titles. Notably, the built-i
 | `cost` | `view` | `*` | `view` | `view` | `view` | `view` | `view` |
 | `metrics` | `view` | `*` | `view` | `view` | `view` | `view` | `view` |
 | `audit` | `view`, `export` | `*` | `view`, `export` | None | None | None | `view`, `export` |
+| `team` | `view` | `*` | `view` | None | None | None | `view` |
 | `data_export` | `export` | `*` | `export` | None | None | None | None |
 | `system_updates` | `read`, `apply`, `rollback` | `*` | `read` | None | None | None | None |
 
@@ -109,6 +119,36 @@ administrator who later removes `runbooks:publish` keeps that choice. After that
 The `playbooks` resource is no longer in the role editor or in
 `GET /api/account/permissions`; `GET /api/roles/simulate` answers a question that names it
 for its `runbooks` meaning and says so in `alias_of`.
+
+## Team activity
+
+`team:view` opens **Analytics → Team activity** and its API (`/api/team/*`): what each
+person did per day, counted from the audit log. A SOC manager tracks the team and an
+auditor may read it; analysts and responders do not get it by default. A stored role
+override that names other resources keeps the default `team` grant.
+
+While RBAC is off every signed-in account holds every grant, so Team activity adds a
+floor of its own: only an account whose stored role is `super_admin`, `soc_manager` or
+`auditor` can open it (`403 team_activity_role_required`, with an Access denied row,
+for anyone else). The page never shows an IP address, user agent, session or settings
+row; those stay in the audit log under `audit:view`. See
+[Team activity](../analyst/team-activity.md).
+
+## Screenshots and reviews on a case
+
+| Action | Grant |
+|---|---|
+| List and view a case's screenshots | `cases:read` |
+| Add a screenshot, or delete one you added | `cases:comment` |
+| Delete a screenshot someone else added | `cases:comment` and `cases:close` |
+| Record a review of a case the AI agent closed | `cases:write` |
+| Reopen a case from that review | `cases:close` |
+| The Review scope count in Case Manager | `cases:read` |
+| The review module on Agent effectiveness | `metrics:view` |
+| The Team activity switch and the review sample settings | `settings:manage` |
+
+A refused screenshot delete writes an Access denied row. See
+[Auto-close review](../automation/auto-close-review.md).
 
 ## Audit log
 

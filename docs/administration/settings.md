@@ -159,9 +159,27 @@ values stay write-only appears only under sections that hold preferences or secr
   comes back, and a failed save keeps what you typed so you can try again. The session
   policy ends with an
   **Access tokens** group whose one value is not enforced in this version.
-- **Security & access → Roles & permissions** says **Role-based access is off** while
-  it is: every signed-in account then counts as Super admin. It is turned on through
-  the settings API (`rbac.enabled`); there is no switch for it in the Console.
+- **Security & access → Roles & permissions** opens with a **Role-based access** group:
+  its **Enforcement** row shows **On** or **Off: every signed-in account is treated as
+  Super admin**, its caption lists the active accounts per role (for an account that may
+  manage users), and its button turns role-based access on or off after a confirmation.
+  Only an account whose stored role is Super admin can use it, after a recent sign-in;
+  otherwise the button is unavailable and the reason shows under the state. The change
+  is saved at once, not through the save bar, and is recorded in the audit log as a
+  settings change to **RBAC**. The **Role-based access** row in the Posture group of
+  **Single sign-on & policy** has a **Manage** button that opens it. The settings API no
+  longer changes `rbac.enabled` (`409 rbac_switch_moved`); use `PUT /api/rbac`. See
+  [Turn on role-based access](users-rbac.md#turn-on-role-based-access).
+- **Security & access → Single sign-on & policy** has a **Team activity** group after
+  Posture with one switch, **Team activity page** (on by default). Off, nobody can open
+  **Analytics → Team activity**, and its API answers `409 team_activity_off`. See
+  [Team activity](../analyst/team-activity.md).
+- **General → Detection** has an **Auto-close review** group beside the auto-close
+  controls: **Send automatic closes for review** (on by default), **Share of automatic
+  closes picked** (0 to 50%, default 5%), **Most picked in a day** (0 to 200, default
+  10, per day in the SLA time zone), **Most of one rule in a day** (1 to 50, default 3)
+  and **Days before a review expires** (1 to 30, default 7). A value outside its range is
+  refused when you save. See [Auto-close review](../automation/auto-close-review.md).
 - **Security & access → Users**: **Change roles** keeps only custom roles that still
   exist. A custom role deleted after it was assigned grants nothing; the dialog names it
   and removes it from the account when you save.
