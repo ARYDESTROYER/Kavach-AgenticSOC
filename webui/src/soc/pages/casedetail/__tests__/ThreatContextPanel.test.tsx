@@ -78,8 +78,8 @@ describe('ThreatContextPanel — asset context', () => {
     );
     // The Criticality row renders...
     expect(screen.getByText('Criticality')).toBeInTheDocument();
-    // ...and the "No asset context" empty state is NOT shown for this card.
-    expect(screen.queryByText('No asset context')).toBeNull();
+    // ...and the asset's empty line is NOT shown for this section.
+    expect(screen.queryByText(/No additional context was recorded/)).toBeNull();
   });
 
   it('still shows the empty state when the asset is genuinely bare', () => {
@@ -87,7 +87,7 @@ describe('ThreatContextPanel — asset context', () => {
     render(
       <ThreatContextPanel c={CASE} panel={panel} loading={false} error={null} onRetry={vi.fn()} />,
     );
-    expect(screen.getByText('No asset context')).toBeInTheDocument();
+    expect(screen.getByText(/No additional context was recorded for the case.s primary entity/)).toBeInTheDocument();
   });
 });
 
@@ -151,7 +151,7 @@ describe('ThreatContextPanel — error state (#33)', () => {
   });
 });
 
-describe('ThreatContextPanel — Case Manager presentation', () => {
+describe('ThreatContextPanel: the flat sections layout', () => {
   it('leads with the MITRE and IOC cards while honoring backend-real score/sources and numeric asset fields', () => {
     // Round 12 (CM-8): flat, divider-led sections (no card-in-card); every field kept.
     const { container } = render(
@@ -161,7 +161,6 @@ describe('ThreatContextPanel — Case Manager presentation', () => {
         loading={false}
         error={null}
         onRetry={vi.fn()}
-        presentation="case-manager"
       />,
     );
 
@@ -213,7 +212,6 @@ describe('ThreatContextPanel — Case Manager presentation', () => {
         loading={false}
         error={null}
         onRetry={vi.fn()}
-        presentation="case-manager"
       />,
     );
     expect(await axe(container)).toHaveNoViolations();

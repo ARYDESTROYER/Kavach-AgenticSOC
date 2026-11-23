@@ -49,8 +49,8 @@ human.
 
 1. Open **Overview** and inspect source coverage, the Human-vs-AI close
    attribution, and the Noise-Reduction flow.
-2. Open **Case Manager**, compare the Overview, Timeline, Investigation, Threat,
-   Collaboration, and Chat tabs, then try queue selection. The legacy **Cases**
+2. Open **Case Manager**, compare the Overview, Runbook, Investigation, Collaboration,
+   and Chat tabs, then try queue selection. The legacy **Cases**
    table remains available for comparison.
 3. Open **Workspace Chat**: the start screen says what changed in the demo data since
    your last visit and suggests questions about it, such as your shift brief or a case

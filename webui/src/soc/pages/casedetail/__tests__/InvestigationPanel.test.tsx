@@ -2,14 +2,12 @@
  * InvestigationPanel — the "Investigation" tab (task 5 split).
  *
  * Task 5 moved the "what happened" six-stage narrative out to the sibling
- * <TimelinePanel>, so this panel is now the investigation proper: the AI assessment
- * (WhyPanel reasoning), the pinned deterministic DecisionCard, and the collapsible full
- * ReAct trace. Verifies the two lanes render in order (AI ASSESSMENT → pinned DECISION),
- * that the AI lane is persistently AI-marked, that the raw ReAct trace stays behind a
- * "Full agent trace" disclosure, and that opening it lazy-loads the timeline when the
- * parent hasn't fetched it yet. A request to open the trace (the audit log's "Open case
- * trace", closing QA integ-06) opens it and brings it into view once, in both
- * presentations, and lands focus that had dropped on the trace.
+ * <TimelinePanel>, so this panel is the investigation proper, in its one Case Manager
+ * layout (Round 15, D8.7 removed the unused 'default' one): the decision first, then the
+ * AI assessment, its evidence and policy inputs one disclosure away, and the collapsed
+ * trace, which opening lazy-loads when the parent hasn't fetched it yet. A request to open
+ * the trace (the audit log's "Open case trace", closing QA integ-06) opens it and brings
+ * it into view once, and lands focus that had dropped on the trace heading.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { act, render, screen, fireEvent, waitFor, within } from '@testing-library/react';
@@ -75,73 +73,7 @@ function props(over: Partial<InvestigationPanelProps> = {}): InvestigationPanelP
   };
 }
 
-describe('InvestigationPanel — the AI-assessment + decision story', () => {
-  it('renders AI ASSESSMENT → DECISION in order', () => {
-    render(<InvestigationPanel {...props()} />);
-
-    // 1. AI ASSESSMENT lane — marked "AI", showing the WhyPanel reasoning (not decision).
-    expect(screen.getByText('AI assessment')).toBeInTheDocument();
-    expect(screen.getByText('AI')).toBeInTheDocument();
-    expect(screen.getByText('Agent reasoning')).toBeInTheDocument();
-    expect(
-      screen.getByText(/Repeated failed logons then a success from a new ASN/),
-    ).toBeInTheDocument();
-
-    // 2. DECISION lane — the pinned deterministic authority card.
-    expect(screen.getByRole('region', { name: 'Decision' })).toBeInTheDocument();
-    expect(screen.getByText('Deterministic decision')).toBeInTheDocument();
-  });
-
-  it('no longer renders the "what happened" stage narrative (moved to TimelinePanel)', () => {
-    render(<InvestigationPanel {...props()} />);
-    expect(screen.queryByText('What happened')).toBeNull();
-  });
-
-  it('hides the WhyPanel decision summary (the DecisionCard is the sole authority)', () => {
-    render(<InvestigationPanel {...props()} />);
-    // hideDecision ⇒ the WhyPanel's own "Deterministic decision" Alert title is gone;
-    // the only decision heading is the pinned DecisionCard's.
-    expect(screen.getAllByText('Deterministic decision')).toHaveLength(1);
-    // The pinned card reads the clause off the timeline (proves the timeline prop flows).
-    expect(screen.getByText('Policy clause evaluated')).toBeInTheDocument();
-  });
-
-  it('keeps the raw ReAct trace behind a "Full agent trace" disclosure', () => {
-    render(<InvestigationPanel {...props()} />);
-    const trigger = screen.getByRole('button', { name: /full agent trace/i });
-    expect(trigger).toBeInTheDocument();
-  });
-
-  it('lazy-loads the timeline when the disclosure opens and none is loaded yet', () => {
-    const onRetryTimeline = vi.fn();
-    render(
-      <InvestigationPanel
-        {...props({
-          timeline: null,
-          timelineLoading: false,
-          timelineError: null,
-          onRetryTimeline,
-        })}
-      />,
-    );
-    fireEvent.click(screen.getByRole('button', { name: /full agent trace/i }));
-    expect(onRetryTimeline).toHaveBeenCalledTimes(1);
-  });
-
-  it('does not re-fetch the timeline on open when it is already loaded', () => {
-    const onRetryTimeline = vi.fn();
-    render(<InvestigationPanel {...props({ onRetryTimeline })} />);
-    fireEvent.click(screen.getByRole('button', { name: /full agent trace/i }));
-    expect(onRetryTimeline).not.toHaveBeenCalled();
-  });
-
-  it('has no axe violations', async () => {
-    const { container } = render(<InvestigationPanel {...props()} />);
-    expect(await axe(container)).toHaveNoViolations();
-  });
-});
-
-describe('InvestigationPanel — Case Manager presentation (Round 12, CM-6)', () => {
+describe('InvestigationPanel: the decision-first layout (Round 12, CM-6)', () => {
   const toolSpan: TraceSpan = {
     step_index: 2,
     kind: 'execute_tool',
@@ -164,7 +96,7 @@ describe('InvestigationPanel — Case Manager presentation (Round 12, CM-6)', ()
 
   function renderCm(over: Partial<InvestigationPanelProps> = {}) {
     return render(
-      <InvestigationPanel {...props({ timeline: FULL, ...over })} presentation="case-manager" />,
+      <InvestigationPanel {...props({ timeline: FULL, ...over })} />,
     );
   }
 
@@ -263,6 +195,23 @@ describe('InvestigationPanel — Case Manager presentation (Round 12, CM-6)', ()
     expect(screen.getByText('Policy clause evaluated')).toBeInTheDocument();
   });
 
+  it('no longer renders the "what happened" stage narrative (it is a section of the Overview)', () => {
+    renderCm();
+    expect(screen.queryByText('What happened')).toBeNull();
+  });
+
+  it('lazy-loads the trace when it opens and none is loaded yet, and never re-reads a loaded one', () => {
+    const onRetryTimeline = vi.fn();
+    const { unmount } = renderCm({ timeline: null, timelineLoading: false, timelineError: null, onRetryTimeline });
+    fireEvent.click(screen.getByRole('button', { name: 'Show trace' }));
+    expect(onRetryTimeline).toHaveBeenCalledTimes(1);
+    unmount();
+    const loaded = vi.fn();
+    renderCm({ onRetryTimeline: loaded });
+    fireEvent.click(screen.getByRole('button', { name: 'Show trace' }));
+    expect(loaded).not.toHaveBeenCalled();
+  });
+
   it('has no axe violations', async () => {
     const { container } = renderCm();
     expect(await axe(container)).toHaveNoViolations();
@@ -301,7 +250,9 @@ describe('InvestigationPanel: a request to open the trace (closing QA integ-06)'
     const onRetryTimeline = vi.fn();
     const request = { traceRequest: 1, onTraceRequestHandled: onHandled };
     const { rerender } = render(<InvestigationPanel {...props({ timeline: null, onRetryTimeline })} {...request} />);
-    const trigger = screen.getByRole('button', { name: /hide full agent trace/i });
+    const trace = screen.getByTestId('investigation-trace');
+    expect(within(trace).getByRole('button', { name: 'Hide trace' })).toBeInTheDocument();
+    const heading = within(trace).getByRole('heading', { name: 'Investigation trace' });
     expect(onHandled).toHaveBeenCalledTimes(1);
     expect(onHandled).toHaveBeenCalledWith(1);
     // Opening never reads the trace itself: the case detail's tab load does that, and a
@@ -314,10 +265,12 @@ describe('InvestigationPanel: a request to open the trace (closing QA integ-06)'
     // Nothing had read it by then, so the beat does, once; the trace comes into view.
     expect(onRetryTimeline).toHaveBeenCalledTimes(1);
     expect(scrolled).toHaveLength(1);
-    expect(scrolled[0].el).toContainElement(trigger);
+    expect(scrolled[0].el).toBe(trace);
     expect(scrolled[0].options).toEqual({ block: 'start', behavior: 'smooth' });
-    // Focus had dropped, so it lands on the trace's own control.
-    expect(document.activeElement).toBe(trigger);
+    // Focus had dropped, so it lands on the trace heading, which takes it without a ring
+    // stop of its own in the tab order.
+    expect(document.activeElement).toBe(heading);
+    expect(heading).toHaveAttribute('tabindex', '-1');
 
     // The same request again, before the parent forgets it, is never replayed.
     rerender(<InvestigationPanel {...props({ timeline: null, onRetryTimeline })} {...request} />);
@@ -336,15 +289,15 @@ describe('InvestigationPanel: a request to open the trace (closing QA integ-06)'
         onTraceRequestHandled={vi.fn()}
       />,
     );
-    fireEvent.click(screen.getByRole('button', { name: /hide full agent trace/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'Hide trace' }));
     pastTheBeat();
-    expect(screen.getByRole('button', { name: /show full agent trace/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Show trace' })).toBeInTheDocument();
     expect(onRetryTimeline).not.toHaveBeenCalled();
     expect(scrolled).toHaveLength(0);
     expect(document.activeElement).toBe(document.body);
 
     // Opened by hand later: it reads the trace as any open does, and nothing scrolls.
-    fireEvent.click(screen.getByRole('button', { name: /show full agent trace/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'Show trace' }));
     expect(onRetryTimeline).toHaveBeenCalledTimes(1);
     pastTheBeat();
     expect(onRetryTimeline).toHaveBeenCalledTimes(1);
@@ -371,25 +324,23 @@ describe('InvestigationPanel: a request to open the trace (closing QA integ-06)'
     const onRetryTimeline = vi.fn();
     render(<InvestigationPanel {...props({ timeline: null, onRetryTimeline })} traceRequest={null} />);
     pastTheBeat();
-    expect(screen.getByRole('button', { name: /show full agent trace/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Show trace' })).toBeInTheDocument();
     expect(onRetryTimeline).not.toHaveBeenCalled();
     expect(scrolled).toHaveLength(0);
   });
 
-  it('in the Case Manager presentation opens its own trace section, handled once', () => {
+  it('opens a loaded trace for a request, handled once, and reads nothing more', () => {
     const onHandled = vi.fn();
     const onRetryTimeline = vi.fn();
     render(
       <InvestigationPanel
         {...props({ onRetryTimeline })}
-        presentation="case-manager"
         traceRequest={4}
         onTraceRequestHandled={onHandled}
       />,
     );
     const trace = screen.getByTestId('investigation-trace');
     expect(within(trace).getByRole('button', { name: 'Hide trace' })).toBeInTheDocument();
-    // The wrapper hands the request to the Case Manager layout and never applies it too.
     expect(onHandled).toHaveBeenCalledTimes(1);
     expect(onHandled).toHaveBeenCalledWith(4);
 
@@ -404,22 +355,19 @@ describe('InvestigationPanel: a request to open the trace (closing QA integ-06)'
     expect(heading).toHaveAttribute('tabindex', '-1');
   });
 
-  it.each(['default', 'case-manager'] as const)(
-    'in the %s presentation keeps focus on a control the analyst is using',
-    (presentation) => {
-      render(
-        <>
-          <input aria-label="Search the queue" />
-          <InvestigationPanel {...props()} presentation={presentation} traceRequest={5} onTraceRequestHandled={vi.fn()} />
-        </>,
-      );
-      const search = screen.getByRole('textbox', { name: 'Search the queue' });
-      search.focus();
-      pastTheBeat();
-      expect(scrolled).toHaveLength(1);
-      expect(document.activeElement).toBe(search);
-    },
-  );
+  it('keeps focus on a control the analyst is using', () => {
+    render(
+      <>
+        <input aria-label="Search the queue" />
+        <InvestigationPanel {...props()} traceRequest={5} onTraceRequestHandled={vi.fn()} />
+      </>,
+    );
+    const search = screen.getByRole('textbox', { name: 'Search the queue' });
+    search.focus();
+    pastTheBeat();
+    expect(scrolled).toHaveLength(1);
+    expect(document.activeElement).toBe(search);
+  });
 
   it('lands focus on the trace when the control that asked left the page', () => {
     function Page({ link }: { link: boolean }) {
@@ -434,6 +382,6 @@ describe('InvestigationPanel: a request to open the trace (closing QA integ-06)'
     screen.getByRole('link', { name: 'Open case trace' }).focus();
     rerender(<Page link={false} />);
     pastTheBeat();
-    expect(document.activeElement).toBe(screen.getByRole('button', { name: /hide full agent trace/i }));
+    expect(document.activeElement).toBe(screen.getByRole('heading', { name: 'Investigation trace' }));
   });
 });

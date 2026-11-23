@@ -6,13 +6,14 @@
  * campaign it belongs to. This spec locks the now-wired behaviour:
  *
  *   1. CaseDetail fetches the campaign a case belongs to on open (`campaignsApi.forCase`)
- *      and surfaces a "Part of campaign: X" chip in the case header (name = plain text, #9);
+ *      and surfaces a "Part of campaign: X" chip in the facts rail's Tags section (its one
+ *      home since Round 15, D8.4; name = plain text, #9);
  *   2. clicking the chip deep-links to the Campaigns surface via `onNavigate('campaigns')`;
  *   3. an uncampaigned case (or a disabled/erroring campaigns feature) renders NO chip
  *      (fail-quiet). A campaign is advisory only (#3/#4) — it never closes/escalates/
  *      re-clusters the case, so the chip is purely informational.
  *
- * Like CaseDetail.footer.test.tsx this is a live mount over a mocked `@/lib/api`; the
+ * Like CaseDetail.header-actions.test.tsx this is a live mount over a mocked `@/lib/api`; the
  * campaign client is mocked separately so it returns a deterministic membership.
  */
 import type * as React from 'react';
@@ -48,6 +49,8 @@ vi.mock('@/lib/api', () => {
     setUnauthorizedHandler: vi.fn(),
     api: {
       getCase: ok(openCase),
+      // The Overview's "What happened" stages (Round 15, D8.3) read through `get`.
+      get: ok({ case_id: 'case-88', stages: [], total: 0 }),
       getModels: ok({ providers: {} }),
       getSettings: ok({ prefs: {}, configured: {}, read_only: false }),
       cases: {
@@ -150,12 +153,12 @@ describe('CaseDetail — campaign membership chip (#51)', () => {
     const src = readFileSync(path.resolve(__dirname, '..', 'CaseDetail.tsx'), 'utf8');
     expect(src).toMatch(/campaignsApi\.forCase\(id\)/);
     expect(src).toMatch(/onNavigate\('campaigns'\)/);
-    // Round 12: the chip renders in the sticky header meta row (its one home).
-    const header = readFileSync(
-      path.resolve(__dirname, '..', 'casedetail', 'CaseHeaderMeta.tsx'),
-      'utf8',
-    );
-    expect(header).toMatch(/<CampaignChip/);
-    expect(src).toMatch(/<CaseHeaderMeta/);
+    // Round 15 (D8.4): the chip renders in the facts rail (its one home), which the
+    // orchestrator hands the campaign; the header meta row no longer carries it.
+    const rail = readFileSync(path.resolve(__dirname, '..', 'casedetail', 'FactsRail.tsx'), 'utf8');
+    expect(rail).toMatch(/<CampaignChip/);
+    const header = readFileSync(path.resolve(__dirname, '..', 'casedetail', 'CaseHeaderMeta.tsx'), 'utf8');
+    expect(header).not.toMatch(/<CampaignChip/);
+    expect(src).toMatch(/campaign=\{campaign\}/);
   });
 });

@@ -12,7 +12,6 @@ const SOURCES = [
   ['components', 'NavSidebar.tsx'],
   ['pages', 'Login.tsx'],
   ['pages', 'casedetail', 'CollaborationPanel.tsx'],
-  ['pages', 'casedetail', 'CaseChatPanel.tsx'],
   ['pages', 'Roles.tsx'],
   ['pages', 'Sources.tsx'],
 ];
@@ -28,6 +27,15 @@ describe('dynamic viewport shell contract', () => {
     }
 
     expect(source).toContain('dvh');
+    expect(source).not.toMatch(/\b(?:h|min-h|max-h)-screen\b/);
+    expect(source).not.toContain('100vh');
+  });
+
+  it('sizes the case Chat tab from its lane, with no viewport height of its own', () => {
+    // Round 15 (D8.7): the Chat tab has one layout, the full-height lane Case Manager
+    // gives it, so the retired card's `h-[60dvh]` went with the card.
+    const source = readFileSync(path.resolve(__dirname, '..', 'pages', 'casedetail', 'CaseChatPanel.tsx'), 'utf8');
+    expect(source).toContain('h-full min-h-0');
     expect(source).not.toMatch(/\b(?:h|min-h|max-h)-screen\b/);
     expect(source).not.toContain('100vh');
   });

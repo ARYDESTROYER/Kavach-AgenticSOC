@@ -15,7 +15,6 @@ import * as React from 'react';
 import {
   AlertTriangle,
   Crosshair,
-  Gauge,
   Globe,
   Link2,
   Shield,
@@ -35,12 +34,11 @@ import { LoadingState } from '@/design-system';
 
 import { EmptyState } from '@/soc/components/EmptyState';
 import { LoadError } from '@/soc/components/LoadError';
-import { AiVerdictChip, VerdictBadge, RiskBadge } from '@/soc/components/badges';
+import { AiVerdictChip, RiskBadge } from '@/soc/components/badges';
 import type { Navigate } from '@/soc/router';
 
 import { AskAi } from './AskAi';
-import { CASE_MANAGER_PANEL_PADDING, PanelCard, SectionHeading } from './shared';
-import type { CasePanelPresentation } from './shared';
+import { CASE_MANAGER_PANEL_PADDING } from './shared';
 import {
   ClusterFormationDiagram,
   type ClusterExplanation,
@@ -160,8 +158,7 @@ export const ThreatContextPanel: React.FC<{
    * lives on the Overview tab (Round-7 dedup). Kept optional so callers can pass it.
    */
   onNavigate?: Navigate;
-  presentation?: CasePanelPresentation;
-}> = ({ c, panel, loading, error, onRetry, presentation = 'default' }) => {
+}> = ({ c, panel, loading, error, onRetry }) => {
   if (loading) {
     return (
       <div className="p-6">
@@ -223,242 +220,35 @@ export const ThreatContextPanel: React.FC<{
   const anySection =
     !!panel.summary || iocs.length > 0 || techniques.length > 0 || !!asset || !!clustering?.available;
 
-  if (presentation === 'case-manager') {
-    const assetEmpty =
-      !asset ||
-      (!asset.entity &&
-        asset.criticality === undefined &&
-        asset.is_internal === undefined &&
-        assetNetworks.length === 0 &&
-        assetAttrs.length === 0);
-    return (
-      <div
-        className={cn('divide-y divide-border', CASE_MANAGER_PANEL_PADDING)}
-        data-case-panel="threat-context"
-        data-presentation="case-manager"
-      >
-        {/* Flat, divider-led sections (CM-8): no card-in-card. Every field of both earlier
-            layouts is kept — summary, AI verdict, risk, malicious-indicator flag, the
-            assembled time, each technique's id/name/every tactic/description/link, each
-            indicator's value/type/verdict/score/source/country, the clustering story and
-            the asset context. Log-derived values stay plain text nodes (#9). */}
-        <section aria-labelledby="threat-summary-title" className="pb-5">
-          <FlatHeading id="threat-summary-title" icon={Shield}>
-            Threat summary
-          </FlatHeading>
-          {panel.summary ? (
-            <p className="whitespace-pre-wrap text-sm leading-relaxed text-foreground/90">{panel.summary}</p>
-          ) : (
-            <p className="text-sm text-muted-foreground">No threat summary was assembled for this case.</p>
-          )}
-          <div className="mt-3 flex flex-wrap items-center gap-2">
-            <AiVerdictChip verdict={c.verdict} confidence={c.confidence} />
-            <RiskBadge score={c.risk_score} />
-            {iocs.some((i) => i.is_malicious) ? (
-              <Badge variant="critical" className="gap-1">
-                <AlertTriangle className="h-3 w-3" />
-                Malicious indicator present
-              </Badge>
-            ) : null}
-            {panel.generated_at ? (
-              <span className="ml-auto text-xs text-muted-foreground">
-                Assembled {humanizeAge(panel.generated_at)}
-              </span>
-            ) : null}
-          </div>
-        </section>
-
-        <section aria-labelledby="threat-mitre-title" className="py-5" data-testid="threat-mitre">
-          <FlatHeading id="threat-mitre-title" icon={Shield} count={techniques.length}>
-            MITRE ATT&amp;CK techniques
-          </FlatHeading>
-          {techniques.length === 0 ? (
-            <p className="text-sm text-muted-foreground">No MITRE ATT&amp;CK techniques were resolved for this case.</p>
-          ) : (
-            <ul className="divide-y divide-border/70">
-              {techniques.map((technique, index) => (
-                <li key={`${technique.id}-${index}`} className="py-2.5 first:pt-0 last:pb-0">
-                  <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-                    <span className="font-mono text-xs font-semibold text-foreground">{technique.id}</span>
-                    {/* Name is from the curated MITRE corpus (TRUSTED) — still a plain text node. */}
-                    <span className="min-w-0 flex-1 text-sm font-medium text-foreground">
-                      {technique.name || 'Unknown technique'}
-                    </span>
-                    <a
-                      href={mitreUrl(technique.id, technique.url)}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      aria-label={`Open MITRE ATT&CK ${technique.id} in a new tab`}
-                      className="inline-flex items-center gap-1 rounded text-xs text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                    >
-                      <Link2 className="h-3 w-3" aria-hidden /> MITRE
-                    </a>
-                  </div>
-                  {technique.tactics && technique.tactics.length ? (
-                    <p className="mt-0.5 text-xs text-muted-foreground">
-                      {technique.tactics.length === 1 ? 'Tactic: ' : 'Tactics: '}
-                      {technique.tactics.map((tactic) => tacticWords(tactic)).join(', ')}
-                    </p>
-                  ) : null}
-                  {technique.description ? (
-                    <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{technique.description}</p>
-                  ) : null}
-                </li>
-              ))}
-            </ul>
-          )}
-        </section>
-
-        <section aria-labelledby="threat-ioc-title" className="py-5" data-testid="threat-ioc">
-          <FlatHeading id="threat-ioc-title" icon={Target} count={iocs.length}>
-            Indicator reputation
-          </FlatHeading>
-          {iocs.length === 0 ? (
-            <p className="text-sm text-muted-foreground">
-              No indicator reputation was available. Enrichment may be off or uncached, or the indicators are internal.
-            </p>
-          ) : (
-            <ul className="divide-y divide-border/70">
-              {iocs.map((ioc, index) => {
-                const score = iocScore(ioc);
-                const source = iocSource(ioc);
-                const verdict = iocVerdict(ioc);
-                return (
-                  <li
-                    key={`${ioc.indicator}-${index}`}
-                    className="group/ask grid gap-x-4 gap-y-1 py-2.5 first:pt-0 last:pb-0 @[40rem]/case:grid-cols-[minmax(0,1fr)_auto]"
-                    data-testid="threat-ioc-row"
-                    data-ioc-verdict={verdict.kind}
-                  >
-                    <div className="flex min-w-0 flex-wrap items-center gap-2">
-                      {/* UNTRUSTED indicator — plain text, mono. */}
-                      <span className="min-w-0 truncate font-mono text-sm text-foreground" title={ioc.indicator}>
-                        {ioc.indicator}
-                      </span>
-                      {ioc.type ? <span className="text-xs text-muted-foreground">{humanizeToken(ioc.type)}</span> : null}
-                      <Badge variant={verdict.variant} title={verdict.detail}>
-                        {verdict.label}
-                      </Badge>
-                      <AskAi type={ioc.type} value={ioc.indicator} />
-                    </div>
-                    <dl className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs @[40rem]/case:justify-end">
-                      <div className="flex gap-1">
-                        <dt className="text-muted-foreground">Source</dt>
-                        <dd className="text-foreground">{source ? humanizeToken(source) : 'Unavailable'}</dd>
-                      </div>
-                      <div className="flex gap-1">
-                        <dt className="text-muted-foreground">Confidence</dt>
-                        <dd
-                          className={cn(
-                            'tabular-nums',
-                            typeof score === 'number' && score >= 50 ? 'font-medium text-critical-text' : 'text-foreground',
-                          )}
-                        >
-                          {typeof score === 'number' ? `${Math.round(score)}%` : 'Unavailable'}
-                        </dd>
-                      </div>
-                      {ioc.country ? (
-                        <div className="flex gap-1">
-                          <dt className="text-muted-foreground">Country</dt>
-                          {/* UNTRUSTED — plain text. */}
-                          <dd className="max-w-[10rem] truncate text-foreground">{ioc.country}</dd>
-                        </div>
-                      ) : null}
-                    </dl>
-                  </li>
-                );
-              })}
-            </ul>
-          )}
-        </section>
-
-        {clustering?.available ? (
-          // The diagram draws its own top/bottom rules; inside this divider-led stack the
-          // dividers already separate it, so its own rules are dropped here.
-          <div className="py-5 [&>section]:border-y-0 [&>section]:py-0">
-            <ClusterFormationDiagram data={clustering} />
-          </div>
-        ) : null}
-
-        <section aria-labelledby="threat-asset-title" className="pt-5">
-          <FlatHeading id="threat-asset-title" icon={Crosshair}>
-            Asset context
-          </FlatHeading>
-          {assetEmpty || !asset ? (
-            <p className="text-sm text-muted-foreground">
-              No additional context was recorded for the case&apos;s primary entity.
-            </p>
-          ) : (
-            <dl className="grid gap-x-6 gap-y-2 text-sm @[40rem]/case:grid-cols-2">
-              {asset.entity ? (
-                <div className="group/ask flex min-w-0 items-baseline justify-between gap-3">
-                  <dt className="text-xs text-muted-foreground">{humanizeToken(asset.entity_type || 'Entity')}</dt>
-                  <dd className="flex min-w-0 items-center justify-end gap-1.5">
-                    {/* UNTRUSTED — plain text, mono. */}
-                    <span className="truncate text-right font-mono text-foreground">{asset.entity}</span>
-                    <AskAi type={asset.entity_type} value={asset.entity} />
-                  </dd>
-                </div>
-              ) : null}
-              {asset.criticality !== undefined ? (
-                <div className="flex items-baseline justify-between gap-3">
-                  <dt className="text-xs text-muted-foreground">Criticality</dt>
-                  <dd className="text-right font-mono text-foreground">{scalarLabel(asset.criticality)}</dd>
-                </div>
-              ) : null}
-              {asset.is_internal !== undefined ? (
-                <div className="flex items-baseline justify-between gap-3">
-                  <dt className="text-xs text-muted-foreground">Internal asset</dt>
-                  <dd className="text-right text-foreground">{asset.is_internal ? 'Yes' : 'No'}</dd>
-                </div>
-              ) : null}
-              {assetNetworks.length ? (
-                <div className="flex items-start justify-between gap-3">
-                  <dt className="text-xs text-muted-foreground">Networks</dt>
-                  <dd className="max-w-[70%] text-right font-mono text-foreground">
-                    {assetNetworks.map(String).join(', ')}
-                  </dd>
-                </div>
-              ) : null}
-              {assetAttrs.map(([key, value], index) => (
-                <div key={`${key}-${index}`} className="flex min-w-0 items-baseline justify-between gap-3">
-                  <dt className="text-xs text-muted-foreground">{humanizeToken(key)}</dt>
-                  {/* UNTRUSTED — plain text. */}
-                  <dd className="truncate text-right font-mono text-foreground">{scalarLabel(value)}</dd>
-                </div>
-              ))}
-            </dl>
-          )}
-        </section>
-
-        {!anySection ? (
-          <p className="pt-5 text-xs text-muted-foreground">
-            Threat context is enabled but produced no sections for this case.
-          </p>
-        ) : null}
-      </div>
-    );
-  }
-
+  const assetEmpty =
+    !asset ||
+    (!asset.entity &&
+      asset.criticality === undefined &&
+      asset.is_internal === undefined &&
+      assetNetworks.length === 0 &&
+      assetAttrs.length === 0);
   return (
-    <div className="space-y-6 p-6">
-      {/* ---------------------------------------------- threat banner */}
-      <PanelCard>
-        <SectionHeading icon={Shield}>
+    <div
+      className={cn('divide-y divide-border', CASE_MANAGER_PANEL_PADDING)}
+      data-case-panel="threat-context"
+      data-presentation="case-manager"
+    >
+      {/* Flat, divider-led sections (CM-8): no card-in-card. Every field of both earlier
+          layouts is kept: summary, AI verdict, risk, malicious-indicator flag, the
+          assembled time, each technique's id/name/every tactic/description/link, each
+          indicator's value/type/verdict/score/source/country, the clustering story and
+          the asset context. Log-derived values stay plain text nodes (#9). */}
+      <section aria-labelledby="threat-summary-title" className="pb-5">
+        <FlatHeading id="threat-summary-title" icon={Shield}>
           Threat summary
-        </SectionHeading>
+        </FlatHeading>
         {panel.summary ? (
-          /* UNTRUSTED — plain text. */
-          <p className="whitespace-pre-wrap text-sm leading-relaxed text-foreground/90">
-            {panel.summary}
-          </p>
+          <p className="whitespace-pre-wrap text-sm leading-relaxed text-foreground/90">{panel.summary}</p>
         ) : (
-          <p className="text-sm text-muted-foreground">
-            No threat summary was assembled for this case.
-          </p>
+          <p className="text-sm text-muted-foreground">No threat summary was assembled for this case.</p>
         )}
-        <div className="mt-4 flex flex-wrap items-center gap-2">
-          <VerdictBadge verdict={c.verdict} />
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <AiVerdictChip verdict={c.verdict} confidence={c.confidence} />
           <RiskBadge score={c.risk_score} />
           {iocs.some((i) => i.is_malicious) ? (
             <Badge variant="critical" className="gap-1">
@@ -468,208 +258,177 @@ export const ThreatContextPanel: React.FC<{
           ) : null}
           {panel.generated_at ? (
             <span className="ml-auto text-xs text-muted-foreground">
-              assembled {humanizeAge(panel.generated_at)}
+              Assembled {humanizeAge(panel.generated_at)}
             </span>
           ) : null}
         </div>
-      </PanelCard>
+      </section>
 
-      <ClusterFormationDiagram data={clustering} />
-
-      {/* ---------------------------------------------- IOC reputation */}
-      <PanelCard>
-        <SectionHeading icon={Target}>
-          IOC reputation
-        </SectionHeading>
-        {iocs.length === 0 ? (
-          <EmptyState
-            icon={Target}
-            compact
-            title="No indicator reputation"
-            description="No IOC reputation was available. Enrichment may be off or uncached, or the indicators are internal."
-          />
-        ) : (
-          <div className="space-y-2">
-            {iocs.map((ioc, i) => {
-              const score = iocScore(ioc);
-              const source = iocSource(ioc);
-              return (
-                <div
-                  key={`${ioc.indicator}-${i}`}
-                  className="group/ask flex flex-wrap items-center gap-2 rounded-md border border-border bg-muted/30 p-3"
-                >
-                  {/* UNTRUSTED indicator — plain text, mono. */}
-                  <span className="min-w-0 flex-1 truncate font-mono text-sm text-foreground">
-                    {ioc.indicator}
-                  </span>
-                  {ioc.type ? <Badge variant="outline">{humanizeToken(ioc.type)}</Badge> : null}
-                  {typeof score === 'number' ? (
-                    <Badge variant={score >= 50 ? 'critical' : 'secondary'}>
-                      <Gauge className="h-3 w-3" />
-                      score {Math.round(score)}
-                    </Badge>
-                  ) : null}
-                  {(() => {
-                    const verdict = iocVerdict(ioc);
-                    return (
-                      <Badge variant={verdict.variant} title={verdict.detail}>
-                        {verdict.label}
-                      </Badge>
-                    );
-                  })()}
-                  {ioc.country ? (
-                    /* UNTRUSTED — plain text. */
-                    <Badge variant="outline" className="gap-1">
-                      <Globe className="h-3 w-3" />
-                      <span className="max-w-[10rem] truncate">{ioc.country}</span>
-                    </Badge>
-                  ) : null}
-                  {source ? (
-                    <span className="text-xs text-muted-foreground">{humanizeToken(source)}</span>
-                  ) : null}
-                  <AskAi type={ioc.type} value={ioc.indicator} />
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </PanelCard>
-
-      {/* ---------------------------------------------- MITRE techniques */}
-      <PanelCard>
-        <SectionHeading icon={Shield}>
+      <section aria-labelledby="threat-mitre-title" className="py-5" data-testid="threat-mitre">
+        <FlatHeading id="threat-mitre-title" icon={Shield} count={techniques.length}>
           MITRE ATT&amp;CK techniques
-        </SectionHeading>
+        </FlatHeading>
         {techniques.length === 0 ? (
-          <EmptyState
-            icon={Shield}
-            compact
-            title="No techniques mapped"
-            description="No MITRE ATT&CK techniques were resolved for this case."
-          />
+          <p className="text-sm text-muted-foreground">No MITRE ATT&amp;CK techniques were resolved for this case.</p>
         ) : (
-          <div className="space-y-2">
-            {techniques.map((t, i) => (
-              <div key={`${t.id}-${i}`} className="rounded-md border border-border bg-muted/30 p-3">
-                <div className="flex flex-wrap items-center gap-2">
-                  <Badge variant="outline" className="font-mono">
-                    {t.id}
-                  </Badge>
+          <ul className="divide-y divide-border/70">
+            {techniques.map((technique, index) => (
+              <li key={`${technique.id}-${index}`} className="py-2.5 first:pt-0 last:pb-0">
+                <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+                  <span className="font-mono text-xs font-semibold text-foreground">{technique.id}</span>
                   {/* Name is from the curated MITRE corpus (TRUSTED) — still a plain text node. */}
-                  <span className="text-sm font-semibold text-foreground">
-                    {t.name || 'Unknown technique'}
+                  <span className="min-w-0 flex-1 text-sm font-medium text-foreground">
+                    {technique.name || 'Unknown technique'}
                   </span>
                   <a
-                    href={mitreUrl(t.id, t.url)}
+                    href={mitreUrl(technique.id, technique.url)}
                     target="_blank"
                     rel="noopener noreferrer"
-                    aria-label={`Open MITRE ATT&CK ${t.id} in a new tab`}
-                    className="ml-auto inline-flex items-center gap-1 text-xs text-primary hover:underline"
+                    aria-label={`Open MITRE ATT&CK ${technique.id} in a new tab`}
+                    className="inline-flex items-center gap-1 rounded text-xs text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   >
                     <Link2 className="h-3 w-3" aria-hidden /> MITRE
                   </a>
                 </div>
-                {t.tactics && t.tactics.length ? (
-                  <div className="mt-2 flex flex-wrap gap-1.5">
-                    {t.tactics.map((tac, j) => (
-                      <Badge key={`${tac}-${j}`} variant="medium">
-                        {humanizeToken(tac)}
-                      </Badge>
-                    ))}
-                  </div>
-                ) : null}
-                {t.description ? (
-                  <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
-                    {t.description}
+                {technique.tactics && technique.tactics.length ? (
+                  <p className="mt-0.5 text-xs text-muted-foreground">
+                    {technique.tactics.length === 1 ? 'Tactic: ' : 'Tactics: '}
+                    {technique.tactics.map((tactic) => tacticWords(tactic)).join(', ')}
                   </p>
                 ) : null}
-              </div>
+                {technique.description ? (
+                  <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{technique.description}</p>
+                ) : null}
+              </li>
             ))}
-          </div>
+          </ul>
         )}
-      </PanelCard>
+      </section>
 
-      {/* ---------------------------------------------- asset context */}
-      <PanelCard>
-        <SectionHeading icon={Crosshair}>
-          Asset context
-        </SectionHeading>
-        {!asset ||
-        (!asset.entity &&
-          asset.criticality === undefined &&
-          asset.is_internal === undefined &&
-          assetNetworks.length === 0 &&
-          assetAttrs.length === 0) ? (
-          <EmptyState
-            icon={Crosshair}
-            compact
-            title="No asset context"
-            description="No additional context was recorded for the case's primary entity."
-          />
+      <section aria-labelledby="threat-ioc-title" className="py-5" data-testid="threat-ioc">
+        <FlatHeading id="threat-ioc-title" icon={Target} count={iocs.length}>
+          Indicator reputation
+        </FlatHeading>
+        {iocs.length === 0 ? (
+          <p className="text-sm text-muted-foreground">
+            No indicator reputation was available. Enrichment may be off or uncached, or the indicators are internal.
+          </p>
         ) : (
-          <dl className="divide-y divide-border">
+          <ul className="divide-y divide-border/70">
+            {iocs.map((ioc, index) => {
+              const score = iocScore(ioc);
+              const source = iocSource(ioc);
+              const verdict = iocVerdict(ioc);
+              return (
+                <li
+                  key={`${ioc.indicator}-${index}`}
+                  className="group/ask grid gap-x-4 gap-y-1 py-2.5 first:pt-0 last:pb-0 @[40rem]/case:grid-cols-[minmax(0,1fr)_auto]"
+                  data-testid="threat-ioc-row"
+                  data-ioc-verdict={verdict.kind}
+                >
+                  <div className="flex min-w-0 flex-wrap items-center gap-2">
+                    {/* UNTRUSTED indicator: plain text, mono. */}
+                    <span className="min-w-0 truncate font-mono text-sm text-foreground" title={ioc.indicator}>
+                      {ioc.indicator}
+                    </span>
+                    {ioc.type ? <span className="text-xs text-muted-foreground">{humanizeToken(ioc.type)}</span> : null}
+                    <Badge variant={verdict.variant} title={verdict.detail}>
+                      {verdict.label}
+                    </Badge>
+                    <AskAi type={ioc.type} value={ioc.indicator} />
+                  </div>
+                  <dl className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs @[40rem]/case:justify-end">
+                    <div className="flex gap-1">
+                      <dt className="text-muted-foreground">Source</dt>
+                      <dd className="text-foreground">{source ? humanizeToken(source) : 'Unavailable'}</dd>
+                    </div>
+                    <div className="flex gap-1">
+                      <dt className="text-muted-foreground">Confidence</dt>
+                      <dd
+                        className={cn(
+                          'tabular-nums',
+                          typeof score === 'number' && score >= 50 ? 'font-medium text-critical-text' : 'text-foreground',
+                        )}
+                      >
+                        {typeof score === 'number' ? `${Math.round(score)}%` : 'Unavailable'}
+                      </dd>
+                    </div>
+                    {ioc.country ? (
+                      <div className="flex gap-1">
+                        <dt className="text-muted-foreground">Country</dt>
+                        {/* UNTRUSTED: plain text. */}
+                        <dd className="max-w-[10rem] truncate text-foreground">{ioc.country}</dd>
+                      </div>
+                    ) : null}
+                  </dl>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </section>
+
+      {clustering?.available ? (
+        // The diagram draws its own top/bottom rules; inside this divider-led stack the
+        // dividers already separate it, so its own rules are dropped here.
+        <div className="py-5 [&>section]:border-y-0 [&>section]:py-0">
+          <ClusterFormationDiagram data={clustering} />
+        </div>
+      ) : null}
+
+      <section aria-labelledby="threat-asset-title" className="pt-5">
+        <FlatHeading id="threat-asset-title" icon={Crosshair}>
+          Asset context
+        </FlatHeading>
+        {assetEmpty || !asset ? (
+          <p className="text-sm text-muted-foreground">
+            No additional context was recorded for the case&apos;s primary entity.
+          </p>
+        ) : (
+          <dl className="grid gap-x-6 gap-y-2 text-sm @[40rem]/case:grid-cols-2">
             {asset.entity ? (
-              <div className="group/ask flex items-center justify-between gap-3 py-2.5 first:pt-0 last:pb-0">
-                <dt className="text-xs font-medium text-muted-foreground">
-                  {humanizeToken(asset.entity_type || 'Entity')}
-                </dt>
+              <div className="group/ask flex min-w-0 items-baseline justify-between gap-3">
+                <dt className="text-xs text-muted-foreground">{humanizeToken(asset.entity_type || 'Entity')}</dt>
                 <dd className="flex min-w-0 items-center justify-end gap-1.5">
                   {/* UNTRUSTED — plain text, mono. */}
-                  <span className="truncate text-right font-mono text-sm text-foreground">{asset.entity}</span>
+                  <span className="truncate text-right font-mono text-foreground">{asset.entity}</span>
                   <AskAi type={asset.entity_type} value={asset.entity} />
                 </dd>
               </div>
             ) : null}
             {asset.criticality !== undefined ? (
-              <div className="flex items-center justify-between gap-3 py-2.5 first:pt-0 last:pb-0">
-                <dt className="text-xs font-medium text-muted-foreground">
-                  Criticality
-                </dt>
-                <dd className="text-right text-sm text-foreground">
-                  {scalarLabel(asset.criticality)}
-                </dd>
+              <div className="flex items-baseline justify-between gap-3">
+                <dt className="text-xs text-muted-foreground">Criticality</dt>
+                <dd className="text-right font-mono text-foreground">{scalarLabel(asset.criticality)}</dd>
               </div>
             ) : null}
             {asset.is_internal !== undefined ? (
-              <div className="flex items-center justify-between gap-3 py-2.5 first:pt-0 last:pb-0">
-                <dt className="text-xs font-medium text-muted-foreground">
-                  Internal asset
-                </dt>
-                <dd className="text-right text-sm text-foreground">
-                  {asset.is_internal ? 'Yes' : 'No'}
-                </dd>
+              <div className="flex items-baseline justify-between gap-3">
+                <dt className="text-xs text-muted-foreground">Internal asset</dt>
+                <dd className="text-right text-foreground">{asset.is_internal ? 'Yes' : 'No'}</dd>
               </div>
             ) : null}
             {assetNetworks.length ? (
-              <div className="flex items-start justify-between gap-3 py-2.5 first:pt-0 last:pb-0">
-                <dt className="text-xs font-medium text-muted-foreground">
-                  Networks
-                </dt>
-                <dd className="max-w-[70%] text-right font-mono text-sm text-foreground">
+              <div className="flex items-start justify-between gap-3">
+                <dt className="text-xs text-muted-foreground">Networks</dt>
+                <dd className="max-w-[70%] text-right font-mono text-foreground">
                   {assetNetworks.map(String).join(', ')}
                 </dd>
               </div>
             ) : null}
-            {assetAttrs.map(([k, v], i) => (
-              <div
-                key={`${k}-${i}`}
-                className="flex items-center justify-between gap-3 py-2.5 first:pt-0 last:pb-0"
-              >
-                <dt className="text-xs font-medium text-muted-foreground">
-                  {humanizeToken(k)}
-                </dt>
-                {/* UNTRUSTED — plain text. */}
-                <dd className="truncate text-right font-mono text-sm text-foreground">
-                  {scalarLabel(v)}
-                </dd>
+            {assetAttrs.map(([key, value], index) => (
+              <div key={`${key}-${index}`} className="flex min-w-0 items-baseline justify-between gap-3">
+                <dt className="text-xs text-muted-foreground">{humanizeToken(key)}</dt>
+                {/* UNTRUSTED: plain text. */}
+                <dd className="truncate text-right font-mono text-foreground">{scalarLabel(value)}</dd>
               </div>
             ))}
           </dl>
         )}
-      </PanelCard>
+      </section>
 
       {!anySection ? (
-        <p className="text-xs text-muted-foreground">
+        <p className="pt-5 text-xs text-muted-foreground">
           Threat context is enabled but produced no sections for this case.
         </p>
       ) : null}

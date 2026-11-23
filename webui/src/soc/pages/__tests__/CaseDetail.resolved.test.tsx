@@ -11,7 +11,7 @@ import * as React from 'react';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 
-import { actionPlanForStatus } from '../casedetail/shared';
+import { actionPlanForStatus, planCloseAction } from '../casedetail/shared';
 
 const RESOLVED = {
   case_id: 'c-res-1',
@@ -64,14 +64,15 @@ describe('actionPlanForStatus — terminal states mirror the server guard', () =
     const plan = actionPlanForStatus('resolved');
     expect(plan.primary.key).toBe('close_disposition');
     expect(plan.primary.wireAction).toBe('close');
-    expect(plan.close).toBeNull();
+    // The close IS the primary here, so it is not offered again in Take action.
+    expect(planCloseAction(plan)).toBe(plan.primary);
     expect(plan.overflow.map((a) => a.key)).toEqual(['set_disposition', 'reopen']);
   });
 
   it('closed: Reopen is the primary, no close is offered, Set disposition stays', () => {
     const plan = actionPlanForStatus('closed');
     expect(plan.primary.key).toBe('reopen');
-    expect(plan.close).toBeNull();
+    expect(planCloseAction(plan)).toBeNull();
     expect(plan.overflow.map((a) => a.key)).toEqual(['set_disposition']);
   });
 });

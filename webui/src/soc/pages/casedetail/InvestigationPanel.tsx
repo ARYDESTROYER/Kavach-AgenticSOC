@@ -1,19 +1,19 @@
 /**
- * InvestigationPanel — the "Investigation" tab (task 5 split).
+ * InvestigationPanel: the "Investigation" tab.
  *
  * Task 5 split the old merged "Timeline" tab: the "what happened" six-stage narrative
- * now lives alone on the sibling <TimelinePanel> ("Timeline" tab), and THIS panel is the
- * investigation proper — the model's assessment, the pinned deterministic decision, and
- * the full ReAct trace. It follows the DESIGN_DIRECTION "lane separation, never
- * interleaved":
+ * lives in <TimelinePanel> (since Round 15 the Overview's "What happened" section), and
+ * THIS panel is the investigation proper, DECISION FIRST (CM-6):
  *
- *   1. AI ASSESSMENT  — the model's reasoning / knowledge / tools / enrichment
- *                       (<WhyPanel hideDecision hideMitre>), rendered in a persistently
- *                       AI-marked lane so model prose never blends into a fact stream.
- *   2. DECISION       — the pinned <DecisionCard>: the deterministic `decide()` output,
- *                       the single authority (#3), most-prominent and last.
- *   3. FULL TRACE     — the raw ReAct <TraceTimeline>, available as a collapsible
- *                       "Full agent trace" disclosure for the step-by-step span log.
+ *   1. DECISION: what settled the case (the deterministic `decide()` output, or the
+ *      analyst who resolved it), the single authority (#3).
+ *   2. AI ASSESSMENT: the model's summary, confidence and recommendation, with the full
+ *      assessment evidence (<WhyPanel>) and the policy inputs one disclosure away.
+ *   3. INPUTS: the knowledge and procedures the investigator consulted.
+ *   4. TRACE: the ReAct <TraceTimeline>, collapsed with its step and tool counts, an
+ *      actor filter and "Jump to decision".
+ *
+ * Round 15 (D8.7) removed the unused 'default' layout: this is the panel's one layout.
  *
  * SECURITY (#9): this panel only composes read-only sub-panels; each renders its own
  * model/log-derived text as plain text or inside an escaped CodeBlock. Nothing here
@@ -42,53 +42,9 @@ import { SegmentedControl } from '@/soc/components/SegmentedControl';
 import { scoreBand, type ScoreBand } from '@/soc/components/palette';
 import { caseOutcome, isHumanClosed, isHumanSettled } from '@/soc/components/outcome';
 import { riskValue, statusWords } from './caseFacts';
-import { CASE_MANAGER_PANEL_PADDING, type CasePanelPresentation } from './shared';
+import { CASE_MANAGER_PANEL_PADDING } from './shared';
 
-/* --------------------------------------------------------------- zone header -- */
-
-/** A lane header — an icon chip + title + subtitle, optionally flagged "AI". `lead`
- *  bumps the chip + title so the lane reads as a prominent story opener. */
-const ZoneHeader: React.FC<{
-  icon: React.ComponentType<{ className?: string }>;
-  title: string;
-  subtitle: string;
-  ai?: boolean;
-  lead?: boolean;
-}> = ({ icon: Icon, title, subtitle, ai = false, lead = false }) => (
-  <div className="flex items-center gap-2.5">
-    <span
-      className={cn(
-        'flex shrink-0 items-center justify-center rounded-md border',
-        lead ? 'h-9 w-9' : 'h-7 w-7',
-        ai ? 'border-info/40 bg-info/10 text-info' : 'border-border bg-muted text-muted-foreground',
-      )}
-      aria-hidden
-    >
-      <Icon className={cn(lead ? 'h-5 w-5' : 'h-4 w-4')} />
-    </span>
-    <div className="min-w-0">
-      <div className="flex items-center gap-1.5">
-        <h3
-          className={cn(
-            'font-semibold tracking-tight text-foreground',
-            lead ? 'text-lg' : 'text-sm',
-          )}
-        >
-          {title}
-        </h3>
-        {ai ? (
-          <Badge variant="info" className="gap-1">
-            <Bot className="size-3 shrink-0" aria-hidden />
-            AI
-          </Badge>
-        ) : null}
-      </div>
-      <p className={cn('text-muted-foreground', lead ? 'text-sm' : 'text-xs')}>{subtitle}</p>
-    </div>
-  </div>
-);
-
-/* ------------------------------------------------- Case Manager presentation -- */
+/* --------------------------------------------------------- the Investigation tab -- */
 
 type TraceActor = 'all' | 'agent' | 'tool' | 'code';
 
@@ -122,7 +78,7 @@ const DisclosureTrigger: React.FC<{
 const DECISION_RECORD = /^[a-z_]+=\S+(\s+[a-z_]+=\S+)+/i;
 
 /**
- * The Case Manager Investigation tab, DECISION FIRST (CM-6): what settled the case →
+ * The Investigation tab, DECISION FIRST (CM-6): what settled the case →
  * the AI assessment (neutral; red only for a critical RISK band) → its evidence → the
  * policy inputs → the inputs consulted → the trace, collapsed with step/tool counts, an
  * actor filter and "Jump to decision". Every datum of the earlier layout is kept: the
@@ -130,7 +86,7 @@ const DECISION_RECORD = /^[a-z_]+=\S+(\s+[a-z_]+=\S+)+/i;
  * decision summary + status, the full assessment evidence, the policy inputs and the
  * grading history.
  */
-const CaseManagerInvestigation: React.FC<Omit<InvestigationPanelProps, 'presentation'>> = ({
+export const InvestigationPanel: React.FC<InvestigationPanelProps> = ({
   c,
   rationale,
   rationaleLoading,
@@ -493,7 +449,6 @@ export interface InvestigationPanelProps {
   timelineLoading: boolean;
   timelineError: unknown;
   onRetryTimeline: () => void;
-  presentation?: CasePanelPresentation;
 
   /**
    * A request to open the full trace and bring it into view, a new number per request
@@ -557,130 +512,5 @@ function useTraceRequest(
     return () => window.clearTimeout(timer);
   }, [reveal, traceOpen, openTrace, target]);
 }
-
-export const InvestigationPanel: React.FC<InvestigationPanelProps> = ({
-  c,
-  rationale,
-  rationaleLoading,
-  rationaleError,
-  onRetryRationale,
-  timeline,
-  timelineLoading,
-  timelineError,
-  onRetryTimeline,
-  presentation = 'default',
-  traceRequest,
-  onTraceRequestHandled,
-}) => {
-  const [traceOpen, setTraceOpen] = React.useState(false);
-  const traceSectionRef = React.useRef<HTMLDivElement | null>(null);
-
-  // Lazy-load the raw trace the first time the disclosure opens, if the parent hasn't
-  // already fetched it (the DecisionCard reads its policy_clause from the same data).
-  const handleTraceToggle = React.useCallback(
-    (open: boolean) => {
-      setTraceOpen(open);
-      if (open && timeline === null && !timelineLoading && !timelineError) {
-        onRetryTimeline();
-      }
-    },
-    [timeline, timelineLoading, timelineError, onRetryTimeline],
-  );
-  // The case-manager presentation applies its own request (it owns its trace).
-  useTraceRequest(
-    presentation === 'case-manager' ? null : traceRequest,
-    onTraceRequestHandled,
-    traceOpen,
-    setTraceOpen,
-    handleTraceToggle,
-    traceSectionRef,
-  );
-
-  if (presentation === 'case-manager') {
-    return (
-      <CaseManagerInvestigation
-        c={c}
-        rationale={rationale}
-        rationaleLoading={rationaleLoading}
-        rationaleError={rationaleError}
-        onRetryRationale={onRetryRationale}
-        timeline={timeline}
-        timelineLoading={timelineLoading}
-        timelineError={timelineError}
-        onRetryTimeline={onRetryTimeline}
-        traceRequest={traceRequest}
-        onTraceRequestHandled={onTraceRequestHandled}
-      />
-    );
-  }
-
-  return (
-    <div className="space-y-6 p-6">
-      {/* ============================================== 1. AI assessment */}
-      <section aria-label="AI assessment" className="space-y-1">
-        <ZoneHeader
-          icon={Bot}
-          title="AI assessment"
-          subtitle="The model's reasoning, the knowledge it retrieved, and the tools it ran."
-          ai
-          lead
-        />
-        {/* Persistent AI-marked lane: an info tint so model prose never reads as fact.
-            hideDecision → the pinned DecisionCard is the sole decision authority (#3);
-            hideMitre → MITRE is surfaced once in the Threat lane, not repeated here. */}
-        <div className="overflow-hidden rounded-lg border border-info/30 bg-info/5">
-          <WhyPanel
-            c={c}
-            rationale={rationale}
-            loading={rationaleLoading}
-            error={rationaleError}
-            onRetry={onRetryRationale}
-            hideDecision
-            hideMitre
-          />
-        </div>
-        {/* Prior analyst gradings of this AI decision (Round-7 #10). Read-only; renders
-            nothing until a close-with-grade has recorded feedback. `pt-4` (not a margin)
-            survives the section's `space-y-1` sibling-margin reset. */}
-        <GradingHistory feedback={c.feedback} className="pt-4" />
-      </section>
-
-      {/* ============================================== 2. Decision (pinned) */}
-      <section aria-label="Decision" className="space-y-1">
-        <ZoneHeader
-          icon={ShieldCheck}
-          title="Decision"
-          subtitle="The deterministic close / escalate authority, never raw model output."
-        />
-        <DecisionCard c={c} rationale={rationale} timeline={timeline} />
-      </section>
-
-      {/* ============================================== Full trace (disclosure) */}
-      <Collapsible ref={traceSectionRef} open={traceOpen} onOpenChange={handleTraceToggle} className="scroll-mt-4">
-        <CollapsibleTrigger
-          data-trace-focus=""
-          className="inline-flex items-center gap-1.5 rounded text-xs font-medium text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-        >
-          <ListTree className="h-3.5 w-3.5" aria-hidden />
-          {traceOpen ? 'Hide' : 'Show'} full agent trace
-          <ChevronDown
-            className={cn('h-3.5 w-3.5 transition-transform', traceOpen && 'rotate-180')}
-            aria-hidden
-          />
-        </CollapsibleTrigger>
-        <CollapsibleContent>
-          <div className="mt-2 rounded-lg border border-border bg-card">
-            <TraceTimeline
-              data={timeline}
-              loading={timelineLoading}
-              error={timelineError}
-              onRetry={onRetryTimeline}
-            />
-          </div>
-        </CollapsibleContent>
-      </Collapsible>
-    </div>
-  );
-};
 
 export default InvestigationPanel;

@@ -1,13 +1,21 @@
 /**
- * Case Manager — the split queue + case workspace (Round 12 redesign, CM-1 … CM-9).
+ * Case Manager: the split queue and case workspace (Round 12 redesign, CM-1 to CM-9;
+ * Round 15, SPEC D8.1).
  *
- * The queue is SERVER-backed: Active / Mine / All, status, severity, search and sort
- * are answered by `GET /api/cases` over the whole corpus and paged with "Load more"
- * (the old newest-200 client filter silently dropped older open cases). The scope line
- * always states loaded vs total. Rows update live from the `cases` realtime topic, bulk
- * work shows per-row progress from the job stream, and the queue has one tab stop with
- * a roving focus: ↑/↓ or J/K move and open, X or Space toggle selection, Shift extends,
- * Enter focuses the case, / searches, ? lists the shortcuts, Esc clears the selection.
+ * The queue is SERVER-backed: Active / Mine / All, status, severity, search and sort are
+ * answered by `GET /api/cases` over the whole corpus and paged with "Load more" (the old
+ * newest-200 client filter silently dropped older open cases). The scope line in the
+ * list footer always states loaded against total. Rows update live from the `cases`
+ * realtime topic, bulk work shows per-row progress from the job stream, and the queue has
+ * one tab stop with a roving focus: Up/Down or J/K move and open, X or Space toggle
+ * selection, Shift extends, Enter focuses the case, / searches, ? lists the shortcuts,
+ * Esc clears the selection.
+ *
+ * Round 15 (D8.1) calms the queue pane: a two-row control band (the scope and a view menu
+ * for sort, density and the shortcuts; then "Select visible", the search and one Filters
+ * control holding Severity, Status and Closed by, with removable chips), a bulk bar that
+ * appears only with a selection, two-line rows that show the status of an open case or
+ * the outcome of an ended one (never both), and the scope line in the list footer.
  *
  * The embedded `CaseDetail` is NOT remounted per case: it renders the queue row at once
  * and refreshes in the background, so switching cases never blanks the pane.
@@ -18,10 +26,9 @@
  *
  * Round 14 (SPEC §4.9.4, D27, ui-audit CM1): the page has the Overview's header (the
  * title "Case Manager", a help tip, the live state and an icon Refresh) and the split
- * workspace sits on one panel instead of a white bordered box. The queue takes a
- * "Closed by" filter from `#/case_manager?closedBy=` (the retired `#/scans` page lands
- * here with `agent`), shown as a removable chip and sent to `GET /api/cases` as
- * `closed_by`.
+ * workspace sits on one panel. The queue takes a "Closed by" filter from
+ * `#/case_manager?closedBy=` (the retired `#/scans` page lands here with `agent`), shown
+ * as a removable chip and sent to `GET /api/cases` as `closed_by`.
  */
 import * as React from 'react';
 import {
@@ -39,9 +46,6 @@ import {
   Keyboard,
   LoaderCircle,
   RefreshCw,
-  Rows2,
-  Rows3,
-  Search,
   SlidersHorizontal,
   Tag as TagIcon,
   UserCheck,
@@ -69,9 +73,12 @@ import {
 } from '@/ui/dialog';
 import {
   DropdownMenu,
+  DropdownMenuCheckboxItem,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/ui/dropdown-menu';
@@ -86,6 +93,8 @@ import {
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/ui/tooltip';
 import { LoadingBar, LoadingState, StatusDot } from '@/design-system';
 
+import { FilterBar, type FilterChip } from '@/soc/components/FilterBar';
+
 import { EmptyState } from '@/soc/components/EmptyState';
 import { LoadError } from '@/soc/components/LoadError';
 import { PageContainer } from '@/soc/components/PageContainer';
@@ -95,8 +104,9 @@ import { Can, ProtectedRoute } from '@/soc/components/Can';
 import { ConfirmDialog } from '@/soc/components/ConfirmDialog';
 import { OwnerMonogram } from '@/soc/components/OwnerMonogram';
 import { SegmentedControl } from '@/soc/components/SegmentedControl';
+import { OutcomeBadge } from '@/soc/components/badges';
 import { caseOutcome } from '@/soc/components/outcome';
-import { semanticIcon } from '@/soc/components/palette';
+import { scoreBand, semanticIcon } from '@/soc/components/palette';
 import { useAnnouncer } from '@/soc/components/announcer';
 import { AnimatePresence, MotionProvider, SPRING_UI, motion, useReducedMotion } from '@/soc/components/motion';
 import { useAuth } from '@/soc/auth';
@@ -125,6 +135,7 @@ import {
   riskValue,
   statusWords,
 } from './casedetail/caseFacts';
+import { DISPOSITION_OPTIONS } from './casedetail/shared';
 import {
   QUEUE_MAX_PAGE,
   QUEUE_PAGE_SIZE,
@@ -140,19 +151,17 @@ import {
   queueSeverity,
   scopeHeading,
   scopeSummary,
+  QUEUE_SORT_LABEL,
   windowPlacement,
   type QueueQueryInput,
   type QueueScope,
   type QueueSort,
 } from './casedetail/queue';
 import { shortcutBlocked } from './casedetail/keyboard';
-import type { RunbookProgress } from '@/lib/types-runbooks';
-import { useRunbookProgressMap } from '@/soc/runbooks/run/live';
-import { RunbookProgressChip } from '@/soc/runbooks/run/ProgressChip';
-import { progressChipLabel } from '@/soc/runbooks/shared/progress';
 
 const ANY_SEVERITY = '__any_severity__';
 const ANY_STATUS = '__any_status__';
+const ANY_CLOSER = '__any_closer__';
 const SPLIT_STORAGE_KEY = 'soc.caseManager.queueWidth';
 const DENSITY_STORAGE_KEY = 'soc.caseManager.density';
 const SPLIT_MIN_QUEUE_PX = 320;
@@ -169,19 +178,10 @@ type ConfirmableBulkAction = 'acknowledge' | 'reinvestigate';
 type BulkFormAction = 'assign' | 'tag' | 'status' | 'disposition';
 
 const BULK_STATUSES = [
-  { value: 'open', label: 'Open' },
-  { value: 'investigating', label: 'Investigating' },
-  { value: 'on_hold', label: 'On hold' },
-  { value: 'escalated', label: 'Escalated' },
-] as const;
-
-const BULK_DISPOSITIONS = [
-  { value: 'true_positive', label: 'True positive' },
-  { value: 'false_positive', label: 'False positive' },
-  { value: 'benign', label: 'Benign' },
-  { value: 'suspicious', label: 'Suspicious' },
-  { value: 'duplicate', label: 'Duplicate' },
-  { value: 'undetermined', label: 'Undetermined' },
+  { value: 'open', text: 'Open' },
+  { value: 'investigating', text: 'Investigating' },
+  { value: 'on_hold', text: 'On hold' },
+  { value: 'escalated', text: 'Escalated' },
 ] as const;
 
 /**
@@ -303,15 +303,17 @@ interface RowJobState {
 }
 
 /**
- * One queue row. Comfortable (default) is three short lines:
+ * One queue row (Round 15, SPEC D8.1). Comfortable (default) is two lines:
  *
- *   line 1  title (truncates) ··························· relative age
- *   line 2  severity · risk · outcome ············· owner  status + glyph
- *   line 3  case id (middle-ellipsis) · primary fact
+ *   line 1  title (one line, truncates) ················ chat glyph · relative age
+ *   line 2  severity · Risk N · case number · status OR outcome ··········· owner
  *
- * Compact is one line: title · risk · outcome or status · age. For a role that may do bulk
- * work the checkbox is ALWAYS visible (bulk work is discoverable) and is a sibling of the
- * open control, never nested; a role with no bulk action gets no checkbox at all.
+ * An open case shows its status (glyph and words); a case that ended shows its outcome
+ * badge instead, never both. The source fact and the runbook chip left the row (they are
+ * in the case, its header and its facts rail); the fact stays in the row's accessible
+ * name. Compact is one line: title · risk · status or outcome · age. For a role that may
+ * do bulk work the checkbox is ALWAYS visible (bulk work is discoverable) and is a
+ * sibling of the open control, never nested; a role with no bulk action gets no checkbox.
  * The open control is the row's single tab stop (roving tabindex on the list).
  */
 const QueueRow: React.FC<{
@@ -324,8 +326,6 @@ const QueueRow: React.FC<{
   selectable?: boolean;
   selectionDisabled: boolean;
   job: RowJobState | null;
-  /** Round 14: the case's runbook progress (live), or null when no runbook is attached. */
-  runbookProgress?: RunbookProgress | null;
   registerButton: (id: string, el: HTMLButtonElement | null) => void;
   onOpen: () => void;
   onFocusRow: () => void;
@@ -340,25 +340,24 @@ const QueueRow: React.FC<{
   selectable = true,
   selectionDisabled,
   job,
-  runbookProgress = null,
   registerButton,
   onOpen,
   onFocusRow,
   onPrefetch,
   onCheckedChange,
 }) => {
-  // The runbook chip shows only when a runbook is attached; its fact is in the row's name.
-  const runbook = runbookProgress && runbookProgress.total > 0 ? runbookProgress : null;
   const severity = caseSeverity(item);
   const displayId = caseDisplayId(item);
   const title = caseTitle(item);
   const fact = primaryFact(item);
   const risk = riskValue(item.risk_score);
-  const riskBand = risk === null ? null : risk >= 74 ? 'critical' : risk >= 48 ? 'high' : risk >= 22 ? 'medium' : 'low';
+  // The one score ladder (`scoreBand`), so the row's risk tone matches every other risk.
+  const riskBand = risk === null ? null : scoreBand(risk);
   const SeverityGlyph = semanticIcon(severity);
   const StatusGlyph = item.status ? queueStatusIcon(item.status) : null;
   const outcome = caseOutcome(item);
-  const settled = outcome.source !== 'pending';
+  // A case that ended shows its outcome of record in place of its status (D8.1).
+  const showOutcome = outcome.terminal && outcome.source !== 'pending';
   const owner = (item.assignee || '').trim();
   const age = humanizeAge(updatedAt(item));
   const sourceAsserted = item.severity_source === 'source_asserted';
@@ -371,16 +370,37 @@ const QueueRow: React.FC<{
     fact,
     `${humanizeToken(severity)} severity${sourceAsserted ? ' (reported by the source)' : ''}`,
     risk !== null ? `risk ${risk}` : null,
-    statusText,
-    settled ? `outcome ${outcome.shortLabel}` : outcome.shortLabel,
+    showOutcome ? `outcome ${outcome.shortLabel}` : statusText,
     owner ? `assigned to ${owner}` : 'unassigned',
     `updated ${age}`,
-    runbook ? progressChipLabel(runbook) : null,
     job?.failure ? `last bulk action failed: ${job.failure}` : null,
     chat.text || null,
   ]
     .filter(Boolean)
     .join(', ');
+
+  const statusNode = (
+    <span data-testid="case-queue-status" className="inline-flex min-w-0 items-center gap-1 text-foreground/80">
+      {job?.pending ? (
+        <LoaderCircle className="size-3 shrink-0 animate-spin text-primary" aria-hidden />
+      ) : job?.failure ? (
+        <AlertTriangle className="size-3 shrink-0 text-warning-text" aria-hidden />
+      ) : StatusGlyph ? (
+        <StatusGlyph className="size-3 shrink-0 text-muted-foreground" aria-hidden />
+      ) : null}
+      {item.status ? <span className="truncate">{statusText}</span> : <span className="text-muted-foreground">{DASH}</span>}
+    </span>
+  );
+  const outcomeNode = (
+    <span
+      data-testid="case-queue-outcome"
+      data-outcome-source={outcome.source}
+      className="inline-flex min-w-0 items-center gap-1"
+    >
+      {job?.pending ? <LoaderCircle className="size-3 shrink-0 animate-spin text-primary" aria-hidden /> : null}
+      <OutcomeBadge outcome={outcome} compact className="max-w-[10rem]" />
+    </span>
+  );
 
   return (
     <div
@@ -432,7 +452,7 @@ const QueueRow: React.FC<{
           aria-label={`Select ${displayId}`}
           className={cn(
             'absolute left-3 z-10 bg-background',
-            density === 'compact' ? 'top-[0.5625rem]' : 'top-[0.6875rem]',
+            density === 'compact' ? 'top-[0.5625rem]' : 'top-[0.875rem]',
             "before:absolute before:-inset-1 before:content-['']",
           )}
         />
@@ -451,7 +471,7 @@ const QueueRow: React.FC<{
         className={cn(
           'block w-full pr-3 text-left',
           selectable ? 'pl-10' : 'pl-4',
-          density === 'compact' ? 'py-1.5' : 'py-2.5',
+          density === 'compact' ? 'py-1.5' : 'py-3',
           'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
         )}
       >
@@ -461,19 +481,10 @@ const QueueRow: React.FC<{
               {title}
             </span>
             {risk !== null ? (
-              <span className={cn('shrink-0 tabular-nums', riskBand ? RISK_WORD[riskBand] : '')}>
-                Risk {risk}
-              </span>
+              <span className={cn('shrink-0 tabular-nums', riskBand ? RISK_WORD[riskBand] : '')}>Risk {risk}</span>
             ) : null}
-            <span
-              data-testid="case-queue-status"
-              className="inline-flex shrink-0 items-center gap-1 text-foreground/80"
-            >
-              {StatusGlyph ? <StatusGlyph className="size-3 shrink-0 text-muted-foreground" aria-hidden /> : null}
-              <span className="max-w-[9rem] truncate">{settled && outcome.terminal ? outcome.shortLabel : statusText}</span>
-            </span>
+            {showOutcome ? outcomeNode : statusNode}
             <ActivityGlyph status={chat.status} />
-            {runbook ? <RunbookProgressChip progress={runbook} decorative /> : null}
             <span className="shrink-0 tabular-nums text-muted-foreground">{age}</span>
           </span>
         ) : (
@@ -486,74 +497,35 @@ const QueueRow: React.FC<{
               <span className="shrink-0 text-xs tabular-nums text-muted-foreground">{age}</span>
             </span>
 
-            <span className="mt-1 flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
-              <span className="flex min-w-0 flex-1 items-center gap-1.5">
-                <span
-                  data-testid="case-queue-severity"
-                  className={cn('inline-flex shrink-0 items-center gap-1', SEVERITY_WORD[severity])}
-                  title={sourceAsserted ? 'Severity reported by the source' : 'Severity derived from the risk score'}
-                >
-                  {SeverityGlyph ? <SeverityGlyph className="size-3 shrink-0" aria-hidden /> : null}
-                  {humanizeToken(severity)}
-                </span>
-                {risk !== null ? (
-                  <>
-                    <MetaDot />
-                    <span className={cn('shrink-0 tabular-nums', riskBand ? RISK_WORD[riskBand] : '')}>
-                      Risk {risk}
-                    </span>
-                  </>
-                ) : null}
-                <MetaDot />
-                <span
-                  data-testid="case-queue-outcome"
-                  data-outcome-source={outcome.source}
-                  className={cn(
-                    'min-w-0 truncate',
-                    settled ? 'font-medium text-foreground' : 'text-muted-foreground',
-                  )}
-                >
-                  {outcome.shortLabel}
-                </span>
-              </span>
-              <OwnerMonogram name={owner} />
+            <span className="mt-1.5 flex min-w-0 items-center gap-1 text-xs text-muted-foreground">
               <span
-                data-testid="case-queue-status"
-                className="inline-flex shrink-0 items-center gap-1 text-foreground/80"
+                data-testid="case-queue-severity"
+                className={cn('inline-flex shrink-0 items-center gap-1', SEVERITY_WORD[severity])}
+                title={sourceAsserted ? 'Severity reported by the source' : 'Severity derived from the risk score'}
               >
-                {job?.pending ? (
-                  <LoaderCircle className="size-3 shrink-0 animate-spin text-primary" aria-hidden />
-                ) : job?.failure ? (
-                  <AlertTriangle className="size-3 shrink-0 text-warning-text" aria-hidden />
-                ) : StatusGlyph ? (
-                  <StatusGlyph className="size-3 shrink-0 text-muted-foreground" aria-hidden />
-                ) : null}
-                {item.status ? <span>{statusText}</span> : <span className="text-muted-foreground">{DASH}</span>}
+                {SeverityGlyph ? <SeverityGlyph className="size-3 shrink-0" aria-hidden /> : null}
+                {humanizeToken(severity)}
               </span>
-            </span>
-
-            <span className="mt-0.5 flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
+              {risk !== null ? (
+                <>
+                  <MetaDot />
+                  <span className={cn('shrink-0 tabular-nums', riskBand ? RISK_WORD[riskBand] : '')}>Risk {risk}</span>
+                </>
+              ) : null}
+              <MetaDot />
               {/* The case number names the row, so it never gives way: middleEllipsis
-                  bounds it at 14 characters, and the source fact beside it absorbs the
-                  runbook chip's width alone. */}
+                  bounds it at 14 characters, and the status beside it truncates first. */}
               <span data-testid="case-queue-id" className="shrink-0 whitespace-nowrap font-mono" title={displayId}>
                 {middleEllipsis(displayId)}
               </span>
-              {fact ? (
-                /* The fact shrinks first and hides in a queue narrower than 360px; it
-                   stays in the row's accessible name, the hover card and the header. */
-                <span
-                  data-testid="case-queue-fact"
-                  className="hidden min-w-0 shrink-[3] items-center gap-1.5 @[22.5rem]/queue:flex"
-                >
-                  <MetaDot />
-                  <span className="min-w-0 truncate">{fact}</span>
-                </span>
-              ) : null}
-              {runbook ? <RunbookProgressChip progress={runbook} decorative className="ml-auto" /> : null}
+              <MetaDot />
+              {showOutcome ? outcomeNode : statusNode}
+              <span className="ml-auto flex shrink-0 items-center pl-1">
+                <OwnerMonogram name={owner} decorative />
+              </span>
             </span>
             {job?.failure ? (
-              <span className="mt-0.5 block truncate text-xs text-warning-text">{job.failure}</span>
+              <span className="mt-1 block truncate text-xs text-warning-text">{job.failure}</span>
             ) : null}
           </>
         )}
@@ -619,7 +591,7 @@ export function caseManagerShortcuts(
       : assign
         ? { keys: 'M', action: 'Change the owner' }
         : write && { keys: 'T', action: 'Edit tags' },
-    { keys: 'Alt + 1 … 7', action: 'Switch case tabs' },
+    { keys: 'Alt + 1 to 5', action: 'Switch case tabs' },
   ];
   return rows.filter((row): row is { keys: string; action: string } => Boolean(row));
 }
@@ -699,6 +671,8 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
   // `#/case_manager?caseId=…&tab=investigation` (the audit log's "Open case trace") opens
   // the case on that tab; the router and CaseDetail both accept only its real tab ids.
   const routeTab = route.page === 'case_manager' ? (route.opts?.tab ?? null) : null;
+  // A rewritten link to a retired tab asks for the section that tab became (D8.3).
+  const routeSection = route.page === 'case_manager' ? (route.opts?.section ?? null) : null;
 
   // ---- queue query --------------------------------------------------------- //
   const [closedBy, setClosedBy] = React.useState<QueueCloser | null>(routeClosedBy);
@@ -770,7 +744,13 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
   /** Where the roving stop landed when the open case left the view (see `onListKeyDown`). */
   const gapStopRef = React.useRef<{ id: string; side: 'after' | 'before' } | null>(null);
   const buttonsRef = React.useRef(new Map<string, HTMLButtonElement>());
-  const searchRef = React.useRef<HTMLInputElement | null>(null);
+  // The queue's filter band (its search field is the `/` target).
+  const filterBarRef = React.useRef<HTMLDivElement | null>(null);
+  const searchField = React.useCallback(
+    () => filterBarRef.current?.querySelector<HTMLInputElement>('[data-filter-search] input') ?? null,
+    [],
+  );
+  const viewMenuRef = React.useRef<HTMLButtonElement | null>(null);
   /** The selected-case workspace; its case title is the focus target when the queue is hidden. */
   const detailRef = React.useRef<HTMLElement | null>(null);
   const [shortcutsOpen, setShortcutsOpen] = React.useState(false);
@@ -968,14 +948,6 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
   );
   const visibleRef = React.useRef(visibleCases);
   visibleRef.current = visibleCases;
-  // Round 14 (SPEC §4.10.11): each visible row's runbook progress chip, read from the
-  // progress endpoint and kept current by `case.runbook` frames.
-  const visibleCaseIds = React.useMemo(() => visibleCases.map((item) => item.case_id), [visibleCases]);
-  // The chips read on cases:read; their live frames need runbooks:read too (the topic's grant).
-  const runbookProgress = useRunbookProgressMap(visibleCaseIds, {
-    enabled: hasPermission('cases', 'read'),
-    live: hasPermission('runbooks', 'read'),
-  });
   const rowsById = React.useMemo(() => new Map(rows.map((row) => [row.case_id, row])), [rows]);
 
   const position = React.useMemo(() => {
@@ -1058,10 +1030,10 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
     // The pane that held focus is gone: land on the case's queue row (or the roving
     // stop, or the search when the queue is empty) instead of <body>.
     requestAnimationFrame(() => {
-      const target = queueRowButton(previous) ?? searchRef.current;
+      const target = queueRowButton(previous) ?? searchField();
       target?.focus();
     });
-  }, [queueRowButton, route]);
+  }, [queueRowButton, route, searchField]);
 
   /** "Close & next": open the case after the current one (or before it, at the end). */
   const advance = React.useCallback(() => {
@@ -1786,7 +1758,7 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
       if (document.querySelector('[role="dialog"][data-state="open"]')) return;
       if (event.key === '/') {
         event.preventDefault();
-        searchRef.current?.focus();
+        searchField()?.focus();
       } else if (event.key === '?') {
         event.preventDefault();
         openShortcuts();
@@ -1794,7 +1766,7 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
     };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
-  }, [openShortcuts]);
+  }, [openShortcuts, searchField]);
 
   const registerButton = React.useCallback((id: string, el: HTMLButtonElement | null) => {
     if (el) buttonsRef.current.set(id, el);
@@ -1810,6 +1782,27 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
     if (open) route.navigate('case_manager', { caseId: open });
     else route.navigate('case_manager');
   }, [route]);
+
+  /**
+   * The "Closed by" filter from the Filters control (Round 15, D8.1). Only a case that
+   * ended has a closer, so choosing one shows All; the key rides in the address like a
+   * link's, so opening or closing a case keeps it.
+   */
+  const applyClosedBy = React.useCallback(
+    (next: QueueCloser | null) => {
+      if (!next) {
+        removeClosedBy();
+        return;
+      }
+      closedByRef.current = next;
+      setClosedBy(next);
+      setScope('all');
+      setFocusId(null);
+      const open = selectedIdRef.current;
+      route.navigate('case_manager', open ? { caseId: open, closedBy: next } : { closedBy: next });
+    },
+    [removeClosedBy, route],
+  );
 
   const clearFilters = React.useCallback(() => {
     setSearchInput('');
@@ -1831,6 +1824,24 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
   const hasFilters = Boolean(
     searchInput.trim() || severity !== ANY_SEVERITY || status !== ANY_STATUS || closedBy,
   );
+  // The active filters as removable chips under the search (D8.1).
+  const filterChips: FilterChip[] = [
+    ...(severity !== ANY_SEVERITY
+      ? [{ id: 'severity', label: `Severity: ${humanizeToken(severity)}`, onRemove: () => setSeverity(ANY_SEVERITY) }]
+      : []),
+    ...(status !== ANY_STATUS
+      ? [
+          {
+            id: 'status',
+            label: `Status: ${QUEUE_STATUS_OPTIONS.find((option) => option.value === status)?.label ?? humanizeToken(status)}`,
+            onRemove: () => setStatus(ANY_STATUS),
+          },
+        ]
+      : []),
+    // D27: the "Closed by" filter a link opened the queue with (`#/scans` lands here as
+    // "Closed by the AI agent"), removable like any chip.
+    ...(closedBy ? [{ id: 'closedBy', label: CLOSED_BY_LABEL[closedBy], onRemove: removeClosedBy }] : []),
+  ];
   const statusOptions = QUEUE_STATUS_OPTIONS.filter((option) => scope === 'all' || !option.terminal);
   React.useEffect(() => {
     if (status !== ANY_STATUS && !statusOptions.some((option) => option.value === status)) setStatus(ANY_STATUS);
@@ -1970,80 +1981,102 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
                   selectedCaseId ? 'hidden xl:flex' : 'flex',
                 )}
               >
-                <header className="shrink-0 space-y-2 border-b border-border px-3 pb-3 pt-3">
-                  <div className="flex items-start gap-2">
-                    <div className="min-w-0 flex-1">
-                      <h2 className="truncate text-base font-semibold text-foreground">
-                        {scopeHeading(scope)}
-                      </h2>
-                      {/* Not a live region: the app's one announcer already speaks the
-                          position when a case opens (focus reads the row itself). */}
-                      <p className="text-xs tabular-nums text-muted-foreground" data-testid="case-queue-scope">
-                        {summary}
-                      </p>
-                    </div>
-                    <Tooltip>
-                      <TooltipTrigger asChild>
+                {/* The control band (D8.1): the scope and the view menu, then "Select
+                    visible", the search and the Filters control with its chips. */}
+                <div className="shrink-0 space-y-2.5 border-b border-border px-3 pb-3 pt-3" data-testid="case-queue-controls">
+                  {/* The scope names the list for assistive technology; the segmented
+                      control shows it. */}
+                  <h2 className="sr-only">{scopeHeading(scope)}</h2>
+                  <div className="flex items-center gap-2">
+                    <SegmentedControl<QueueScope>
+                      aria-label="Case queue scope"
+                      size="sm"
+                      value={scope}
+                      onValueChange={(next) => {
+                        setScope(next);
+                        setFocusId(null);
+                        // Only a closed case has a closer: Active and Mine would always be empty.
+                        if (next !== 'all') removeClosedBy();
+                      }}
+                      options={[
+                        { value: 'active', label: 'Active' },
+                        ...(currentUser ? [{ value: 'mine' as const, label: 'Mine' }] : []),
+                        { value: 'all', label: 'All' },
+                      ]}
+                    />
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
                         <Button
+                          ref={viewMenuRef}
                           variant="ghost"
-                          size="icon"
-                          className="h-8 w-8 shrink-0"
-                          onClick={() => changeDensity(density === 'compact' ? 'comfortable' : 'compact')}
-                          aria-label="Compact rows"
-                          aria-pressed={density === 'compact'}
+                          size="sm"
+                          className="ml-auto h-8 gap-1.5 px-2 text-xs font-medium text-muted-foreground hover:text-foreground"
+                          aria-label={`${QUEUE_SORT_LABEL[sort]}, sort and view options`}
                         >
-                          {density === 'compact' ? <Rows2 className="h-4 w-4" /> : <Rows3 className="h-4 w-4" />}
+                          <ArrowDownUp className="size-3.5" aria-hidden />
+                          {QUEUE_SORT_LABEL[sort]}
+                          <ChevronDown className="size-3.5" aria-hidden />
                         </Button>
-                      </TooltipTrigger>
-                      <TooltipContent side="bottom">
-                        {density === 'compact' ? 'Compact rows: on' : 'Compact rows: off'}
-                      </TooltipContent>
-                    </Tooltip>
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="h-8 w-8 shrink-0"
-                          onClick={openShortcuts}
-                          aria-label="Keyboard shortcuts"
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end" sideOffset={6} className="w-56">
+                        <DropdownMenuLabel>Sort by</DropdownMenuLabel>
+                        <DropdownMenuRadioGroup value={sort} onValueChange={(value) => setSort(value as QueueSort)}>
+                          {(Object.keys(QUEUE_SORT_LABEL) as QueueSort[]).map((value) => (
+                            <DropdownMenuRadioItem key={value} value={value}>
+                              {QUEUE_SORT_LABEL[value]}
+                            </DropdownMenuRadioItem>
+                          ))}
+                        </DropdownMenuRadioGroup>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuCheckboxItem
+                          checked={density === 'compact'}
+                          onCheckedChange={(next) => changeDensity(next === true ? 'compact' : 'comfortable')}
+                        >
+                          Compact rows
+                        </DropdownMenuCheckboxItem>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem
                           aria-keyshortcuts="?"
+                          onSelect={() => {
+                            // The dialog returns focus to the menu's trigger, not the item.
+                            shortcutsOpenerRef.current = viewMenuRef.current;
+                            setShortcutsOpen(true);
+                          }}
                         >
-                          <Keyboard className="h-4 w-4" />
-                        </Button>
-                      </TooltipTrigger>
-                      <TooltipContent side="bottom">Keyboard shortcuts (?)</TooltipContent>
-                    </Tooltip>
+                          <Keyboard className="h-4 w-4" aria-hidden />
+                          <span className="flex-1">Keyboard shortcuts</span>
+                          <kbd aria-hidden className="ml-auto font-sans text-xs text-muted-foreground">
+                            ?
+                          </kbd>
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
                   </div>
 
-                  <SegmentedControl<QueueScope>
-                    aria-label="Case queue scope"
-                    size="sm"
-                    fitted
-                    value={scope}
-                    onValueChange={(next) => {
-                      setScope(next);
-                      setFocusId(null);
-                      // Only a closed case has a closer: Active and Mine would always be empty.
-                      if (next !== 'all') removeClosedBy();
-                    }}
-                    options={[
-                      { value: 'active', label: 'Active' },
-                      ...(currentUser ? [{ value: 'mine' as const, label: 'Mine' }] : []),
-                      { value: 'all', label: 'All' },
-                    ]}
-                  />
-
-                  <div className="relative">
-                    <Search
-                      className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground"
-                      aria-hidden
-                    />
-                    <Input
-                      ref={searchRef}
-                      value={searchInput}
-                      onChange={(event) => setSearchInput(event.target.value)}
+                  <div className="flex items-start gap-2.5">
+                    {canBulk ? (
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <span className="flex h-8 shrink-0 items-center pl-0.5">
+                            <Checkbox
+                              id="case-manager-select-visible"
+                              checked={allVisibleSelected ? true : someVisibleSelected ? 'indeterminate' : false}
+                              disabled={bulkBusy || visibleCases.length === 0}
+                              onCheckedChange={(next) => toggleVisibleSelection(next === true)}
+                              aria-label="Select all visible cases"
+                              className="bg-background"
+                            />
+                          </span>
+                        </TooltipTrigger>
+                        <TooltipContent side="bottom">Select visible</TooltipContent>
+                      </Tooltip>
+                    ) : null}
+                    {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions -- keys from the search field inside: Escape clears it, Down moves into the list */}
+                    <div
+                      className="min-w-0 flex-1"
                       onKeyDown={(event) => {
+                        const target = event.target as HTMLElement;
+                        if (!target.closest('[data-filter-search]')) return;
                         if (event.key === 'Escape' && searchInput) {
                           event.preventDefault();
                           setSearchInput('');
@@ -2053,128 +2086,103 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
                           if (first) buttonsRef.current.get(effectiveFocusId ?? first.case_id)?.focus();
                         }
                       }}
-                      placeholder="Search all cases, entities…"
-                      aria-label="Search case queue"
-                      aria-keyshortcuts="/"
-                      className="h-8 pl-8 pr-8 text-xs"
-                    />
-                    <kbd
-                      aria-hidden
-                      className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 rounded-sm border border-border px-1 font-mono text-2xs text-muted-foreground"
                     >
-                      /
-                    </kbd>
-                  </div>
-                  <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_6.75rem] gap-2">
-                    <Select value={severity} onValueChange={setSeverity}>
-                      <SelectTrigger className="h-8 min-w-0 px-2 text-xs" aria-label="Severity filter">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value={ANY_SEVERITY}>Severity</SelectItem>
-                        {QUEUE_SEVERITIES.map((band) => (
-                          <SelectItem key={band} value={band}>
-                            {humanizeToken(band)}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-
-                    <Select value={status} onValueChange={setStatus}>
-                      <SelectTrigger className="h-8 min-w-0 px-2 text-xs" aria-label="Status filter">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value={ANY_STATUS}>Status</SelectItem>
-                        {statusOptions.map((item) => (
-                          <SelectItem key={item.value} value={item.value}>
-                            {item.label}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-
-                    <Select value={sort} onValueChange={(value) => setSort(value as QueueSort)}>
-                      <SelectTrigger className="h-8 min-w-0 px-2 text-xs" aria-label="Sort case queue">
-                        <ArrowDownUp className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden />
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent align="end">
-                        <SelectItem value="updated_desc">Latest</SelectItem>
-                        <SelectItem value="risk_desc">Highest risk</SelectItem>
-                        <SelectItem value="created_desc">Newest</SelectItem>
-                        <SelectItem value="title_asc">Title A–Z</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  {/* D27: the "Closed by" filter a link opened the queue with (`#/scans`
-                      lands here as "Closed by the AI agent"), removable like any chip. */}
-                  {closedBy ? (
-                    <ul className="flex flex-wrap items-center gap-2" aria-label="Active filters">
-                      <li>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            removeClosedBy();
-                            searchRef.current?.focus();
-                          }}
-                          aria-label={`Remove filter: ${CLOSED_BY_LABEL[closedBy]}`}
-                          data-testid="case-queue-closed-by"
-                          className={cn(
-                            'inline-flex h-7 max-w-full items-center gap-1 rounded-sm border border-border bg-muted px-2 text-xs text-foreground transition-colors',
-                            'hover:border-border-strong hover:bg-hover',
-                            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background',
-                          )}
-                        >
-                          <span className="truncate">{CLOSED_BY_LABEL[closedBy]}</span>
-                          <X className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
-                        </button>
-                      </li>
-                    </ul>
-                  ) : null}
-                </header>
-
-                {/* Selection row. With anything selected it becomes the bulk toolbar. */}
-                {/* A role with no bulk action has no selection: the row keeps only the
-                    visible count, and is not a "bulk actions" region. */}
-                <div
-                  role={canBulk ? 'region' : undefined}
-                  aria-label={canBulk ? 'Case selection and bulk actions' : undefined}
-                  aria-busy={canBulk ? bulkBusy || Boolean(trackedJob) : undefined}
-                  className="shrink-0 border-b border-border px-3 py-1.5"
-                  data-testid="case-manager-selection-row"
-                >
-                  <div className="flex min-h-7 flex-wrap items-center gap-x-2 gap-y-1">
-                    {canBulk ? (
-                      <Checkbox
-                        id="case-manager-select-visible"
-                        checked={allVisibleSelected ? true : someVisibleSelected ? 'indeterminate' : false}
-                        disabled={bulkBusy || visibleCases.length === 0}
-                        onCheckedChange={(next) => toggleVisibleSelection(next === true)}
-                        aria-label="Select all visible cases"
-                        className="bg-background"
+                      <FilterBar
+                        ref={filterBarRef}
+                        aria-label="Case queue filters"
+                        primaryCount={0}
+                        search={{
+                          value: searchInput,
+                          onChange: setSearchInput,
+                          label: 'Search case queue',
+                          placeholder: 'Search cases',
+                          compactPlaceholder: 'Search cases',
+                        }}
+                        filters={[
+                          {
+                            id: 'severity',
+                            label: 'Severity',
+                            active: severity !== ANY_SEVERITY,
+                            control: (
+                              <Select value={severity} onValueChange={setSeverity}>
+                                <SelectTrigger className="h-8 w-full text-sm" aria-label="Severity filter">
+                                  <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value={ANY_SEVERITY}>Any severity</SelectItem>
+                                  {QUEUE_SEVERITIES.map((band) => (
+                                    <SelectItem key={band} value={band}>
+                                      {humanizeToken(band)}
+                                    </SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
+                            ),
+                          },
+                          {
+                            id: 'status',
+                            label: 'Status',
+                            active: status !== ANY_STATUS,
+                            control: (
+                              <Select value={status} onValueChange={setStatus}>
+                                <SelectTrigger className="h-8 w-full text-sm" aria-label="Status filter">
+                                  <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value={ANY_STATUS}>Any status</SelectItem>
+                                  {statusOptions.map((item) => (
+                                    <SelectItem key={item.value} value={item.value}>
+                                      {item.label}
+                                    </SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
+                            ),
+                          },
+                          {
+                            id: 'closedBy',
+                            label: 'Closed by',
+                            active: Boolean(closedBy),
+                            control: (
+                              <Select
+                                value={closedBy ?? ANY_CLOSER}
+                                onValueChange={(value) => applyClosedBy(value === ANY_CLOSER ? null : asCloser(value))}
+                              >
+                                <SelectTrigger className="h-8 w-full text-sm" aria-label="Closed by filter">
+                                  <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value={ANY_CLOSER}>Anyone</SelectItem>
+                                  {(Object.keys(CLOSED_BY_LABEL) as QueueCloser[]).map((closer) => (
+                                    <SelectItem key={closer} value={closer}>
+                                      {CLOSED_BY_LABEL[closer]}
+                                    </SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
+                            ),
+                          },
+                        ]}
+                        chips={filterChips}
+                        onClearAll={clearFilters}
                       />
-                    ) : null}
-                    {selectedCount === 0 ? (
-                      <>
-                        {canBulk ? (
-                          <label
-                            htmlFor="case-manager-select-visible"
-                            className={cn(
-                              'ml-1 cursor-pointer text-xs font-medium text-foreground',
-                              (bulkBusy || visibleCases.length === 0) && 'cursor-not-allowed opacity-50',
-                            )}
-                          >
-                            Select visible
-                          </label>
-                        ) : null}
-                        <span className="text-xs tabular-nums text-muted-foreground">
-                          {visibleCases.length} visible
-                        </span>
-                      </>
-                    ) : (
-                      <>
-                        <span className="ml-1 text-xs font-medium tabular-nums text-foreground" aria-live="polite">
+                    </div>
+                  </div>
+                </div>
+
+                {/* The bulk bar (D8.1): only with a selection, a running bulk job or its
+                    result. A role with no bulk action never has one. */}
+                {canBulk && (selectedCount > 0 || trackedJob || bulkOutcome) ? (
+                  <div
+                    role="region"
+                    aria-label="Case selection and bulk actions"
+                    aria-busy={bulkBusy || Boolean(trackedJob)}
+                    className="shrink-0 space-y-1.5 border-b border-border bg-primary/[0.04] px-3 py-2 dark:bg-primary/[0.07]"
+                    data-testid="case-manager-selection-row"
+                  >
+                    {selectedCount > 0 ? (
+                      <div className="flex min-h-7 flex-wrap items-center gap-x-2 gap-y-1">
+                        <span className="text-xs font-medium tabular-nums text-foreground" aria-live="polite">
                           {selectedCount} selected
                         </span>
                         {total > selectedCount && total > visibleCases.length ? (
@@ -2298,37 +2306,50 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
                             <X className="h-3.5 w-3.5" aria-hidden />
                           </Button>
                         </div>
-                      </>
-                    )}
-                  </div>
+                      </div>
+                    ) : null}
 
-                  {selectedCount > 0 && bulkUnavailable ? (
-                    <p role="note" data-testid="case-bulk-demo-note" className="mt-1.5 text-xs leading-5 text-muted-foreground">
-                      Bulk changes run as background jobs, which are off in Demo Mode. Open a case to
-                      change it on its own.
-                    </p>
-                  ) : null}
-                  {trackedJob ? (
-                    <div className="mt-1.5 space-y-1" role="status">
-                      <p className="text-xs text-foreground">
-                        {trackedJob.label}: {trackedJob.done} of {trackedJob.total} done
+                    {selectedCount > 0 && bulkUnavailable ? (
+                      <p role="note" data-testid="case-bulk-demo-note" className="text-xs leading-5 text-muted-foreground">
+                        Bulk changes run as background jobs, which are off in Demo Mode. Open a case to change it on its
+                        own.
                       </p>
-                      <LoadingBar active size="sm" label={`${trackedJob.label} in progress`} />
-                    </div>
-                  ) : bulkOutcome ? (
-                    <p
-                      role={bulkOutcome.kind === 'warning' ? 'alert' : 'status'}
-                      className={cn(
-                        'mt-1.5 border-l-2 pl-2 text-xs leading-5',
-                        bulkOutcome.kind === 'warning'
-                          ? 'border-warning text-warning-text'
-                          : 'border-success text-success-text',
-                      )}
-                    >
-                      {bulkOutcome.message}
-                    </p>
-                  ) : null}
-                </div>
+                    ) : null}
+                    {trackedJob ? (
+                      <div className="space-y-1" role="status">
+                        <p className="text-xs text-foreground">
+                          {trackedJob.label}: {trackedJob.done} of {trackedJob.total} done
+                        </p>
+                        <LoadingBar active size="sm" label={`${trackedJob.label} in progress`} />
+                      </div>
+                    ) : bulkOutcome ? (
+                      <div className="flex items-start gap-2">
+                        <p
+                          role={bulkOutcome.kind === 'warning' ? 'alert' : 'status'}
+                          className={cn(
+                            'min-w-0 flex-1 border-l-2 pl-2 text-xs leading-5',
+                            bulkOutcome.kind === 'warning'
+                              ? 'border-warning text-warning-text'
+                              : 'border-success text-success-text',
+                          )}
+                        >
+                          {bulkOutcome.message}
+                        </p>
+                        {selectedCount === 0 ? (
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-6 w-6 shrink-0"
+                            onClick={() => setBulkOutcome(null)}
+                            aria-label="Dismiss the bulk result"
+                          >
+                            <X className="h-3.5 w-3.5" aria-hidden />
+                          </Button>
+                        ) : null}
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
 
                 {newCount > 0 ? (
                   <div className="shrink-0 border-b border-border px-3 py-1.5">
@@ -2349,16 +2370,13 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
                     <QueueSkeleton />
                   ) : error ? (
                     <div className="p-3">
-                      <LoadError
-                        error={error}
-                        title="Could not load cases"
-                        onRetry={refreshLoaded}
-                      />
+                      <LoadError error={error} title="Could not load cases" onRetry={refreshLoaded} />
                     </div>
                   ) : visibleCases.length === 0 ? (
                     <EmptyState
                       compact
                       icon={Inbox}
+                      state={hasFilters ? 'no-results' : 'no-data'}
                       title={hasFilters ? 'No matching cases' : 'No cases in this queue'}
                       description={
                         hasFilters
@@ -2382,12 +2400,7 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
                       <LoadingBar active={loading} size="sm" label="Refreshing the queue" className="rounded-none" />
                       {/* One tab stop: the focused row's open control (roving tabindex). */}
                       {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- arrow-key handling for the roving list; each row's open control is a real button */}
-                      <div
-                        className="divide-y divide-border/70 border-b border-border/70"
-                        role="list"
-                        aria-label="Cases"
-                        onKeyDown={onListKeyDown}
-                      >
+                      <div className="divide-y divide-border/70" role="list" aria-label="Cases" onKeyDown={onListKeyDown}>
                         <AnimatePresence initial={false}>
                           {visibleCases.map((item) => (
                             <motion.div
@@ -2406,7 +2419,6 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
                                 selectable={canBulk}
                                 selectionDisabled={bulkBusy}
                                 job={rowJob(item.case_id)}
-                                runbookProgress={runbookProgress[item.case_id] ?? null}
                                 registerButton={registerButton}
                                 onOpen={() => selectCase(item.case_id)}
                                 onFocusRow={() => setFocusId(item.case_id)}
@@ -2417,27 +2429,35 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
                           ))}
                         </AnimatePresence>
                       </div>
-                      {canLoadMore ? (
-                        <div className="p-3">
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            className="w-full"
-                            disabled={loadingMore}
-                            onClick={() => void fetchPage(rows.length, 'append')}
-                          >
-                            {loadingMore ? <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden /> : null}
-                            Load more · {rows.length.toLocaleString()} of {total.toLocaleString()} loaded
-                          </Button>
-                        </div>
-                      ) : (
-                        <p className="px-3 py-3 text-center text-xs text-muted-foreground">
-                          All {total.toLocaleString()} loaded
-                        </p>
-                      )}
                     </>
                   )}
                 </div>
+
+                {/* The list footer (D8.1): the scope line, loaded against total, beside Load
+                    more. Not a live region: the app's one announcer already speaks the
+                    position when a case opens (focus reads the row itself). */}
+                {!error && !(loading && rows.length === 0) ? (
+                  <div className="flex min-h-11 shrink-0 items-center gap-2 border-t border-border px-3 py-1.5">
+                    <p
+                      className="min-w-0 flex-1 truncate text-xs tabular-nums text-muted-foreground"
+                      data-testid="case-queue-scope"
+                    >
+                      {summary}
+                    </p>
+                    {canLoadMore ? (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 shrink-0 px-2 text-xs"
+                        disabled={loadingMore}
+                        onClick={() => void fetchPage(rows.length, 'append')}
+                      >
+                        {loadingMore ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" aria-hidden /> : null}
+                        Load more
+                      </Button>
+                    ) : null}
+                  </div>
+                ) : null}
               </aside>
 
               {/* ARIA's focusable separator pattern is a value widget (aria-valuenow +
@@ -2521,6 +2541,7 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
                         onAdvance={advance}
                         resolveDialogFocus={resolveDialogFocus}
                         requestedTab={routeTab}
+                        requestedSection={routeSection}
                       />
                     </div>
                   </>
@@ -2570,9 +2591,10 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
                     <SelectValue placeholder={bulkFormAction === 'disposition' ? 'Select an outcome…' : undefined} />
                   </SelectTrigger>
                   <SelectContent>
-                    {(bulkFormAction === 'status' ? BULK_STATUSES : BULK_DISPOSITIONS).map((option) => (
+                    {/* The disposition choices are the one schema-pinned list (D8.7). */}
+                    {(bulkFormAction === 'status' ? BULK_STATUSES : DISPOSITION_OPTIONS).map((option) => (
                       <SelectItem key={option.value} value={option.value}>
-                        {option.label}
+                        {option.text}
                       </SelectItem>
                     ))}
                   </SelectContent>

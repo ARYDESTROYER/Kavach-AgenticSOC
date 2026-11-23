@@ -6,8 +6,9 @@
  * "Close" X in its header icon row, so two identical panel-dismiss controls
  * stacked in the top-right.
  *
- * The labeled "Close case" lifecycle action in the footer is a SEPARATE, correct
- * control (it changes case state — it does not dismiss the panel).
+ * The labeled "Close case" lifecycle action (the header's primary action on an open case
+ * since Round 15, D8.2) is a SEPARATE, correct control: it changes case state, it does
+ * not dismiss the panel.
  *
  * This test renders CaseDetail with a mocked open case (and stubs for the other
  * load-time api calls) and asserts there is EXACTLY ONE panel-dismiss control
@@ -50,8 +51,10 @@ vi.mock('@/lib/api', () => {
   return {
     setUnauthorizedHandler: vi.fn(),
     api: {
-      // load-time calls fired when the sheet opens
+      // load-time calls fired when the sheet opens (the Overview reads its "What
+      // happened" stages through the generic `get`, Round 15 D8.3)
       getCase: ok(openCase),
+      get: ok({ case_id: 'case-001', stages: [], total: 0 }),
       getModels: ok({ providers: {} }),
       getSettings: ok({ prefs: {}, configured: {}, read_only: false }),
       // namespaced calls referenced by the module (only fired on tab change)
@@ -97,7 +100,7 @@ describe('CaseDetail — single panel-dismiss control (BUG-3)', () => {
     const dismiss = screen.getAllByRole('button', { name: /^close$/i });
     expect(dismiss).toHaveLength(1);
 
-    // The labeled lifecycle "Close case" footer action is separate and present.
+    // The labeled lifecycle "Close case" (the primary action on an open case) is separate.
     expect(screen.getByRole('button', { name: /^close case/i })).toBeInTheDocument();
   });
 
@@ -118,27 +121,22 @@ describe('CaseDetail — single panel-dismiss control (BUG-3)', () => {
 
     expect(screen.getByRole('region', { name: 'Case detail' })).toBeInTheDocument();
     expect(screen.queryByRole('dialog', { name: 'Case detail' })).not.toBeInTheDocument();
-    // Round 14: the Runbook tab is second (SPEC §4.10.11).
-    expect(screen.getAllByRole('tab')).toHaveLength(7);
-    for (const label of [
-      'Overview',
-      'Runbook',
-      'Timeline',
-      'Investigation',
-      'Threat context',
-      'Collaboration',
-      'Chat',
-    ]) {
+    // Round 15 (D8.3): five tabs, Runbook still second (Round 14 SPEC §4.10.11).
+    expect(screen.getAllByRole('tab')).toHaveLength(5);
+    for (const label of ['Overview', 'Runbook', 'Investigation', 'Collaboration', 'Chat']) {
       expect(screen.getByRole('tab', { name: label })).toBeInTheDocument();
     }
-    expect(screen.getByRole('button', { name: 'Share' })).toBeInTheDocument();
+    for (const gone of ['Timeline', 'Threat context']) {
+      expect(screen.queryByRole('tab', { name: gone })).not.toBeInTheDocument();
+    }
+    expect(screen.getByRole('button', { name: 'More options' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Take action' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Back to case queue' })).toBeInTheDocument();
     expect(screen.getByText('High severity')).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /More actions/i })).not.toBeInTheDocument();
-    // Round 12 (CM-3): one primary action, one "Close case" secondary, then Take action.
+    expect(screen.queryByRole('button', { name: 'Share' })).not.toBeInTheDocument();
+    // Round 15 (D8.2): ONE primary action (Close case on an open case), then Take action.
     expect(screen.getAllByRole('button', { name: /^Close case/i })).toHaveLength(1);
-    expect(screen.getByTestId('case-primary-action')).toBeInTheDocument();
+    expect(screen.getByTestId('case-primary-action')).toHaveTextContent('Close case');
     expect(onCaseChange).toHaveBeenCalledWith(expect.objectContaining({ case_id: 'case-001' }));
   });
 
@@ -163,7 +161,6 @@ describe('CaseDetail — single panel-dismiss control (BUG-3)', () => {
       'Start runbook',
       'Refresh case',
       'Ask about this case',
-      'Open in new tab',
       'Export JSON',
       'Export Markdown report',
       'Notify',
@@ -171,6 +168,8 @@ describe('CaseDetail — single panel-dismiss control (BUG-3)', () => {
       expect(within(menu).getByRole('menuitem', { name: label })).toBeInTheDocument();
     }
     expect(within(menu).queryByRole('menuitem', { name: /playbook/i })).not.toBeInTheDocument();
+    // The link items live in More options (D8.2), not in Take action.
+    expect(within(menu).queryByRole('menuitem', { name: 'Open in new tab' })).not.toBeInTheDocument();
     expect(within(menu).queryByRole('menuitem', { name: 'Timeline' })).not.toBeInTheDocument();
     expect(within(menu).queryByRole('menuitem', { name: 'Investigation' })).not.toBeInTheDocument();
 
@@ -187,10 +186,12 @@ describe('CaseDetail — single panel-dismiss control (BUG-3)', () => {
 
     // The human title is the heading, in the foreground (no longer a muted subtitle).
     const title = await screen.findByRole('heading', { level: 2, name: 'Suspicious login burst' });
-    // Round 12 (casemanager.md §4.1): one line at text-lg in a narrow pane (the full title
-    // stays in its hover title and accessible name), up to two lines at text-xl from 56rem.
+    // Round 15 (D8.2): one line at every width (the full title stays in its hover title and
+    // accessible name), text-lg, text-xl from a 56rem pane; never tracked tighter.
     expect(title).toHaveClass('text-lg', 'truncate', 'font-semibold', 'text-foreground');
-    expect(title).toHaveClass('@[56rem]/case:text-xl', '@[56rem]/case:line-clamp-2');
+    expect(title).toHaveClass('@[56rem]/case:text-xl');
+    expect(title).not.toHaveClass('@[56rem]/case:line-clamp-2');
+    expect(title).not.toHaveClass('tracking-tight');
     expect(title).toHaveAttribute('title', 'Suspicious login burst');
     expect(title).not.toHaveClass('text-muted-foreground');
 
@@ -214,13 +215,17 @@ describe('CaseDetail — single panel-dismiss control (BUG-3)', () => {
     expect(await within(meta).findByRole('button', { name: 'Case ID copied' })).toBeInTheDocument();
   });
 
-  it('shares the canonical Case Manager deep link from the separate top-right control', async () => {
+  it('copies the canonical Case Manager deep link from More options', async () => {
+    const user = userEvent.setup();
     renderWithProviders(
       <CaseDetail caseId="case-001" presentation="embedded" onClose={vi.fn()} />,
     );
 
     await screen.findByText('Suspicious login burst');
-    fireEvent.click(screen.getByRole('button', { name: 'Share' }));
+    await user.click(screen.getByRole('button', { name: 'More options' }));
+    const menu = await screen.findByRole('menu');
+    expect(within(menu).getByRole('menuitem', { name: 'Open in new tab' })).toBeInTheDocument();
+    await user.click(within(menu).getByRole('menuitem', { name: 'Copy link' }));
 
     await waitFor(() => {
       expect(clipboardMocks.copyText).toHaveBeenCalledWith(

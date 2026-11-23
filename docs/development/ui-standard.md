@@ -563,22 +563,32 @@ responsive 16–24px content rail. Do not stack page, pane, and panel padding in
 separate 32px gutters; the resizable detail pane must spend its width on evidence.
 
 Queue rows are a divided list, not boxed cards. A row has two lines: the title and its
-relative age, then the severity word, risk score, display id, a secondary fact only
-when it adds to the title, and the status as sentence-case text with its glyph. The
-word carries severity; a left rail only reinforces it (solid for critical and high,
-dashed for medium, none below). Hover, keyboard focus, selected (checked box and a
+relative age, then the severity word, risk score, display id, and the status as
+sentence-case text with its glyph (a queue that has an outcome of record shows that
+instead, see below). A secondary fact that adds to the title stays in the row's
+accessible name. The word carries severity; a left rail only reinforces it (solid for
+critical and high, dashed for medium, none below). Hover, keyboard focus, selected (checked box and a
 light tint) and open (a stronger tint, a primary edge rail and `aria-current`) never
 look alike. Labels and titles are sentence case, never tracked capitals. Panels inside a
 resizable pane lay out against the pane width with container queries, not the viewport.
 
-The Case Manager queue (Round 12) keeps that grammar and adds to it. Its scope (Active,
-Mine, All), filters, search and sort are answered by the server over every case, paged
-with Load more, and the scope line always states loaded against total; a client-side
-filter of a recent window is never the queue. The comfortable row may carry a third
-line (the middle-ellipsised id and the secondary fact, which shrinks first and hides in
-a narrow queue but stays in the row's accessible name); a compact density is one line.
-The second line names the case outcome (§ Case outcome) beside severity and risk. The
-list is one tab stop with a roving focus (↑/↓ or J/K move and open, X or Space select,
+The Case Manager queue (Round 12, calmed in Round 15) keeps that grammar and adds to it.
+Its scope (Active, Mine, Review with its pending count, All), filters, search and sort
+are answered by the server over every case, paged with Load more, and the scope line in
+the list footer, beside Load more, always states loaded against total ("1 of 68 active ·
+50 loaded"); a client-side filter of a recent window is never the queue. Above the list
+is one control band of two rows: the scope `SegmentedControl` and a view menu (sort,
+compact density and the keyboard shortcuts, outside the filter count); then, for a role
+that may do bulk work, the "Select visible" checkbox, and a `FilterBar` with the search
+and `primaryCount={0}`, so Severity, Status and Closed by sit behind its one "Filters
+(n)" control with their removable chips and Clear all. Live and Refresh stay in the page
+header. A bulk bar with the selection count appears only while something is selected (or
+a bulk job runs or reports). Rows are two lines: the title (one line, its full value
+accessible) and the age; then the severity word, "Risk N" (coloured by `scoreBand`), the
+case number, and either the status of an open case or the outcome badge of a case that
+ended, never both, with the owner monogram at the end. The runbook chip and the source
+fact are not on the row. A compact density is one line. The list is one tab stop with a
+roving focus (↑/↓ or J/K move and open, X or Space select,
 Enter moves into the case, / searches, ? lists the shortcuts) and rows update live from
 the `cases` realtime topic. A live change is checked against the whole view (scope,
 status, owner, search, severity): a row that no longer matches leaves the window and the
@@ -614,14 +624,26 @@ stays as a labelled secondary line. One shared helper decides it for the case he
 queue rows, the Cases list, hover cards and grading; a disposition value alone is never
 treated as an analyst's call.
 
-**Case header.** The header stays put above every tab: the title (one line in a narrow
-pane, its full text on hover and in its accessible name), one meta row (id, severity,
-risk with its band, status, outcome, AI verdict, owner, tags, times and SLA, campaign),
-one primary contextual action plus the full Take action menu. Facts about the case live
-once, in a facts rail beside every tab (a non-blocking Details sheet in a narrow pane);
-the tabs hold the evidence narrative. The title shares its row with the actions only
-when the whole title fits beside them; otherwise the actions wrap below it, so the title
-is never squeezed. Lifecycle dialogs keep their actions in a footer that never scrolls
+**Case header.** The header stays put above every tab: the title (one line at every
+width, its full text on hover and in its accessible name), then one primary contextual
+action, the Take action menu (every other verb), a "More options" menu (copy link, open
+in new tab) and, below a 60rem pane, the Details button. Under it, one meta row: the case
+number with its copy control, severity, the status while the case is open or its outcome
+once it ended, the AI verdict chip, the owner (its one editable home), the opened age and,
+while open, the SLA. Tags, the campaign, the risk reading, Ask AI and the Sample mark live
+in the facts rail; T and "Edit tags" open the Details sheet first when the rail is hidden.
+The primary action follows the status: Acknowledge when new; Close case while open,
+investigating or awaiting an analyst (Escalate is in Take action, and C opens the close
+dialog wherever a close is allowed); Resume when on hold; Mark resolved when escalated;
+Close case when resolved; Reopen when closed. Facts about the case live once, in a facts
+rail beside every tab (a non-blocking Details sheet in a narrow pane): eight sections
+divided by hairlines, with no icon headings (Outcome, Signal, Runbook, Times, Tags with
+the campaign, Source with the primary entity, Related cases, Record). The record
+sections are five underline tabs (Overview, Runbook, Investigation, Collaboration, Chat;
+Alt+1 to Alt+5); the retired Timeline and Threat context tab links open the Overview's
+"What happened" and Investigation's "Threat context" sections. The tabs hold the evidence
+narrative. The title shares its row with the actions only when the whole title fits
+beside them; otherwise the actions wrap below it, so the title is never squeezed. Lifecycle dialogs keep their actions in a footer that never scrolls
 away, open with focus on the field the analyst must fill (the disposition), and return
 focus to the control that opened it, or, when that control left with its row, to the
 row that took its place ("Close & next" lands on the next case's row). The confirmation

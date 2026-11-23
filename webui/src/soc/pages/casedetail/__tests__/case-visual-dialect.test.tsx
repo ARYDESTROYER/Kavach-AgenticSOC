@@ -64,28 +64,24 @@ describe('IOC verdict is tri-state', () => {
     expect(iocVerdict(ioc({})).label).toBe('Not checked');
   });
 
-  it('never renders "Clean" in either presentation', () => {
+  it('never renders "Clean"', () => {
     const panel = {
       case_id: 'c1',
       summary: 'One indicator, no provider answered.',
       ioc_reputation: [ioc({ is_malicious: false, score: 0 })],
       mitre_techniques: [],
     } as unknown as ThreatPanelData;
-    for (const presentation of ['default', 'case-manager'] as const) {
-      const { unmount } = render(
-        <ThreatContextPanel
-          c={{ case_id: 'c1', verdict: 'NEEDS_HUMAN' } as Case}
-          panel={panel}
-          loading={false}
-          error={null}
-          onRetry={vi.fn()}
-          presentation={presentation}
-        />,
-      );
-      expect(screen.queryByText('Clean')).toBeNull();
-      expect(screen.getByText('Not checked')).toBeInTheDocument();
-      unmount();
-    }
+    render(
+      <ThreatContextPanel
+        c={{ case_id: 'c1', verdict: 'NEEDS_HUMAN' } as Case}
+        panel={panel}
+        loading={false}
+        error={null}
+        onRetry={vi.fn()}
+      />,
+    );
+    expect(screen.queryByText('Clean')).toBeNull();
+    expect(screen.getByText('Not checked')).toBeInTheDocument();
   });
 });
 
@@ -145,7 +141,7 @@ describe('Timeline colour follows the value', () => {
   });
 
   it('a Risk 7 stage is low (not red) and nothing glows', () => {
-    const { container } = render(<StageTimeline data={data(7)} presentation="case-manager" />);
+    const { container } = render(<StageTimeline data={data(7)} />);
     const marker = container.querySelector('[data-stage-marker="risk"]');
     expect(marker?.className).toContain('bg-low');
     expect(marker?.className).not.toContain('bg-critical');
@@ -156,7 +152,7 @@ describe('Timeline colour follows the value', () => {
   });
 
   it('a Risk 90 stage is critical', () => {
-    const { container } = render(<StageTimeline data={data(90)} presentation="case-manager" />);
+    const { container } = render(<StageTimeline data={data(90)} />);
     expect(container.querySelector('[data-stage-marker="risk"]')?.className).toContain('bg-critical');
   });
 });

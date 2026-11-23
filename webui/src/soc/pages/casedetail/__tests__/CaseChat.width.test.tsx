@@ -95,7 +95,7 @@ afterEach(() => {
 async function renderCaseManagerChat() {
   const view = render(
     <TooltipProvider>
-      <ChatTab c={CASE} onClose={vi.fn()} presentation="case-manager" />
+      <ChatTab c={CASE} />
     </TooltipProvider>,
   );
   await screen.findByRole('group', { name: 'AI analyst status' }, { timeout: 5000 });

@@ -168,7 +168,7 @@ function impliedDisposition(outcome?: string): string | null {
 /** Which actions end the case (and so may advance the queue with "& next"). */
 function isTerminalAction(pending: ActionDef): boolean {
   const verb = pending.wireAction ?? pending.key;
-  return verb === 'close' || verb === 'confirm_fp' || verb === 'resolve';
+  return verb === 'close' || verb === 'resolve';
 }
 
 export const ConfirmActionDialog: React.FC<ConfirmActionDialogProps> = ({
@@ -235,17 +235,16 @@ export const ConfirmActionDialog: React.FC<ConfirmActionDialogProps> = ({
 
   // Which actions carry the note into DURABLE, AGENT-VISIBLE context. The backend
   // indexes the resolved case (note included) on the `close` and `confirm_fp` verbs
-  // only, so the disclosure follows the same wire verb — `close_disposition` maps to
-  // `close` via `wireAction`, and an escalate/hold note is not indexed.
-  const notePersists = pending
-    ? pending.key === 'confirm_fp' || (pending.wireAction ?? pending.key) === 'close'
-    : false;
+  // only, and the Console posts `close` (`close_disposition` maps to it via
+  // `wireAction`), so the disclosure follows that wire verb; an escalate/hold note is not
+  // indexed.
+  const notePersists = pending ? (pending.wireAction ?? pending.key) === 'close' : false;
 
   const hasDisposition = Boolean(pending?.fields.includes('disposition'));
   const hasGrading = Boolean(pending?.fields.includes('grading'));
   const hasOpenSteps = openSteps.length > 0;
   const wide = hasDisposition || hasGrading || hasOpenSteps;
-  const committed = pending?.key === 'confirm_fp' ? 'false_positive' : disposition;
+  const committed = disposition;
   // Marking a duplicate needs no reason (the work lives in the other case).
   const stepsReasonRequired = hasOpenSteps && committed !== 'duplicate';
   const stepsReasonMissing = stepsReasonRequired && !openStepsReason.trim();

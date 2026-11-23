@@ -118,12 +118,12 @@ describe('assigneeSelectValue (#11)', () => {
   });
 });
 
-describe('CollaborationThreadTab — Case Manager presentation', () => {
+describe('CollaborationThreadTab: the two-lane layout', () => {
   beforeEach(() => useEventStreamMock.mockClear());
 
   it('uses the compact two-lane layout without dropping discussion, ownership, the tasks pointer, activity, or live wiring', () => {
     const { container } = render(
-      <CollaborationThreadTab {...PANEL_PROPS} presentation="case-manager" />,
+      <CollaborationThreadTab {...PANEL_PROPS} />,
     );
 
     const panel = container.querySelector(
@@ -178,7 +178,6 @@ describe('CollaborationThreadTab — Case Manager presentation', () => {
         {...PANEL_PROPS}
         thread={[]}
         canComment
-        presentation="case-manager"
       />,
     );
 
@@ -207,7 +206,6 @@ describe('CollaborationThreadTab — Case Manager presentation', () => {
         activityError={new Error('activity endpoint unavailable')}
         onRetryActivity={onRetryActivity}
         onOpenTasks={onOpenTasks}
-        presentation="case-manager"
       />,
     );
 
@@ -229,13 +227,12 @@ describe('CollaborationThreadTab — Case Manager presentation', () => {
         {...PANEL_PROPS}
         onOpenTasks={undefined}
         tasksSection={<p>Standalone task list</p>}
-        presentation="case-manager"
       />,
     );
     expect(screen.getByText('Standalone task list')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Open the Runbook tab' })).toBeNull();
 
-    rerender(<CollaborationThreadTab {...PANEL_PROPS} onOpenTasks={undefined} presentation="case-manager" />);
+    rerender(<CollaborationThreadTab {...PANEL_PROPS} onOpenTasks={undefined} />);
     expect(container.querySelector('[data-collaboration-rail-section="tasks"]')).toBeNull();
     expect(container.querySelectorAll('[data-collaboration-rail-section]')).toHaveLength(2);
   });
@@ -247,7 +244,6 @@ describe('CollaborationThreadTab — Case Manager presentation', () => {
         {...PANEL_PROPS}
         threadError={new Error('discussion endpoint unavailable')}
         onRetryThread={onRetryThread}
-        presentation="case-manager"
       />,
     );
 
@@ -286,7 +282,7 @@ describe('CollaborationThreadTab — Case Manager presentation', () => {
 
   it('has no axe violations with live collaboration content', async () => {
     const { container } = render(
-      <CollaborationThreadTab {...PANEL_PROPS} presentation="case-manager" />,
+      <CollaborationThreadTab {...PANEL_PROPS} />,
     );
     expect(await axe(container)).toHaveNoViolations();
   });

@@ -1,5 +1,5 @@
 /**
- * CaseDetail — shared contracts, tone maps, action model, and small presentational
+ * CaseDetail: shared contracts, tone maps, action model, and small presentational
  * building blocks used by every panel (Coupling-D split).
  *
  * This module is behavior-preserving: it lifts the pieces that were previously
@@ -27,7 +27,6 @@ import {
 
 import type { components } from '@/lib/api-types.gen';
 import type { Case } from '@/lib/types';
-import { DASH, humanizeToken } from '@/lib/format';
 import { cn } from '@/lib/cn';
 
 import { Card } from '@/ui/card';
@@ -72,9 +71,13 @@ export interface NotifyChannelOption {
   enabled: boolean;
 }
 
+/**
+ * The lifecycle verbs the Console offers. Round 15 (D8.7) removed the unused `close` and
+ * `confirm_fp` definitions: the one close flow is `close_disposition`. A stored
+ * `confirm_fp` history entry (an older Console's verb) is still READ as a classification
+ * by the outcome helpers and the facts rail.
+ */
 export type ActionKind =
-  | 'close'
-  | 'confirm_fp'
   | 'escalate'
   | 'deescalate'
   | 'reopen'
@@ -102,10 +105,8 @@ export type ActionField =
   | 'grading';
 
 /** The RBAC grant an action needs: close-class moves need cases:close, the rest
- *  cases:write. The footer gates each button with <Can> using this. */
+ *  cases:write. The header gates the primary action and every Take action item with it. */
 export const ACTION_PERMISSION: Record<ActionKind, { resource: 'cases'; action: 'close' | 'write' }> = {
-  close: { resource: 'cases', action: 'close' },
-  confirm_fp: { resource: 'cases', action: 'close' },
   close_disposition: { resource: 'cases', action: 'close' },
   resolve: { resource: 'cases', action: 'close' },
   reopen: { resource: 'cases', action: 'close' },
@@ -150,13 +151,13 @@ export interface ActionDef {
   key: ActionKind;
   label: string;
   icon: React.ComponentType<{ className?: string }>;
-  /** Button variant for the footer + confirm dialog. */
+  /** Button variant for the confirm dialog. */
   variant: 'default' | 'secondary' | 'outline' | 'destructive';
   /** Whether this is the primary action of the current state (filled). */
   fill?: boolean;
   /** The EXISTING backend action verb to POST. Defaults to `key` when unset; the
    *  UI-only `close_disposition` maps here to `'close'` so we never invent a verb. */
-  wireAction?: ActionKind;
+  wireAction?: 'close';
   confirmTitle: string;
   confirmBody: string;
   help: string;
@@ -164,27 +165,6 @@ export interface ActionDef {
 }
 
 export const ALL_ACTIONS: Record<ActionKind, ActionDef> = {
-  close: {
-    key: 'close',
-    label: 'Close case',
-    icon: Check,
-    variant: 'default',
-    confirmTitle: 'Close this case?',
-    confirmBody: 'Mark this case as CLOSED: triaged and handled.',
-    help: 'Mark this case as CLOSED: triaged and handled.',
-    fields: ['resolution', 'tags'],
-  },
-  confirm_fp: {
-    key: 'confirm_fp',
-    label: 'Confirm false positive',
-    icon: CheckCircle2,
-    variant: 'secondary',
-    confirmTitle: 'Confirm false positive?',
-    confirmBody:
-      'Close the case as a FALSE POSITIVE. The resolved case is fed into the RAG baseline memory so future triage learns from it.',
-    help: 'Close as FALSE_POSITIVE; also feeds the resolved case into RAG baseline memory.',
-    fields: ['resolution', 'tags', 'grading'],
-  },
   // ONE unified close flow: pick the investigative disposition (true/false
   // positive, benign, …) + an optional note, then close. Posts the EXISTING
   // `close` verb with a `disposition` — the backend still runs decide()/apply()
@@ -308,28 +288,35 @@ export const PRIORITY_OPTIONS: Array<{ value: string; text: string }> = [
 ];
 
 /**
- * The lifecycle action plan for a status: ONE clear primary CTA, ONE always-visible
- * "Close with disposition" (except where close is itself the primary), and the rest
- * folded into an overflow menu — instead of a row of equally-weighted buttons.
+ * The lifecycle action plan for a status (Round 15, SPEC D8.2): ONE primary contextual
+ * action in the header and every other verb in the Take action menu, instead of a row of
+ * equally weighted buttons.
  *
- *   - `primary`  — the single filled CTA for the current state (context-dependent:
- *                  Acknowledge when new, Escalate/Resolve when working, Resume when
- *                  held, Close when resolved, Reopen when closed). Never null for a
- *                  loaded case.
- *   - `close`    — the unified Close-with-disposition action, shown as a secondary
- *                  button, UNLESS it is already the primary (resolved cases).
- *   - `overflow` — the remaining contextual actions, in a "More" menu.
+ *   | Status                              | Primary          | Take action                          |
+ *   |-------------------------------------|------------------|--------------------------------------|
+ *   | new                                 | Acknowledge      | Close case, Escalate, Mark resolved, Put on hold |
+ *   | open, investigating, needs_human    | Close case       | Escalate, Acknowledge, Mark resolved, Put on hold |
+ *   | on_hold                             | Resume           | Close case, Mark resolved, Escalate  |
+ *   | escalated                           | Mark resolved    | Close case, De-escalate, Put on hold |
+ *   | resolved                            | Close case       | Set disposition, Reopen              |
+ *   | closed                              | Reopen           | Set disposition                      |
  *
- * Every entry is one of the existing `ALL_ACTIONS` records, so the confirm dialog +
- * `runAction` wire keys are unchanged. The plan mirrors the backend transition guard:
- * a closed case offers no close (only reopen), and a resolved case offers its final
- * close (resolved → closed through `close`, the one forward move out of a terminal
- * status the server allows). Both terminal states keep Set disposition, so an outcome
- * that was never recorded can be recorded without reopening the case.
+ * The secondary "Close case" button is gone; C still opens the close dialog wherever the
+ * plan offers it (it is in Take action). The auto-close review rows of the D8.2 table
+ * (Start review as the primary on a pending review, "Review this auto-close" in place of
+ * Set disposition) are added where the review is mounted (WP7); the lifecycle verbs here
+ * are unchanged by them.
+ *
+ * Every entry is one of the existing `ALL_ACTIONS` records, so the confirm dialog and
+ * `runAction` wire keys are unchanged. The plan mirrors the backend transition guard: a
+ * closed case offers no close (only reopen), and a resolved case offers its final close
+ * (resolved to closed through `close`, the one forward move out of a terminal status the
+ * server allows). Both terminal states keep Set disposition, so an outcome that was never
+ * recorded can be recorded without reopening the case.
  */
 export interface ActionPlan {
   primary: ActionDef;
-  close: ActionDef | null;
+  /** Every other verb the status allows, in Take action order. */
   overflow: ActionDef[];
 }
 
@@ -339,52 +326,39 @@ export function actionPlanForStatus(status?: string): ActionPlan {
 
   // Closed: only reopen (and re-classify) is legal, no close.
   if (s === 'closed') {
-    return {
-      primary: { ...ALL_ACTIONS.reopen, fill: true },
-      close: null,
-      overflow: [ALL_ACTIONS.set_disposition],
-    };
+    return { primary: { ...ALL_ACTIONS.reopen, fill: true }, overflow: [ALL_ACTIONS.set_disposition] };
   }
   if (s === 'resolved') {
-    // Resolved is "worked to completion, pending final close": Close IS the primary
-    // here (the server allows resolved → closed through `close`), so it is not repeated
-    // as a secondary button. Set disposition records or corrects the outcome without
-    // closing, e.g. a case resolved before resolve captured one ("outcome not recorded").
-    return {
-      primary: { ...close, fill: true },
-      close: null,
-      overflow: [ALL_ACTIONS.set_disposition, ALL_ACTIONS.reopen],
-    };
+    // Resolved is "worked to completion, pending final close": the final close is the
+    // primary (the server allows resolved to closed through `close`). Set disposition
+    // records or corrects the outcome without closing, e.g. a case resolved before resolve
+    // captured one ("outcome not recorded").
+    return { primary: { ...close, fill: true }, overflow: [ALL_ACTIONS.set_disposition, ALL_ACTIONS.reopen] };
   }
   if (s === 'on_hold') {
-    return {
-      primary: { ...ALL_ACTIONS.resume, fill: true },
-      close,
-      overflow: [ALL_ACTIONS.resolve, ALL_ACTIONS.escalate],
-    };
+    return { primary: { ...ALL_ACTIONS.resume, fill: true }, overflow: [close, ALL_ACTIONS.resolve, ALL_ACTIONS.escalate] };
   }
   if (s === 'escalated') {
-    return {
-      primary: { ...ALL_ACTIONS.resolve, fill: true },
-      close,
-      overflow: [ALL_ACTIONS.deescalate, ALL_ACTIONS.hold],
-    };
+    return { primary: { ...ALL_ACTIONS.resolve, fill: true }, overflow: [close, ALL_ACTIONS.deescalate, ALL_ACTIONS.hold] };
   }
-  // New — Acknowledge is the natural first move (now sets INVESTIGATING).
+  // New: Acknowledge is the natural first move (it sets INVESTIGATING).
   if (s === 'new' || s === '') {
     return {
       primary: { ...ALL_ACTIONS.acknowledge, fill: true },
-      close,
-      overflow: [ALL_ACTIONS.escalate, ALL_ACTIONS.resolve, ALL_ACTIONS.hold],
+      overflow: [close, ALL_ACTIONS.escalate, ALL_ACTIONS.resolve, ALL_ACTIONS.hold],
     };
   }
-  // Working states (open / investigating / needs_human) — Escalate is the primary
-  // path to a human; the rest fold into the overflow.
+  // Working states (open / investigating / needs_human): closing with a disposition is the
+  // move that ends the work; escalation is one menu item away.
   return {
-    primary: { ...ALL_ACTIONS.escalate, fill: true },
-    close,
-    overflow: [ALL_ACTIONS.acknowledge, ALL_ACTIONS.resolve, ALL_ACTIONS.hold],
+    primary: { ...close, fill: true },
+    overflow: [ALL_ACTIONS.escalate, ALL_ACTIONS.acknowledge, ALL_ACTIONS.resolve, ALL_ACTIONS.hold],
   };
+}
+
+/** The close-with-disposition action this plan offers (primary or in Take action), or null. */
+export function planCloseAction(plan: ActionPlan): ActionDef | null {
+  return [plan.primary, ...plan.overflow].find((action) => action.key === 'close_disposition') ?? null;
 }
 
 /**
@@ -413,9 +387,9 @@ export type FpPolicy = {
 } | null;
 
 /**
- * Additive visual treatment used by the split Case Manager workspace. The default
- * keeps the legacy Cases sheet byte-for-byte familiar; `case-manager` only changes
- * layout/chrome and never the panel's data or mutation contracts.
+ * The agent trace's two layouts (`TraceTimeline`, a shared component). Every case panel
+ * renders the one Case Manager layout since Round 15 (D8.7); only the trace keeps a
+ * second one.
  */
 export type CasePanelPresentation = 'default' | 'case-manager';
 
@@ -435,80 +409,8 @@ export function confidenceCalibration(
   return { threshold: policy.min_confidence, note };
 }
 
-/** Map a severity-ish value to a token text-color class for the headline panels. */
+/** A severity-ish tone for a verdict or an automation entry. */
 export type ScoreTone = 'critical' | 'high' | 'medium' | 'low' | 'info';
-
-export const TONE_TEXT: Record<ScoreTone, string> = {
-  critical: 'text-critical',
-  high: 'text-high',
-  medium: 'text-medium',
-  low: 'text-low',
-  info: 'text-info',
-};
-export const TONE_BORDER: Record<ScoreTone, string> = {
-  critical: 'border-critical/30 bg-critical/5',
-  high: 'border-high/30 bg-high/5',
-  medium: 'border-medium/30 bg-medium/5',
-  low: 'border-low/30 bg-low/5',
-  info: 'border-info/30 bg-info/5',
-};
-
-/** A quiet top-accent bar tone for the calmer headline panels. */
-export const TONE_ACCENT: Record<ScoreTone, string> = {
-  critical: 'bg-critical',
-  high: 'bg-high',
-  medium: 'bg-medium',
-  low: 'bg-low',
-  info: 'bg-info',
-};
-
-/** Headline label for a verdict (Suspicious / Malicious / Benign / …). */
-export function verdictHeadline(verdict?: string): { label: string; tone: ScoreTone } {
-  const t = (verdict || '').trim().toLowerCase();
-  if (!t || t === 'none') return { label: 'Unverdicted', tone: 'info' };
-  if (t === 'true_positive') return { label: 'Malicious', tone: 'critical' };
-  if (t === 'false_positive' || t === 'benign') return { label: 'Benign', tone: 'low' };
-  if (t === 'needs_human') return { label: 'Needs human', tone: 'high' };
-  if (t === 'suspicious') return { label: 'Suspicious', tone: 'high' };
-  return { label: humanizeToken(verdict), tone: 'medium' };
-}
-
-/** Confidence headline (Low / Medium / High) from a 0..1 (or 0..100) score. */
-export function confidenceHeadline(conf?: number): { label: string; tone: ScoreTone } {
-  if (typeof conf !== 'number' || Number.isNaN(conf)) {
-    return { label: DASH, tone: 'info' };
-  }
-  const pct = conf <= 1 ? conf * 100 : conf;
-  if (pct >= 75) return { label: 'High', tone: 'low' };
-  if (pct >= 50) return { label: 'Medium', tone: 'medium' };
-  return { label: 'Low', tone: 'high' };
-}
-
-/* ----------------------------------------------------------- headline panel -- */
-
-export const HeadlinePanel: React.FC<{
-  label: string;
-  value: string;
-  tone: ScoreTone;
-}> = ({ label, value, tone }) => (
-  <div className="relative flex flex-col items-center justify-center overflow-hidden rounded-lg border border-border bg-card px-4 py-3 text-center">
-    <span
-      aria-hidden="true"
-      className={cn('absolute inset-x-0 top-0 h-0.5', TONE_ACCENT[tone])}
-    />
-    <span className="text-xs font-medium text-muted-foreground">
-      {label}
-    </span>
-    <span
-      className={cn(
-        'mt-1.5 text-base font-semibold tracking-tight tabular-nums',
-        TONE_TEXT[tone],
-      )}
-    >
-      {value}
-    </span>
-  </div>
-);
 
 /* ------------------------------------------------------------- meta item --- */
 
@@ -538,7 +440,7 @@ export const SectionHeading: React.FC<{
   <div className="mb-4 flex items-center justify-between gap-3">
     <div className="flex items-center gap-2">
       <Icon className="h-4 w-4 text-muted-foreground" />
-      <h3 className="text-sm font-semibold tracking-tight text-foreground">
+      <h3 className="text-sm font-semibold text-foreground">
         {children}
       </h3>
     </div>
@@ -549,10 +451,9 @@ export const SectionHeading: React.FC<{
 /* --------------------------------------------------------------- PanelCard -- */
 
 /**
- * The ONE surface a CaseDetail panel section renders in — a top-level page Card at
- * the sanctioned 24px (`padding="md"`) rhythm. Replaces the hand-rolled
- * `rounded-lg border border-border bg-card p-6` divs that were repeated ~30× across
- * the panels (DESIGN_STANDARD §3.2 / §5.2 — adopt the Card primitive).
+ * The surface a CaseDetail panel section renders in: a top-level page Card at the
+ * sanctioned 24px (`padding="md"`) rhythm. Round 15 (D8.5) retires it from the case files
+ * as the tab bodies are rebuilt (no Card inside a Panel).
  */
 export const PanelCard: React.FC<React.HTMLAttributes<HTMLDivElement>> = ({
   className,

@@ -87,7 +87,11 @@ export interface CaseClock {
   relative: string;
 }
 
-/** The lifecycle clocks a case carries (detected / opened / acknowledged / first response). */
+/**
+ * The lifecycle clocks a case carries (detected / opened / acknowledged / first response,
+ * then closed or resolved for a case that ended, from the status trail's last move into
+ * its current terminal status).
+ */
 export function caseClocks(c: Case): CaseClock[] {
   const rows: CaseClock[] = [];
   const push = (label: string, at: unknown) => {
@@ -97,6 +101,12 @@ export function caseClocks(c: Case): CaseClock[] {
   push('Opened', c.created_at);
   push('Acknowledged', c.acknowledged_at);
   push('First response', c.first_response_at);
+  const status = String(c.status || '').trim().toLowerCase();
+  if (status === 'closed' || status === 'resolved') {
+    const trail = Array.isArray(c.status_history) ? c.status_history : [];
+    const ended = [...trail].reverse().find((entry) => String(entry?.to_status || '').trim().toLowerCase() === status);
+    push(status === 'closed' ? 'Closed' : 'Resolved', ended?.at);
+  }
   push('Updated', c.updated_at);
   return rows;
 }

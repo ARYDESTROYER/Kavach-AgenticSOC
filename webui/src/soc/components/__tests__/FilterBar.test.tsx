@@ -128,6 +128,20 @@ describe('FilterBar', () => {
     expect(screen.getByRole('button', { name: /More filters/ })).toBeInTheDocument();
   });
 
+  it('names the control "Filters" when every filter sits behind it (primaryCount 0, Round 15 D8.1)', () => {
+    mockViewport(false);
+    render(<FilterBar aria-label="Queue filters" filters={FILTERS} primaryCount={0} />);
+    for (const name of ['status', 'severity', 'assignee']) {
+      expect(screen.queryByRole('button', { name: `Filter by ${name}` })).toBeNull();
+    }
+    expect(screen.queryByRole('button', { name: /More filters/ })).toBeNull();
+    // Two of the filters are active, both behind the one control.
+    fireEvent.click(screen.getByRole('button', { name: 'Filters 2 active' }));
+    const popup = screen.getByRole('dialog', { name: 'Filters' });
+    expect(within(popup).getByRole('group', { name: 'Status' })).toBeInTheDocument();
+    expect(within(popup).getByRole('group', { name: 'Time' })).toBeInTheDocument();
+  });
+
   it('removes a chip and moves focus to the next chip, then the search when none is left', () => {
     mockViewport(false);
     render(<Harness />);

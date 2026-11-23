@@ -16,8 +16,10 @@
  *
  * `section`/`anchor` (Round-5 Sett-C) are also serialized: for the `settings` page they
  * are serialized into the URL hash (`#/settings?s=<section>&a=<anchor>`) so a Cmd-K
- * jump / card-level deep-link survives a full hashchange. They are ignored for every
- * other page.
+ * jump / card-level deep-link survives a full hashchange. On `case_manager` (Round 15,
+ * D8.3) `section` is an in-memory request to scroll the open case to a section
+ * (`what-happened`, `threat-context`), set when a retired tab link is rewritten; it is
+ * never written to the hash. Every other page ignores them.
  */
 export type NavOpts = {
   caseId?: string;
@@ -100,6 +102,11 @@ export type NavOpts = {
   severity_gte?: string;
   /** Case Manager: the queue's "Closed by" filter (`agent`, `analyst`, `analyst_policy`, `system`). */
   closedBy?: string;
+  /**
+   * Case Manager (Round 15, D6.12): the auto-close review queue to open (`pending`,
+   * `completed`, `disagreed`, `expired`); a durable hash key (`#/case_manager?review=pending`).
+   */
+  review?: string;
   /** Runbooks: the runbook the editor opens, or `new`. */
   id?: string;
   /** Audit log: the scope (`people`, `agent` or `all`). */

@@ -43,7 +43,6 @@ import { TooltipProvider } from '@/ui/tooltip';
 import { caseOutcome } from '@/soc/components/outcome';
 import { UnifiedLogsBody } from '../UnifiedLogsSheet';
 import { FactsRail } from '@/soc/pages/casedetail/FactsRail';
-import { CaseHeaderMeta } from '@/soc/pages/casedetail/CaseHeaderMeta';
 import { OverviewPanel } from '@/soc/pages/casedetail/OverviewPanel';
 import { ThreatContextPanel } from '@/soc/pages/casedetail/ThreatContextPanel';
 
@@ -195,14 +194,7 @@ describe('Ask AI in the Case Manager', () => {
     const user = userEvent.setup();
     render(
       <TooltipProvider>
-        <FactsRail
-          c={CASE}
-          outcome={caseOutcome(CASE)}
-          triage={null}
-          users={[]}
-          canAssign={false}
-          onCaseChange={vi.fn()}
-        />
+        <FactsRail c={CASE} outcome={caseOutcome(CASE)} triage={null} canViewCost={false} onCaseChange={vi.fn()} />
       </TooltipProvider>,
     );
     const entity = screen.getByTestId('facts-entity');
@@ -213,27 +205,18 @@ describe('Ask AI in the Case Manager', () => {
     expect(navigate).toHaveBeenLastCalledWith('chat', ref('rule', 'ssh_bruteforce'));
   });
 
-  it('asks about the case from the header id: a new Workspace chat, not the case chat', async () => {
+  it('asks about the case from the facts rail Record: a new Workspace chat, not the case chat', async () => {
+    // Round 15 (D8.2): the case chip moved from the header meta row to the rail's Record.
     const user = userEvent.setup();
     render(
       <TooltipProvider>
-        <CaseHeaderMeta
-          c={CASE}
-          outcome={caseOutcome(CASE)}
-          users={[]}
-          canAssign={false}
-          canTag={false}
-          onCaseChange={vi.fn()}
-          ownerOpen={false}
-          onOwnerOpenChange={vi.fn()}
-          tagsOpen={false}
-          onTagsOpenChange={vi.fn()}
-        />
+        <FactsRail c={CASE} outcome={caseOutcome(CASE)} triage={null} canViewCost={false} onCaseChange={vi.fn()} />
       </TooltipProvider>,
     );
+    const record = screen.getByTestId('facts-record');
     // The id already says "case", so the name does not say it twice.
-    const chip = await screen.findByRole('button', { name: 'Ask AI about CASE-2026-0042' });
-    // The size of the copy button beside it: no label-wide gap in the header row.
+    const chip = await within(record).findByRole('button', { name: 'Ask AI about CASE-2026-0042' });
+    // An icon the size of a row action: no label-wide gap in the row.
     expect(chip.className).toContain('size-6');
     expect(chip).toHaveTextContent(/^$/);
     await user.click(chip);
@@ -242,29 +225,18 @@ describe('Ask AI in the Case Manager', () => {
   });
 
   it.each(['INC#000042', 'SOC/2026/000042', 'CASE 000042'])(
-    'keeps the header chip for a custom case number (%s) and asks about the case id',
+    'keeps the case chip for a custom case number (%s) and asks about the case id',
     async (caseNumber) => {
       const user = userEvent.setup();
       const custom = { ...CASE, case_number: caseNumber } as Case;
       render(
         <TooltipProvider>
-          <CaseHeaderMeta
-            c={custom}
-            outcome={caseOutcome(custom)}
-            users={[]}
-            canAssign={false}
-            canTag={false}
-            onCaseChange={vi.fn()}
-            ownerOpen={false}
-            onOwnerOpenChange={vi.fn()}
-            tagsOpen={false}
-            onTagsOpenChange={vi.fn()}
-          />
+          <FactsRail c={custom} outcome={caseOutcome(custom)} triage={null} canViewCost={false} onCaseChange={vi.fn()} />
         </TooltipProvider>,
       );
       // The number the analyst sees names the chip; the question asks about the id that
       // always has a question (chat finds the case by either).
-      const chip = await screen.findByRole('button', { name: /^Ask AI about (case )?/ });
+      const chip = await within(screen.getByTestId('facts-record')).findByRole('button', { name: /^Ask AI about (case )?/ });
       expect(chip).toHaveAccessibleName(expect.stringContaining(caseNumber));
       await user.click(chip);
       expect(navigate).toHaveBeenLastCalledWith('chat', ref('case', 'case-7f2a'));
@@ -275,7 +247,7 @@ describe('Ask AI in the Case Manager', () => {
     const user = userEvent.setup();
     render(
       <TooltipProvider>
-        <OverviewPanel c={CASE} fpPolicy={null} triage={null} triageLoading={false} />
+        <OverviewPanel c={CASE} fpPolicy={null} triage={null} />
       </TooltipProvider>,
     );
     const chip = await screen.findByRole('button', { name: 'Ask AI about 203.0.113.9' });
@@ -288,54 +260,50 @@ describe('Ask AI in the Case Manager', () => {
     expect(navigate).toHaveBeenLastCalledWith('chat', ref('ip', '203.0.113.9'));
   });
 
-  it.each(['case-manager', 'default'] as const)(
-    'asks about each indicator and the asset in the %s Threat context',
-    async (presentation) => {
-      const user = userEvent.setup();
-      const panel = {
-        case_id: CASE.case_id,
-        ioc_reputation: [
-          { indicator: '198.51.100.45', type: 'ip', score: 100, is_malicious: true },
-          { indicator: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855', type: 'file_hash' },
-          { indicator: 'opaque-thing', type: 'process' },
-        ],
-        asset_context: { entity: 'ip:2001:db8::7', criticality: 4, is_internal: false, networks: [] },
-      } as unknown as ThreatContextPanelData;
-      render(
-        <ThreatContextPanel
-          c={CASE}
-          panel={panel}
-          loading={false}
-          error={null}
-          onRetry={vi.fn()}
-          presentation={presentation}
-        />,
-      );
-      await user.click(await screen.findByRole('button', { name: 'Ask AI about 198.51.100.45' }));
-      expect(navigate).toHaveBeenLastCalledWith('chat', ref('ip', '198.51.100.45'));
-      await user.click(
-        screen.getByRole('button', {
-          name: 'Ask AI about e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
-        }),
-      );
-      expect(navigate).toHaveBeenLastCalledWith(
-        'chat',
-        ref('hash', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'),
-      );
-      // An indicator whose kind is unknown gets no chip rather than a misnamed question.
-      expect(screen.queryByRole('button', { name: 'Ask AI about opaque-thing' })).toBeNull();
-      // The asset key `ip:<value>` asks about the value itself.
-      await user.click(screen.getByRole('button', { name: 'Ask AI about 2001:db8::7' }));
-      expect(navigate).toHaveBeenLastCalledWith('chat', ref('ip', '2001:db8::7'));
-    },
-  );
+  it('asks about each indicator and the asset in the Threat context', async () => {
+    const user = userEvent.setup();
+    const panel = {
+      case_id: CASE.case_id,
+      ioc_reputation: [
+        { indicator: '198.51.100.45', type: 'ip', score: 100, is_malicious: true },
+        { indicator: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855', type: 'file_hash' },
+        { indicator: 'opaque-thing', type: 'process' },
+      ],
+      asset_context: { entity: 'ip:2001:db8::7', criticality: 4, is_internal: false, networks: [] },
+    } as unknown as ThreatContextPanelData;
+    render(
+      <ThreatContextPanel
+        c={CASE}
+        panel={panel}
+        loading={false}
+        error={null}
+        onRetry={vi.fn()}
+      />,
+    );
+    await user.click(await screen.findByRole('button', { name: 'Ask AI about 198.51.100.45' }));
+    expect(navigate).toHaveBeenLastCalledWith('chat', ref('ip', '198.51.100.45'));
+    await user.click(
+      screen.getByRole('button', {
+        name: 'Ask AI about e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+      }),
+    );
+    expect(navigate).toHaveBeenLastCalledWith(
+      'chat',
+      ref('hash', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'),
+    );
+    // An indicator whose kind is unknown gets no chip rather than a misnamed question.
+    expect(screen.queryByRole('button', { name: 'Ask AI about opaque-thing' })).toBeNull();
+    // The asset key `ip:<value>` asks about the value itself.
+    await user.click(screen.getByRole('button', { name: 'Ask AI about 2001:db8::7' }));
+    expect(navigate).toHaveBeenLastCalledWith('chat', ref('ip', '2001:db8::7'));
+  });
 
   it('offers no chip in the case surfaces to a viewer who cannot use chat', async () => {
     authState.denied = new Set(['cases:read']);
     render(
       <TooltipProvider>
-        <FactsRail c={CASE} outcome={caseOutcome(CASE)} triage={null} users={[]} canAssign={false} onCaseChange={vi.fn()} />
-        <OverviewPanel c={CASE} fpPolicy={null} triage={null} triageLoading={false} />
+        <FactsRail c={CASE} outcome={caseOutcome(CASE)} triage={null} canViewCost={false} onCaseChange={vi.fn()} />
+        <OverviewPanel c={CASE} fpPolicy={null} triage={null} />
       </TooltipProvider>,
     );
     await settleLazy();

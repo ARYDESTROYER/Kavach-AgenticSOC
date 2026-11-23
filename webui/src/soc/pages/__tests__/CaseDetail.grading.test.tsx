@@ -23,7 +23,7 @@
  */
 import type * as React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor, fireEvent, within } from '@testing-library/react';
+import { act, render, screen, waitFor, fireEvent, within } from '@testing-library/react';
 
 const { caseActionExec, caseFeedback, getCase, toastMock } = vi.hoisted(() => ({
   caseActionExec: vi.fn(),
@@ -89,13 +89,23 @@ function renderWithProviders(node: React.ReactNode) {
   );
 }
 
-/** Open the footer "Close case" dialog and pick a disposition (leaves it submittable). */
+/**
+ * Open the close dialog with C (Round 15, D8.2: "Close case" is the primary action only
+ * while a case is open, investigating or awaiting an analyst, and in Take action
+ * otherwise; C opens it in every status that allows a close).
+ */
+function openCloseDialog() {
+  act(() => (document.activeElement as HTMLElement | null)?.blur());
+  fireEvent.keyDown(document.body, { key: 'c' });
+}
+
+/** Open the "Close case" dialog and pick a disposition (leaves it submittable). */
 async function openCloseDialogAndPick(disposition: RegExp): Promise<HTMLElement> {
   await waitFor(
     () => expect(screen.getByText('Credential stuffing burst')).toBeInTheDocument(),
     { timeout: 5000 },
   );
-  fireEvent.click(screen.getByRole('button', { name: /^close case/i }));
+  openCloseDialog();
   const dialog = await screen.findByRole('dialog');
   // Round 12: the disposition picker is a radio-card group (with definitions).
   fireEvent.click(within(dialog).getByRole('radio', { name: disposition }));
@@ -464,7 +474,7 @@ describe('CaseDetail — the disposition picker never answers for the analyst (G
     await waitFor(() =>
       expect(screen.getByText('Credential stuffing burst')).toBeInTheDocument(),
     );
-    fireEvent.click(screen.getByRole('button', { name: /^close case/i }));
+    openCloseDialog();
     const dialog = await screen.findByRole('dialog');
 
     // The picker opens with NOTHING chosen, NOT the model's answer.

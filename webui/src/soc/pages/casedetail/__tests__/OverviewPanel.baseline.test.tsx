@@ -50,7 +50,7 @@ function baseCase(extra: Partial<Case>): Case {
 
 function renderOverview(c: Case) {
   return render(
-    <OverviewPanel c={c} fpPolicy={null} triage={null} triageLoading={false} />,
+    <OverviewPanel c={c} fpPolicy={null} triage={null} />,
   );
 }
 

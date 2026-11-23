@@ -1,58 +1,60 @@
 /**
- * CaseDetail — the core analyst workflow surface (thin orchestrator).
+ * CaseDetail: the core analyst workflow surface (thin orchestrator).
  *
- * Opened with a `caseId`, it fetches the full case (`api.getCase`) and presents a
- * WIDE right-side Sheet modeled on the reference "case report" page:
- *   - a header (title, created/updated, action buttons: reinvestigate / start runbook /
- *     refresh / chat / history / export / notify),
- *   - the tabbed body: one lazy panel per tab (Overview / Runbook / Timeline /
- *     Investigation / Threat context / Collaboration / Chat). Round 14 (SPEC §4.10.11)
- *     added the Runbook tab, second, with its progress chip; the case's runbook runs are
- *     read once here and shared by the tab, the Overview's Next step card, the facts rail
- *     and the close dialog (which asks why when required steps are open). Task 5 split the merged investigation tab:
- *     the "Timeline" tab is now ONLY the "what happened" six-stage narrative
- *     (the TimelinePanel), and the new "Investigation" tab holds the AI assessment +
- *     the pinned deterministic DecisionCard + the collapsible full ReAct trace
- *     (the InvestigationPanel). The standalone Feedback tab was retired,
- *   - a footer with ONE context-dependent primary CTA, ONE unified Close-with-
- *     disposition secondary, and an overflow "More" menu,
- *   - the shared confirm-action dialog (every lifecycle action) + a Notify dialog.
+ * Opened with a `caseId`, it fetches the full case (`api.getCase`) and presents it in one
+ * of two hosts: embedded in the Case Manager split, or a wide right-side Sheet (the
+ * Overview dashboard and Investigate open it that way). The same tree renders in both:
  *
- * COUPLING-D SPLIT: the conceptual panels now live in `soc/pages/casedetail/*`
- * (OverviewPanel · InvestigationPanel · ThreatContextPanel · CollaborationPanel ·
- * CaseChatPanel), the lifecycle action model + small building blocks in `./shared`,
- * and the close-with-disposition dialog in `./ConfirmActionDialog`. This file is the
- * ORCHESTRATOR: it owns the fetch/lazy-load/mutation state and wires it to the panels.
+ *   - a sticky header (Round 15, SPEC D8.2): the title on one line, ONE primary
+ *     contextual action (`actionPlanForStatus`), the Take action menu holding every other
+ *     verb, a "More options" menu (copy link, open in new tab) and, in a narrow pane, the
+ *     Details button; under it one meta row (case number, severity, status or outcome,
+ *     the AI verdict, the owner, the opened age and the SLA while open);
+ *   - five tabs (D8.3): Overview (with the "What happened" stage timeline that was the
+ *     Timeline tab), Runbook (Round 14, second, with its progress chip; lazy), Investigation
+ *     (with the Threat context that was its own tab), Collaboration and Chat. A link to a
+ *     retired tab id opens the tab it became and scrolls to its section;
+ *   - the facts rail (D8.4) beside every tab from a 60rem pane, else in a non-blocking
+ *     Details sheet;
+ *   - the shared confirm-action dialog (every lifecycle action), Reinvestigate and Notify.
  *
- * Contract: `CaseDetail({ caseId, onClose, onNavigate?, presentation? })` — `caseId`
- * null/empty renders nothing (closed). Cases / Scans / Investigate use the default
- * right-side sheet; Case Manager opts into the additive `embedded` presentation so the
- * SAME orchestrator, panels, RBAC gates, and deterministic lifecycle actions can live
- * inside its split workspace without forking business logic.
+ * The case's runbook runs are read once here and shared by the Runbook tab, the Overview's
+ * Next step card, the facts rail and the close dialog (which asks why when required steps
+ * are open).
  *
- * SECURITY (#9): every case-derived value (title, summary, entity, IPs, rules,
- * queries, evidence, tool output, comments, tags, model keys, enrichment) is UNTRUSTED
- * — it is rendered as plain text or inside <CodeBlock>/<InlineCode>, never as markup.
+ * COUPLING-D SPLIT: the conceptual panels live in `soc/pages/casedetail/*`, the lifecycle
+ * action model and small building blocks in `./shared`, and the close-with-disposition
+ * dialog in `./ConfirmActionDialog`. This file is the ORCHESTRATOR: it owns the
+ * fetch, lazy-load and mutation state and wires it to the panels.
+ *
+ * Contract: `CaseDetail({ caseId, onClose, onNavigate?, presentation? })`: a null or
+ * empty `caseId` renders nothing (closed). Case Manager uses the `embedded` presentation;
+ * every other host uses the default right-side sheet, with the same panels, RBAC gates and
+ * deterministic lifecycle actions.
+ *
+ * SECURITY (#9): every case-derived value (title, summary, entity, IPs, rules, queries,
+ * evidence, tool output, comments, tags, model keys, enrichment) is UNTRUSTED: it is
+ * rendered as plain text or inside <CodeBlock>/<InlineCode>, never as markup.
  * #3: the unified Close-with-disposition still POSTs the EXISTING `close` verb (via
- * `wireAction`) so the backend runs the real decide()/apply() — this file never
- * invents a verb or makes a close/escalate decision itself.
+ * `wireAction`) so the backend runs the real decide()/apply(); this file never invents a
+ * verb or makes a close/escalate decision itself.
  */
 import * as React from 'react';
 import {
   AlertTriangle,
   BookCheck,
-  Check,
   ChevronDown,
   Download,
   ExternalLink,
   FileText,
+  Link2,
   LoaderCircle,
   MessageSquare,
+  MoreHorizontal,
   PanelRight,
   Play,
   RefreshCw,
   Send,
-  Share2,
   Shield,
   Tag as TagIcon,
   UserCheck,
@@ -82,10 +84,10 @@ import { Label } from '@/ui/label';
 import { Alert, AlertTitle, AlertDescription } from '@/ui/alert';
 import { Sheet, SheetContent, SheetTitle } from '@/ui/sheet';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/ui/tabs';
-// motion.dev (lazy — CaseDetail is loaded off the lazy Cases chunk, never the eager
-// first-paint graph): the tab-body cross-fade + the DecisionCard "verdict lands" one-shot.
+// motion.dev (lazy: CaseDetail is loaded off a lazy route chunk, never the eager
+// first-paint graph): the tab-body cross-fade and the DecisionCard "verdict lands" one-shot.
 // CaseDetail mounts its OWN MotionProvider so in-page motion works even on a deep link.
-import { MotionProvider, TabPanelMotion } from '@/soc/components/motion';
+import { MotionProvider, TabPanelMotion, useReducedMotion } from '@/soc/components/motion';
 import {
   Dialog,
   DialogContent,
@@ -143,7 +145,7 @@ import {
 } from '@/soc/pages/CaseDetail.api';
 
 import type { Navigate } from '@/soc/router';
-// The case tabs in order (Alt+1 to Alt+7 select them), shared with the router's
+// The case tabs in order (Alt+1 to Alt+5 select them), shared with the router's
 // `tab` deep-link key so the two lists can never drift.
 import { CASE_TABS, isCaseTab, type CaseTab } from '@/soc/case-tabs';
 
@@ -157,6 +159,7 @@ import {
   ACTION_PERMISSION,
   CASE_MANAGER_PANEL_PADDING,
   actionPlanForStatus,
+  planCloseAction,
 } from './casedetail/shared';
 import { OverviewPanel } from './casedetail/OverviewPanel';
 import { TimelinePanel } from './casedetail/TimelinePanel';
@@ -245,6 +248,23 @@ export function reinvestigateErrorText(error: unknown): string {
   return error instanceof Error && error.message ? error.message : 'The reinvestigation could not be started.';
 }
 
+/**
+ * Is `el` laid out right now? The rail column is `hidden` below a 60rem pane by a
+ * container query, so connected is not enough. `checkVisibility()` where the browser has
+ * it, else no ancestor with display:none.
+ */
+function elementShown(el: HTMLElement): boolean {
+  if (!el.isConnected) return false;
+  const check = (el as HTMLElement & { checkVisibility?: () => boolean }).checkVisibility;
+  if (typeof check === 'function') return check.call(el);
+  const view = el.ownerDocument.defaultView;
+  if (!view) return true;
+  for (let node: Element | null = el; node; node = node.parentElement) {
+    if (view.getComputedStyle(node).display === 'none') return false;
+  }
+  return true;
+}
+
 /** A case already resolved or closed (a further close is its final close, never asked about). */
 function caseIsTerminal(status?: string | null): boolean {
   const s = String(status ?? '').toLowerCase();
@@ -253,17 +273,19 @@ function caseIsTerminal(status?: string | null): boolean {
 
 /** Which wire verbs end a case (the close dialog asks about open runbook steps for them). */
 function isTerminalVerb(verb: string, status?: string | null): boolean {
-  if (verb === 'close' || verb === 'confirm_fp' || verb === 'resolve') return true;
+  if (verb === 'close' || verb === 'resolve') return true;
   return verb === 'set_status' && (status === 'closed' || status === 'resolved');
 }
 
 /**
- * Embedded (Case Manager) tab trigger: a calm, text-only underline tab. The active tab
- * reads in the foreground colour over a primary underline; the rest stay muted.
+ * The sections a link can ask the case to scroll to (Round 15, D8.3): the two retired
+ * tabs, now a section of Overview and of Investigation. A closed set, so a value from an
+ * address never reaches a selector.
  */
-const EMBEDDED_TAB_TRIGGER =
-  'rounded-none border-b-2 border-transparent px-0 py-2.5 text-sm font-medium text-muted-foreground hover:text-foreground ' +
-  'data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-foreground data-[state=active]:shadow-none';
+const CASE_SECTIONS: Readonly<Record<string, CaseTab>> = {
+  'what-happened': 'overview',
+  'threat-context': 'investigation',
+};
 
 /* --------------------------------------------------------------- component -- */
 
@@ -403,6 +425,12 @@ export interface CaseDetailProps {
    * then. The Runbook tab applies only for a viewer who has it.
    */
   requestedTab?: string | null;
+  /**
+   * The section of the requested tab a link asks for (Round 15, D8.3: a link to a retired
+   * tab id is rewritten to its new tab with `what-happened` or `threat-context`). The case
+   * scrolls it into view once; any other value is ignored.
+   */
+  requestedSection?: string | null;
 }
 
 export const CaseDetail: React.FC<CaseDetailProps> = ({
@@ -415,8 +443,13 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
   onAdvance,
   resolveDialogFocus,
   requestedTab: requestedTabId = null,
+  requestedSection: requestedSectionId = null,
 }) => {
   const requestedTab = isCaseTab(requestedTabId) ? requestedTabId : null;
+  const requestedSection =
+    requestedTab && requestedSectionId && CASE_SECTIONS[requestedSectionId] === requestedTab ? requestedSectionId : null;
+  const reduceMotion = useReducedMotion();
+  const sectionId = React.useId();
   const open = Boolean(caseId && caseId.trim());
   const id = caseId || '';
 
@@ -466,15 +499,32 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
   useCaseChatRequest(open ? id : null, () => setTab('chat'));
   const panelScrollRef = React.useRef<HTMLDivElement>(null);
 
-  // All six panels share one scroll lane. Reset it when the selected tab/case changes
-  // so a deep Timeline scroll never opens Investigation halfway down the terminal.
+  // Every tab shares one scroll lane. Reset it when the selected tab/case changes so a
+  // deep Overview scroll never opens Investigation halfway down the trace.
   React.useEffect(() => {
     if (panelScrollRef.current) panelScrollRef.current.scrollTop = 0;
   }, [tab, id]);
 
+  // A section of a tab to bring into view (Round 15, D8.3): the Overview's "What happened"
+  // and Investigation's "Threat context", asked for by a rewritten retired-tab link or by
+  // the Overview's attack story. A new tick per request, applied once the tab is on
+  // screen and then forgotten, so it is never replayed.
+  // An in-page request (the attack story) also moves focus to the section's heading; a
+  // link's request only scrolls, so it never takes focus from the queue.
+  const [sectionRequest, setSectionRequest] = React.useState<{ section: string; tick: number; focus: boolean } | null>(
+    null,
+  );
+  const sectionTickRef = React.useRef(0);
+  const openTabSection = React.useCallback((next: CaseTab, section?: string) => {
+    setTab(next);
+    if (section && CASE_SECTIONS[section] === next) {
+      sectionTickRef.current += 1;
+      setSectionRequest({ section, tick: sectionTickRef.current, focus: true });
+    }
+  }, []);
+
   // Round 3 — triage chips (#12), eager so the overview header is honest on open.
   const [triage, setTriage] = React.useState<TriageChips | null>(null);
-  const [triageLoading, setTriageLoading] = React.useState(false);
 
   // Round 3 — typed ReAct timeline (#12), lazy on the Timeline tab (powers the
   // DecisionCard's policy clause + the collapsible full trace).
@@ -538,14 +588,19 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
   const requested: CaseTab | null = requestedTab === 'runbook' && !canReadRunbooks ? 'overview' : requestedTab;
   const [traceRequest, setTraceRequest] = React.useState<{ tick: number; caseId: string } | null>(null);
   const traceTickRef = React.useRef(0);
+  // A rewritten retired-tab link names a section of its new tab instead (Round 15, D8.3):
+  // "Threat context" on Investigation, so it does not also open the trace.
   React.useEffect(() => {
     if (!requested) return;
     setTab(requested);
-    if (requested === 'investigation') {
+    if (requestedSection) {
+      sectionTickRef.current += 1;
+      setSectionRequest({ section: requestedSection, tick: sectionTickRef.current, focus: false });
+    } else if (requested === 'investigation') {
       traceTickRef.current += 1;
       setTraceRequest({ tick: traceTickRef.current, caseId: id });
     }
-  }, [requested, id]);
+  }, [requested, requestedSection, id]);
   // The queue can open another case before the linked one arrives, with no tab in the
   // address: the link was for the other case's trace, so it goes with the switch and is
   // not replayed if the analyst later opens the linked case again.
@@ -556,7 +611,25 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
   // choice: coming back to Investigation later shows the trace as they left it.
   React.useEffect(() => {
     if (tab !== 'investigation') setTraceRequest(null);
+    setSectionRequest((current) => (current && CASE_SECTIONS[current.section] !== tab ? null : current));
   }, [tab]);
+  // Bring the requested section into view once its tab is on screen, then forget it.
+  const caseShown = Boolean(c);
+  React.useEffect(() => {
+    if (!sectionRequest || !caseShown || CASE_SECTIONS[sectionRequest.section] !== tab) return undefined;
+    const { section, tick, focus } = sectionRequest;
+    const frame = window.requestAnimationFrame(() => {
+      const lane = panelScrollRef.current;
+      const target = lane?.querySelector<HTMLElement>(`[data-section="${section}"]`);
+      if (!lane || !target) return;
+      const top = lane.scrollTop + target.getBoundingClientRect().top - lane.getBoundingClientRect().top;
+      if (typeof lane.scrollTo === 'function') lane.scrollTo({ top, behavior: reduceMotion ? 'auto' : 'smooth' });
+      else lane.scrollTop = top;
+      if (focus) target.querySelector<HTMLElement>('[data-section-title]')?.focus({ preventScroll: true });
+      setSectionRequest((current) => (current?.tick === tick ? null : current));
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [sectionRequest, caseShown, tab, reduceMotion]);
   const traceRequestHandled = React.useCallback((tick: number) => {
     setTraceRequest((current) => (current?.tick === tick ? null : current));
   }, []);
@@ -585,9 +658,8 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
   const [openStepsReason, setOpenStepsReason] = React.useState('');
   const [openStepsError, setOpenStepsError] = React.useState<string | null>(null);
 
-  // Embedded Case Manager: one reference-faithful top-right action surface. The
-  // legacy Sheet keeps its existing toolbar/footer so the old Cases workflow is
-  // backward-compatible while the new workspace stays deliberately uncluttered.
+  // The header's Take action menu (every verb but the primary, the investigation tools,
+  // export and notify), the same in both hosts.
   const [takeActionOpen, setTakeActionOpen] = React.useState(false);
 
   // Pending lifecycle action (confirm dialog) + optional structured fields.
@@ -632,10 +704,25 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
   const [slaPolicy, setSlaPolicy] = React.useState<SlaPolicy | null>(null);
   // Header popovers + the narrow-pane Details sheet (keyboard shortcuts open them).
   const [ownerOpen, setOwnerOpen] = React.useState(false);
-  const [tagsOpen, setTagsOpen] = React.useState(false);
   const [detailsOpen, setDetailsOpen] = React.useState(false);
   const detailsTriggerRef = React.useRef<HTMLButtonElement | null>(null);
   const detailsTitleRef = React.useRef<HTMLHeadingElement | null>(null);
+  // The tag editor lives in the facts rail (Round 15, D8.2): in the rail column beside the
+  // tabs, or in the Details sheet when the pane is too narrow for the column. T and "Edit
+  // tags" open it where the rail is; with the column hidden, the Details sheet opens first
+  // and the editor once the sheet is up.
+  const [tagsEditor, setTagsEditor] = React.useState<'column' | 'sheet' | null>(null);
+  const railColumnRef = React.useRef<HTMLDivElement | null>(null);
+  const tagsInSheetRef = React.useRef(false);
+  const openTagsEditor = React.useCallback(() => {
+    const column = railColumnRef.current;
+    if (column && elementShown(column)) {
+      setTagsEditor('column');
+      return;
+    }
+    tagsInSheetRef.current = true;
+    setDetailsOpen(true);
+  }, []);
   // The control that opened a lifecycle / editor dialog, so focus returns to it (CM-3).
   const actionOpenerRef = React.useRef<HTMLElement | null>(null);
   const takeActionTriggerRef = React.useRef<HTMLButtonElement | null>(null);
@@ -713,20 +800,17 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
     void loadCase();
   }, [open, id, loadCase]);
 
-  // Triage chips (#12) — eager so the overview header reflects the four honest
-  // signals as soon as the case opens. Best-effort: a failure leaves the chips null
-  // and the overview falls back to its legacy headline panels.
+  // Triage chips (#12), eager so the facts rail's Signal section reflects the four honest
+  // signals as soon as the case opens. Best-effort: a failure leaves the chips null and
+  // the rail falls back to the case's own fields.
   const loadTriage = React.useCallback(async () => {
     if (!id || activeIdRef.current !== id) return;
-    setTriageLoading(true);
     try {
       const res = await getTriage(id);
       if (activeIdRef.current !== id) return;
       setTriage(res.chips || null);
     } catch {
       if (activeIdRef.current === id) setTriage(null);
-    } finally {
-      if (activeIdRef.current === id) setTriageLoading(false);
     }
   }, [id]);
 
@@ -814,9 +898,10 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
     }
   }, [id]);
 
-  // Lazy on the Timeline tab (same error-guard rationale as loadTimeline above).
+  // Lazy on the Overview tab, whose "What happened" section it is (Round 15, D8.3; same
+  // error-guard rationale as loadTimeline above).
   React.useEffect(() => {
-    if (open && tab === 'timeline' && stages === null && !stagesLoading && !stagesError) {
+    if (open && tab === 'overview' && stages === null && !stagesLoading && !stagesError) {
       void loadStages();
     }
   }, [open, tab, stages, stagesLoading, stagesError, loadStages]);
@@ -1016,8 +1101,9 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
     }
   }, [id]);
 
+  // Lazy on the Investigation tab, whose "Threat context" section it is (Round 15, D8.3).
   React.useEffect(() => {
-    if (open && tab === 'threat' && threat === null && !threatLoading && !threatError) {
+    if (open && tab === 'investigation' && threat === null && !threatLoading && !threatError) {
       void loadThreat();
     }
   }, [open, tab, threat, threatLoading, threatError, loadThreat]);
@@ -1264,11 +1350,8 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
         // committed on close ↔ the AI verdict — do NOT trust `grading.assessment`. That
         // field is synced by an effect inside GradingFields, which is unmounted when the
         // analyst collapses the grading section; a later disposition change would then
-        // POST a STALE assessment into the AI-eval loop. `confirm_fp` carries no
-        // disposition picker: its committed outcome is FALSE_POSITIVE (mirrors the dialog).
-        const committedDisposition =
-          pending.key === 'confirm_fp' ? 'false_positive' : actionDisposition;
-        const derived = deriveAgreement(gradedVerdictRaw, committedDisposition);
+        // POST a STALE assessment into the AI-eval loop.
+        const derived = deriveAgreement(gradedVerdictRaw, actionDisposition);
         // Only a match or an override is an agreement signal. A Needs-human hand-off the
         // analyst settled (`resolved`) or an outcome with no comparison (`none`) states no
         // agreement, so nothing is posted unless the analyst entered a grade themselves —
@@ -1425,10 +1508,10 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
   }, [id, presentation]);
 
   // ---- keyboard shortcuts (CM-4/CM-3) -------------------------------------- //
-  // A / C / E / H acknowledge, close, escalate or hold (each OPENS its dialog — every
+  // A / C / E / H acknowledge, close, escalate or hold (each OPENS its dialog: every
   // mutation still goes through its dialog), R reinvestigate (always confirmed), M the
-  // owner picker, T the tags editor, Alt+1…7 switch tabs. Active only while focus is NOT
-  // in text entry and no menu, popover or dialog of this case is open.
+  // owner picker, T the tags editor, Alt+1 to Alt+5 switch tabs. Active only while focus
+  // is NOT in text entry and no menu, popover or dialog of this case is open.
   const shortcutStateRef = React.useRef({
     blocked: false,
     actions: [] as ActionDef[],
@@ -1439,7 +1522,7 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
   });
   const permittedForShortcuts = (() => {
     const plan = actionPlanForStatus(c?.status);
-    return [plan.primary, plan.close, ...plan.overflow].filter(
+    return [plan.primary, ...plan.overflow].filter(
       (action, index, actions): action is ActionDef =>
         Boolean(action) &&
         actions.findIndex((candidate) => candidate?.key === action?.key) === index &&
@@ -1457,7 +1540,7 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
       reinvestOpen ||
       notifyOpen ||
       ownerOpen ||
-      tagsOpen ||
+      tagsEditor !== null ||
       detailsOpen,
     actions: permittedForShortcuts,
     canAssign: hasPermission('cases', 'assign'),
@@ -1467,6 +1550,8 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
   };
   const openActionRef = React.useRef(openAction);
   openActionRef.current = openAction;
+  const openTagsEditorRef = React.useRef(openTagsEditor);
+  openTagsEditorRef.current = openTagsEditor;
 
   React.useEffect(() => {
     if (!open || typeof document === 'undefined') return undefined;
@@ -1486,7 +1571,7 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
       const state = shortcutStateRef.current;
       if (state.blocked) return;
       if (event.altKey) {
-        const digit = /^Digit([1-7])$/.exec(event.code);
+        const digit = /^Digit([1-5])$/.exec(event.code);
         if (!digit) return;
         const next = CASE_TABS[Number(digit[1]) - 1];
         // Alt+2 is the Runbook tab, which a viewer without `runbooks:read` does not have.
@@ -1521,7 +1606,7 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
         setOwnerOpen(true);
       } else if (key === 't' && state.canTag) {
         event.preventDefault();
-        setTagsOpen(true);
+        openTagsEditorRef.current();
       }
     };
     document.addEventListener('keydown', onKey);
@@ -1542,10 +1627,14 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
   const permittedLifecycleActions = permittedForShortcuts;
   const outcome = c ? caseOutcome(c) : null;
   const busy = loading || acting || !shownIsCurrent;
-  const canClosePrimary =
-    hasPermission(ACTION_PERMISSION[actionPlan.primary.key].resource, ACTION_PERMISSION[actionPlan.primary.key].action);
-  const canCloseSecondary = actionPlan.close
-    ? hasPermission(ACTION_PERMISSION[actionPlan.close.key].resource, ACTION_PERMISSION[actionPlan.close.key].action)
+  const canPrimary = hasPermission(
+    ACTION_PERMISSION[actionPlan.primary.key].resource,
+    ACTION_PERMISSION[actionPlan.primary.key].action,
+  );
+  // The close-with-disposition action this status offers (the primary, or in Take action).
+  const planClose = planCloseAction(actionPlan);
+  const canClose = planClose
+    ? hasPermission(ACTION_PERMISSION[planClose.key].resource, ACTION_PERMISSION[planClose.key].action)
     : false;
   const setDispositionAction = permittedLifecycleActions.find((a) => a.key === 'set_disposition');
   const shortcutFor = (key: ActionKind): string | null =>
@@ -1562,7 +1651,6 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
     actionOpenerRef.current = control;
     openAction(action);
   };
-  const mitreCount = Array.isArray(c?.mitre) ? c!.mitre!.length : 0;
   const traceSteps = timeline?.spans?.length ?? null;
   const messageCount = thread ? visibleMessageCount(thread) : null;
   const runbookData = runbooks.data;
@@ -1578,34 +1666,40 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
       ? openStepsFromRefusal(refusedSteps, runbookData)
       : openRequiredSteps(runbookData);
   const openRunbookTab = () => setTab('runbook');
-  const rail = c && outcome ? (
-    <FactsRail
-      c={c}
-      outcome={outcome}
-      triage={triage}
-      slaPolicy={slaPolicy}
-      fpPolicy={fpPolicy}
-      users={pickUsers}
-      canAssign={hasPermission('cases', 'assign')}
-      canViewCost={canViewCost}
-      onCaseChange={commitCase}
-      onSetDisposition={
-        setDispositionAction ? () => openFromControl(setDispositionAction, takeActionTriggerRef.current) : undefined
-      }
-      onShowRelated={() => setTab('overview')}
-      runbook={
-        showRunbookTab
-          ? {
-              data: runbookData,
-              loading: runbooks.loading,
-              failed: Boolean(runbooks.error) && !runbookData,
-              onOpenPhase: (phase) => (phase ? requestRunbook({ kind: 'phase', phase }) : openRunbookTab()),
-            }
-          : undefined
-      }
-    />
-  ) : null;
-  const tabTrigger = cn(EMBEDDED_TAB_TRIGGER, 'gap-1.5 text-xs');
+  const canTag = canWriteCase && shownIsCurrent;
+  // The rail renders in the column beside the tabs and, in a narrow pane, in the Details
+  // sheet; the tag editor opens only in the one being looked at.
+  const renderRail = (placement: 'column' | 'sheet') =>
+    c && outcome ? (
+      <FactsRail
+        c={c}
+        outcome={outcome}
+        triage={triage}
+        slaPolicy={slaPolicy}
+        fpPolicy={fpPolicy}
+        canViewCost={canViewCost}
+        onCaseChange={commitCase}
+        onSetDisposition={
+          setDispositionAction ? () => openFromControl(setDispositionAction, takeActionTriggerRef.current) : undefined
+        }
+        onShowRelated={() => setTab('overview')}
+        runbook={
+          showRunbookTab
+            ? {
+                data: runbookData,
+                loading: runbooks.loading,
+                failed: Boolean(runbooks.error) && !runbookData,
+                onOpenPhase: (phase) => (phase ? requestRunbook({ kind: 'phase', phase }) : openRunbookTab()),
+              }
+            : undefined
+        }
+        canTag={canTag}
+        tagsOpen={tagsEditor === placement}
+        onTagsOpenChange={(next) => setTagsEditor(next ? placement : null)}
+        campaign={campaign}
+        onOpenCampaign={onNavigate ? () => onNavigate('campaigns') : undefined}
+      />
+    ) : null;
   const restoreTo = (ref: React.RefObject<HTMLElement | null>) => (event: Event) => {
     const target = [ref.current, takeActionTriggerRef.current].find(
       (el): el is HTMLElement => Boolean(el && el.isConnected),
@@ -1631,13 +1725,13 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
             className="@container/case flex h-full min-h-0 flex-col"
             data-case-busy={busy ? 'true' : undefined}
           >
-            {/* ------------------------------------------- sticky header (CM-2) */}
+            {/* ------------------------------------------- sticky header (D8.2) */}
             <div
               ref={headerRef}
               data-testid="case-detail-header"
               className={cn(
                 materialBar,
-                'relative z-10 shrink-0 px-4 pt-3 sm:px-5 lg:px-6',
+                'relative z-10 shrink-0 px-4 pt-4 sm:px-5 lg:px-6',
                 presentation === 'sheet' && 'pr-14 sm:pr-14 lg:pr-14',
               )}
             >
@@ -1648,29 +1742,25 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
                 className="absolute inset-x-0 top-0 rounded-none"
               />
               {/* Line 1: the title and the actions share ONE row when the whole title fits
-                  beside them; when it does not (a long title in the default 1280 pane, a
-                  phone) the actions WRAP to their own row and the title takes the full
-                  width — it is never squeezed to a few characters or to nothing. The title
-                  cell's flex basis is its natural width (`flex-auto`), which is what the
-                  wrap decision is made on. Below a 56rem pane the title is a single line
-                  (full title on hover and in its accessible name) and the secondary Close
-                  folds into the Take action menu (casemanager.md §4.1). Line 2: the meta
-                  row, full width. */}
-              <header className="flex flex-wrap items-start gap-x-3 gap-y-2" data-testid="case-title-row">
+                  beside them; when it does not (a long title in a narrow pane, a phone) the
+                  actions WRAP to their own row and the title takes the full width: it is
+                  never squeezed. The title cell's flex basis is its natural width
+                  (`flex-auto`), which is what the wrap decision is made on. The title is one
+                  line (its full text on hover and in its accessible name). Line 2: the one
+                  meta row, full width. */}
+              <header className="flex flex-wrap items-center gap-x-4 gap-y-2" data-testid="case-title-row">
                 <div className="min-w-0 max-w-full flex-auto" data-testid="case-title-cell">
-                  {/* UNTRUSTED title — plain text node. The full title is in the accessible
-                      name and the hover title when it clamps. The SAME heading element is
-                      rendered while the case loads (visually hidden, "Loading case"), so the
-                      sheet can focus it on open and keep that focus when the case arrives —
-                      never an icon button whose tooltip would then open by itself (CM-9). */}
+                  {/* UNTRUSTED title: a plain text node. The SAME heading element is rendered
+                      while the case loads (visually hidden, "Loading case"), so the sheet can
+                      focus it on open and keep that focus when the case arrives, never an icon
+                      button whose tooltip would then open by itself (CM-9). */}
                   <h2
                     ref={titleRef}
                     tabIndex={-1}
                     title={c ? c.title || c.case_id : undefined}
                     data-case-title
                     className={cn(
-                      'truncate text-lg font-semibold leading-8 tracking-tight text-foreground outline-none',
-                      '@[56rem]/case:line-clamp-2 @[56rem]/case:whitespace-normal @[56rem]/case:text-xl @[56rem]/case:leading-snug',
+                      'truncate text-lg font-semibold leading-8 text-foreground outline-none @[56rem]/case:text-xl',
                       !c && 'sr-only',
                       c && !shownIsCurrent && 'opacity-60',
                     )}
@@ -1679,21 +1769,9 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
                   </h2>
                 </div>
 
-                <div className="ml-auto flex max-w-full shrink-0 flex-wrap items-center justify-end gap-1.5 @[48rem]/case:gap-2">
-                  {c && actionPlan.close && canCloseSecondary ? (
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="hidden h-8 @[56rem]/case:inline-flex"
-                      disabled={busy}
-                      aria-keyshortcuts="C"
-                      onClick={(event) => openFromControl(actionPlan.close!, event.currentTarget)}
-                    >
-                      <Check className="h-4 w-4" aria-hidden />
-                      {actionPlan.close.label}
-                    </Button>
-                  ) : null}
-                  {c && canClosePrimary ? (
+                <div className="ml-auto flex max-w-full shrink-0 flex-wrap items-center justify-end gap-2">
+                  {/* ONE primary contextual action (the D8.2 table in `actionPlanForStatus`). */}
+                  {c && canPrimary ? (
                     <Tooltip>
                       <TooltipTrigger asChild>
                         <Button
@@ -1712,6 +1790,7 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
                     </Tooltip>
                   ) : null}
 
+                  {/* Take action: every other verb, the investigation tools, export and notify. */}
                   <DropdownMenu open={takeActionOpen} onOpenChange={setTakeActionOpen}>
                     <DropdownMenuTrigger asChild>
                       <Button
@@ -1721,7 +1800,6 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
                         className="h-8"
                         disabled={!c}
                       >
-                        <Zap className="h-4 w-4" aria-hidden />
                         Take action
                         <ChevronDown className="h-3.5 w-3.5" aria-hidden />
                       </Button>
@@ -1798,7 +1876,7 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
                       >
                         <MessageSquare className="h-4 w-4" />
                         <span className="flex-1">Ask about this case</span>
-                        <MenuShortcut>Alt 7</MenuShortcut>
+                        <MenuShortcut>Alt 5</MenuShortcut>
                       </DropdownMenuItem>
                       {hasPermission('cases', 'assign') ? (
                         <DropdownMenuItem
@@ -1820,7 +1898,7 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
                           aria-keyshortcuts="T"
                           onSelect={() => {
                             setTakeActionOpen(false);
-                            setTagsOpen(true);
+                            openTagsEditor();
                           }}
                         >
                           <TagIcon className="h-4 w-4" />
@@ -1830,16 +1908,7 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
                       ) : null}
 
                       <DropdownMenuSeparator />
-                      <DropdownMenuLabel>Share and export</DropdownMenuLabel>
-                      <DropdownMenuItem
-                        onSelect={() => {
-                          setTakeActionOpen(false);
-                          openInNewTab();
-                        }}
-                      >
-                        <ExternalLink className="h-4 w-4" />
-                        Open in new tab
-                      </DropdownMenuItem>
+                      <DropdownMenuLabel>Export and notify</DropdownMenuLabel>
                       <DropdownMenuItem
                         disabled={exporting !== null || !c}
                         onSelect={() => {
@@ -1888,6 +1957,30 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
                     </DropdownMenuContent>
                   </DropdownMenu>
 
+                  {/* More options: the case's link (copy it, or open it in a new tab). */}
+                  <DropdownMenu>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <DropdownMenuTrigger asChild>
+                          <Button variant="ghost" size="icon" className="h-8 w-8" aria-label="More options" disabled={!c}>
+                            <MoreHorizontal className="h-4 w-4" aria-hidden />
+                          </Button>
+                        </DropdownMenuTrigger>
+                      </TooltipTrigger>
+                      <TooltipContent side="bottom">More options</TooltipContent>
+                    </Tooltip>
+                    <DropdownMenuContent align="end" sideOffset={8} className="w-56">
+                      <DropdownMenuItem onSelect={() => void shareCase()}>
+                        <Link2 className="h-4 w-4" />
+                        Copy link
+                      </DropdownMenuItem>
+                      <DropdownMenuItem onSelect={() => openInNewTab()}>
+                        <ExternalLink className="h-4 w-4" />
+                        Open in new tab
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+
                   {/* The facts rail folds into a side sheet in a narrow pane. */}
                   <Button
                     ref={detailsTriggerRef}
@@ -1901,22 +1994,6 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
                     <PanelRight className="h-4 w-4" aria-hidden />
                     <span className="hidden @[48rem]/case:inline">Details</span>
                   </Button>
-
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="h-8 px-2 @[48rem]/case:px-3"
-                        aria-label="Share"
-                        onClick={() => void shareCase()}
-                      >
-                        <Share2 className="h-4 w-4" aria-hidden />
-                        <span className="hidden @[48rem]/case:inline">Share</span>
-                      </Button>
-                    </TooltipTrigger>
-                    <TooltipContent side="bottom">Copy a link to this case</TooltipContent>
-                  </Tooltip>
 
                   {presentation === 'embedded' ? (
                     <Button
@@ -1932,26 +2009,19 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
                 </div>
               </header>
               {c ? (
-                <>
-                  {outcome ? (
-                    <CaseHeaderMeta
-                      c={c}
-                      outcome={outcome}
-                      campaign={campaign}
-                      onOpenCampaign={onNavigate ? () => onNavigate('campaigns') : undefined}
-                      users={pickUsers}
-                      currentUser={currentUser}
-                      canAssign={hasPermission('cases', 'assign') && shownIsCurrent}
-                      canTag={canWriteCase && shownIsCurrent}
-                      slaPolicy={slaPolicy}
-                      onCaseChange={commitCase}
-                      ownerOpen={ownerOpen}
-                      onOwnerOpenChange={setOwnerOpen}
-                      tagsOpen={tagsOpen}
-                      onTagsOpenChange={setTagsOpen}
-                    />
-                  ) : null}
-                </>
+                outcome ? (
+                  <CaseHeaderMeta
+                    c={c}
+                    outcome={outcome}
+                    users={pickUsers}
+                    currentUser={currentUser}
+                    canAssign={hasPermission('cases', 'assign') && shownIsCurrent}
+                    slaPolicy={slaPolicy}
+                    onCaseChange={commitCase}
+                    ownerOpen={ownerOpen}
+                    onOwnerOpenChange={setOwnerOpen}
+                  />
+                ) : null
               ) : (
                 <div className="space-y-2 py-1">
                   <Skeleton className="h-6 w-72 max-w-full" />
@@ -1960,41 +2030,32 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
               )}
 
               {c ? (
-                <div className="-mx-1 mt-2 overflow-x-auto px-1">
-                  <TabsList className="h-auto w-max min-w-full justify-start gap-4 rounded-none border-0 bg-transparent p-0">
-                    <TabsTrigger value="overview" className={tabTrigger} aria-keyshortcuts="Alt+1">
-                      Overview
+                <TabsList variant="underline" className="mt-3">
+                  <TabsTrigger value="overview" aria-keyshortcuts="Alt+1">
+                    Overview
+                  </TabsTrigger>
+                  {showRunbookTab ? (
+                    <TabsTrigger value="runbook" className="gap-1.5" aria-keyshortcuts="Alt+2" data-tab="runbook">
+                      Runbook
+                      {runbookData ? (
+                        <RunbookTabCount progress={runbookProgress} abandoned={runbookData.runs.length > 0} />
+                      ) : null}
                     </TabsTrigger>
-                    {showRunbookTab ? (
-                      <TabsTrigger value="runbook" className={tabTrigger} aria-keyshortcuts="Alt+2" data-tab="runbook">
-                        Runbook
-                        {runbookData ? (
-                          <RunbookTabCount progress={runbookProgress} abandoned={runbookData.runs.length > 0} />
-                        ) : null}
-                      </TabsTrigger>
-                    ) : null}
-                    <TabsTrigger value="timeline" className={tabTrigger} aria-keyshortcuts="Alt+3">
-                      Timeline
-                    </TabsTrigger>
-                    <TabsTrigger value="investigation" className={tabTrigger} aria-keyshortcuts="Alt+4">
-                      Investigation
-                      {traceSteps ? <TabCount label="steps">{traceSteps}</TabCount> : null}
-                    </TabsTrigger>
-                    <TabsTrigger value="threat" className={tabTrigger} aria-keyshortcuts="Alt+5">
-                      Threat context
-                      {mitreCount ? <TabCount label="MITRE techniques">{mitreCount}</TabCount> : null}
-                    </TabsTrigger>
-                    <TabsTrigger value="collab" className={tabTrigger} aria-keyshortcuts="Alt+6">
-                      Collaboration
-                      {messageCount ? <TabCount label="messages">{messageCount}</TabCount> : null}
-                    </TabsTrigger>
-                    <TabsTrigger value="chat" className={tabTrigger} aria-keyshortcuts="Alt+7">
-                      Chat
-                      {/* A case chat answer being written, unread, waiting or failed (SPEC D13). */}
-                      <CaseChatActivityGlyph caseId={c.case_id} className="ml-1.5" />
-                    </TabsTrigger>
-                  </TabsList>
-                </div>
+                  ) : null}
+                  <TabsTrigger value="investigation" className="gap-1.5" aria-keyshortcuts="Alt+3">
+                    Investigation
+                    {traceSteps ? <TabCount label="steps">{traceSteps}</TabCount> : null}
+                  </TabsTrigger>
+                  <TabsTrigger value="collab" className="gap-1.5" aria-keyshortcuts="Alt+4">
+                    Collaboration
+                    {messageCount ? <TabCount label="messages">{messageCount}</TabCount> : null}
+                  </TabsTrigger>
+                  <TabsTrigger value="chat" aria-keyshortcuts="Alt+5">
+                    Chat
+                    {/* A case chat answer being written, unread, waiting or failed (SPEC D13). */}
+                    <CaseChatActivityGlyph caseId={c.case_id} className="ml-1.5" />
+                  </TabsTrigger>
+                </TabsList>
               ) : (
                 <div className="h-3" />
               )}
@@ -2043,16 +2104,13 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
                           c={c}
                           fpPolicy={fpPolicy}
                           triage={triage}
-                          triageLoading={triageLoading}
                           rationale={rationale}
                           rationaleLoading={rationaleLoading}
                           rationaleError={rationaleError}
                           onRetryRationale={loadRationale}
                           onOpenInvestigation={() => setTab('investigation')}
-                          onOpenTab={(next) => setTab(next)}
+                          onOpenTab={openTabSection}
                           onNavigate={onNavigate}
-                          presentation="case-manager"
-                          canViewCost={canViewCost}
                           onSetDisposition={
                             setDispositionAction && shownIsCurrent
                               ? (opener) => openFromControl(setDispositionAction, opener)
@@ -2071,6 +2129,29 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
                             ) : null
                           }
                         />
+                        {/* "What happened", the six-stage story that was the Timeline tab
+                            (Round 15, D8.3). Its stages load when Overview opens. */}
+                        <section
+                          data-section="what-happened"
+                          aria-labelledby={`${sectionId}-what-happened`}
+                          className="border-t border-border/70"
+                        >
+                          <h2
+                            id={`${sectionId}-what-happened`}
+                            data-section-title
+                            tabIndex={-1}
+                            className="px-4 pt-5 text-base font-semibold text-foreground outline-none sm:px-5 lg:px-6"
+                          >
+                            What happened
+                          </h2>
+                          <TimelinePanel
+                            stages={stages}
+                            stagesLoading={stagesLoading}
+                            stagesError={stagesError}
+                            onRetryStages={loadStages}
+                            onOpenInvestigation={() => setTab('investigation')}
+                          />
+                        </section>
                       </TabPanelMotion>
                     </TabsContent>
                     {showRunbookTab ? (
@@ -2102,11 +2183,9 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
                               focusRequest={runbookRequest}
                               onFocusRequestHandled={runbookRequestHandled}
                               onCloseCase={
-                                actionPlan.close && canCloseSecondary
-                                  ? () => openFromControl(actionPlan.close!, document.activeElement as HTMLElement | null)
-                                  : canClosePrimary && isTerminalVerb(actionPlan.primary.wireAction ?? actionPlan.primary.key)
-                                    ? () => openFromControl(actionPlan.primary, document.activeElement as HTMLElement | null)
-                                    : undefined
+                                planClose && canClose
+                                  ? () => openFromControl(planClose, document.activeElement as HTMLElement | null)
+                                  : undefined
                               }
                               className={CASE_MANAGER_PANEL_PADDING}
                             />
@@ -2114,19 +2193,6 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
                         </TabPanelMotion>
                       </TabsContent>
                     ) : null}
-                    <TabsContent value="timeline" className="mt-0">
-                      <TabPanelMotion>
-                        {/* The "what happened" six-stage narrative, alone (task 5). */}
-                        <TimelinePanel
-                          stages={stages}
-                          stagesLoading={stagesLoading}
-                          stagesError={stagesError}
-                          onRetryStages={loadStages}
-                          presentation="case-manager"
-                          onOpenInvestigation={() => setTab('investigation')}
-                        />
-                      </TabPanelMotion>
-                    </TabsContent>
                     <TabsContent value="investigation" className="mt-0">
                       <TabPanelMotion>
                         {/* Decision first, then the AI assessment, inputs, evidence, and the
@@ -2141,23 +2207,33 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
                           timelineLoading={timelineLoading}
                           timelineError={timelineError}
                           onRetryTimeline={loadTimeline}
-                          presentation="case-manager"
                           traceRequest={shownIsCurrent && traceRequest?.caseId === id ? traceRequest.tick : null}
                           onTraceRequestHandled={traceRequestHandled}
                         />
-                      </TabPanelMotion>
-                    </TabsContent>
-                    <TabsContent value="threat" className="mt-0">
-                      <TabPanelMotion>
-                        <ThreatContextPanel
-                          c={c}
-                          panel={threat}
-                          loading={threatLoading}
-                          error={threatError}
-                          onRetry={loadThreat}
-                          onNavigate={onNavigate}
-                          presentation="case-manager"
-                        />
+                        {/* "Threat context", which was its own tab (Round 15, D8.3). It loads
+                            when Investigation opens. */}
+                        <section
+                          data-section="threat-context"
+                          aria-labelledby={`${sectionId}-threat-context`}
+                          className="border-t border-border/70"
+                        >
+                          <h2
+                            id={`${sectionId}-threat-context`}
+                            data-section-title
+                            tabIndex={-1}
+                            className="px-4 pt-5 text-base font-semibold text-foreground outline-none sm:px-5 lg:px-6"
+                          >
+                            Threat context
+                          </h2>
+                          <ThreatContextPanel
+                            c={c}
+                            panel={threat}
+                            loading={threatLoading}
+                            error={threatError}
+                            onRetry={loadThreat}
+                            onNavigate={onNavigate}
+                          />
+                        </section>
                       </TabPanelMotion>
                     </TabsContent>
                     <TabsContent value="collab" className="mt-0">
@@ -2199,34 +2275,29 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
                           liveCaseId={id}
                           onLiveThread={liveRefreshThread}
                           onLiveActivity={liveRefreshActivity}
-                          presentation="case-manager"
                         />
                       </TabPanelMotion>
                     </TabsContent>
                     <TabsContent value="chat" className="mt-0 h-full min-h-0">
                       <TabPanelMotion className="h-full min-h-0">
-                        <ChatTab
-                          c={c}
-                          onNavigate={onNavigate}
-                          onClose={onClose}
-                          presentation="case-manager"
-                        />
+                        <ChatTab c={c} />
                       </TabPanelMotion>
                     </TabsContent>
                   </div>
                 )}
               </div>
 
-              {/* The facts rail — every tab, from a 60rem pane (CM-6). */}
-              {rail ? (
+              {/* The facts rail: every tab, from a 60rem pane (CM-6, D8.4). */}
+              {c && outcome ? (
                 <div
+                  ref={railColumnRef}
                   data-testid="case-facts-column"
                   className={cn(
-                    'hidden w-[19rem] shrink-0 overflow-y-auto border-l border-border/70 px-4 py-5 @[60rem]/case:block',
+                    'hidden w-[19rem] shrink-0 overflow-y-auto border-l border-border/70 px-5 py-5 @[60rem]/case:block',
                     !shownIsCurrent && 'opacity-60',
                   )}
                 >
-                  {rail}
+                  {renderRail('column')}
                 </div>
               ) : null}
             </div>
@@ -2235,17 +2306,33 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
       </CaseDetailSurface>
 
       {/* Narrow panes: the same facts in a NON-blocking side sheet (no scrim). */}
-      <Sheet open={detailsOpen} onOpenChange={setDetailsOpen} modal={false}>
+      <Sheet
+        open={detailsOpen}
+        onOpenChange={(next) => {
+          setDetailsOpen(next);
+          if (!next) {
+            tagsInSheetRef.current = false;
+            setTagsEditor((current) => (current === 'sheet' ? null : current));
+          }
+        }}
+        modal={false}
+      >
         <SheetContent
           side="right"
           size="default"
           className="overflow-y-auto p-5"
           aria-describedby={undefined}
           // Open on the sheet's heading, never its first help tip (whose explainer would
-          // then pop open by itself); close back to the Details button, not <body> — the
+          // then pop open by itself); close back to the Details button, not <body>: the
           // sheet is opened from state and non-modal, so Radix has no trigger to return to.
+          // Opened by T or "Edit tags", it opens the tag editor instead, which takes focus.
           onOpenAutoFocus={(event) => {
             event.preventDefault();
+            if (tagsInSheetRef.current) {
+              tagsInSheetRef.current = false;
+              setTagsEditor('sheet');
+              return;
+            }
             detailsTitleRef.current?.focus();
           }}
           onCloseAutoFocus={(event) => {
@@ -2263,7 +2350,7 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
           >
             Case facts
           </SheetTitle>
-          {rail}
+          {renderRail('sheet')}
         </SheetContent>
       </Sheet>
 

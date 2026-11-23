@@ -41,7 +41,7 @@ const CASE = {
 function showActions(actions: AutomationActionRecord[]) {
   render(
     <TooltipProvider>
-      <OverviewPanel c={{ ...CASE, automation_actions: actions } as Case} fpPolicy={null} triage={null} triageLoading={false} />
+      <OverviewPanel c={{ ...CASE, automation_actions: actions } as Case} fpPolicy={null} triage={null} />
     </TooltipProvider>,
   );
   fireEvent.click(screen.getByRole('button', { name: /Provenance & audit/ }));

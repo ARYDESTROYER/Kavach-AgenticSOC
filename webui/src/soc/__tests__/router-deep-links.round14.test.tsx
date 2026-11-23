@@ -198,7 +198,9 @@ describe('case_manager: tab (closing QA integ-06, "Open case trace")', () => {
   it('accepts exactly the tabs the case detail renders (one shared list, never a router copy)', () => {
     // CaseDetail renders and indexes CASE_TABS; the router validates `tab` against the
     // same tuple, so a tab added or renamed there is linkable at once.
-    expect([...CASE_TABS]).toEqual(['overview', 'runbook', 'timeline', 'investigation', 'threat', 'collab', 'chat']);
+    // Round 15 (D8.3): five tabs; the retired `timeline` and `threat` ids are rewritten
+    // (router-case-tabs.round15.test.tsx).
+    expect([...CASE_TABS]).toEqual(['overview', 'runbook', 'investigation', 'collab', 'chat']);
     const kept = CASE_TABS.filter((tab) => pageHash('case_manager', { caseId: 'case-214', tab }).endsWith(`&tab=${tab}`));
     expect(kept).toEqual([...CASE_TABS]);
   });

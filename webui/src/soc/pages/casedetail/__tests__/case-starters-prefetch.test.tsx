@@ -269,7 +269,7 @@ describe("Case Manager's Chat tab", () => {
     const { ChatTab } = await import('../CaseChatPanel');
     render(
       <React.Suspense fallback={null}>
-        <ChatTab c={{ case_id: 'case-0042', case_number: 'CASE-000042' } as never} onClose={() => {}} presentation="case-manager" />
+        <ChatTab c={{ case_id: 'case-0042', case_number: 'CASE-000042' } as never} />
       </React.Suspense>,
     );
     await waitFor(() => expect(server.reads()).toHaveLength(1));
@@ -315,7 +315,7 @@ describe("Case Manager's Chat tab", () => {
       <DemoProvider>
         <Probe />
         <React.Suspense fallback={null}>
-          <ChatTab c={{ case_id: 'case-0042', case_number: 'CASE-000042' } as never} onClose={() => {}} presentation="case-manager" />
+          <ChatTab c={{ case_id: 'case-0042', case_number: 'CASE-000042' } as never} />
         </React.Suspense>
       </DemoProvider>,
     );

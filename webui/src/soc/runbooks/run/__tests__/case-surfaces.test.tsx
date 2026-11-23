@@ -109,8 +109,6 @@ describe('Overview Next step card', () => {
           c={CASE}
           fpPolicy={null}
           triage={null}
-          triageLoading={false}
-          presentation="case-manager"
           runbookCard={<OverviewNextStep run={makeRun()} progress={progress()} onOpenRunbook={vi.fn()} />}
         />
       </TooltipProvider>,
@@ -122,24 +120,22 @@ describe('Overview Next step card', () => {
 
 describe('Overview and facts rail labels', () => {
   it('names the runbook the investigator used, and labels stored data from before Round 14', () => {
+    const legacy = {
+      ...CASE,
+      runbook_id: null,
+      playbook_id: 'pb-ssh',
+      automation_actions: [{ action: 'run_playbook', rule_id: 'r1', detail: 'Queued', at: '2026-10-28T13:00:00Z' }],
+    } as unknown as Case;
     render(
       <TooltipProvider>
-        <OverviewPanel
-          c={{
-            ...CASE,
-            runbook_id: null,
-            playbook_id: 'pb-ssh',
-            automation_actions: [{ action: 'run_playbook', rule_id: 'r1', detail: 'Queued', at: '2026-10-28T13:00:00Z' }],
-          } as unknown as Case}
-          fpPolicy={null}
-          triage={null}
-          triageLoading={false}
-        />
+        <OverviewPanel c={legacy} fpPolicy={null} triage={null} />
+        <FactsRail c={legacy} outcome={caseOutcome(legacy)} triage={null} canViewCost={false} onCaseChange={vi.fn()} />
       </TooltipProvider>,
     );
     fireEvent.click(screen.getByRole('button', { name: /Provenance & audit/ }));
     expect(screen.getByText('Runbook automation (before Round 14)')).toBeInTheDocument();
-    expect(screen.getByText('Runbook (before Round 14) pb-ssh')).toBeInTheDocument();
+    // The investigator's stored runbook id is a fact of the record (Round 15, D8.4).
+    expect(screen.getByTestId('facts-record')).toHaveTextContent('Runbook (before Round 14)pb-ssh');
     expect(document.body.textContent).not.toMatch(/Queued playbook|Playbook pb-ssh/);
   });
 
@@ -151,8 +147,7 @@ describe('Overview and facts rail labels', () => {
           c={CASE}
           outcome={caseOutcome(CASE)}
           triage={null}
-          users={[]}
-          canAssign={false}
+          canViewCost={false}
           onCaseChange={vi.fn()}
           runbook={{ data: makeData(), loading: false, failed: false, onOpenPhase }}
         />
@@ -169,7 +164,7 @@ describe('Overview and facts rail labels', () => {
   it('leaves the facts rail Runbook section out for a viewer with no Runbook tab', () => {
     render(
       <TooltipProvider>
-        <FactsRail c={CASE} outcome={caseOutcome(CASE)} triage={null} users={[]} canAssign={false} onCaseChange={vi.fn()} />
+        <FactsRail c={CASE} outcome={caseOutcome(CASE)} triage={null} canViewCost={false} onCaseChange={vi.fn()} />
       </TooltipProvider>,
     );
     expect(screen.queryByTestId('facts-runbook')).toBeNull();

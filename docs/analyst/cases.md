@@ -110,13 +110,16 @@ positive"), and the AI verdict stays visible as a labelled second line.
 
 ## Work a case
 
-The canonical Case Manager detail has seven tabs. Cases no longer opens a separate
+The canonical Case Manager detail has five tabs. Cases no longer opens a separate
 sheet with another copy of the same controls.
 
-- **Overview**: a compact decision brief, risk and confidence signal profile,
-  persisted risk-factor values, source/agent/code provenance, entity context, attack story,
-  ownership, and history without duplicating the same verdict in every card. When a
-  runbook is attached to an open case, its **Next step** card sits at the top.
+- **Overview**: a compact decision brief, source/agent/code provenance, entity context,
+  attack story, and history without duplicating the same verdict in every card, then
+  **What happened**: the chronological input → correlate → risk assigned → triage →
+  investigate → decision story. Expanding Risk Assigned reconstructs current-weight
+  arithmetic from persisted factors and flags any historical-weight mismatch; the final
+  stage marker pulses. When a runbook is attached to an open case, its **Next step**
+  card sits at the top.
 - **Runbook**: the runbook attached to the case with its pinned version and progress,
   the Next step card, one tab per phase with its steps, and **Other tasks** (the case's
   free-form tasks). The tab shows "None" when no runbook is attached, with **Start
@@ -124,26 +127,20 @@ sheet with another copy of the same controls.
   run stays workable (its optional steps, **Reopen step**); only an abandoned run, or
   every run while runbooks are turned off in Settings, is read only. See
   [Case Manager](case-manager.md#work-the-runbook).
-- **Timeline**: the chronological input → correlate → risk assigned → triage →
-  investigate → decision story. Expanding Risk Assigned reconstructs current-weight
-  arithmetic from persisted factors and flags any historical-weight mismatch. In
-  Case Manager only, the final stage marker pulses.
 - **Investigation**: AI assessment, pinned deterministic decision, and the full
-  tool/reasoning trace.
-- **Threat context**: indicator reputation, ATT&CK context, related cases, and the persisted
-  redacted Input alerts → Correlation cluster → Opened case explanation. Focus or
-  hover its nodes for source counts, grouping, threshold/window, status, and verdict;
-  raw identifiers and payloads are excluded.
+  tool/reasoning trace, then **Threat context**: indicator reputation, ATT&CK context,
+  related cases, and the persisted redacted Input alerts → Correlation cluster → Opened
+  case explanation. Focus or hover its nodes for source counts, grouping,
+  threshold/window, status, and verdict; raw identifiers and payloads are excluded.
 - **Collaboration**: discussion, reactions, and activity. The case's tasks are in the
   Runbook tab under **Other tasks**.
 - **Chat**: case-scoped questions using the shared chat engine.
 
 In Case Manager, the header's **Take action** menu contains state-changing, investigative, and export
-commands: the appropriate lifecycle action, disposition, re-investigation, **Start
-runbook**, refresh, case chat, open in a new tab, JSON/Markdown export, and notification as
-permissions allow. Timeline and Investigation are visible tabs and are intentionally
-not repeated as menu actions. **Share** remains separate. Exports are available as
-JSON or a Markdown handoff report.
+commands: the lifecycle actions, disposition, re-investigation, **Start runbook**,
+refresh, case chat, JSON/Markdown export, and notification as permissions allow. The tabs
+are intentionally not repeated as menu actions. **More options** holds the case link.
+Exports are available as JSON or a Markdown handoff report.
 
 ## Lifecycle actions and permissions
 

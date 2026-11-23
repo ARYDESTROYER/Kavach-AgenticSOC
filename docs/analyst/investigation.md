@@ -56,7 +56,8 @@ In a case:
    guidance the investigator received (with its version), and the platform
    threshold-tuning snapshot for the latest run. When a runbook is attached to an
    open case, its **Next step** card sits at the top of the Overview.
-2. **Timeline** shows when the six pipeline stages occurred. The visible labels are
+2. **What happened**, a section of the Overview (the former Timeline tab), shows when
+   the six pipeline stages occurred. The visible labels are
    Input, Correlate, Risk Assigned, Triage, Investigate, and Decision. Expanding
    **Risk Assigned** reconstructs the arithmetic from persisted factor values and
    current configured weights. When historical weights differ, it preserves the
@@ -69,8 +70,8 @@ In a case:
    severity-threshold changes, not model fine-tuning. When the narrative sentence
    already states the verdict and confidence, duplicate verdict and confidence chips
    are suppressed rather than shown twice.
-4. **Threat** adds enrichment, ATT&CK, related-case context, and **How this case was
-   clustered**. That read-only diagram uses persisted facts to show Input alerts →
+4. **Threat context**, a section of the Investigation tab (formerly its own tab), adds
+   enrichment, ATT&CK, related-case context, and **How this case was clustered**. That read-only diagram uses persisted facts to show Input alerts →
    Correlation cluster → Opened case. Focus or hover a node to inspect contributing
    source counts, grouping, threshold/window, status, verdict, and related links.
    Alert references are bounded one-way hashes; raw source identifiers and payloads

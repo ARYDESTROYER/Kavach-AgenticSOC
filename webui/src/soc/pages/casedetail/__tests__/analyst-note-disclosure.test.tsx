@@ -11,10 +11,11 @@
  * The only real fix is telling the analyst, where they type, what the note becomes.
  *
  * This spec pins that the label is present on exactly the flows that persist the text:
- *   (a) the close-with-disposition dialog (wire verb `close`);
- *   (b) the confirm-false-positive dialog;
- *   (c) the grading "What did the AI miss?" comment;
- *   (d) and NOT on a lifecycle action whose note is never indexed (escalate/hold).
+ *   (a) the close-with-disposition dialog (wire verb `close`), the Console's one close
+ *       flow since Round 15 removed the unused `close` and `confirm_fp` actions (D8.7);
+ *   (b) the grading "What did the AI miss?" comment;
+ *   (c) and NOT on a lifecycle action whose note is never indexed (escalate/hold, a
+ *       resolve).
  * It also pins the note field is programmatically described by the label (a11y).
  */
 import { describe, it, expect, vi } from 'vitest';
@@ -73,14 +74,10 @@ describe('analyst-comment disclosure', () => {
     expect(note).toHaveAccessibleDescription(DURABLE_CONTEXT_NOTE);
   });
 
-  it('labels the analyst note on confirm-false-positive', () => {
-    renderDialog('confirm_fp');
-    expect(screen.getByText(DURABLE_CONTEXT_NOTE)).toBeInTheDocument();
-  });
-
-  it('labels the analyst note on the plain close action', () => {
-    renderDialog('close');
-    expect(screen.getByText(DURABLE_CONTEXT_NOTE)).toBeInTheDocument();
+  it('offers no other close action: close_disposition is the one close flow (D8.7)', () => {
+    expect(Object.keys(ALL_ACTIONS)).not.toContain('close');
+    expect(Object.keys(ALL_ACTIONS)).not.toContain('confirm_fp');
+    expect(ALL_ACTIONS.close_disposition.wireAction).toBe('close');
   });
 
   it('does not claim durability for a note that is never indexed', () => {

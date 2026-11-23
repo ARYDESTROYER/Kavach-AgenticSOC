@@ -10,7 +10,7 @@
  */
 import * as React from 'react';
 import { describe, expect, it, vi } from 'vitest';
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 const CASE = {
@@ -91,6 +91,39 @@ describe('CaseDetail keyboard model', () => {
     await user.keyboard('{Escape}');
     await waitFor(() => expect(screen.queryByRole('heading', { name: 'Case facts' })).toBeNull());
     await waitFor(() => expect(details).toHaveFocus());
+  });
+
+  it('T opens the tag editor in the facts rail column beside the tabs (D8.2)', async () => {
+    await renderLoaded();
+    act(() => (document.activeElement as HTMLElement | null)?.blur());
+    fireEvent.keyDown(document.body, { key: 't' });
+    const field = await screen.findByRole('textbox', { name: 'New tag' });
+    // The editor opened from the rail column, and no Details sheet was needed.
+    expect(screen.queryByRole('heading', { name: 'Case facts' })).toBeNull();
+    expect(within(screen.getByTestId('case-facts-column')).getByTestId('case-detail-tags')).toBeInTheDocument();
+    // The editor is a popover dialog anchored to the rail's "Edit tags".
+    await waitFor(() => expect(field.closest('[role="dialog"]')).not.toBeNull());
+  });
+
+  it('T opens the Details sheet first when the rail column is hidden, then the tag editor (D8.2, [ru] M4)', async () => {
+    const proto = HTMLElement.prototype as HTMLElement & { checkVisibility?: () => boolean };
+    const original = proto.checkVisibility;
+    // A narrow pane: the container query hides the rail column.
+    proto.checkVisibility = function checkVisibility(this: HTMLElement) {
+      return this.getAttribute('data-testid') !== 'case-facts-column';
+    };
+    try {
+      await renderLoaded();
+      act(() => (document.activeElement as HTMLElement | null)?.blur());
+      fireEvent.keyDown(document.body, { key: 't' });
+      expect(await screen.findByRole('heading', { name: 'Case facts' })).toBeInTheDocument();
+      const field = await screen.findByRole('textbox', { name: 'New tag' });
+      // The editor is the one in the sheet, not in the hidden column.
+      expect(screen.getByTestId('case-facts-column')).not.toContainElement(field);
+    } finally {
+      if (original) proto.checkVisibility = original;
+      else delete proto.checkVisibility;
+    }
   });
 
   it('wraps the actions below a long title instead of squeezing it', async () => {

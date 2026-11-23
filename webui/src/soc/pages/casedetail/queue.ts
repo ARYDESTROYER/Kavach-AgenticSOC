@@ -39,6 +39,14 @@ export const QUEUE_STATUS_OPTIONS: ReadonlyArray<{ value: string; label: string;
 
 export const QUEUE_SEVERITIES = ['critical', 'high', 'medium', 'low', 'info'] as const;
 
+/** The view menu's words for each sort (Round 15, D8.1), in menu order. */
+export const QUEUE_SORT_LABEL: Readonly<Record<QueueSort, string>> = {
+  updated_desc: 'Latest',
+  risk_desc: 'Highest risk',
+  created_desc: 'Newest',
+  title_asc: 'Title, A to Z',
+};
+
 const SORTS: Record<QueueSort, { sort_field: string; sort_order: 'asc' | 'desc' }> = {
   updated_desc: { sort_field: 'updated_at', sort_order: 'desc' },
   risk_desc: { sort_field: 'risk_score', sort_order: 'desc' },
@@ -235,7 +243,7 @@ export function scopeHeading(scope: QueueScope): string {
   return 'Active cases';
 }
 
-/** "23 of 253 active · 50 loaded" — the scope line always states loaded vs total. */
+/** "23 of 253 active · 50 loaded": the scope line (in the list footer) states loaded against total. */
 export function scopeSummary(
   scope: QueueScope,
   loaded: number,
