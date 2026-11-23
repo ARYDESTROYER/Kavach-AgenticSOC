@@ -11872,3 +11872,10 @@
 - Tests: docs records tests pass (52).
 - Status: in progress; an adversarial review of the SPEC against the code is running.
 - Next: fold the review corrections into the SPEC, then run WP1 (foundation) in the main tree.
+
+### 2026-11-23 13:10Z - orchestrator - Round 15 SPEC revised after three code reviews
+- Context: adversarial review of the Round 15 SPEC against the code (backend contracts, Console and UI, safety and statistics), before any implementation.
+- Did: folded every finding into the SPEC and indexed them in its Appendix A; committed the three reports under `docs/research/2026-11-round15/review/`. Main corrections: the close keeps today's derived-agreement grade and never sets `actual_outcome` from the disposition; review notes are fenced precedent like grading comments, and new audit rows keep filenames, captions and notes out of `result_summary`; the review marker and history event are written only for sampled cases; `CaseAction.review_via` is a Literal that never reaches the internal `via`; the carry-over covers all three case builders and carries status for the transition only; `PUT /api/settings` needs `roles:manage` and a fresh sign-in for other `rbac.*` changes; the wizard readiness uses one helper per provider and the public status carries only a boolean; Team activity normalises people, labels environment and Demo accounts, and keeps a role floor while RBAC is off; old `tab=timeline` and `tab=threat` links redirect; the Runbook tab stays second.
+- Tests: docs records tests pass.
+- Status: in progress.
+- Next: WP1 foundation in the main tree.
