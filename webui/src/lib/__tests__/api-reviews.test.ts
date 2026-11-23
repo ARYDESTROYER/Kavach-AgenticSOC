@@ -5,7 +5,8 @@
  *   - every call names a real path and method of `openapi.json`, its query parameters
  *     are declared and its body fields belong to the declared request body;
  *   - the URL, method and body each call sends;
- *   - the module is lazy: no entry module imports it.
+ *   - the module is lazy: no entry module imports it;
+ *   - the browser listens on the `case.review` live channel the backend publishes (D6.5).
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
@@ -13,6 +14,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { getAutoCloseReviewMetrics, getAutoCloseReviewSummary, listReviewCases, recordReview } from '../api-reviews';
+import { STREAM_CHANNELS } from '../useEventStream';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SRC = resolve(HERE, '..', '..');
@@ -102,5 +104,11 @@ describe('laziness', () => {
     };
     walk(SRC);
     expect(offenders).toEqual([]);
+  });
+});
+
+describe('the live review nudge', () => {
+  it('is a channel the shared stream listens on, so a queue can refresh its review count', () => {
+    expect(STREAM_CHANNELS as readonly string[]).toContain('case.review');
   });
 });

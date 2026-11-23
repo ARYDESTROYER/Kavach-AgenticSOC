@@ -45,8 +45,8 @@ from ..constants import (
     FeedbackOutcome,
 )
 from ..models import AuditChange, AuditTarget
+from ..realtime import CASE_REVIEW_EVENT
 from ..stores.auto_close_review import (
-    LEDGER_MAX_ENTRIES,
     STATE_COMPLETED,
     STATE_EXPIRED,
     STATE_PENDING,
@@ -85,8 +85,10 @@ REQUEST_FAILED_ACTION = "case.review_request_failed"
 RECORDED_ACTION = "case.review_recorded"
 RECORD_FAILED_ACTION = "case.review_record_failed"
 #: The live frame published on ``cases:{id}`` and ``cases`` when a case is sampled or
-#: reviewed (a nudge: ids and codes only; the Console re-reads).
-REVIEW_EVENT = "case.review"
+#: reviewed (a nudge: ids and codes only; the Console re-reads). The registry constant,
+#: never a literal: a channel missing from ``realtime.SSE_EVENT_TYPES`` (and the browser's
+#: mirror) is silently never delivered to a listener.
+REVIEW_EVENT = CASE_REVIEW_EVENT
 #: The statement the Agent effectiveness module shows beside every agreement figure.
 AGREEMENT_STATEMENT = (
     "Agreement describes the sampled cases only, unweighted. "
@@ -371,13 +373,12 @@ def review_metrics(
             waits.append((done_at - sampled_at).total_seconds() * 1000.0)
     sampled_days = Counter(e.day for e in cohort)
     days = sorted(set(sampled_days) | set(eligible_days or {}))
-    oldest = ledger.entries[0].sampled_instant() if ledger.entries else None
-    # The ring keeps the newest entries: a window that starts before the oldest kept
-    # one may be missing evicted samples, so its counts are lower bounds.
-    ledger_complete = not (
-        len(ledger.entries) >= LEDGER_MAX_ENTRIES and oldest is not None
-        and (start is None or start < oldest)
-    )
+    # The ring drops settled entries first, so a dropped sample can be newer than the
+    # oldest kept one: the ledger's watermark is the newest dropped sample time. A
+    # window that starts at or before it may be missing dropped samples, so its counts
+    # are lower bounds; one that starts after it holds every sample.
+    evicted = ledger.evicted_instant()
+    ledger_complete = not (evicted is not None and (start is None or start <= evicted))
     return {
         "sampled": len(cohort),
         "reviewed": len(completed),

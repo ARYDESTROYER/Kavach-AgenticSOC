@@ -18,6 +18,9 @@ case ids, rule names and dates never become Elasticsearch field names:
   expired entries are dropped first, then the oldest pending ones.
 * ``days``: per operator day, how many cases were sampled overall and per rule, for
   :data:`DAY_COUNTS_DAYS` days (the daily and per-rule caps read it).
+* ``evicted_through``: the newest sample time among the entries the ring has dropped
+  (absent until it drops one), so a metrics window that starts after it is known to
+  hold every sample, and one that starts at or before it reports "at least".
 
 The document is written only when a case is sampled or reviewed. ``pending`` and
 ``completed`` are stored; ``expired`` is computed on read from the configured expiry.
@@ -175,11 +178,14 @@ class ReviewEntry:
 @dataclass
 class ReviewLedger:
     """The decoded ledger: the entry ring (oldest first), the per-day counts
-    (``{day: {"n": int, "rules": {rule: int}}}``) and the document revision."""
+    (``{day: {"n": int, "rules": {rule: int}}}``), the eviction watermark
+    (``evicted_through``, the newest sample time the ring has dropped, ISO text or
+    empty) and the document revision."""
 
     entries: list[ReviewEntry] = field(default_factory=list)
     days: dict[str, dict[str, Any]] = field(default_factory=dict)
     rev: int = 0
+    evicted_through: str = ""
 
     # -- reads ------------------------------------------------------------------ #
     def entry_for_case(self, case_id: str) -> ReviewEntry | None:
@@ -213,6 +219,11 @@ class ReviewLedger:
     def oldest_day(self) -> str | None:
         return min(self.days) if self.days else None
 
+    def evicted_instant(self) -> datetime | None:
+        """The newest sample time among the dropped entries, or None when the ring has
+        never dropped one."""
+        return _parse_ts(self.evicted_through)
+
     # -- transitions (pure; callers run them inside :meth:`AutoCloseReviewStore.update`) #
     def add(self, entry: ReviewEntry, *, now: datetime, expiry_days: int) -> None:
         """Append ``entry``, count it on its day (overall and for its rule), then keep
@@ -241,6 +252,15 @@ class ReviewLedger:
             if len(remove) < overflow:
                 pending = [i for i in range(len(self.entries)) if i not in remove]
                 remove.update(pending[: overflow - len(remove)])
+            # Settled entries go first, so a dropped entry can be NEWER than the oldest
+            # kept one: the watermark records the newest dropped sample time.
+            newest = self.evicted_instant()
+            for index in remove:
+                at = self.entries[index].sampled_instant()
+                if at is not None and (newest is None or at > newest):
+                    newest = at
+            if newest is not None:
+                self.evicted_through = newest.astimezone(timezone.utc).isoformat()
             self.entries = [e for i, e in enumerate(self.entries) if i not in remove]
             dropped = len(remove)
         cutoff = (now - timedelta(days=DAY_COUNTS_DAYS)).date().isoformat()
@@ -290,15 +310,21 @@ class ReviewLedger:
                 "n": max(0, n) if isinstance(n, int) and not isinstance(n, bool) else 0,
                 "rules": clean_rules,
             }
-        return cls(entries=entries, days=days, rev=rev)
+        evicted = _text(parsed.get("evicted_through"), _MAX_TS)
+        return cls(
+            entries=entries, days=days, rev=rev,
+            evicted_through=evicted if _parse_ts(evicted) is not None else "",
+        )
 
     def to_json(self) -> str:
         """The canonical stored form (sorted keys, no spaces)."""
-        payload = {
+        payload: dict[str, Any] = {
             "schema": LEDGER_SCHEMA,
             "entries": [entry.to_doc() for entry in self.entries],
             "days": self.days,
         }
+        if self.evicted_through:
+            payload["evicted_through"] = self.evicted_through
         return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
     def to_doc(self) -> dict[str, Any]:
@@ -313,6 +339,7 @@ class ReviewLedger:
             entries=[copy.copy(entry) for entry in self.entries],
             days=copy.deepcopy(self.days),
             rev=self.rev,
+            evicted_through=self.evicted_through,
         )
 
 

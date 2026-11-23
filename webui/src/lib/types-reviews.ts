@@ -125,7 +125,7 @@ export interface AutoCloseReviewMetrics {
   time_to_review_ms: ReviewDuration;
   by_day: ReviewDayRow[];
   eligible: ReviewEligible;
-  /** False when the ledger ring evicted samples older than the window start. */
+  /** False when the ledger ring dropped samples this window may hold (the counts are then "at least"). */
   ledger_complete: boolean;
   statement: string;
   generated_at: string;

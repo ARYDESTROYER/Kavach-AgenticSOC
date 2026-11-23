@@ -244,9 +244,9 @@ def _store(state: AppState) -> Any:
     return state.auto_close_review
 
 
-async def _load(state: AppState) -> ReviewLedger:
+async def _load(state: AppState, store: Any = None) -> ReviewLedger:
     try:
-        return await _store(state).load()
+        return await (store if store is not None else _store(state)).load()
     except ReviewLedgerUnavailable as exc:
         raise _error(503, "review_ledger_unavailable",
                      "Auto-close reviews could not be read right now. Try again.") from exc
@@ -281,11 +281,15 @@ def _complete_from_history(ledger: ReviewLedger, entries: dict[str, Any]) -> Rev
     return ledger if changed else None
 
 
-async def _repair(state: AppState, found: dict[str, Any]) -> None:
+async def _repair(
+    state: AppState, found: dict[str, Any], *, store: Any = None, locked: bool = False,
+) -> None:
     """Complete the ledger entries a case's history shows as reviewed (the ledger write
-    failed after the case save). Best-effort."""
+    failed after the case save). Best-effort. ``locked=True`` when the caller already
+    holds the store's lock."""
+    store = store if store is not None else _store(state)
     try:
-        ledger = await _store(state).load()
+        ledger = await store.load()
     except ReviewLedgerUnavailable:
         return
     events: dict[str, Any] = {}
@@ -299,7 +303,7 @@ async def _repair(state: AppState, found: dict[str, Any]) -> None:
     if not events:
         return
     try:
-        await _store(state).update(lambda current: _complete_from_history(current, events))
+        await store.update(lambda current: _complete_from_history(current, events), locked=locked)
     except ReviewLedgerUnavailable as exc:
         logger.warning("Auto-close review ledger repair failed: %s", exc)
 
@@ -350,8 +354,11 @@ def _label(case: Any) -> str:
 
 
 async def _inapp_allows(state: AppState, user: str) -> bool:
-    """False when ``user`` turned the Assignment category off for the Inbox (their
-    category preference, D6.9). Any read failure delivers."""
+    """False when ``user`` switched the Assignment category off (their category
+    preference, D6.9). The category's ``channels`` list names the EXTRA channels only
+    (email, Slack and the rest; the Inbox preferences never write ``in_app``, which is
+    always on), so a list is never read as a mute: a person who added email to
+    Assignment still gets the Inbox item. Any read failure delivers."""
     prefs_store = getattr(state, "notif_prefs", None)
     if prefs_store is None:
         return True
@@ -360,13 +367,7 @@ async def _inapp_allows(state: AppState, user: str) -> bool:
         entry = (getattr(pref, "categories", {}) or {}).get(NotificationCategory.ASSIGNMENT.value)
     except Exception:  # noqa: BLE001
         return True
-    if isinstance(entry, dict):
-        if entry.get("enabled") is False:
-            return False
-        channels = entry.get("channels")
-        if isinstance(channels, list) and channels and "in_app" not in channels:
-            return False
-    return True
+    return not (isinstance(entry, dict) and entry.get("enabled") is False)
 
 
 async def notify_disagreement(
@@ -457,24 +458,62 @@ async def record_auto_close_review(
     state: AppState = Depends(get_state),
 ) -> ReviewResult:
     """Record a person's review of a case the AI agent closed automatically (D6.6)."""
-    from .routes import _case_audit_fields, _case_work_actor, _request_audit_context
+    from .routes import _case_work_actor
 
     user = await _enforce(request, "cases", "write")
     actor = _case_work_actor(user, None)
     can_reopen = (await resolve_access(request)).allows("cases", "close")
+    store = _store(state)
+    # One review at a time per ledger in this process: the store's lock, which the
+    # sampler and every ledger write also take, is held from the checks through the
+    # ledger completion. The second of two concurrent submissions for one sampled case
+    # then reads the first one's completed entry (or its history event) and answers
+    # 409, and neither case save can overwrite the other's grade. The precedent index,
+    # the Inbox and the live frame follow outside the lock.
+    async with store.lock:
+        recorded = await _record_review_locked(state, store, case_id, body, request, actor=actor)
+    fresh, agrees, ai_verdict, review_id = recorded
+
+    # 4. The note becomes fenced untrusted precedent text like any grading comment (#9).
+    if _status(fresh) in TERMINAL_CASE_STATUSES:
+        try:
+            await state.rag_service.index_resolved_case(fresh, note=body.note)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Auto-close review RAG refresh failed for %s: %s", case_id[:80], exc)
+
+    # 5. A disagreement from someone who cannot reopen reaches someone who can.
+    if agrees is False and not can_reopen:
+        await notify_disagreement(
+            state, fresh, reviewer=actor, classification=body.classification,
+            ai_verdict=ai_verdict, review_id=review_id,
+        )
+    publish_review_frame(getattr(state, "event_bus", None), case_id, review_id, STATE_COMPLETED)
+    return ReviewResult(agrees=agrees, can_reopen=can_reopen, sampled=bool(review_id),
+                        review_id=review_id or None)
+
+
+async def _record_review_locked(
+    state: AppState, store: Any, case_id: str, body: ReviewBody, request: Request, *,
+    actor: str,
+) -> tuple[Case, bool | None, str, str]:
+    """Steps 1 to 3 of the review with ``store.lock`` held
+    (:func:`record_auto_close_review`): the checks, the audit row, the case save and the
+    ledger completion. Returns ``(saved case, agrees, AI verdict, review id)``; the
+    review id is empty for a case that was not sampled."""
+    from .routes import _case_audit_fields, _request_audit_context
+
     case = await state.cases.get(case_id)
     if case is None:
         raise _error(404, "case_not_found", "Case not found.")
     if _status(case) not in TERMINAL_CASE_STATUSES or not first_decision_is_agent_close(case):
         raise _error(409, "review_not_agent_closed",
                      "Only a case the AI agent closed automatically can be reviewed.")
-    store = _store(state)
-    ledger = await _load(state)
+    ledger = await _load(state, store)
     entry = ledger.entry_for_case(case_id)
     if entry is not None and entry.state == STATE_COMPLETED:
         raise _error(409, "review_already_recorded", "This auto-close review is already recorded.")
     if entry is not None and history_review(case, entry.review_id) is not None:
-        await _repair(state, {case_id: case})
+        await _repair(state, {case_id: case}, store=store, locked=True)
         raise _error(409, "review_already_recorded", "This auto-close review is already recorded.")
     sampled = entry is not None
     review_id = entry.review_id if entry is not None else ""
@@ -583,30 +622,14 @@ async def record_auto_close_review(
 
         for attempt in range(2):
             try:
-                await store.update(_complete)
+                await store.update(_complete, locked=True)
                 break
             except ReviewLedgerUnavailable as exc:
                 logger.warning(
                     "Auto-close review ledger completion failed for %s (attempt %d): %s",
                     case_id[:80], attempt + 1, exc,
                 )
-
-    # 4. The note becomes fenced untrusted precedent text like any grading comment (#9).
-    if _status(fresh) in TERMINAL_CASE_STATUSES:
-        try:
-            await state.rag_service.index_resolved_case(fresh, note=body.note)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Auto-close review RAG refresh failed for %s: %s", case_id[:80], exc)
-
-    # 5. A disagreement from someone who cannot reopen reaches someone who can.
-    if agrees is False and not can_reopen:
-        await notify_disagreement(
-            state, fresh, reviewer=actor, classification=body.classification,
-            ai_verdict=ai_verdict, review_id=review_id,
-        )
-    publish_review_frame(getattr(state, "event_bus", None), case_id, review_id, STATE_COMPLETED)
-    return ReviewResult(agrees=agrees, can_reopen=can_reopen, sampled=sampled,
-                        review_id=review_id or None)
+    return fresh, agrees, ai_verdict, review_id
 
 
 # --------------------------------------------------------------------------- #
@@ -642,6 +665,10 @@ async def auto_close_review_summary(
     if settled:
         await _repair(state, found)
         ledger = await _load(state)
+        # A repaired entry may be a disagreement: count it now, not on the next read
+        # (its case was read above with the pending ones).
+        disagreed = [e for e in ledger.entries if e.state == STATE_COMPLETED and e.agrees is False]
+        disagreed = disagreed[-SUMMARY_DISAGREED_SCAN:]
     open_disagreements = sum(
         1 for e in disagreed
         if e.case_id in found and _status(found[e.case_id]) in TERMINAL_CASE_STATUSES

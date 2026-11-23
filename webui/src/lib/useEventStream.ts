@@ -102,6 +102,9 @@ export const STREAM_CHANNELS = [
   // Round 14 (SPEC §4.10.15): a case's runbook run changed, topic `runbooks` (served
   // only with runbooks:read and cases:read). Ids, progress counts and the revision only.
   'case.runbook',
+  // Round 15 (SPEC D6.5): an auto-close review was picked or recorded, topics `cases:{id}`
+  // and `cases`. Ids and the review state only; the Review scope re-reads.
+  'case.review',
   'overflow',
 ] as const;
 

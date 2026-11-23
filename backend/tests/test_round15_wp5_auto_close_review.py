@@ -1083,3 +1083,195 @@ async def test_the_ledger_round_trips_on_the_sql_and_elasticsearch_kv_stores() -
             assert (await store.load()).entries == []
     finally:
         await engine.dispose()
+
+
+# --------------------------------------------------------------------------- #
+# Review fixes (the WP5 independent review)
+# --------------------------------------------------------------------------- #
+def test_the_review_frame_is_a_registered_live_channel() -> None:
+    """D6.5: the ``case.review`` nudge is named in the one SSE registry (and so in the
+    browser's mirror, ``useEventStream.ts``): a channel outside it is never delivered to
+    a listener."""
+    from app.realtime import CASE_REVIEW_EVENT, SSE_EVENT_TYPES
+
+    assert acr.REVIEW_EVENT == CASE_REVIEW_EVENT == "case.review"
+    assert CASE_REVIEW_EVENT in SSE_EVENT_TYPES
+    src = (APP / "engine" / "auto_close_review.py").read_text(encoding="utf-8")
+    assert '"case.review"' not in src  # the registry constant, never a second literal
+
+
+async def test_a_queue_subscriber_receives_a_typed_case_review_frame() -> None:
+    """End to end over the bus: a ``cases`` subscriber gets ``event: case.review`` with
+    ids and the state only, the token the browser's listener matches."""
+    import asyncio
+
+    from app.realtime import EventBus
+
+    bus = EventBus(heartbeat_seconds=60)
+    frames: list[str] = []
+
+    async def consume() -> None:
+        async for chunk in bus.subscribe(["cases"], user=None):
+            frames.append(chunk.decode("utf-8"))
+            if len(frames) >= 2:  # ": connected" + the first real frame
+                break
+
+    task = asyncio.create_task(consume())
+    await asyncio.sleep(0)
+    acr.publish_review_frame(bus, "case-0042", "acr-1", "pending")
+    await asyncio.wait_for(task, timeout=5)
+    assert "event: case.review\n" in frames[1]
+    payload = json.loads(frames[1].split("data: ", 1)[1].split("\n", 1)[0])
+    assert payload == {"case_id": "case-0042", "review_id": "acr-1", "state": "pending"}
+    bus.clear()
+
+
+class _DirectRequest:
+    """A request for an in-process call of the review route with sign-in off."""
+
+    def __init__(self, state: AppState) -> None:
+        self.app = SimpleNamespace(state=SimpleNamespace(tlsoc=state))
+        self.headers: dict[str, str] = {}
+        self.cookies: dict[str, str] = {}
+        self.state = SimpleNamespace()
+        self.client = None
+        self.url = SimpleNamespace(path="/api/cases/x/review")
+        self.method = "POST"
+
+
+async def _sample_direct(state: AppState, case: Case) -> str:
+    decision = acr.select_for_review(ReviewLedger(), case, _cfg(sample_rate=1.0), now=NOW, tz="UTC", score=0.0)
+    entry = acr.new_entry(case, decision, datetime.now(timezone.utc))
+
+    def add(ledger: ReviewLedger) -> ReviewLedger:
+        ledger.add(entry, now=datetime.now(timezone.utc), expiry_days=7)
+        return ledger
+
+    await state.real_auto_close_review.update(add)
+    return entry.review_id
+
+
+async def test_two_concurrent_reviews_of_one_sampled_case_record_one(
+    app_state: AppState, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """D6.6: a double submission (two requests in flight at once) records ONE review:
+    the second answers 409 review_already_recorded, the case keeps exactly one grade and
+    one history event, and the ledger names the review that was saved. Without the
+    ledger lock both passed the checks and the second case save dropped the first grade."""
+    import asyncio
+
+    from fastapi import HTTPException
+
+    from app.api.routes_auto_close_review import ReviewBody, record_auto_close_review
+
+    case = _agent_closed("case-race-1")
+    await app_state.cases.save(case)
+    review_id = await _sample_direct(app_state, case)
+    store = app_state.cases
+    original_save = store.save
+
+    async def slow_save(value: Case) -> Any:
+        await asyncio.sleep(0.05)  # widen the read, save window
+        return await original_save(value)
+
+    monkeypatch.setattr(store, "save", slow_save)
+    results = await asyncio.gather(
+        record_auto_close_review("case-race-1", ReviewBody(classification="benign", note="first"),
+                                 _DirectRequest(app_state), app_state),
+        record_auto_close_review("case-race-1", ReviewBody(classification="true_positive", note="second"),
+                                 _DirectRequest(app_state), app_state),
+        return_exceptions=True,
+    )
+    ok = [r for r in results if not isinstance(r, BaseException)]
+    refused = [r for r in results if isinstance(r, HTTPException)]
+    assert len(ok) == 1 and len(refused) == 1, results
+    assert refused[0].status_code == 409 and refused[0].detail["code"] == "review_already_recorded"
+    stored = await app_state.cases.get("case-race-1")
+    assert len(stored.feedback) == 1
+    assert len([e for e in stored.history if e.get("event") == "auto_close_review"]) == 1
+    entry = (await app_state.real_auto_close_review.load()).entry_by_id(review_id)
+    assert entry.state == "completed"
+    saved = stored.feedback[0]
+    assert entry.classification == ("benign" if saved.assessment == "agree" else "true_positive")
+    rows = await app_state.audit.records_for_case("case-race-1")
+    assert len([r for r in rows if r.get("action") == "case.review_recorded"]) == 1
+
+
+def test_an_extra_delivery_channel_never_mutes_the_inbox_item(env) -> None:
+    """D6.9: the Inbox preferences list the EXTRA channels of a category (email and the
+    rest) and never ``in_app``, which is always on. A person who added email to
+    Assignment still gets the disagreement item; only switching Assignment off mutes it."""
+    c, state, h = env
+    case = _agent_closed("case-rv-chan", number="CASE-0303")
+    _put(c, state, case)
+    _sample(c, state, case)
+    c.portal.call(lambda: state.notif_prefs.patch(
+        "t2", categories={"assignment": {"enabled": True, "channels": ["email"]}}))
+    c.portal.call(lambda: state.notif_prefs.patch("boss", categories={"assignment": {"enabled": False}}))
+    r = c.post("/api/cases/case-rv-chan/review", headers=h["t1"], json={"classification": "true_positive"})
+    assert r.status_code == 200 and r.json()["agrees"] is False
+    inbox = state.inbox
+    for user, expected in (("t2", 1), ("Admin", 1), ("boss", 0)):
+        items = [n for n in c.portal.call(inbox.list_for_user, user)[0]
+                 if n.category == "assignment" and n.case_id == "case-rv-chan"]
+        assert len(items) == expected, user
+
+
+def test_the_summary_counts_a_repaired_disagreement_on_the_same_read(env, monkeypatch) -> None:
+    """The summary repairs a pending entry from its case's history and counts it at
+    once: a repaired disagreement on a still-closed case is an open disagreement."""
+    c, state, h = env
+    case = _agent_closed("case-sm-repair")
+    _put(c, state, case)
+    _sample(c, state, case, when=datetime.now(timezone.utc))
+    store = state.real_auto_close_review
+    original = store.update
+
+    async def failing(change: Any, **kw: Any) -> Any:
+        raise ReviewLedgerUnavailable("down")
+
+    monkeypatch.setattr(store, "update", failing)
+    r = c.post("/api/cases/case-sm-repair/review", headers=h["t2"], json={"classification": "true_positive"})
+    assert r.status_code == 200 and r.json()["agrees"] is False
+    monkeypatch.setattr(store, "update", original)
+    body = c.get("/api/auto-close-review/summary", headers=h["t1"]).json()
+    assert body["pending"] == 0 and body["disagreed_open"] == 1
+
+
+def test_ledger_completeness_follows_the_newest_dropped_sample() -> None:
+    """The ring drops settled entries first, so a dropped sample can be newer than the
+    oldest kept (pending) one. The ledger keeps the newest dropped sample time, and a
+    window that starts at or before it is not complete; one after it is."""
+    ledger = ReviewLedger()
+    base = NOW - timedelta(days=5)
+    # The oldest entry is still pending (inside its expiry); the rest are completed.
+    ledger.entries.append(ReviewEntry(review_id="p0", case_id="cp0", sampled_at=base.isoformat(),
+                                      day=base.date().isoformat()))
+    for i in range(1, LEDGER_MAX_ENTRIES):
+        at = base + timedelta(minutes=i)
+        ledger.entries.append(ReviewEntry(review_id=f"r{i}", case_id=f"c{i}", sampled_at=at.isoformat(),
+                                          day=at.date().isoformat(), state="completed",
+                                          completed_at=at.isoformat(), agrees=True))
+    full = acr.review_metrics(ledger, _cfg(), start=None, end=NOW, now=NOW, tz="UTC")
+    assert full["ledger_complete"] is True  # a full ring that never dropped anything
+    newest_dropped = base + timedelta(minutes=3)
+    for n in range(3):
+        ledger.add(ReviewEntry(review_id=f"n{n}", case_id=f"cn{n}", sampled_at=NOW.isoformat(),
+                               day=NOW.date().isoformat()), now=NOW, expiry_days=7)
+    ids = {e.review_id for e in ledger.entries}
+    assert "p0" in ids and not {"r1", "r2", "r3"} & ids and "r4" in ids
+    assert ledger.evicted_instant() == newest_dropped
+    # Starts after the kept pending entry but before the dropped ones: not complete
+    # (the old rule, "starts before the oldest kept entry", called it complete).
+    between = base + timedelta(minutes=2)
+    out = acr.review_metrics(ledger, _cfg(), start=between, end=NOW + timedelta(hours=1), now=NOW, tz="UTC")
+    assert out["ledger_complete"] is False
+    after = acr.review_metrics(ledger, _cfg(), start=newest_dropped + timedelta(seconds=1),
+                               end=NOW + timedelta(hours=1), now=NOW, tz="UTC")
+    assert after["ledger_complete"] is True
+    # The watermark survives the stored form and a copy; an empty ledger has none.
+    doc = {**ledger.to_doc(), "_rev": 4}
+    assert ReviewLedger.from_doc(doc).evicted_instant() == newest_dropped
+    assert ledger.copy().evicted_through == ledger.evicted_through
+    assert ReviewLedger.from_doc({**ReviewLedger().to_doc(), "_rev": 1}).evicted_instant() is None
+    assert "evicted_through" not in json.loads(ReviewLedger().to_json())
