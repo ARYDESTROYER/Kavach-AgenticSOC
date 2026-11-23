@@ -440,7 +440,7 @@ backend/app/
                    /account/me, /demo/*, /proposals, /settings/schema, `/chat`, and
                    per-user `/chat/conversations` list/detail/rename/delete).
                    api/deps.py =
-                   auth/RBAC gates (+ custom-role union). **39 feature routers total**,
+                   auth/RBAC gates (+ custom-role union). **43 feature routers total**,
                    ALL auto-discovered at boot
                    (`main.py::discover_feature_routers()` walks `app.api.routes_*`, needs
                    only a top-level `router: APIRouter` — no manual registration):
@@ -488,7 +488,10 @@ backend/app/
                    added routes_audit (the audit log read API: paged list, count and one
                    record), routes_rule_summary (one detection rule's picture for the
                    rule sheet) and routes_case_runbooks (runbook runs on cases, progress
-                   and the editor's lookup test). Direct reset mutation also returns 410;
+                   and the editor's lookup test); Round 15 added routes_rbac (the
+                   role-based access switch), routes_team (Team activity),
+                   routes_case_files (case screenshots) and routes_auto_close_review
+                   (the auto-close review). Direct reset mutation also returns 410;
                    canonical tiered reset is a Job.
   auth/            passwords (PBKDF2) · tokens (stdlib HS256 JWT, sid/tv claims) · service ·
                    mfa (RFC-6238 TOTP) · oidc (SSO code-exchange)
