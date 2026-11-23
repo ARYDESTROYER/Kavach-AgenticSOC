@@ -278,3 +278,55 @@ describe('FactsRail', () => {
     expect(within(screen.getByTestId('facts-times')).getByText('Closed')).toBeInTheDocument();
   });
 });
+
+describe('FactsRail: the auto-close review in Outcome (Round 15, D8.4; WP7)', () => {
+  const AGENT = {
+    ...FULL,
+    decision_by: 'agent',
+    verdict: 'FALSE_POSITIVE',
+    confidence: 0.93,
+    history: [{ event: 'decision', status: 'closed', decision_by: 'agent', ts: iso(-3 * 3600_000) }],
+    feedback: [],
+  } as unknown as Case;
+  const state = (over: Record<string, unknown> = {}) =>
+    ({ case_id: AGENT.case_id, agent_closed: true, state: 'pending', can_record: true, ...over }) as never;
+
+  it('names who reviewed it and when, and lets the headline carry the agreement', () => {
+    const reviewed = {
+      ...AGENT,
+      feedback: [{ ts: iso(-3600_000), analyst: 't2', assessment: 'disagree', actual_outcome: 'true_positive', origin: 'auto_close_review' }],
+      history: [
+        ...(AGENT.history as unknown[]),
+        { event: 'auto_close_review', review_id: 'acr-1', feedback_ts: iso(-3600_000), analyst: 't2', agrees: false, classification: 'true_positive' },
+      ],
+    } as unknown as Case;
+    renderRail(reviewed, { review: { state: state({ state: 'completed', can_record: false }), bandShown: false } });
+    expect(screen.getByTestId('facts-outcome-headline')).toHaveTextContent('Review disagreed: true positive');
+    expect(screen.getByTestId('facts-review')).toHaveTextContent(/^Auto-close review by t2 · /);
+    // "Overrides the AI" is not repeated beside the AI line: the headline says it.
+    expect(screen.getByTestId('facts-outcome')).not.toHaveTextContent('Overrides the AI');
+  });
+
+  it('says a sample is waiting only when no band says so, and that an expired one went unreviewed', () => {
+    renderRail(AGENT, { review: { state: state(), bandShown: true } });
+    expect(screen.queryByTestId('facts-review')).toBeNull();
+    cleanup();
+    renderRail(AGENT, { review: { state: state(), bandShown: false } });
+    expect(screen.getByTestId('facts-review')).toHaveTextContent(
+      'Picked at random for auto-close review. Waiting for a person.',
+    );
+    cleanup();
+    renderRail(AGENT, { review: { state: state({ state: 'expired', expires_at: iso(-86_400_000) }), bandShown: false } });
+    expect(screen.getByTestId('facts-review')).toHaveTextContent(
+      /^Picked at random for auto-close review\. The review expired .+ ago\.$/,
+    );
+  });
+
+  it('says nothing for an unsampled close or a reopened sample', () => {
+    renderRail(AGENT, { review: { state: state({ state: 'none' }), bandShown: false } });
+    expect(screen.queryByTestId('facts-review')).toBeNull();
+    cleanup();
+    renderRail(AGENT, { review: { state: state({ agent_closed: false, can_record: false }), bandShown: false } });
+    expect(screen.queryByTestId('facts-review')).toBeNull();
+  });
+});

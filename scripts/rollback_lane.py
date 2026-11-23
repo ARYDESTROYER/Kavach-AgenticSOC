@@ -18,6 +18,15 @@ proves it against a real PostgreSQL server:
    gracefully (its shutdown rewrites the preferences document).
 3. Boot release N again and assert the ``runbooks.*`` choices survived the round trip.
 
+Round 15 (SPEC §3.7) adds, unconditionally: in step 1, a terminal case the AI agent
+closed is written through the SQL case repository with a pending auto-close review
+sample, then N records a review of it (a review grade, excluded from
+``/api/feedback/stats``) and uploads a screenshot to it. In step 2, N-1 makes a full save
+of that case (``POST /api/cases/{id}/comment``), which drops the fields it does not know
+from the grade (``origin``, ``review_id``) but keeps the case history. In step 3, N
+asserts that the grade stays excluded (the history marker alone identifies it) and that
+the screenshot still lists and serves.
+
 With ``"forward_contract": true`` in the pin file (set it once N-1 is a release that
 carries the forward-compatibility contract: tolerated unknown job kinds, preserved
 unknown preference keys, corpus-migration markers), the lane also plants synthetic
@@ -56,12 +65,14 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
 import json
 import os
 import re
 import shutil
 import signal
 import socket
+import struct
 import subprocess
 import sys
 import tarfile
@@ -71,6 +82,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+import zlib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -97,6 +109,13 @@ FUTURE_SECTION = "rollback_lane_future_section"
 FUTURE_RUNBOOK_KEY = "rollback_lane_future_switch"
 FUTURE_SCHEME = "runbook-rollback-lane-future:"
 FUTURE_CHUNKS = 300
+#: The Round 15 plants (SPEC §3.7): a terminal agent-closed case in the review sample.
+REVIEW_CASE_ID = "case-rollback-lane-review"
+REVIEW_CASE_NUMBER = "CASE-ROLLBACK-LANE"
+REVIEW_ID = "acr-rollback-lane"
+REVIEW_EVENT = "auto_close_review"
+SCREENSHOT_CAPTION = "Rollback lane screenshot"
+PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
 
 class LaneFailure(AssertionError):
@@ -153,6 +172,68 @@ def audit_export_body(key: str, *, now: float | None = None) -> dict[str, Any]:
             "to": time.strftime("%Y-%m-%dT%H:%M:%SZ", instant),
         },
     }
+
+
+def tiny_png(width: int = 2, height: int = 2) -> bytes:
+    """A small, valid RGB PNG built with the standard library (the screenshot plant)."""
+
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        crc = zlib.crc32(kind + data) & 0xFFFFFFFF
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", crc)
+
+    rows = b"".join(b"\x00" + b"\x1f\x6f\xd0" * width for _ in range(height))
+    header = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    return PNG_SIGNATURE + chunk(b"IHDR", header) + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b"")
+
+
+def screenshot_body() -> dict[str, Any]:
+    """A ``POST /api/cases/{id}/files`` body the backend accepts."""
+    return {
+        "data_base64": base64.b64encode(tiny_png()).decode("ascii"),
+        "content_type": "image/png",
+        "thumbnail_base64": None,
+        "filename": "rollback-lane.png",
+        "caption": SCREENSHOT_CAPTION,
+    }
+
+
+def review_body() -> dict[str, Any]:
+    """A ``POST /api/cases/{id}/review`` body: the reviewer agrees with the AI."""
+    return {"classification": "false_positive", "note": "", "elapsed_ms": 1000}
+
+
+def review_case_doc(now_iso: str) -> dict[str, Any]:
+    """The terminal case the AI agent closed (first decision record an agent close)."""
+    return {
+        "case_id": REVIEW_CASE_ID,
+        "case_number": REVIEW_CASE_NUMBER,
+        "title": "Rollback lane: an automatic close in the review sample",
+        "cluster_signature": "sig-rollback-lane-review",
+        "source_surface": "automated_scan",
+        "rule_ids": ["rollback-lane-rule"],
+        "entity": {"type": "ip", "value": "198.51.100.7"},
+        "verdict": "FALSE_POSITIVE",
+        "confidence": 0.93,
+        "risk_score": 12.0,
+        "status": "closed",
+        "decision_by": "agent",
+        "disposition": "false_positive",
+        "created_at": now_iso,
+        "updated_at": now_iso,
+        "status_history": [{"from_status": "new", "to_status": "closed", "by": "agent", "at": now_iso}],
+        "history": [{
+            "ts": now_iso, "event": "decision", "status": "closed", "decision_by": "agent",
+            "escalate": False, "rationale": "FALSE_POSITIVE auto-closed",
+        }],
+    }
+
+
+def review_events(case: dict[str, Any]) -> list[dict[str, Any]]:
+    """The case's ``auto_close_review`` history events (the rollback-safe marker)."""
+    return [
+        event for event in (case.get("history") or [])
+        if isinstance(event, dict) and event.get("event") == REVIEW_EVENT
+    ]
 
 
 def check(condition: bool, message: str) -> None:
@@ -219,6 +300,15 @@ class Boot:
     def post(self, path: str, body: Any) -> tuple[int, Any]:
         return _http("POST", self.base + path, body)
 
+    def get_bytes(self, path: str) -> tuple[int, str, bytes]:
+        """A raw read (status, content type, bytes): a screenshot's content."""
+        request = urllib.request.Request(self.base + path, method="GET")
+        try:
+            with _LOCAL.open(request, timeout=30.0) as response:
+                return response.status, response.headers.get("Content-Type", ""), response.read()
+        except urllib.error.HTTPError as exc:
+            return exc.code, exc.headers.get("Content-Type", "") if exc.headers else "", exc.read()
+
     def log(self) -> str:
         if not self.log_handle.closed:
             self.log_handle.flush()
@@ -240,6 +330,9 @@ class Lane:
         self.previous_python = args.previous_python or ""
         self.boots: list[Boot] = []
         self.results: list[str] = []
+        #: The Round 15 plants: the screenshot's id and the feedback count before the review.
+        self.screenshot_id = ""
+        self.feedback_baseline = -1
 
     # ----- set-up ------------------------------------------------------ #
     def materialise_previous(self) -> None:
@@ -401,6 +494,103 @@ class Lane:
         check(counts["refused"] == 0, f"{boot.label}: a RAG projection was refused")
         check(counts["seeded"] <= 1, f"{boot.label}: the corpus was projected {counts['seeded']} times")
 
+    def feedback_count(self, boot: Boot) -> int:
+        status, stats = boot.get("/api/feedback/stats")
+        check(status == 200 and isinstance(stats, dict), f"{boot.label}: /api/feedback/stats answered {status}")
+        return int(stats.get("feedback_count") or 0)
+
+    def review_case(self, boot: Boot) -> dict[str, Any]:
+        status, case = boot.get(f"/api/cases/{REVIEW_CASE_ID}")
+        check(status == 200 and isinstance(case, dict), f"{boot.label}: the review case answered {status}")
+        return case
+
+    def assert_review_grade_excluded(self, boot: Boot) -> None:
+        """The review grade is on the case, marked by its history event, and left out of
+        the agreement view (D6.7, D6.8)."""
+        case = self.review_case(boot)
+        grades = list(case.get("feedback") or [])
+        check(len(grades) == 1, f"{boot.label}: the review case holds {len(grades)} grades, expected 1")
+        events = review_events(case)
+        check(
+            len(events) == 1 and events[0].get("review_id") == REVIEW_ID
+            and events[0].get("feedback_ts") == grades[0].get("ts"),
+            f"{boot.label}: the review history event does not name the grade ({events})",
+        )
+        count = self.feedback_count(boot)
+        check(
+            count == self.feedback_baseline,
+            f"{boot.label}: /api/feedback/stats counts {count} grades, expected {self.feedback_baseline} (the review excluded)",
+        )
+
+    def assert_screenshot_served(self, boot: Boot) -> None:
+        status, listing = boot.get(f"/api/cases/{REVIEW_CASE_ID}/files")
+        check(status == 200 and isinstance(listing, dict), f"{boot.label}: the screenshot list answered {status}")
+        ids = [str(entry.get("id")) for entry in listing.get("files") or []]
+        check(ids == [self.screenshot_id], f"{boot.label}: the screenshot list is {ids}, expected [{self.screenshot_id}]")
+        status, kind, data = boot.get_bytes(f"/api/cases/{REVIEW_CASE_ID}/files/{self.screenshot_id}/content")
+        check(status == 200, f"{boot.label}: the screenshot content answered {status}")
+        check(kind.startswith("image/png"), f"{boot.label}: the screenshot was served as {kind!r}")
+        check(data.startswith(PNG_SIGNATURE), f"{boot.label}: the screenshot content is not the PNG uploaded")
+
+    def plant_review_case(self, boot: Boot) -> None:
+        """SPEC §3.7 on release N: the agent-closed case and its pending sample, written
+        directly (the case repository and the ledger's compare-and-set), then a review
+        and a screenshot through N's own API."""
+        asyncio.run(self._plant_review_case())
+        self.feedback_baseline = self.feedback_count(boot)
+        status, result = boot.post(f"/api/cases/{REVIEW_CASE_ID}/review", review_body())
+        check(status == 200, f"release-n: the review answered {status} {result}")
+        check(
+            result.get("sampled") is True and result.get("review_id") == REVIEW_ID,
+            f"release-n: the review was not recorded as the sampled review ({result})",
+        )
+        case = self.review_case(boot)
+        grades = list(case.get("feedback") or [])
+        check(
+            len(grades) == 1 and grades[0].get("origin") == REVIEW_EVENT and grades[0].get("review_id") == REVIEW_ID,
+            f"release-n: the review grade carries no marker ({grades})",
+        )
+        check(case.get("status") == "closed" and case.get("decision_by") == "agent",
+              "release-n: the review changed the case's status or decider")
+        status, upload = boot.post(f"/api/cases/{REVIEW_CASE_ID}/files", screenshot_body())
+        check(status in (200, 201), f"release-n: the screenshot upload answered {status} {upload}")
+        self.screenshot_id = str(((upload or {}).get("file") or {}).get("id") or "")
+        check(bool(self.screenshot_id), f"release-n: the upload named no file ({upload})")
+        self.assert_review_grade_excluded(boot)
+        self.assert_screenshot_served(boot)
+
+    async def _plant_review_case(self) -> None:
+        _backend_on_path()
+        from datetime import datetime, timezone  # noqa: PLC0415
+
+        from app.models import Case  # noqa: PLC0415
+        from app.stores.auto_close_review import AutoCloseReviewStore, ReviewEntry  # noqa: PLC0415
+        from app.stores.sql import SqlKVStore, build_async_engine  # noqa: PLC0415
+        from app.stores.sql.repositories import SqlCaseRepository  # noqa: PLC0415
+
+        now = datetime.now(timezone.utc)
+        engine = build_async_engine(self.url)
+        try:
+            repository = SqlCaseRepository(engine)
+            # Written as stored data, never announced on a bus (no process listens here).
+            repository.publishes_case_events = False
+            await repository.save(Case.model_validate(review_case_doc(now.isoformat())))
+            entry = ReviewEntry(
+                review_id=REVIEW_ID, case_id=REVIEW_CASE_ID, case_number=REVIEW_CASE_NUMBER,
+                rule="rollback-lane-rule", sampled_at=now.isoformat(), day=now.date().isoformat(),
+                score=0.0, ai_verdict="FALSE_POSITIVE",
+            )
+
+            def add(ledger: Any) -> Any:
+                if ledger.entry_for_case(REVIEW_CASE_ID) is not None:
+                    return None
+                ledger.add(entry, now=now, expiry_days=7)
+                return ledger
+
+            await AutoCloseReviewStore(SqlKVStore(engine)).update(add)
+        finally:
+            await engine.dispose()
+
     # ----- the phases -------------------------------------------------- #
     def phase_n(self) -> None:
         boot = self.boot("release-n", BACKEND, sys.executable)
@@ -425,8 +615,10 @@ class Lane:
             "release-n: the runbook corpus is not the migrated runbook-library corpus",
         )
         self.assert_runbook_choices(boot)
+        self.plant_review_case(boot)
         self.stop(boot)
         self.results.append("release-n: wrote an audit export, the migrated corpus and runbook settings")
+        self.results.append("release-n: recorded an auto-close review and a screenshot on an agent-closed case")
 
     def phase_previous(self) -> None:
         boot = self.boot("release-n-1", self.previous_backend, self.previous_python)
@@ -438,15 +630,32 @@ class Lane:
         self.assert_no_reembedding(boot, documents)
         self.assert_healthy(boot)
         self.assert_runbook_choices(boot)
+        # A full save of the reviewed case by a build that does not know the grade's
+        # Round 15 fields (SPEC §3.7): it keeps the history, not the unknown fields.
+        status, saved = boot.post(
+            f"/api/cases/{REVIEW_CASE_ID}/comment",
+            {"author": "rollback-lane", "body": "Saved again by the previous release."},
+        )
+        check(status == 200, f"release-n-1: the comment on the review case answered {status} {saved}")
         self.stop(boot)
         self.results.append("release-n-1: healthy on release N data; corpus served; settings intact")
+        self.results.append("release-n-1: made a full save of the reviewed case")
 
     def phase_return(self) -> None:
         boot = self.boot("release-n-again", BACKEND, sys.executable)
         self.assert_healthy(boot)
         self.assert_runbook_choices(boot)
+        case = self.review_case(boot)
+        comments = [str(c.get("body") or "") for c in case.get("comments") or []]
+        check(
+            "Saved again by the previous release." in comments,
+            "release-n again: the previous release's save of the review case is missing",
+        )
+        self.assert_review_grade_excluded(boot)
+        self.assert_screenshot_served(boot)
         self.stop(boot)
         self.results.append("release-n again: the runbook settings survived the round trip")
+        self.results.append("release-n again: the review grade stays excluded; the screenshot lists and serves")
 
     # ----- synthetic future data (forward_contract) -------------------- #
     async def _plant_future(self) -> dict[str, Any]:

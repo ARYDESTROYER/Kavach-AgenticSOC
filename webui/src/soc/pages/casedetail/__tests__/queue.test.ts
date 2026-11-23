@@ -7,7 +7,9 @@ import { describe, expect, it } from 'vitest';
 
 import type { Case } from '@/lib/types';
 import {
+  QUEUE_REVIEW_STATES,
   QUEUE_STATUS_OPTIONS,
+  asQueueReview,
   caseInScope,
   compareQueueOrder,
   firstDecisionIsAgentClose,
@@ -222,5 +224,42 @@ describe('agent-closed cases (Round 15, D4.7)', () => {
     expect(isAgentClosedCase({ status: 'open', history } as unknown as Case)).toBe(false);
     // A person's close is not an agent close, whatever the last writer says.
     expect(isAgentClosedCase({ status: 'closed', decision_by: 'agent', history: [decision('needs_human', 'system')] } as unknown as Case)).toBe(false);
+  });
+});
+
+describe('the Review scope (Round 15, SPEC D6.12; WP7)', () => {
+  const c = (over: Partial<Case>) => ({ case_id: 'c', status: 'closed', ...over }) as Case;
+
+  it('asks the server for the review queue, behaving like All for the status options', () => {
+    expect(queueQuery({ ...base, scope: 'review' })).toEqual({
+      sort_field: 'updated_at',
+      sort_order: 'desc',
+      review: 'pending',
+    });
+    const completed = queueQuery({ ...base, scope: 'review', review: 'completed', status: 'closed' });
+    expect(completed).toMatchObject({ review: 'completed', status: 'closed' });
+    expect(completed).not.toHaveProperty('status_group');
+    // Every other scope sends no review key, whatever the input carries.
+    for (const scope of ['active', 'mine', 'all'] as const) {
+      expect(queueQuery({ ...base, scope, review: 'pending' })).not.toHaveProperty('review');
+    }
+  });
+
+  it('leaves membership to the server and words its heading and footer per queue', () => {
+    expect(caseInScope(c({ status: 'closed' }), 'review')).toBe(true);
+    expect(caseInScope(c({ status: 'open' }), 'review')).toBe(true);
+    expect(scopeHeading('review')).toBe('Auto-close reviews waiting');
+    expect(scopeHeading('review', 'completed')).toBe('Completed auto-close reviews');
+    // Short words: the line shares the footer with "Show completed reviews".
+    expect(scopeSummary('review', 3, 3, null)).toBe('3 waiting · 3 loaded');
+    expect(scopeSummary('review', 12, 40, 2, 'completed')).toBe('2 of 40 reviewed · 12 loaded');
+    expect(scopeSummary('review', 1, 1, null, 'disagreed')).toBe('1 disagreed · 1 loaded');
+    expect(scopeSummary('review', 0, 0, null, 'expired')).toBe('0 expired · 0 loaded');
+  });
+
+  it('reads only the four review queues from an address', () => {
+    expect(QUEUE_REVIEW_STATES).toEqual(['pending', 'completed', 'disagreed', 'expired']);
+    for (const value of QUEUE_REVIEW_STATES) expect(asQueueReview(value)).toBe(value);
+    for (const value of ['', 'PENDING', 'all', null, undefined, 3]) expect(asQueueReview(value)).toBeNull();
   });
 });

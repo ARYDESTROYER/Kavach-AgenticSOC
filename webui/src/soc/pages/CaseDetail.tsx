@@ -18,6 +18,12 @@
  *     tab id opens the tab it became and scrolls to its section;
  *   - the facts rail (D8.4) beside every tab from a 60rem pane, else in a non-blocking
  *     Details sheet;
+ *   - the auto-close review (Round 15, D6.12, D8.2): on a pending sample of the agent's
+ *     closes, a band under the meta row and Start review as the primary action; on any
+ *     other case the agent closed, "Review this auto-close" in Take action in place of Set
+ *     disposition. Both open the review card in a non-blocking side sheet;
+ *   - the Collaboration tab's Files (D5.12) and the close dialog's "Add screenshots"
+ *     (D4.6), both lazy chunks of the screenshots kit;
  *   - the shared confirm-action dialog (every lifecycle action; a close asks the
  *     disposition once, the actions taken and, on a disagreement with the AI, a note,
  *     with the AI rating collapsed, D4.1 to D4.4), Reinvestigate and Notify.
@@ -48,6 +54,7 @@ import {
   AlertTriangle,
   BookCheck,
   ChevronDown,
+  ClipboardCheck,
   Download,
   ExternalLink,
   FileText,
@@ -82,6 +89,7 @@ import { downloadText } from '@/lib/download';
 import { errorMessage } from '@/lib/errorMessage';
 import { fmtMoney, humanizeToken } from '@/lib/format';
 import { cn } from '@/lib/cn';
+import type { StreamEvent } from '@/lib/useEventStream';
 
 import { Button } from '@/ui/button';
 import { Label } from '@/ui/label';
@@ -176,7 +184,16 @@ import { ConfirmActionDialog } from './casedetail/ConfirmActionDialog';
 import { CaseHeaderMeta } from './casedetail/CaseHeaderMeta';
 import { FactsRail } from './casedetail/FactsRail';
 import { shortcutBlocked } from './casedetail/keyboard';
-import { keepAdvisoryBands } from './casedetail/queue';
+import { isAgentClosedCase, keepAdvisoryBands } from './casedetail/queue';
+import {
+  REVIEW_MENU_LABEL,
+  START_REVIEW_HELP,
+  START_REVIEW_LABEL,
+  reviewActionLayout,
+} from './casedetail/review/review-plan';
+import { useCaseReviewState } from './casedetail/review/useCaseReviewState';
+import { ReviewBand } from './casedetail/review/ReviewBand';
+import { ReviewSheet, loadReviewCard } from './casedetail/review/ReviewSheet';
 import { notifyResultToast } from './casedetail/notifyResult';
 import { CaseChatActivityGlyph, useCaseChatRequest } from '@/soc/chat-activity/case-glyph';
 import { useCaseRunbooks } from '@/soc/runbooks/run/useCaseRunbooks';
@@ -211,6 +228,12 @@ export type { ThreadMessage };
 
 // The Runbook tab's body is lazy (SPEC §3.4, §4.10.11): its chunk loads when the tab opens.
 const RunbookPanel = React.lazy(() => import('./casedetail/RunbookPanel'));
+// The screenshots kit (Round 15, D5.12, D4.6): the Files section loads with the
+// Collaboration tab and the close dialog's drop zone with the dialog, never before.
+const CaseFiles = React.lazy(() => import('./casedetail/files/CaseFiles').then((m) => ({ default: m.CaseFiles })));
+const CloseScreenshots = React.lazy(() => import('./casedetail/files/CloseScreenshots'));
+/** How long a burst of screenshot frames waits before the Files section re-reads. */
+const FILES_REFRESH_MS = 400;
 
 /** The runbook settings the case surfaces read (absent keys keep the defaults: on). */
 interface RunbookPrefs {
@@ -444,6 +467,13 @@ export interface CaseDetailProps {
    * scrolls it into view once; any other value is ignored.
    */
   requestedSection?: string | null;
+  /**
+   * Round 15 (D6.12): bump to re-read the case's auto-close review state (Case Manager
+   * passes one on a `case.review` frame for the open case).
+   */
+  reviewRefreshKey?: number;
+  /** Called after a review is recorded or the case reopened from it (the queue re-reads). */
+  onReviewChange?: () => void;
 }
 
 export const CaseDetail: React.FC<CaseDetailProps> = ({
@@ -457,6 +487,8 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
   resolveDialogFocus,
   requestedTab: requestedTabId = null,
   requestedSection: requestedSectionId = null,
+  reviewRefreshKey = 0,
+  onReviewChange,
 }) => {
   const requestedTab = isCaseTab(requestedTabId) ? requestedTabId : null;
   const requestedSection =
@@ -567,6 +599,40 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
   const { username: currentUser, hasPermission, role: viewerRole, authEnabled, rbacEnabled } = useAuth();
   const canComment = useCan('cases', 'comment');
   const canWriteCase = useCan('cases', 'write');
+
+  // Round 15 (D6.12, D8.2): the auto-close review. Its state is read only for a case the
+  // agent closed (terminal, first decision record an agent close), again after a review,
+  // on a `case.review` frame the queue passes on, and when the status changes.
+  const agentClosed = Boolean(c && c.case_id === id && isAgentClosedCase(c));
+  const [reviewTick, setReviewTick] = React.useState(0);
+  const reviewState = useCaseReviewState(
+    open ? id : null,
+    agentClosed,
+    `${reviewRefreshKey}:${reviewTick}:${c?.status ?? ''}`,
+  );
+  const [reviewOpen, setReviewOpen] = React.useState(false);
+  // A new session per opening: the card measures the time from opening it.
+  const [reviewSession, setReviewSession] = React.useState(0);
+  const reviewOpenerRef = React.useRef<HTMLElement | null>(null);
+
+  // Round 15 (D5.12): the Files section re-reads on a screenshot frame or an upload from
+  // the close dialog; its count sits beside the section heading.
+  const [filesTick, setFilesTick] = React.useState(0);
+  const [filesCount, setFilesCount] = React.useState<{ count: number; max: number | null } | null>(null);
+  const filesTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const refreshFiles = React.useCallback(() => {
+    if (filesTimer.current) clearTimeout(filesTimer.current);
+    filesTimer.current = setTimeout(() => {
+      filesTimer.current = null;
+      setFilesTick((n) => n + 1);
+    }, FILES_REFRESH_MS);
+  }, []);
+  React.useEffect(
+    () => () => {
+      if (filesTimer.current) clearTimeout(filesTimer.current);
+    },
+    [],
+  );
 
   const [rationale, setRationale] = React.useState<CaseRationale | null>(null);
   const [rationaleLoading, setRationaleLoading] = React.useState(false);
@@ -857,6 +923,9 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
     setThreat(null);
     setThreatError(null);
     setThreatLoading(false);
+    // A review belongs to the case it was opened on; the Files count is read again.
+    setReviewOpen(false);
+    setFilesCount(null);
     // The active tab is kept across case switches: an analyst browsing the queue on
     // Investigation stays on Investigation (Defender's Up/Down behaviour).
     void loadCase();
@@ -1012,12 +1081,22 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
   // burst of teammate/AI events collapses into one refetch instead of a fetch storm.
   const liveThreadTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const liveActivityTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
-  const liveRefreshThread = React.useCallback(() => {
-    if (liveThreadTimer.current) clearTimeout(liveThreadTimer.current);
-    liveThreadTimer.current = setTimeout(() => {
-      void loadThread();
-    }, 1200);
-  }, [loadThread]);
+  const liveRefreshThread = React.useCallback(
+    (event?: StreamEvent) => {
+      // A frame that names a screenshot (Round 15, D5.12) re-reads the Files section; the
+      // thread did not change. Only the id's presence is read, never a value (#9).
+      const ref = (event?.data as { ref?: { file_id?: unknown } } | null | undefined)?.ref;
+      if (ref && typeof ref.file_id === 'string') {
+        refreshFiles();
+        return;
+      }
+      if (liveThreadTimer.current) clearTimeout(liveThreadTimer.current);
+      liveThreadTimer.current = setTimeout(() => {
+        void loadThread();
+      }, 1200);
+    },
+    [loadThread, refreshFiles],
+  );
   const liveRefreshActivity = React.useCallback(() => {
     if (liveActivityTimer.current) clearTimeout(liveActivityTimer.current);
     liveActivityTimer.current = setTimeout(() => {
@@ -1584,15 +1663,25 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
     canReinvestigate: false,
     hasRunbookTab: false,
   });
-  const permittedForShortcuts = (() => {
-    const plan = actionPlanForStatus(c?.status);
-    return [plan.primary, ...plan.overflow].filter(
-      (action, index, actions): action is ActionDef =>
-        Boolean(action) &&
-        actions.findIndex((candidate) => candidate?.key === action?.key) === index &&
-        hasPermission(ACTION_PERMISSION[action!.key].resource, ACTION_PERMISSION[action!.key].action),
-    );
-  })();
+  // The D8.2 table: the lifecycle plan for the status, with the auto-close review's rows
+  // (Start review on a pending sample, "Review this auto-close" in place of Set disposition
+  // on any other case the agent closed).
+  const lifecyclePlan = actionPlanForStatus(c?.status);
+  const layout = reviewActionLayout(lifecyclePlan, {
+    agentClosed,
+    review: reviewState,
+    canReview: canWriteCase,
+  });
+  const permittedForShortcuts = [layout.primary, ...layout.overflow].filter(
+    (action, index, actions): action is ActionDef =>
+      Boolean(action) &&
+      actions.findIndex((candidate) => candidate?.key === action?.key) === index &&
+      hasPermission(ACTION_PERMISSION[action!.key].resource, ACTION_PERMISSION[action!.key].action),
+  );
+  // A pending sample's review card is warmed before Start review is pressed.
+  React.useEffect(() => {
+    if (layout.startReview) void loadReviewCard().catch(() => undefined);
+  }, [layout.startReview]);
   const shownIsCurrent = Boolean(c && c.case_id === id);
   shortcutStateRef.current = {
     blocked:
@@ -1687,18 +1776,20 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
 
   if (!open) return null;
 
-  const actionPlan = actionPlanForStatus(c?.status);
   // Take action holds every OTHER verb (D8.2): the primary contextual action is the
-  // header button, so the menu never repeats it.
-  const permittedLifecycleActions = permittedForShortcuts.filter((action) => action.key !== actionPlan.primary.key);
+  // header button, so the menu never repeats it. With Start review as the primary, every
+  // lifecycle verb (Reopen first) is in the menu.
+  const lifecyclePrimary = layout.primary;
+  const permittedLifecycleActions = permittedForShortcuts.filter(
+    (action) => !lifecyclePrimary || action.key !== lifecyclePrimary.key,
+  );
   const outcome = c ? caseOutcome(c) : null;
   const busy = loading || acting || !shownIsCurrent;
-  const canPrimary = hasPermission(
-    ACTION_PERMISSION[actionPlan.primary.key].resource,
-    ACTION_PERMISSION[actionPlan.primary.key].action,
-  );
+  const canPrimary = lifecyclePrimary
+    ? hasPermission(ACTION_PERMISSION[lifecyclePrimary.key].resource, ACTION_PERMISSION[lifecyclePrimary.key].action)
+    : false;
   // The close-with-disposition action this status offers (the primary, or in Take action).
-  const planClose = planCloseAction(actionPlan);
+  const planClose = planCloseAction(lifecyclePlan);
   const canClose = planClose
     ? hasPermission(ACTION_PERMISSION[planClose.key].resource, ACTION_PERMISSION[planClose.key].action)
     : false;
@@ -1764,8 +1855,31 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
         onTagsOpenChange={(next) => setTagsEditor(next ? placement : null)}
         campaign={campaign}
         onOpenCampaign={onNavigate ? () => onNavigate('campaigns') : undefined}
+        review={agentClosed ? { state: reviewState, bandShown: layout.startReview } : undefined}
       />
     ) : null;
+  // The auto-close review sheet (Round 15, D6.6, D6.9): opened from Start review or Take
+  // action; a recorded review re-reads the case (its grade and history) and the state.
+  const openReview = (opener: HTMLElement | null) => {
+    reviewOpenerRef.current = opener;
+    setTakeActionOpen(false);
+    setDetailsOpen(false);
+    setReviewSession((n) => n + 1);
+    setReviewOpen(true);
+  };
+  const onReviewRecorded = () => {
+    setReviewTick((n) => n + 1);
+    void loadCase();
+    if (activity !== null) void loadActivity();
+    onReviewChange?.();
+  };
+  const onReviewReopened = (updated: Case | null) => {
+    if (updated && activeIdRef.current === updated.case_id) commitCase(updated);
+    setReviewTick((n) => n + 1);
+    void loadTriage();
+    if (activity !== null) void loadActivity();
+    onReviewChange?.();
+  };
   const restoreTo = (ref: React.RefObject<HTMLElement | null>) => (event: Event) => {
     const target = [ref.current, takeActionTriggerRef.current].find(
       (el): el is HTMLElement => Boolean(el && el.isConnected),
@@ -1836,8 +1950,9 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
                 </div>
 
                 <div className="ml-auto flex max-w-full shrink-0 flex-wrap items-center justify-end gap-2">
-                  {/* ONE primary contextual action (the D8.2 table in `actionPlanForStatus`). */}
-                  {c && canPrimary ? (
+                  {/* ONE primary contextual action (the D8.2 table: `actionPlanForStatus`,
+                      with Start review on a pending auto-close sample). */}
+                  {c && layout.startReview ? (
                     <Tooltip>
                       <TooltipTrigger asChild>
                         <Button
@@ -1845,14 +1960,30 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
                           className="h-8"
                           data-testid="case-primary-action"
                           disabled={busy}
-                          aria-keyshortcuts={shortcutFor(actionPlan.primary.key) ?? undefined}
-                          onClick={(event) => openFromControl(actionPlan.primary, event.currentTarget)}
+                          onClick={(event) => openReview(event.currentTarget)}
                         >
-                          {React.createElement(actionPlan.primary.icon, { className: 'h-4 w-4' })}
-                          {actionPlan.primary.label}
+                          <ClipboardCheck className="h-4 w-4" />
+                          {START_REVIEW_LABEL}
                         </Button>
                       </TooltipTrigger>
-                      <TooltipContent side="bottom">{actionPlan.primary.help}</TooltipContent>
+                      <TooltipContent side="bottom">{START_REVIEW_HELP}</TooltipContent>
+                    </Tooltip>
+                  ) : c && lifecyclePrimary && canPrimary ? (
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button
+                          size="sm"
+                          className="h-8"
+                          data-testid="case-primary-action"
+                          disabled={busy}
+                          aria-keyshortcuts={shortcutFor(lifecyclePrimary.key) ?? undefined}
+                          onClick={(event) => openFromControl(lifecyclePrimary, event.currentTarget)}
+                        >
+                          {React.createElement(lifecyclePrimary.icon, { className: 'h-4 w-4' })}
+                          {lifecyclePrimary.label}
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent side="bottom">{lifecyclePrimary.help}</TooltipContent>
                     </Tooltip>
                   ) : null}
 
@@ -1873,9 +2004,20 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
                     <DropdownMenuContent align="end" sideOffset={8} className="w-72">
                       {/* The group's label and separator go with its items: a role that may
                           change nothing about the case (an auditor) gets no empty group. */}
-                      {permittedLifecycleActions.length > 0 ? (
+                      {permittedLifecycleActions.length > 0 || layout.reviewInMenu ? (
                         <>
                           <DropdownMenuLabel>Case actions</DropdownMenuLabel>
+                          {/* D4.7, D8.2: on a case the agent closed, the review takes Set
+                              disposition's place. */}
+                          {layout.reviewInMenu ? (
+                            <DropdownMenuItem
+                              disabled={busy}
+                              onSelect={() => openReview(takeActionTriggerRef.current)}
+                            >
+                              <ClipboardCheck className="h-4 w-4" />
+                              <span className="flex-1">{REVIEW_MENU_LABEL}</span>
+                            </DropdownMenuItem>
+                          ) : null}
                           {permittedLifecycleActions.map((action) => {
                             const Icon = action.icon;
                             const hint = shortcutFor(action.key);
@@ -2095,6 +2237,10 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
                 </div>
               )}
 
+              {/* A pending auto-close sample (D6.12): why the case is here; Start review,
+                  the primary action above, is what to do. */}
+              {c && layout.startReview ? <ReviewBand className="mt-3" /> : null}
+
               {c ? (
                 <TabsList variant="underline" className="mt-3">
                   <TabsTrigger value="overview" aria-keyshortcuts="Alt+1">
@@ -2298,8 +2444,32 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
                               />
                             )
                           }
-                          // The Files section (D5.12) is the WP4 kit; it is mounted here with
-                          // `renderFiles` (and the close dialog's `renderScreenshots`), WP7.
+                          // The Files section (D5.12): the lazy screenshots gallery, with this
+                          // tab as its paste scope and its count beside the heading.
+                          renderFiles={(pasteScope) => (
+                            <React.Suspense
+                              fallback={
+                                <LoadingState label="Loading screenshots" layout="panel" shape="rows" shapeRows={2} />
+                              }
+                            >
+                              <CaseFiles
+                                caseId={c.case_id}
+                                refreshKey={filesTick}
+                                pasteScopeRef={pasteScope}
+                                heading="section"
+                                onCountChange={(count, max) => setFilesCount({ count, max })}
+                              />
+                            </React.Suspense>
+                          )}
+                          filesAdornment={
+                            filesCount ? (
+                              <span className="text-xs tabular-nums text-muted-foreground">
+                                {filesCount.max
+                                  ? `${filesCount.count.toLocaleString()} of ${filesCount.max.toLocaleString()}`
+                                  : filesCount.count.toLocaleString()}
+                              </span>
+                            ) : null
+                          }
                           liveCaseId={id}
                           onLiveThread={liveRefreshThread}
                           onLiveActivity={liveRefreshActivity}
@@ -2477,6 +2647,29 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
           if (openStepsError) setOpenStepsError(null);
         }}
         openStepsError={openStepsError}
+        renderScreenshots={
+          // D4.6: "Add screenshots" for a person who may add them (`cases:comment`, the
+          // grant the upload route checks), with the dialog as the paste scope.
+          canComment && c
+            ? (pasteScope) => (
+                <React.Suspense fallback={null}>
+                  <CloseScreenshots caseId={c.case_id} pasteScopeRef={pasteScope} onUploaded={refreshFiles} />
+                </React.Suspense>
+              )
+            : undefined
+        }
+      />
+
+      {/* The auto-close review (D6.6, D6.9, D6.12): a non-blocking side sheet. */}
+      <ReviewSheet
+        open={reviewOpen}
+        onOpenChange={setReviewOpen}
+        caseData={c && shownIsCurrent ? c : null}
+        canReopen={hasPermission('cases', 'close')}
+        session={reviewSession}
+        returnFocusRef={reviewOpenerRef}
+        onRecorded={onReviewRecorded}
+        onReopened={onReviewReopened}
       />
 
       {/* Notify (manual send) dialog: F5/Wave 4. Picks one configured channel or

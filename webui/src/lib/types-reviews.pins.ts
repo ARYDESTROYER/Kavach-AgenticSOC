@@ -9,6 +9,7 @@ import type { components, paths } from './api-types.gen';
 import type {
   AutoCloseReviewMetrics,
   AutoCloseReviewSummary,
+  CaseReviewState,
   ReviewAgreement,
   ReviewBody,
   ReviewClassification,
@@ -34,6 +35,8 @@ export type ReviewPins = [
   Expect<SameFields<ReviewBody, 'ReviewBody'>>,
   Expect<SameFields<ReviewResult, 'ReviewResult'>>,
   Expect<SameFields<AutoCloseReviewSummary, 'AutoCloseReviewSummary'>>,
+  Expect<SameFields<CaseReviewState, 'CaseReviewState'>>,
+  Expect<Equal<CaseReviewState['state'], S['CaseReviewState']['state']>>,
   Expect<SameFields<AutoCloseReviewMetrics, 'AutoCloseReviewMetrics'>>,
   Expect<SameFields<ReviewMetricsWindow, 'ReviewMetricsWindow'>>,
   Expect<SameFields<ReviewAgreement, 'ReviewAgreement'>>,

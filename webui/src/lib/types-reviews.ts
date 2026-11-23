@@ -36,6 +36,27 @@ export interface ReviewResult {
   review_id?: string | null;
 }
 
+/** One case's place in the sample: `none` when it was never sampled. */
+export type CaseReviewSampleState = 'none' | 'pending' | 'completed' | 'expired';
+
+/**
+ * `GET /api/cases/{id}/review` (`cases:read`): what the case workspace needs for the
+ * pending band, Start review and "Review this auto-close" (Round 15 WP7, D8.2).
+ * `agent_closed` is the review endpoint's own rule (terminal, first decision record an
+ * agent close); `can_record` says whether that endpoint would accept a review now, the
+ * caller's grants aside.
+ */
+export interface CaseReviewState {
+  case_id: string;
+  agent_closed: boolean;
+  state: CaseReviewSampleState;
+  can_record: boolean;
+  review_id?: string | null;
+  sampled_at?: string | null;
+  /** When a pending sample expires (null once it is completed). */
+  expires_at?: string | null;
+}
+
 /** `GET /api/auto-close-review/summary`: the Review scope badge. */
 export interface AutoCloseReviewSummary {
   enabled: boolean;

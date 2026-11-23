@@ -1,13 +1,14 @@
 /**
  * Round 15 auto-close review client (SPEC D6.6, D6.12). Lazy-only: imported by the
- * review card, the Agent effectiveness module and (WP7) the Case Manager Review scope,
- * never by an entry module (§3.1).
+ * review card and its case hooks, the Agent effectiveness module and the Case Manager
+ * Review scope, never by an entry module (§3.1).
  */
 import { request } from './api';
 import type { Case, CasesResponse } from './types';
 import type {
   AutoCloseReviewMetrics,
   AutoCloseReviewSummary,
+  CaseReviewState,
   ReviewBody,
   ReviewQueueState,
   ReviewResult,
@@ -21,6 +22,14 @@ import type {
  */
 export function recordReview(caseId: string, body: ReviewBody, signal?: AbortSignal): Promise<ReviewResult> {
   return request<ReviewResult>('POST', `cases/${encodeURIComponent(caseId)}/review`, { body, signal });
+}
+
+/**
+ * `GET /api/cases/{id}/review` (`cases:read`): the case's place in the review sample and
+ * whether a review can be recorded now (Round 15 WP7, D8.2). Reads change nothing.
+ */
+export function getCaseReviewState(caseId: string, signal?: AbortSignal): Promise<CaseReviewState> {
+  return request<CaseReviewState>('GET', `cases/${encodeURIComponent(caseId)}/review`, { signal });
 }
 
 /** `GET /api/auto-close-review/summary` (`cases:read`): the Review scope badge. */

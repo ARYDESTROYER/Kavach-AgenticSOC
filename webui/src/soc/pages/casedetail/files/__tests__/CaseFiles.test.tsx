@@ -1,10 +1,12 @@
 /**
- * Round 15 (SPEC D5.12): the case Files kit (not mounted yet; WP7 mounts it). The
+ * Round 15 (SPEC D5.12): the case Files kit, mounted in the Collaboration tab's Files
+ * section (WP7; `heading="section"` below). The
  * gallery lists screenshots with caption, uploader and time; the lightbox always has a
  * DialogTitle (the caption, else a visually hidden "Screenshot N of M"); delete is for
  * the uploader or a moderator behind a confirmation; every object URL is revoked; and
  * nothing writes to the console (`npm run test:strict` requires zero stderr).
  */
+import type * as React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { axe, toHaveNoViolations } from 'jest-axe';
@@ -271,5 +273,69 @@ describe('CaseFiles', () => {
     await screen.findByText('Login page');
     await waitFor(() => expect(created).toHaveLength(1));
     expect(await axe(container)).toHaveNoViolations();
+  });
+});
+
+describe('CaseFiles under a host section heading (Round 15 WP7: the Collaboration Files section)', () => {
+  /** The Collaboration tab's Files section, as `PanelSection` renders it. */
+  function Host({ children }: { children: React.ReactNode }) {
+    return (
+      <section data-section="files" aria-labelledby="files-heading">
+        <h2 id="files-heading" data-section-title="" tabIndex={-1}>
+          Files
+        </h2>
+        {children}
+      </section>
+    );
+  }
+
+  it('renders no heading of its own and reports its count and limit to the host', async () => {
+    const api = apiFor([entry('f1', { caption: 'Login page' }), entry('f2')]);
+    const onCountChange = vi.fn();
+    render(
+      <Host>
+        <CaseFiles caseId="case-1" api={api} heading="section" onCountChange={onCountChange} />
+      </Host>,
+    );
+    expect(await screen.findByText('Login page')).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Screenshots' })).toBeNull();
+    expect(screen.queryByText('2 of 20')).toBeNull();
+    expect(screen.queryByRole('region', { name: 'Screenshots' })).toBeNull();
+    await waitFor(() => expect(onCountChange).toHaveBeenLastCalledWith(2, 20));
+    await waitFor(() => expect(created).toHaveLength(2));
+  });
+
+  it("returns focus to the host's section heading after a delete", async () => {
+    const api = apiFor([entry('mine', { caption: 'Mine', can_delete: true })]);
+    render(
+      <Host>
+        <CaseFiles caseId="case-1" api={api} heading="section" />
+      </Host>,
+    );
+    fireEvent.click(await screen.findByRole('button', { name: 'Open Mine' }));
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.click(within(dialog).getByRole('button', { name: /Delete/ }));
+    const confirm = await screen.findByRole('alertdialog');
+    await act(async () => {
+      fireEvent.click(within(confirm).getByRole('button', { name: 'Delete screenshot' }));
+    });
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Files' })).toHaveFocus());
+  });
+
+  it('turns a client that throws at once into a load error, never a broken tree', async () => {
+    const list = vi.fn(() => {
+      throw new Error('The client is not available.');
+    });
+    render(<CaseFiles caseId="case-1" api={{ ...apiFor([]), list }} heading="section" />);
+    expect(await screen.findByRole('alert')).toHaveTextContent('The client is not available.');
+  });
+
+  it('makes its drop zone compact once the case has screenshots', async () => {
+    const api = apiFor([entry('f1', { caption: 'Login page' })], { can_upload: true });
+    render(<CaseFiles caseId="case-1" api={api} heading="section" />);
+    await screen.findByText('Login page');
+    expect(screen.getByTestId('file-drop-zone')).not.toHaveClass('flex-col');
+    await waitFor(() => expect(created).toHaveLength(1));
   });
 });

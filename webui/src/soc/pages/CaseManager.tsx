@@ -24,6 +24,12 @@
  * #3: every bulk and single mutation is the existing analyst verb or durable job; the
  * outcome shown on a row is presentation (`caseOutcome`), never a decision.
  *
+ * Round 15 (D6.12) adds the Review scope: the auto-close review sample, with its pending
+ * count from `GET /api/auto-close-review/summary` on the scope control, read through
+ * `GET /api/cases?review=` (pending by default; "Show completed reviews" in the footer;
+ * `#/case_manager?review=disagreed|expired` deep links) and refreshed by `case.review`
+ * frames. Bulk Set status and Set disposition leave out the cases the agent closed (D4.7).
+ *
  * Round 14 (SPEC §4.9.4, D27, ui-audit CM1): the page has the Overview's header (the
  * title "Case Manager", a help tip, the live state and an icon Refresh) and the split
  * workspace sits on one panel. The queue takes a "Closed by" filter from
@@ -54,6 +60,7 @@ import {
 import { toast } from 'sonner';
 
 import { api } from '@/lib/api';
+import type { AutoCloseReviewSummary } from '@/lib/types-reviews';
 import { cn } from '@/lib/cn';
 import { errorMessage } from '@/lib/errorMessage';
 import { DASH, humanizeAge, humanizeToken } from '@/lib/format';
@@ -112,6 +119,7 @@ import { AnimatePresence, MotionProvider, SPRING_UI, motion, useReducedMotion } 
 import { useAuth } from '@/soc/auth';
 import { useDemo } from '@/soc/demo';
 import { useRoute } from '@/soc/router';
+import type { NavOpts } from '@/soc/nav-types';
 import {
   announceJobAccepted,
   isTerminalJobStatus,
@@ -144,6 +152,7 @@ import {
   QUEUE_STATUS_OPTIONS,
   TERMINAL_STATUSES,
   AGENT_CLOSED_LEFT_OUT,
+  asQueueReview,
   caseInScope,
   isAgentClosedCase,
   matchesSearch,
@@ -156,6 +165,7 @@ import {
   QUEUE_SORT_LABEL,
   windowPlacement,
   type QueueQueryInput,
+  type QueueReview,
   type QueueScope,
   type QueueSort,
 } from './casedetail/queue';
@@ -174,6 +184,19 @@ const SPLIT_DEFAULT_QUEUE_PX = 400;
 const SPLIT_KEYBOARD_STEP_PX = 24;
 const SEARCH_DEBOUNCE_MS = 250;
 const LIVE_FLUSH_MS = 600;
+/** A burst of `case.review` frames reads the review summary once. */
+const REVIEW_SUMMARY_MS = 400;
+
+/** The Review scope's empty queue, per review state (D6.12). */
+const REVIEW_EMPTY_TITLE: Readonly<Record<QueueReview, string>> = {
+  pending: 'No reviews waiting',
+  completed: 'No completed reviews',
+  disagreed: 'No reviews that disagreed',
+  expired: 'No expired reviews',
+};
+export const REVIEW_EMPTY_DESCRIPTION =
+  'A small random sample of the cases the AI agent closes waits here for a person to classify.';
+export const REVIEW_OFF_DESCRIPTION = 'Auto-close review is off. Turn it on in Settings, under Detection.';
 
 type Density = 'comfortable' | 'compact';
 type ConfirmableBulkAction = 'acknowledge' | 'reinvestigate';
@@ -675,12 +698,20 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
   const routeTab = route.page === 'case_manager' ? (route.opts?.tab ?? null) : null;
   // A rewritten link to a retired tab asks for the section that tab became (D8.3).
   const routeSection = route.page === 'case_manager' ? (route.opts?.section ?? null) : null;
+  // D6.12: `#/case_manager?review=pending|completed|disagreed|expired` opens the Review scope.
+  const routeReview = route.page === 'case_manager' ? asQueueReview(route.opts?.review) : null;
 
   // ---- queue query --------------------------------------------------------- //
   const [closedBy, setClosedBy] = React.useState<QueueCloser | null>(routeClosedBy);
   const closedByRef = React.useRef(closedBy);
   closedByRef.current = closedBy;
-  const [scope, setScope] = React.useState<QueueScope>(routeClosedBy ? 'all' : 'active');
+  const [scope, setScope] = React.useState<QueueScope>(routeReview ? 'review' : routeClosedBy ? 'all' : 'active');
+  const scopeRef = React.useRef(scope);
+  scopeRef.current = scope;
+  // The Review scope's queue (pending by default), carried in the address like "Closed by".
+  const [review, setReview] = React.useState<QueueReview>(routeReview ?? 'pending');
+  const reviewKeyRef = React.useRef<QueueReview | null>(scope === 'review' ? review : null);
+  reviewKeyRef.current = scope === 'review' ? review : null;
   const [searchInput, setSearchInput] = React.useState('');
   const [search, setSearch] = React.useState('');
   const [severity, setSeverity] = React.useState(ANY_SEVERITY);
@@ -696,13 +727,14 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
   const queueInput = React.useMemo<QueueQueryInput>(
     () => ({
       scope,
+      review: scope === 'review' ? review : null,
       username: currentUser,
       search,
       severity: severity === ANY_SEVERITY ? null : severity,
       status: status === ANY_STATUS ? null : status,
       sort,
     }),
-    [scope, currentUser, search, severity, status, sort],
+    [scope, review, currentUser, search, severity, status, sort],
   );
   const query = React.useMemo(() => {
     const next = queueQuery(queueInput);
@@ -928,6 +960,47 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
     setDismissedSelection(false);
   }, [routeCaseId]);
 
+  // ---- the auto-close review summary (D6.12) ------------------------------- //
+  // The Review scope's pending count. Best-effort: without it the scope is offered only
+  // while a link has it open, and the queue itself is the server's answer. The review
+  // client is imported on use, so it is never on this route's preload list (§3.1).
+  const [reviewSummary, setReviewSummary] = React.useState<AutoCloseReviewSummary | null>(null);
+  const loadReviewSummary = React.useCallback(() => {
+    import('@/lib/api-reviews')
+      .then((reviews) => reviews.getAutoCloseReviewSummary())
+      .then((next) => setReviewSummary(next))
+      .catch(() => undefined);
+  }, []);
+  React.useEffect(() => {
+    loadReviewSummary();
+  }, [loadReviewSummary]);
+  const reviewSummaryTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const scheduleReviewSummary = React.useCallback(() => {
+    if (reviewSummaryTimerRef.current) return;
+    reviewSummaryTimerRef.current = setTimeout(() => {
+      reviewSummaryTimerRef.current = null;
+      loadReviewSummary();
+    }, REVIEW_SUMMARY_MS);
+  }, [loadReviewSummary]);
+  React.useEffect(
+    () => () => {
+      if (reviewSummaryTimerRef.current) clearTimeout(reviewSummaryTimerRef.current);
+    },
+    [],
+  );
+  // A `case.review` frame for the open case asks it to read its review state again.
+  const [reviewRefresh, setReviewRefresh] = React.useState(0);
+  /** A review was recorded, or a case reopened from one, in the open case. */
+  const onReviewChange = React.useCallback(() => {
+    scheduleReviewSummary();
+    if (scopeRef.current === 'review') scheduleResync();
+  }, [scheduleResync, scheduleReviewSummary]);
+  /** The header's Refresh: the loaded window and the review count. */
+  const refreshQueue = React.useCallback(() => {
+    refreshLoaded();
+    loadReviewSummary();
+  }, [loadReviewSummary, refreshLoaded]);
+
   // A link that names a closer applies it. A later route without one keeps the chip: the
   // queue's own navigation (opening or closing a case) carries the key along.
   React.useEffect(() => {
@@ -935,6 +1008,31 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
     setClosedBy(routeClosedBy);
     setScope('all');
   }, [routeClosedBy]);
+
+  // A link that names a review queue opens the Review scope on it (D6.12), and so does the
+  // footer's "Show completed reviews" (it navigates). Like "Closed by", the queue's own
+  // navigation carries the key along.
+  React.useEffect(() => {
+    if (!routeReview) return;
+    reviewKeyRef.current = routeReview;
+    setReview(routeReview);
+    setScope('review');
+  }, [routeReview]);
+
+  /**
+   * Navigate within the queue, carrying the keys that shape it: "Closed by" and, in the
+   * Review scope, the review queue. Without any, the bare route (as before Round 15).
+   */
+  const goQueue = React.useCallback(
+    (extra?: NavOpts) => {
+      const keys: NavOpts = { ...(extra ?? {}) };
+      if (closedByRef.current) keys.closedBy = closedByRef.current;
+      if (reviewKeyRef.current) keys.review = reviewKeyRef.current;
+      if (Object.keys(keys).length) route.navigate('case_manager', keys);
+      else route.navigate('case_manager');
+    },
+    [route],
+  );
 
   // The loaded rows, consistent with the scope (a live update may have moved a case out
   // of it) and instantly pre-filtered by the search being typed while the server query
@@ -991,8 +1089,7 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
       setSelectedCaseId(caseId);
       setFocusId(caseId);
       setDismissedSelection(false);
-      const filter = closedByRef.current;
-      route.navigate('case_manager', filter ? { caseId, closedBy: filter } : { caseId });
+      goQueue({ caseId });
       if (opts.focusRow) {
         // The row when the queue is on screen (the xl split); below xl the queue is
         // hidden while a case is open, so the case's title instead of <body>.
@@ -1006,7 +1103,7 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
       const index = visibleRef.current.findIndex((row) => row.case_id === caseId);
       if (index >= 0) announce(`Opened. ${index + 1} of ${visibleRef.current.length} loaded.`);
     },
-    [announce, caseTitleTarget, route],
+    [announce, caseTitleTarget, goQueue],
   );
 
   /**
@@ -1026,16 +1123,14 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
     const previous = selectedIdRef.current;
     setSelectedCaseId(null);
     setDismissedSelection(true);
-    const filter = closedByRef.current;
-    if (filter) route.navigate('case_manager', { closedBy: filter });
-    else route.navigate('case_manager');
+    goQueue();
     // The pane that held focus is gone: land on the case's queue row (or the roving
     // stop, or the search when the queue is empty) instead of <body>.
     requestAnimationFrame(() => {
       const target = queueRowButton(previous) ?? searchField();
       target?.focus();
     });
-  }, [queueRowButton, route, searchField]);
+  }, [goQueue, queueRowButton, searchField]);
 
   /** "Close & next": open the case after the current one (or before it, at the end). */
   const advance = React.useCallback(() => {
@@ -1279,10 +1374,24 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
         scheduleResync();
         return;
       }
+      if (event.type === 'case.review') {
+        // D6.5, D6.12: a case was picked for review or reviewed. The count is read again,
+        // the open case reads its review state again, and the Review scope re-reads its
+        // window (only the server knows the ledger).
+        const data = event.data as { case_id?: unknown } | null;
+        const id = typeof data?.case_id === 'string' ? data.case_id : '';
+        scheduleReviewSummary();
+        if (id && id === selectedIdRef.current) setReviewRefresh((n) => n + 1);
+        if (scopeRef.current === 'review') scheduleResync();
+        return;
+      }
       if (event.type === 'case.changed') {
         const data = event.data as { case_id?: unknown; created?: unknown } | null;
         const id = typeof data?.case_id === 'string' ? data.case_id : '';
         if (!id) return;
+        // The Review scope lists ledger cases only: a case it has not loaded can join it
+        // only through a `case.review` frame, so the other frames update loaded rows.
+        if (scopeRef.current === 'review' && !rowsRef.current.some((row) => row.case_id === id)) return;
         pendingLiveRef.current.set(id, Boolean(data?.created) || pendingLiveRef.current.get(id) === true);
         if (!liveTimerRef.current) {
           liveTimerRef.current = setTimeout(() => void flushLive(), LIVE_FLUSH_MS);
@@ -1302,7 +1411,7 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
           );
       }
     },
-    [finishTrackedJob, flushLive, scheduleResync],
+    [finishTrackedJob, flushLive, scheduleResync, scheduleReviewSummary],
   );
   const { live } = useEventStream(['cases', 'jobs'], { enabled: true, onEvent: onStreamEvent });
 
@@ -1827,9 +1936,8 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
     closedByRef.current = null;
     setClosedBy(null);
     const open = selectedIdRef.current;
-    if (open) route.navigate('case_manager', { caseId: open });
-    else route.navigate('case_manager');
-  }, [route]);
+    goQueue(open ? { caseId: open } : undefined);
+  }, [goQueue]);
 
   /**
    * The "Closed by" filter from the Filters control (Round 15, D8.1). Only a case that
@@ -1845,11 +1953,48 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
       closedByRef.current = next;
       setClosedBy(next);
       setScope('all');
+      reviewKeyRef.current = null;
       setFocusId(null);
       const open = selectedIdRef.current;
-      route.navigate('case_manager', open ? { caseId: open, closedBy: next } : { closedBy: next });
+      goQueue(open ? { caseId: open } : undefined);
     },
-    [removeClosedBy, route],
+    [goQueue, removeClosedBy],
+  );
+
+  /**
+   * Change the queue scope. Leaving All drops "Closed by" (only a closed case has a
+   * closer); entering Review opens its pending queue. The address changes only when a key
+   * it carries does.
+   */
+  const changeScope = React.useCallback(
+    (next: QueueScope) => {
+      const hadKeys = Boolean(closedByRef.current || reviewKeyRef.current);
+      setScope(next);
+      setFocusId(null);
+      if (next !== 'all' && closedByRef.current) {
+        closedByRef.current = null;
+        setClosedBy(null);
+      }
+      if (next === 'review') setReview('pending');
+      reviewKeyRef.current = next === 'review' ? 'pending' : null;
+      if (hadKeys || next === 'review') {
+        const open = selectedIdRef.current;
+        goQueue(open ? { caseId: open } : undefined);
+      }
+    },
+    [goQueue],
+  );
+
+  /** Switch the Review scope's queue ("Show completed reviews", and back). */
+  const showReview = React.useCallback(
+    (next: QueueReview) => {
+      reviewKeyRef.current = next;
+      setReview(next);
+      setFocusId(null);
+      const open = selectedIdRef.current;
+      goQueue(open ? { caseId: open } : undefined);
+    },
+    [goQueue],
   );
 
   const clearFilters = React.useCallback(() => {
@@ -1890,11 +2035,19 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
     // "Closed by the AI agent"), removable like any chip.
     ...(closedBy ? [{ id: 'closedBy', label: CLOSED_BY_LABEL[closedBy], onRemove: removeClosedBy }] : []),
   ];
-  const statusOptions = QUEUE_STATUS_OPTIONS.filter((option) => scope === 'all' || !option.terminal);
+  // The Review scope behaves like All for the status options (D6.12).
+  const statusOptions = QUEUE_STATUS_OPTIONS.filter(
+    (option) => scope === 'all' || scope === 'review' || !option.terminal,
+  );
   React.useEffect(() => {
     if (status !== ANY_STATUS && !statusOptions.some((option) => option.value === status)) setStatus(ANY_STATUS);
   }, [status, statusOptions]);
-  const summary = scopeSummary(scope, rows.length, total, position);
+  const summary = scopeSummary(scope, rows.length, total, position, scope === 'review' ? review : null);
+  // The Review scope is offered while the review is on or has waiting cases, and always
+  // while a link has it open.
+  const pendingReviews = reviewSummary?.pending ?? 0;
+  const offerReview =
+    scope === 'review' || Boolean(reviewSummary && (reviewSummary.enabled || reviewSummary.pending > 0));
   const selectedRow = selectedCaseId ? rowsById.get(selectedCaseId) ?? null : null;
   const prefetched = selectedCaseId ? prefetchedRef.current.get(selectedCaseId) ?? null : null;
   const selectedCase =
@@ -1998,7 +2151,7 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
                   <RefreshButton
                     display="icon"
                     label="Refresh case queue"
-                    onClick={refreshLoaded}
+                    onClick={refreshQueue}
                     refreshing={loading}
                   />
                 </>
@@ -2034,21 +2187,36 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
                 <div className="shrink-0 space-y-2.5 border-b border-border px-3 pb-3 pt-3" data-testid="case-queue-controls">
                   {/* The scope names the list for assistive technology; the segmented
                       control shows it. */}
-                  <h2 className="sr-only">{scopeHeading(scope)}</h2>
+                  <h2 className="sr-only">{scopeHeading(scope, scope === 'review' ? review : null)}</h2>
                   <div className="flex items-center gap-2">
                     <SegmentedControl<QueueScope>
                       aria-label="Case queue scope"
                       size="sm"
                       value={scope}
-                      onValueChange={(next) => {
-                        setScope(next);
-                        setFocusId(null);
-                        // Only a closed case has a closer: Active and Mine would always be empty.
-                        if (next !== 'all') removeClosedBy();
-                      }}
+                      onValueChange={changeScope}
                       options={[
                         { value: 'active', label: 'Active' },
                         ...(currentUser ? [{ value: 'mine' as const, label: 'Mine' }] : []),
+                        ...(offerReview
+                          ? [
+                              {
+                                value: 'review' as const,
+                                label: (
+                                  // Inline, so the name reads "Review, 2 waiting".
+                                  <span data-testid="case-queue-review-scope">
+                                    Review
+                                    {pendingReviews ? (
+                                      <span className="ml-1.5 rounded-sm bg-muted px-1.5 py-px text-2xs font-medium tabular-nums text-muted-foreground">
+                                        <span className="sr-only">, </span>
+                                        {pendingReviews.toLocaleString()}
+                                        <span className="sr-only"> waiting</span>
+                                      </span>
+                                    ) : null}
+                                  </span>
+                                ),
+                              },
+                            ]
+                          : []),
                         { value: 'all', label: 'All' },
                       ]}
                     />
@@ -2438,11 +2606,21 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
                       compact
                       icon={Inbox}
                       state={hasFilters ? 'no-results' : 'no-data'}
-                      title={hasFilters ? 'No matching cases' : 'No cases in this queue'}
+                      title={
+                        hasFilters
+                          ? 'No matching cases'
+                          : scope === 'review'
+                            ? REVIEW_EMPTY_TITLE[review]
+                            : 'No cases in this queue'
+                      }
                       description={
                         hasFilters
                           ? 'Adjust or clear the queue filters.'
-                          : scope === 'mine'
+                          : scope === 'review'
+                            ? reviewSummary && !reviewSummary.enabled
+                              ? REVIEW_OFF_DESCRIPTION
+                              : REVIEW_EMPTY_DESCRIPTION
+                            : scope === 'mine'
                             ? 'No active case is assigned to you.'
                             : scope === 'active'
                               ? 'There are no active cases awaiting work.'
@@ -2505,6 +2683,17 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
                     >
                       {summary}
                     </p>
+                    {scope === 'review' ? (
+                      <Button
+                        variant="link"
+                        size="sm"
+                        className="h-7 shrink-0 px-1 text-xs"
+                        data-testid="case-queue-review-switch"
+                        onClick={() => showReview(review === 'pending' ? 'completed' : 'pending')}
+                      >
+                        {review === 'pending' ? 'Show completed reviews' : 'Show waiting reviews'}
+                      </Button>
+                    ) : null}
                     {canLoadMore ? (
                       <Button
                         variant="ghost"
@@ -2603,6 +2792,8 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
                         resolveDialogFocus={resolveDialogFocus}
                         requestedTab={routeTab}
                         requestedSection={routeSection}
+                        reviewRefreshKey={reviewRefresh}
+                        onReviewChange={onReviewChange}
                       />
                     </div>
                   </>

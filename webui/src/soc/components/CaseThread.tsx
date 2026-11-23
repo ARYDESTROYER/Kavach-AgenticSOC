@@ -30,7 +30,7 @@
  */
 import * as React from 'react';
 
-import { useEventStream } from '@/lib/useEventStream';
+import { useEventStream, type StreamEvent } from '@/lib/useEventStream';
 import {
   Bot,
   Check,
@@ -629,9 +629,11 @@ export interface CaseThreadProps {
   liveCaseId?: string;
   /**
    * Called when a live `case.activity` frame arrives for `liveCaseId`. The caller
-   * should refetch the authoritative thread. Only fires when `liveCaseId` is set.
+   * should refetch the authoritative thread. Only fires when `liveCaseId` is set. The
+   * frame is passed along (Round 15): one that names a screenshot (`ref.file_id`) asks
+   * the Files section to re-read instead, on this one stream.
    */
-  onLiveActivity?: () => void;
+  onLiveActivity?: (event: StreamEvent) => void;
 }
 
 /**
@@ -657,8 +659,8 @@ export const CaseThread: React.FC<CaseThreadProps> = ({
   // Live nudge: a `case.activity` frame on this case's room → ask the caller to refetch
   // the thread. The frame payload is never rendered here (#9) — it only triggers a load.
   const onEvent = React.useCallback(
-    (ev: { type: string }) => {
-      if (ev.type === 'case.activity') onLiveActivity?.();
+    (ev: StreamEvent) => {
+      if (ev.type === 'case.activity') onLiveActivity?.(ev);
     },
     [onLiveActivity],
   );

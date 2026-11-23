@@ -18,6 +18,10 @@ the ledger). This router serves:
   ``disposition`` (#3); its note is indexed as fenced, untrusted precedent text exactly
   as a grading comment is (#9). A disagreeing reviewer who cannot close cases sends one
   Inbox item to the people who can (at most 200, category ``assignment``).
+* ``GET /api/cases/{case_id}/review`` (``cases:read``): one case's place in the
+  sample (``none``, ``pending``, ``completed`` or ``expired``) and whether a review
+  can be recorded now; the case workspace reads it for the pending band, Start review
+  and "Review this auto-close" (Round 15 WP7, D8.2).
 * ``GET /api/auto-close-review/summary`` (``cases:read``): the queue badge.
 * ``GET /api/metrics/auto-close-review?window=`` (``metrics:view``): the Agent
   effectiveness module. Agreement describes the sampled cases only, unweighted; it is
@@ -149,6 +153,26 @@ class AutoCloseReviewSummary(BaseModel):
     disagreed_open: int
     sampled_today: int
     daily_cap: int
+
+
+class CaseReviewState(BaseModel):
+    """One case's place in the auto-close review (Round 15, D6.12, D8.2): what the case
+    workspace needs to show the pending band, choose its primary action and offer
+    "Review this auto-close". ``state`` is the case's sample entry (``pending``,
+    ``completed`` or ``expired``, computed on read) or ``none`` when it was never
+    sampled. ``agent_closed`` is the review endpoint's own rule (terminal, first
+    decision record an agent close), and ``can_record`` says whether that endpoint
+    would accept a review now, the caller's grants aside: a sampled case whose review
+    is recorded answers 409, and so does a case that is not (or no longer) closed by
+    the agent."""
+
+    case_id: str
+    agent_closed: bool
+    state: Literal["none", "pending", "completed", "expired"]
+    can_record: bool
+    review_id: str | None = None
+    sampled_at: str | None = None
+    expires_at: str | None = None
 
 
 class ReviewMetricsWindow(BaseModel):
@@ -630,6 +654,48 @@ async def _record_review_locked(
                     case_id[:80], attempt + 1, exc,
                 )
     return fresh, agrees, ai_verdict, review_id
+
+
+# --------------------------------------------------------------------------- #
+# GET /api/cases/{case_id}/review
+# --------------------------------------------------------------------------- #
+@router.get("/cases/{case_id}/review", response_model=CaseReviewState)
+async def case_review_state(
+    case_id: str,
+    state: AppState = Depends(get_state),
+    _=Depends(require_permission("cases", "read")),
+) -> CaseReviewState:
+    """One case's auto-close review state (D6.12, D8.2), read by the case workspace.
+    A pending entry whose case already carries its review reads as completed (and the
+    ledger is repaired, as the summary does). Nothing here changes the case (#3)."""
+    case = await state.cases.get(case_id)
+    if case is None:
+        raise _error(404, "case_not_found", "Case not found.")
+    agent_closed = _status(case) in TERMINAL_CASE_STATUSES and first_decision_is_agent_close(case)
+    ledger = await _load(state)
+    entry = ledger.entry_for_case(case_id)
+    if entry is None:
+        return CaseReviewState(case_id=case_id, agent_closed=agent_closed, state="none",
+                               can_record=agent_closed)
+    expiry = int(getattr(_config(state), "expiry_days", 7) or 7)
+    current = entry.state_at(now_utc(), expiry)
+    if current != STATE_COMPLETED and history_review(case, entry.review_id) is not None:
+        await _repair(state, {case_id: case})
+        current = STATE_COMPLETED
+    sampled = entry.sampled_instant()
+    expires = (
+        (sampled + timedelta(days=max(1, expiry))).isoformat()
+        if sampled is not None and current != STATE_COMPLETED else None
+    )
+    return CaseReviewState(
+        case_id=case_id,
+        agent_closed=agent_closed,
+        state=current,
+        can_record=agent_closed and current != STATE_COMPLETED,
+        review_id=entry.review_id or None,
+        sampled_at=entry.sampled_at or None,
+        expires_at=expires,
+    )
 
 
 # --------------------------------------------------------------------------- #

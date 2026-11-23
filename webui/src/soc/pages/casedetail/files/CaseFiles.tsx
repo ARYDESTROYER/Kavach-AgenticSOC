@@ -1,8 +1,11 @@
 /**
- * Round 15 (SPEC D5.12): the Files section of a case, a kit WP7 mounts in the
- * Collaboration tab. A thumbnail grid (caption, who added it, when), a lightbox, a
- * download, and a delete for the uploader or someone who can close cases; uploads by
- * drop, paste or the file picker when the caller holds `cases:comment`.
+ * Round 15 (SPEC D5.12): the screenshots of a case, mounted (lazily) as the body of the
+ * Collaboration tab's Files section. A thumbnail grid (caption, who added it, when), a
+ * lightbox, a download, and a delete for the uploader or someone who can close cases;
+ * uploads by drop, paste or the file picker when the caller holds `cases:comment`. The
+ * server decides both (`can_upload`, `can_delete`), so a viewer without them sees no
+ * control. Under the Files heading (`heading="section"`) it has no heading of its own and
+ * reports its count to the host instead.
  *
  * Image bytes are fetched with the shared request helpers as Blobs (never a plain
  * `<img src>` to the API), shown through object URLs, and every object URL is revoked
@@ -255,12 +258,18 @@ function Lightbox({ caseId, files, index, onIndexChange, onDelete, fetcher }: Li
 
 export interface CaseFilesProps {
   caseId: string;
-  /** Bump to re-read the list (a `case.activity` frame naming a file, WP7). */
+  /** Bump to re-read the list (a `case.activity` frame naming a file, an upload elsewhere). */
   refreshKey?: number;
   /** Where a paste adds screenshots (the Collaboration tab). Defaults to the drop zone. */
   pasteScopeRef?: React.RefObject<HTMLElement | null>;
-  /** Called with the live count after every read. */
-  onCountChange?: (count: number) => void;
+  /**
+   * `own` (default): a "Screenshots" heading with the count. `section`: the host's
+   * section heading names it (the Collaboration tab's Files), so there is none here, the
+   * count goes to `onCountChange`, and focus returns to that heading after a delete.
+   */
+  heading?: 'own' | 'section';
+  /** Called with the live count (and the case's limit) after every read. */
+  onCountChange?: (count: number, max: number | null) => void;
   /** Injectable for tests. */
   api?: {
     list?: typeof listCaseFiles;
@@ -271,7 +280,15 @@ export interface CaseFilesProps {
   uploadOptions?: Omit<UseCaseFileUploadOptions, 'caseId' | 'onUploaded'>;
 }
 
-export function CaseFiles({ caseId, refreshKey = 0, pasteScopeRef, onCountChange, api, uploadOptions }: CaseFilesProps) {
+export function CaseFiles({
+  caseId,
+  refreshKey = 0,
+  pasteScopeRef,
+  heading = 'own',
+  onCountChange,
+  api,
+  uploadOptions,
+}: CaseFilesProps) {
   // Callbacks a host passes may be new on every render: read them through a ref, so
   // a re-render never re-reads the list or re-fetches an image.
   const props = React.useRef({ api, onCountChange });
@@ -300,15 +317,22 @@ export function CaseFiles({ caseId, refreshKey = 0, pasteScopeRef, onCountChange
   // Where focus lands when the delete confirmation closes: the screenshot and the
   // lightbox it was opened from are gone by then (WCAG 2.4.3).
   const headingRef = React.useRef<HTMLHeadingElement | null>(null);
+  const rootRef = React.useRef<HTMLDivElement | null>(null);
+  // Under a host's section heading, focus returns to that heading (else to this root).
+  const deleteReturnRef = React.useRef<HTMLElement | null>(null);
+  const ownHeading = heading === 'own';
 
   React.useEffect(() => {
     const controller = new AbortController();
-    list(caseId, controller.signal)
+    // Through a resolved promise, so a client that throws synchronously is a load error
+    // like any other, never an error in the render tree.
+    Promise.resolve()
+      .then(() => list(caseId, controller.signal))
       .then((next) => {
         if (controller.signal.aborted) return;
         setData(next);
         setLoadError(null);
-        props.current.onCountChange?.(next.count);
+        props.current.onCountChange?.(next.count, next.limits?.max_files ?? null);
       })
       .catch((e) => {
         if (!controller.signal.aborted) setLoadError(errorMessage(e, 'Screenshots could not be loaded.'));
@@ -343,22 +367,32 @@ export function CaseFiles({ caseId, refreshKey = 0, pasteScopeRef, onCountChange
   const active = uploader.items.filter((item) => item.status !== 'done');
 
   return (
-    <section aria-labelledby={`${captionId}-heading`} className="flex flex-col gap-3" data-testid="case-files">
-      <div className="flex items-baseline justify-between gap-3">
-        <h3
-          id={`${captionId}-heading`}
-          ref={headingRef}
-          tabIndex={-1}
-          className={cn('text-sm font-semibold text-foreground', focusRing)}
-        >
-          Screenshots
-        </h3>
-        {limits ? (
-          <span className="text-xs text-muted-foreground">
-            {`${files.length.toLocaleString('en-US')} of ${limits.max_files.toLocaleString('en-US')}`}
-          </span>
-        ) : null}
-      </div>
+    // A labelled region with its own heading; under a host's section heading, a plain
+    // block (the host's section is the region).
+    <div
+      ref={rootRef}
+      role={ownHeading ? 'region' : undefined}
+      aria-labelledby={ownHeading ? `${captionId}-heading` : undefined}
+      className="flex flex-col gap-3"
+      data-testid="case-files"
+    >
+      {ownHeading ? (
+        <div className="flex items-baseline justify-between gap-3">
+          <h3
+            id={`${captionId}-heading`}
+            ref={headingRef}
+            tabIndex={-1}
+            className={cn('text-sm font-semibold text-foreground', focusRing)}
+          >
+            Screenshots
+          </h3>
+          {limits ? (
+            <span className="text-xs text-muted-foreground">
+              {`${files.length.toLocaleString('en-US')} of ${limits.max_files.toLocaleString('en-US')}`}
+            </span>
+          ) : null}
+        </div>
+      ) : null}
 
       {loadError ? (
         <div className="flex items-center gap-3 text-sm">
@@ -394,6 +428,7 @@ export function CaseFiles({ caseId, refreshKey = 0, pasteScopeRef, onCountChange
             disabled={!canUpload}
             busy={uploader.busy}
             pasteScopeRef={pasteScopeRef}
+            compact={files.length > 0}
             hint={full ? 'This case has reached its screenshot limit. Delete one to add another.' : undefined}
           />
         </div>
@@ -441,6 +476,11 @@ export function CaseFiles({ caseId, refreshKey = 0, pasteScopeRef, onCountChange
         index={openIndex}
         onIndexChange={setOpenIndex}
         onDelete={(entry) => {
+          if (!ownHeading) {
+            const root = rootRef.current;
+            deleteReturnRef.current =
+              root?.closest('[data-section]')?.querySelector<HTMLElement>('[data-section-title]') ?? root;
+          }
           // One modal at a time: the lightbox closes before the confirmation opens.
           setOpenIndex(null);
           setDeleteError(null);
@@ -462,9 +502,9 @@ export function CaseFiles({ caseId, refreshKey = 0, pasteScopeRef, onCountChange
         confirmLabel="Delete screenshot"
         destructive
         busy={deleting}
-        returnFocusRef={headingRef}
+        returnFocusRef={ownHeading ? headingRef : deleteReturnRef}
         onConfirm={() => void confirmDelete()}
       />
-    </section>
+    </div>
   );
 }

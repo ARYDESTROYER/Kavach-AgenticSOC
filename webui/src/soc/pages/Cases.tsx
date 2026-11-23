@@ -53,6 +53,7 @@ import {
   SelectValue,
   SelectContent,
   SelectItem,
+  SelectSeparator,
 } from '@/ui/select';
 import {
   Popover,
@@ -116,6 +117,7 @@ import {
   type BulkCloseInput,
   type BulkTerminalAction,
 } from './casedetail/BulkCloseDialog';
+import { AGENT_CLOSED_LEFT_OUT, isAgentClosedCase } from './casedetail/queue';
 
 import type { Navigate } from '@/soc/router';
 import { useRoute } from '@/soc/router';
@@ -1172,6 +1174,13 @@ export default function Cases({
     const set = new Set(selected);
     return filteredSorted.filter((c) => set.has(c.case_id));
   }, [selected, filteredSorted]);
+  // Round 15 (D4.7): the selected cases the AI agent closed. A person reviews such a case
+  // rather than re-labelling it in bulk, so bulk Set status and Set disposition leave them
+  // out (the backend verbs are unchanged), as Case Manager does.
+  const agentClosedSelected = React.useMemo(
+    () => new Set(selectedCases.filter((c) => isAgentClosedCase(c)).map((c) => c.case_id)),
+    [selectedCases],
+  );
   // The selection the bulk close dialog covers (it reads their runbook progress).
   const bulkTerminalIds = React.useMemo(
     () => (bulkTerminal ? selectedCases.map((c) => c.case_id).sort((a, b) => a.localeCompare(b)) : undefined),
@@ -1185,9 +1194,24 @@ export default function Cases({
       kind: BackgroundJobKind,
       additionalParams: Record<string, unknown>,
       activity: string,
+      opts: { leaveOut?: ReadonlySet<string> } = {},
     ) => {
-      const ids = selectedCases.map((item) => item.case_id).sort((a, b) => a.localeCompare(b));
-      if (!ids.length || bulkBusy) return;
+      const leaveOut = opts.leaveOut ?? new Set<string>();
+      const ids = selectedCases
+        .map((item) => item.case_id)
+        .filter((id) => !leaveOut.has(id))
+        .sort((a, b) => a.localeCompare(b));
+      const leftOut = selectedCases.length - ids.length;
+      if (bulkBusy) return;
+      if (!ids.length) {
+        // Every selected case was left out: nothing to send (D4.7).
+        if (leftOut > 0) {
+          const msg = 'Not queued: the AI agent closed every selected case. Review those cases instead.';
+          setBulkError(msg);
+          toast.error(msg);
+        }
+        return;
+      }
       const params = { case_ids: ids, ...additionalParams };
       const intent = retainJobSubmissionIntent(jobSubmissionIntentRef.current, kind, params);
       jobSubmissionIntentRef.current = intent;
@@ -1203,7 +1227,10 @@ export default function Cases({
         const acceptedIds = new Set(ids);
         setSelected((current) => current.filter((id) => !acceptedIds.has(id)));
         announceJobAccepted(job);
-        toast.success(`${ids.length} case${ids.length === 1 ? '' : 's'} ${activity}.`, {
+        const leftOutNote = leftOut
+          ? ` ${leftOut} case${leftOut === 1 ? '' : 's'} the AI agent closed ${leftOut === 1 ? 'was' : 'were'} left out.`
+          : '';
+        toast.success(`${ids.length} case${ids.length === 1 ? '' : 's'} ${activity}.${leftOutNote}`, {
           description: 'The server-owned job continues after navigation or reload. Track it in Inbox.',
           action: { label: 'Open Inbox', onClick: () => navigate('inbox') },
         });
@@ -1221,8 +1248,8 @@ export default function Cases({
   // Typed with the job's own params (never the single-case `CaseActionInput`), so a
   // single-case field such as `require_open_steps_reason` fails tsc instead of a 422.
   const runBulk = React.useCallback(
-    (input: CaseLifecycleInput, activity = 'are being updated') =>
-      submitCaseJob('case_lifecycle', { ...input }, activity),
+    (input: CaseLifecycleInput, activity = 'are being updated', opts?: { leaveOut?: ReadonlySet<string> }) =>
+      submitCaseJob('case_lifecycle', { ...input }, activity, opts),
     [submitCaseJob],
   );
 
@@ -2159,10 +2186,15 @@ export default function Cases({
         onAddTag={(tag) =>
           void submitCaseJob('case_tag', { tag }, `are being tagged ${tag}`)
         }
-        onSetStatus={(status) => void runBulk({ action: 'set_status', status }, `are being set to ${status}`)}
-        onSetDisposition={(disposition) =>
-          void runBulk({ action: 'set_disposition', disposition }, `are being classified as ${disposition}`)
+        onSetStatus={(status) =>
+          void runBulk({ action: 'set_status', status }, `are being set to ${status}`, { leaveOut: agentClosedSelected })
         }
+        onSetDisposition={(disposition) =>
+          void runBulk({ action: 'set_disposition', disposition }, `are being classified as ${disposition}`, {
+            leaveOut: agentClosedSelected,
+          })
+        }
+        agentClosedCount={agentClosedSelected.size}
         onReinvestigate={() => setReinvestConfirmOpen(true)}
         onClear={() => setSelected([])}
         unavailableReason={
@@ -2359,6 +2391,8 @@ const BulkActionBar: React.FC<{
   onClear: () => void;
   /** Why bulk changes cannot run right now (Demo Mode); disables the actions, keeps Clear. */
   unavailableReason?: string | null;
+  /** How many selected cases the AI agent closed (left out of Set status and Set disposition, D4.7). */
+  agentClosedCount?: number;
 }> = ({
   count,
   busy,
@@ -2372,8 +2406,18 @@ const BulkActionBar: React.FC<{
   onReinvestigate,
   onClear,
   unavailableReason = null,
+  agentClosedCount = 0,
 }) => {
   const locked = busy || Boolean(unavailableReason);
+  // D4.7: the help text both bulk relabelling menus carry, with the count when it applies.
+  const leftOutNote = (
+    <p className="px-2 pb-1.5 pt-1 text-xs leading-4 text-muted-foreground" data-testid="cases-bulk-agent-closed-note">
+      {AGENT_CLOSED_LEFT_OUT}
+      {agentClosedCount
+        ? ` ${agentClosedCount.toLocaleString()} of the selected cases ${agentClosedCount === 1 ? 'is' : 'are'} left out.`
+        : ''}
+    </p>
+  );
   const [assignOpen, setAssignOpen] = React.useState(false);
   const [assignee, setAssignee] = React.useState('');
   const [tagOpen, setTagOpen] = React.useState(false);
@@ -2568,6 +2612,8 @@ const BulkActionBar: React.FC<{
                   {s.label}
                 </SelectItem>
               ))}
+              <SelectSeparator />
+              {leftOutNote}
             </SelectContent>
           </Select>
 
@@ -2586,6 +2632,8 @@ const BulkActionBar: React.FC<{
                   {d.label}
                 </SelectItem>
               ))}
+              <SelectSeparator />
+              {leftOutNote}
             </SelectContent>
           </Select>
         </Can>
