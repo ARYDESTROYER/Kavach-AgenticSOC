@@ -177,11 +177,12 @@ const HINT = 'no dist/ build present — run `vite build` first (CI/integrator d
  * both halves share, moved out of Wizard.tsx), +91 that the build writes without a mapping
  * (+100 for the three chunks the preload table now lists, -9 elsewhere), and +53 of
  * attribution drift on files whose source did not change (registry.tsx +71, main.tsx -18).
- * The baseline, the +1,024 B budget and the 400,000 B ceiling are unchanged; whether to
- * ratchet the baseline down is the orchestrator's call (SPEC §3.1). Until then this budget
- * lets 8,156 B of first-paint growth pass unseen.
+ * Lowered at the Round 15 integration (its SPEC §3.1 and §8.1, the one ratchet that item
+ * allows) from 336,216 B to the integrated entry, 329,080 B with WP7 merged (WP7 itself
+ * measured -4 B), so the 7,136 B the round moved out of first paint cannot be spent
+ * unseen. The +1,024 B budget and the 400,000 B ceiling are unchanged.
  */
-const PRE_REVAMP_ENTRY_BYTES = 336_216;
+const PRE_REVAMP_ENTRY_BYTES = 329_080;
 const REVAMP_ENTRY_BUDGET_BYTES = 1_024;
 
 function readHtml(): string {

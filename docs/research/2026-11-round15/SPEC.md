@@ -957,6 +957,26 @@ note), `docs/releases/known-limitations.md`.
 Filled by the orchestrator after integration: contract resolutions, per-package notes, gate
 results, entry bytes, known limitations.
 
+### 8.1 Contract resolutions
+
+- **Entry bundle.** The first-paint baseline is now `PRE_REVAMP_ENTRY_BYTES = 329_080`
+  (329,080 B) in `webui/src/soc/__tests__/bundle-first-paint.test.ts`, with the unchanged
+  +1,024 B budget over it and the unchanged 400,000 B ceiling. This is the one downward
+  ratchet §3.1 allows. The merged Wave 2 tree (`c3d7cd3`) measured 337,999 B, 759 B over the
+  Round 14 budget: Wizard.tsx +693 (WP2's AI runtime copy, provider table and readiness
+  logic, eager because App.tsx imports the wizard), router.tsx +475 and case-tabs.ts +71
+  (WP6's retired tab links, WP3's Team activity route), registry.tsx -558 (WP3 removed the
+  hidden duplicate `FEATURES` entries), useEventStream.ts +14 (WP5's `case.review` channel),
+  +108 unmapped and +33 attribution drift. The entry package then moved the wizard's AI
+  runtime and review stages into the lazy chunk `pages/wizard/RuntimeReviewSteps.tsx`,
+  behind one lazy component for both stages, prefetched when the browser is idle: 329,084 B
+  (Wizard.tsx -6,091, SecretField.tsx -1,842, Field.tsx -1,481, StepHeading.tsx +355, +91
+  unmapped, +53 drift). WP7 measured -4 B (its review state client is reached by dynamic
+  import only). The integrated tree with WP7 merged measured **329,080 B** with
+  `npm run build:app`, 7,136 B under the Round 14 baseline of 336,216 B, so the baseline was
+  lowered to it and those bytes cannot be spent unseen. A CI build stamps the SHA and date,
+  about +46 B.
+
 ---
 
 ## Appendix A. Review resolutions

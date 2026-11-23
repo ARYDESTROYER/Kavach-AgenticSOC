@@ -3493,7 +3493,9 @@ built" pointer.
 
 ### 11.1 Contract resolutions
 
-- **Entry bundle.** The first-paint baseline is now `PRE_REVAMP_ENTRY_BYTES = 336_216`
+- **Entry bundle.** (Since Round 15 the baseline is lower; the "Entry bundle" item of the
+  Round 15 SPEC §8.1 holds the current value.) At the Round 14 close the first-paint
+  baseline was `PRE_REVAMP_ENTRY_BYTES = 336_216`
   (336,216 B) in `webui/src/soc/__tests__/bundle-first-paint.test.ts`, with the unchanged
   +1,024 B budget over it and the unchanged 400,000 B ceiling. Package R raised it once
   (§3.4, E11) to 377,070 B, and WP-GEN lowered it to the measured merged entry so the bytes

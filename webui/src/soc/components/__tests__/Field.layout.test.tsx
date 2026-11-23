@@ -3,8 +3,8 @@
  * `inlineFieldLayout` (a Settings row: label and help on the left, the control on the
  * row's end; under 640px the control stacks under the help) and `wideFieldLayout` (a
  * Settings row for a wide control: label, help, then the control at full width). The row
- * layouts are renderers in the lazy Settings primitives (SPEC §3.4: Field ships at first
- * paint with Login and Wizard, the rows do not). A `FieldLayoutContext` provider (what
+ * layouts are renderers in the lazy Settings primitives (SPEC §3.4), so a page that needs
+ * only a stacked Field never carries them; since Round 15 Field itself is off first paint. A `FieldLayoutContext` provider (what
  * `SettingRow` uses) sets the layout of every Field inside it, so the wiring of label,
  * description and error is identical in all of them.
  */
@@ -176,8 +176,8 @@ describe('Field layout', () => {
   });
 
   it('keeps the Settings row layouts out of the first-paint Field module (SPEC §3.4)', () => {
-    // Field ships at first paint (Login and Wizard import it); the rows live with the
-    // lazy Settings primitives, so Field.tsx itself draws only the stacked layout.
+    // The rows live with the lazy Settings primitives, so Field.tsx itself draws only the
+    // stacked layout and a page that imports Field never carries them.
     const source = readFileSync(path.resolve(__dirname, '..', 'Field.tsx'), 'utf8');
     expect(source).not.toContain('data-field-layout');
     expect(source).not.toContain('--setting-control-w');

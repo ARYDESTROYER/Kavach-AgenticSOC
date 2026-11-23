@@ -12000,3 +12000,53 @@
 - Tests: Round 15 backend files plus the records, audit-writer, SSE channel and factory-primitive suites all pass on the merged tree; docs records and app knowledge tests pass. Entry chunk 337,999 B, 759 B over the 337,240 B budget (WP2 +727 B in Wizard.tsx, WP6 +537 B in router.tsx and case-tabs.ts, WP5 +14 B, WP3 -445 B after removing the 11 hidden FEATURES duplicates). SPEC §3.1 forbids an upward rebase, so the bytes come back from the wizard in Wave 3.
 - Status: done; pushed as c3d7cd3.
 - Next: Wave 3 (WP7 integration, the entry fix) and the WP8 docs that do not depend on WP7, then the cross-cutting review.
+
+### 2026-11-23 21:15Z - entry package agent - Round 15 entry bundle: lazy wizard AI runtime and review stages
+- Context: SPEC §3.1 entry budget. The merged Wave 2 tree c3d7cd3 measured 337,999 B against the 337,240 B budget; target at most 336,900 B with no behaviour change.
+- Did: moved KeysStep, ReviewStep, ReadinessRow, KEY_FIELDS, PROVIDERS and their helpers unchanged into the lazy chunk webui/src/soc/pages/wizard/RuntimeReviewSteps.tsx, and the shared stage heading into wizard/StepHeading.tsx. The wizard loads the chunk with retryingLoader behind a LoadingState fallback, prefetches it into the HTTP cache when idle after mount (chunk list mark, never an import), focuses the stage heading when a lazy stage mounts, and shows a focused reload notice if the chunk cannot load. saveKeys builds its body from the typed values. Added Wizard.lazy-steps.round15.test.tsx; the onboarding launch test now waits for the review stage.
+- Tests: npm run test:strict 672 files, 8,785 passed, 1 skipped, zero stderr; bundle-first-paint with REQUIRE_DIST_BUILD=1 25 passed; lint 0 errors and 0 warnings; gates pass; check:types no drift; build:app clean. Entry 329,106 B (-8,893 B). Live check in the seeded Demo, in live mode and on the production build: both stages render, focus their heading and keep their states.
+- Status: done, branch r15-entry at 9e1d841.
+- Next: the independent review, then the orchestrator merges and decides the baseline ratchet.
+
+### 2026-11-23 21:20Z - WP8 agent - Round 15 records and documentation
+- Context: Round 15 SPEC WP8 (§6 Documentation, §7 follow-ups) on r15-wp8 from c3d7cd3, excluding the docs that wait for the Case Manager integration.
+- Did: CHANGELOG Round 15 entry; README, INSTALL and DEPLOY updated for the Roles & permissions switch, the PUT /api/rbac recipe (verified live), truthful wizard wording and the 3 MiB front-proxy upload body. api.md, permissions.md and configuration.md gained the new endpoints, frames, team:view and the team_activity and auto_close_review blocks. known-limitations and upgrades gained the rollback reset, screenshot, Team activity and review bounds; settings, install and quickstart lost the retired wording. ROADMAP gained the Round 15 deferred items; AGENTS §4 and HANDOFF layout lines name the new modules. install-05, install-06 and users-rbac recaptured in the light theme from the live Console; corpus regenerated.
+- Tests: check_docs 86 pages; mkdocs strict build clean; corpus current at 965 chunks; docs and knowledge pytest 266 passed; docs and corpus readers 2,642 passed; chat and demo suites 710 passed; webui Docs and console-map Vitest 29 passed; no banned characters in added lines.
+- Status: done, commit 41e9173 on r15-wp8, merged as 582d005.
+- Next: after WP7 merges, recheck the CHANGELOG, README and known-limitations claims about the mounted Files section, the close-dialog drop zone, the Review scope and the Cases bulk exclusion. The orchestrator owns Journal, SPEC §8, AGENTS §10, the analyst docs and case-manager.webp.
+
+### 2026-11-23 21:55Z - WP7 sub-agent - Round 15 integration: screenshots and auto-close review in the case workspace
+- Context: Round 15 SPEC 4.4 (WP7), on branch r15-wp7 from c3d7cd3.
+- Did:
+  - Mounted CaseFiles (lazy) in the Collaboration tab's Files section, with the tab as paste scope and a count beside the heading.
+  - Mounted a lazy CloseScreenshots drop zone in the close dialog for viewers with cases:comment.
+  - Files refresh on case.activity frames naming a file_id, through CaseThread's existing stream.
+  - Added read-only GET /api/cases/{id}/review (cases:read) for one case's sample state.
+  - Case Manager Review scope: pending count from the summary, review= filter, a footer switch, case.review refresh.
+  - D8.2 in CaseDetail: a pending band and a Start review primary only on a terminal agent-closed pending sample; "Review this auto-close" in place of Set disposition on other agent-closed terminal cases.
+  - The ReviewCard opens in a non-modal side sheet. The rail Outcome shows the recorded review.
+  - Cases bulk exclusion of agent-closed cases (D4.7); rollback lane plants of SPEC 3.7 with offline tests; DangerZone cases-tier copy names screenshots and the review sample; case-manager.md section; corpus regenerated.
+- Tests: backend 13,087 passed, 24 skipped, 5 known sandbox env failures; rollback lane 18 OK; Vitest strict 8,838 passed, 1 skipped, 1 expected bundle-budget failure, 677 files; lint 0/0, gates pass, check:types no drift, check_docs 86 pages. Entry 337,995 B (-4 B). decide() untouched.
+- Status: done; commit 933404d on r15-wp7.
+- Next: the independent review; follow up on the Cases bulk disposition_declared gap.
+
+### 2026-11-23 21:55Z - entry package reviewer - Round 15 entry bundle review: one lazy component for both wizard stages
+- Context: adversarial review of r15-entry (9e1d841) against SPEC §3.1: no behaviour change in the wizard, tests not weakened, first-paint assertions meaningful, doc comment figures correct, entry re-measured.
+- Did: the second stage reached still mounted the loading state, because the two stages were two React.lazy components; fixed with one lazy component (RuntimeReviewStage, LaterStage). Added 6 tests: no loader on the second stage in both orders; the whole first-paint graph from main.tsx keeps RuntimeReviewSteps, SecretField and Field off; the idle warm passes the chunk-list mark and module URL, skips offline, and schedules nothing without requestIdleCallback; the review stage shows the reload notice and launch still completes when the chunk cannot load. Rewrote the bundle-first-paint doc comment with per-file source-map figures.
+- Tests: npm run test:strict 672 files, 8,791 passed, 1 skipped, zero stderr; bundle-first-paint with REQUIRE_DIST_BUILD=1 25 passed; lint 0/0; gates pass; check:types no drift; build:app clean, entry 329,084 B. Live check on the production build in Demo and live mode, light and dark.
+- Status: done, r15-entry at 2ab3a39.
+- Next: the orchestrator merges and decides the PRE_REVAMP_ENTRY_BYTES ratchet; fix the stale Field first-paint comments.
+
+### 2026-11-23 22:55Z - WP7 reviewer - Round 15 WP7 review: lightbox focus, accessible bulk help, upload announcements
+- Context: independent adversarial review of r15-wp7 (933404d on c3d7cd3) against SPEC D4.7, D5.12, 2.6 and 3.7, with a live seeded Console and a real PostgreSQL rollback run.
+- Did: the screenshot lightbox now returns focus to the last-shown thumbnail (Radix sent it to the body because there is no DialogTrigger); finished uploads are announced in the Files section; the Cases bulk Set status and Set disposition triggers carry the D4.7 help text as their accessible description; the review card's Rate the AI disclosure matches the close dialog; the rollback lane reports whether N-1 dropped the grade marker (on PostgreSQL 16 the pinned release drops it and the grade stays excluded through the history event). New tests for the paste scopes, the focus return and the announcement; docs sentence fixed; corpus regenerated.
+- Tests: backend 13,087 passed, 24 skipped, 5 known sandbox failures; rollback lane 19 offline OK, plus both scenarios live on PostgreSQL; test:strict without dist 8,829 passed, 16 skipped, zero stderr; lint 0/0, gates, check:types and tsc clean; check_docs 86 pages; corpus current. decide() untouched.
+- Status: done; commit b804d16 on r15-wp7.
+- Next: follow-ups: a reopened pending sample shows no explanation; the review-state read loads the whole ledger; the Cases bulk disposition_declared gap.
+
+### 2026-11-23 23:00Z - orchestrator - Round 15 Wave 3 merged and the entry baseline ratcheted
+- Context: Round 15 Wave 3 (WP7 integration, the entry package), each built in an isolated worktree from c3d7cd3 and then independently reviewed and fixed (entries above); WP8 merged earlier as 582d005.
+- Did: merged r15-entry and r15-wp7. The only conflict was the generated knowledge manifest; regenerated the console map and the corpus (966 chunks); openapi.json and api-types.gen.ts show no drift. The integrated entry measured 329,080 B, 7,136 B under the Round 14 baseline, so PRE_REVAMP_ENTRY_BYTES was lowered once to 329,080 B as SPEC §3.1 allows; recorded in Round 15 SPEC §8.1 (with a pointer from the Round 14 record) and repointed the test_docs_round12_records.py pin. Fixed the stale Field first-paint comments.
+- Tests: bundle-first-paint with dist and Field layout 35 passed; docs records pytest passed.
+- Status: done; pushed.
+- Next: the cross-cutting adversarial review of the integrated tree, then the remaining docs, SPEC §8, the full gates and the PR into Testing.
