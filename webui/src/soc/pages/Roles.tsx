@@ -9,6 +9,9 @@
  * applying, and persist (POST/PUT/DELETE /roles). A simulate panel spot-checks a
  * single role × resource × action (GET /roles/simulate).
  *
+ * Round 15 (SPEC D1.1): the section opens with the "Role-based access" group
+ * (<RbacSwitchPanel>), the one place in the Console that turns RBAC on or off.
+ *
  * RBAC: the whole page is gated behind <ProtectedRoute resource="roles" action="manage">.
  * GET /api/account/permissions drives a small capability banner (what the CURRENT user
  * may do here). Every role name / description / action is operator-influenceable and
@@ -65,6 +68,7 @@ import {
   type AccountPermissions,
   type GrantMap,
 } from './Roles.api';
+import { RbacSwitchPanel } from './RbacSwitchPanel';
 import { SettingRow, SettingsGroup, SettingsPageSection } from './settings/primitives';
 import { SECTION_META_BY_ID } from './settings/settings-sections-meta';
 
@@ -345,15 +349,9 @@ export function RolesInner({ embedded = false }: RolesInnerProps) {
         </div>
       }
     >
-      {perms && !perms.rbac_enabled ? (
-        // A live condition, worded as it is: there is no switch for it in the Console.
-        <Callout intent="warning" title="Role-based access is off">
-          Every signed-in account counts as Super admin, so these roles are not enforced yet.
-          Turning it on is a change to the stored settings (
-          <code className="font-mono text-sm">rbac.enabled</code>) through the settings API; there
-          is no switch for it on this page.
-        </Callout>
-      ) : null}
+      {/* Round 15 (SPEC D1.1): the switch itself, at the top of the section. It replaces
+          the "Role-based access is off" callout; the roles below re-read after a change. */}
+      <RbacSwitchPanel onChanged={() => void load()} />
 
       {error ? (
         <LoadError

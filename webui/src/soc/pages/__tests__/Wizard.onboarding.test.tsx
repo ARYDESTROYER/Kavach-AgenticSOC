@@ -266,9 +266,12 @@ describe('Wizard onboarding fixes', () => {
   });
 
   it('treats configured-but-disabled sources as unavailable and reports them separately', async () => {
+    // Round 15: the AI runtime row is ready when the server says the default models can
+    // be called (`ai_runtime_ready`), so only the sources row needs attention here.
     setupStatusMock.mockResolvedValue({
       setup_complete: false,
       configured: { openai_api_key: true },
+      ai_runtime_ready: true,
     });
     listSourcesMock.mockResolvedValue({
       sources: [
