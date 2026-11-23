@@ -286,7 +286,7 @@ Continue, or a setup re-run's Close action. If the write fails, setup stays on t
 AI runtime stage so you can retry.
 
 <figure markdown="span">
-[![Setup wizard AI runtime stage with empty OpenAI, Anthropic and Embedding API key fields, each marked not set, and a Skip for now button.](../assets/screenshots/install-05-setup-ai-runtime.webp) ](../assets/screenshots/install-05-setup-ai-runtime.webp)
+[![Setup wizard AI runtime stage with the amber notice No usable AI provider yet, which says you can continue without a key but new cases wait for a person as Needs human review, above empty OpenAI, Anthropic and Embedding API key fields marked not set, and a Skip for now button.](../assets/screenshots/install-05-setup-ai-runtime.webp) ](../assets/screenshots/install-05-setup-ai-runtime.webp)
 <figcaption>Step 3 of 4: AI runtime, before any key is entered.</figcaption>
 </figure>
 
@@ -343,7 +343,7 @@ It distinguishes these outcomes instead of claiming every configuration is compl
   missing.
 
 <figure markdown="span">
-[![Review and launch stage reading Ready with limited capabilities, listing workspace, data sources, AI runtime and automation posture readiness, with the Launch Agentic SOC button.](../assets/screenshots/install-06-setup-review.webp) ](../assets/screenshots/install-06-setup-review.webp)
+[![Review and launch stage reading Ready with limited capabilities: the workspace and one data source are ready, the AI runtime row needs attention and reads No usable provider, cases wait for a person, and automation posture is on by default, above the Launch Agentic SOC button.](../assets/screenshots/install-06-setup-review.webp) ](../assets/screenshots/install-06-setup-review.webp)
 <figcaption>Step 4 of 4: Review & launch, with a source and no provider.</figcaption>
 </figure>
 

@@ -296,6 +296,20 @@ migrations are kept, and a CI lane boots the previous release on each candidate'
 **Required change:** none for later releases; it cannot be fixed inside the earlier
 builds themselves.
 
+### Rolling back from Round 15 resets two settings
+
+The previous release that the rollback lane pins (`45a4c31`, the Round 14 build) predates
+the preferences forward contract and rewrites the settings document without the keys it
+does not model. After an image-only rollback to it, `team_activity` and
+`auto_close_review` read as their defaults again once you return: the Team activity page
+and the review sample are on, at a 5% sample, at most 10 a day and 3 per rule. Note any
+values you changed and set them again after the return. Screenshots and the review ledger
+stay in the store unused while the earlier build runs, and its feedback statistics count
+review grades as ordinary grades; this build recognises them again from the case history.
+The steps are in [Upgrades](../operations/upgrades.md#rolling-back-from-round-15).
+
+**Required change:** none for later releases, which carry the forward contract.
+
 ### Single replica only
 
 Run exactly one backend replica. Signature locks, receiver ownership, schedulers,
@@ -466,6 +480,67 @@ a count its answer would contradict. Case lists in chat answers name a case by i
 and a short ID until the lookups return case numbers, and chat cannot yet filter cases by
 the signed-in analyst, so the answer to "Which of my open cases should I work on first?"
 says so and shows the open queue by assignee.
+
+### Screenshots are checked, not decoded
+
+The server never decodes a screenshot's pixels and has no image library. It accepts PNG,
+JPEG and WebP by their magic bytes, checks each file's structure, removes its metadata,
+and refuses an image over 2 MiB, 8,192 pixels a side or 40 megapixels. The compressed
+image data and a colour profile are stored as sent, so a crafted image aimed at a
+browser's image decoder is not detected; the type allowlist, the structure check, the size
+limits, sign-in, the audit row and strict response headers are the mitigations. The server
+does not re-encode or downscale either: the Console does that before it uploads, so an API
+client must send an image that already fits. A screenshot without a thumbnail is served in
+full for `variant=thumb`, and the Console shows **No preview** for it in the gallery.
+
+The upload bounds of 30 a minute and 2 at once per person are kept in the backend
+process, like the other request bounds. A deleted screenshot keeps its caption, uploader
+and time on the case; a case keeps at most 100 such entries, the oldest dropped first.
+
+### Team activity counts are bounded and come from the audit log
+
+Team activity counts audit rows, not distinct cases, in calendar days of the SLA time
+zone; there are no shift-based buckets. It reads at most 92 days (`422
+team_window_too_long`) and at most 250,000 audit rows. On Elasticsearch, a read that
+cannot hold a point in time stops at 10,000 rows, and a store without paging support stops
+at its own scan limit; the page then marks its counts as lower bounds ("at least") and
+says why (`partial_reason` `row_limit` or `store_limit`). The median time to acknowledge
+covers at most 5,000 cases and is left out above that. Answers are cached per viewer and
+window for 60 seconds, so a new action can take that long to appear.
+
+The audit row of a case action, assignment, tag change or comment is still written after
+the change (best effort), so an action whose row could not be written is not counted.
+Rows written before Round 15 or with sign-in off may name no person; they are grouped as
+**Not attributed** and have no events list. Counts last as long as the audit rows do.
+
+### Auto-close review bounds
+
+- **Not a blind review.** The review card asks for the reviewer's own classification
+  before it shows the AI verdict, but the rest of the case page still shows the verdict
+  while a review is pending.
+- **Agreement describes the sample only.** It is unweighted and is not an estimate of
+  auto-close precision; the rate and its interval appear only from 30 reviews.
+- **No backfill and a bounded ledger.** Sampling starts with the first automatic close
+  after the upgrade. The ledger keeps the newest 2,000 picks (completed and expired ones are
+  dropped first) and the daily counts for 90 days; once a pick is dropped, a case that is
+  closed automatically again can be picked again, and the Agent effectiveness module marks
+  a window that reaches past the dropped picks as incomplete. Its count of eligible
+  automatic closes reads at most 20,000 cases and says when it could not read them all.
+- **The Review scope reads whole cases.** `GET /api/cases?review=` reads every case the
+  ledger names for that state (up to 2,000) on each request before it filters and pages
+  them.
+- **A pick on a case reopened outside the review stays pending.** It stays in the Review
+  scope and its count, and a review of it is refused with `409 review_not_agent_closed`
+  until the case is closed again.
+- **A review repaired from the case history has no time spent.** When the ledger could
+  not be updated after a review, a later read restores the entry from the case's history
+  event, which does not carry the time the reviewer spent; the audit row keeps it.
+- **One review at a time per process.** Recording a review is serialised by a lock in the
+  backend process, and the ledger by strict compare-and-set; run one backend replica.
+- **Bulk changes leave out agent-closed cases in the Console only.** Bulk Set status and
+  Set disposition in Case Manager and Cases leave out the cases the AI agent closed among
+  those the Console has loaded. A selected case the Console never loaded is sent as
+  before, and the bulk API and jobs do not refuse agent-closed cases.
 
 ### Baseline learning and anomaly promotion are separate
 

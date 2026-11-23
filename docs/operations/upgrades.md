@@ -467,9 +467,71 @@ that correctly reports **Manual upgrade required**:
 
 ## Changes that need attention when upgrading to this build
 
-This build (the current `0.1.13` source candidate, after the Round 12, Round 13 and
-Round 14 changes) needs no database migration and no new index or table. It changes
+This build (the current `0.1.13` source candidate, after the Round 12, Round 13, Round 14
+and Round 15 changes) needs no database migration and no new index or table. It changes
 these behaviours, which operators should know about before upgrading.
+
+### Round 15 changes
+
+Round 15 keeps version `0.1.13` and adds no database migration, index or table. Case
+screenshots and the auto-close review ledger live in two new key-value namespaces,
+`case_files` and `auto_close_review`. Read these before upgrading:
+
+- **Role-based access has its own switch.** **Settings → Security & access → Roles &
+  permissions** turns it on or off, and so does `PUT /api/rbac` (stored role Super admin
+  and a recent sign-in). `PUT /api/settings` answers `409 rbac_switch_moved` when a body
+  would change `rbac.enabled`, and any other changed `rbac` field (`roles`, `resources`,
+  `custom_roles`, `denies`, `default_role`) now needs `roles:manage` and a fresh sign-in.
+  A script that sends the whole settings document with `rbac.enabled` unchanged keeps
+  working. See [Turn on role-based access](../administration/users-rbac.md#turn-on-role-based-access).
+- **New permission `team:view`.** SOC managers and Auditors get it by default (Super
+  admins hold every grant). A stored role override that names other resources keeps it.
+  While role-based access is off, Team activity is still limited to accounts whose
+  stored role is Super admin, SOC manager or Auditor.
+- **Two new settings, on by default.** `team_activity.enabled` (the Team activity page)
+  and `auto_close_review` (5% of automatic closes, at most 10 a day and 3 per rule,
+  expiring after 7 days). The review sample starts with the first automatic close after
+  the upgrade; earlier closes are never sampled. Neither changes a case decision.
+- **Front proxy body size.** A case screenshot is uploaded as one request of up to
+  3 MiB. The bundled Web UI allows it on that path; a TLS proxy in front of the Console
+  needs `client_max_body_size 3m` or more, or uploads fail with HTTP 413.
+- **Elasticsearch config index.** At startup the backend adds the `binary` mapping of the
+  new `case_file_data` field to the config index; there is no operator step. If it cannot,
+  it logs a warning and uploads still work, at the indexing cost described in
+  [Health, backup, and restore](health-backup.md#case-screenshots-in-the-backup).
+- **Audit rows for human case work.** New rows from case actions, assignments, tags,
+  comments and grades carry a structured `case.*` action, the case as target, the request
+  context and the changes; bulk actions add `run_id` `bulk-<id>`. Their `action_type`,
+  `surface` and `result_summary` are unchanged, so existing filters and parsers keep
+  working, and older rows are not rewritten.
+- **Attribution and re-investigation.** With sign-in on, the actor of a comment, tag
+  change or assignment, and the stored comment author, are the signed-in person. Rebuilding
+  a case after a new investigation keeps its owner, comments, grades, status history,
+  acknowledgement and an analyst's disposition.
+- **Feedback statistics.** `GET /api/feedback/stats` averages each sub-score over the
+  grades that rated it and adds three `*_rated` counts; grades recorded by an auto-close
+  review are left out of it.
+
+### Rolling back from Round 15
+
+The previous release pinned for the rollback lane (`45a4c31`, the Round 14 build) does
+not carry the preferences forward contract, and it rewrites the settings document without
+the keys it does not model. After an image-only rollback and the return:
+
+- `team_activity` and `auto_close_review` read as their defaults again (both on, with the
+  default sample rate and caps). Note any values you changed before the rollback and set
+  them again after the return.
+- `rbac.enabled` is kept, because the earlier build models it, and that build changes it
+  through `PUT /api/settings` again.
+- Screenshots and the review ledger stay in the store and are not shown while the earlier
+  build runs. Its own `cases` reset does not know them and leaves them; the next `cases`
+  reset on this release removes them.
+- A grade recorded by an auto-close review loses its `origin` and `review_id` fields the
+  first time the earlier build saves that case, but the case history keeps the review
+  event, so this build still recognises it as a review grade and keeps it out of the
+  agent statistics. While the earlier build runs, its own statistics count it.
+- The structured audit fields, `actions_taken` and `review_via` on history entries stay
+  stored; the earlier build ignores them.
 
 ### Round 14 changes
 

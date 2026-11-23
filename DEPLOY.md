@@ -253,21 +253,23 @@ The setup workspace has four stages:
    `POST /api/setup/secrets` whenever you leave this stage; a failed save keeps you
    on the stage. After launch, model registration and budgets stay on
    **Analytics → Models**, and per-role assignment in **Settings → General → Models**.
+   A notice says whether the default investigation models (router and investigator)
+   can be called: **Live provider configured**, **Your key does not match the default
+   models** (a key is set, but not for the provider those models use), or **No usable
+   AI provider yet**. The same answer is `ai_runtime_ready` on `GET /api/setup/status`.
 4. **Review & launch** — reports **Ready**, **Needs attention**, or **Optional**
    for the workspace, sources, and AI runtime. A live workspace without a source or
-   provider may launch, but is explicitly labelled **Ready with limited
-   capabilities**. The Automation posture notes that adaptive routing and related-
+   a usable provider may launch, but is explicitly labelled **Ready with limited
+   capabilities**, and its AI runtime row reads "No usable provider · cases wait for a
+   person". The Automation posture notes that adaptive routing and related-
    case grouping are on by default while detailed control remains in Settings;
    deterministic close/escalate authority is unchanged. **Launch Agentic SOC**
    calls `POST /api/setup/complete`, which flips `setup_complete`, starts pull
    polling, and reconciles enabled receivers.
 
-> **Known 0.1.13 wording issue.** Without a provider key, the **AI runtime** stage
-> says "live investigations will use the limited mock runtime until a provider is
-> added" and its **Review & launch** row says "mock runtime only". That wording is
-> wrong: no live investigation uses the mock model. Each cluster sent to
-> investigation becomes a **Needs human** case whose recommended action names the
-> missing key, and nothing is closed automatically (see §2).
+Without a usable provider key no live investigation calls a model, and none uses the
+mock model: each cluster sent to investigation becomes a **Needs human** case whose
+recommended action names the missing key, and nothing is closed automatically (see §2).
 
 The first-run app does not fail open. If `GET /api/setup/status` is unavailable,
 it shows **Can't verify setup state** with **Retry** rather than exposing the
@@ -666,7 +668,35 @@ Before rolling back, ask users with more than 50 conversations to export the ext
 conversations they want to keep (history row menu → **Export**) and delete them, so
 the older build has nothing to evict.
 
-**Round 14 (current build).** Still version `0.1.13`; no database migration, index or
+**Round 15 (current build).** Still version `0.1.13`; no database migration, index or
+table is added. The new state (case screenshots, the auto-close review ledger) lives in
+two new key-value namespaces, `case_files` and `auto_close_review`. The full list is in
+`docs/operations/upgrades.md` ("Round 15 changes").
+
+- **Front proxy body size.** A case screenshot is uploaded as one request of up to 3 MiB.
+  The bundled Web UI accepts it on that path; a TLS proxy in front of the Console needs
+  `client_max_body_size 3m` (or its equivalent) or uploads fail with HTTP 413 (§8).
+- **Elasticsearch config index.** The backend adds the `binary` mapping of the new
+  `case_file_data` field to the config index when it starts; no operator step. If the
+  mapping cannot be added it logs a warning and uploads still work, at the indexing cost
+  described in `docs/operations/health-backup.md`.
+- **New defaults on.** The Team activity page (`team_activity.enabled`) and the
+  auto-close review sample (`auto_close_review`: 5% of automatic closes, at most 10 a day
+  and 3 per rule) are on after the upgrade. The sample starts with the first automatic
+  close after the upgrade; earlier closes are never sampled. Neither changes a case
+  decision.
+- **Role-based access.** `PUT /api/settings` no longer changes `rbac.enabled` (`409
+  rbac_switch_moved`); use **Roles & permissions** or `PUT /api/rbac` (§9). A script that
+  saved the whole settings document with an unchanged `rbac.enabled` keeps working.
+- **Rollback.** The previous release (the Round 14 build pinned in
+  `scripts/rollback_previous_release.json`) rewrites the settings document without
+  `team_activity` and `auto_close_review`, so after an image-only rollback and the return
+  both read as their defaults again; note any values you changed and set them again.
+  Screenshots and the review ledger stay in the store unused while it runs, and its
+  feedback statistics count review grades as ordinary grades; back on this build they
+  are excluded again, because each reviewed case's history keeps the marker.
+
+**Round 14 (same candidate).** Still version `0.1.13`; no database migration, index or
 table is added. The full list is in `docs/operations/upgrades.md` ("Round 14 changes").
 
 - **Audit index on Elasticsearch (required step).** New audit rows carry structured
@@ -814,7 +844,11 @@ operator-owned deployment concern outside the supported single-replica profile.
 LLM API usage — watch the in-app **Cost** panel (`GET /api/usage/summary`) and the
 per-case caps (`caps.max_tokens`, `caps.max_tool_calls`, `caps.timeout_seconds`,
 and the `kill_switch`). LLM investigations can run for a while; the web-UI nginx
-proxy is configured with 300s read/send timeouts for that reason.
+proxy is configured with 300s read/send timeouts for that reason. It also accepts
+request bodies of up to 3 MiB on the case screenshot upload path
+(`location ~ ^/api/cases/[^/]+/files$`, `client_max_body_size 3m`, with the same proxy
+headers and timeouts as `/api/`); every other path keeps nginx's 1 MiB default. The
+backend refuses a larger upload body itself (`413 case_files_body_too_large`).
 
 ---
 
@@ -956,7 +990,11 @@ plugin part of the supported release.
   (e.g. nginx, Caddy, Traefik). The suite now ships **built-in API auth + RBAC +
   MFA + SSO** (default OFF — enable per §9); enable it (and set
   `TLSOC_AUTH_COOKIE_SECURE=true` behind TLS), and/or add proxy-level auth in
-  front. A site that revives the unsupported archived Kibana plugin must assess
+  front. The front proxy must accept request bodies of at least 3 MiB (nginx:
+  `client_max_body_size 3m;`), because a case screenshot is uploaded as one JSON
+  request of up to 3 MiB; with nginx's 1 MiB default the upload fails with HTTP 413.
+  [`INSTALL.md`](INSTALL.md#hardening-checklist) has a complete nginx example.
+  A site that revives the unsupported archived Kibana plugin must assess
   and own that plugin's separate session/proxy boundary; it is not part of the
   supported production posture.
 - **Restrict the `:8088` backend port.** The compose files publish `8088:8088`
@@ -1024,19 +1062,24 @@ Then `./scripts/agentic-soc-compose.sh up -d` to apply.
   (`Preferences.rbac.enabled` is `false`): with auth on and RBAC off, every signed-in
   account is treated as Super admin. **Settings → Security & access → Single sign-on &
   policy** shows this in the Posture row **Role-based access** ("Off: everyone is
-  Super admin"), and the Roles page shows a "Role-based access is off" callout. Once
-  RBAC is on, roles are enforced **server-side** (every `/api` route is gated by
+  Super admin"), and **Roles & permissions** shows the same state in its
+  **Role-based access** group. Once RBAC is on, roles are enforced **server-side** (every `/api` route is gated by
   `require_permission`, deny-by-default + a CI coverage test) **and** in the UI
   (`<Can>` guards). When auth is OFF, every user is treated as `super_admin`.
-- **Turn RBAC on.** The 0.1.13 Console has no switch for it (a known gap). Save
-  `{"rbac": {"enabled": true}}` through `PUT /api/settings` (permission
-  `settings:manage`), signed in as a super administrator before that account turns
-  on two-factor (for an account with two-factor, the sign-in call returns
+- **Turn RBAC on.** In **Settings → Security & access → Roles & permissions** (the
+  Posture row's **Manage** opens it), a Super admin selects **Turn on role-based
+  access** and confirms. The API is `PUT /api/rbac` with `{"enabled": true}`: it needs
+  an account whose stored role is `super_admin` and a sign-in (or `POST
+  /api/auth/reauth`) within the session policy's re-authentication window, else `403
+  rbac_super_admin_only` or `401 reauth_required`; it answers `409 rbac_auth_required`
+  with sign-in off. For an account with two-factor, the sign-in call returns
   `requires_mfa` and a `pending_token` instead of `token`; the second step is
   `POST /api/auth/mfa/verify` with `{"pending_token": ..., "code": ...}`, which
-  returns `token`). [`INSTALL.md`](INSTALL.md#accounts-and-roles) gives the tested command and
-  its expected output. It takes effect on the next request; keep at least one super
-  administrator.
+  returns `token`. [`INSTALL.md`](INSTALL.md#accounts-and-roles) gives the tested command and
+  its expected output. `PUT /api/settings` no longer changes `rbac.enabled` (`409
+  rbac_switch_moved`), and changing any other `rbac` field through it needs
+  `roles:manage` and a fresh sign-in. The change takes effect on the next request; keep
+  at least one super administrator.
 - **Env fallback admin** (optional, separate from the seed):
   `TLSOC_AUTH_ADMIN_USERNAME` + `TLSOC_AUTH_ADMIN_PASSWORD` (plaintext, hashed in
   memory at startup, never stored; granted super_admin), or a boot-time map

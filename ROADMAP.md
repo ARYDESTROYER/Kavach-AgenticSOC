@@ -433,9 +433,10 @@ engineering sequence is ordered by data safety and measurable outcomes, not scre
   the Draft text.
 - ☐ **Grant blocks keep their version stamp on a downgrade save**, so the once-only
   `runbooks:publish` grant rule never runs twice on a block an older build saved without it.
-- ☐ **Re-investigation keeps person-made case state**: today it rebuilds the Case and keeps
-  only its tags (assignee, comments, status history, disposition, campaign and related cases
-  need a deliberate contract).
+- ◐ **Re-investigation keeps person-made case state**: Round 15 (SPEC D6.10) carries the
+  owner, comments, grades, status history, acknowledgement, status reason, sent
+  notifications and a standing analyst disposition, from the stored case read again just
+  before the rebuild. Campaign and related cases still need a deliberate contract.
 - ☐ **Console follow-ups**: the Low severity hue separated from the link blue (with
   `chat/report/export/report-tokens.ts`, which mirrors it); a dot for the notification bell's
   health mark and a neutral Demo mode pill (§4.8.1); Inbox result actions as links; a browser
@@ -477,6 +478,59 @@ engineering sequence is ordered by data safety and measurable outcomes, not scre
 - **Never** (product decisions, not backlog): executable response actions of any kind (the suite
   never acts on another system), and runbooks that close or escalate a case.
 
+**J. Round-15 deferred items (see `docs/research/2026-11-round15/SPEC.md` §7 and the
+known limitations):**
+
+- ☐ **Audit push-down aggregation for Team activity**: an Elasticsearch composite and a SQL
+  `GROUP BY` instead of the exact fold over at most 250,000 rows, which marks larger
+  windows partial.
+- ☐ **Shift-based day buckets for Team activity**: days are calendar days in the SLA time
+  zone.
+- ☐ **A full blind review**: hide the AI verdict across the whole case page while an
+  auto-close review is pending; today only the review card holds it back.
+- ☐ **Reinvestigating a closed case updates it in place**: today it creates a second case.
+- ☐ **Lifecycle notifications honour `triggers.on_closed` and the risk floors.**
+- ☐ **`first_response_at` written on the first human response.**
+- ☐ **`case_activity` and `case_tasks` as opaque rows on Elasticsearch**, like the case
+  thread.
+- ☐ **`caseOutcome` for ordinary feedback labels**: the Console renders only review grades
+  through the backend authority; an ordinary grade's label keeps the earlier rendering.
+- ☐ **Server-side image re-encoding**: the server checks structure and strips metadata but
+  never decodes or re-encodes pixels (no image library is added); the Console re-encodes
+  before it uploads.
+- ☐ **The bulk exclusion of agent-closed cases on the server**: today Case Manager and Cases
+  leave them out of bulk Set status and Set disposition only among the cases the Console
+  has loaded; the bulk API and jobs accept them.
+- ☐ **The Review scope reads by projection**: `GET /api/cases?review=completed` reads up to
+  2,000 whole cases per request before it filters and pages them.
+- ☐ **Time spent survives a ledger repair**: a ledger entry restored from the case history
+  has no `elapsed_ms`, because the `auto_close_review` history event does not carry it.
+- ☐ **A pick on a case reopened outside the review**: it stays pending and listed until the
+  case is closed again; decide whether to settle or hide it.
+- ☐ **A case a person closes while its investigation runs**: it is rebuilt from the stored
+  copy, never dropped; decide whether it needs a dedicated skip path with an audit row.
+- ☐ **The in-app channel-list mute flaw in `notifications/dispatch.py::_inapp_route`**: a
+  category's `channels` list names only the extra channels (the Inbox preferences never
+  write `in_app`), so a person who adds email to a category loses its Inbox items. The
+  auto-close review disagreement Inbox item already reads the list correctly.
+- ☐ **Case Manager queue status at 360 px**: a Critical row with an owner can cut its status
+  word ("Escala…") at the default queue width; the full text is in the row's accessible
+  name.
+- ☐ **Primary entity shown twice**: in the Overview's Key entities and in the facts rail's
+  Source section.
+- ☐ **Leftovers**: `RunbookProgressChip` and `useRunbookProgressMap` have no production use
+  since the queue rows dropped the runbook chip; `TraceTimeline` keeps a second layout and
+  `CaseChat` an always-true `caseManager` prop; the Demo runbook step rows carry no
+  `changes`, so Demo Team activity counts no runbook steps; the Settings reset tiers do
+  not mention screenshots; the Vite dev proxy answers 500 instead of 413 for an upload body
+  over 3 MiB (development only); the setup wizard's Keys-step sentence "Add at least one
+  provider for live reasoning" could be shortened to win back entry bytes; em dashes remain
+  in `docs/development/ui-standard.md` outside the Case Manager part, `docs/USAGE.md` and
+  `webui/src/soc/router.tsx` outside the case block.
+- **Never** (product decisions, not backlog): a ranking, leaderboard, "top performer" or
+  composite productivity score on Team activity; a review that changes a case by itself; a
+  screenshot, caption or team count in a prompt.
+
 Each item ends with: `pytest -q` green (keep the count current), full docs+app
 `npm run build` + `npm run test:strict` clean, **#3 `decide()` byte-identical**, additive + zero new runtime deps
 where possible, and docs + Journal updated. Commit or publish only after intentional,
@@ -488,6 +542,17 @@ explicit authorization.
 - ☑ AGENTS.md (with CLAUDE.md forwarder), Journal.md, docs/ENVIRONMENT.md, this ROADMAP.
 
 ## Progress (this cycle, newest first)
+- ◐ **Round 15: an RBAC switch, honest setup copy, Team activity, screenshots, auto-close
+  review and a calmer Case Manager** (branch `claude/round15`, PR to `Testing`). The
+  Role-based access switch on Roles & permissions and `PUT /api/rbac` (`PUT /api/settings`
+  answers `409 rbac_switch_moved`); truthful setup-wizard readiness (`ai_runtime_ready`);
+  the Team activity page from the audit log under `team:view`; a close dialog with one
+  classification question, actions taken and an optional rating; screenshots on cases in
+  the `case_files` KV namespace; a random, capped review of automatic closes recorded as
+  independent ground truth; the five-tab Case Manager with a calmer queue, header and facts
+  rail; structured audit rows for human case work; re-investigation that keeps people's
+  work. `decide()` untouched; KV only; no new dependency. See
+  `docs/research/2026-11-round15/SPEC.md`.
 - ◐ **Round 14: one console grammar, a Dashboards library, an audit log you can use, rule
   drill-down and one Runbooks feature** (branch `claude/round14`, PR to `Testing`). The sign-out
   notice without a duration; the Audit log page (scopes, search, inspector, audited CSV and JSON
