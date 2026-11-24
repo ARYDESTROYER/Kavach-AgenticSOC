@@ -60,10 +60,14 @@ Below the header:
   closed, acknowledged, commented, reviewed, escalated, reopened and other case work
   (assignments, screenshots and runbook steps). Sign-ins are not case work and are not
   drawn. A range with no case work shows "No case work in this window".
-- **People**: one row per person with their counts, their reviews ("3 of 4 agreed"),
-  their median time to acknowledge and when they were last active. Select a row to open
-  that person's sheet. **Download CSV** saves the table as a spreadsheet; a name that
-  starts like a formula is written as text.
+- **People**: one row per person with their name and role, their counts of the chart's
+  kinds (closed, reviews, acknowledged, commented, escalated, reopened and other) and when
+  they were last active ("Not in window" when nothing of theirs was counted in the range).
+  A count with nothing in it reads 0. Point at a reviews count to see how many agreed
+  ("3 of 4 agreed"). Their sign-ins, each kind inside **Other** and their median time to
+  acknowledge are on the person's sheet and in the CSV. Select a row to open that
+  person's sheet. **Download CSV** saves every count as a spreadsheet; a name that starts
+  like a formula is written as text.
 
 ### What each count means
 
@@ -95,8 +99,8 @@ time a person moved it to Investigating, Escalated or On hold (an Escalate or a 
 hold, for example). It is measured from up to 5,000 cases; with more, the page says the
 median was not measured rather than guessing.
 
-**Reviews** always read "N of M agreed", where M counts the reviews that agreed or
-disagreed (an unsure review is not an answer). An agreement rate is added only from 30
+**Reviews** always read "N of M agreed" on the strip, the person sheet and a reviews
+count's hover title, where M counts the reviews that agreed or disagreed (an unsure review is not an answer). An agreement rate is added only from 30
 answered reviews, because fewer would say more than the reviews can. A case that was not
 picked for review can be reviewed again; only the person's latest review of a case counts,
 so the 30 are 30 different cases, and an earlier review shows in their events as

@@ -247,7 +247,8 @@ function CrossSourceGroup({ prefs, update }: SecProps) {
   const entityKeys = Array.isArray(x.entity_keys)
     ? x.entity_keys
     : ['ip', 'host', 'user', 'file_hash', 'domain'];
-  const enabled = x.enabled ?? false;
+  // On by default (`CrossSourceCorrelationConfig.enabled`), so an absent value reads on.
+  const enabled = x.enabled ?? true;
   return (
     <SettingsGroup
       id="detection-crosssource"
@@ -257,7 +258,7 @@ function CrossSourceGroup({ prefs, update }: SecProps) {
       <SettingRow
         variant="switch"
         label="Cross-source correlation"
-        help="Off by default."
+        help="On by default."
         checked={enabled}
         onCheckedChange={(v) => set({ enabled: v })}
       />

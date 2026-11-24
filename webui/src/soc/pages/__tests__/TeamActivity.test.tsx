@@ -227,6 +227,80 @@ describe('Team activity', () => {
     expect(headers[closed + 1]).toMatch(/^Reviews/);
   });
 
+  it('fits the people table in a 1440px window with the navigation rail open', async () => {
+    renderPage();
+    const table = await screen.findByRole('table', { name: 'People' });
+    const headers = within(table).getAllByRole('columnheader').map((th) => th.textContent?.trim() ?? '');
+    // The chart's kinds, the role beside the name; sign-ins, each kind of "Other" and the
+    // time to acknowledge are on the person sheet and in the CSV.
+    expect(headers).toEqual([
+      'Person', 'Closed', 'Reviews', 'Acknowledged', 'Commented', 'Escalated', 'Reopened', 'Other', 'Last active', 'Row actions',
+    ]);
+    // The planned minimum width (the fixed columns, the Person minimum and the row action)
+    // fits the 1,152px the panel has there, so no column, header or open button is cut.
+    const terms = table.style.minWidth.replace(/^calc\((.*)\)$/, '$1').split(' + ');
+    const px = terms.map((term) => {
+      const m = /^(\d+(?:\.\d+)?)(px|rem)$/.exec(term.trim());
+      expect(m, `unexpected width term ${term}`).not.toBeNull();
+      return Number(m![1]) * (m![2] === 'rem' ? 16 : 1);
+    });
+    expect(px.reduce((a, b) => a + b, 0)).toBeLessThanOrEqual(1152);
+    // A narrower window scrolls with the person kept in view.
+    expect(within(table).getAllByRole('columnheader')[0].className).toMatch(/(^|\s)sticky(\s|$)/);
+    // The role reads beside the name.
+    const zoe = within(table).getAllByRole('row').find((row) => row.textContent?.includes('Zoe Adams'))!;
+    expect(within(zoe).getAllByRole('cell')[0]).toHaveTextContent('Zoe AdamsAnalyst Tier 1');
+  });
+
+  it('shows every count right-aligned with 0 for none, and Last active as not in the window', async () => {
+    const asha = person('asha.iyer', {
+      kind: 'demo',
+      role: '',
+      counts: { ...zeros, reviewed: 4, assigned: 1, runbook_step_done: 2 },
+      reviews: { ...reviews, completed: 4, agreed: 2, disagreed: 1, unsure: 1, answered: 3 },
+      last_active: new Date().toISOString(),
+    });
+    h.activity.mockResolvedValue(data({ people: [asha, data().people[1]] }));
+    renderPage();
+    const table = await screen.findByRole('table', { name: 'People' });
+    const headers = within(table).getAllByRole('columnheader').map((th) => th.textContent?.trim() ?? '');
+    const cellsOf = (name: string) =>
+      within(within(table).getAllByRole('row').find((row) => row.textContent?.includes(name))!).getAllByRole('cell');
+    const zoe = cellsOf('Zoe Adams');
+    // No review: a right-aligned 0 like every other count, never "None".
+    const zoeReviews = zoe[headers.indexOf('Reviews')];
+    expect(zoeReviews).toHaveTextContent(/^0$/);
+    expect(zoeReviews).toHaveClass('text-right');
+    expect(table).not.toHaveTextContent('None');
+    for (const header of ['Closed', 'Reviews', 'Acknowledged', 'Commented', 'Escalated', 'Reopened', 'Other']) {
+      expect(zoe[headers.indexOf(header)]).toHaveClass('text-right');
+    }
+    // Nothing counted in the window: Last active says so.
+    expect(zoe[headers.indexOf('Last active')]).toHaveTextContent('Not in window');
+    // Reviews: the count, with how many agreed as its title; Other: assigned plus runbook steps.
+    const ashaCells = cellsOf('asha.iyer');
+    expect(ashaCells[headers.indexOf('Reviews')]).toHaveTextContent(/^4$/);
+    expect(within(ashaCells[headers.indexOf('Reviews')]).getByTitle('2 of 3 agreed, 1 unsure')).toBeInTheDocument();
+    expect(ashaCells[headers.indexOf('Other')]).toHaveTextContent(/^3$/);
+    expect(sortPeople([data().people[1], asha], { id: 'other', dir: 'desc' }).map((p) => p.key)).toEqual(['asha.iyer', 'zoe']);
+  });
+
+  it('writes the auto-close caption with a plain hyphen and proportional figures', async () => {
+    renderPage();
+    const strip = await screen.findByTestId('team-kpis');
+    const caption = within(strip).getByText('auto-close reviews');
+    // U+002D, never a non-breaking hyphen or another dash the font draws wide.
+    expect(Array.from(caption.textContent ?? '').map((c) => c.codePointAt(0))).toContain(0x2d);
+    expect(caption.textContent).toMatch(/^[a-z -]+$/);
+    // Inter's tabular figures widen the hyphen ("auto - close"): words stay proportional,
+    // and no tabular element on the page holds a hyphenated word.
+    expect(caption).not.toHaveClass('tabular-nums');
+    const hyphenated = Array.from(document.querySelectorAll<HTMLElement>('.tabular-nums'))
+      .map((node) => node.textContent ?? '')
+      .filter((text) => /[A-Za-z]-[A-Za-z]/.test(text));
+    expect(hyphenated).toEqual([]);
+  });
+
   it('opens a person with their events, case links and the Audit log link', async () => {
     renderPage();
     await screen.findByTestId('team-kpis');
@@ -270,6 +344,10 @@ describe('Team activity', () => {
     const table = within(sheet).getByRole('table', { name: 'Work per day, days in UTC' });
     const headers = within(table).getAllByRole('columnheader').map((th) => th.textContent?.trim());
     expect(headers).toEqual(['Day', 'Closed', 'Reviews', 'Acknowledged', 'Commented', 'Escalated', 'Reopened', 'Other', 'Sign-ins']);
+    // The table's outer cells sit on the sheet's text edge, as the "Per day" heading does.
+    const heads = within(table).getAllByRole('columnheader');
+    expect(heads[0]).toHaveClass('pl-0');
+    expect(heads[heads.length - 1]).toHaveClass('pr-0');
     const cells = within(within(table).getAllByRole('row')[1]).getAllByRole('cell').map((td) => td.textContent);
     // The reopen has its own column, as on the chart; "Other" holds the two screenshots.
     expect(cells[headers.indexOf('Reopened')]).toBe('1');
@@ -278,6 +356,22 @@ describe('Team activity', () => {
     // 20:00Z is listed on 23 Nov, the day the table counts it on, whatever the viewer's zone.
     expect(await within(sheet).findByText('23 Nov, 20:00')).toBeInTheDocument();
     expect(within(sheet).getByText('Times in UTC.')).toBeInTheDocument();
+  });
+
+  it("words the sheet's closes and reviews as the sheet's other lines", async () => {
+    const zoe = person('zoe', {
+      display_name: 'Zoe Adams',
+      counts: { ...zeros, closed: 3 },
+      closed_by: { true_positive: 1, false_positive: 2, benign: 0, duplicate: 0, other: 0 },
+    });
+    h.activity.mockResolvedValue(data({ people: [zoe] }));
+    renderPage();
+    await screen.findByTestId('team-kpis');
+    fireEvent.click(screen.getByRole('button', { name: 'Open the activity of Zoe Adams' }));
+    const sheet = await screen.findByTestId('team-person-sheet');
+    expect(within(sheet).getByText('Closed as true positive: 1, false positive: 2.')).toBeInTheDocument();
+    // No review in the window: said in words here, a 0 in the table and the counts above.
+    expect(within(sheet).getByText('None completed in this window.')).toBeInTheDocument();
   });
 
   it('gives Not attributed no events and no Audit log link', async () => {

@@ -214,6 +214,17 @@ export const CHART_WORDS: Readonly<Record<TeamChartKind, string>> = {
   other: 'Other case work',
 };
 
+/** The kinds the chart, the people table and the per-day table count as "Other". */
+export const OTHER_KINDS: readonly TeamKind[] = ['assigned', 'screenshot_added', 'runbook_step_done'];
+
+/** What "Other" holds, in words. */
+export const OTHER_KINDS_TEXT = 'assigned, screenshots added and runbook steps done';
+
+/** A person's "Other" case work (assigned, screenshots added, runbook steps done). */
+export function otherCount(person: Pick<PersonActivity, 'counts'>): number {
+  return OTHER_KINDS.reduce((sum, k) => sum + (person.counts[k] ?? 0), 0);
+}
+
 export const CLOSE_WORDS: Readonly<Record<TeamCloseGroup, string>> = {
   true_positive: 'True positive',
   false_positive: 'False positive',
@@ -260,9 +271,12 @@ export function fmtSeconds(seconds: number | null | undefined): string | null {
   return fmtDuration(seconds / 60);
 }
 
-/** "3 of 4 agreed" always; the rate only from 30 answered reviews (SPEC D3.8). */
+/**
+ * "3 of 4 agreed" always; the rate only from 30 answered reviews (SPEC D3.8). With none,
+ * says that no review was completed in the window (a count of 0 says the same).
+ */
 export function reviewsText(reviews: TeamReviews): string {
-  if (reviews.completed === 0) return 'None';
+  if (reviews.completed === 0) return 'None completed in this window';
   const parts = [`${fmtNumber(reviews.agreed)} of ${fmtNumber(reviews.answered)} agreed`];
   if (reviews.agreement_rate !== null && reviews.agreement_rate !== undefined) {
     parts.push(`${Math.round(reviews.agreement_rate * 100)}%`);

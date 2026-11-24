@@ -3258,7 +3258,15 @@
    "page": "analyst/team-activity.md",
    "anchor": "read-the-page",
    "heading": "Read the page",
-   "text": "The header holds the range: **Today**, **Yesterday**, **Last 7 days** or **Last 30\ndays**, or a **Custom range** of whole days, at most 92 of them. A day is a calendar day\nin the operator time zone (the time zone of the SLA policy, set in Settings); the help\ntip beside the title names it. Last 7 and 30 days count today and the days before it\nfrom local midnight.\n\nBelow the header:\n\n- **One strip of figures**: people active (anyone with at least one counted action or\n  sign-in in the range), cases closed by people, cases acknowledged, auto-close reviews\n  completed, and the median time to acknowledge.\n- **Work per day**: the team's case work for each day of the range, stacked by kind:\n  closed, acknowledged, commented, reviewed, escalated, reopened and other case work\n  (assignments, screenshots and runbook steps). Sign-ins are not case work and are not\n  drawn. A range with no case work shows \"No case work in this window\".\n- **People**: one row per person with their counts, their reviews (\"3 of 4 agreed\"),\n  their median time to acknowledge and when they were last active. Select a row to open\n  that person's sheet. **Download CSV** saves the table as a spreadsheet; a name that\n  starts like a formula is written as text.",
+   "text": "The header holds the range: **Today**, **Yesterday**, **Last 7 days** or **Last 30\ndays**, or a **Custom range** of whole days, at most 92 of them. A day is a calendar day\nin the operator time zone (the time zone of the SLA policy, set in Settings); the help\ntip beside the title names it. Last 7 and 30 days count today and the days before it\nfrom local midnight.\n\nBelow the header:",
+   "console": []
+  },
+  {
+   "id": "analyst/team-activity#read-the-page:1",
+   "page": "analyst/team-activity.md",
+   "anchor": "read-the-page",
+   "heading": "Read the page",
+   "text": "- **One strip of figures**: people active (anyone with at least one counted action or\n  sign-in in the range), cases closed by people, cases acknowledged, auto-close reviews\n  completed, and the median time to acknowledge.\n- **Work per day**: the team's case work for each day of the range, stacked by kind:\n  closed, acknowledged, commented, reviewed, escalated, reopened and other case work\n  (assignments, screenshots and runbook steps). Sign-ins are not case work and are not\n  drawn. A range with no case work shows \"No case work in this window\".\n- **People**: one row per person with their name and role, their counts of the chart's\n  kinds (closed, reviews, acknowledged, commented, escalated, reopened and other) and when\n  they were last active (\"Not in window\" when nothing of theirs was counted in the range).\n  A count with nothing in it reads 0. Point at a reviews count to see how many agreed\n  (\"3 of 4 agreed\"). Their sign-ins, each kind inside **Other** and their median time to\n  acknowledge are on the person's sheet and in the CSV. Select a row to open that\n  person's sheet. **Download CSV** saves every count as a spreadsheet; a name that starts\n  like a formula is written as text.",
    "console": []
   },
   {
@@ -3282,7 +3290,7 @@
    "page": "analyst/team-activity.md",
    "anchor": "what-each-count-means",
    "heading": "What each count means",
-   "text": "**Reviews** always read \"N of M agreed\", where M counts the reviews that agreed or\ndisagreed (an unsure review is not an answer). An agreement rate is added only from 30\nanswered reviews, because fewer would say more than the reviews can. A case that was not\npicked for review can be reviewed again; only the person's latest review of a case counts,\nso the 30 are 30 different cases, and an earlier review shows in their events as\n\"Replaced by a later review of this case\". The person sheet\nalso shows the median **time spent reviewing** (measured while the review card was open)\nand, separately, the median **time to review** (from the case being picked for review to\nthe review).",
+   "text": "**Reviews** always read \"N of M agreed\" on the strip, the person sheet and a reviews\ncount's hover title, where M counts the reviews that agreed or disagreed (an unsure review is not an answer). An agreement rate is added only from 30\nanswered reviews, because fewer would say more than the reviews can. A case that was not\npicked for review can be reviewed again; only the person's latest review of a case counts,\nso the 30 are 30 different cases, and an earlier review shows in their events as\n\"Replaced by a later review of this case\". The person sheet\nalso shows the median **time spent reviewing** (measured while the review card was open)\nand, separately, the median **time to review** (from the case being picked for review to\nthe review).",
    "console": []
   },
   {

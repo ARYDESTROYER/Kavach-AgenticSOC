@@ -14,6 +14,7 @@
 import * as React from 'react';
 import { ScrollText } from 'lucide-react';
 
+import { cn } from '@/lib/cn';
 import { fmtNumber, formatTimestamp } from '@/lib/format';
 import { getTeamPersonEvents, teamErrorMessage } from '@/lib/api-team';
 import type { PersonActivity, TeamEvent, TeamKind } from '@/lib/types-team';
@@ -31,6 +32,7 @@ import {
   CLOSE_WORDS,
   KIND_ORDER,
   KIND_WORDS,
+  OTHER_KINDS,
   PERSON_KIND_WORDS,
   UNATTRIBUTED_HELP,
   dayLabel,
@@ -57,9 +59,12 @@ const DAY_COLUMNS: ReadonlyArray<readonly [string, string, readonly TeamKind[]]>
   ['commented', 'Commented', ['commented']],
   ['escalated', 'Escalated', ['escalated']],
   ['reopened', 'Reopened', ['reopened']],
-  ['other', 'Other', ['assigned', 'screenshot_added', 'runbook_step_done']],
+  ['other', 'Other', OTHER_KINDS],
   ['signed_in', 'Sign-ins', ['signed_in']],
 ];
+/** The per-day table's outer cells sit on the sheet's text edge, as its heading does. */
+const FIRST_CELL = 'pl-0';
+const LAST_CELL = 'pr-0';
 const SECTION = 'space-y-2 border-t border-border pt-4';
 const HEADING = 'text-sm font-semibold text-foreground';
 
@@ -178,7 +183,8 @@ export function PersonSheet({
       <SheetContent
         side="right"
         size="xl"
-        className="max-w-[46rem] gap-0 overflow-y-auto p-0"
+        // The `xl` width (56rem): the per-day table's nine columns fit whole at 1440px.
+        className="gap-0 overflow-y-auto p-0"
         data-testid="team-person-sheet"
         onOpenAutoFocus={(event) => {
           event.preventDefault();
@@ -231,7 +237,7 @@ export function PersonSheet({
                 <p className={NOTE}>
                   Closed as{' '}
                   {CLOSE_ORDER.filter((g) => person.closed_by[g] > 0)
-                    .map((g) => `${CLOSE_WORDS[g].toLowerCase()} ${fmtNumber(person.closed_by[g])}`)
+                    .map((g) => `${CLOSE_WORDS[g].toLowerCase()}: ${fmtNumber(person.closed_by[g])}`)
                     .join(', ')}
                   .
                 </p>
@@ -278,9 +284,12 @@ export function PersonSheet({
                   <Table aria-label={`Work per day, days in ${timezone}`}>
                     <TableHeader>
                       <TableRow>
-                        <TableHead>Day</TableHead>
-                        {DAY_COLUMNS.map(([id, header]) => (
-                          <TableHead key={id} className="whitespace-nowrap text-right">
+                        <TableHead className={FIRST_CELL}>Day</TableHead>
+                        {DAY_COLUMNS.map(([id, header], index) => (
+                          <TableHead
+                            key={id}
+                            className={cn('whitespace-nowrap text-right', index === DAY_COLUMNS.length - 1 && LAST_CELL)}
+                          >
                             {header}
                           </TableHead>
                         ))}
@@ -289,9 +298,12 @@ export function PersonSheet({
                     <TableBody>
                       {[...person.daily].reverse().map((day) => (
                         <TableRow key={day.date}>
-                          <TableCell className="whitespace-nowrap">{dayLabel(day.date, now)}</TableCell>
-                          {DAY_COLUMNS.map(([id, , kinds]) => (
-                            <TableCell key={id} className="text-right tabular-nums">
+                          <TableCell className={cn('whitespace-nowrap', FIRST_CELL)}>{dayLabel(day.date, now)}</TableCell>
+                          {DAY_COLUMNS.map(([id, , kinds], index) => (
+                            <TableCell
+                              key={id}
+                              className={cn('text-right tabular-nums', index === DAY_COLUMNS.length - 1 && LAST_CELL)}
+                            >
                               {fmtNumber(kinds.reduce((sum, k) => sum + (day.counts[k] ?? 0), 0))}
                             </TableCell>
                           ))}

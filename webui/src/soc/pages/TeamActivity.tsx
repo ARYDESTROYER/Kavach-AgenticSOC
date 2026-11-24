@@ -27,7 +27,7 @@ import { Download } from 'lucide-react';
 import { fmtNumber, humanizeAge } from '@/lib/format';
 import { EXPORT_MIME, UTF8_BOM, downloadText, exportFileName } from '@/lib/download';
 import { getTeamActivity, teamErrorCode, teamErrorMessage } from '@/lib/api-team';
-import type { PersonActivity, TeamActivity as TeamActivityData } from '@/lib/types-team';
+import type { PersonActivity, TeamActivity as TeamActivityData, TeamKind } from '@/lib/types-team';
 import { Badge } from '@/ui/badge';
 import { Button } from '@/ui/button';
 import { Callout, LoadingState, Panel } from '@/design-system';
@@ -52,9 +52,12 @@ import { PersonSheet } from './team/PersonSheet';
 import { TeamDailyChart } from './team/TeamDailyChart';
 import { TeamRangeControl } from './team/TeamRangeControl';
 import {
+  CHART_WORDS,
   DEFAULT_TEAM_RANGE,
+  OTHER_KINDS_TEXT,
   PERSON_KIND_WORDS,
   fmtSeconds,
+  otherCount,
   peopleCsv,
   personName,
   personRole,
@@ -131,27 +134,53 @@ function useTeamActivityData(windowToken: string, nonce: number): Loaded {
   return state;
 }
 
-/** The people table's columns. Sortable; the default order is by name. */
+/** A person's row as words: the name, the role and the kind of account. */
+function personLine(person: PersonActivity): string {
+  const kind = person.kind === 'unattributed' ? '' : PERSON_KIND_WORDS[person.kind];
+  return [personName(person), personRole(person), kind].filter(Boolean).join(', ');
+}
+
+/** Last active for a person with nothing counted in the window. */
+const NOT_IN_WINDOW = 'Not in window';
+
+/**
+ * The people table's columns. Sortable; the default order is by name.
+ *
+ * They fit a 1440px window with the navigation rail open, so nothing scrolls sideways
+ * there: the role sits beside the name, the case work uses the chart's kinds (so "Other"
+ * is the chart's "Other case work") and every count column is as wide as its header.
+ * Sign-ins, each kind inside "Other" and the time to acknowledge are on the person sheet
+ * and in the CSV. Narrower, the table scrolls with the person kept in view.
+ */
 function peopleColumns(): DataTableColumn<PersonActivity>[] {
-  const count = (id: keyof PersonActivity['counts'], header: string, width = 104): DataTableColumn<PersonActivity> => ({
+  const count = (
+    id: string,
+    header: string,
+    width: number,
+    value: (p: PersonActivity) => number,
+    extra: Partial<DataTableColumn<PersonActivity>> = {},
+  ): DataTableColumn<PersonActivity> => ({
     id,
     header,
     kind: 'number',
     width,
     sortable: true,
-    cell: (p) => fmtNumber(p.counts[id] ?? 0),
-    text: (p) => fmtNumber(p.counts[id] ?? 0),
+    cell: (p) => fmtNumber(value(p)),
+    text: (p) => fmtNumber(value(p)),
+    ...extra,
   });
+  const kindCount = (id: TeamKind, header: string, width: number) => count(id, header, width, (p) => p.counts[id] ?? 0);
   return [
     {
       id: 'person',
       header: 'Person',
-      minWidth: 220,
+      minWidth: 200,
       sortable: true,
-      text: (p) => personName(p),
+      text: personLine,
       cell: (p) => (
         <span className="flex min-w-0 items-center gap-2">
           <span className="min-w-0 truncate font-medium text-foreground">{personName(p)}</span>
+          {personRole(p) ? <span className="min-w-0 truncate text-muted-foreground">{personRole(p)}</span> : null}
           {PERSON_KIND_WORDS[p.kind] ? (
             <Badge variant="outline" className="shrink-0 px-1.5 py-0 text-2xs font-normal">
               {PERSON_KIND_WORDS[p.kind]}
@@ -160,57 +189,38 @@ function peopleColumns(): DataTableColumn<PersonActivity>[] {
         </span>
       ),
     },
-    {
-      id: 'role',
-      header: 'Role',
-      width: 140,
-      sortable: true,
-      text: (p) => personRole(p),
-      cell: (p) => <span className="truncate text-muted-foreground">{personRole(p)}</span>,
-    },
-    count('closed', 'Closed', 96),
+    kindCount('closed', 'Closed', 92),
     // Review counts sit beside close counts (SPEC D3.5): closes read with the reviews
-    // beside them, so speed alone never reads as the work.
-    {
-      id: 'reviewed',
-      header: 'Reviews',
-      width: 150,
-      sortable: true,
-      text: (p) => reviewsText(p.reviews),
-      cell: (p) => <span className="truncate tabular-nums">{reviewsText(p.reviews)}</span>,
-    },
-    count('acknowledged', 'Acknowledged', 136),
-    count('commented', 'Commented', 120),
-    count('escalated', 'Escalated', 112),
-    count('reopened', 'Reopened', 112),
-    count('runbook_step_done', 'Runbook steps', 136),
-    count('signed_in', 'Sign-ins', 100),
-    {
-      id: 'median_ack',
-      header: 'Time to acknowledge',
-      kind: 'number',
-      width: 176,
-      sortable: true,
-      text: (p) => fmtSeconds(p.median_ack_seconds) ?? 'Not measured',
+    // beside them, so speed alone never reads as the work. A count like every other
+    // column; how many agreed is its hover title and on the person sheet.
+    count('reviewed', 'Reviews', 100, (p) => p.reviews.completed, {
       cell: (p) =>
-        p.median_ack_seconds === null ? (
-          <span className="text-muted-foreground">Not measured</span>
+        p.reviews.completed ? (
+          <span title={reviewsText(p.reviews)}>{fmtNumber(p.reviews.completed)}</span>
         ) : (
-          fmtSeconds(p.median_ack_seconds)
+          fmtNumber(0)
         ),
-    },
+    }),
+    kindCount('acknowledged', 'Acknowledged', 140),
+    kindCount('commented', 'Commented', 124),
+    kindCount('escalated', 'Escalated', 108),
+    kindCount('reopened', 'Reopened', 112),
+    count('other', 'Other', 88, otherCount, {
+      header: <span title={`${CHART_WORDS.other}: ${OTHER_KINDS_TEXT}`}>Other</span>,
+      menuLabel: CHART_WORDS.other,
+    }),
     {
       id: 'last_active',
       header: 'Last active',
       kind: 'time',
-      width: 130,
+      width: 120,
       sortable: true,
-      text: (p) => (p.last_active ? humanizeAge(p.last_active) : 'None'),
+      text: (p) => (p.last_active ? humanizeAge(p.last_active) : NOT_IN_WINDOW),
       cell: (p) =>
         p.last_active ? (
           <span title={new Date(p.last_active).toLocaleString()}>{humanizeAge(p.last_active)}</span>
         ) : (
-          <span className="text-muted-foreground">None</span>
+          <span className="text-muted-foreground">{NOT_IN_WINDOW}</span>
         ),
     },
   ];
@@ -218,9 +228,8 @@ function peopleColumns(): DataTableColumn<PersonActivity>[] {
 
 function sortValue(person: PersonActivity, id: string): number | string {
   if (id === 'person') return personName(person).toLowerCase();
-  if (id === 'role') return personRole(person).toLowerCase();
   if (id === 'reviewed') return person.reviews.completed;
-  if (id === 'median_ack') return person.median_ack_seconds ?? Number.POSITIVE_INFINITY;
+  if (id === 'other') return otherCount(person);
   if (id === 'last_active') return person.last_active ? Date.parse(person.last_active) : 0;
   return person.counts[id as keyof PersonActivity['counts']] ?? 0;
 }

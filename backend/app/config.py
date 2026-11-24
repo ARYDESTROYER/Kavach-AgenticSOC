@@ -2953,11 +2953,11 @@ class AssetNetwork(BaseModel):
 class CrossSourceCorrelationConfig(BaseModel):
     """Optional, GLOBAL cross-source correlation (Wave 5 / F6).
 
-    Default ``enabled=False`` so today's single-source path is byte-identical out of
-    the box. When enabled, a SECOND, opt-in pass groups OPEN cases/clusters that share
-    an entity (ip/host/user/file_hash/domain) within ``time_window_seconds`` ACROSS
-    ``min_sources`` or more DISTINCT sources. It NEVER force-merges: the per-cluster
-    1:1 signature stays intact (#4) — it only ADDS ``related_case_ids`` +
+    Default ``enabled=True`` (see below); a single-source path stays byte-identical
+    because the pass is a no-op there. When enabled, a SECOND pass groups OPEN
+    cases/clusters that share an entity (ip/host/user/file_hash/domain) within
+    ``time_window_seconds`` ACROSS ``min_sources`` or more DISTINCT sources. It NEVER
+    force-merges: the per-cluster 1:1 signature stays intact (#4); it only ADDS ``related_case_ids`` +
     ``cross_source_cluster_id`` to the cases, surfacing them as RELATED.
 
     ``entity_keys`` lists the cross-source entity types considered (a superset of the
@@ -4391,9 +4391,10 @@ class Preferences(BaseModel):
     # --- Correlation (Section 6.2) ---
     default_correlation: CorrelationRule = Field(default_factory=CorrelationRule)
     correlation_rules: dict[str, CorrelationRule] = Field(default_factory=dict)
-    # Optional, GLOBAL cross-source correlation (Wave 5 / F6). Default OFF →
-    # single-source behaviour is byte-identical. When enabled, an additive pass links
-    # open cases sharing an entity across >= min_sources sources (RELATED, never merged).
+    # Optional, GLOBAL cross-source correlation (Wave 5 / F6). Default ON since the
+    # Autopilot overhaul; a single-source tenant is a no-op. When enabled, an additive
+    # pass links open cases sharing an entity across >= min_sources sources (RELATED,
+    # never merged).
     cross_source_correlation: CrossSourceCorrelationConfig = Field(
         default_factory=CrossSourceCorrelationConfig
     )

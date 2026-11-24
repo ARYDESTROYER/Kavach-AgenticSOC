@@ -319,6 +319,17 @@ describe('KpiTile — the hero context line', () => {
     }
   });
 
+  it('sets tabular figures only on a line that holds a figure', () => {
+    // Inter's tabular set also widens the hyphen, so a caption of words set in it read
+    // "auto - close reviews" on Team activity. Figures still line up on a live tick.
+    const { rerender } = render(<KpiTile label="Reviews completed" value="0" context="auto-close reviews" {...hero} />);
+    const words = within(screen.getByTestId('kpi-reviews-completed')).getByText('auto-close reviews');
+    expect(words).toHaveAttribute('data-kpi-line', 'context');
+    expect(words).not.toHaveClass('tabular-nums');
+    rerender(<KpiTile label="Reviews completed" value="4" context="3 of 4 agreed" {...hero} />);
+    expect(within(screen.getByTestId('kpi-reviews-completed')).getByText('3 of 4 agreed')).toHaveClass('tabular-nums');
+  });
+
   it('gives the line to exactly one thing: state, then bound, then context', () => {
     const { rerender } = render(
       <KpiTile label="Total Cases" value="4" countTo={4} context="arrivals, last 24h" bound="Partial window · lower bound" {...hero} />,

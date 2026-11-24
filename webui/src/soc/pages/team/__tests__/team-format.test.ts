@@ -14,7 +14,9 @@ import {
   customRangeError,
   eventClock,
   eventTimeLabel,
+  OTHER_KINDS,
   fmtSeconds,
+  otherCount,
   peopleCsv,
   peopleCsvRows,
   personName,
@@ -108,11 +110,19 @@ describe('the range control maps to the server window tokens', () => {
 
 describe('the words the page uses', () => {
   it('says N of M agreed, and a rate only when the server sends one', () => {
-    expect(reviewsText(person().reviews)).toBe('None');
+    // None in the window says so in words (the person sheet); the table shows the count, 0.
+    expect(reviewsText(person().reviews)).toBe('None completed in this window');
     const few = { ...person().reviews, completed: 4, agreed: 2, disagreed: 1, unsure: 1, answered: 3 };
     expect(reviewsText(few)).toBe('2 of 3 agreed, 1 unsure');
     const many = { ...few, completed: 30, agreed: 24, disagreed: 6, unsure: 0, answered: 30, agreement_rate: 0.8 };
     expect(reviewsText(many)).toBe('24 of 30 agreed, 80%');
+  });
+
+  it('counts "Other" as the chart does: assigned, screenshots added and runbook steps done', () => {
+    expect(OTHER_KINDS).toEqual(['assigned', 'screenshot_added', 'runbook_step_done']);
+    const busy = person({ counts: { ...zeros, assigned: 1, screenshot_added: 2, runbook_step_done: 3, closed: 9, signed_in: 4 } });
+    expect(otherCount(busy)).toBe(6);
+    expect(otherCount(person())).toBe(0);
   });
 
   it('formats durations without inventing a value', () => {
