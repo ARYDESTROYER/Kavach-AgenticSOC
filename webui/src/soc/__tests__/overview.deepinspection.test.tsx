@@ -226,6 +226,21 @@ function lastOffset(): unknown {
   return arg?.offset;
 }
 
+
+/**
+ * axe inside act(), as Chat.test.tsx does: the shell announcer re-sets its live region on a
+ * 60 ms timer (useLiveAnnouncer) and the open panel announces itself, so the update can
+ * land while axe walks the DOM. Outside act() React writes a warning to stderr, which fails
+ * the strict Console gate.
+ */
+async function axeInAct(node: Element) {
+  let results: Awaited<ReturnType<typeof axe>> | undefined;
+  await act(async () => {
+    results = await axe(node);
+  });
+  return results as Awaited<ReturnType<typeof axe>>;
+}
+
 describe('Overview — KPI deep-inspection panel', () => {
   beforeEach(() => {
     fetchPostureMock.mockReset();
@@ -593,7 +608,7 @@ describe('Overview — KPI deep-inspection panel', () => {
     // `document.body` rather than the container, so a control that portals out of the
     // panel (every Radix Select here does) — and the panel itself, which is portalled —
     // is inside the audited tree too.
-    expect(await axe(document.body)).toHaveNoViolations();
+    expect(await axeInAct(document.body)).toHaveNoViolations();
 
     // The panel is a MODAL. Radix hides the rest of the page with `aria-hidden` (through
     // `aria-hidden`'s `hideOthers`) and NEVER sets the `inert` attribute — the

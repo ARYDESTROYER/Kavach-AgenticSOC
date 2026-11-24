@@ -248,18 +248,6 @@ function renderOverview() {
   );
 }
 
-/**
- * Let the live region's pending announcement land inside act(). The announcer re-sets its
- * text on a 60 ms timer (useLiveAnnouncer), and the panel announces itself on open; an axe
- * run takes longer than that, so without this the timer fires mid-audit, outside act(),
- * and React writes a warning to stderr that fails the strict gate.
- */
-async function settleAnnouncements() {
-  await act(async () => {
-    await new Promise((resolve) => setTimeout(resolve, 80));
-  });
-}
-
 /** Render the dashboard, open one tile's panel, and wait for its first page to land. */
 async function openPanel(user: ReturnType<typeof makeUser>, testId: string) {
   renderOverview();
@@ -272,6 +260,21 @@ async function openPanel(user: ReturnType<typeof makeUser>, testId: string) {
     ).toBeInTheDocument(),
   );
   return { tile, panel };
+}
+
+
+/**
+ * axe inside act(), as Chat.test.tsx does: the shell announcer re-sets its live region on a
+ * 60 ms timer (useLiveAnnouncer) and the open panel announces itself, so the update can
+ * land while axe walks the DOM. Outside act() React writes a warning to stderr, which fails
+ * the strict Console gate.
+ */
+async function axeInAct(node: Element) {
+  let results: Awaited<ReturnType<typeof axe>> | undefined;
+  await act(async () => {
+    results = await axe(node);
+  });
+  return results as Awaited<ReturnType<typeof axe>>;
 }
 
 describe('KPI deep-inspection modal', () => {
@@ -571,8 +574,7 @@ describe('KPI deep-inspection modal', () => {
     // container, so a container-scoped audit would be green while auditing nothing.
     // The probe is the non-vacuity guard.
     expect(document.body.querySelector('[data-testid="kpi-drilldown"]')).not.toBeNull();
-    await settleAnnouncements();
-    expect(await axe(document.body)).toHaveNoViolations();
+    expect(await axeInAct(document.body)).toHaveNoViolations();
   });
 
   it('audits the close-attribution partition, which is a real <dl> inside the panel', async () => {
@@ -594,7 +596,6 @@ describe('KPI deep-inspection modal', () => {
     );
     expect(partition!.querySelectorAll(':scope > dd')).toHaveLength(4);
 
-    await settleAnnouncements();
-    expect(await axe(document.body)).toHaveNoViolations();
+    expect(await axeInAct(document.body)).toHaveNoViolations();
   });
 });
