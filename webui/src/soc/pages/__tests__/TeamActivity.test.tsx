@@ -231,7 +231,7 @@ describe('Team activity', () => {
     renderPage();
     const table = await screen.findByRole('table', { name: 'People' });
     const headers = within(table).getAllByRole('columnheader').map((th) => th.textContent?.trim() ?? '');
-    // The chart's kinds, the role beside the name; sign-ins, each kind of "Other" and the
+    // The chart's kinds, the role under the name; sign-ins, each kind of "Other" and the
     // time to acknowledge are on the person sheet and in the CSV.
     expect(headers).toEqual([
       'Person', 'Closed', 'Reviews', 'Acknowledged', 'Commented', 'Escalated', 'Reopened', 'Other', 'Last active', 'Row actions',
@@ -244,12 +244,46 @@ describe('Team activity', () => {
       expect(m, `unexpected width term ${term}`).not.toBeNull();
       return Number(m![1]) * (m![2] === 'rem' ? 16 : 1);
     });
-    expect(px.reduce((a, b) => a + b, 0)).toBeLessThanOrEqual(1152);
+    // With room to spare for a classic 17px scrollbar, so the open button is never cut.
+    expect(px.reduce((a, b) => a + b, 0)).toBeLessThanOrEqual(1152 - 17);
+    // The Person column keeps at least 220px for the name.
+    expect(terms).toContain('220px');
     // A narrower window scrolls with the person kept in view.
     expect(within(table).getAllByRole('columnheader')[0].className).toMatch(/(^|\s)sticky(\s|$)/);
-    // The role reads beside the name.
+    // The role reads under the name.
     const zoe = within(table).getAllByRole('row').find((row) => row.textContent?.includes('Zoe Adams'))!;
     expect(within(zoe).getAllByRole('cell')[0]).toHaveTextContent('Zoe AdamsAnalyst Tier 1');
+  });
+
+  it('gives the name its own line, with its full text as the title while it is cut', async () => {
+    const long = person('priya', {
+      display_name: 'Priya Ramakrishnan-Venkataraman',
+      role: 'soc_manager',
+      kind: 'environment',
+    });
+    h.activity.mockResolvedValue(data({ people: [long] }));
+    renderPage();
+    const table = await screen.findByRole('table', { name: 'People' });
+    const row = within(table).getAllByRole('row').find((r) => r.textContent?.includes('Priya'))!;
+    const cell = within(row).getAllByRole('cell')[0];
+    const name = within(cell).getByText('Priya Ramakrishnan-Venkataraman');
+    const role = within(cell).getByText('SOC manager');
+    // The name's line holds the name alone; the role and the kind of account sit under it.
+    expect(name.textContent).toBe('Priya Ramakrishnan-Venkataraman');
+    expect(name).not.toContainElement(role);
+    expect(role.parentElement).not.toBe(name.parentElement);
+    expect(role.parentElement).toHaveTextContent('SOC managerEnvironment account');
+    expect(name.parentElement).toHaveClass('flex-col');
+    // When the role and the badge do not fit side by side, the badge takes its own line.
+    expect(role.parentElement).toHaveClass('flex-wrap');
+    // Cut names and roles show their full text as the hover title.
+    for (const [el, full] of [[name, 'Priya Ramakrishnan-Venkataraman'], [role, 'SOC manager']] as const) {
+      expect(el).toHaveClass('truncate');
+      Object.defineProperty(el, 'scrollWidth', { configurable: true, value: 300 });
+      Object.defineProperty(el, 'clientWidth', { configurable: true, value: 180 });
+      fireEvent.pointerEnter(el);
+      expect(el).toHaveAttribute('title', full);
+    }
   });
 
   it('shows every count right-aligned with 0 for none, and Last active as not in the window', async () => {
@@ -348,6 +382,9 @@ describe('Team activity', () => {
     const heads = within(table).getAllByRole('columnheader');
     expect(heads[0]).toHaveClass('pl-0');
     expect(heads[heads.length - 1]).toHaveClass('pr-0');
+    // The sheet keeps the xl width (56rem) whole: a narrower override cuts Sign-ins at 1440px.
+    const widths = sheet.className.split(/\s+/).filter((c) => c.startsWith('max-w-'));
+    expect(widths).toEqual(['max-w-[56rem]']);
     const cells = within(within(table).getAllByRole('row')[1]).getAllByRole('cell').map((td) => td.textContent);
     // The reopen has its own column, as on the chart; "Other" holds the two screenshots.
     expect(cells[headers.indexOf('Reopened')]).toBe('1');
@@ -361,8 +398,9 @@ describe('Team activity', () => {
   it("words the sheet's closes and reviews as the sheet's other lines", async () => {
     const zoe = person('zoe', {
       display_name: 'Zoe Adams',
-      counts: { ...zeros, closed: 3 },
+      counts: { ...zeros, closed: 3, acknowledged: 1 },
       closed_by: { true_positive: 1, false_positive: 2, benign: 0, duplicate: 0, other: 0 },
+      bulk: { acknowledged: 1, closed: 2, reopened: 0, escalated: 0, assigned: 0 },
     });
     h.activity.mockResolvedValue(data({ people: [zoe] }));
     renderPage();
@@ -370,6 +408,9 @@ describe('Team activity', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Open the activity of Zoe Adams' }));
     const sheet = await screen.findByTestId('team-person-sheet');
     expect(within(sheet).getByText('Closed as true positive: 1, false positive: 2.')).toBeInTheDocument();
+    // The bulk line below it reads as plainly, the count before the action.
+    expect(within(sheet).getByText('In bulk actions: 1 acknowledged, 2 closed.')).toBeInTheDocument();
+    expect(sheet).not.toHaveTextContent('Of which');
     // No review in the window: said in words here, a 0 in the table and the counts above.
     expect(within(sheet).getByText('None completed in this window.')).toBeInTheDocument();
   });

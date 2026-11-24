@@ -34,7 +34,7 @@ import { Callout, LoadingState, Panel } from '@/design-system';
 import { useOptionalAuth } from '@/soc/auth';
 import { Unauthorized } from '@/soc/components/Can';
 import { ChartCard } from '@/soc/components/ChartCard';
-import { DataTable, type DataTableColumn, type SortState } from '@/soc/components/DataTable';
+import { DataTable, TruncatedText, type DataTableColumn, type SortState } from '@/soc/components/DataTable';
 import { EmptyState } from '@/soc/components/EmptyState';
 import { KpiStrip } from '@/soc/components/KpiStrip';
 import { KpiTile } from '@/soc/components/KpiTile';
@@ -147,10 +147,12 @@ const NOT_IN_WINDOW = 'Not in window';
  * The people table's columns. Sortable; the default order is by name.
  *
  * They fit a 1440px window with the navigation rail open, so nothing scrolls sideways
- * there: the role sits beside the name, the case work uses the chart's kinds (so "Other"
- * is the chart's "Other case work") and every count column is as wide as its header.
- * Sign-ins, each kind inside "Other" and the time to acknowledge are on the person sheet
- * and in the CSV. Narrower, the table scrolls with the person kept in view.
+ * there: the role sits under the name, the case work uses the chart's kinds (so "Other"
+ * is the chart's "Other case work"), every count column is as wide as its header (sort
+ * icon included, in Inter) and Last active as "Not in window". The minimum leaves room
+ * for a classic scrollbar. Sign-ins, each kind inside "Other" and the time to acknowledge
+ * are on the person sheet and in the CSV. Narrower, the table scrolls with the person
+ * kept in view.
  */
 function peopleColumns(): DataTableColumn<PersonActivity>[] {
   const count = (
@@ -174,26 +176,33 @@ function peopleColumns(): DataTableColumn<PersonActivity>[] {
     {
       id: 'person',
       header: 'Person',
-      minWidth: 200,
+      minWidth: 220,
       sortable: true,
       text: personLine,
+      // The name keeps the whole first line; the role and the kind of account sit under
+      // it, the badge moving to a line of its own when both do not fit. A cut name or
+      // role shows its full text as its title (`TruncatedText`).
       cell: (p) => (
-        <span className="flex min-w-0 items-center gap-2">
-          <span className="min-w-0 truncate font-medium text-foreground">{personName(p)}</span>
-          {personRole(p) ? <span className="min-w-0 truncate text-muted-foreground">{personRole(p)}</span> : null}
-          {PERSON_KIND_WORDS[p.kind] ? (
-            <Badge variant="outline" className="shrink-0 px-1.5 py-0 text-2xs font-normal">
-              {PERSON_KIND_WORDS[p.kind]}
-            </Badge>
+        <span className="flex min-w-0 flex-col gap-0.5">
+          <TruncatedText className="font-medium text-foreground">{personName(p)}</TruncatedText>
+          {personRole(p) || PERSON_KIND_WORDS[p.kind] ? (
+            <span className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-muted-foreground">
+              {personRole(p) ? <TruncatedText>{personRole(p)}</TruncatedText> : null}
+              {PERSON_KIND_WORDS[p.kind] ? (
+                <Badge variant="outline" className="shrink-0 px-1.5 py-0 text-2xs font-normal">
+                  {PERSON_KIND_WORDS[p.kind]}
+                </Badge>
+              ) : null}
+            </span>
           ) : null}
         </span>
       ),
     },
-    kindCount('closed', 'Closed', 92),
+    kindCount('closed', 'Closed', 90),
     // Review counts sit beside close counts (SPEC D3.5): closes read with the reviews
     // beside them, so speed alone never reads as the work. A count like every other
     // column; how many agreed is its hover title and on the person sheet.
-    count('reviewed', 'Reviews', 100, (p) => p.reviews.completed, {
+    count('reviewed', 'Reviews', 98, (p) => p.reviews.completed, {
       cell: (p) =>
         p.reviews.completed ? (
           <span title={reviewsText(p.reviews)}>{fmtNumber(p.reviews.completed)}</span>
@@ -201,11 +210,11 @@ function peopleColumns(): DataTableColumn<PersonActivity>[] {
           fmtNumber(0)
         ),
     }),
-    kindCount('acknowledged', 'Acknowledged', 140),
-    kindCount('commented', 'Commented', 124),
-    kindCount('escalated', 'Escalated', 108),
-    kindCount('reopened', 'Reopened', 112),
-    count('other', 'Other', 88, otherCount, {
+    kindCount('acknowledged', 'Acknowledged', 136),
+    kindCount('commented', 'Commented', 120),
+    kindCount('escalated', 'Escalated', 106),
+    kindCount('reopened', 'Reopened', 108),
+    count('other', 'Other', 84, otherCount, {
       header: <span title={`${CHART_WORDS.other}: ${OTHER_KINDS_TEXT}`}>Other</span>,
       menuLabel: CHART_WORDS.other,
     }),

@@ -125,7 +125,7 @@ describe('Settings copy, rendered (Round 14)', () => {
     expect(container.textContent).not.toContain('Suppression drops events before triage');
     // The group caption says what the matrix does; the switch's helper never repeats it.
     expect((container.textContent ?? '').split('Map every impact and urgency pair').length - 1).toBe(1);
-    expect(container.textContent).toContain('Off by default. When off, cases have no priority.');
+    expect(container.textContent).toContain('On by default. When off, cases have no priority.');
   });
 
   it('Detection, with Asset criticality filled in, has no dashes and no standing explanation box', () => {

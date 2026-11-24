@@ -65,6 +65,11 @@ const DAY_COLUMNS: ReadonlyArray<readonly [string, string, readonly TeamKind[]]>
 /** The per-day table's outer cells sit on the sheet's text edge, as its heading does. */
 const FIRST_CELL = 'pl-0';
 const LAST_CELL = 'pr-0';
+/**
+ * The sheet keeps the `xl` width (56rem) with no narrower override, so the per-day
+ * table's nine columns fit whole at 1440px.
+ */
+const PERSON_SHEET_CLASS = 'gap-0 overflow-y-auto p-0';
 const SECTION = 'space-y-2 border-t border-border pt-4';
 const HEADING = 'text-sm font-semibold text-foreground';
 
@@ -183,8 +188,7 @@ export function PersonSheet({
       <SheetContent
         side="right"
         size="xl"
-        // The `xl` width (56rem): the per-day table's nine columns fit whole at 1440px.
-        className="gap-0 overflow-y-auto p-0"
+        className={PERSON_SHEET_CLASS}
         data-testid="team-person-sheet"
         onOpenAutoFocus={(event) => {
           event.preventDefault();
@@ -244,10 +248,10 @@ export function PersonSheet({
               ) : null}
               {Object.values(person.bulk).some((n) => n > 0) ? (
                 <p className={NOTE}>
-                  Of which in bulk actions:{' '}
+                  In bulk actions:{' '}
                   {(['acknowledged', 'closed', 'reopened', 'escalated', 'assigned'] as const)
                     .filter((k) => person.bulk[k] > 0)
-                    .map((k) => `${KIND_WORDS[k].toLowerCase()} ${fmtNumber(person.bulk[k])}`)
+                    .map((k) => `${fmtNumber(person.bulk[k])} ${KIND_WORDS[k].toLowerCase()}`)
                     .join(', ')}
                   .
                 </p>
