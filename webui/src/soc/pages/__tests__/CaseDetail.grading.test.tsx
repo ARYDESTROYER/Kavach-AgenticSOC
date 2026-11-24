@@ -24,6 +24,7 @@
 import type * as React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { act, render, screen, waitFor, fireEvent, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 
 const { caseActionExec, caseFeedback, getCase, toastMock } = vi.hoisted(() => ({
   caseActionExec: vi.fn(),
@@ -524,5 +525,154 @@ describe('CaseDetail: the disposition picker never answers for the analyst (G1)'
       disposition: 'true_positive',
       disposition_declared: true,
     });
+  });
+});
+
+/**
+ * D4.4 names "a close, resolve or set_disposition": Mark resolved and Set disposition
+ * carry the same `grading` field as the close, so the Console posts the one derived
+ * feedback entry after the lifecycle call (agree on a match, disagree on an override),
+ * and nothing for a case without an AI verdict.
+ */
+describe('CaseDetail: Mark resolved and Set disposition grade the AI as a close does (D4.4)', () => {
+  beforeEach(() => {
+    caseActionExec.mockReset();
+    caseFeedback.mockReset();
+    getCase.mockReset();
+    toastMock.error.mockReset();
+    toastMock.warning.mockReset();
+    toastMock.success.mockReset();
+  });
+
+  const ESCALATED = { ...BASE_CASE, status: 'escalated', decision_by: 'system' };
+  /** Resolved by a person (not an automatic close, so Set disposition is on offer). */
+  const RESOLVED = { ...BASE_CASE, status: 'resolved', decision_by: 'analyst' };
+
+  async function waitForCase() {
+    await waitFor(() => expect(screen.getByText('Credential stuffing burst')).toBeInTheDocument(), {
+      timeout: 5000,
+    });
+  }
+
+  async function submitDisposition(submitName: RegExp, disposition: RegExp, note?: string) {
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.click(within(dialog).getByRole('radio', { name: disposition }));
+    if (note) {
+      fireEvent.change(within(dialog).getByLabelText(/analyst note \(required\)/i), { target: { value: note } });
+    }
+    const submit = within(dialog).getByRole('button', { name: submitName });
+    await waitFor(() => expect(submit).not.toBeDisabled());
+    fireEvent.click(submit);
+  }
+
+  async function resolveAs(disposition: RegExp, note?: string) {
+    await waitForCase();
+    const primary = screen.getByTestId('case-primary-action');
+    expect(primary).toHaveTextContent('Mark resolved');
+    fireEvent.click(primary);
+    await submitDisposition(/^mark resolved/i, disposition, note);
+  }
+
+  async function setDispositionAs(disposition: RegExp, note?: string) {
+    await waitForCase();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Take action' }));
+    await user.click(await screen.findByRole('menuitem', { name: /Set disposition/ }));
+    await submitDisposition(/^set disposition/i, disposition, note);
+  }
+
+  it('Mark resolved with the AI verdict posts the resolve, then one agree grade', async () => {
+    getCase.mockResolvedValue({ ...ESCALATED, verdict: 'true_positive' });
+    caseActionExec.mockResolvedValue({
+      ...ESCALATED,
+      verdict: 'true_positive',
+      status: 'resolved',
+      disposition: 'true_positive',
+    });
+    caseFeedback.mockResolvedValue(null);
+
+    renderWithProviders(<CaseDetail caseId="case-91" onClose={vi.fn()} />);
+    await resolveAs(/True positive/i);
+
+    await waitFor(() => expect(caseActionExec).toHaveBeenCalledTimes(1));
+    expect(caseActionExec.mock.calls[0][1]).toMatchObject({
+      action: 'resolve',
+      disposition: 'true_positive',
+      disposition_declared: true,
+    });
+    await waitFor(() => expect(caseFeedback).toHaveBeenCalledTimes(1));
+    expect(caseFeedback.mock.calls[0]).toEqual(['case-91', expect.objectContaining({ assessment: 'agree' })]);
+    expect(caseFeedback.mock.calls[0][1]).not.toHaveProperty('actual_outcome');
+    expect(caseActionExec.mock.invocationCallOrder[0]).toBeLessThan(caseFeedback.mock.invocationCallOrder[0]);
+  });
+
+  it('Mark resolved against the AI verdict posts one disagree grade', async () => {
+    getCase.mockResolvedValue({ ...ESCALATED, verdict: 'true_positive' });
+    caseActionExec.mockResolvedValue({
+      ...ESCALATED,
+      verdict: 'true_positive',
+      status: 'resolved',
+      disposition: 'false_positive',
+    });
+    caseFeedback.mockResolvedValue(null);
+
+    renderWithProviders(<CaseDetail caseId="case-91" onClose={vi.fn()} />);
+    await resolveAs(/False positive/i, 'The source IP is our scanner.');
+
+    await waitFor(() => expect(caseActionExec).toHaveBeenCalledTimes(1));
+    expect(caseActionExec.mock.calls[0][1]).toMatchObject({ action: 'resolve', disposition: 'false_positive' });
+    await waitFor(() => expect(caseFeedback).toHaveBeenCalledTimes(1));
+    expect(caseFeedback.mock.calls[0][1].assessment).toBe('disagree');
+  });
+
+  it('Set disposition with the AI verdict posts the classification, then one agree grade', async () => {
+    getCase.mockResolvedValue({ ...RESOLVED, verdict: 'false_positive' });
+    caseActionExec.mockResolvedValue({ ...RESOLVED, verdict: 'false_positive', disposition: 'false_positive' });
+    caseFeedback.mockResolvedValue(null);
+
+    renderWithProviders(<CaseDetail caseId="case-91" onClose={vi.fn()} />);
+    await setDispositionAs(/False positive/i);
+
+    await waitFor(() => expect(caseActionExec).toHaveBeenCalledTimes(1));
+    expect(caseActionExec.mock.calls[0][1]).toMatchObject({
+      action: 'set_disposition',
+      disposition: 'false_positive',
+    });
+    await waitFor(() => expect(caseFeedback).toHaveBeenCalledTimes(1));
+    expect(caseFeedback.mock.calls[0]).toEqual(['case-91', expect.objectContaining({ assessment: 'agree' })]);
+    expect(caseActionExec.mock.invocationCallOrder[0]).toBeLessThan(caseFeedback.mock.invocationCallOrder[0]);
+  });
+
+  it('Set disposition against the AI verdict posts one disagree grade', async () => {
+    getCase.mockResolvedValue({ ...RESOLVED, verdict: 'false_positive' });
+    caseActionExec.mockResolvedValue({ ...RESOLVED, verdict: 'false_positive', disposition: 'true_positive' });
+    caseFeedback.mockResolvedValue(null);
+
+    renderWithProviders(<CaseDetail caseId="case-91" onClose={vi.fn()} />);
+    await setDispositionAs(/True positive/i, 'Lateral movement followed the first login.');
+
+    await waitFor(() => expect(caseActionExec).toHaveBeenCalledTimes(1));
+    expect(caseActionExec.mock.calls[0][1]).toMatchObject({ action: 'set_disposition', disposition: 'true_positive' });
+    await waitFor(() => expect(caseFeedback).toHaveBeenCalledTimes(1));
+    expect(caseFeedback.mock.calls[0][1].assessment).toBe('disagree');
+  });
+
+  it('a resolve or a classification of a case with no AI verdict posts no grade', async () => {
+    getCase.mockResolvedValue({ ...ESCALATED, verdict: undefined });
+    caseActionExec.mockResolvedValue({ ...ESCALATED, verdict: undefined, status: 'resolved', disposition: 'benign' });
+
+    const first = renderWithProviders(<CaseDetail caseId="case-91" onClose={vi.fn()} />);
+    await resolveAs(/^Benign/i);
+    await waitFor(() => expect(toastMock.success).toHaveBeenCalledWith('Resolved as benign.', expect.anything()));
+    expect(caseActionExec.mock.calls[0][1]).toMatchObject({ action: 'resolve', disposition: 'benign' });
+    first.unmount();
+
+    getCase.mockResolvedValue({ ...RESOLVED, verdict: undefined });
+    caseActionExec.mockResolvedValue({ ...RESOLVED, verdict: undefined, disposition: 'benign' });
+    renderWithProviders(<CaseDetail caseId="case-91" onClose={vi.fn()} />);
+    await setDispositionAs(/^Benign/i);
+    await waitFor(() => expect(toastMock.success).toHaveBeenCalledWith('Recorded as benign.'));
+    expect(caseActionExec.mock.calls[1][1]).toMatchObject({ action: 'set_disposition', disposition: 'benign' });
+    expect(caseFeedback).not.toHaveBeenCalled();
   });
 });

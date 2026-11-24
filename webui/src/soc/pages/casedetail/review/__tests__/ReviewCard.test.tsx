@@ -63,12 +63,15 @@ describe('ReviewCard', () => {
 
   it('records the answer, note, ratings and the time spent', async () => {
     const { record, advance } = setup();
+    // D6.11: the time runs from opening the card, not from the answer or the compare.
+    advance(10_000);
     fireEvent.click(screen.getByRole('radio', { name: 'False positive' }));
     fireEvent.change(screen.getByLabelText('Note (optional)'), { target: { value: '  Weekly scanner.  ' } });
     fireEvent.click(screen.getByRole('button', { name: 'Rate the AI (optional)' }));
     fireEvent.click(screen.getByRole('button', { name: 'Accuracy: 4 of 5' }));
+    advance(20_000);
     fireEvent.click(screen.getByRole('button', { name: 'Compare with the AI' }));
-    advance(42_000);
+    advance(12_000);
     fireEvent.click(screen.getByRole('button', { name: 'Record review' }));
     await waitFor(() => expect(record).toHaveBeenCalledTimes(1));
     expect(record).toHaveBeenCalledWith('case-9', {

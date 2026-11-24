@@ -13,6 +13,7 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from typing import Any
 
+import pytest
 from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
 
@@ -203,6 +204,58 @@ def test_the_environment_administrator_counts_as_a_super_admin():
         turned = client.put("/api/rbac", json={"enabled": True})
         assert turned.status_code == 200, turned.text
         assert turned.json()["changed"] is True
+
+
+def test_a_deactivated_super_admin_is_not_counted():
+    """``super_admin_count`` and ``role_counts`` count active accounts only."""
+    with TestClient(_app(_secrets())) as client:
+        _as(client, "super_admin", "second-admin")
+        state = _state(client)
+        assert client.get("/api/rbac").json()["super_admin_count"] == 2
+        assert client.portal.call(lambda: state.users.update("Admin", active=False)) is not None
+        body = client.get("/api/rbac").json()
+        assert body["super_admin_count"] == 1
+        assert body["role_counts"] == {"super_admin": 1}
+
+
+def test_rule_5_refuses_when_the_only_super_admin_is_deactivated(monkeypatch):
+    """Rule 5 asks for an ACTIVE Super admin: a deactivated one does not meet it."""
+    from app.models import User
+
+    with TestClient(_app(_secrets())) as client:
+        _admin(client)
+        state = _state(client)
+
+        async def inactive_only() -> list[Any]:
+            return [User(username="Admin", role="super_admin", active=False)]
+
+        monkeypatch.setattr(state.users, "list", inactive_only)
+        refused = client.put("/api/rbac", json={"enabled": True})
+        assert refused.status_code == 409, refused.text
+        assert refused.json()["detail"]["code"] == "rbac_no_super_admin"
+        assert state.prefs.rbac.enabled is False
+        assert client.get("/api/rbac").json()["super_admin_count"] == 0
+
+
+def test_a_persisted_namesake_overrides_the_environment_administrator(monkeypatch):
+    """The environment administrator counts only while no persisted account has its
+    name (the user store overrides the environment layer, case-insensitively)."""
+    from app.models import User
+
+    secrets = _secrets(auth_seed_admin=False, auth_admin_username="envadmin",
+                       auth_admin_password="Env-Admin-Pass-1")
+    with TestClient(_app(secrets)) as client:
+        signed_in = client.post("/api/auth/login", json={"username": "envadmin", "password": "Env-Admin-Pass-1"})
+        assert signed_in.status_code == 200, signed_in.text
+        state = _state(client)
+
+        async def namesake() -> list[Any]:
+            return [User(username="EnvAdmin", role="analyst_tier1", active=True)]
+
+        monkeypatch.setattr(state.users, "list", namesake)
+        body = client.get("/api/rbac").json()
+        assert body["super_admin_count"] == 0
+        assert body["role_counts"] == {"analyst_tier1": 1}
 
 
 def test_the_status_needs_roles_read():
@@ -580,7 +633,29 @@ def test_settings_matrix_edits_with_sign_in_off_are_unchanged():
         assert _state(client).prefs.rbac.default_role == "auditor"
 
 
-def test_settings_matrix_edits_need_roles_manage():
+#: One changed value for every field of the role matrix (SPEC D1.3), each a valid edit,
+#: so the guard and not validation is what answers.
+_MATRIX_EDITS: dict[str, Any] = {
+    "roles": {"auditor": {"cases": ["read"]}},
+    "resources": {"auditor": {"cases": ["read", "update"]}},
+    "custom_roles": [{"name": "everything", "grants": {"cases": ["read"]}}],
+    "denies": {"auditor": {"cases": ["read"]}},
+    "default_role": "auditor",
+}
+
+
+def test_every_rbac_field_but_the_switch_and_the_stamp_is_guarded():
+    """A field added to the rbac block later is guarded by default: the matrix set is
+    every field but ``enabled`` (its own route) and ``rbac_grants_version`` (a stamp)."""
+    from app.api.routes import _RBAC_MATRIX_FIELDS
+    from app.config import RBACConfig
+
+    assert set(_RBAC_MATRIX_FIELDS) == set(RBACConfig.model_fields) - {"enabled", "rbac_grants_version"}
+    assert set(_MATRIX_EDITS) == set(_RBAC_MATRIX_FIELDS)
+
+
+@pytest.mark.parametrize("field", sorted(_MATRIX_EDITS))
+def test_settings_matrix_edits_need_roles_manage(field: str):
     with TestClient(_app(_secrets(), rbac=True)) as client:
         username = _as(client, "soc_manager")
         state = _state(client)
@@ -591,11 +666,12 @@ def test_settings_matrix_edits_need_roles_manage():
             await state.update_prefs(prefs)
 
         client.portal.call(deny)
+        stored = state.prefs.rbac.model_dump(mode="json")
         before = len([r for r in _rows(client) if r.get("action") == "settings.updated"])
-        refused = client.put("/api/settings", json={"rbac": {"default_role": "auditor"}})
-        assert refused.status_code == 403
+        refused = client.put("/api/settings", json={"rbac": {field: _MATRIX_EDITS[field]}})
+        assert refused.status_code == 403, refused.text
         assert refused.json()["detail"] == "permission denied: roles:manage"
-        assert state.prefs.rbac.default_role == "analyst_tier1"
+        assert state.prefs.rbac.model_dump(mode="json") == stored
         assert any(r.get("actor") == username and "roles:manage" in r.get("result_summary", "")
                    for r in _denials(client))
         after = len([r for r in _rows(client) if r.get("action") == "settings.updated"])
@@ -604,22 +680,27 @@ def test_settings_matrix_edits_need_roles_manage():
         assert client.put("/api/settings", json={"poll_interval_seconds": 45}).status_code == 200
 
 
-def test_settings_matrix_edits_need_a_fresh_sign_in():
+@pytest.mark.parametrize("field", sorted(_MATRIX_EDITS))
+def test_settings_matrix_edits_need_a_fresh_sign_in(field: str):
     with TestClient(_app(_secrets())) as client:
         username = _as(client, "soc_manager")
         _backdate_sessions(client, username)
         state = _state(client)
-        refused = client.put("/api/settings", json={"rbac": {"roles": {"auditor": {"cases": ["read"]}}}})
-        assert refused.status_code == 401
+        stored = state.prefs.rbac.model_dump(mode="json")
+        body = {"rbac": {field: _MATRIX_EDITS[field]}}
+        refused = client.put("/api/settings", json=body)
+        assert refused.status_code == 401, refused.text
         assert refused.json()["detail"]["code"] == "reauth_required"
-        assert state.prefs.rbac.roles == {}
+        assert state.prefs.rbac.model_dump(mode="json") == stored
         # A save without an rbac change needs no fresh sign-in.
         assert client.put("/api/settings", json={"poll_interval_seconds": 45}).status_code == 200
         # After re-authenticating the matrix edit goes through and is audited once.
         assert client.post("/api/auth/reauth", json={"password": PASSWORD}).status_code == 200
-        saved = client.put("/api/settings", json={"rbac": {"roles": {"auditor": {"cases": ["read"]}}}})
+        saved = client.put("/api/settings", json=body)
         assert saved.status_code == 200, saved.text
-        assert state.prefs.rbac.roles == {"auditor": {"cases": ["read"]}}
+        assert state.prefs.rbac.model_dump(mode="json")[field] != stored[field]
+        if field == "roles":
+            assert state.prefs.rbac.roles == {"auditor": {"cases": ["read"]}}
         rbac_rows = [r for r in _rows(client) if r.get("action") == "settings.updated"
                      and "rbac" in str((r.get("target") or {}).get("id"))]
         assert len(rbac_rows) == 1

@@ -432,6 +432,10 @@ def test_reviews_say_n_of_m_and_a_rate_only_from_thirty() -> None:
     many = [_review("hal", i % 3 != 0, ts=t, case_id=f"c{i}") for i in range(30)]
     rated = _person(_fold(many).result([]), "hal")["reviews"]
     assert rated["answered"] == 30 and rated["agreement_rate"] == pytest.approx(20 / 30, abs=1e-4)
+    # One short of the bar (D3.8, "only when M is at least 30"): the counts, no rate.
+    assert ta.REVIEW_RATE_MIN == 30
+    short = _person(_fold(many[:29]).result([]), "hal")["reviews"]
+    assert short["answered"] == 29 and short["agreed"] == 19 and short["agreement_rate"] is None
 
 
 def test_a_person_s_reviews_count_once_per_case() -> None:
@@ -1129,9 +1133,11 @@ def _app(*, auth: bool = True, rbac: bool = False, work_routers: bool = False) -
     if work_routers:
         from app.api.routes_auto_close_review import router as review_router
         from app.api.routes_case_files import router as files_router
+        from app.api.routes_case_runbooks import router as runbooks_router
 
         api.include_router(files_router, dependencies=deps)
         api.include_router(review_router, dependencies=deps)
+        api.include_router(runbooks_router, dependencies=deps)
     mount_moved_routers(api, dependencies=deps)
     api.add_middleware(RequestIdMiddleware)
     return TestClient(api)
@@ -1167,8 +1173,21 @@ def _write(client: TestClient, rows: list[dict[str, Any]], store: str = "control
     client.portal.call(go)
 
 
+#: Longer than any offset a route test asks of :func:`_recent`.
+_RECENT_SPAN = timedelta(hours=3)
+
+
 def _recent(minutes: int = 5) -> datetime:
-    return datetime.now(timezone.utc) - timedelta(minutes=minutes)
+    """``minutes`` before now, kept inside today (UTC, the default operator zone): most
+    route tests read the window ``today``. In the first hours after midnight the offsets
+    are scaled into the part of the day that has passed, in the same order, so a row is
+    never dated yesterday."""
+    now = datetime.now(timezone.utc)
+    offset = timedelta(minutes=minutes)
+    elapsed = now - now.replace(hour=0, minute=0, second=0, microsecond=0)
+    if elapsed <= _RECENT_SPAN:
+        offset = elapsed * (offset / _RECENT_SPAN)
+    return now - offset
 
 
 def test_a_super_admin_reads_the_team_and_actions_are_counted() -> None:
@@ -1299,6 +1318,64 @@ def test_a_screenshot_or_review_whose_save_failed_is_not_counted(monkeypatch) ->
     rcf._RUNTIMES.clear()  # noqa: SLF001
 
 
+def test_a_runbook_step_that_lost_a_race_is_not_counted(monkeypatch) -> None:
+    """End to end: two people mark the same runbook step done at once. Both pre-checks
+    pass, and the loser's compare-and-set write finds the step already changed, so its
+    action row (``step.updated``) is followed by its failure row (``step.update_failed``)
+    with the same request id. That attempt counts nothing on Team activity or in the
+    person's events; the step the same person did complete counts."""
+    from app.engine import runbook_runs
+    from app.models import LookupResult
+
+    async def no_source_read(_state: Any, _case: Any, template: Any, **_kw: Any) -> LookupResult:
+        return LookupResult(tool=template.tool, status="empty", count=0, ran_at=_iso(_recent(1)),
+                            ran_by="system", facts=[])
+
+    monkeypatch.setattr(runbook_runs, "execute_lookup", no_source_read)
+    with _app(work_routers=True) as client:
+        admin = _login(client)
+        state = _state(client)
+        client.portal.call(state.cases.save, _case("case-wp3-steps", created=_recent(30)))
+        attached = client.post("/api/cases/case-wp3-steps/runbooks", headers=admin,
+                               json={"runbook_id": "generic-incident"})
+        assert attached.status_code == 201, attached.text
+        # The on-attach lookups write to the runs too; let them settle before the race.
+        client.portal.call(runbook_runs.wait_for_background_lookups, 10)
+        base = f"/api/cases/case-wp3-steps/runbooks/{attached.json()['run']['run_id']}/steps"
+        runs = state.runbook_runs
+        original = runs.mutate
+        raced = {"done": False}
+
+        async def other_writer_first(case_id: str, change: Any, **kw: Any) -> Any:
+            # Another process stores the same step change just before this one writes.
+            if not raced["done"]:
+                raced["done"] = True
+                await original(case_id, change, **kw)
+            return await original(case_id, change, **kw)
+
+        monkeypatch.setattr(runs, "mutate", other_writer_first)
+        lost = client.patch(f"{base}/incident-lead", headers=admin, json={"expected_revision": 0, "status": "done"})
+        assert lost.status_code == 409 and lost.json()["detail"]["code"] == "runbook_conflict", lost.text
+        monkeypatch.setattr(runs, "mutate", original)
+        done = client.patch(f"{base}/what-happened", headers=admin,
+                            json={"expected_revision": 0, "status": "done", "note": "Seen on one host."})
+        assert done.status_code == 200, done.text
+
+        rows = client.portal.call(lambda: state.control_audit.records(limit=1000))
+        steps = [r for r in rows if r.get("action") in ("step.updated", "step.update_failed")]
+        assert sorted(r["action"] for r in steps) == ["step.update_failed", "step.updated", "step.updated"]
+        failed = next(r for r in steps if r["action"] == "step.update_failed")
+        assert sum(1 for r in steps if r.get("request_id") == failed.get("request_id")) == 2
+
+        response = client.get("/api/team/activity", params={"window": "today"}, headers=admin)
+        assert response.status_code == 200, response.text
+        me = next(p for p in response.json()["people"] if p["key"] == "admin")
+        assert me["counts"]["runbook_step_done"] == 1
+        events = client.get("/api/team/people/admin/events", params={"window": "today"}, headers=admin)
+        assert events.status_code == 200, events.text
+        assert [e["kind"] for e in events.json()["events"]].count("runbook_step_done") == 1
+
+
 def test_repeated_reviews_of_one_unsampled_case_count_as_one() -> None:
     """Through the routes: 35 reviews of one agent-closed case that was not sampled are
     35 recorded grades and one review on Team activity, with no agreement rate."""
@@ -1385,6 +1462,24 @@ def test_with_rbac_on_the_team_view_grant_decides() -> None:
         assert client.get("/api/team/activity", headers=auditor).status_code == 200
 
 
+def test_with_rbac_on_a_role_outside_the_floor_reads_the_team_once_granted() -> None:
+    """D3.2, D3.3: the stored-role floor applies only while role-based access is off.
+    With it on, ``team:view`` is an ordinary grant: a team lead's role (here a Tier 2
+    analyst) given it through a role override opens every team route."""
+    with _app(rbac=True) as client:
+        admin = _login(client)
+        state = _state(client)
+        lead = _user(client, admin, "lead-wp3", "analyst_tier2")
+        assert client.get("/api/team/activity", headers=lead).status_code == 403
+        prefs = state.prefs.model_copy(deep=True)
+        prefs.rbac.roles = {**prefs.rbac.roles, "analyst_tier2": {"team": ["view"]}}
+        client.portal.call(state.update_prefs, prefs)
+        for path in ("/api/team/activity", "/api/team/people", "/api/team/people/admin/events"):
+            response = client.get(path, headers=lead)
+            assert response.status_code == 200, (path, response.text)
+        assert client.get("/api/team/activity", headers=lead).json()["rbac_enabled"] is True
+
+
 def test_the_switch_and_the_window_bounds() -> None:
     with _app() as client:
         admin = _login(client)
@@ -1399,6 +1494,48 @@ def test_the_switch_and_the_window_bounds() -> None:
         for path in ("/api/team/activity", "/api/team/people", "/api/team/people/admin/events"):
             off = client.get(path, headers=admin)
             assert off.status_code == 409 and off.json()["detail"]["code"] == "team_activity_off"
+
+
+def test_a_person_s_events_page_holds_at_most_two_hundred() -> None:
+    """D3.10: at most 200 events a page; a larger limit is refused, not served."""
+    assert routes_team.EVENTS_PAGE_MAX == 200
+    with _app() as client:
+        admin = _login(client)
+        _write(client, [
+            _lifecycle("max", "acknowledge", "open", "investigating", ts=_recent(30), case_id=f"m-{i}")
+            for i in range(201)
+        ])
+        too_many = client.get("/api/team/people/max/events", params={"window": "today", "limit": 201},
+                              headers=admin)
+        assert too_many.status_code == 422, too_many.text[:200]
+        page = client.get("/api/team/people/max/events", params={"window": "today", "limit": 200}, headers=admin)
+        assert page.status_code == 200, page.text
+        assert len(page.json()["events"]) == 200 and page.json()["next_cursor"]
+
+
+def test_a_cached_answer_expires_after_sixty_seconds() -> None:
+    """D3.6: an answer is reused for 60 seconds per viewer and window, then computed
+    again. The "today" window starts at the same instant all day, so an answer that
+    never expired would freeze the day's counts at the first read."""
+    now = [0.0]
+    computed: list[float] = []
+    cache = routes_team._AnswerCache(clock=lambda: now[0])  # noqa: SLF001
+
+    async def compute() -> int:
+        computed.append(now[0])
+        return len(computed)
+
+    async def run() -> list[int]:
+        seen = [await cache.get(("viewer", "today"), compute)]
+        now[0] = 59.999
+        seen.append(await cache.get(("viewer", "today"), compute))
+        seen.append(await cache.get(("other-viewer", "today"), compute))
+        now[0] = 60.0
+        seen.append(await cache.get(("viewer", "today"), compute))
+        return seen
+
+    assert asyncio.run(run()) == [1, 1, 2, 3]
+    assert computed == [0.0, 59.999, 60.0]
 
 
 def test_sign_in_off_answers_an_empty_page() -> None:
