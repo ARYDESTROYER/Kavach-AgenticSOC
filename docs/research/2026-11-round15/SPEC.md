@@ -1204,6 +1204,42 @@ and AWS variables unset, and the 2 router-count records waited for the merge.
 - **Wave 3 merge** (`8e3e6d4`): entry 329,080 B and the one ratchet (§8.1 "Entry bundle"), the
   Round 14 record pointing here, the records test pin, the stale `Field` first-paint comments
   fixed.
+- **Cross-cutting review** (§4.5; six fixer commits `bf12323` to `7cb238a`, merged `b01098f`):
+  one adversarial reviewer per dimension over `8e3e6d4` (backend, security, statistics, UI,
+  test honesty, docs) and an independent skeptic per finding: 50 candidates, 46 confirmed and
+  fixed, 4 rejected (one each in backend, security, UI and docs). The fixes, one fixer per
+  dimension in sequence:
+  - Backend and statistics: Team activity counts an audit-first screenshot, review or runbook
+    step only when its `*_failed` row does not follow it (the Audit log inspector's pairing
+    rule, read up to 5 minutes past the window end); a partial read omits the medians and the
+    agreement rate (`ack_status` "partial", a CSV note row); an assignee change on any
+    lifecycle row counts as Assigned; an Escalate, Hold or Set status move makes a case a
+    candidate for the median time to acknowledge; `GET /api/metrics/auto-close-review` repairs
+    the ledger from the case history before it counts.
+  - Security: a Super admin account can be created, changed, deleted or granted only by a
+    Super admin, with a strict fresh sign-in (`_require_super_admin_for` in `routes.py`, also
+    on `PUT /api/users/{u}/roles`; `403 super_admin_only` otherwise), so a `users:manage`
+    holder can no longer promote itself; one disagreement Inbox fan-out per reviewer and
+    unsampled case; one review per person and case in Team activity, with replaced reviews
+    marked in the person's events; the RBAC-off Team activity floor documented as a page
+    limit, not an access control (D3.3, D3.8 and D6.9 amended).
+  - UI: the review card announces the comparison in a live region and moves focus after
+    Record and Reopen; the person sheet returns focus to its row, uses the chart's kinds per
+    day and shows event times in the operator zone; the Team chart's two near-identical
+    oranges and its one-day slab; the queue control band stays on one row with a filter on;
+    equal queue row heights; review durations in the shared format; the clustering heading an
+    h3; the RBAC state wraps on a phone; two strings.
+  - Tests: ten rules that survived mutation are now pinned (D1.3 over all five matrix fields,
+    the RBAC-on team grant, account counting, the review's precedent refresh and completed
+    frame, missed threats and the top-10 cut, D4.4 grading on resolve and set disposition,
+    review timing from opening the card, the Team activity bounds).
+  - Docs: 14 statements corrected against the code, with a new
+    `backend/tests/test_docs_round15_records.py` (14 tests that read each fact from the code),
+    `case-manager.webp` recaptured, and `GET /api/cases/{case_id}/review` documented.
+- **Closing fixes** (`f7063cf`, `e917435`): the Overview axe audits that render the announcer
+  run inside `act()`, as `Chat.test.tsx` does. The announcer's 60 ms timer could land while axe
+  walked the DOM and write React's act warning to stderr, failing the strict gate; it also
+  appears on the Round 14 base.
 
 ### 8.3 Known limitations
 
@@ -1238,7 +1274,7 @@ and add what was found after WP8 wrote those pages.
   shows in both Key entities and the rail's Source section. A long title wraps the header's
   actions onto their own row. `RunbookProgressChip`, `useRunbookProgressMap` and `CaseChat`'s
   always-true `caseManager` prop are left over. Bulk Set disposition in `Cases.tsx` does not send
-  `disposition_declared` (pre-existing, found by WP7, not yet in ROADMAP J).
+  `disposition_declared` (pre-existing, found by WP7; ROADMAP J).
 - **Setup wizard (WP2, entry package).** On first arrival the lazy stage shows its loader for one
   frame (13 to 30 ms measured with the chunk prefetched); hiding it would need an `import()` warm,
   which `lazy-retry.ts` forbids. Without `requestIdleCallback` there is no prefetch. The Keys-step
@@ -1246,8 +1282,9 @@ and add what was found after WP8 wrote those pages.
 - **Elsewhere.** `notifications/dispatch.py::_inapp_route` keeps the channel-list mute flaw WP5
   fixed for the disagreement item. A rollback to `45a4c31` resets `team_activity` and
   `auto_close_review` and counts review grades as ordinary grades while it runs (§3.7). Em dashes
-  remain outside the regions the packages owned. The ROADMAP J leftover about the reset tiers not
-  naming screenshots predates WP7, which added them to the cases tier.
+  remain outside the regions the packages owned. After the cross-cutting review nothing bounds
+  one reviewer's disagreement fan-outs across many unsampled cases (one per case), and the
+  `case.review` frame goes out on every review (ROADMAP J).
 - **Tests seen failing once** (each passes alone and in the default order):
   `run-regressions.test.tsx` (WP6b), `Chat.earlier.test.tsx` (WP5), `appshell.search.test.tsx`
   under load (WP7 review), and three Round 14 source editor tests on one of six shuffled orders,
@@ -1258,7 +1295,28 @@ and add what was found after WP8 wrote those pages.
 The closing gate figures (§5.2) are recorded after the cross-cutting review of the integrated
 tree; the per-package figures are in §8.2.
 
-- Closing gates: to be recorded.
+- Closing gates on the integrated tree (`b01098f` plus the two closing test fixes), run one
+  at a time in CI's order:
+  - Backend `pytest -q`: 13,172 tests, 13,143 passed, 24 skipped (the PostgreSQL-only modules
+    skip offline and run in the PostgreSQL lane) and 5 failed. The five are the sandbox-only
+    environment tests (`test_enrich.py`, `test_round3_wave1_enrichment.py`,
+    `test_round3_wave2b_config.py` twice, `test_round3_wave2b_netguard.py`); their four files
+    pass 55 of 55 with the sandbox's proxy and AWS variables unset, as CI runs.
+  - Fatal ruff (`E9,F63,F7,F82` over `backend/app`, `backend/tests`, `updater` and `scripts`,
+    ruff 0.12.5): clean.
+  - Webui `npm run test:strict` without a build, as CI runs it: 679 files, 8,864 passed, 16
+    skipped (the cases that need `dist/`), zero stderr. The first run of the round's tree
+    found the act warning the closing fixes remove.
+  - `npm run lint -- --max-warnings=0`: 0 errors, 0 warnings. `npm run gates`: pass.
+    `npm run check:types`: no drift.
+  - `npm run build` (Help Center and app): clean. Entry chunk 329,093 B with the build SHA and
+    date stamped (329,080 B with `build:app`), inside the 329,080 + 1,024 B budget and under
+    the 400,000 B ceiling; `bundle-first-paint.test.ts` with `REQUIRE_DIST_BUILD=1` passes.
+  - `npm run docs:check`, `scripts/check_docs.py` (86 public pages),
+    `scripts/build_app_knowledge.py --check` (970 chunks), `scripts/check_version.py`,
+    `scripts/check_ci_contract.py`, the rollback lane and CI contract unit tests, and the docs
+    bundle and theme tests: pass.
+  - `decide()` in `backend/app/engine/case_manager.py` is byte-identical to `c4227bd`.
 
 ---
 

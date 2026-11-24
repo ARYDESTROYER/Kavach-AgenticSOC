@@ -12106,3 +12106,10 @@
 - Tests: the full gate run on the merged tree follows.
 - Status: done.
 - Next: the full gates (SPEC §5.2), light and dark screenshots, the remaining records (SPEC §8.4, AGENTS §10, HANDOFF), then the PR into Testing.
+
+### 2026-11-24 04:35Z - orchestrator - Round 15 closing gates and records
+- Context: SPEC §5.2 gates on the integrated tree after the cross-cutting review merge (b01098f), and the closing records (SPEC §8, AGENTS §10, HANDOFF, ROADMAP J).
+- Did: ran every gate one at a time in CI's order. The first strict Console run passed every test but failed on stderr: the Overview axe audits that render the announcer could see its 60 ms timer land mid-audit, outside act() (it also appears on the Round 14 base). Those audits now run inside act(), as Chat.test.tsx does (f7063cf, e917435). Filled SPEC §8.2 (cross-cutting review and closing fixes) and §8.4 (closing gates), updated §8.3; ROADMAP J drops the stale reset-tier leftover and gains the bulk disposition_declared gap, the per-case review read, the Review scope's unloaded rows, the disagreement fan-out bound and two leftovers; AGENTS §10 gains the Round 15 status, bullet and baseline, with the cheatsheet counts; HANDOFF names Round 15 as built.
+- Tests: backend 13,172 tests, 13,143 passed, 24 skipped, 5 sandbox-only failures (their four files pass 55 of 55 with the proxy and AWS variables unset); fatal ruff clean; webui test:strict without a build 679 files, 8,864 passed, 16 skipped, zero stderr; lint 0/0; gates pass; check:types no drift; full build clean, entry 329,093 B stamped (329,080 B with build:app) inside the 329,080 + 1,024 B budget; bundle check with dist passes; docs:check, check_docs (86 pages), corpus (970 chunks), check_version, check_ci_contract, rollback lane and docs bundle tests pass. decide() byte-identical to c4227bd.
+- Status: done; pushed.
+- Next: the final light and dark captures, then the PR into Testing and CI.

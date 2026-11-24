@@ -513,6 +513,18 @@ known limitations):**
   category's `channels` list names only the extra channels (the Inbox preferences never
   write `in_app`), so a person who adds email to a category loses its Inbox items. The
   auto-close review disagreement Inbox item already reads the list correctly.
+- ☐ **Bulk Set disposition records who declared it**: bulk Set disposition in `Cases.tsx`
+  does not send `disposition_declared` (it predates Round 15; found during the WP7 build).
+- ☐ **The per-case review state reads less**: `GET /api/cases/{case_id}/review` loads the whole
+  review ledger (up to 2,000 entries) on each open of an agent-closed case; cache it or read
+  one entry.
+- ☐ **Review scope follows status changes of unloaded rows**: it ignores `case.changed` for rows
+  it has not loaded, so a ledger case hidden by a status filter joins only on the next
+  `case.review` frame or Refresh.
+- ☐ **Disagreement fan-outs across many cases**: since the cross-cutting review one reviewer
+  sends at most one disagreement Inbox fan-out per unsampled case, but nothing bounds a
+  reviewer's fan-outs across many cases, and the `case.review` frame goes out on every review;
+  decide whether a per-reviewer bound, or frames only for ledger cases, are wanted.
 - ☐ **Case Manager queue status at 360 px**: a Critical row with an owner can cut its status
   word ("Escala…") at the default queue width; the full text is in the row's accessible
   name.
@@ -521,10 +533,13 @@ known limitations):**
 - ☐ **Leftovers**: `RunbookProgressChip` and `useRunbookProgressMap` have no production use
   since the queue rows dropped the runbook chip; `TraceTimeline` keeps a second layout and
   `CaseChat` an always-true `caseManager` prop; the Demo runbook step rows carry no
-  `changes`, so Demo Team activity counts no runbook steps; the Settings reset tiers do
-  not mention screenshots; the Vite dev proxy answers 500 instead of 413 for an upload body
-  over 3 MiB (development only); the setup wizard's Keys-step sentence "Add at least one
-  provider for live reasoning" could be shortened to win back entry bytes; em dashes remain
+  `changes`, so Demo Team activity counts no runbook steps; the Vite dev proxy answers 500
+  instead of 413 for an upload body over 3 MiB (development only); the setup wizard's
+  Keys-step sentence "Add at least one provider for live reasoning" overlaps the new
+  key-mismatch state; the review route takes its request id from the middleware and does not
+  mint one when the middleware is missing, as `audited_write` does; `tests/test_sessions.py`
+  fails after `tests/test_mfa_mandate_and_user_fields.py` resets the event loop (test order
+  only, it passes alone and in the default order); em dashes remain
   in `docs/development/ui-standard.md` outside the Case Manager part, `docs/USAGE.md` and
   `webui/src/soc/router.tsx` outside the case block.
 - **Never** (product decisions, not backlog): a ranking, leaderboard, "top performer" or

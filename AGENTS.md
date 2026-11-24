@@ -848,9 +848,9 @@ See `docs/ENVIRONMENT.md` for the full detail. Summary:
 ## 7. Build / run / test cheatsheet
 
 ```bash
-# Backend tests (offline; MUST stay green). Latest recorded full run: 12,554 tests (see Journal for the exact current count)
+# Backend tests (offline; MUST stay green). Latest recorded full run: 13,172 tests (see Journal for the exact current count)
 cd backend && python3 -m venv .venv && . .venv/bin/activate && pip install -r requirements-dev.txt
-python -m pytest -q                         # -> latest recorded full run: 12,525 passed, 24 skipped, 5 sandbox-only env failures (see Journal)
+python -m pytest -q                         # -> latest recorded full run: 13,143 passed, 24 skipped, 5 sandbox-only env failures (see Journal)
 
 # Backend run locally (in-memory store, mock LLM if no keys)
 uvicorn app.main:app --port 8088
@@ -858,7 +858,7 @@ uvicorn app.main:app --port 8088
 # Web UI + installed Help Center build, tests, and lint (Node 22)
 cd webui && npm install && npm run build   # MkDocs bundle + tsc --noEmit + Vite -> webui/dist/
 npm run docs:check                         # validate app 0.1.13 ↔ bundled docs 0.1
-npm run test:strict                        # -> latest recorded full run: 8,578 passed, 1 skipped / 652 files; zero stderr/console output
+npm run test:strict                        # -> latest recorded full run: 8,864 passed, 16 skipped / 679 files; zero stderr/console output
 npm run lint                               # 0 errors, 0 warnings; jsx-a11y at error
 
 # Shipping backend acceptance also runs `python -m pip check` inside the final
@@ -920,8 +920,8 @@ cp .env.example .env   # set TLSOC_PG_PASSWORD + at least one LLM key
   `/api` proxy forwards arbitrary JSON). Keep `webui/src/lib/types.ts` in sync with
   `models.py`.
 - **Secrets:** env only; UI shows booleans (`configured ✓`) never values.
-- **Tests:** add/keep offline tests; `pytest -q` green (latest recorded full run: 12,525 passed, 24 skipped; 5 sandbox-only env failures) +
-  `npm run build` clean + `npm run test:strict` (latest recorded full run: 8,578 passed, 1 skipped / 652 files) +
+- **Tests:** add/keep offline tests; `pytest -q` green (latest recorded full run: 13,143 passed, 24 skipped; 5 sandbox-only env failures) +
+  `npm run build` clean + `npm run test:strict` (latest recorded full run: 8,864 passed, 16 skipped / 679 files) +
   `npm run lint` (0 errors, jsx-a11y at error) before
   every commit. (Counts rise each round — see `Journal.md` for the exact current totals.)
 - **Git:** active branch `Testing`. Commit focused changes; push when asked. The
@@ -1023,9 +1023,13 @@ cp .env.example .env   # set TLSOC_PG_PASSWORD + at least one LLM key
 
 **Round 15 is the newest work** (a Console switch for role-based access, honest setup-wizard
 copy, a Team activity page, screenshots on cases, a random review of automatically closed cases
-and a cleaner Case Manager). It is in progress on branch `claude/round15` (from `c4227bd` on
-`Testing`) and heads to `Testing` through a pull request; see
-`docs/research/2026-11-round15/SPEC.md`. Round 14 (one console grammar, a Dashboards library, an audit log you
+and a cleaner Case Manager). It was built on branch `claude/round15` (from `c4227bd` on
+`Testing`) as a foundation package, five feature packages, an entry package, an integration
+package and a records package, each independently reviewed, then a cross-cutting review of the
+integrated tree (50 candidate findings, 46 confirmed and fixed); every gate is green apart from
+the five sandbox-only environment tests, and it heads to `Testing` through a pull request; see
+`docs/research/2026-11-round15/SPEC.md`, whose §8 "As built" records what shipped, the contract
+resolutions, the known limitations and the closing gates. Round 14 (one console grammar, a Dashboards library, an audit log you
 can use, rule drill-down and one Runbooks feature that replaces playbooks) was built on
 branch `claude/round14` (from `1cf20a7`, after Round 13 merged into `Testing`) and merged into
 `Testing`; see the Round 14 bullet in the round summary below and
@@ -1108,14 +1112,14 @@ raw hex, chart ramps colour-vision separable, 364 login accent composites); `che
 drift (293 paths); `docs:check`, `check_version`, `check_ci_contract` (3 workflows, 3 shipping
 Dockerfiles), `check_docs` (84 pages) and `build_app_knowledge --check` (877 chunks) pass.
 
-**Current baseline (2026-11-10, Round 14 follow-up fixes, integration gates):** backend **12,525 pytest**
+**Current baseline (2026-11-24, Round 15 closing gates, Round 15 SPEC §8.4):** backend **13,143 pytest**
 passed, 24 skipped (the PostgreSQL-only modules skip offline and run in the PostgreSQL lane; 5
 sandbox-only environment failures, which pass with the sandbox's proxy and AWS variables unset);
-webui **8,578 Vitest** specs passed, 1 skipped (the dist-required case outside the build lane) / 652 files
-with zero stderr or captured console output, full docs+app build clean (3,523 modules; entry chunk
-337,163 B, inside the +1,024 B budget over the recorded `PRE_REVAMP_ENTRY_BYTES` baseline
-336,216 B and under the 400,000 B ceiling;
-motion remains lazy and off the entry path); eslint **0 errors, 0 warnings**; **zero new webui runtime
+webui **8,864 Vitest** specs passed, 16 skipped (the cases that need `dist/`, run without a build as
+CI does) / 679 files with zero stderr or captured console output, full docs+app build clean (3,553
+modules; entry chunk 329,093 B with the build SHA and date stamped, inside the +1,024 B budget over
+the `PRE_REVAMP_ENTRY_BYTES` baseline 329,080 B that Round 15 ratcheted down, and under the
+400,000 B ceiling; motion remains lazy and off the entry path); eslint **0 errors, 0 warnings**; **zero new webui runtime
 deps except the deliberate lazy `motion`** (12.42.2). Version 0.1 adds only the
 explicitly pinned connector/SQL packaging dependencies required by its advertised
 `full` image; the `core` image remains available. `engine/case_manager.py` `decide()` stays **byte-identical** to
@@ -1348,6 +1352,24 @@ a retelling — do not re-derive round detail from here.
   the gateway (#6); storage is KV only (#12). Records: `docs/research/2026-10-round14/SPEC.md`
   (§11 "As built"), chat-revamp SPEC amendments A69 to A73, BLOCKS amendments 36 to 39, and the
   Round 14 `Journal.md` entries.
+- **Round 15** (2026-11-23→24, branch `claude/round15`, PR to `Testing`): six operator asks. A
+  **role-based access switch** on Roles & permissions (`PUT /api/rbac`; only a stored Super admin,
+  with a strict fresh sign-in; `PUT /api/settings` answers `409 rbac_switch_moved`); truthful
+  **setup-wizard** wording (`llm/readiness.py` `ai_runtime_status`; Ready for live triage needs a
+  source and a provider the default investigation models can call); **Team activity**
+  (`#/team`, `team:view`, a pure fold of audit rows into per-person, per-day counts with a chart,
+  a person sheet and a CSV; counts with context, never a ranking or score); a **stronger close**
+  (the disposition asked once, Actions taken, Rate the AI collapsed, no `actual_outcome` with the
+  grade) and **screenshots** on cases (PNG, JPEG or WebP, structure checked and metadata stripped,
+  20 per case, 20 MiB per case, 2 MiB each, never sent to a model); an **auto-close review** (about
+  5% of automatic closes, at most 10 a day and 3 per rule, classified before comparing with the AI,
+  kept out of agent statistics, an Effectiveness module with a Wilson interval from 30 reviews);
+  and a calmer **Case Manager** (one control band, two-line rows, one primary action plus Take
+  action, five tabs, an eight-section facts rail). Human case work writes structured audit rows
+  (`case.acknowledged` to `case.graded`), re-investigation keeps people's work, and Super admin
+  accounts are for Super admins only. `decide()` untouched (#3); no new model call (#6); storage
+  is KV only (#12); no new dependency; the entry baseline ratcheted down to 329,080 B. Records:
+  `docs/research/2026-11-round15/SPEC.md` (§8 "As built") and the Round 15 `Journal.md` entries.
 
 **Auth is DEFAULT OFF** (`Secrets.auth_enabled`) so the no-auth profile and the
 offline test suite keep working unchanged; `TLSOC_AUTH_ENABLED=true` turns on the

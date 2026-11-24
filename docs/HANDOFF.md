@@ -6,11 +6,15 @@
 > source of truth for *where we are*, *how to run it*, *what's done*, and *what's next*.
 > Everything in here is verified against the repo as of the date below — not from memory.
 
-- **Repo:** `ARYDESTROYER/Agentic-Kibana`  ·  **Integration target:** `Testing`  ·  **Date:** 2026-11-06
-- **Round 15 (newest, 2026-11):** six operator asks on `claude/round15`, in progress: a Console
-  switch for role-based access, honest setup-wizard copy, a Team activity page for managers,
-  screenshots on cases, a random review of automatically closed cases, and a cleaner Case
-  Manager. See `docs/research/2026-11-round15/SPEC.md`.
+- **Repo:** `ARYDESTROYER/Agentic-Kibana`  ·  **Integration target:** `Testing`  ·  **Date:** 2026-11-24
+- **Round 15 (newest, 2026-11):** six operator asks on `claude/round15`: a Console switch for
+  role-based access, honest setup-wizard copy, a Team activity page for managers, screenshots on
+  cases, a random review of automatically closed cases, and a cleaner Case Manager. It is built,
+  each package and the integrated tree were independently reviewed (the cross-cutting review
+  confirmed and fixed 46 of 50 candidate findings), and every gate is green apart from five
+  sandbox-only environment tests (SPEC §8.4); it heads to `Testing` by a pull request. See
+  `docs/research/2026-11-round15/SPEC.md`, whose §8 "As built" records what shipped and the known
+  limitations.
 - **Round 14 (2026-10 and 11):** nine operator asks on `claude/round14`. It is built,
   two closing acceptance passes and their fixes are done, and every gate is green apart from five
   sandbox-only environment tests (SPEC §11.4 "Final gates"); it heads to `Testing` by a pull
