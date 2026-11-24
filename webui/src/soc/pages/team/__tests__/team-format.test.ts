@@ -12,6 +12,8 @@ import {
   TEAM_MAX_DAYS,
   customRangeDays,
   customRangeError,
+  eventClock,
+  eventTimeLabel,
   fmtSeconds,
   peopleCsv,
   peopleCsvRows,
@@ -172,5 +174,22 @@ describe('the people CSV', () => {
     const lines = peopleCsv(partial).trimEnd().split('\r\n');
     expect(lines).toHaveLength(3);
     expect(lines[2]).toBe(`"${CSV_PARTIAL_NOTE}"`);
+  });
+});
+
+describe('event times in the operator zone (SPEC D3.7)', () => {
+  const at = '2026-11-23T20:00:00+00:00';
+  it('formats in the named zone, not the viewer zone', () => {
+    expect(eventTimeLabel(at, 'UTC')).toBe('23 Nov, 20:00');
+    expect(eventTimeLabel(at, 'Asia/Kolkata')).toBe('24 Nov, 01:30');
+    expect(eventClock('Asia/Kolkata').zone).toBe('Asia/Kolkata');
+  });
+
+  it('applies a fixed offset by hand and falls back to UTC for an unknown zone', () => {
+    expect(eventTimeLabel(at, '+05:30')).toBe('24 Nov, 01:30');
+    expect(eventTimeLabel(at, '-0400')).toBe('23 Nov, 16:00');
+    expect(eventClock('Not/AZone').zone).toBe('UTC');
+    expect(eventTimeLabel(at, 'Not/AZone')).toBe('23 Nov, 20:00');
+    expect(eventTimeLabel('not a time', 'UTC')).toBe('not a time');
   });
 });

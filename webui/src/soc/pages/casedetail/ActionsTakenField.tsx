@@ -77,7 +77,7 @@ export const ActionsTakenField: React.FC<ActionsTakenFieldProps> = ({
       </div>
       <p id={helpId} className="text-xs leading-relaxed text-muted-foreground">
         {full
-          ? `That is the most one action records (${ACTIONS_TAKEN_MAX}).`
+          ? `You can record up to ${ACTIONS_TAKEN_MAX} actions.`
           : 'Recorded with your classification in the case history.'}
       </p>
     </div>

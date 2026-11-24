@@ -42,6 +42,7 @@ import { LoadError } from '@/soc/components/LoadError';
 import { PageContainer } from '@/soc/components/PageContainer';
 import { PageHeader } from '@/soc/components/PageHeader';
 import { RefreshButton } from '@/soc/components/RefreshButton';
+import { useReturnFocus } from '@/soc/hooks/useReturnFocus';
 import { settingsSectionHash } from '@/soc/router';
 import { safeRouteHref, useRouteLinkClick } from '@/soc/route-link';
 
@@ -66,6 +67,21 @@ import {
 } from './team/team-format';
 
 const PAGE_TITLE = 'Team activity';
+
+/** The name of a person's row action, which opens their sheet. */
+function personActionLabel(person: PersonActivity): string {
+  return `Open the activity of ${personName(person)}`;
+}
+
+/**
+ * The row action that opened a person's sheet, looked up when the sheet closes: the table
+ * may have re-rendered while it was open, and a row click by mouse never focused it.
+ */
+function personRowAction(label: string): HTMLElement | undefined {
+  return Array.from(document.querySelectorAll<HTMLElement>('button[aria-label]')).find(
+    (el) => el.getAttribute('aria-label') === label,
+  );
+}
 
 function pageHelp(timezone: string | null): string {
   const zone = timezone ? ` Days are calendar days in ${timezone}.` : '';
@@ -268,6 +284,9 @@ function TeamView() {
   const loading = loaded.loading || !fresh;
   const [sort, setSort] = React.useState<SortState | null>(null);
   const [openKey, setOpenKey] = React.useState<string | null>(null);
+  // The sheet opens from state (no Radix trigger), so Escape or Close hands focus back to
+  // the row's action here rather than to the page body (WCAG 2.4.3).
+  const personOpener = useReturnFocus();
   const columns = React.useMemo(() => peopleColumns(), []);
   const people = React.useMemo(() => sortPeople(data?.people ?? [], sort), [data, sort]);
   const openPerson = openKey === null ? null : (data?.people.find((p) => p.key === openKey) ?? null);
@@ -389,8 +408,12 @@ function TeamView() {
             rows={people}
             getRowId={(p) => p.key || '__unattributed__'}
             getRowLabel={(p) => personName(p)}
-            getRowActionLabel={(p) => `Open the activity of ${personName(p)}`}
-            onRowClick={(p) => setOpenKey(p.key)}
+            getRowActionLabel={personActionLabel}
+            onRowClick={(p) => {
+              const label = personActionLabel(p);
+              personOpener.remember(() => personRowAction(label));
+              setOpenKey(p.key);
+            }}
             sort={sort}
             onSortChange={setSort}
             surface="panel"
@@ -408,6 +431,7 @@ function TeamView() {
           windowLabel={rangeLabel(range)}
           timezone={data.timezone}
           canViewAudit={can('audit', 'view')}
+          onCloseAutoFocus={personOpener.onCloseAutoFocus}
           onOpenChange={(open) => {
             if (!open) setOpenKey(null);
           }}

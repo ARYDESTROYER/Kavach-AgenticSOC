@@ -60,8 +60,8 @@ describe('AutoCloseReviewBody', () => {
     expect(screen.getByTestId('review-statement')).toHaveTextContent(STATEMENT);
     expect(screen.getByRole('link', { name: 'CASE-0007' })).toHaveAttribute('href', expect.stringContaining('case-7'));
     expect(screen.getByTestId('review-eligible')).toHaveTextContent('1,234 automatic closes in this range');
-    expect(screen.getByText('1 min 30 s')).toBeInTheDocument();
-    expect(screen.getByText('2 h')).toBeInTheDocument();
+    expect(screen.getByText('1m 30s')).toBeInTheDocument();
+    expect(screen.getByText('2h')).toBeInTheDocument();
   });
 
   it('shows the rate and its interval from thirty reviews', () => {
@@ -95,7 +95,12 @@ describe('AutoCloseReviewModule', () => {
   it('maps hours to tokens and words durations', () => {
     expect(reviewWindowToken(24)).toBe('now-1d');
     expect(reviewWindowToken(12)).toBe('now-12h');
-    expect(durationWords(45_000)).toBe('45 s');
+    expect(durationWords(45_000)).toBe('45s');
+    expect(durationWords(200_000)).toBe('3m 20s');
+    // Hour-scale values go through the shared duration formatter ("2d 23h", never "71 h 50 min").
+    expect(durationWords((71 * 60 + 50) * 60_000)).toBe('2d 23h');
+    expect(durationWords((216 * 60 + 10) * 60_000)).toBe('9d');
+    expect(durationWords(2 * 3_600_000 + 5 * 60_000)).toBe('2h 5m');
     expect(durationWords(null)).toBe('Not measured');
   });
 

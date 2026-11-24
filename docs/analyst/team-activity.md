@@ -112,6 +112,11 @@ many came from bulk actions, their reviews, a table per day and their events, ne
 first, with a link to each case. **Load more** reads the next 50 events. A viewer who can
 read the Audit log also gets **Open in Audit log**, which opens that person's records.
 
+The table per day has the same kinds as **Work per day**, so its **Other** is the same
+assignments, screenshots and runbook steps. Its days and the event times are both in the
+operator time zone, which the sheet names, so an event is listed on the day it is
+counted on.
+
 An event names what was done ("Closed a case"), the case and a short detail built from
 the record's structured fields: the disposition, the actions taken and a review's answer.
 Free text from a record (a reason a person typed) is not shown here.

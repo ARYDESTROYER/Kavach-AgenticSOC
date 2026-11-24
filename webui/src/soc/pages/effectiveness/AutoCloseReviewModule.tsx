@@ -15,7 +15,7 @@ import * as React from 'react';
 
 import { getAutoCloseReviewMetrics } from '@/lib/api-reviews';
 import type { AutoCloseReviewMetrics, ReviewDuration } from '@/lib/types-reviews';
-import { fmtNumber } from '@/lib/format';
+import { fmtDuration, fmtNumber } from '@/lib/format';
 import { Badge } from '@/ui/badge';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/ui/table';
 import { LoadingState, Panel } from '@/design-system';
@@ -29,19 +29,21 @@ export function reviewWindowToken(hours: number): string {
   return whole % 24 === 0 ? `now-${whole / 24}d` : `now-${whole}h`;
 }
 
-/** "1 min 30 s", "45 s", "2 h 5 min" for a duration in milliseconds. */
+/**
+ * "45s", "3m 20s", "2d 23h" for a duration in milliseconds: the shared `fmtDuration`
+ * from ten minutes up ("6d 21h", never "165h"), and the same seconds and minutes wording
+ * as Team activity's `fmtSeconds`, so both review surfaces print one style.
+ */
 export function durationWords(ms: number | null | undefined): string {
   if (typeof ms !== 'number' || !Number.isFinite(ms) || ms < 0) return 'Not measured';
   const seconds = Math.round(ms / 1000);
-  if (seconds < 60) return `${seconds} s`;
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) {
+  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 600) {
+    const minutes = Math.floor(seconds / 60);
     const rest = seconds % 60;
-    return rest ? `${minutes} min ${rest} s` : `${minutes} min`;
+    return rest ? `${minutes}m ${rest}s` : `${minutes}m`;
   }
-  const hours = Math.floor(minutes / 60);
-  const rest = minutes % 60;
-  return rest ? `${fmtNumber(hours)} h ${rest} min` : `${fmtNumber(hours)} h`;
+  return fmtDuration(seconds / 60);
 }
 
 function percent(value: number | null | undefined): string {

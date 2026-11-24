@@ -7,7 +7,9 @@
  *     from opening the card to submitting (`elapsed_ms`);
  *   - a disagreement offers Reopen case and Reopen and escalate to someone who can close
  *     cases (two calls with `review_via`), and says when the second one failed;
- *   - anyone else reads that someone who can close cases has been asked to look.
+ *   - anyone else reads that someone who can close cases has been asked to look;
+ *   - the comparison is announced from a live region mounted before Compare, and Record
+ *     review and Reopen move focus to the line that says what happened (WCAG 2.4.3, 4.1.3).
  */
 import { describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
@@ -128,6 +130,61 @@ describe('ReviewCard', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Record review' }));
     expect(await screen.findByRole('alert')).toHaveTextContent('nothing changed');
     expect(screen.getByRole('button', { name: 'Record review' })).toBeEnabled();
+  });
+});
+
+describe('ReviewCard focus and announcements', () => {
+  it('announces the comparison from a live region that was there before Compare', () => {
+    setup();
+    const live = screen.getByTestId('review-comparison-live');
+    expect(live).toHaveAttribute('aria-live', 'polite');
+    expect(live).toBeEmptyDOMElement();
+    fireEvent.click(screen.getByRole('radio', { name: 'True positive' }));
+    const compare = screen.getByRole('button', { name: 'Compare with the AI' });
+    compare.focus();
+    fireEvent.click(compare);
+    expect(live).toContainElement(screen.getByTestId('review-comparison'));
+    expect(live).toHaveTextContent('AI verdict: False positive (91%)');
+    expect(live).toHaveTextContent('Your classification disagrees with the AI.');
+    // Focus stays on the same button, now Record review.
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Record review' }));
+  });
+
+  it('moves focus to the result line after Record review', async () => {
+    setup({}, { agrees: true });
+    fireEvent.click(screen.getByRole('radio', { name: 'False positive' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Compare with the AI' }));
+    const recordButton = screen.getByRole('button', { name: 'Record review' });
+    recordButton.focus();
+    fireEvent.click(recordButton);
+    const line = await screen.findByText('Review recorded. Your classification agrees with the AI.');
+    await waitFor(() => expect(document.activeElement).toBe(line));
+    expect(line).toHaveAttribute('tabindex', '-1');
+  });
+
+  it.each([
+    ['Reopen case', 'The case is reopened.', false],
+    ['Reopen and escalate', 'The case is reopened and escalated.', false],
+    ['Reopen and escalate', 'The case is reopened, but it could not be escalated', true],
+  ] as const)('moves focus to the outcome after %s', async (button, outcome, escalationFails) => {
+    const { caseAction } = setup({ canReopen: true }, { agrees: false, can_reopen: true });
+    if (escalationFails) caseAction.mockResolvedValueOnce(CASE).mockRejectedValueOnce(new Error('Refused.'));
+    fireEvent.click(screen.getByRole('radio', { name: 'True positive' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Compare with the AI' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Record review' }));
+    const action = await screen.findByRole('button', { name: button });
+    action.focus();
+    fireEvent.click(action);
+    const line = await screen.findByText(outcome, { exact: false });
+    await waitFor(() => expect(document.activeElement).toBe(line));
+    expect(document.activeElement).not.toBe(document.body);
+  });
+
+  it('lets the four answers wrap inside the rail on a narrow sheet', () => {
+    setup();
+    const rail = screen.getByRole('radiogroup', { name: 'Your classification' });
+    expect(rail).toHaveClass('h-auto', 'min-h-9', 'flex-wrap');
+    expect(rail).not.toHaveClass('h-9');
   });
 });
 

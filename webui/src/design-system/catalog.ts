@@ -267,7 +267,7 @@ export const DESIGN_SYSTEM_CATALOG = {
       module: '@/design-system/status-dot',
       exportName: 'StatusDot',
       purpose: 'A status as a 6px dot and plain text; coloured only when it is not the healthy default',
-      variants: ['neutral (healthy default)', 'success', 'info', 'warning', 'critical'],
+      variants: ['neutral (healthy default)', 'success', 'info', 'warning', 'critical', 'wrap (a long status wraps instead of truncating)'],
       accessibility: ['the text always states the status; the dot is decorative', 'readable in forced colours'],
     },
     {

@@ -149,7 +149,9 @@ export function RbacSwitchPanel({ onChanged }: RbacSwitchPanelProps) {
         }
         status={
           status ? (
-            <StatusDot tone={enabled ? 'neutral' : 'warning'} data-rbac-state={enabled ? 'on' : 'off'}>
+            // `wrap`: on a phone the Off sentence is wider than the row, and a truncated
+            // security state has no hover to show the rest.
+            <StatusDot wrap tone={enabled ? 'neutral' : 'warning'} data-rbac-state={enabled ? 'on' : 'off'}>
               {enabled ? RBAC_STATE_ON : RBAC_STATE_OFF}
             </StatusDot>
           ) : loadFailed ? null : (
@@ -167,16 +169,13 @@ export function RbacSwitchPanel({ onChanged }: RbacSwitchPanelProps) {
         title="Turn on role-based access?"
         richDescription
         description={
-          <>
-            <p>Each account gets the permissions of its role.</p>
-            <ul className="list-disc space-y-1 pl-5">
-              <li>Every account gets its role’s permissions on its next request.</li>
-              <li>A background job started by an account that loses a permission stops at its next item.</li>
-              <li>An open live stream keeps its topics until it reconnects.</li>
-              <li>Whether an account can use Remember me follows its role.</li>
-              <li>You stay Super admin.</li>
-            </ul>
-          </>
+          <ul className="list-disc space-y-1 pl-5">
+            <li>Every account gets its role’s permissions on its next request.</li>
+            <li>A background job started by an account that loses a permission stops at its next item.</li>
+            <li>An open live stream keeps its topics until it reconnects.</li>
+            <li>Whether an account can use Remember me follows its role.</li>
+            <li>You stay Super admin.</li>
+          </ul>
         }
         confirmLabel="Turn on"
         onConfirm={() => {

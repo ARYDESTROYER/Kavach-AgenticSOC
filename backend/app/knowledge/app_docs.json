@@ -3271,7 +3271,7 @@
    "page": "analyst/team-activity.md",
    "anchor": "a-persons-sheet",
    "heading": "A person's sheet",
-   "text": "The sheet shows the person's counts for the range, their closes by disposition and how\nmany came from bulk actions, their reviews, a table per day and their events, newest\nfirst, with a link to each case. **Load more** reads the next 50 events. A viewer who can\nread the Audit log also gets **Open in Audit log**, which opens that person's records.\n\nAn event names what was done (\"Closed a case\"), the case and a short detail built from\nthe record's structured fields: the disposition, the actions taken and a review's answer.\nFree text from a record (a reason a person typed) is not shown here.",
+   "text": "The sheet shows the person's counts for the range, their closes by disposition and how\nmany came from bulk actions, their reviews, a table per day and their events, newest\nfirst, with a link to each case. **Load more** reads the next 50 events. A viewer who can\nread the Audit log also gets **Open in Audit log**, which opens that person's records.\n\nThe table per day has the same kinds as **Work per day**, so its **Other** is the same\nassignments, screenshots and runbook steps. Its days and the event times are both in the\noperator time zone, which the sheet names, so an event is listed on the day it is\ncounted on.\n\nAn event names what was done (\"Closed a case\"), the case and a short detail built from\nthe record's structured fields: the disposition, the actions taken and a review's answer.\nFree text from a record (a reason a person typed) is not shown here.",
    "console": []
   },
   {

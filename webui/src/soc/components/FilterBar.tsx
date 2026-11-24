@@ -11,6 +11,8 @@
  * Slots:
  *  - `search`: the free-text search (`label` is its accessible name; the placeholder
  *                shortens below 768px to `compactPlaceholder`, default the label).
+ *                It is at least 12rem wide; a narrow pane can lower that with
+ *                `searchClassName`, so the search and "Filters (n)" share a row.
  *  - `filters`: the filter controls, in priority order. The first `primaryCount` (at
  *                most three) sit in the bar; the rest move behind "More filters" (named
  *                "Filters" when `primaryCount` is 0 and every filter is behind it). Each
@@ -107,6 +109,8 @@ export interface FilterBarProps extends Omit<React.HTMLAttributes<HTMLDivElement
   'aria-label'?: string;
   /** The free-text search. */
   search?: FilterBarSearch;
+  /** Classes for the search field's wrapper (a narrow pane lowers its 12rem minimum width). */
+  searchClassName?: string;
   /** The filters, in priority order; see the module comment. */
   filters?: FilterBarFilter[];
   /** How many filters sit in the bar (at most three; default three). */
@@ -161,6 +165,7 @@ export const FilterBar = React.forwardRef<HTMLDivElement, FilterBarProps>(
   (
     {
       search,
+      searchClassName,
       filters,
       primaryCount = FILTER_BAR_MAX_PRIMARY,
       chips,
@@ -246,7 +251,7 @@ export const FilterBar = React.forwardRef<HTMLDivElement, FilterBarProps>(
     };
 
     const searchField = search ? (
-      <div className="relative min-w-[12rem] max-w-md flex-1" data-filter-search="">
+      <div className={cn('relative min-w-[12rem] max-w-md flex-1', searchClassName)} data-filter-search="">
         <Search
           className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
           aria-hidden
