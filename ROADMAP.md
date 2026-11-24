@@ -526,6 +526,8 @@ known limitations):**
 - ☐ **Case Manager queue status at 360 px**: a Critical row with an owner can cut its status
   word ("Escala…") at the default queue width; the full text is in the row's accessible
   name.
+- ☐ **Person sheet Per day table on a phone**: at 390 px it scrolls sideways with no sticky
+  Day column and no edge fade, so the cut column ends hard at the box edge.
 - ☐ **Primary entity shown twice**: in the Overview's Key entities and in the facts rail's
   Source section.
 - ☐ **Leftovers**: `RunbookProgressChip` and `useRunbookProgressMap` have no production use

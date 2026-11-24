@@ -1291,7 +1291,8 @@ and add what was found after WP8 wrote those pages.
   change (best effort), so a lost row is a lost count. Demo runbook step rows carry no `changes`,
   so Demo counts no runbook steps.
 - **Case Manager and Console (WP6, WP7).** At the default 360 px queue a Critical row with an
-  owner can cut its status word (the full text is in the accessible name). The primary entity
+  owner can cut its status word (the full text is in the accessible name). On a phone the
+  Team activity person sheet's Per day table scrolls with no sticky Day column or edge fade. The primary entity
   shows in both Key entities and the rail's Source section. A long title wraps the header's
   actions onto their own row. `RunbookProgressChip`, `useRunbookProgressMap` and `CaseChat`'s
   always-true `caseManager` prop are left over. Bulk Set disposition in `Cases.tsx` does not send
