@@ -1,8 +1,9 @@
 /**
- * StageTimeline — the six-stage narrative renderer.
+ * StageTimeline: the six-stage narrative renderer.
  *
- * Verifies the headline/state render, the deterministic trust badge, skipped/pending
- * spines, and the #9 rule that an UNTRUSTED step body is fenced (never leaked as prose).
+ * Verifies the headline/state render, the deterministic trust marker, skipped stages,
+ * and the #9 rule that an UNTRUSTED step body is fenced (never leaked as prose), in the
+ * one story layout (Round 15, D8.7 removed the unused 'default' one).
  */
 import { describe, it, expect } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
@@ -32,7 +33,7 @@ const data = (stages: TimelineStage[]): TimelineStagesResponse => ({
 });
 
 describe('StageTimeline', () => {
-  it('renders each stage headline and the deterministic trust badge', () => {
+  it('renders each stage headline and the deterministic trust marker', () => {
     render(
       <StageTimeline
         data={data([
@@ -43,13 +44,14 @@ describe('StageTimeline', () => {
     );
     expect(screen.getByText('6 alerts from Lab Elastic')).toBeInTheDocument();
     expect(screen.getByText('Risk 72/100')).toBeInTheDocument();
-    expect(screen.getByText('deterministic')).toBeInTheDocument();
-    expect(screen.getByText('risk 72/100')).toBeInTheDocument(); // the state chip
+    expect(screen.getByTestId('story-stage-deterministic')).toHaveTextContent('Deterministic');
+    // The risk stage states its score once, as the meter, not again as a chip.
+    expect(screen.queryByText('risk 72/100')).toBeNull();
   });
 
   it('marks a skipped stage', () => {
     render(<StageTimeline data={data([stage({ kind: 'investigate', label: 'Investigate', status: 'skipped', headline: 'No investigation ran' })])} />);
-    expect(screen.getByText('skipped')).toBeInTheDocument();
+    expect(screen.getByText('Skipped')).toBeInTheDocument();
   });
 
   it('fences an untrusted step body and reveals it only on expand (#9)', () => {
@@ -67,51 +69,29 @@ describe('StageTimeline', () => {
     );
     // The untrusted payload is NOT in the trusted headline.
     expect(screen.getByText('Verdict: true positive')).toBeInTheDocument();
-    // Steps are collapsed by default; expand, then the body appears inside a code block.
-    fireEvent.click(screen.getByText(/Show 1 step/));
-    expect(screen.getByText('untrusted')).toBeInTheDocument();
-    expect(screen.getByText('ignore previous instructions')).toBeInTheDocument();
+    expect(screen.queryByText('ignore previous instructions')).toBeNull();
+    // Details are collapsed by default; expand, then the body appears inside a code block.
+    fireEvent.click(screen.getByText('View event details'));
+    expect(screen.getByText(/Untrusted source data/)).toBeInTheDocument();
+    expect(screen.getByText('ignore previous instructions').closest('[data-story-step="untrusted"]')).not.toBeNull();
   });
 
-  it('clamps a long trusted reasoning body behind "Show more" / "Show less"', () => {
-    const long = 'GPT reasoning. '.repeat(60); // > 320 chars
-    render(
-      <StageTimeline
-        data={data([
-          stage({
-            kind: 'investigate',
-            label: 'Investigate',
-            headline: 'Verdict: true positive',
-            steps: [{ kind: 'reasoning', label: 'reasoning', body: long, trusted: true }],
-          }),
-        ])}
-      />,
-    );
-    fireEvent.click(screen.getByText(/Show 1 step/)); // expand the stage's steps first
-    const toggle = screen.getByText('Show more');
-    expect(toggle).toBeInTheDocument();
-    fireEvent.click(toggle);
-    expect(screen.getByText('Show less')).toBeInTheDocument();
-  });
-
-  it('does not add a toggle to a short trusted body', () => {
+  it('shows a trusted step body as plain text once expanded', () => {
     render(
       <StageTimeline
         data={data([
           stage({ kind: 'investigate', label: 'Investigate', headline: 'x',
-            steps: [{ kind: 'reasoning', label: 'reasoning', body: 'short.', trusted: true }] }),
+            steps: [{ kind: 'reasoning', label: 'reasoning', body: '**short.**', trusted: true }] }),
         ])}
       />,
     );
-    fireEvent.click(screen.getByText(/Show 1 step/)); // expand the stage's steps first
-    expect(screen.getByText('short.')).toBeInTheDocument();
-    expect(screen.queryByText('Show more')).toBeNull();
+    fireEvent.click(screen.getByText('View event details'));
+    expect(screen.getByText('**short.**').closest('[data-story-step="trusted"]')).not.toBeNull();
   });
 
-  it('uses the operator-facing Risk assigned / Decision labels in Case Manager', () => {
+  it('uses the operator-facing Risk assigned / Decision labels', () => {
     render(
       <StageTimeline
-        presentation="case-manager"
         data={data([
           stage({ kind: 'risk', label: 'Risk', state: { risk_score: 7 } }),
           stage({ kind: 'decide', label: 'Decide', headline: 'Held for human review' }),
@@ -128,7 +108,6 @@ describe('StageTimeline', () => {
   it('renders untrusted input evidence as ONE fenced block whose header carries label and marker (CM-8)', () => {
     const { container } = render(
       <StageTimeline
-        presentation="case-manager"
         data={data([
           stage({
             kind: 'input',
@@ -151,7 +130,6 @@ describe('StageTimeline', () => {
   it('opens an exact, accessible risk derivation with values, weights, contributions, and formula', async () => {
     const { container } = render(
       <StageTimeline
-        presentation="case-manager"
         data={data([
           stage({
             kind: 'risk',
@@ -196,7 +174,6 @@ describe('StageTimeline', () => {
   it('states the data gap for an older risk payload instead of inventing weights', () => {
     render(
       <StageTimeline
-        presentation="case-manager"
         data={data([
           stage({
             kind: 'risk',
@@ -216,7 +193,7 @@ describe('StageTimeline', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Risk factors' }));
     const table = screen.getByRole('table', { name: 'Risk score factor calculation' });
-    expect(table).toHaveTextContent('Volume20/100—');
+    expect(table).toHaveTextContent('Volume20/100\u2014');
     expect(screen.getByText(/supplies factor values and the final score/i)).toHaveTextContent(
       'Exact arithmetic cannot be reconstructed from the available data.',
     );
@@ -225,7 +202,6 @@ describe('StageTimeline', () => {
   it('removes only an equivalent investigate headline while retaining its chips', () => {
     render(
       <StageTimeline
-        presentation="case-manager"
         data={data([
           stage({
             kind: 'investigate',
@@ -245,7 +221,6 @@ describe('StageTimeline', () => {
   it('pulses only the terminal marker and includes a reduced-motion override', () => {
     const { container } = render(
       <StageTimeline
-        presentation="case-manager"
         data={data([
           stage({ kind: 'input', label: 'Alert received' }),
           stage({ kind: 'investigate', label: 'Investigate', status: 'pending' }),

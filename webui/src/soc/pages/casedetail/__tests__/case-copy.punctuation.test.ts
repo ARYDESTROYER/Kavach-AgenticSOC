@@ -1,18 +1,19 @@
 /**
  * Case Manager / case detail copy uses plain punctuation (Round 12 polish, tour finding
- * 5). The close dialog read "deterministic code — this records …", the note disclosure
- * "durable context — the AI reads …", the grading help "ground truth — the stars …",
- * the outcome rail "Needs human review — on hold", and the role names "Analyst — Tier
- * 2/1". The display labels change; the stored role ids and wire values do not.
+ * 5). The close dialog ("deterministic code, this records …"), the note disclosure
+ * ("durable context, the AI reads …"), the grading help ("ground truth, the stars …"),
+ * the outcome rail ("Needs human review, on hold") and the role names ("Analyst, Tier
+ * 2/1") each joined their clauses with an em dash. The display labels change; the
+ * stored role ids and wire values do not.
  */
 import { describe, expect, it } from 'vitest';
 
 import { aiHeadline } from '@/soc/components/outcome';
 import { BUILTIN_ROLES, ROLE_LABELS, roleLabel } from '@/soc/pages/Roles.api';
-import { ALL_ACTIONS, DURABLE_CONTEXT_NOTE } from '../shared';
+import { ACTIONS_TAKEN_OPTIONS, ALL_ACTIONS, DURABLE_CONTEXT_NOTE } from '../shared';
 import { OUTCOME_OPTIONS } from '../grading';
 
-const EM_DASH = '—';
+const EM_DASH = '\u2014';
 
 describe('case copy punctuation', () => {
   it('has no em dash in any lifecycle action copy', () => {
@@ -21,16 +22,18 @@ describe('case copy punctuation', () => {
         expect(text, `${action.key}: ${text}`).not.toContain(EM_DASH);
       }
     }
+    // Round 15 (D4.1): the close asks one classification question, then what was done.
     expect(ALL_ACTIONS.close_disposition.confirmBody).toBe(
-      'Choose the investigative outcome, then close this case. The close/escalate decision is still made by deterministic code. This records your disposition and closes the case.',
+      'Say what this case was and what you did about it, then close it.',
     );
     expect(DURABLE_CONTEXT_NOTE).toBe(
       'Saved with the resolved case as durable context. The AI reads this note when it investigates similar cases later.',
     );
   });
 
-  it('has no em dash in the confirmed-outcome options', () => {
+  it('has no em dash in the confirmed-outcome words or the actions-taken vocabulary', () => {
     for (const option of OUTCOME_OPTIONS) expect(option.text).not.toContain(EM_DASH);
+    for (const option of ACTIONS_TAKEN_OPTIONS) expect(option.text).not.toContain(EM_DASH);
   });
 
   it('joins the AI headline with a comma', () => {

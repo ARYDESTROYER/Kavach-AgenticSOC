@@ -21,7 +21,12 @@
 import { Lock, RotateCcw } from 'lucide-react';
 
 import { humanizeToken } from '@/lib/format';
-import type { AutoClosePolicy, RiskWeights, VerdictAutoClose as VerdictAutoCloseConfig } from '@/lib/types';
+import type {
+  AutoClosePolicy,
+  AutoCloseReviewConfig,
+  RiskWeights,
+  VerdictAutoClose as VerdictAutoCloseConfig,
+} from '@/lib/types';
 import { cn } from '@/lib/cn';
 
 import { Button } from '@/ui/button';
@@ -228,6 +233,8 @@ export function DetectionSection({ prefs, update }: SecProps) {
 
       <AutonomyControls prefs={prefs} update={update} />
 
+      <AutoCloseReviewGroup prefs={prefs} update={update} />
+
       <CrossSourceGroup prefs={prefs} update={update} />
     </SettingsSection>
   );
@@ -240,7 +247,8 @@ function CrossSourceGroup({ prefs, update }: SecProps) {
   const entityKeys = Array.isArray(x.entity_keys)
     ? x.entity_keys
     : ['ip', 'host', 'user', 'file_hash', 'domain'];
-  const enabled = x.enabled ?? false;
+  // On by default (`CrossSourceCorrelationConfig.enabled`), so an absent value reads on.
+  const enabled = x.enabled ?? true;
   return (
     <SettingsGroup
       id="detection-crosssource"
@@ -250,7 +258,7 @@ function CrossSourceGroup({ prefs, update }: SecProps) {
       <SettingRow
         variant="switch"
         label="Cross-source correlation"
-        help="Off by default."
+        help="On by default."
         checked={enabled}
         onCheckedChange={(v) => set({ enabled: v })}
       />
@@ -440,5 +448,97 @@ function AutonomyControls({ prefs, update }: SecProps) {
         />
       </SettingsGroup>
     </>
+  );
+}
+
+/** Defaults mirror `config.py` `AutoCloseReviewConfig` (Round 15 SPEC D6.2). */
+export const AUTO_CLOSE_REVIEW_DEFAULTS: AutoCloseReviewConfig = {
+  enabled: true,
+  sample_rate: 0.05,
+  daily_cap: 10,
+  per_rule_daily_cap: 3,
+  expiry_days: 7,
+};
+
+/**
+ * Round 15 (SPEC D6.2): the auto-close review sample, beside the auto-close bars. A small,
+ * random, capped share of the cases the AI agent closed goes to a person to classify; the
+ * answer is kept as independent ground truth. Writes `prefs.auto_close_review` only; the
+ * sample never changes a case and never feeds `decide()` (#3). The server answers an
+ * out-of-range value with 422, so each field keeps its range here too.
+ */
+function AutoCloseReviewGroup({ prefs, update }: SecProps) {
+  const current: AutoCloseReviewConfig = { ...AUTO_CLOSE_REVIEW_DEFAULTS, ...(prefs.auto_close_review || {}) };
+  const set = (patch: Partial<AutoCloseReviewConfig>) =>
+    update({ auto_close_review: { ...current, ...patch } });
+  const enabled = current.enabled;
+  return (
+    <SettingsGroup
+      id="detection-autoclose-review"
+      title="Auto-close review"
+      caption="A few cases the AI agent closed are picked at random for a person to classify. A review never changes the case unless that person reopens it."
+    >
+      <SettingRow
+        variant="switch"
+        label="Send automatic closes for review"
+        help="On by default. The answers are kept as independent ground truth for tuning and precedent."
+        checked={enabled}
+        onCheckedChange={(v) => set({ enabled: v })}
+      />
+      <div className="divide-y divide-border/70">
+        <SettingRow variant="field" controlWidth="8rem">
+          <NumberField
+            label="Share of automatic closes picked"
+            description="From 0 to 50%. Each case has a fixed random score; the cases scoring below this share are picked."
+            value={Math.round(current.sample_rate * 1000) / 10}
+            min={0}
+            max={50}
+            step="any"
+            stepperStep={1}
+            unit="%"
+            empty="keep"
+            disabled={!enabled}
+            onChange={(v) => set({ sample_rate: Math.min(0.5, Math.max(0, v / 100)) })}
+          />
+        </SettingRow>
+        <SettingRow variant="field" controlWidth="8rem">
+          <NumberField
+            label="Most picked in a day"
+            description="From 0 to 200, counted per day in the SLA time zone."
+            value={current.daily_cap}
+            min={0}
+            max={200}
+            empty="keep"
+            disabled={!enabled}
+            onChange={(v) => set({ daily_cap: Math.round(v) })}
+          />
+        </SettingRow>
+        <SettingRow variant="field" controlWidth="8rem">
+          <NumberField
+            label="Most of one rule in a day"
+            description="From 1 to 50, so one noisy rule cannot fill the day's sample."
+            value={current.per_rule_daily_cap}
+            min={1}
+            max={50}
+            empty="keep"
+            disabled={!enabled}
+            onChange={(v) => set({ per_rule_daily_cap: Math.round(v) })}
+          />
+        </SettingRow>
+        <SettingRow variant="field" controlWidth="8rem">
+          <NumberField
+            label="Days before a review expires"
+            description="From 1 to 30. An expired review is shown as expired; it can still be recorded."
+            value={current.expiry_days}
+            min={1}
+            max={30}
+            unit="days"
+            empty="keep"
+            disabled={!enabled}
+            onChange={(v) => set({ expiry_days: Math.round(v) })}
+          />
+        </SettingRow>
+      </div>
+    </SettingsGroup>
   );
 }

@@ -164,7 +164,8 @@ With `TLSOC_AUTH_ADMIN_PASSWORD` set, the backend does not seed the demonstratio
 `Admin` account, and the Console opens on **Create your admin account**, where you
 create a named administrator. The environment administrator remains a fallback sign-in.
 Role-based access is off by default, so every signed-in account is treated as Super
-admin until a super administrator turns it on; see
+admin until a Super admin turns it on in **Settings → Security & access → Roles &
+permissions**; see
 [Turn on role-based access](../administration/users-rbac.md#turn-on-role-based-access). Leave
 `AGENTIC_SOC_UPDATE_REPOSITORY` as `.env.example` ships it: it names the repository
 whose signed releases the update supervisor trusts, not the clone URL.
@@ -240,14 +241,14 @@ its type, status, enabled switch, last event, and protocol.
 <figcaption>Sources in the demo: five connected sources, all ready.</figcaption>
 </figure>
 
-In **Case Manager**, a case's Investigation tab shows the **Decision** card, labelled
-**Code**, above the **AI assessment**, labelled **AI** and marked advisory. The close or
+In **Case Manager**, a case's Investigation tab shows the **AI assessment**, labelled
+**AI** and marked advisory, then the **Decision** card, labelled **Code**. The close or
 escalate decision is made by deterministic code against the operator policy, never by
 the model.
 
 <figure markdown="span">
-[![Case Manager with an escalated true-positive case selected: the Decision card, labelled Code, records why code escalated it, and the advisory AI assessment below gives the model's reading and confidence, above the investigation inputs.](../assets/screenshots/case-manager.webp) ](../assets/screenshots/case-manager.webp)
-<figcaption>Case Manager: the code decision above the advisory AI assessment.</figcaption>
+[![Case Manager with an escalated true-positive case open on its Investigation tab: the advisory AI assessment, labelled AI, gives the model's reading and findings, and the Decision card below it, labelled Code, records that code routed the case to a person.](../assets/screenshots/case-manager.webp) ](../assets/screenshots/case-manager.webp)
+<figcaption>Case Manager: the advisory AI assessment, then the code decision.</figcaption>
 </figure>
 
 ## Stop

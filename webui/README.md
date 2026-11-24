@@ -19,14 +19,18 @@ in-Kibana proxy in the loop.
      Add multiple sources; mark one pull source primary. Leaving an open editor
      requires discard confirmation.
   3. **AI runtime** — Anthropic / OpenAI / embedding API keys only. They are
-     write-only and auto-save when guarded navigation leaves the stage (at least
-     one is recommended; without one, live investigations use the mock runtime).
+     write-only and auto-save when guarded navigation leaves the stage. Without a
+     key the default router and investigator models can call (`ai_runtime_ready`
+     from `GET /api/setup/status`), the AI agent investigates nothing: new cases
+     wait for a person as Needs human review. The mock runtime is used only in
+     Demo Mode.
      Azure / Bedrock / Vertex / OpenAI-compatible (local) keys and per-role model
      selection (router / investigator / formatter / standup / chat / overview /
      embedding, `GET /api/models`) are configured later from **Settings → Models**.
   4. **Review & launch** — truthful Ready / Needs attention / Optional states,
      default automation-posture explanation, then **Launch Agentic SOC** →
-     `POST /api/setup/complete`.
+     `POST /api/setup/complete`. Its heading reads "Ready for live triage" only
+     when an enabled source exists and `ai_runtime_ready` is true.
   The wizard shows automatically when `GET /api/setup/status` reports
   `setup_complete: false`; setup-status failure is fail-closed and retryable. A
   non-destructive Settings re-run ends with **Apply changes**.

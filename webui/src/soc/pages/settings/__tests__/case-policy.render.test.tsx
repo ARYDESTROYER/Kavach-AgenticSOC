@@ -59,11 +59,24 @@ describe('CasePolicySection — mounts the orphaned G6 editors', () => {
 
   it('the priority-matrix editor writes prefs.priority_matrix', () => {
     const { update } = renderSection({ priority_matrix: {} });
-    fireEvent.click(screen.getByRole('switch', { name: /enable priority derivation/i }));
+    // The server derives priority by default (`PriorityMatrix.enabled = True`): an absent
+    // value reads on, and the row says so.
+    const toggle = screen.getByRole('switch', { name: /enable priority derivation/i });
+    expect(toggle).toHaveAttribute('aria-checked', 'true');
+    expect(screen.getByText('On by default. When off, cases have no priority.')).toBeInTheDocument();
+    // The switch reads its help text out, as the cross-source row's does.
+    expect(toggle).toHaveAccessibleDescription('On by default. When off, cases have no priority.');
+    expect(screen.queryByText(/Off by default/)).toBeNull();
+    fireEvent.click(toggle);
     expect(update).toHaveBeenCalledTimes(1);
     const patch = update.mock.calls[0][0] as { priority_matrix?: { enabled?: boolean } };
     expect(patch).toHaveProperty('priority_matrix');
-    expect(patch.priority_matrix?.enabled).toBe(true);
+    expect(patch.priority_matrix?.enabled).toBe(false);
+  });
+
+  it('keeps an explicit priority-matrix off as off', () => {
+    renderSection({ priority_matrix: { enabled: false } });
+    expect(screen.getByRole('switch', { name: /enable priority derivation/i })).toHaveAttribute('aria-checked', 'false');
   });
 
   it('the suppression builder adds an operator rule to prefs.suppression_rules', () => {

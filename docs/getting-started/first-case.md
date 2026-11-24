@@ -71,9 +71,10 @@ between:
 - what the model assessed, if the candidate was admitted to investigation; and
 - what deterministic policy decided.
 
-In Case Manager, Overview separates the signal profile and provenance, Timeline
-expands **Risk Assigned** into the stored score factors and ends at **Decision**,
-and Investigation carries the model evidence plus the pinned deterministic result.
+In Case Manager, the Overview gives the AI's summary (tagged AI), and its **What
+happened** section expands **Risk Assigned** into the stored score factors and ends at
+**Decision**; Investigation carries the AI assessment plus the pinned deterministic
+**Decision**, and its **Threat context** section the intelligence.
 
 An event-feed candidate can remain visible without a model call when it does not
 cross the investigation gate. That is expected and costs `$0`. An alert feed is

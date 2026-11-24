@@ -26,6 +26,11 @@ vi.mock('sonner', () => ({
   toast: { success: vi.fn(), error: vi.fn(), info: vi.fn(), warning: vi.fn() },
 }));
 
+// Round 15: SecuritySsoInner reads the live RBAC state for its Remember-me note.
+vi.mock('@/soc/auth', () => ({
+  useAuth: () => ({ authEnabled: true, rbacEnabled: true, role: 'super_admin', hasPermission: () => true }),
+}));
+
 import { TooltipProvider } from '@/ui/tooltip';
 import { api } from '@/lib/api';
 import { SecuritySsoInner } from '../Security';

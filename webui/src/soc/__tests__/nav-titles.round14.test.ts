@@ -40,6 +40,7 @@ const TITLE_SOURCES: Partial<Record<PageId, string[]>> = {
   memory: ['pages/Intelligence.tsx', 'pages/Memory.tsx'],
   personas: ['pages/Intelligence.tsx', 'pages/Personas.tsx'],
   metrics: ['pages/Analytics.tsx', 'pages/Metrics.tsx'],
+  team: ['pages/TeamActivity.tsx'],
   effectiveness: ['pages/Analytics.tsx', 'pages/AgentEffectiveness.tsx'],
   cost: ['pages/Analytics.tsx', 'pages/Cost.tsx'],
   models: ['pages/Models.tsx'],

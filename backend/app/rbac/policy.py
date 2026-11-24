@@ -69,6 +69,11 @@ RESOURCES: dict[str, list[str]] = {
     # rows. Separate from ``view`` so a role can read the log without bulk extraction.
     "audit": ["view", "export"],
     "metrics": ["view"],
+    # Round 15 (SPEC D3.2): ``view`` reads the Team activity page, the per-person work
+    # counts built from the audit log. A SOC manager tracks the team and an auditor may
+    # read it; analysts do not. While role-based access is off the team routes also
+    # require a stored role of super_admin, soc_manager or auditor (SPEC D3.3).
+    "team": ["view"],
     # Portable application-state export. Deliberately NOT settings-like: only the
     # two platform-owner roles receive it by default; read-only analysts/auditors do
     # not inherit bulk data extraction merely because they can view settings.
@@ -445,6 +450,8 @@ _SOC_MANAGER: dict[str, list[str]] = {
     "cost": ["view"],
     "audit": ["view", "export"],
     "metrics": ["view"],
+    # Round 15 (SPEC D3.2): the SOC manager tracks the team's work.
+    "team": ["view"],
     "data_export": ["export"],
     "system_updates": ["read"],
     **_settings_like([ALL]),
@@ -507,6 +514,8 @@ _AUDITOR: dict[str, list[str]] = {
     # Round 14 (SPEC D5): the auditor exports what it can read.
     "audit": ["view", "export"],
     "metrics": ["view"],
+    # Round 15 (SPEC D3.2): the auditor may read the team's work counts.
+    "team": ["view"],
     **_settings_like(["read"]),
 }
 

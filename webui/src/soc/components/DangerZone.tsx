@@ -99,6 +99,7 @@ const TIERS: TierCopy[] = [
     summary: 'Clear every case and its working data, keeping your sources and settings.',
     clears: [
       'All cases, campaigns and baselines',
+      'Screenshots on cases and the auto-close review sample',
       'Per-case collaboration, ordinary inbox items and activity',
       'Frozen replay fixtures and the raw records they hold',
       'LLM Batch records and live-tail log buffers',

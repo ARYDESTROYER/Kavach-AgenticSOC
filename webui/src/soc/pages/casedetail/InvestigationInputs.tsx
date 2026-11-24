@@ -1,5 +1,5 @@
 /**
- * Case Manager — concise, case-specific investigation-input provenance.
+ * Case Manager: concise, case-specific investigation-input provenance.
  *
  * Every item comes from the latest run's append-only audit projection.  Nothing is
  * inferred from feature enablement or mutable current settings.  Log/model/operator
@@ -232,12 +232,12 @@ export const InvestigationInputs: React.FC<{
     >
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h3
+          <h2
             id="investigation-inputs-heading"
-            className="text-sm font-semibold text-foreground"
+            className="text-base font-semibold text-foreground"
           >
             Investigation inputs
-          </h3>
+          </h2>
           <p className="mt-0.5 text-xs text-muted-foreground">
             {showSelectionStatus
               ? 'Latest-run selections and the inputs actually consulted.'

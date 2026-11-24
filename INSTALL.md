@@ -601,23 +601,24 @@ event; a one-shot connection test is not meaningful for them. See
 
 #### Stage 3: AI runtime
 
-![Setup wizard AI runtime stage with empty OpenAI, Anthropic and Embedding API key fields, each marked not set, and a Skip for now button.](docs/assets/screenshots/install-05-setup-ai-runtime.webp)
+![Setup wizard AI runtime stage with the amber notice No usable AI provider yet, which says you can continue without a key but new cases wait for a person as Needs human review, above empty OpenAI, Anthropic and Embedding API key fields marked not set, and a Skip for now button.](docs/assets/screenshots/install-05-setup-ai-runtime.webp)
 
-*Figure 11. Connect the models that investigate cases. The amber callout recommends a live
-provider; its wording about a mock runtime is a known issue, explained below the table.*
+*Figure 11. Connect the models that investigate cases, before any key is entered. The amber
+notice says no provider can be called yet.*
 
 | # | Field or button | What to do |
 | --- | --- | --- |
 | 1 | **OpenAI API key** | The default runtime for the GPT-5.6 Luna completion roles and embeddings. The chip above each field reads `not set` or shows the key as configured; a key set in `.env` already counts |
-| 2 | **Skip for now** | Leaves the stage without a key. It reads **Continue** once a key is typed or already configured |
+| 2 | **Skip for now** | Leaves the stage when no key is typed and the default investigation models cannot be called yet. Otherwise it reads **Continue** |
 
-> [!WARNING]
-> **Known issue in 0.1.13:** without a key, the callout says live investigations "will use the
-> limited mock runtime until a provider is added", and the review stage reads
-> `No provider configured · mock runtime only`. That wording is wrong. Without a key the Console
-> still runs, but no investigation can call a model: each cluster sent to investigation becomes a
-> **Needs human** case whose recommended action names the missing key, and nothing is closed
-> automatically. The `$0` mock model is used only by Demo Mode.
+The notice above the fields says whether the default investigation models (the router and the
+investigator) can be called with the keys the backend holds:
+
+| Notice | Meaning |
+| --- | --- |
+| **Live provider configured** | They can. Polling and triage can begin after launch |
+| **Your key does not match the default models** | A key is set, but not one these models use (for example an Anthropic key while the defaults are OpenAI). Add a key for the provider it names, or choose other models in **Settings → General → Models** after launch |
+| **No usable AI provider yet** | No provider key is set. You can continue: the Console runs, but the AI agent investigates nothing, so each cluster sent to investigation becomes a **Needs human** case whose recommended action names the missing key, and nothing is closed automatically. The `$0` mock model is used only by Demo Mode |
 
 **Anthropic API key** is the optional alternative for Claude models, and **Embedding API key** is
 optional (blank reuses the OpenAI key). A typed key saves when you leave the stage; if the save
@@ -631,22 +632,22 @@ key.
 
 #### Stage 4: Review and launch
 
-![Review and launch stage reading Ready with limited capabilities, listing workspace, data sources, AI runtime and automation posture readiness, with the Launch Agentic SOC button.](docs/assets/screenshots/install-06-setup-review.webp)
+![Review and launch stage reading Ready with limited capabilities: the workspace and one data source are ready, the AI runtime row needs attention and reads No usable provider, cases wait for a person, and automation posture is on by default, above the Launch Agentic SOC button.](docs/assets/screenshots/install-06-setup-review.webp)
 
-*Figure 12. Review & launch. This capture has a source but no provider, so it reads **Ready with
-limited capabilities**.*
+*Figure 12. Review & launch. This capture has a source but no usable provider, so it reads
+**Ready with limited capabilities**.*
 
 | # | Item | What it shows |
 | --- | --- | --- |
-| 1 | Readiness summary | One row per area with **Ready**, **Needs attention** or **Optional**: Workspace (`Live environment`), Data sources (`1 enabled source · primary: Production SIEM`), AI runtime (`No provider configured · mock runtime only`, which is wrong: see the known issue under [stage 3](#stage-3-ai-runtime)), and Automation posture (**On by default**: it tunes investigation routing and groups related cases, while close and escalation decisions remain deterministic) |
+| 1 | Readiness summary | One row per area with **Ready**, **Needs attention** or **Optional**: Workspace (`Live environment`), Data sources (`1 enabled source · primary: Production SIEM`), AI runtime (`No usable provider · cases wait for a person`; with a usable key it reads `Configured:` and the provider families that have a key), and Automation posture (**On by default**: it tunes investigation routing and groups related cases, while close and escalation decisions remain deterministic) |
 | 2 | **Launch Agentic SOC** | Completes setup and starts polling of enabled pull sources. Push, queue, object-store and file receivers do not wait for launch: each starts accepting events as soon as you save it with **Add source** |
 
 The heading tells you where you stand:
 
 | Heading | Meaning |
 | --- | --- |
-| **Ready for live triage** | A live source and a provider are configured |
-| **Ready with limited capabilities** | Live mode, but a source or a provider is missing. You can launch and fix it later. Until a provider is added, each cluster sent to investigation becomes a **Needs human** case |
+| **Ready for live triage** | A live source is enabled and the default investigation models can be called |
+| **Ready with limited capabilities** | Live mode, but a source or a usable provider is missing. You can launch and fix it later. Until a usable provider is added, each cluster sent to investigation becomes a **Needs human** case |
 | **Demo workspace is ready** | Synthetic demo was chosen |
 
 Launch is non-destructive. Administrators can re-run setup from **Settings** (its final button is
@@ -694,12 +695,25 @@ threat model is in [`SECURITY.md`](SECURITY.md) and
 1. **Turn on role-based access.** Out of the box `rbac.enabled` is `false`, so every signed-in
    account counts as Super admin, whatever role you assign. While that is true,
    **Settings → Security & access → Single sign-on & policy** shows the Posture row
-   **Role-based access** as `Off: everyone is Super admin`, and
-   **Settings → Security & access → Roles & permissions** shows a **Role-based access is off**
-   callout. The 0.1.13 Console has no switch for it (a known gap). Turn it on through the settings
-   API (permission `settings:manage`) from a Bash shell on the Docker host. In zsh, the macOS
-   default, type `bash` first, because zsh's `read -p` reads from a coprocess instead of showing
-   a prompt:
+   **Role-based access** as `Off: everyone is Super admin`. Sign in as a Super admin, open
+   **Settings → Security & access → Roles & permissions** (the Posture row's **Manage** opens it
+   too), select **Turn on role-based access** and confirm with **Turn on**. If you signed in
+   longer ago than the re-authentication window (10 minutes by default), sign in again when
+   asked.
+
+   ![Roles and permissions section of Settings with the Role-based access group at the top: its Enforcement row reads Off, every signed-in account is treated as Super admin, and the Turn on role-based access button is outlined, above the table of six built-in roles.](docs/assets/screenshots/users-rbac.webp)
+
+   *Figure 14. **Settings → Security & access → Roles & permissions** (captured on the demo
+   workspace, which is why the header shows **Demo mode**). **1** marks the **Enforcement** row,
+   which shows the state; the group's caption lists the active accounts per role. **2** marks
+   **Turn on role-based access**. The confirmation lists what changes: every account gets its
+   role's permissions on its next request, a background job started by an account that loses a
+   permission stops at its next item, and you stay Super admin.*
+
+   The button is unavailable, with the reason under the state, when sign-in is off, when the role
+   stored for your account is not Super admin, or while settings are in read-only mode. The same
+   change is `PUT /api/rbac`. From a Bash shell on the Docker host (in zsh, the macOS default,
+   type `bash` first, because zsh's `read -p` reads from a coprocess instead of showing a prompt):
 
    ```bash
    CONSOLE=http://localhost:8080
@@ -709,22 +723,25 @@ threat model is in [`SECURITY.md`](SECURITY.md) and
      | curl -s -X POST "$CONSOLE/api/auth/login" -H 'Content-Type: application/json' --data-binary @- \
      | python3 -c 'import json, sys; print(json.load(sys.stdin)["token"])')
    unset PW
-   curl --fail -s -o /dev/null -w 'settings saved: HTTP %{http_code}\n' -X PUT "$CONSOLE/api/settings" \
+   curl --fail -s -X PUT "$CONSOLE/api/rbac" \
      -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-     -d '{"rbac": {"enabled": true}}'
+     -d '{"enabled": true}' \
+     | python3 -c 'import json, sys; b = json.load(sys.stdin); print("enabled:", b["enabled"], "changed:", b["changed"])'
    unset TOKEN
-   curl -s "$CONSOLE/api/setup/status" | python3 -c 'import json, sys; print("rbac_enabled:", json.load(sys.stdin)["rbac_enabled"])'
    ```
 
-   Expected output: `settings saved: HTTP 200`, then `rbac_enabled: True`. Set `ADMIN` to a super
-   administrator that has not turned on two-factor authentication: for an account with
-   two-factor, the sign-in call returns `requires_mfa` and a `pending_token` instead of `token`,
-   and the first command ends with `KeyError: 'token'` (as it also does for a wrong password). If
-   your named administrator already uses two-factor, run the command as the environment
-   administrator instead (`TLSOC_AUTH_ADMIN_USERNAME`, default `admin`, with the
-   `TLSOC_AUTH_ADMIN_PASSWORD` value from `.env`), which signs in with its password alone.
-   The change takes effect on the next request. Reload **Roles & permissions** and check that
-   the callout is gone before you hand out accounts, and always keep at least one super
+   Expected output: `enabled: True changed: True` (`changed: False` when it was already on). The
+   call needs an account whose stored role is Super admin, signed in within the re-authentication
+   window, which the first command does; otherwise it answers `403 rbac_super_admin_only` or `401
+   reauth_required`. Set `ADMIN` to a super administrator that has not turned on two-factor
+   authentication: for an account with two-factor, the sign-in call returns `requires_mfa` and a
+   `pending_token` instead of `token`, and the first command ends with `KeyError: 'token'` (as it
+   also does for a wrong password). If your named administrator already uses two-factor, use the
+   Console, or run the command as the environment administrator (`TLSOC_AUTH_ADMIN_USERNAME`,
+   default `admin`, with the `TLSOC_AUTH_ADMIN_PASSWORD` value from `.env`), which signs in with
+   its password alone. `PUT /api/settings` no longer changes `rbac.enabled`: it answers `409
+   rbac_switch_moved`. The change takes effect on the next request. Check that the Posture row
+   reads **Enforced** before you hand out accounts, and always keep at least one super
    administrator.
 2. **Remove demo or seeded credentials.** If the `Admin` / `Admin@123` account exists, turn it off
    once a named super administrator works. If you set `TLSOC_AUTH_ADMIN_PASSWORD`, that account
@@ -734,14 +751,10 @@ threat model is in [`SECURITY.md`](SECURITY.md) and
    stored offline. Otherwise, once named administrators exist, remove the value from `.env` and
    recreate the backend (`./scripts/agentic-soc-compose.sh up --detach`, with your `-f` files if
    you use any).
-3. **Create a named account for every person**, with the smallest role that covers the work.
-
-![Settings Users section with the accounts table and the Add user button outlined.](docs/assets/screenshots/users-rbac.webp)
-
-*Figure 14. **Settings → Security & access → Users** (captured on the demo workspace, which is why
-the header shows **Demo mode** and the seeded `Admin` account). Each row shows the role, an
-**Active** switch (a turned-off account cannot sign in), the MFA state and the last sign-in.
-**1** marks **Add user**.*
+3. **Create a named account for every person**, with the smallest role that covers the work: open
+   **Settings → Security & access → Users** and select **Add user**. Each row of the accounts
+   table shows the role, an **Active** switch (a turned-off account cannot sign in), the MFA state
+   and the last sign-in.
 
 ![Add user dialog with a username, full name, masked temporary password and the Analyst Tier 1 role with its permission summary.](docs/assets/screenshots/users-add-user.webp)
 
@@ -760,11 +773,11 @@ privileged accounts. The six built-in roles are enforced only once role-based ac
 | Role | Intended use |
 | --- | --- |
 | `super_admin` | Platform owner |
-| `soc_manager` | SOC administration: cases, sources, users, settings, rules, knowledge and audit |
+| `soc_manager` | SOC administration: cases, sources, users, settings, rules, knowledge, audit and Team activity |
 | `analyst_tier2` | Senior analyst: full investigation and closure, read-only administration |
 | `analyst_tier1` | Analyst: read, update, assign and comment on cases; no closure by default |
 | `responder` | Tier 1 case and runbook access plus proposal approval |
-| `auditor` | Read-only, including the audit trail |
+| `auditor` | Read-only, including the audit trail and Team activity |
 
 See [Users and RBAC](docs/administration/users-rbac.md) and
 [Authentication](docs/administration/authentication.md) for custom roles, SSO and session policy.
@@ -773,10 +786,10 @@ See [Users and RBAC](docs/administration/users-rbac.md) and
 
 | Control | How |
 | --- | --- |
-| **Role-based access** | Off by default, so every signed-in account counts as Super admin. Turn it on with the command in [Accounts and roles](#accounts-and-roles) step 1, then check that **Settings → Security & access → Single sign-on & policy** shows **Role-based access** as **Enforced** |
+| **Role-based access** | Off by default, so every signed-in account counts as Super admin. Turn it on as in [Accounts and roles](#accounts-and-roles) step 1, then check that **Settings → Security & access → Single sign-on & policy** shows **Role-based access** as **Enforced** |
 | **MFA** | Each person enrols in **Settings → Account → Security & two-factor**. Require it per account in the user dialog. The environment administrator can never enrol ([Accounts and roles](#accounts-and-roles) step 2) |
 | **Stable secrets** | Keep `TLSOC_AUTH_JWT_SECRET` (and `TLSOC_MFA_OBFUSCATION_KEY` if set) unchanged across restarts, outside Git, in a protected secret backup |
-| **TLS at a trusted ingress** | Put a TLS-terminating reverse proxy in front of port 8080 (example below). The Console itself serves plain HTTP |
+| **TLS at a trusted ingress** | Put a TLS-terminating reverse proxy in front of port 8080 (example below). It must accept request bodies of at least 3 MiB for case screenshots. The Console itself serves plain HTTP |
 | **Secure cookies** | With TLS in place, set `TLSOC_AUTH_COOKIE_SECURE=true` in `.env` and run `./scripts/agentic-soc-compose.sh up --detach` (with your `-f` files, if any) |
 | **Restrict ports** | Allow port 8080 only from your ingress. Port 8088 is published for direct API access and HTTP push senders: firewall it to the hosts that need it, or block it. PostgreSQL and Redis are not published |
 | **Client addresses in the audit log** | The audit log trusts `X-Forwarded-For` only from proxies in `TRUSTED_PROXIES` (default `tlsoc-webui`). To record real client addresses behind your ingress, add it through an [override file](#use-an-override-file-for-local-changes) (see [`DEPLOY.md`](DEPLOY.md) section 3.2) |
@@ -790,8 +803,10 @@ See [Users and RBAC](docs/administration/users-rbac.md) and
 <summary>Example: nginx as the TLS ingress in front of port 8080</summary>
 
 This mirrors the bundled proxy's settings: the live event stream (`/api/events`) and the chat
-stream (`/api/chat/stream`) must not be buffered, and investigations can hold a request open for
-minutes. Replace the host name and certificate paths with yours.
+stream (`/api/chat/stream`) must not be buffered, investigations can hold a request open for
+minutes, and a case screenshot is uploaded as one request of up to 3 MiB, above nginx's 1 MiB
+default body limit (without `client_max_body_size`, uploads fail with HTTP 413). Replace the
+host name and certificate paths with yours.
 
 ```nginx
 server {
@@ -799,6 +814,7 @@ server {
     server_name soc.example.com;
     ssl_certificate     /etc/ssl/soc.example.com/fullchain.pem;
     ssl_certificate_key /etc/ssl/soc.example.com/privkey.pem;
+    client_max_body_size 3m;        # case screenshot uploads (the bundled proxy allows 3 MiB)
 
     location / {
         proxy_pass http://127.0.0.1:8080;

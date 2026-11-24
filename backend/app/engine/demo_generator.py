@@ -1753,6 +1753,129 @@ def demo_runbook_audit_rows(run: Any, case: Any) -> list[dict[str, Any]]:
     return rows
 
 
+# --------------------------------------------------------------------------- #
+# Round 15 (SPEC D3.12): the Demo audit rows of the seeded human case work
+# --------------------------------------------------------------------------- #
+#: The lifecycle verb (and its structured action) a seeded person's status move records.
+_DEMO_TEAM_MOVES: dict[str, tuple[str, str]] = {
+    CaseStatus.INVESTIGATING.value: ("acknowledge", "case.acknowledged"),
+    CaseStatus.CLOSED.value: ("close", "case.closed"),
+    CaseStatus.RESOLVED.value: ("resolve", "case.resolved"),
+    CaseStatus.ESCALATED.value: ("escalate", "case.escalated"),
+    CaseStatus.ON_HOLD.value: ("hold", "case.held"),
+}
+#: A seeded assignment was taken this many minutes after its case was opened.
+_DEMO_ASSIGN_MINUTES = (1, 9)
+
+
+def demo_team_activity_audit_rows(cases: Iterable[Case], *, now_millis: int) -> list[dict[str, Any]]:
+    """The Demo audit rows of the seeded human work, oldest first, as keyword arguments
+    of ``record_strict``: the rows the live routes write for the same work (SPEC
+    D3.12), dated when the seeded work happened and by the person the case credits, so
+    Team activity in Demo Mode counts what the seeded cases show.
+
+    For each status move a person on the Demo SOC team (:data:`DEMO_SOC_ANALYSTS`) made
+    in ``status_history`` (acknowledged, closed with the case's disposition, resolved,
+    escalated, put on hold), one lifecycle row (``case.acknowledged`` and so on) with
+    the live row's positional summary and structured ``changes``; each comment such a
+    person wrote, one ``case.commented`` row; each case such a person owns, one
+    ``case.assigned`` row by its owner a few minutes after the case was opened. Rows by
+    anyone else (the triage automation, the agent, the system) are not written. Never
+    later than ``now_millis``. Pure."""
+    from ..constants import (
+        CASE_ASSIGNED_AUDIT_ACTION,
+        CASE_COMMENTED_AUDIT_ACTION,
+        ActionType,
+    )
+    from ..models import AuditChange, AuditTarget
+
+    team = {name.lower(): name for name in DEMO_SOC_ANALYSTS}
+    now = datetime.fromtimestamp(now_millis / 1000, tz=timezone.utc)
+    rows: list[tuple[datetime, int, dict[str, Any]]] = []
+
+    def add(moment: datetime, fields: dict[str, Any]) -> None:
+        rows.append((min(moment, now), len(rows), fields))
+
+    for case in cases:
+        case_id = str(getattr(case, "case_id", "") or "")
+        if not case_id:
+            continue
+        number = str(getattr(case, "case_number", "") or "")
+        target = AuditTarget(type="case", id=case_id, label=number or case_id)
+        raw_disposition = getattr(case, "disposition", None)
+        disposition = getattr(raw_disposition, "value", raw_disposition)
+        acknowledged = False
+        for entry in getattr(case, "status_history", None) or []:
+            person = team.get(str(getattr(entry, "by", "") or "").strip().lower())
+            move = _DEMO_TEAM_MOVES.get(str(getattr(entry, "to_status", "") or ""))
+            if person is None or move is None:
+                continue
+            verb, action = move
+            before, after = str(entry.from_status or "?"), str(entry.to_status)
+            at = min(_demo_moment(entry.at, now_millis), now)
+            changes = [AuditChange(field="status", before=before, after=after)]
+            if verb == "acknowledge" and not acknowledged:
+                changes.append(AuditChange(field="acknowledged_at", after=_demo_iso(at)))
+                acknowledged = True
+            if verb == "close" and disposition:
+                changes.append(AuditChange(field="disposition", before=None, after=str(disposition)))
+            add(at, {
+                "ts": _demo_iso(at), "action_type": ActionType.STATUS, "surface": "case",
+                "actor": person, "actor_type": "human", "action": action, "outcome": "success",
+                "case_id": case_id, "target": target, "changes": changes,
+                "result_summary": f"action={verb} status {before}\u2192{after} disposition={disposition or 'none'}",
+            })
+        for comment in getattr(case, "comments", None) or []:
+            person = team.get(str(getattr(comment, "author", "") or "").strip().lower())
+            if person is None:
+                continue
+            at = min(_demo_moment(comment.ts, now_millis), now)
+            add(at, {
+                "ts": _demo_iso(at), "action_type": ActionType.COLLAB, "surface": "case",
+                "actor": person, "actor_type": "human", "action": CASE_COMMENTED_AUDIT_ACTION,
+                "outcome": "success", "case_id": case_id, "target": target,
+                "result_summary": "comment added",
+            })
+        owner = team.get(str(getattr(case, "assignee", "") or "").strip().lower())
+        if owner is not None:
+            rng = random.Random(f"demo-assign:{case_id}")
+            low, high = _DEMO_ASSIGN_MINUTES
+            at = min(_demo_moment(case.created_at, now_millis) + timedelta(minutes=rng.randint(low, high)), now)
+            add(at, {
+                "ts": _demo_iso(at), "action_type": ActionType.COLLAB, "surface": "case",
+                "actor": owner, "actor_type": "human", "action": CASE_ASSIGNED_AUDIT_ACTION,
+                "outcome": "success", "case_id": case_id, "target": target,
+                "changes": [AuditChange(field="assignee", before=None, after=owner)],
+                "result_summary": f"assigned to {owner}",
+            })
+    rows.sort(key=lambda item: (item[0], item[1]))
+    return [fields for _at, _order, fields in rows]
+
+
+async def seed_demo_team_activity(audit: Any, cases: Iterable[Case], *, now_millis: int) -> int:
+    """Append :func:`demo_team_activity_audit_rows` to the Demo audit (SPEC D3.12).
+    Returns the rows written. A failed row is logged and the rest are still written;
+    it never raises, so seeding never blocks Demo Mode."""
+    import logging
+
+    log = logging.getLogger("tlsoc.engine.demo_generator")
+    if audit is None:
+        return 0
+    try:
+        planned = demo_team_activity_audit_rows(list(cases), now_millis=now_millis)
+    except Exception as exc:  # noqa: BLE001 - seeded rows never block Demo Mode
+        log.warning("demo team activity rows not planned: %s", exc)
+        return 0
+    written = 0
+    for fields in planned:
+        try:
+            await audit.record_strict(**fields)
+            written += 1
+        except Exception as exc:  # noqa: BLE001 - one row never blocks the rest
+            log.warning("demo team activity row for case %s not written: %s", str(fields.get("case_id"))[:80], exc)
+    return written
+
+
 async def seed_demo_runbook_runs(
     store: Any, cases: list[Case], catalog: Any, *, prefs: Preferences, seed: int, now_millis: int,
     audit: Any = None,
@@ -2055,3 +2178,226 @@ def schedule_demo_runbook_lookups(state: Any, cases: Iterable[Case], *, seed: in
     engine._BACKGROUND.add(task)
     task.add_done_callback(engine._BACKGROUND.discard)
     return task
+
+
+# --------------------------------------------------------------------------- #
+# Round 15 (SPEC D6.13): the seeded auto-close review sample
+# --------------------------------------------------------------------------- #
+#: How many seeded automatic closes the Demo samples for review, and how their reviews
+#: come out: three still waiting, two that agree with the AI, one that does not.
+DEMO_REVIEW_PLAN: tuple[str, ...] = ("pending", "pending", "pending", "agree", "agree", "disagree")
+#: A seeded review was recorded this many minutes after its case was sampled.
+_DEMO_REVIEW_MINUTES = (25, 180)
+#: ... after the reviewer spent this many seconds on the review card.
+_DEMO_REVIEW_SECONDS = (40, 240)
+#: The plain notes the Demo reviewers leave (fixed copy, never log text).
+_DEMO_REVIEW_NOTES = {
+    "agree": "Checked the source and the destination; this is the expected noise.",
+    "disagree": "The destination is not a service we run. This needs a closer look.",
+}
+
+
+def _demo_review_answer(kind: str, verdict: Any) -> str:
+    """The seeded reviewer's classification: the AI verdict's own answer when the
+    review agrees; the opposite when it does not."""
+    value = str(getattr(verdict, "value", verdict) or "").upper()
+    if kind == "agree":
+        return "true_positive" if value == "TRUE_POSITIVE" else "false_positive"
+    return "false_positive" if value == "TRUE_POSITIVE" else "true_positive"
+
+
+async def seed_demo_auto_close_reviews(
+    store: Any,
+    cases: list[Case],
+    *,
+    save: Callable[[Case], Any],
+    audit: Any = None,
+    seed: int,
+    now_millis: int,
+    tz: str = "UTC",
+    expiry_days: int = 7,
+) -> int:
+    """Sample about six seeded automatic closes for review (SPEC D6.13): three pending,
+    two completed and agreeing, one completed and disagreeing (a missed threat when the
+    AI closed it as a false positive). Each completed review is written as the live
+    route writes it: one ``FeedbackEntry`` marked ``origin="auto_close_review"`` with
+    its ``review_id``, one ``auto_close_review`` history event, the completed ledger
+    entry and a ``case.review_recorded`` Demo audit row by a Demo analyst; every sample
+    has its ``case.review_requested`` row by the system. The cases picked are the
+    eligible ones with the lowest sample scores, the pending ones among the closes
+    decided in the last ``expiry_days - 1`` days so they are not yet expired, at most
+    three of one rule. ``save`` re-saves a reviewed case. Returns the entries written;
+    never raises (a failure is logged and Demo Mode starts without the sample)."""
+    import logging
+
+    from ..constants import AUTO_CLOSE_REVIEW_EVENT, AUTO_CLOSE_REVIEW_ORIGIN, ActionType
+    from ..models import AuditChange, AuditTarget
+    from ..stores.auto_close_review import STATE_COMPLETED, STATE_PENDING, ReviewEntry
+    from .auto_close_review import (
+        CLASSIFICATION_OUTCOME,
+        RECORDED_ACTION,
+        REQUESTED_ACTION,
+        classification_agrees,
+        operator_day,
+        review_score,
+        sample_eligible,
+    )
+    from .metrics import decision_record
+    from .precedent import case_rule_identity
+
+    log = logging.getLogger("tlsoc.engine.demo_generator")
+    now = datetime.fromtimestamp(now_millis / 1000, tz=timezone.utc)
+    recent_floor = now - timedelta(days=max(1, expiry_days - 1))
+
+    def decided_at(case: Case) -> datetime:
+        record = decision_record(case)
+        at = record.at if record is not None and record.at is not None else None
+        return at if at is not None else _demo_moment(case.created_at, now_millis)
+
+    try:
+        eligible = sorted(
+            (c for c in cases if sample_eligible(c)),
+            # The capability seed's same-rule tuner cases last: the sample reads like
+            # the varied work a real queue holds.
+            key=lambda c: (c.case_id.startswith("demo-tune-"), review_score(c.case_id), c.case_id),
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.warning("demo auto-close review candidates not read: %s", exc)
+        return 0
+    if not eligible:
+        return 0
+    picked: list[tuple[Case, str]] = []
+    per_rule: dict[str, int] = {}
+
+    def take(pool: list[Case], kind: str) -> None:
+        for case in pool:
+            rule = case_rule_identity(case)
+            if any(c.case_id == case.case_id for c, _k in picked) or per_rule.get(rule, 0) >= 3:
+                continue
+            # The disagreeing review labels its case a true positive: never one of the
+            # tuner seed's same-rule false positives, whose demo tuning observation
+            # needs every label to agree.
+            if kind == "disagree" and case.case_id.startswith("demo-tune-"):
+                continue
+            per_rule[rule] = per_rule.get(rule, 0) + 1
+            picked.append((case, kind))
+            return
+
+    recent = [c for c in eligible if decided_at(c) >= recent_floor]
+    for kind in DEMO_REVIEW_PLAN:
+        take(recent if kind == "pending" else eligible, kind)
+
+    entries: list[ReviewEntry] = []
+    reviewed: list[tuple[Case, ReviewEntry, str]] = []
+    for case, kind in picked:
+        rng = random.Random(f"demo-review:{seed}:{case.case_id}")
+        sampled = min(decided_at(case) + timedelta(seconds=2), now)
+        entry = ReviewEntry(
+            review_id=f"acr-demo-{case.case_id[-24:]}",
+            case_id=case.case_id,
+            case_number=case.case_number or "",
+            rule=case_rule_identity(case)[:256],
+            sampled_at=_demo_iso(sampled),
+            day=operator_day(sampled, tz),
+            score=round(review_score(case.case_id), 8),
+            state=STATE_PENDING,
+            ai_verdict=str(getattr(case.verdict, "value", case.verdict) or "").upper(),
+        )
+        if kind != "pending":
+            subject = _account_name(case.entity.type, case.entity.value) if case.entity is not None else ""
+            team = [a for a in DEMO_SOC_ANALYSTS if a.lower() != subject] or list(DEMO_SOC_ANALYSTS)
+            low, high = _DEMO_REVIEW_MINUTES
+            done = min(sampled + timedelta(minutes=rng.randint(low, high)), now)
+            answer = _demo_review_answer(kind, case.verdict)
+            entry.state = STATE_COMPLETED
+            entry.reviewer = team[rng.randrange(len(team))]
+            entry.completed_at = _demo_iso(done)
+            entry.classification = answer
+            entry.agrees = classification_agrees(answer, entry.ai_verdict)
+            s_low, s_high = _DEMO_REVIEW_SECONDS
+            entry.elapsed_ms = rng.randint(s_low, s_high) * 1000
+            reviewed.append((case, entry, kind))
+        entries.append(entry)
+
+    for case, entry, kind in reviewed:
+        try:
+            grade = FeedbackEntry(
+                ts=entry.completed_at,
+                analyst=entry.reviewer,
+                assessment="agree" if entry.agrees else "disagree",
+                actual_outcome=CLASSIFICATION_OUTCOME[entry.classification],
+                comment=_DEMO_REVIEW_NOTES[kind],
+                ai_verdict=entry.ai_verdict,
+                ai_confidence=float(case.confidence or 0.0),
+                origin=AUTO_CLOSE_REVIEW_ORIGIN,
+                review_id=entry.review_id,
+            )
+            case.feedback.append(grade)
+            case.history.append({
+                "ts": entry.completed_at,
+                "event": AUTO_CLOSE_REVIEW_EVENT,
+                "review_id": entry.review_id,
+                "feedback_ts": grade.ts,
+                "analyst": entry.reviewer,
+                "agrees": entry.agrees,
+                "classification": entry.classification,
+            })
+            await save(case)
+        except Exception as exc:  # noqa: BLE001 - one seeded review never blocks Demo Mode
+            log.warning("demo auto-close review for case %s not seeded: %s", case.case_id[:80], exc)
+            entry.state = STATE_PENDING
+            entry.reviewer = entry.completed_at = entry.classification = ""
+            entry.agrees = None
+            entry.elapsed_ms = None
+
+    def _seed(ledger: Any) -> Any:
+        for entry in sorted(entries, key=lambda e: e.sampled_at):
+            if ledger.entry_for_case(entry.case_id) is None:
+                ledger.add(entry, now=now, expiry_days=expiry_days)
+        return ledger
+
+    try:
+        await store.update(_seed)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("demo auto-close review ledger not seeded: %s", exc)
+        return 0
+    if audit is None:
+        return len(entries)
+    by_id = {c.case_id: c for c, _kind in picked}
+    try:
+        for entry in sorted(entries, key=lambda e: e.sampled_at):
+            case = by_id[entry.case_id]
+            target = AuditTarget(type="case", id=case.case_id, label=case.case_number or case.case_id)
+            await audit.record_strict(
+                ts=entry.sampled_at, action_type=ActionType.AUTOMATION, surface="auto_close_review",
+                actor="system", actor_type="system", action=REQUESTED_ACTION, outcome="success",
+                case_id=case.case_id, target=target,
+                changes=[AuditChange(field="auto_close_review.state", before=None, after=STATE_PENDING)],
+                tool_input={"review_id": entry.review_id, "score": entry.score, "day": entry.day,
+                            "rule": entry.rule, "demo_seed": True},
+                result_summary=f"review_requested review_id={entry.review_id} score={entry.score:.6f}",
+            )
+            if entry.state != STATE_COMPLETED:
+                continue
+            agrees = "none" if entry.agrees is None else str(entry.agrees).lower()
+            await audit.record_strict(
+                ts=entry.completed_at, action_type=ActionType.FEEDBACK, surface="case",
+                actor=entry.reviewer, actor_type="human", action=RECORDED_ACTION, outcome="success",
+                case_id=case.case_id, target=target,
+                changes=[
+                    AuditChange(field="review.classification", before=None, after=entry.classification),
+                    AuditChange(field="review.agrees", before=None, after=entry.agrees),
+                    AuditChange(field="review.elapsed_ms", before=None, after=entry.elapsed_ms),
+                    AuditChange(field="review.review_id", before=None, after=entry.review_id),
+                ],
+                tool_input={"review_id": entry.review_id, "sampled": True,
+                            "classification": entry.classification, "agrees": entry.agrees,
+                            "elapsed_ms": entry.elapsed_ms, "ai_verdict": entry.ai_verdict},
+                result_summary=(
+                    f"review_recorded review_id={entry.review_id} sampled=true "
+                    f"classification={entry.classification} agrees={agrees}"
+                ),
+            )
+    except Exception as exc:  # noqa: BLE001 - the seeded sample stands; its rows are best effort
+        log.warning("demo auto-close review audit rows not written: %s", exc)
+    return len(entries)

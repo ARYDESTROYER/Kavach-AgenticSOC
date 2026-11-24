@@ -1,31 +1,36 @@
 /**
- * InvestigationPanel — the "Investigation" tab (task 5 split).
+ * InvestigationPanel: the Investigation tab (Round 15, SPEC D8.3).
  *
- * Task 5 split the old merged "Timeline" tab: the "what happened" six-stage narrative
- * now lives alone on the sibling <TimelinePanel> ("Timeline" tab), and THIS panel is the
- * investigation proper — the model's assessment, the pinned deterministic decision, and
- * the full ReAct trace. It follows the DESIGN_DIRECTION "lane separation, never
- * interleaved":
+ * The investigation proper, in flat sections divided by hairlines:
  *
- *   1. AI ASSESSMENT  — the model's reasoning / knowledge / tools / enrichment
- *                       (<WhyPanel hideDecision hideMitre>), rendered in a persistently
- *                       AI-marked lane so model prose never blends into a fact stream.
- *   2. DECISION       — the pinned <DecisionCard>: the deterministic `decide()` output,
- *                       the single authority (#3), most-prominent and last.
- *   3. FULL TRACE     — the raw ReAct <TraceTimeline>, available as a collapsible
- *                       "Full agent trace" disclosure for the step-by-step span log.
+ *   1. AI ASSESSMENT: the model's reading only (G17: it never falls back to the code's
+ *      `decision_rationale`), the findings it recorded and the query to reproduce them,
+ *      with the full assessment evidence (<WhyPanel>) one disclosure away.
+ *   2. DECISION: what settled the case (the deterministic `decide()` output, or the
+ *      analyst or analyst policy that closed it), its authority sentence ONCE, the
+ *      auto-close reading, the policy inputs (<DecisionCard>) one disclosure away, and the
+ *      automation applied after it (#3).
+ *   3. THREAT CONTEXT: the section that was its own tab (the caller passes it in, loaded
+ *      when this tab opens); a link to the retired Threat context tab lands here
+ *      (`data-section="threat-context"`).
+ *   4. INPUTS: the knowledge and procedures the investigator consulted.
+ *   5. TRACE: the ReAct <TraceTimeline>, collapsed with its step and tool counts, an
+ *      actor filter and "Jump to decision".
+ *   6. PREVIOUS GRADINGS, when any.
+ *
+ * The verdict, confidence and risk are the header's and the facts rail's (D8.4): this tab
+ * does not repeat them.
  *
  * SECURITY (#9): this panel only composes read-only sub-panels; each renders its own
  * model/log-derived text as plain text or inside an escaped CodeBlock. Nothing here
  * decides or mutates a case.
  */
 import * as React from 'react';
-import { ArrowDown, Bot, ChevronDown, Gauge, Lightbulb, ListTree, ShieldCheck, UserCheck } from 'lucide-react';
+import { ArrowDown, ChevronDown, Lock } from 'lucide-react';
 
 import type { Case, CaseRationale } from '@/lib/types';
 import type { TimelineResponse } from '@/soc/pages/CaseDetail.api';
 import { cn } from '@/lib/cn';
-import { DASH, fmtPercent, humanizeToken } from '@/lib/format';
 
 import { Badge } from '@/ui/badge';
 import { Button } from '@/ui/button';
@@ -35,60 +40,18 @@ import { Skeleton } from '@/ui/skeleton';
 import { WhyPanel } from './WhyPanel';
 import { InvestigationInputs } from './InvestigationInputs';
 import { DecisionCard } from './DecisionCard';
+import { AutomationApplied } from './AutomationApplied';
 import { GradingHistory } from './grading';
 import { TraceTimeline } from '@/soc/components/TraceTimeline';
+import { CodeBlock, InlineCode } from '@/soc/components/CodeBlock';
 import { ProvenanceTag } from '@/soc/components/ProvenanceTag';
 import { SegmentedControl } from '@/soc/components/SegmentedControl';
-import { scoreBand, type ScoreBand } from '@/soc/components/palette';
-import { caseOutcome, isHumanClosed, isHumanSettled } from '@/soc/components/outcome';
-import { riskValue, statusWords } from './caseFacts';
-import { CASE_MANAGER_PANEL_PADDING, type CasePanelPresentation } from './shared';
+import { isAutoClosedByAI } from '@/soc/components/badges';
+import { caseOutcome, isHumanClosed } from '@/soc/components/outcome';
+import { aiAssessed, aiAssessmentText } from './caseFacts';
+import { CASE_MANAGER_PANEL_PADDING, PanelSection, type FpPolicy } from './shared';
 
-/* --------------------------------------------------------------- zone header -- */
-
-/** A lane header — an icon chip + title + subtitle, optionally flagged "AI". `lead`
- *  bumps the chip + title so the lane reads as a prominent story opener. */
-const ZoneHeader: React.FC<{
-  icon: React.ComponentType<{ className?: string }>;
-  title: string;
-  subtitle: string;
-  ai?: boolean;
-  lead?: boolean;
-}> = ({ icon: Icon, title, subtitle, ai = false, lead = false }) => (
-  <div className="flex items-center gap-2.5">
-    <span
-      className={cn(
-        'flex shrink-0 items-center justify-center rounded-md border',
-        lead ? 'h-9 w-9' : 'h-7 w-7',
-        ai ? 'border-info/40 bg-info/10 text-info' : 'border-border bg-muted text-muted-foreground',
-      )}
-      aria-hidden
-    >
-      <Icon className={cn(lead ? 'h-5 w-5' : 'h-4 w-4')} />
-    </span>
-    <div className="min-w-0">
-      <div className="flex items-center gap-1.5">
-        <h3
-          className={cn(
-            'font-semibold tracking-tight text-foreground',
-            lead ? 'text-lg' : 'text-sm',
-          )}
-        >
-          {title}
-        </h3>
-        {ai ? (
-          <Badge variant="info" className="gap-1">
-            <Bot className="size-3 shrink-0" aria-hidden />
-            AI
-          </Badge>
-        ) : null}
-      </div>
-      <p className={cn('text-muted-foreground', lead ? 'text-sm' : 'text-xs')}>{subtitle}</p>
-    </div>
-  </div>
-);
-
-/* ------------------------------------------------- Case Manager presentation -- */
+/* --------------------------------------------------------- the Investigation tab -- */
 
 type TraceActor = 'all' | 'agent' | 'tool' | 'code';
 
@@ -98,39 +61,73 @@ const TRACE_ACTOR_KINDS: Record<Exclude<TraceActor, 'all'>, ReadonlySet<string>>
   code: new Set(['decision']),
 };
 
-const RISK_TEXT: Record<ScoreBand, string> = {
-  low: 'text-low-text',
-  medium: 'text-medium-text',
-  high: 'text-high-text',
-  critical: 'text-critical-text',
-};
-
 const DisclosureTrigger: React.FC<{
   open: boolean;
-  icon: React.ComponentType<{ className?: string }>;
   showLabel: string;
   hideLabel: string;
-}> = ({ open, icon: Icon, showLabel, hideLabel }) => (
-  <CollapsibleTrigger className="inline-flex items-center gap-1.5 rounded text-xs font-medium text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-    <Icon className="h-3.5 w-3.5" aria-hidden />
-    {open ? hideLabel : showLabel}
+}> = ({ open, showLabel, hideLabel }) => (
+  <CollapsibleTrigger className="inline-flex items-center gap-1.5 rounded-sm text-xs font-medium text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
     <ChevronDown className={cn('h-3.5 w-3.5 transition-transform', open && 'rotate-180')} aria-hidden />
+    {open ? hideLabel : showLabel}
   </CollapsibleTrigger>
 );
 
 /** A machine decision record (`verdict=… status=… risk=…`), not a sentence. */
 const DECISION_RECORD = /^[a-z_]+=\S+(\s+[a-z_]+=\S+)+/i;
 
+/** A finding the agent recorded as clean (a ruled-out check), not a positive finding. */
+const RULED_OUT_RE =
+  /\b(no\s+(match|evidence|sign|indicat|hit|result)|not\s+(malicious|found|present|observed)|ruled\s+out|clean|benign|negative|nothing\s+(found|suspicious)|false\s+positive|cleared)\b/i;
+
+/** The first sentence of a longer text. */
+function firstSentence(text?: string): string {
+  const trimmed = (text || '').trim();
+  if (!trimmed) return '';
+  const m = trimmed.match(/^.*?[.!?](\s|$)/);
+  return (m ? m[0] : trimmed).trim();
+}
+
+// Re-exported for the G17 test and existing importers.
+export { aiAssessmentText };
+
 /**
- * The Case Manager Investigation tab, DECISION FIRST (CM-6): what settled the case →
- * the AI assessment (neutral; red only for a critical RISK band) → its evidence → the
- * policy inputs → the inputs consulted → the trace, collapsed with step/tool counts, an
- * actor filter and "Jump to decision". Every datum of the earlier layout is kept: the
- * summary, confidence, recommended action, risk score, inputs, every trace step, the
- * decision summary + status, the full assessment evidence, the policy inputs and the
- * grading history.
+ * The FP auto-close reading of an undecided or code-decided case (one line), or null when
+ * no FP policy is configured or a person closed the case. Our own copy (#9).
  */
-const CaseManagerInvestigation: React.FC<Omit<InvestigationPanelProps, 'presentation'>> = ({
+function autoCloseLine(policy: FpPolicy | undefined, c: Case): string | null {
+  if (!policy || typeof policy.min_confidence !== 'number') return null;
+  if (isHumanClosed(c)) return null;
+  const v = (c.verdict || '').toLowerCase();
+  const isFp = v.includes('false') || v === 'fp' || v.includes('benign');
+  if (!policy.enabled) {
+    // Only a case assessed as false positive and still needing a person: never a true
+    // positive or Needs human verdict, and never a recorded AI close.
+    if (!isFp || isAutoClosedByAI(c.status, c.decision_by)) return null;
+    return 'False-positive auto-close is disabled.';
+  }
+  if (!isFp) {
+    return 'Needs human review and true-positive verdicts never auto-close. The auto-close bar applies to false positives only.';
+  }
+  const conf = typeof c.confidence === 'number' ? c.confidence : null;
+  const risk = typeof c.risk_score === 'number' ? c.risk_score : null;
+  const confOk = conf !== null && conf >= policy.min_confidence;
+  const riskOk = typeof policy.max_risk_score !== 'number' || (risk !== null && risk <= policy.max_risk_score);
+  const bar = policy.min_confidence.toFixed(2);
+  if (confOk && riskOk) {
+    return `Eligible for auto-close: confidence is at or above the ${bar} bar and risk is within the policy ceiling.`;
+  }
+  if (!confOk) return `Below the ${bar} auto-close confidence bar, so it is held for a human.`;
+  return 'Above the confidence bar, but risk exceeds the auto-close ceiling, so it is held for a human.';
+}
+
+/**
+ * The Investigation tab (see the module note): the AI assessment, the decision, threat
+ * context, the inputs, the collapsed trace and earlier gradings. Every datum of the
+ * earlier layout is kept or has one home elsewhere: the reasoning, the findings, the
+ * reproduce query, the decision line and record, the policy inputs, the automation, the
+ * full assessment evidence, every trace step and the grading history.
+ */
+export const InvestigationPanel: React.FC<InvestigationPanelProps> = ({
   c,
   rationale,
   rationaleLoading,
@@ -142,6 +139,8 @@ const CaseManagerInvestigation: React.FC<Omit<InvestigationPanelProps, 'presenta
   onRetryTimeline,
   traceRequest,
   onTraceRequestHandled,
+  fpPolicy,
+  threatContext,
 }) => {
   const [traceOpen, setTraceOpen] = React.useState(false);
   const [evidenceOpen, setEvidenceOpen] = React.useState(false);
@@ -152,15 +151,11 @@ const CaseManagerInvestigation: React.FC<Omit<InvestigationPanelProps, 'presenta
 
   const outcome = caseOutcome(c);
   const humanClosed = isHumanClosed(c);
-  const humanSettled = isHumanSettled(outcome);
-  const confidence = typeof rationale?.confidence === 'number' ? rationale.confidence : c.confidence;
-  const summary =
-    rationale?.reasoning?.trim() || rationale?.decision_rationale?.trim() || c.summary?.trim() || '';
-  const recommendation = c.recommended_action?.trim() || '';
+  const assessment = aiAssessmentText(c, rationale);
   const decisionSummary = rationale?.decision_rationale?.trim() || '';
-  const risk = riskValue(c.risk_score);
-  const band = risk === null ? null : scoreBand(risk);
-  const criticalRisk = band === 'critical';
+  const autoClose = autoCloseLine(fpPolicy, c);
+  const findings = (c.evidence || []).filter((e) => e && (e.summary || e.query));
+  const reproduce = (c.reproduce_query || '').trim();
 
   const spans = timeline?.spans ?? [];
   const toolCount = spans.filter((span) => span.kind === 'execute_tool').length;
@@ -193,200 +188,161 @@ const CaseManagerInvestigation: React.FC<Omit<InvestigationPanelProps, 'presenta
   }, []);
 
   // An operator's declared-benign policy is neither a person's case work nor the
-  // model's: it gets its own title (checked first — it is also "human closed").
+  // model's: it gets its own title (checked first, it is also "human closed").
   const policyClosed = outcome.source === 'analyst_policy';
   const decisionTitle = policyClosed ? 'Analyst policy' : humanClosed ? 'Analyst resolved' : 'Decision';
   const decisionLine =
     humanClosed || policyClosed
       ? `${outcome.headline}${outcome.by ? ` by ${outcome.by}` : ''}.`
       : decisionSummary || 'The server-side case policy recorded the outcome shown for this case.';
+  const resolvedByHuman = String(c.status || '').toLowerCase() === 'resolved';
+  // The authority sentence, ONCE on the case (D8.3).
+  const authority = policyClosed
+    ? 'Closed by an operator rule that declared this detection benign. No model was asked.'
+    : humanClosed
+      ? `${resolvedByHuman ? 'Resolved' : 'Closed'} by an analyst (a human lifecycle action). The deterministic policy did not ${resolvedByHuman ? 'resolve' : 'close'} this case.`
+      : 'The close or escalate decision is made by deterministic code against the operator policy, never by the model.';
 
   return (
     <div
-      className={cn('space-y-6', CASE_MANAGER_PANEL_PADDING)}
+      className={cn('@container/investigation space-y-6', CASE_MANAGER_PANEL_PADDING)}
       data-case-panel="investigation"
       data-presentation="case-manager"
     >
-      {/* 1. DECISION — what settled the case, first (#3: code or a person, never the model). */}
-      <section
-        aria-labelledby="case-manager-decision-title"
-        data-testid="investigation-decision"
-        data-decided-by={policyClosed ? 'analyst_policy' : humanClosed ? 'analyst' : 'code'}
-        className="space-y-3 border-b border-border pb-5"
+      {/* 1. AI ASSESSMENT: the model's reading only (G17), advisory. */}
+      <PanelSection
+        title="AI assessment"
+        headingId="case-manager-assessment-title"
+        adornment={<ProvenanceTag kind="ai" />}
+        description="The model's reading of the evidence. Advisory only."
+        testId="investigation-assessment"
       >
-        <div className="flex flex-wrap items-start gap-3">
-          <span
-            className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-border bg-muted text-foreground"
-            aria-hidden
-          >
-            {humanClosed && !policyClosed ? <UserCheck className="h-4 w-4" /> : <ShieldCheck className="h-4 w-4" />}
-          </span>
-          <div className="min-w-0 flex-1">
-            <div className="flex flex-wrap items-center gap-2">
-              <h2
-                id="case-manager-decision-title"
-                className="text-base font-semibold tracking-tight text-foreground"
-              >
-                {decisionTitle}
-              </h2>
-              <ProvenanceTag kind={humanClosed && !policyClosed ? 'analyst' : 'code'} />
-            </div>
-            {/* The server's decision record is a `key=value` audit line: show it as the
-                record it is (mono, wrapping) rather than as a prose sentence. */}
-            <p
-              data-testid="investigation-decision-line"
-              className={cn(
-                'mt-1 leading-relaxed text-foreground/90',
-                DECISION_RECORD.test(decisionLine)
-                  ? 'font-mono text-xs [overflow-wrap:anywhere]'
-                  : 'text-sm',
-              )}
-            >
-              {decisionLine}
-            </p>
-            {humanClosed && !policyClosed && decisionSummary ? (
-              <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-                Before the analyst: {decisionSummary}
-              </p>
-            ) : null}
-            {humanSettled && outcome.aiLine ? (
-              <p className="mt-1 text-xs text-muted-foreground" data-testid="investigation-ai-line">
-                {outcome.aiLine}
-              </p>
-            ) : null}
-          </div>
-          <Badge variant="outline" className="self-start">
-            {c.status ? statusWords(c.status) : 'Pending'}
-          </Badge>
-        </div>
-        <Collapsible open={decisionOpen} onOpenChange={setDecisionOpen}>
-          <DisclosureTrigger
-            open={decisionOpen}
-            icon={ShieldCheck}
-            showLabel="Show policy inputs"
-            hideLabel="Hide policy inputs"
-          />
-          <CollapsibleContent className="mt-3">
-            <DecisionCard c={c} rationale={rationale} timeline={timeline} />
-          </CollapsibleContent>
-        </Collapsible>
-      </section>
-
-      {/* 2. AI ASSESSMENT — advisory. Neutral frame; only a critical RISK band is red. */}
-      <section
-        aria-labelledby="case-manager-assessment-title"
-        data-testid="investigation-assessment"
-        data-risk-band={band ?? undefined}
-        className={cn(
-          'relative overflow-hidden rounded-lg border bg-card p-4',
-          criticalRisk ? 'border-critical/40' : 'border-border',
-        )}
-      >
-        {criticalRisk ? <span aria-hidden className="absolute inset-y-0 left-0 w-1 bg-critical" /> : null}
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div className="flex items-start gap-3">
-            <span
-              className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-border bg-muted text-muted-foreground"
-              aria-hidden
-            >
-              <Bot className="h-4 w-4" />
-            </span>
-            <div>
-              <div className="flex flex-wrap items-center gap-2">
-                <h2
-                  id="case-manager-assessment-title"
-                  className="text-base font-semibold tracking-tight text-foreground"
-                >
-                  AI assessment
-                </h2>
-                <ProvenanceTag kind="ai" />
-              </div>
-              <p className="mt-0.5 text-xs text-muted-foreground">
-                The model&apos;s reading of the evidence. Advisory only.
-              </p>
-            </div>
-          </div>
-          {typeof confidence === 'number' ? (
-            <div className="text-right">
-              <div className="text-xs text-muted-foreground">
-                {humanSettled ? 'AI confidence at assessment' : 'Confidence'}
-              </div>
-              <div className="mt-0.5 text-sm font-semibold tabular-nums text-foreground">
-                {fmtPercent(confidence)}
-              </div>
-            </div>
-          ) : null}
-        </div>
-
-        <div className="mt-3">
-          {rationaleLoading && !summary ? (
+        <div className="max-w-3xl space-y-4">
+          {rationaleLoading && !assessment ? (
             <div className="space-y-2" aria-label="Loading AI assessment">
               <Skeleton className="h-4 w-full" />
               <Skeleton className="h-4 w-4/5" />
             </div>
-          ) : summary ? (
-            <p className="whitespace-pre-wrap text-sm leading-relaxed text-foreground/90">{summary}</p>
+          ) : assessment ? (
+            <p data-testid="investigation-assessment-text" className="whitespace-pre-wrap text-sm leading-relaxed text-foreground/90">
+              {/* UNTRUSTED model text: plain text. */}
+              {assessment}
+            </p>
           ) : (
-            <p className="text-sm text-muted-foreground">
-              No assessment summary was recorded for this investigation.
+            <p data-testid="investigation-assessment-text" className="text-sm text-muted-foreground">
+              {aiAssessed(c)
+                ? 'No assessment text was recorded for this investigation.'
+                : 'The AI has not assessed this case.'}
             </p>
           )}
-        </div>
 
-        <dl className="mt-4 grid gap-x-6 gap-y-3 border-t border-border pt-3 sm:grid-cols-[minmax(0,1fr)_10rem]">
-          <div className="min-w-0">
-            <dt className="flex items-center gap-1.5 text-xs text-muted-foreground">
-              <Lightbulb className="h-3.5 w-3.5" aria-hidden />
-              {humanClosed ? 'AI recommendation at triage' : 'Recommended action'}
-            </dt>
-            <dd
-              className={cn(
-                'mt-1 text-sm',
-                humanClosed ? 'text-muted-foreground' : 'text-foreground/90',
-              )}
-            >
-              {recommendation || 'No recommended action was recorded.'}
-            </dd>
-          </div>
-          <div>
-            <dt className="flex items-center gap-1.5 text-xs text-muted-foreground">
-              <Gauge className="h-3.5 w-3.5" aria-hidden />
-              Risk score
-            </dt>
-            <dd className="mt-1 flex items-baseline gap-1.5">
-              <span
-                className={cn('text-xl font-semibold tabular-nums', band ? RISK_TEXT[band] : 'text-foreground')}
-                data-testid="investigation-risk"
-              >
-                {risk !== null ? `${risk}/100` : DASH}
-              </span>
-              {band ? <span className="text-xs text-muted-foreground">{humanizeToken(band)}</span> : null}
-            </dd>
-          </div>
-        </dl>
+          {findings.length ? (
+            <div className="space-y-2" data-testid="investigation-findings">
+              <h3 className="text-xs font-medium text-muted-foreground">Findings</h3>
+              <ul className="divide-y divide-border/60">
+                {findings.map((finding, index) => {
+                  const clear = RULED_OUT_RE.test(finding.summary || '');
+                  return (
+                    <li key={`${finding.summary}-${index}`} className="flex items-start gap-3 py-2 first:pt-0 last:pb-0">
+                      <Badge variant={clear ? 'success' : 'high'} className="mt-0.5 shrink-0">
+                        {clear ? 'Clear' : 'Found'}
+                      </Badge>
+                      <div className="min-w-0 flex-1 space-y-1">
+                        {/* UNTRUSTED summary: plain text. */}
+                        <p className="text-sm text-foreground/90">
+                          {finding.summary ? firstSentence(finding.summary) : `Finding ${index + 1}`}
+                        </p>
+                        {finding.query ? (
+                          /* UNTRUSTED query: inside an InlineCode fence. */
+                          <InlineCode className="block w-fit max-w-full break-all text-xs">{finding.query}</InlineCode>
+                        ) : null}
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          ) : null}
 
-        <Collapsible className="mt-3" open={evidenceOpen} onOpenChange={setEvidenceOpen}>
-          <DisclosureTrigger
-            open={evidenceOpen}
-            icon={Bot}
-            showLabel="Show full assessment evidence"
-            hideLabel="Hide full assessment evidence"
-          />
-          <CollapsibleContent className="mt-3 overflow-hidden rounded-md border border-border">
-            <WhyPanel
-              c={c}
-              rationale={rationale}
-              loading={rationaleLoading}
-              error={rationaleError}
-              onRetry={onRetryRationale}
-              hideDecision
-              hideMitre
+          {reproduce ? (
+            <div className="space-y-1.5">
+              <h3 className="text-xs font-medium text-muted-foreground">Reproduce query</h3>
+              {/* UNTRUSTED query: inside a CodeBlock fence, copyable. */}
+              <CodeBlock value={reproduce} caption="read-only" copyable wrap maxHeightClassName="max-h-40" />
+            </div>
+          ) : null}
+
+          <Collapsible open={evidenceOpen} onOpenChange={setEvidenceOpen}>
+            <DisclosureTrigger
+              open={evidenceOpen}
+              showLabel="Show full assessment evidence"
+              hideLabel="Hide full assessment evidence"
             />
+            <CollapsibleContent className="mt-3">
+              <WhyPanel
+                c={c}
+                rationale={rationale}
+                loading={rationaleLoading}
+                error={rationaleError}
+                onRetry={onRetryRationale}
+                hideDecision
+                hideMitre
+              />
+            </CollapsibleContent>
+          </Collapsible>
+        </div>
+      </PanelSection>
+
+      {/* 2. DECISION: what settled the case (#3: code or a person, never the model). */}
+      <PanelSection
+        title={decisionTitle}
+        headingId="case-manager-decision-title"
+        adornment={<ProvenanceTag kind={humanClosed && !policyClosed ? 'analyst' : 'code'} />}
+        testId="investigation-decision"
+        data-decided-by={policyClosed ? 'analyst_policy' : humanClosed ? 'analyst' : 'code'}
+      >
+        <div className="max-w-3xl space-y-2">
+          {/* The server's decision record is a `key=value` audit line: show it as the
+              record it is (mono, wrapping) rather than as a prose sentence. */}
+          <p
+            data-testid="investigation-decision-line"
+            className={cn(
+              'leading-relaxed text-foreground/90',
+              DECISION_RECORD.test(decisionLine) ? 'font-mono text-xs [overflow-wrap:anywhere]' : 'text-sm',
+            )}
+          >
+            {decisionLine}
+          </p>
+          {humanClosed && !policyClosed && decisionSummary ? (
+            <p className="text-xs leading-relaxed text-muted-foreground">Before the analyst: {decisionSummary}</p>
+          ) : null}
+          <p data-testid="investigation-authority" className="flex items-start gap-1.5 text-xs leading-relaxed text-muted-foreground">
+            <Lock className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />
+            <span>{authority}</span>
+          </p>
+          {autoClose ? (
+            <p data-testid="investigation-auto-close" className="text-xs leading-relaxed text-muted-foreground">
+              {autoClose}
+            </p>
+          ) : null}
+        </div>
+        <Collapsible open={decisionOpen} onOpenChange={setDecisionOpen}>
+          <DisclosureTrigger open={decisionOpen} showLabel="Show policy inputs" hideLabel="Hide policy inputs" />
+          <CollapsibleContent className="mt-3 max-w-3xl">
+            <DecisionCard c={c} rationale={rationale} timeline={timeline} />
           </CollapsibleContent>
         </Collapsible>
-      </section>
+        <AutomationApplied c={c} className="max-w-3xl pt-2" />
+      </PanelSection>
 
-      {/* 3. The inputs the latest run selected and actually consulted. */}
+      {/* 3. THREAT CONTEXT: the retired Threat context tab, loaded when this tab opens. */}
+      {threatContext ? (
+        <PanelSection title="Threat context" section="threat-context" testId="investigation-threat-context">
+          {threatContext}
+        </PanelSection>
+      ) : null}
+
+      {/* 4. The inputs the latest run selected and actually consulted. */}
       <InvestigationInputs
         rationale={rationale}
         loading={rationaleLoading}
@@ -396,22 +352,21 @@ const CaseManagerInvestigation: React.FC<Omit<InvestigationPanelProps, 'presenta
         showSelectionStatus
       />
 
-      {/* 4. TRACE — collapsed by default; every step is one click away. */}
+      {/* 5. TRACE: collapsed by default; every step is one click away. */}
       <section
         ref={traceSectionRef}
         aria-labelledby="case-manager-trace-title"
-        className="scroll-mt-4 space-y-3"
+        className="scroll-mt-4 space-y-3 border-t border-border/60 pt-6 first:border-t-0 first:pt-0"
         data-testid="investigation-trace"
       >
         <Collapsible open={traceOpen} onOpenChange={handleTraceToggle}>
           <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-            <ListTree className="h-4 w-4 text-muted-foreground" aria-hidden />
             {/* Where a request to open the trace lands focus that had dropped. */}
             <h2
               id="case-manager-trace-title"
               tabIndex={-1}
               data-trace-focus=""
-              className="rounded-sm text-sm font-semibold text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+              className="rounded-sm text-base font-semibold text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
             >
               Investigation trace
             </h2>
@@ -432,10 +387,7 @@ const CaseManagerInvestigation: React.FC<Omit<InvestigationPanelProps, 'presenta
               <CollapsibleTrigger asChild>
                 <Button type="button" variant="outline" size="sm" className="h-7 px-2 text-xs">
                   {traceOpen ? 'Hide trace' : 'Show trace'}
-                  <ChevronDown
-                    className={cn('h-3.5 w-3.5 transition-transform', traceOpen && 'rotate-180')}
-                    aria-hidden
-                  />
+                  <ChevronDown className={cn('h-3.5 w-3.5 transition-transform', traceOpen && 'rotate-180')} aria-hidden />
                 </Button>
               </CollapsibleTrigger>
             </div>
@@ -472,7 +424,12 @@ const CaseManagerInvestigation: React.FC<Omit<InvestigationPanelProps, 'presenta
         </Collapsible>
       </section>
 
-      <GradingHistory feedback={c.feedback} />
+      {/* 6. Earlier gradings of the AI on this case. */}
+      {c.feedback && c.feedback.length ? (
+        <PanelSection title="Previous gradings" testId="investigation-gradings">
+          <GradingHistory feedback={c.feedback} className="max-w-3xl" />
+        </PanelSection>
+      ) : null}
     </div>
   );
 };
@@ -482,18 +439,17 @@ const CaseManagerInvestigation: React.FC<Omit<InvestigationPanelProps, 'presenta
 export interface InvestigationPanelProps {
   c: Case;
 
-  /** AI-ASSESSMENT lane — the decision rationale projection. */
+  /** AI-ASSESSMENT lane: the decision rationale projection. */
   rationale: CaseRationale | null;
   rationaleLoading: boolean;
   rationaleError: unknown;
   onRetryRationale: () => void;
 
-  /** DECISION lane + the collapsible full trace — the typed ReAct spans. */
+  /** DECISION lane + the collapsible full trace: the typed ReAct spans. */
   timeline: TimelineResponse | null;
   timelineLoading: boolean;
   timelineError: unknown;
   onRetryTimeline: () => void;
-  presentation?: CasePanelPresentation;
 
   /**
    * A request to open the full trace and bring it into view, a new number per request
@@ -503,6 +459,14 @@ export interface InvestigationPanelProps {
    */
   traceRequest?: number | null;
   onTraceRequestHandled?: (tick: number) => void;
+
+  /** The FP auto-close policy, for the Decision's auto-close reading (best-effort). */
+  fpPolicy?: FpPolicy;
+  /**
+   * Round 15 (D8.3): the Threat context section's body (the retired Threat context tab),
+   * which the caller loads when this tab opens. Omitted: no Threat context section.
+   */
+  threatContext?: React.ReactNode;
 }
 
 /**
@@ -557,130 +521,5 @@ function useTraceRequest(
     return () => window.clearTimeout(timer);
   }, [reveal, traceOpen, openTrace, target]);
 }
-
-export const InvestigationPanel: React.FC<InvestigationPanelProps> = ({
-  c,
-  rationale,
-  rationaleLoading,
-  rationaleError,
-  onRetryRationale,
-  timeline,
-  timelineLoading,
-  timelineError,
-  onRetryTimeline,
-  presentation = 'default',
-  traceRequest,
-  onTraceRequestHandled,
-}) => {
-  const [traceOpen, setTraceOpen] = React.useState(false);
-  const traceSectionRef = React.useRef<HTMLDivElement | null>(null);
-
-  // Lazy-load the raw trace the first time the disclosure opens, if the parent hasn't
-  // already fetched it (the DecisionCard reads its policy_clause from the same data).
-  const handleTraceToggle = React.useCallback(
-    (open: boolean) => {
-      setTraceOpen(open);
-      if (open && timeline === null && !timelineLoading && !timelineError) {
-        onRetryTimeline();
-      }
-    },
-    [timeline, timelineLoading, timelineError, onRetryTimeline],
-  );
-  // The case-manager presentation applies its own request (it owns its trace).
-  useTraceRequest(
-    presentation === 'case-manager' ? null : traceRequest,
-    onTraceRequestHandled,
-    traceOpen,
-    setTraceOpen,
-    handleTraceToggle,
-    traceSectionRef,
-  );
-
-  if (presentation === 'case-manager') {
-    return (
-      <CaseManagerInvestigation
-        c={c}
-        rationale={rationale}
-        rationaleLoading={rationaleLoading}
-        rationaleError={rationaleError}
-        onRetryRationale={onRetryRationale}
-        timeline={timeline}
-        timelineLoading={timelineLoading}
-        timelineError={timelineError}
-        onRetryTimeline={onRetryTimeline}
-        traceRequest={traceRequest}
-        onTraceRequestHandled={onTraceRequestHandled}
-      />
-    );
-  }
-
-  return (
-    <div className="space-y-6 p-6">
-      {/* ============================================== 1. AI assessment */}
-      <section aria-label="AI assessment" className="space-y-1">
-        <ZoneHeader
-          icon={Bot}
-          title="AI assessment"
-          subtitle="The model's reasoning, the knowledge it retrieved, and the tools it ran."
-          ai
-          lead
-        />
-        {/* Persistent AI-marked lane: an info tint so model prose never reads as fact.
-            hideDecision → the pinned DecisionCard is the sole decision authority (#3);
-            hideMitre → MITRE is surfaced once in the Threat lane, not repeated here. */}
-        <div className="overflow-hidden rounded-lg border border-info/30 bg-info/5">
-          <WhyPanel
-            c={c}
-            rationale={rationale}
-            loading={rationaleLoading}
-            error={rationaleError}
-            onRetry={onRetryRationale}
-            hideDecision
-            hideMitre
-          />
-        </div>
-        {/* Prior analyst gradings of this AI decision (Round-7 #10). Read-only; renders
-            nothing until a close-with-grade has recorded feedback. `pt-4` (not a margin)
-            survives the section's `space-y-1` sibling-margin reset. */}
-        <GradingHistory feedback={c.feedback} className="pt-4" />
-      </section>
-
-      {/* ============================================== 2. Decision (pinned) */}
-      <section aria-label="Decision" className="space-y-1">
-        <ZoneHeader
-          icon={ShieldCheck}
-          title="Decision"
-          subtitle="The deterministic close / escalate authority, never raw model output."
-        />
-        <DecisionCard c={c} rationale={rationale} timeline={timeline} />
-      </section>
-
-      {/* ============================================== Full trace (disclosure) */}
-      <Collapsible ref={traceSectionRef} open={traceOpen} onOpenChange={handleTraceToggle} className="scroll-mt-4">
-        <CollapsibleTrigger
-          data-trace-focus=""
-          className="inline-flex items-center gap-1.5 rounded text-xs font-medium text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-        >
-          <ListTree className="h-3.5 w-3.5" aria-hidden />
-          {traceOpen ? 'Hide' : 'Show'} full agent trace
-          <ChevronDown
-            className={cn('h-3.5 w-3.5 transition-transform', traceOpen && 'rotate-180')}
-            aria-hidden
-          />
-        </CollapsibleTrigger>
-        <CollapsibleContent>
-          <div className="mt-2 rounded-lg border border-border bg-card">
-            <TraceTimeline
-              data={timeline}
-              loading={timelineLoading}
-              error={timelineError}
-              onRetry={onRetryTimeline}
-            />
-          </div>
-        </CollapsibleContent>
-      </Collapsible>
-    </div>
-  );
-};
 
 export default InvestigationPanel;

@@ -27,11 +27,22 @@ function sources(dir: string, out: string[] = []): string[] {
 
 describe('object URLs for downloads are made and revoked only by lib/download-blob.ts', () => {
   it('no other module creates or revokes a download object URL', () => {
+    // Round 15 (SPEC D5.12): the case Files kit SHOWS screenshots through object URLs,
+    // which it revokes as soon as an image is replaced or unmounted (never a download).
+    const allowed = new Set([
+      path.join('lib', 'download-blob.ts'),
+      path.join('soc', 'pages', 'casedetail', 'files', 'object-url.ts'),
+    ]);
     const offenders = sources(SRC)
-      .filter((file) => path.relative(SRC, file) !== path.join('lib', 'download-blob.ts'))
+      .filter((file) => !allowed.has(path.relative(SRC, file)))
       // A call (`URL.createObjectURL(…)`, `URL.revokeObjectURL?.(…)`), not a mention in a comment.
       .filter((file) => /\bURL\.(?:createObjectURL|revokeObjectURL)\s*(?:\?\.)?\(/.test(fs.readFileSync(file, 'utf8')))
       .map((file) => path.relative(SRC, file));
     expect(offenders).toEqual([]);
+  });
+
+  it('the screenshot display helper never starts a download', () => {
+    const text = fs.readFileSync(path.join(SRC, 'soc', 'pages', 'casedetail', 'files', 'object-url.ts'), 'utf8');
+    expect(text).not.toMatch(/\.download\s*=|\.click\(\)/);
   });
 });

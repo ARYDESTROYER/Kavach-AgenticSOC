@@ -905,6 +905,154 @@
         "title": "AutoClosePolicy",
         "type": "object"
       },
+      "AutoCloseReviewMetrics": {
+        "description": "The Agent effectiveness \"Auto-close review\" module (D6.12) over the cases sampled\nin ``window``. Never a composite score.",
+        "properties": {
+          "agreement": {
+            "$ref": "#/components/schemas/ReviewAgreement"
+          },
+          "by_day": {
+            "items": {
+              "$ref": "#/components/schemas/ReviewDayRow"
+            },
+            "title": "By Day",
+            "type": "array"
+          },
+          "by_rule": {
+            "items": {
+              "$ref": "#/components/schemas/ReviewRuleRow"
+            },
+            "title": "By Rule",
+            "type": "array"
+          },
+          "daily_cap": {
+            "title": "Daily Cap",
+            "type": "integer"
+          },
+          "eligible": {
+            "$ref": "#/components/schemas/ReviewEligible"
+          },
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "expired": {
+            "title": "Expired",
+            "type": "integer"
+          },
+          "expiry_days": {
+            "title": "Expiry Days",
+            "type": "integer"
+          },
+          "generated_at": {
+            "title": "Generated At",
+            "type": "string"
+          },
+          "ledger_complete": {
+            "title": "Ledger Complete",
+            "type": "boolean"
+          },
+          "missed_threats": {
+            "$ref": "#/components/schemas/ReviewMissedThreats"
+          },
+          "pending": {
+            "title": "Pending",
+            "type": "integer"
+          },
+          "per_rule_daily_cap": {
+            "title": "Per Rule Daily Cap",
+            "type": "integer"
+          },
+          "reviewed": {
+            "title": "Reviewed",
+            "type": "integer"
+          },
+          "sample_rate": {
+            "title": "Sample Rate",
+            "type": "number"
+          },
+          "sampled": {
+            "title": "Sampled",
+            "type": "integer"
+          },
+          "statement": {
+            "title": "Statement",
+            "type": "string"
+          },
+          "time_spent_ms": {
+            "$ref": "#/components/schemas/ReviewDuration"
+          },
+          "time_to_review_ms": {
+            "$ref": "#/components/schemas/ReviewDuration"
+          },
+          "unsure": {
+            "title": "Unsure",
+            "type": "integer"
+          },
+          "window": {
+            "$ref": "#/components/schemas/ReviewMetricsWindow"
+          }
+        },
+        "required": [
+          "window",
+          "enabled",
+          "sample_rate",
+          "daily_cap",
+          "per_rule_daily_cap",
+          "expiry_days",
+          "sampled",
+          "reviewed",
+          "pending",
+          "expired",
+          "unsure",
+          "agreement",
+          "missed_threats",
+          "by_rule",
+          "time_spent_ms",
+          "time_to_review_ms",
+          "by_day",
+          "eligible",
+          "ledger_complete",
+          "statement",
+          "generated_at"
+        ],
+        "title": "AutoCloseReviewMetrics",
+        "type": "object"
+      },
+      "AutoCloseReviewSummary": {
+        "description": "The Review scope badge: pending reviews, disagreeing reviews whose case is still\nclosed, today's sample against the daily cap.",
+        "properties": {
+          "daily_cap": {
+            "title": "Daily Cap",
+            "type": "integer"
+          },
+          "disagreed_open": {
+            "title": "Disagreed Open",
+            "type": "integer"
+          },
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "pending": {
+            "title": "Pending",
+            "type": "integer"
+          },
+          "sampled_today": {
+            "title": "Sampled Today",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "enabled",
+          "pending",
+          "disagreed_open",
+          "sampled_today",
+          "daily_cap"
+        ],
+        "title": "AutoCloseReviewSummary",
+        "type": "object"
+      },
       "AvatarBody": {
         "description": "Thin set/clear of just the avatar (empty string clears it).",
         "properties": {
@@ -1165,11 +1313,40 @@
         "type": "object"
       },
       "BulkCaseAction": {
-        "description": "A :class:`CaseAction` applied to many cases at once. ``ids`` is the set of\ntarget case ids; the action/payload fields are inherited verbatim so a bulk move\nis IDENTICAL to N single-case moves.",
+        "description": "A :class:`CaseAction` applied to many cases at once. ``ids`` is the set of\ntarget case ids; the action/payload fields are inherited verbatim so a bulk move\nis IDENTICAL to N single-case moves. The one exception is ``review_via`` (Round 15\nSPEC D6.9): a review is about one case, so a bulk body that sends it answers 422.",
         "properties": {
           "action": {
             "title": "Action",
             "type": "string"
+          },
+          "actions_taken": {
+            "anyOf": [
+              {
+                "items": {
+                  "enum": [
+                    "no_action_needed",
+                    "blocked_indicator",
+                    "isolated_host",
+                    "disabled_account",
+                    "reset_credentials",
+                    "removed_malware",
+                    "patched_or_hardened",
+                    "notified_owner",
+                    "escalated_externally",
+                    "tuned_detection",
+                    "other"
+                  ],
+                  "type": "string"
+                },
+                "maxItems": 8,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "At most 8 values from the fixed vocabulary; an unknown value answers 422 and a repeated value is kept once.",
+            "title": "What was done about the case"
           },
           "analyst": {
             "default": "analyst",
@@ -1851,6 +2028,35 @@
             "title": "Action",
             "type": "string"
           },
+          "actions_taken": {
+            "anyOf": [
+              {
+                "items": {
+                  "enum": [
+                    "no_action_needed",
+                    "blocked_indicator",
+                    "isolated_host",
+                    "disabled_account",
+                    "reset_credentials",
+                    "removed_malware",
+                    "patched_or_hardened",
+                    "notified_owner",
+                    "escalated_externally",
+                    "tuned_detection",
+                    "other"
+                  ],
+                  "type": "string"
+                },
+                "maxItems": 8,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "At most 8 values from the fixed vocabulary; an unknown value answers 422 and a repeated value is kept once.",
+            "title": "What was done about the case"
+          },
           "analyst": {
             "default": "analyst",
             "title": "Analyst",
@@ -1947,6 +2153,18 @@
               }
             ],
             "title": "Resolution"
+          },
+          "review_via": {
+            "anyOf": [
+              {
+                "const": "auto_close_review"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "\"auto_close_review\" or null; recorded on the history entry and the audit row only.",
+            "title": "The action was taken from an auto-close review"
           },
           "status": {
             "anyOf": [
@@ -2050,6 +2268,315 @@
         "title": "CaseComment",
         "type": "object"
       },
+      "CaseFileDeleteResult": {
+        "properties": {
+          "deleted": {
+            "default": true,
+            "title": "Deleted",
+            "type": "boolean"
+          },
+          "file": {
+            "$ref": "#/components/schemas/CaseFileEntry"
+          }
+        },
+        "required": [
+          "file"
+        ],
+        "title": "CaseFileDeleteResult",
+        "type": "object"
+      },
+      "CaseFileEntry": {
+        "description": "One screenshot as the API lists it (metadata only, never the bytes).",
+        "properties": {
+          "bytes": {
+            "title": "Bytes",
+            "type": "integer"
+          },
+          "can_delete": {
+            "default": false,
+            "title": "Can Delete",
+            "type": "boolean"
+          },
+          "caption": {
+            "default": "",
+            "title": "Caption",
+            "type": "string"
+          },
+          "case_id": {
+            "title": "Case Id",
+            "type": "string"
+          },
+          "content_type": {
+            "title": "Content Type",
+            "type": "string"
+          },
+          "deleted": {
+            "default": false,
+            "title": "Deleted",
+            "type": "boolean"
+          },
+          "deleted_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deleted At"
+          },
+          "deleted_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deleted By"
+          },
+          "filename": {
+            "default": "",
+            "title": "Filename",
+            "type": "string"
+          },
+          "has_thumbnail": {
+            "default": false,
+            "title": "Has Thumbnail",
+            "type": "boolean"
+          },
+          "height": {
+            "title": "Height",
+            "type": "integer"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "position": {
+            "description": "1-based number of the screenshot on its case (upload order).",
+            "title": "Position",
+            "type": "integer"
+          },
+          "sha256": {
+            "title": "Sha256",
+            "type": "string"
+          },
+          "thumbnail_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Thumbnail Bytes"
+          },
+          "uploaded_at": {
+            "default": "",
+            "title": "Uploaded At",
+            "type": "string"
+          },
+          "uploaded_by": {
+            "default": "",
+            "title": "Uploaded By",
+            "type": "string"
+          },
+          "width": {
+            "title": "Width",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "case_id",
+          "position",
+          "content_type",
+          "bytes",
+          "width",
+          "height",
+          "sha256"
+        ],
+        "title": "CaseFileEntry",
+        "type": "object"
+      },
+      "CaseFileLimitsInfo": {
+        "properties": {
+          "accepted_types": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Accepted Types",
+            "type": "array"
+          },
+          "max_caption_chars": {
+            "title": "Max Caption Chars",
+            "type": "integer"
+          },
+          "max_case_bytes": {
+            "title": "Max Case Bytes",
+            "type": "integer"
+          },
+          "max_file_bytes": {
+            "title": "Max File Bytes",
+            "type": "integer"
+          },
+          "max_filename_chars": {
+            "title": "Max Filename Chars",
+            "type": "integer"
+          },
+          "max_files": {
+            "title": "Max Files",
+            "type": "integer"
+          },
+          "max_pixels": {
+            "title": "Max Pixels",
+            "type": "integer"
+          },
+          "max_side_px": {
+            "title": "Max Side Px",
+            "type": "integer"
+          },
+          "max_thumbnail_bytes": {
+            "title": "Max Thumbnail Bytes",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "max_files",
+          "max_case_bytes",
+          "max_file_bytes",
+          "max_thumbnail_bytes",
+          "max_side_px",
+          "max_pixels",
+          "max_caption_chars",
+          "max_filename_chars",
+          "accepted_types"
+        ],
+        "title": "CaseFileLimitsInfo",
+        "type": "object"
+      },
+      "CaseFileList": {
+        "properties": {
+          "bytes": {
+            "title": "Bytes",
+            "type": "integer"
+          },
+          "can_upload": {
+            "title": "Can Upload",
+            "type": "boolean"
+          },
+          "case_id": {
+            "title": "Case Id",
+            "type": "string"
+          },
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          },
+          "deleted": {
+            "items": {
+              "$ref": "#/components/schemas/CaseFileEntry"
+            },
+            "title": "Deleted",
+            "type": "array"
+          },
+          "files": {
+            "items": {
+              "$ref": "#/components/schemas/CaseFileEntry"
+            },
+            "title": "Files",
+            "type": "array"
+          },
+          "limits": {
+            "$ref": "#/components/schemas/CaseFileLimitsInfo"
+          }
+        },
+        "required": [
+          "case_id",
+          "files",
+          "deleted",
+          "count",
+          "bytes",
+          "can_upload",
+          "limits"
+        ],
+        "title": "CaseFileList",
+        "type": "object"
+      },
+      "CaseFileUploadBody": {
+        "additionalProperties": false,
+        "description": "One screenshot upload. ``data_base64`` is the image as base64 (a ``data:``\nURL is accepted too); ``content_type`` the type the client claims (it must match\nthe image's magic bytes). A thumbnail is optional (at most 48 KiB once decoded).",
+        "properties": {
+          "caption": {
+            "default": "",
+            "maxLength": 200,
+            "title": "Caption",
+            "type": "string"
+          },
+          "content_type": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content Type"
+          },
+          "data_base64": {
+            "maxLength": 3145728,
+            "minLength": 1,
+            "title": "Data Base64",
+            "type": "string"
+          },
+          "filename": {
+            "default": "",
+            "maxLength": 1024,
+            "title": "Filename",
+            "type": "string"
+          },
+          "thumbnail_base64": {
+            "anyOf": [
+              {
+                "maxLength": 131072,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Thumbnail Base64"
+          }
+        },
+        "required": [
+          "data_base64"
+        ],
+        "title": "CaseFileUploadBody",
+        "type": "object"
+      },
+      "CaseFileUploadResult": {
+        "properties": {
+          "deduplicated": {
+            "default": false,
+            "title": "Deduplicated",
+            "type": "boolean"
+          },
+          "file": {
+            "$ref": "#/components/schemas/CaseFileEntry"
+          }
+        },
+        "required": [
+          "file"
+        ],
+        "title": "CaseFileUploadResult",
+        "type": "object"
+      },
       "CaseIdPreviewBody": {
         "properties": {
           "prefix": {
@@ -2104,6 +2631,74 @@
           "total"
         ],
         "title": "CaseListResponse",
+        "type": "object"
+      },
+      "CaseReviewState": {
+        "description": "One case's place in the auto-close review (Round 15, D6.12, D8.2): what the case\nworkspace needs to show the pending band, choose its primary action and offer\n\"Review this auto-close\". ``state`` is the case's sample entry (``pending``,\n``completed`` or ``expired``, computed on read) or ``none`` when it was never\nsampled. ``agent_closed`` is the review endpoint's own rule (terminal, first\ndecision record an agent close), and ``can_record`` says whether that endpoint\nwould accept a review now, the caller's grants aside: a sampled case whose review\nis recorded answers 409, and so does a case that is not (or no longer) closed by\nthe agent.",
+        "properties": {
+          "agent_closed": {
+            "title": "Agent Closed",
+            "type": "boolean"
+          },
+          "can_record": {
+            "title": "Can Record",
+            "type": "boolean"
+          },
+          "case_id": {
+            "title": "Case Id",
+            "type": "string"
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At"
+          },
+          "review_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Review Id"
+          },
+          "sampled_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sampled At"
+          },
+          "state": {
+            "enum": [
+              "none",
+              "pending",
+              "completed",
+              "expired"
+            ],
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "case_id",
+          "agent_closed",
+          "state",
+          "can_record"
+        ],
+        "title": "CaseReviewState",
         "type": "object"
       },
       "CaseRunbooks": {
@@ -6574,10 +7169,20 @@
             "title": "Comment",
             "type": "string"
           },
+          "origin": {
+            "default": "",
+            "title": "Origin",
+            "type": "string"
+          },
           "reasoning_quality": {
             "default": 0.0,
             "title": "Reasoning Quality",
             "type": "number"
+          },
+          "review_id": {
+            "default": "",
+            "title": "Review Id",
+            "type": "string"
           },
           "time_saved_minutes": {
             "default": 0,
@@ -8580,6 +9185,115 @@
         "title": "OverviewRequest",
         "type": "object"
       },
+      "PersonActivity": {
+        "properties": {
+          "ack_samples": {
+            "default": 0,
+            "title": "Ack Samples",
+            "type": "integer"
+          },
+          "active": {
+            "default": true,
+            "title": "Active",
+            "type": "boolean"
+          },
+          "bulk": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Bulk",
+            "type": "object"
+          },
+          "closed_by": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Closed By",
+            "type": "object"
+          },
+          "counts": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Counts",
+            "type": "object"
+          },
+          "daily": {
+            "items": {
+              "$ref": "#/components/schemas/TeamDay"
+            },
+            "title": "Daily",
+            "type": "array"
+          },
+          "display_name": {
+            "default": "",
+            "title": "Display Name",
+            "type": "string"
+          },
+          "key": {
+            "description": "The normalised username; empty for Not attributed.",
+            "title": "Key",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "account",
+              "environment",
+              "demo",
+              "deleted",
+              "unattributed"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "last_active": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Active"
+          },
+          "median_ack_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Median Ack Seconds"
+          },
+          "reviews": {
+            "$ref": "#/components/schemas/TeamReviews"
+          },
+          "role": {
+            "default": "",
+            "title": "Role",
+            "type": "string"
+          },
+          "username": {
+            "title": "Username",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "username",
+          "kind",
+          "counts",
+          "closed_by",
+          "bulk",
+          "daily",
+          "reviews"
+        ],
+        "title": "PersonActivity",
+        "type": "object"
+      },
       "PingEvent": {
         "additionalProperties": false,
         "properties": {
@@ -8816,6 +9530,151 @@
           "text"
         ],
         "title": "RagImportRequest",
+        "type": "object"
+      },
+      "RbacStatus": {
+        "description": "The state of role-based access, as ``GET /api/rbac`` reports it.",
+        "properties": {
+          "auth_enabled": {
+            "description": "Whether sign-in is on. Without it roles have no effect.",
+            "title": "Auth Enabled",
+            "type": "boolean"
+          },
+          "blockers": {
+            "description": "Why the caller may not change it: auth_off, not_super_admin, read_only_settings.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Blockers",
+            "type": "array"
+          },
+          "caller_role": {
+            "default": "",
+            "description": "The caller's stored role, even while role-based access is off (empty with sign-in off).",
+            "title": "Caller Role",
+            "type": "string"
+          },
+          "can_change": {
+            "description": "Whether the caller may turn it on or off now (no blockers).",
+            "title": "Can Change",
+            "type": "boolean"
+          },
+          "enabled": {
+            "description": "Whether role-based access is on (``rbac.enabled``).",
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "role_counts": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "integer"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Active accounts per stored role (environment accounts included). Only for a caller holding users:manage; null otherwise.",
+            "title": "Role Counts"
+          },
+          "super_admin_count": {
+            "default": 0,
+            "description": "Active Super admin accounts: persisted ones, plus the environment administrator when it is configured and no persisted user has its name.",
+            "title": "Super Admin Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "enabled",
+          "auth_enabled",
+          "can_change"
+        ],
+        "title": "RbacStatus",
+        "type": "object"
+      },
+      "RbacUpdate": {
+        "additionalProperties": false,
+        "description": "``PUT /api/rbac``: the requested state. A JSON boolean only.",
+        "properties": {
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "enabled"
+        ],
+        "title": "RbacUpdate",
+        "type": "object"
+      },
+      "RbacUpdateResult": {
+        "description": "The answer to ``PUT /api/rbac``: the new state and whether it changed.",
+        "properties": {
+          "auth_enabled": {
+            "description": "Whether sign-in is on. Without it roles have no effect.",
+            "title": "Auth Enabled",
+            "type": "boolean"
+          },
+          "blockers": {
+            "description": "Why the caller may not change it: auth_off, not_super_admin, read_only_settings.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Blockers",
+            "type": "array"
+          },
+          "caller_role": {
+            "default": "",
+            "description": "The caller's stored role, even while role-based access is off (empty with sign-in off).",
+            "title": "Caller Role",
+            "type": "string"
+          },
+          "can_change": {
+            "description": "Whether the caller may turn it on or off now (no blockers).",
+            "title": "Can Change",
+            "type": "boolean"
+          },
+          "changed": {
+            "description": "False when role-based access was already in the requested state.",
+            "title": "Changed",
+            "type": "boolean"
+          },
+          "enabled": {
+            "description": "Whether role-based access is on (``rbac.enabled``).",
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "role_counts": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "integer"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Active accounts per stored role (environment accounts included). Only for a caller holding users:manage; null otherwise.",
+            "title": "Role Counts"
+          },
+          "super_admin_count": {
+            "default": 0,
+            "description": "Active Super admin accounts: persisted ones, plus the environment administrator when it is configured and no persisted user has its name.",
+            "title": "Super Admin Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "enabled",
+          "auth_enabled",
+          "can_change",
+          "changed"
+        ],
+        "title": "RbacUpdateResult",
         "type": "object"
       },
       "ReactionBody": {
@@ -10086,6 +10945,374 @@
           "scope"
         ],
         "title": "ResetBody",
+        "type": "object"
+      },
+      "ReviewAgreement": {
+        "properties": {
+          "agreed": {
+            "title": "Agreed",
+            "type": "integer"
+          },
+          "disagreed": {
+            "title": "Disagreed",
+            "type": "integer"
+          },
+          "interval": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "number"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Interval"
+          },
+          "minimum": {
+            "title": "Minimum",
+            "type": "integer"
+          },
+          "rate": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rate"
+          },
+          "reviews": {
+            "title": "Reviews",
+            "type": "integer"
+          },
+          "statement": {
+            "title": "Statement",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "ok",
+              "insufficient"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "agreed",
+          "disagreed",
+          "reviews",
+          "minimum",
+          "statement"
+        ],
+        "title": "ReviewAgreement",
+        "type": "object"
+      },
+      "ReviewBody": {
+        "additionalProperties": false,
+        "description": "A person's review of an automatic close. ``classification`` is their own\nanswer, asked before the AI verdict is compared. The optional ratings are stars\n(above 0, at most 1). ``elapsed_ms`` is the time from opening the review card to\nsubmitting it, measured by the Console.",
+        "properties": {
+          "accuracy": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "maximum": 1.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Accuracy"
+          },
+          "action_appropriateness": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "maximum": 1.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Action Appropriateness"
+          },
+          "classification": {
+            "enum": [
+              "true_positive",
+              "false_positive",
+              "benign",
+              "unsure"
+            ],
+            "title": "Classification",
+            "type": "string"
+          },
+          "elapsed_ms": {
+            "anyOf": [
+              {
+                "maximum": 86400000.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Elapsed Ms"
+          },
+          "note": {
+            "default": "",
+            "maxLength": 1000,
+            "title": "Note",
+            "type": "string"
+          },
+          "reasoning_quality": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "maximum": 1.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reasoning Quality"
+          }
+        },
+        "required": [
+          "classification"
+        ],
+        "title": "ReviewBody",
+        "type": "object"
+      },
+      "ReviewDayRow": {
+        "properties": {
+          "day": {
+            "title": "Day",
+            "type": "string"
+          },
+          "eligible": {
+            "title": "Eligible",
+            "type": "integer"
+          },
+          "sampled": {
+            "title": "Sampled",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "day",
+          "eligible",
+          "sampled"
+        ],
+        "title": "ReviewDayRow",
+        "type": "object"
+      },
+      "ReviewDuration": {
+        "properties": {
+          "median": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Median"
+          },
+          "reviews": {
+            "default": 0,
+            "title": "Reviews",
+            "type": "integer"
+          }
+        },
+        "title": "ReviewDuration",
+        "type": "object"
+      },
+      "ReviewEligible": {
+        "properties": {
+          "complete": {
+            "title": "Complete",
+            "type": "boolean"
+          },
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "count",
+          "complete"
+        ],
+        "title": "ReviewEligible",
+        "type": "object"
+      },
+      "ReviewMetricsWindow": {
+        "properties": {
+          "end": {
+            "title": "End",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "start": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Start"
+          },
+          "token": {
+            "title": "Token",
+            "type": "string"
+          },
+          "tz": {
+            "title": "Tz",
+            "type": "string"
+          }
+        },
+        "required": [
+          "token",
+          "label",
+          "tz",
+          "end"
+        ],
+        "title": "ReviewMetricsWindow",
+        "type": "object"
+      },
+      "ReviewMissedThreat": {
+        "properties": {
+          "case_id": {
+            "title": "Case Id",
+            "type": "string"
+          },
+          "case_number": {
+            "default": "",
+            "title": "Case Number",
+            "type": "string"
+          },
+          "completed_at": {
+            "default": "",
+            "title": "Completed At",
+            "type": "string"
+          },
+          "rule": {
+            "default": "",
+            "title": "Rule",
+            "type": "string"
+          }
+        },
+        "required": [
+          "case_id"
+        ],
+        "title": "ReviewMissedThreat",
+        "type": "object"
+      },
+      "ReviewMissedThreats": {
+        "properties": {
+          "cases": {
+            "items": {
+              "$ref": "#/components/schemas/ReviewMissedThreat"
+            },
+            "title": "Cases",
+            "type": "array"
+          },
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "count"
+        ],
+        "title": "ReviewMissedThreats",
+        "type": "object"
+      },
+      "ReviewResult": {
+        "description": "The recorded review: ``agrees`` (None for unsure), whether the caller may\nreopen the case (``cases:close``), and the ledger id when the case was sampled.",
+        "properties": {
+          "agrees": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agrees"
+          },
+          "can_reopen": {
+            "default": false,
+            "title": "Can Reopen",
+            "type": "boolean"
+          },
+          "review_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Review Id"
+          },
+          "sampled": {
+            "default": false,
+            "title": "Sampled",
+            "type": "boolean"
+          }
+        },
+        "title": "ReviewResult",
+        "type": "object"
+      },
+      "ReviewRuleRow": {
+        "properties": {
+          "agreed": {
+            "title": "Agreed",
+            "type": "integer"
+          },
+          "disagreed": {
+            "title": "Disagreed",
+            "type": "integer"
+          },
+          "reviewed": {
+            "title": "Reviewed",
+            "type": "integer"
+          },
+          "rule": {
+            "title": "Rule",
+            "type": "string"
+          },
+          "sampled": {
+            "title": "Sampled",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "rule",
+          "sampled",
+          "reviewed",
+          "agreed",
+          "disagreed"
+        ],
+        "title": "ReviewRuleRow",
         "type": "object"
       },
       "RevokeOthersBody": {
@@ -14490,6 +15717,463 @@
         "title": "TaskPatchBody",
         "type": "object"
       },
+      "TeamActivity": {
+        "description": "One window of Team activity (SPEC D3.10).",
+        "properties": {
+          "auth_enabled": {
+            "default": true,
+            "title": "Auth Enabled",
+            "type": "boolean"
+          },
+          "days": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Days",
+            "type": "array"
+          },
+          "demo": {
+            "default": false,
+            "title": "Demo",
+            "type": "boolean"
+          },
+          "exact": {
+            "default": true,
+            "title": "Exact",
+            "type": "boolean"
+          },
+          "generated_at": {
+            "title": "Generated At",
+            "type": "string"
+          },
+          "partial_reason": {
+            "anyOf": [
+              {
+                "enum": [
+                  "row_limit",
+                  "store_limit"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Partial Reason"
+          },
+          "people": {
+            "items": {
+              "$ref": "#/components/schemas/PersonActivity"
+            },
+            "title": "People",
+            "type": "array"
+          },
+          "rbac_enabled": {
+            "default": false,
+            "title": "Rbac Enabled",
+            "type": "boolean"
+          },
+          "scanned_rows": {
+            "default": 0,
+            "title": "Scanned Rows",
+            "type": "integer"
+          },
+          "team": {
+            "$ref": "#/components/schemas/TeamTotals"
+          },
+          "timezone": {
+            "title": "Timezone",
+            "type": "string"
+          },
+          "window": {
+            "$ref": "#/components/schemas/TeamWindow"
+          }
+        },
+        "required": [
+          "window",
+          "timezone",
+          "days",
+          "people",
+          "team",
+          "generated_at"
+        ],
+        "title": "TeamActivity",
+        "type": "object"
+      },
+      "TeamDay": {
+        "properties": {
+          "counts": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Counts",
+            "type": "object"
+          },
+          "date": {
+            "title": "Date",
+            "type": "string"
+          }
+        },
+        "required": [
+          "date",
+          "counts"
+        ],
+        "title": "TeamDay",
+        "type": "object"
+      },
+      "TeamEvent": {
+        "properties": {
+          "case_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Case Id"
+          },
+          "case_number": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Case Number"
+          },
+          "detail": {
+            "default": "",
+            "title": "Detail",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "ts": {
+            "title": "Ts",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ts",
+          "kind",
+          "label"
+        ],
+        "title": "TeamEvent",
+        "type": "object"
+      },
+      "TeamEvents": {
+        "properties": {
+          "events": {
+            "items": {
+              "$ref": "#/components/schemas/TeamEvent"
+            },
+            "title": "Events",
+            "type": "array"
+          },
+          "exact": {
+            "default": true,
+            "title": "Exact",
+            "type": "boolean"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          },
+          "partial_reason": {
+            "anyOf": [
+              {
+                "enum": [
+                  "row_limit",
+                  "store_limit"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Partial Reason"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          },
+          "username": {
+            "title": "Username",
+            "type": "string"
+          },
+          "window": {
+            "$ref": "#/components/schemas/TeamWindow"
+          }
+        },
+        "required": [
+          "username",
+          "window",
+          "events",
+          "total"
+        ],
+        "title": "TeamEvents",
+        "type": "object"
+      },
+      "TeamPeople": {
+        "properties": {
+          "auth_enabled": {
+            "default": true,
+            "title": "Auth Enabled",
+            "type": "boolean"
+          },
+          "demo": {
+            "default": false,
+            "title": "Demo",
+            "type": "boolean"
+          },
+          "people": {
+            "items": {
+              "$ref": "#/components/schemas/TeamPerson"
+            },
+            "title": "People",
+            "type": "array"
+          }
+        },
+        "required": [
+          "people"
+        ],
+        "title": "TeamPeople",
+        "type": "object"
+      },
+      "TeamPerson": {
+        "properties": {
+          "active": {
+            "default": true,
+            "title": "Active",
+            "type": "boolean"
+          },
+          "display_name": {
+            "default": "",
+            "title": "Display Name",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "account",
+              "environment",
+              "demo"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "role": {
+            "default": "",
+            "title": "Role",
+            "type": "string"
+          },
+          "username": {
+            "title": "Username",
+            "type": "string"
+          }
+        },
+        "required": [
+          "username",
+          "kind"
+        ],
+        "title": "TeamPerson",
+        "type": "object"
+      },
+      "TeamReviews": {
+        "properties": {
+          "agreed": {
+            "default": 0,
+            "title": "Agreed",
+            "type": "integer"
+          },
+          "agreement_rate": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Agreed over answered, only from 30 answered reviews.",
+            "title": "Agreement Rate"
+          },
+          "answered": {
+            "default": 0,
+            "title": "Answered",
+            "type": "integer"
+          },
+          "completed": {
+            "default": 0,
+            "title": "Completed",
+            "type": "integer"
+          },
+          "disagreed": {
+            "default": 0,
+            "title": "Disagreed",
+            "type": "integer"
+          },
+          "time_spent_median_ms": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Median time spent on the review card, measured in the Console.",
+            "title": "Time Spent Median Ms"
+          },
+          "time_to_review_median_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Median time from the case being picked for review to the review.",
+            "title": "Time To Review Median Seconds"
+          },
+          "unsure": {
+            "default": 0,
+            "title": "Unsure",
+            "type": "integer"
+          }
+        },
+        "title": "TeamReviews",
+        "type": "object"
+      },
+      "TeamTotals": {
+        "properties": {
+          "ack_samples": {
+            "default": 0,
+            "title": "Ack Samples",
+            "type": "integer"
+          },
+          "ack_status": {
+            "default": "measured",
+            "description": "Whether the median time to acknowledge was measured: too many cases, the cases could not be read, or the audit read stopped before the end of the window (partial). It is omitted unless measured.",
+            "enum": [
+              "measured",
+              "too_many_cases",
+              "unavailable",
+              "partial"
+            ],
+            "title": "Ack Status",
+            "type": "string"
+          },
+          "bulk": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Bulk",
+            "type": "object"
+          },
+          "closed_by": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Closed By",
+            "type": "object"
+          },
+          "counts": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Counts",
+            "type": "object"
+          },
+          "daily": {
+            "items": {
+              "$ref": "#/components/schemas/TeamDay"
+            },
+            "title": "Daily",
+            "type": "array"
+          },
+          "median_ack_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Median Ack Seconds"
+          },
+          "people_active": {
+            "default": 0,
+            "title": "People Active",
+            "type": "integer"
+          },
+          "reviews": {
+            "$ref": "#/components/schemas/TeamReviews"
+          }
+        },
+        "required": [
+          "counts",
+          "closed_by",
+          "bulk",
+          "daily",
+          "reviews"
+        ],
+        "title": "TeamTotals",
+        "type": "object"
+      },
+      "TeamWindow": {
+        "properties": {
+          "end": {
+            "title": "End",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "start": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Start"
+          },
+          "token": {
+            "title": "Token",
+            "type": "string"
+          }
+        },
+        "required": [
+          "token",
+          "label",
+          "end"
+        ],
+        "title": "TeamWindow",
+        "type": "object"
+      },
       "TerminologyBody": {
         "description": "The ORG terminology label-override map (admin-only). Every value is plain DATA\nrendered as text by the UI (#9). Validated/bounded by CustomizationConfig.",
         "properties": {
@@ -18660,6 +20344,25 @@
         "summary": "Set Sso Provider Secret"
       }
     },
+    "/api/auto-close-review/summary": {
+      "get": {
+        "description": "The Review scope badge (D6.12). Pending entries whose case already carries its\nreview are repaired in the ledger and not counted.",
+        "operationId": "auto_close_review_summary_api_auto_close_review_summary_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AutoCloseReviewSummary"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Auto Close Review Summary"
+      }
+    },
     "/api/baseline/config": {
       "get": {
         "description": "Read ``Preferences.baseline`` (the anomaly-baseline policy). Read-only, no\nsecrets — the baseline block carries only tuning knobs (#10).",
@@ -19468,6 +21171,22 @@
               ],
               "title": "Closed By"
             }
+          },
+          {
+            "in": "query",
+            "name": "review",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Review"
+            }
           }
         ],
         "responses": {
@@ -19919,6 +21638,235 @@
         "summary": "Case Feedback"
       }
     },
+    "/api/cases/{case_id}/files": {
+      "get": {
+        "description": "The case's screenshots (metadata only, upload order), its deleted ones (their\nmetadata kept), what they take and the bounds that apply.",
+        "operationId": "list_case_files_api_cases__case_id__files_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "case_id",
+            "required": true,
+            "schema": {
+              "title": "Case Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CaseFileList"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Case Files"
+      },
+      "post": {
+        "description": "Attach one screenshot to the case (see the module docstring). Allowed on a\nclosed case; never changes the case.",
+        "operationId": "upload_case_file_api_cases__case_id__files_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "case_id",
+            "required": true,
+            "schema": {
+              "title": "Case Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CaseFileUploadBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CaseFileUploadResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Upload Case File"
+      }
+    },
+    "/api/cases/{case_id}/files/{file_id}": {
+      "delete": {
+        "description": "Delete one screenshot: its bytes go, its metadata stays as a deleted entry. The\nuploader may delete their own; a ``cases:close`` holder anyone's (a refusal\nwrites an Access denied row).",
+        "operationId": "delete_case_file_api_cases__case_id__files__file_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "case_id",
+            "required": true,
+            "schema": {
+              "title": "Case Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "file_id",
+            "required": true,
+            "schema": {
+              "title": "File Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CaseFileDeleteResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Case File"
+      }
+    },
+    "/api/cases/{case_id}/files/{file_id}/content": {
+      "get": {
+        "description": "The image bytes with strict headers (see the module docstring). A thumbnail\nis served when asked for and present, else the full image.",
+        "operationId": "get_case_file_content_api_cases__case_id__files__file_id__content_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "case_id",
+            "required": true,
+            "schema": {
+              "title": "Case Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "file_id",
+            "required": true,
+            "schema": {
+              "title": "File Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "variant",
+            "required": false,
+            "schema": {
+              "default": "full",
+              "enum": [
+                "full",
+                "thumb"
+              ],
+              "title": "Variant",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "download",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Download",
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "image/jpeg": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              },
+              "image/png": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              },
+              "image/webp": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The screenshot (or its thumbnail), as stored after validation."
+          },
+          "404": {
+            "description": "case_not_found or case_file_not_found"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "503": {
+            "description": "case_files_unavailable: the store could not be read"
+          }
+        },
+        "summary": "Get Case File Content"
+      }
+    },
     "/api/cases/{case_id}/forwarding": {
       "get": {
         "description": "Explain, READ-ONLY, WHY this case's cluster did/didn't auto-forward to the LLM\ninvestigator (Round 4 Wave 4).\n\nRebuilds the case's cluster from its stored member events (the same read-only\nreconstruction the re-investigate path uses) and asks\n``engine.forwarding.explain_forwarding`` which deterministic auto-forward GATE\ndecided the outcome, returning a plain-English ``sentence`` + the deciding\n``gate``. Pure narrator: it NEVER calls ``decide()`` (#3), makes NO LLM call (#6),\nand never mutates the cluster signature (#4) — it only describes the gate the\ningest pipeline walks BEFORE any verdict exists.",
@@ -20149,6 +22097,94 @@
           }
         },
         "summary": "Case Reinvestigate"
+      }
+    },
+    "/api/cases/{case_id}/review": {
+      "get": {
+        "description": "One case's auto-close review state (D6.12, D8.2), read by the case workspace.\nA pending entry whose case already carries its review reads as completed (and the\nledger is repaired, as the summary does). Nothing here changes the case (#3).",
+        "operationId": "case_review_state_api_cases__case_id__review_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "case_id",
+            "required": true,
+            "schema": {
+              "title": "Case Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CaseReviewState"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Case Review State"
+      },
+      "post": {
+        "description": "Record a person's review of a case the AI agent closed automatically (D6.6).",
+        "operationId": "record_auto_close_review_api_cases__case_id__review_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "case_id",
+            "required": true,
+            "schema": {
+              "title": "Case Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReviewBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Record Auto Close Review"
       }
     },
     "/api/cases/{case_id}/run-playbook": {
@@ -24851,6 +26887,54 @@
         "summary": "Metrics Auto Close Health Recorded"
       }
     },
+    "/api/metrics/auto-close-review": {
+      "get": {
+        "description": "The Agent effectiveness module (D6.12) over the cases sampled in ``window`` (a\n``time_windows`` token, default the last 30 days, in the operator zone).",
+        "operationId": "auto_close_review_metrics_api_metrics_auto_close_review_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "window",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 200,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Window"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AutoCloseReviewMetrics"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Auto Close Review Metrics"
+      }
+    },
     "/api/metrics/breakdown": {
       "get": {
         "description": "Exact case or usage counts by one field (``by``) or two (``by`` then ``then``) over\na window, optionally bucketed by time (SPEC §4.4.2).\n\n``kind=cases`` hands one ``CaseAggregateSpec`` (window, group_by, bucket, top_n,\nfilters; metrics ``count``, ``open_now`` and the two named families) to\n``engine.case_aggregate.aggregate_cases``, the engine the chat's ``case_stats`` uses,\nover the case store this caller reads (the Demo store while Demo Mode is on), with\nthe same prefs and operator timezone, so the dashboards and chat agree on every\nnumber. The two families are never mixed: AI verdicts (``verdicted = verdict_tp +\nverdict_fp + verdict_needs_human``) and the analyst outcome (``count = analyst_tp +\nanalyst_fp + analyst_ungraded``; analyst-policy closes are never graded). In an\nun-bucketed row ``open_now`` is the window-exempt open stock: the open cases matching\nthe row whenever they were created, so it can exceed the row's windowed ``count``; in\na bucketed row it is the open part of that bucket's cohort. ``window_label`` is the\nwindow as a caption start in sentence case (\"Last 7 days (since 20 Oct 2026)\"); a\nrelative window of days, weeks, months or years counts whole local periods exactly\nas chat does, and an hours window (``now-168h``) is the rolling span the other\n``window_hours`` metrics count, labelled as a board names it (\"Last 7 days (since 21\nOct 2026, 12:00)\"). ``multi_valued`` is true for ``rule``, ``mitre_tactic``\nand ``mitre_technique``: a case counts once in each of its values, so rows never sum\nto ``total``. ``exact`` false (``partial`` true, with ``partial_reason``) marks lower\nbounds; a zero is never invented for a figure that was not measured. Cases with no\nreadable creation date are disclosed in ``missing_created`` (``missing_in_total``\nsays whether ``total`` holds them), and with buckets cut by ``top`` each bucket's\n``other_count`` holds its share of ``other``.\n\n``kind=usage`` aggregates the usage ledger (``engine.case_aggregate.aggregate_usage``,\nmetrics ``calls`` and ``cost_usd``, ranked by spend) and is gated on ``cost:view``.\n\nOne answer per question is shared for a few seconds and a question being read is\njoined, never read twice; at most two reads run at once, a read gets a bounded time,\nan answer holds at most 5,000 group rows and the shared answers 20,000 in all. Every read\nfolds the cases of the window, because the analyst outcome family needs the case\nmodel; the fold reads only the stored fields its metrics and groups need.\n\nErrors: ``400 breakdown_bad_param`` (an unknown value, ``then`` equal to ``by``, a\ncase-only parameter with ``kind=usage``, an empty ``filter_rule``, a ``top`` that is\nnot a whole number from 1 to 50, a window it cannot read, too many buckets, or\n``top`` times the buckets over 5,000 rows); ``403`` without the grant; ``409\nbreakdown_scope_unsupported`` for a case breakdown while row-level data scope applies\nto the caller (aggregates do not honour row scope yet, SPEC D16); ``503\nbreakdown_unavailable`` when the store could not be read at all or the read ran past\nits time (nothing was measured, so no figure is returned). A read: no audit row, no\nmodel call (#6), aggregates only (#7); nothing here is read by\n``case_manager.decide()`` (#3).",
@@ -26845,6 +28929,68 @@
           }
         },
         "summary": "Rag Stats"
+      }
+    },
+    "/api/rbac": {
+      "get": {
+        "description": "Whether role-based access is on and whether the caller may change it.",
+        "operationId": "get_rbac_api_rbac_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RbacStatus"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Rbac",
+        "tags": [
+          "rbac"
+        ]
+      },
+      "put": {
+        "description": "Turn role-based access on or off (module doc, rules 1 to 7).",
+        "operationId": "put_rbac_api_rbac_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RbacUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RbacUpdateResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Put Rbac",
+        "tags": [
+          "rbac"
+        ]
       }
     },
     "/api/releases/upstream": {
@@ -31327,6 +33473,167 @@
         "summary": "Update Status",
         "tags": [
           "system-updates"
+        ]
+      }
+    },
+    "/api/team/activity": {
+      "get": {
+        "operationId": "team_activity_api_team_activity_get",
+        "parameters": [
+          {
+            "description": "A time window: today, yesterday, now-7d, or a date range.",
+            "in": "query",
+            "name": "window",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 64,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A time window: today, yesterday, now-7d, or a date range.",
+              "title": "Window"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TeamActivity"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Team Activity",
+        "tags": [
+          "team"
+        ]
+      }
+    },
+    "/api/team/people": {
+      "get": {
+        "operationId": "team_people_api_team_people_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TeamPeople"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Team People",
+        "tags": [
+          "team"
+        ]
+      }
+    },
+    "/api/team/people/{username}/events": {
+      "get": {
+        "operationId": "team_person_events_api_team_people__username__events_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "username",
+            "required": true,
+            "schema": {
+              "title": "Username",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "window",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 64,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Window"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 2048,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TeamEvents"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Team Person Events",
+        "tags": [
+          "team"
         ]
       }
     },

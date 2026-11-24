@@ -6,8 +6,16 @@
 > source of truth for *where we are*, *how to run it*, *what's done*, and *what's next*.
 > Everything in here is verified against the repo as of the date below — not from memory.
 
-- **Repo:** `ARYDESTROYER/Agentic-Kibana`  ·  **Integration target:** `Testing`  ·  **Date:** 2026-11-06
-- **Round 14 (newest, 2026-10 and 11):** nine operator asks on `claude/round14`. It is built,
+- **Repo:** `ARYDESTROYER/Agentic-Kibana`  ·  **Integration target:** `Testing`  ·  **Date:** 2026-11-24
+- **Round 15 (newest, 2026-11):** six operator asks on `claude/round15`: a Console switch for
+  role-based access, honest setup-wizard copy, a Team activity page for managers, screenshots on
+  cases, a random review of automatically closed cases, and a cleaner Case Manager. It is built,
+  each package and the integrated tree were independently reviewed (the cross-cutting review
+  confirmed and fixed 46 of 50 candidate findings), and every gate is green apart from five
+  sandbox-only environment tests (SPEC §8.4); it heads to `Testing` by a pull request. See
+  `docs/research/2026-11-round15/SPEC.md`, whose §8 "As built" records what shipped and the known
+  limitations.
+- **Round 14 (2026-10 and 11):** nine operator asks on `claude/round14`. It is built,
   two closing acceptance passes and their fixes are done, and every gate is green apart from five
   sandbox-only environment tests (SPEC §11.4 "Final gates"); it heads to `Testing` by a pull
   request. The automatic sign-out notice no longer states how long the session lasted. The
@@ -436,7 +444,7 @@ backend/app/
                    /account/me, /demo/*, /proposals, /settings/schema, `/chat`, and
                    per-user `/chat/conversations` list/detail/rename/delete).
                    api/deps.py =
-                   auth/RBAC gates (+ custom-role union). **39 feature routers total**,
+                   auth/RBAC gates (+ custom-role union). **43 feature routers total**,
                    ALL auto-discovered at boot
                    (`main.py::discover_feature_routers()` walks `app.api.routes_*`, needs
                    only a top-level `router: APIRouter` — no manual registration):
@@ -484,7 +492,10 @@ backend/app/
                    added routes_audit (the audit log read API: paged list, count and one
                    record), routes_rule_summary (one detection rule's picture for the
                    rule sheet) and routes_case_runbooks (runbook runs on cases, progress
-                   and the editor's lookup test). Direct reset mutation also returns 410;
+                   and the editor's lookup test); Round 15 added routes_rbac (the
+                   role-based access switch), routes_team (Team activity),
+                   routes_case_files (case screenshots) and routes_auto_close_review
+                   (the auto-close review). Direct reset mutation also returns 410;
                    canonical tiered reset is a Job.
   auth/            passwords (PBKDF2) · tokens (stdlib HS256 JWT, sid/tv claims) · service ·
                    mfa (RFC-6238 TOTP) · oidc (SSO code-exchange)
@@ -506,7 +517,10 @@ backend/app/
                    Round-4: tuning · campaigns (full-set active reconciliation + durable
                    success anchor) · baseline · batch_jobs +
                    Round-5: dashboards (per-user custom-dashboard layouts) · rule_versions
-                   (detection-rule version ledger + rollback) — NO new index/table needed
+                   (detection-rule version ledger + rollback); NO new index/table needed +
+                   Round 15: case_files (case screenshots: per-case index, write-once
+                   image and thumbnail documents, usage total) · auto_close_review (the
+                   strict-CAS review ledger: a ring of 2,000 picks and 90 days of counts)
   notifications/   channel SPI · email (SMTP+SES) · resend · webhook/slack/teams · templates · dispatch ·
                    InAppChannel (Round 3 — fan-out to InboxStore, no network) · jobs
                    (one strict-CAS bounded registry, renewable leases, intent
@@ -543,22 +557,36 @@ backend/app/
                    cancellation, restart recovery, verified ZIP artifacts) ·
                    investigation_gate (process-local ingest-priority concurrency) ·
                    agent_improvement (pure aggregate complete-day quality headline +
-                   additive cost/closure/outcome/volume trends; reporting only)
+                   additive cost/closure/outcome/volume trends; reporting only) +
+                   Round 15: team_activity (pure audit-row fold for Team activity) ·
+                   case_images (stdlib image structure check and metadata strip, no
+                   pixel decode) · auto_close_review (seeded, capped sampler of automatic
+                   closes, run after `apply()`; summary and metrics folds) · review_origin
+                   (`is_review_grade`, the rollback-safe review-grade marker)
+  llm/             gateway (the one cost-ledger choke point) · providers · pricing · batch ·
+                   readiness (Round 15: whether the router and investigator models can be
+                   called with the credentials held; the wizard's `ai_runtime_ready`)
   agents/          router · investigator · formatter · chat · standup · overview · personas · pipeline
   threat/          bundled compact MITRE ATT&CK technique map (+ refresh script)
 webui/src/
   soc/pages/       Login, Cases (Round-9c: 6-tile summary strip + monogram Assignee column),
-                   CaseManager (additive Active/All split-pane queue using the shared
-                   CaseDetail orchestrator in embedded mode; reference-matched top-right
-                   Share/Take Action/close controls; selection + permission-gated bulk work;
+                   CaseManager (additive Active/Mine/Review/All split-pane queue using the
+                   shared CaseDetail orchestrator in embedded mode; one primary action,
+                   Take action, More options and close controls in the header (Round 15);
+                   selection + permission-gated bulk work;
                    Acknowledge/Assign/Add tag/Set status/Set disposition/Reinvestigate/Resolve;
                    successes deselect, failures remain selected; accessible persisted
                    desktop queue resize; the Cases table hands opened rows to this
                    canonical detail workspace; operator contract in
                    `docs/analyst/case-manager.md`),
                    CaseDetail (Round-5 split from a 4210-line god-file into ~1529 LOC +
-                   sub-components; **6 tabs**: overview | timeline | investigation | threat |
-                   collab | chat — Round 9/9b split the old Investigation tab into a
+                   sub-components; **5 tabs since Round 15**: overview | runbook |
+                   investigation | collab | chat, where Overview absorbed the Timeline,
+                   Investigation absorbed Threat context, and `tab=timeline` and
+                   `tab=threat` links open those sections; casedetail/files/** holds the
+                   screenshot kit and casedetail/review/ReviewCard.tsx the auto-close
+                   review card. Before that: 6 tabs, overview | timeline | investigation
+                   | threat | collab | chat; Round 9/9b split the old Investigation tab into a
                    "Timeline" [ONLY the what-happened narrative: input → correlate → Risk
                    Assigned → triage → investigate → Decision; current-weight reconstruction
                    from persisted factors with mismatch warning; Case Manager terminal marker
@@ -578,7 +606,10 @@ webui/src/
                    and boards + Standup), Intelligence(Knowledge corpus+Runbooks+Operator
                    memory+Agent personas; runbooks/** holds the editor, the run and the
                    shared pieces), Audit (Round 14: scopes, inspector, export), Help
-                   Center + Round-3 Models, Roles, Inbox, ... (the Scans page is gone)
+                   Center + Round-3 Models, Roles, Inbox, ... (the Scans page is gone) +
+                   Round 15: TeamActivity (+ team/**: range control, per-day chart, person
+                   sheet), RbacSwitchPanel (the Role-based access group on Roles &
+                   permissions), effectiveness/AutoCloseReviewModule (Agent effectiveness)
   soc/pages/settings/  Round-5 — one file per Settings section (general/security/models/detection/
                    cases/automation/enrichment/knowledge/keys/standup/storage/advanced/...) driven by
                    settings-sections.ts (the registry) — replaces the old god-file

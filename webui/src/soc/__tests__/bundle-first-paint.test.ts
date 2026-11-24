@@ -154,8 +154,35 @@ const HINT = 'no dist/ build present — run `vite build` first (CI/integrator d
  * committed r6w-fix tree 537f5a6 (334,998 B): Wizard.tsx +958, nav-store.ts +239, nav.ts
  * +47, useDeploymentUpgrade.ts -17, Login.tsx -5, AppShell.tsx -2, NotificationBell.tsx -2.
  * The +1,024 B budget and the 400,000 B ceiling are unchanged.
+ *
+ * Round 15 (its SPEC §3.1, the entry package). The merged Wave 2 tree c3d7cd3 measured
+ * 337,999 B: 836 B over the Round 14 entry (337,163 B at c4227bd) and 759 B over the
+ * budget. Per file, through the source map: Wizard.tsx +693 (WP2: the D2.3 AI runtime
+ * copy, the provider table and the readiness logic, eager because App.tsx imports the
+ * wizard for the first-run boot), router.tsx +475 and case-tabs.ts +71 (WP6's retired tab
+ * links; only WP6 changed router.tsx), registry.tsx -558 (WP3: the hidden duplicate
+ * FEATURES entries removed, the Team activity child added), useEventStream.ts +14 (WP5's
+ * `case.review` channel), +108 unmapped, and +33 of attribution drift on files whose
+ * source did not change. The entry package then moved what first paint never needs out of
+ * the wizard, keeping every behaviour: the AI runtime and review stages (KeysStep,
+ * ReviewStep, ReadinessRow, KEY_FIELDS, PROVIDERS and their helpers) are the lazy chunk
+ * pages/wizard/RuntimeReviewSteps.tsx, behind one lazy component for both stages. The
+ * wizard prefetches it into the HTTP cache when the browser is idle after it mounts (a
+ * prefetch, never an import, as lazy-retry.ts requires) and loads it when either stage is
+ * reached, behind a LoadingState fallback; the stage heading takes focus once it mounts.
+ * Measured with `npm run build:app`: 329,084 B (-8,915 B), per file: Wizard.tsx -6,091
+ * (the idle warm's build-written chunk list is mapped to it), SecretField.tsx -1,842 and
+ * Field.tsx -1,481 (the AI runtime stage's key fields were the entry's only path to
+ * either: SecretField imports Field), pages/wizard/StepHeading.tsx +355 (the stage heading
+ * both halves share, moved out of Wizard.tsx), +91 that the build writes without a mapping
+ * (+100 for the three chunks the preload table now lists, -9 elsewhere), and +53 of
+ * attribution drift on files whose source did not change (registry.tsx +71, main.tsx -18).
+ * Lowered at the Round 15 integration (its SPEC §3.1 and §8.1, the one ratchet that item
+ * allows) from 336,216 B to the integrated entry, 329,080 B with WP7 merged (WP7 itself
+ * measured -4 B), so the 7,136 B the round moved out of first paint cannot be spent
+ * unseen. The +1,024 B budget and the 400,000 B ceiling are unchanged.
  */
-const PRE_REVAMP_ENTRY_BYTES = 336_216;
+const PRE_REVAMP_ENTRY_BYTES = 329_080;
 const REVAMP_ENTRY_BUDGET_BYTES = 1_024;
 
 function readHtml(): string {

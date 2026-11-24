@@ -22,6 +22,15 @@ Authentication and RBAC are independent switches:
 The default role is `analyst_tier1`. For shared use, enable both authentication and
 RBAC; enabling authentication alone does not create role separation.
 
+Authentication is turned on in the deployment environment (`AUTH_ENABLED`). RBAC is turned
+on or off in **Settings → Security & access → Roles & permissions** (the **Role-based
+access** group) or with `PUT /api/rbac`. Only an account whose stored role is
+`super_admin` may change it, after a recent sign-in, whatever RBAC currently says, so the
+"every account is `super_admin`" view while RBAC is off never grants it. `PUT
+/api/settings` cannot change `rbac.enabled` (`409 rbac_switch_moved`), and changing any
+other `rbac` field through it needs `roles:manage` and a fresh sign-in. See
+[Turn on role-based access](../administration/users-rbac.md#turn-on-role-based-access).
+
 ## Built-in roles
 
 | Role ID | Intended scope |
@@ -52,6 +61,7 @@ The names describe defaults, not organizational job titles. Notably, the built-i
 | `cost` | `view` | `*` | `view` | `view` | `view` | `view` | `view` |
 | `metrics` | `view` | `*` | `view` | `view` | `view` | `view` | `view` |
 | `audit` | `view`, `export` | `*` | `view`, `export` | None | None | None | `view`, `export` |
+| `team` | `view` | `*` | `view` | None | None | None | `view` |
 | `data_export` | `export` | `*` | `export` | None | None | None | None |
 | `system_updates` | `read`, `apply`, `rollback` | `*` | `read` | None | None | None | None |
 
@@ -109,6 +119,40 @@ administrator who later removes `runbooks:publish` keeps that choice. After that
 The `playbooks` resource is no longer in the role editor or in
 `GET /api/account/permissions`; `GET /api/roles/simulate` answers a question that names it
 for its `runbooks` meaning and says so in `alias_of`.
+
+## Team activity
+
+`team:view` opens **Analytics → Team activity** and its API (`/api/team/*`): what each
+person did per day, counted from the audit log. A SOC manager tracks the team and an
+auditor may read it; analysts and responders do not get it by default. A stored role
+override that names other resources keeps the default `team` grant.
+
+While RBAC is off every signed-in account holds every grant, so Team activity adds a
+floor of its own: only an account whose stored role is `super_admin`, `soc_manager` or
+`auditor` can open it (`403 team_activity_role_required`, with an Access denied row,
+for anyone else). That floor limits this page only and is not an access control: while
+RBAC is off every account still holds `audit:view` and `users:manage`, so it can read the
+same rows in the Audit log or change its own role (an audited `user.role_changed` row).
+Turn RBAC on to keep per-person work private. The page never shows an IP address, user
+agent, session or settings row; those stay in the audit log under `audit:view`. See
+[Team activity](../analyst/team-activity.md).
+
+## Screenshots and reviews on a case
+
+| Action | Grant |
+|---|---|
+| List and view a case's screenshots | `cases:read` |
+| Add a screenshot, or delete one you added | `cases:comment` |
+| Delete a screenshot someone else added | `cases:comment` and `cases:close` |
+| Record a review of a case the AI agent closed | `cases:write` |
+| Reopen a case from that review | `cases:close` |
+| See one case's review state | `cases:read` |
+| The Review scope count in Case Manager | `cases:read` |
+| The review module on Agent effectiveness | `metrics:view` |
+| The Team activity switch and the review sample settings | `settings:manage` |
+
+A refused screenshot delete writes an Access denied row. See
+[Auto-close review](../automation/auto-close-review.md).
 
 ## Audit log
 
@@ -217,7 +261,12 @@ resources and invalid actions are ignored by the policy normalizer; use the role
 preview/simulation endpoints to detect mistakes before assigning a role.
 
 `super_admin` remains hard-allowed even if an override or deny is malformed. Protect
-assignment of that role as a privileged operation.
+assignment of that role as a privileged operation. The server does: giving an account
+the `super_admin` role, or changing, disabling or deleting an account that has it,
+needs a caller whose stored role is `super_admin` and a sign-in within the
+re-authentication window, on `POST`, `PUT` and `DELETE /api/users` and `PUT
+/api/users/{username}/roles`. `users:manage` alone answers `403 super_admin_only` with an
+Access denied row, whether RBAC is on or off.
 
 ## Inspect and test access
 

@@ -11,8 +11,11 @@
  * Slots:
  *  - `search`: the free-text search (`label` is its accessible name; the placeholder
  *                shortens below 768px to `compactPlaceholder`, default the label).
+ *                It is at least 12rem wide; a narrow pane can lower that with
+ *                `searchClassName`, so the search and "Filters (n)" share a row.
  *  - `filters`: the filter controls, in priority order. The first `primaryCount` (at
- *                most three) sit in the bar; the rest move behind "More filters". Each
+ *                most three) sit in the bar; the rest move behind "More filters" (named
+ *                "Filters" when `primaryCount` is 0 and every filter is behind it). Each
  *                has a visible `label` (shown in the menu and the phone sheet; the
  *                control's own accessible name should contain it) and `active` when it
  *                holds a non-default value (counted on "More filters" and "Filters").
@@ -72,6 +75,8 @@ export interface FilterBarSearch {
   placeholder?: string;
   /** Placeholder below 768px ("Search cases"). Defaults to `label`. */
   compactPlaceholder?: string;
+  /** The page's shortcut to this field (`aria-keyshortcuts`, for example "/"). */
+  keyShortcuts?: string;
 }
 
 /** Where a filter control is drawn: in the bar (compact, fixed width) or in a menu or sheet (full width). */
@@ -104,6 +109,8 @@ export interface FilterBarProps extends Omit<React.HTMLAttributes<HTMLDivElement
   'aria-label'?: string;
   /** The free-text search. */
   search?: FilterBarSearch;
+  /** Classes for the search field's wrapper (a narrow pane lowers its 12rem minimum width). */
+  searchClassName?: string;
   /** The filters, in priority order; see the module comment. */
   filters?: FilterBarFilter[];
   /** How many filters sit in the bar (at most three; default three). */
@@ -158,6 +165,7 @@ export const FilterBar = React.forwardRef<HTMLDivElement, FilterBarProps>(
   (
     {
       search,
+      searchClassName,
       filters,
       primaryCount = FILTER_BAR_MAX_PRIMARY,
       chips,
@@ -185,6 +193,8 @@ export const FilterBar = React.forwardRef<HTMLDivElement, FilterBarProps>(
     const primary = all.slice(0, inlineCount);
     const more = all.slice(inlineCount);
     const moreActive = more.filter((f) => f.active).length;
+    // With no filter in the bar, the popover holds them all: it is "Filters", not "More".
+    const moreLabel = inlineCount === 0 ? 'Filters' : 'More filters';
     const chipList = chips ?? [];
     const activeCount = activeCountProp ?? (chipList.length || all.filter((f) => f.active).length);
 
@@ -241,7 +251,7 @@ export const FilterBar = React.forwardRef<HTMLDivElement, FilterBarProps>(
     };
 
     const searchField = search ? (
-      <div className="relative min-w-[12rem] max-w-md flex-1" data-filter-search="">
+      <div className={cn('relative min-w-[12rem] max-w-md flex-1', searchClassName)} data-filter-search="">
         <Search
           className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
           aria-hidden
@@ -253,6 +263,7 @@ export const FilterBar = React.forwardRef<HTMLDivElement, FilterBarProps>(
           onChange={(event) => search.onChange(event.target.value)}
           placeholder={compact ? search.compactPlaceholder ?? search.label : search.placeholder ?? search.label}
           aria-label={search.label}
+          aria-keyshortcuts={search.keyShortcuts}
           className="h-8 pl-9"
         />
       </div>
@@ -333,11 +344,11 @@ export const FilterBar = React.forwardRef<HTMLDivElement, FilterBarProps>(
                   <PopoverTrigger asChild>
                     <Button type="button" variant="outline" size="sm" className="h-8 gap-1.5">
                       <SlidersHorizontal aria-hidden />
-                      More filters
+                      {moreLabel}
                       <ActiveCount count={moreActive} />
                     </Button>
                   </PopoverTrigger>
-                  <PopoverContent aria-label="More filters" align="start" className="w-72 space-y-3">
+                  <PopoverContent aria-label={moreLabel} align="start" className="w-72 space-y-3">
                     {more.map((filter) => (
                       <MenuFilter key={filter.id} filter={filter} />
                     ))}

@@ -51,10 +51,10 @@ Which screen you see first depends on the deployment's `.env`; see
     With authentication on and role-based access off, every signed-in account is
     treated as Super admin, whatever role it was given. **Settings → Security & access →
     Single sign-on & policy** shows this in its Posture row **Role-based access**: "Off:
-    everyone is Super admin". The 0.1.13 Console has no switch for it; a super
-    administrator turns it on by saving `{"rbac": {"enabled": true}}` through
-    `PUT /api/settings`; [Turn on role-based access](../administration/users-rbac.md#turn-on-role-based-access)
-    has the command. Keep at least one super administrator when you do.
+    everyone is Super admin". A Super admin turns it on in **Settings → Security &
+    access → Roles & permissions** with **Turn on role-based access** (the Posture row's
+    **Manage** opens it); see [Turn on role-based access](../administration/users-rbac.md#turn-on-role-based-access).
+    Give every account its intended role first, and keep at least one Super admin.
 
 For role design, MFA, SSO, and session policy, see
 [Users and RBAC](../administration/users-rbac.md).
@@ -286,7 +286,7 @@ Continue, or a setup re-run's Close action. If the write fails, setup stays on t
 AI runtime stage so you can retry.
 
 <figure markdown="span">
-[![Setup wizard AI runtime stage with empty OpenAI, Anthropic and Embedding API key fields, each marked not set, and a Skip for now button.](../assets/screenshots/install-05-setup-ai-runtime.webp) ](../assets/screenshots/install-05-setup-ai-runtime.webp)
+[![Setup wizard AI runtime stage with the amber notice No usable AI provider yet, which says you can continue without a key but new cases wait for a person as Needs human review, above empty OpenAI, Anthropic and Embedding API key fields marked not set, and a Skip for now button.](../assets/screenshots/install-05-setup-ai-runtime.webp) ](../assets/screenshots/install-05-setup-ai-runtime.webp)
 <figcaption>Step 3 of 4: AI runtime, before any key is entered.</figcaption>
 </figure>
 
@@ -298,20 +298,23 @@ The stage has three fields, each marked **not set** until a key is configured:
 - **Embedding API key**: optional. Leave it blank to reuse the OpenAI key for knowledge
   retrieval.
 
-The footer button reads **Skip for now** (badge 2) when no key is typed or configured,
-and **Continue** otherwise.
+The footer button reads **Skip for now** (badge 2) when no key is typed and the default
+investigation models cannot be called yet, and **Continue** otherwise.
 
-Without a key the Console still runs, but no investigation can call a model: each
-cluster sent to investigation becomes a **Needs human** case whose recommended action
-names the missing key, and nothing is closed automatically. The `$0` mock model is used
-only by Demo Mode.
+The notice above the fields says whether the default investigation models (the router
+and the investigator) can be called with the keys the Console holds:
 
-!!! warning "Known issue in 0.1.13: the mock runtime wording"
+- **Live provider configured**: they can.
+- **Your key does not match the default models**: a key is set, but not one these
+  models use, for example an Anthropic key while the defaults are OpenAI. The notice
+  names the provider the defaults use: add a key for it, or choose other models in
+  **Settings → General → Models** after launch.
+- **No usable AI provider yet**: no provider key is set. You can continue without one.
 
-    Without a key this stage warns "A live provider is recommended" and says live
-    investigations "will use the limited mock runtime until a provider is added". That
-    wording is wrong: a live workspace never falls back to the mock model, and what
-    happens is the **Needs human** routing described above.
+Without a usable provider the Console still runs, but the AI agent investigates nothing:
+each cluster sent to investigation waits for a person as a **Needs human review** case
+whose recommended action names the missing key. The `$0` mock model is used only by
+Demo Mode.
 
 Fresh workspaces assign `gpt-5.6-luna` to router, investigator, formatter, standup,
 chat, and overview; embeddings remain on `text-embedding-3-small`. Existing stored
@@ -334,23 +337,25 @@ The final stage reports each item as **Ready**, **Needs attention**, or **Option
 It distinguishes these outcomes instead of claiming every configuration is complete:
 
 - **Demo workspace is ready** when Synthetic demo is active;
-- **Ready for live triage** when a live source and provider are configured; or
-- **Ready with limited capabilities** when live telemetry or a live provider is
+- **Ready for live triage** when a live source is enabled and the default investigation
+  models can be called; or
+- **Ready with limited capabilities** when live telemetry or a usable provider is
   missing.
 
 <figure markdown="span">
-[![Review and launch stage reading Ready with limited capabilities, listing workspace, data sources, AI runtime and automation posture readiness, with the Launch Agentic SOC button.](../assets/screenshots/install-06-setup-review.webp) ](../assets/screenshots/install-06-setup-review.webp)
+[![Review and launch stage reading Ready with limited capabilities: the workspace and one data source are ready, the AI runtime row needs attention and reads No usable provider, cases wait for a person, and automation posture is on by default, above the Launch Agentic SOC button.](../assets/screenshots/install-06-setup-review.webp) ](../assets/screenshots/install-06-setup-review.webp)
 <figcaption>Step 4 of 4: Review & launch, with a source and no provider.</figcaption>
 </figure>
 
 The readiness summary (badge 1) has one row per item. In the screenshot,
 **Data sources** reads "1 enabled source · primary: Production SIEM" and **AI runtime**
-reads "No provider configured · mock runtime only", so the heading is
-**Ready with limited capabilities**. "Mock runtime only" is the known wording issue
-described under [AI runtime](#4-ai-runtime): without a provider, each cluster sent to
-investigation becomes a **Needs human** case and nothing is closed automatically. With
-no source, **Data sources** reads "No source configured · live telemetry will not be
-ingested".
+reads "No usable provider · cases wait for a person", so the heading is
+**Ready with limited capabilities**: as described under [AI runtime](#4-ai-runtime),
+without a usable provider each cluster sent to investigation waits for a person as a
+**Needs human review** case. With a usable provider the row reads "Configured:" and the
+provider families that have a key (OpenAI, Anthropic, OpenAI-compatible endpoint, Azure
+OpenAI, Amazon Bedrock, Google Vertex AI). With no source, **Data sources** reads "No
+source configured · live telemetry will not be ingested".
 
 The **Automation posture** row explains that adaptive investigation routing and
 related-case grouping are on by default. Detailed controls remain in **Settings**.

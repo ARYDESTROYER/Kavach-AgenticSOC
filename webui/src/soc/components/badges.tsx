@@ -734,7 +734,7 @@ function CompactOutcomeBadge({ outcome, className }: { outcome: CaseOutcome; cla
       title={text.full}
       className={cn(TABLE_BADGE, outcome.source === 'analyst_unrecorded' && 'text-muted-foreground', className)}
     >
-      {human ? (
+      {human || outcome.source === 'review' ? (
         <UserCheck className="size-3 shrink-0" aria-hidden />
       ) : outcome.source === 'agent_auto' ? (
         <Bot className="size-3 shrink-0" aria-hidden />
@@ -794,19 +794,22 @@ export function OutcomeBadge({ outcome, className, showProvenance = true, compac
       </Badge>
     );
   }
+  // An automatic close, or (Round 15) its review, whose headline is the review's reading.
   return (
     <Badge
-      variant="info"
+      variant={outcome.agreement === 'overrides' ? 'warning' : 'info'}
       data-testid="case-outcome"
-      data-outcome-source="agent_auto"
+      data-outcome-source={outcome.source}
       className={className}
     >
       <Bot className="size-3 shrink-0" aria-hidden />
-      {outcome.aiVerdict === 'FALSE_POSITIVE'
-        ? 'Auto-closed as false positive'
-        : outcome.aiVerdict === 'TRUE_POSITIVE'
-          ? 'Auto-closed as true positive'
-          : 'Auto-closed'}
+      {outcome.source === 'review'
+        ? outcome.headline
+        : outcome.aiVerdict === 'FALSE_POSITIVE'
+          ? 'Auto-closed as false positive'
+          : outcome.aiVerdict === 'TRUE_POSITIVE'
+            ? 'Auto-closed as true positive'
+            : 'Auto-closed'}
     </Badge>
   );
 }

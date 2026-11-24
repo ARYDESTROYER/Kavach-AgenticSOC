@@ -451,6 +451,12 @@ const PAGE_HELP =
   'Agent health over the selected range, then observed outcomes: the last seven complete ' +
   'UTC days against the 28 before. Reporting only; deterministic case decisions do not change.';
 
+/**
+ * Round 15 (SPEC D6.12): the "Auto-close review" module, loaded on demand (its client and
+ * types stay out of this page's chunk until it renders).
+ */
+const AutoCloseReviewModule = React.lazy(() => import('./effectiveness/AutoCloseReviewModule'));
+
 /** Whether the Agent health reads exist on this client (an older proxy may lack them). */
 function healthAvailable(): boolean {
   return typeof api.diagnosticsHealth === 'function' || typeof api.autoCloseHealth === 'function';
@@ -506,6 +512,11 @@ function AgentEffectivenessView(_props: AgentEffectivenessPageProps = {}) {
         actions={<UpdatedStamp at={evidence.data?.generated_at} />}
       />
       {healthAvailable() ? <HealthDiagnostics windowHours={hours} refreshKey={healthRefresh} /> : null}
+      <React.Suspense
+        fallback={<LoadingState label="Loading the auto-close review" layout="panel" shape="panel" />}
+      >
+        <AutoCloseReviewModule hours={hours} refreshKey={healthRefresh} />
+      </React.Suspense>
       <EvidenceReport {...evidence} />
     </PageContainer>
   );

@@ -151,9 +151,11 @@ export function ClusterFormationDiagram({ data }: { data: ClusterExplanation | n
     >
       <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h2 id="cluster-formation-heading" className="text-base font-semibold text-foreground">
+          {/* A part of the Investigation tab's Threat context section (its only host), so a
+              part heading under that section's h2, as the parts beside it are. */}
+          <h3 id="cluster-formation-heading" className="text-sm font-semibold text-foreground">
             How this case was clustered
-          </h2>
+          </h3>
           <p className="mt-1 max-w-3xl text-xs leading-relaxed text-muted-foreground">
             A redacted view of the persisted alert inputs, deterministic correlation rule, and case created from the cluster.
           </p>
@@ -257,10 +259,10 @@ export function ClusterFormationDiagram({ data }: { data: ClusterExplanation | n
 
       {related.length ? (
         <div className="mt-4 border-t border-border pt-3">
-          <h3 className="inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+          <h4 className="inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
             <Link2 className="h-3.5 w-3.5" aria-hidden /> Related cases
             <span className="tabular-nums">{related.length}</span>
-          </h3>
+          </h4>
           {/* Readable rows instead of raw 32-hex chips: the id is middle-ellipsised (the
               full id stays in the tooltip and the accessible name), with the relationship,
               the AI verdict and the reason beside it. Plain text only (#9). */}
@@ -292,7 +294,7 @@ export function ClusterFormationDiagram({ data }: { data: ClusterExplanation | n
       ) : null}
 
       {data.limitations ? (
-        <p className="mt-3 text-2xs leading-relaxed text-muted-foreground">{data.limitations}</p>
+        <p className="mt-3 text-xs leading-relaxed text-muted-foreground">{data.limitations}</p>
       ) : null}
     </section>
   );

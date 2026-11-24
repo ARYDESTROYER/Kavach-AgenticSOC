@@ -1,7 +1,8 @@
 /**
  * Roles and permissions, Round 14 page grammar (SPEC §4.9.4 and §4.9.6; ui-audit SE1,
  * Y2, Y9, Y10): a plain header (title and help only) with "New custom role" and Refresh in
- * its actions, a live-condition callout only when RBAC is off, the caller's access as one
+ * its actions, the role-based access switch panel first (Round 15; it replaced the
+ * live-condition callout), the caller's access as one
  * plain line, row actions neutral at rest (one in view, the rest in a menu, Delete last),
  * the roles table in a "Roles" group on the tinted panel (C9 option A, the access line
  * as its caption), and the permission check as a Settings group. The A8c permission
@@ -59,6 +60,19 @@ function permissions(rbac_enabled: boolean) {
   };
 }
 
+/** GET /api/rbac (Round 15): the switch panel at the top of the section. */
+function rbacStatus(enabled: boolean) {
+  return {
+    enabled,
+    auth_enabled: true,
+    can_change: false,
+    blockers: ['not_super_admin'],
+    caller_role: 'soc_manager',
+    super_admin_count: 1,
+    role_counts: null,
+  };
+}
+
 function renderRoles() {
   return render(
     <TooltipProvider>
@@ -78,7 +92,7 @@ describe('Roles page (Round 14 grammar)', () => {
 
   it('has a plain header with its actions, the access line, and neutral row actions', async () => {
     apiGetMock.mockImplementation((path: string) =>
-      Promise.resolve(path === 'roles' ? MATRIX : permissions(true)),
+      Promise.resolve(path === 'roles' ? MATRIX : path === 'rbac' ? rbacStatus(true) : permissions(true)),
     );
     renderRoles();
     await screen.findByText('tier1_plus');
@@ -119,22 +133,22 @@ describe('Roles page (Round 14 grammar)', () => {
     expect(items).toEqual(['Clone tier1_plus', 'Delete tier1_plus']);
   });
 
-  it('shows the RBAC-disabled warning as a live-condition callout', async () => {
+  it('states that RBAC is off in the switch panel, which replaced the callout (Round 15)', async () => {
     apiGetMock.mockImplementation((path: string) =>
-      Promise.resolve(path === 'roles' ? MATRIX : permissions(false)),
+      Promise.resolve(path === 'roles' ? MATRIX : path === 'rbac' ? rbacStatus(false) : permissions(false)),
     );
     renderRoles();
     await screen.findByText('tier1_plus');
-    const callout = await waitFor(() => {
-      const el = document.querySelector('[data-callout="warning"]');
-      expect(el).not.toBeNull();
-      return el as HTMLElement;
-    });
-    // True copy: the condition, what it means, and that there is no switch on this page.
-    expect(callout).toHaveTextContent('Role-based access is off');
-    expect(callout).toHaveTextContent('Every signed-in account counts as Super admin');
-    expect(callout).toHaveTextContent('there is no switch for it on this page');
-    expect(callout).not.toHaveTextContent(/Turn on RBAC in Security settings/);
+    // The "Role-based access" group sits first and states the condition as it is.
+    const panel = await screen.findByRole('group', { name: 'Role-based access' });
+    await waitFor(() =>
+      expect(within(panel).getByText('Off: every signed-in account is treated as Super admin')).toBeInTheDocument(),
+    );
+    const groups = screen.getAllByRole('group').filter((g) => g.hasAttribute('data-settings-group'));
+    expect(groups[0]).toBe(panel);
+    // No callout, and no "there is no switch" wording anywhere.
+    expect(document.querySelector('[data-callout]')).toBeNull();
+    expect(document.body).not.toHaveTextContent(/no switch/i);
     expect(screen.queryByTestId('roles-capability')).toBeNull();
     // Without RBAC the group caption says how custom roles start instead.
     expect(within(screen.getByRole('group', { name: 'Roles' })).getByText(
@@ -144,7 +158,7 @@ describe('Roles page (Round 14 grammar)', () => {
 
   it('runs the permission check from a Settings group', async () => {
     apiGetMock.mockImplementation((path: string) =>
-      Promise.resolve(path === 'roles' ? MATRIX : permissions(true)),
+      Promise.resolve(path === 'roles' ? MATRIX : path === 'rbac' ? rbacStatus(true) : permissions(true)),
     );
     renderRoles();
     await screen.findByText('tier1_plus');
@@ -158,7 +172,9 @@ describe('Roles page (Round 14 grammar)', () => {
   it('ends the check form and its result on one edge in the full-width section (FX6s)', async () => {
     apiGetMock.mockImplementation((path: string) =>
       Promise.resolve(
-        path === 'roles'
+        path === 'rbac'
+          ? rbacStatus(true)
+          : path === 'roles'
           ? MATRIX
           : path === 'roles/simulate'
             ? {

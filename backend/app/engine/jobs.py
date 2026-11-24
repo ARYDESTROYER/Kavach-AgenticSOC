@@ -774,32 +774,40 @@ class JobRunner:
         await self._item_loop(job, token, run, result_kind="case_lifecycle")
 
     async def _case_assign(self, job: Job, token: str) -> None:
-        from ..api.routes import AssignBody, case_assign
+        from ..api.routes import AssignBody, _bulk_audit_run, case_assign
 
         body = AssignBody(assignee=job.params["assignee"], analyst=job.actor)
+        # Round 15 (SPEC D7.3): every row this job writes carries ``run_id =
+        # bulk-<job_id>`` (the ``case_lifecycle`` job's ``batch_id``), set here through a
+        # private context variable, never a route or query parameter.
+        run_id = f"bulk-{job.job_id}"
 
         async def run(case_id: str) -> None:
-            await case_assign(case_id, body, self.state, request=None)
+            with _bulk_audit_run(run_id):
+                await case_assign(case_id, body, self.state, request=None)
 
         await self._item_loop(job, token, run, result_kind="case_assignment")
 
     async def _case_tag(self, job: Job, token: str) -> None:
         # ``case_tags`` runs the runbook re-evaluation hook (Round 14 SPEC §4.10.4) for
         # each case whose tags this job changes.
-        from ..api.routes import TagsBody, case_tags
+        from ..api.routes import TagsBody, _bulk_audit_run, case_tags
 
         tag = str(job.params["tag"])
+        # Round 15 (SPEC D7.3): the bulk marker of this job's rows, as ``_case_assign``.
+        run_id = f"bulk-{job.job_id}"
 
         async def run(case_id: str) -> None:
             case = await self.state.cases.get(case_id)
             if case is None:
                 raise HTTPException(status_code=404, detail="Case not found")
-            await case_tags(
-                case_id,
-                TagsBody(tags=[*list(case.tags or []), tag], analyst=job.actor),
-                self.state,
-                request=None,
-            )
+            with _bulk_audit_run(run_id):
+                await case_tags(
+                    case_id,
+                    TagsBody(tags=[*list(case.tags or []), tag], analyst=job.actor),
+                    self.state,
+                    request=None,
+                )
 
         await self._item_loop(job, token, run, result_kind="case_tagging")
 

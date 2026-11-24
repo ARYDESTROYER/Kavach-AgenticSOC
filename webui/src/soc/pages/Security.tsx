@@ -26,7 +26,7 @@ import { useAuth } from '@/soc/auth';
 import { Can } from '@/soc/components/Can';
 import { MfaSetupCard } from '@/soc/components/MfaSetupCard';
 import { LoadError } from '@/soc/components/LoadError';
-import { SessionPolicySection, rbacEnabledOf } from '@/soc/components/SessionPolicyEditor';
+import { SessionPolicySection } from '@/soc/components/SessionPolicyEditor';
 import { Button } from '@/ui/button';
 import { Textarea } from '@/ui/textarea';
 import { LoadingState, StatusDot } from '@/design-system';
@@ -656,6 +656,10 @@ export function SecuritySsoInner({
   embedded = false,
 }: SecuritySsoInnerProps) {
   const controlled = Boolean(update);
+  // Round 15 (SPEC D1.4): the Remember-me note reads the live session's RBAC state, which
+  // `auth.refresh()` updates after the switch, never the Settings draft (`PUT /api/rbac`
+  // does not change the draft, so the note would be wrong until a reload).
+  const { rbacEnabled } = useAuth();
 
   // Uncontrolled (standalone) local state, only used when `update` is absent.
   const [localPrefs, setLocalPrefs] = React.useState<Preferences | null>(null);
@@ -715,7 +719,7 @@ export function SecuritySsoInner({
     ? {
         policy: (prefs?.session_policy as SessionPolicy | undefined) ?? {},
         onChange: (next: SessionPolicy) => update?.({ session_policy: next }),
-        rbacEnabled: rbacEnabledOf(prefs),
+        rbacEnabled,
       }
     : {};
 

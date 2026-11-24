@@ -737,8 +737,10 @@ describe('the Overview row and its group (SPEC §2.2, E13)', () => {
 
   it('opens the first visible Analytics page (Cost) for a viewer without metrics:view', () => {
     // `#/analytics` redirects to Metrics, whose GET /api/metrics this viewer cannot read,
-    // so the row's own id is no fallback while one of its pages is visible.
-    grant = (resource, action) => !(resource === 'metrics' && action === 'view');
+    // so the row's own id is no fallback while one of its pages is visible. The viewer
+    // cannot read Team activity either (`team:view`, Round 15), as a SOC analyst cannot.
+    grant = (resource, action) =>
+      !(resource === 'metrics' && action === 'view') && !(resource === 'team' && action === 'view');
     const { onNavigate } = setup({ page: 'cases', open: ['analytics'] });
     const row = screen.getByTestId('nav-analytics');
     expect(row).toHaveAttribute('href', '#/cost');

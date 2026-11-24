@@ -1084,9 +1084,12 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
           // never lifts its numeral above its neighbours' (the numeral row is `mt-auto`);
           // in a row-aligned strip a caption longer than that grows downward instead
           // (`rowAligned`). The text is also the trigger's accessible name.
-          // `tabular-nums` so "18% of 43 cases" does not jitter on a live tick.
+          // `tabular-nums` so "18% of 43 cases" does not jitter on a live tick, and only
+          // when the line holds a figure: Inter's tabular set also widens the hyphen, so
+          // a caption of words ("auto-close reviews") would read "auto - close".
           className={cn(
-            'mt-1.5 block min-h-[2lh] min-w-0 whitespace-normal break-words tabular-nums text-muted-foreground',
+            'mt-1.5 block min-h-[2lh] min-w-0 whitespace-normal break-words text-muted-foreground',
+            /\d/.test(heroLine) && 'tabular-nums',
             comfortable ? 'text-sm' : 'text-xs',
             // The strip spark sits in the bottom-right corner: the line wraps short of it.
             strip && sparkNode ? 'pr-16' : null,

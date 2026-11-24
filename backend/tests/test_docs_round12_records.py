@@ -34,6 +34,7 @@ REPO_ROOT = Path(app.__file__).resolve().parents[2]
 REVAMP_SPEC = REPO_ROOT / "docs" / "research" / "2026-10-chat-revamp" / "SPEC.md"
 ROUND12_SPEC = REPO_ROOT / "docs" / "research" / "2026-10-round12" / "SPEC.md"
 ROUND14_SPEC = REPO_ROOT / "docs" / "research" / "2026-10-round14" / "SPEC.md"
+ROUND15_SPEC = REPO_ROOT / "docs" / "research" / "2026-11-round15" / "SPEC.md"
 KNOWN_LIMITATIONS = REPO_ROOT / "docs" / "releases" / "known-limitations.md"
 BUNDLE_TEST = REPO_ROOT / "webui" / "src" / "soc" / "__tests__" / "bundle-first-paint.test.ts"
 SCOPE_CONTROLS = REPO_ROOT / "webui" / "src" / "soc" / "chat" / "composer" / "ScopeControls.tsx"
@@ -250,14 +251,22 @@ def test_round12_entry_bundle_item_records_the_rebased_baseline():
     assert '"Entry bundle" item of the Round 14 SPEC §11.1' in item, (
         "the Round 12 record must point at the Round 14 record of the rebased baseline"
     )
-    current = _bullet(_section(_read(ROUND14_SPEC), "### 11.1 Contract resolutions"), "Entry bundle.")
+    round14 = _bullet(_section(_read(ROUND14_SPEC), "### 11.1 Contract resolutions"), "Entry bundle.")
+    # The per-file deltas of the Round 14 rebase, including what package R moved out of the entry.
+    for name in ("nav-store.ts", "router.tsx", "nav-rail-loader.ts", "nav-rail-interactions.tsx", "Field.tsx", "field-layouts.tsx"):
+        assert name in round14, name
+    assert "PRE_REVAMP_ENTRY_BYTES = 336_216" in round14, "the Round 14 record keeps its own value"
+    assert '"Entry bundle" item of the Round 15 SPEC §8.1' in round14, (
+        "the Round 14 record must point at the Round 15 record of the ratcheted baseline"
+    )
+    current = _bullet(_section(_read(ROUND15_SPEC), "### 8.1 Contract resolutions"), "Entry bundle.")
     assert f"PRE_REVAMP_ENTRY_BYTES = {raw}" in current, (
-        "Round 14 SPEC §11.1 'Entry bundle' is the one record of the rebased entry baseline "
-        "(E11); update it with the value in bundle-first-paint.test.ts"
+        "Round 15 SPEC §8.1 'Entry bundle' is the one record of the current entry baseline "
+        "(its §3.1 ratchet); update it with the value in bundle-first-paint.test.ts"
     )
     assert f"{value:,} B" in current
-    # The per-file deltas of the rebase, including what package R moved out of the entry.
-    for name in ("nav-store.ts", "router.tsx", "nav-rail-loader.ts", "nav-rail-interactions.tsx", "Field.tsx", "field-layouts.tsx"):
+    # The per-file deltas of the Round 15 ratchet.
+    for name in ("Wizard.tsx", "RuntimeReviewSteps.tsx", "SecretField.tsx", "Field.tsx", "registry.tsx"):
         assert name in current, name
 
 

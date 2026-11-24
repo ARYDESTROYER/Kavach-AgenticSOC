@@ -1275,6 +1275,8 @@ _SPLAT_PRODUCERS: dict[tuple[str, str], str] = {
     ("agents/pipeline.py", "RunStampedAudit.record_strict"): "RunStampedAudit._stamp",
     # The Demo seed writes the rows ``demo_runbook_audit_rows`` builds.
     ("engine/demo_generator.py", "seed_demo_runbook_runs"): "demo_runbook_audit_rows",
+    # Round 15 (SPEC D3.12): the Demo seed writes the rows of the seeded human case work.
+    ("engine/demo_generator.py", "seed_demo_team_activity"): "demo_team_activity_audit_rows",
 }
 
 
@@ -1417,6 +1419,10 @@ def test_the_splat_producers_supply_an_outcome() -> None:
     lookup = LookupResult(tool="log_stats", status="ok", count=1, ran_at="2026-10-28T10:00:05Z",
                           ran_by=RUNBOOK_SYSTEM_RUNNER)
     rows.append(gen.demo_evidence_audit_row(runs[0], by_id.get(runs[0].case_id), "step", lookup))
+    # Round 15 (SPEC D3.12): the seeded human case work.
+    team_rows = gen.demo_team_activity_audit_rows(cases, now_millis=now_ms)
+    assert team_rows
+    rows.extend(team_rows)
     assert all(r.get("outcome") in AUDIT_OUTCOMES and r.get("actor_type") in AUDIT_ACTOR_TYPES for r in rows)
 
     for action_type in ActionType:

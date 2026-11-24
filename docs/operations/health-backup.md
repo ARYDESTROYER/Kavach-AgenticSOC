@@ -65,6 +65,33 @@ rebuild and [troubleshooting](troubleshooting.md) for the diagnosis order.
 Redis is an optimization/cache and is not the authoritative application backup.
 Upstream logs remain in their source systems and require their own retention/backup.
 
+### Case screenshots in the backup
+
+Screenshots added to cases are stored in the `StateStore` with the rest of the
+application state (the `case_files` key-value documents), so the database dump or
+Elasticsearch snapshot above already contains them, and a restore brings them back with
+their cases. Plan for the space they take: each image is at most 2 MiB after its
+metadata is removed, plus a thumbnail of at most 48 KiB and 640 pixels a side; a case
+holds at most 20 images and 20 MiB; the organisation holds at most 2 GiB in all (Demo
+Mode and the in-memory store at most 5 images a case and 64 MiB). Backup time, backup
+size and, on PostgreSQL, the updater's pre-update dump grow with them.
+
+On Elasticsearch the image content field (`case_file_data`) is mapped `binary` in the
+config index, so it is stored but not indexed. A new install creates the index with that
+mapping; an upgraded install adds it when the backend starts. If the field was already
+mapped as text (an image written before that start), or the mapping could not be added
+(the backend logs a warning), uploads still work, but each image's base64 is also indexed
+as text, which costs index space and indexing time until the config index is recreated
+from a snapshot restore into a fresh index.
+
+The server checks each image's structure and removes its metadata but never decodes its
+pixels: PNG, JPEG and WebP only, by their magic bytes, at most 8,192 pixels a side and
+40 megapixels. Every part it keeps besides the compressed image data and a colour
+profile must have exactly the shape its format defines, so no other bytes ride along. A
+crafted image aimed at a browser's image decoder is not detected; the type allowlist,
+the structure check, the size limits, sign-in, the audit row and strict response headers
+are the mitigations.
+
 **Settings → Organization → Data export** submits a background job that can package all
 records in its selected supported safe scopes into one verified server-assembled ZIP,
 using either the archive or internal segmented walk,
@@ -73,7 +100,9 @@ backup. Its Knowledge scope preserves sanitized operator runbooks (and, for one 
 the stored documents of the two retired procedure lists, as they were stored) plus safe
 bundled runbook metadata, but it omits credentials,
 users/sessions, chat history, chat reports, collaboration state, raw upstream logs, and raw knowledge chunks,
-and has no matching import/restore endpoint. The ZIP manifest proves that the server
+and has no matching import/restore endpoint. Its Cases scope lists each case's
+screenshots (id, type, size, dimensions, SHA-256, caption, filename, who added it and
+when, and deletion) but never their image bytes, and its manifest says so. The ZIP manifest proves that the server
 emitted each scope's starting count and verified the prepared artifact, not that the
 client received it or that it is recoverable. Only exact Elasticsearch scopes are fixed
 snapshots; PostgreSQL honestly reports a non-exact `bounded_at_start` view.

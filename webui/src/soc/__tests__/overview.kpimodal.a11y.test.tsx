@@ -262,6 +262,21 @@ async function openPanel(user: ReturnType<typeof makeUser>, testId: string) {
   return { tile, panel };
 }
 
+
+/**
+ * axe inside act(), as Chat.test.tsx does: the shell announcer re-sets its live region on a
+ * 60 ms timer (useLiveAnnouncer) and the open panel announces itself, so the update can
+ * land while axe walks the DOM. Outside act() React writes a warning to stderr, which fails
+ * the strict Console gate.
+ */
+async function axeInAct(node: Element) {
+  let results: Awaited<ReturnType<typeof axe>> | undefined;
+  await act(async () => {
+    results = await axe(node);
+  });
+  return results as Awaited<ReturnType<typeof axe>>;
+}
+
 describe('KPI deep-inspection modal', () => {
   beforeEach(() => {
     listCasesMock.mockReset().mockResolvedValue(RESPONSE);
@@ -559,7 +574,7 @@ describe('KPI deep-inspection modal', () => {
     // container, so a container-scoped audit would be green while auditing nothing.
     // The probe is the non-vacuity guard.
     expect(document.body.querySelector('[data-testid="kpi-drilldown"]')).not.toBeNull();
-    expect(await axe(document.body)).toHaveNoViolations();
+    expect(await axeInAct(document.body)).toHaveNoViolations();
   });
 
   it('audits the close-attribution partition, which is a real <dl> inside the panel', async () => {
@@ -581,6 +596,6 @@ describe('KPI deep-inspection modal', () => {
     );
     expect(partition!.querySelectorAll(':scope > dd')).toHaveLength(4);
 
-    expect(await axe(document.body)).toHaveNoViolations();
+    expect(await axeInAct(document.body)).toHaveNoViolations();
   });
 });

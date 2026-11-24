@@ -46,7 +46,7 @@ export interface PriorityMatrixEditorProps {
 }
 
 export function PriorityMatrixEditor({ matrix, onChange, disabled, intro = true }: PriorityMatrixEditorProps) {
-  const enabled = matrix.enabled ?? false;
+  const enabled = matrix.enabled ?? true;
   const levels = matrix.levels?.length ? matrix.levels : DEFAULT_LEVELS;
   const grid = matrix.matrix ?? {};
   const controlsDisabled = disabled || !enabled;
@@ -82,12 +82,13 @@ export function PriorityMatrixEditor({ matrix, onChange, disabled, intro = true 
           </Label>
           {/* Only what the host's caption ("Map every impact and urgency pair to a
               priority…") does not already say. */}
-          <p className="text-xs text-muted-foreground">
-            Off by default. When off, cases have no priority.
+          <p id="priority-enabled-help" className="text-xs text-muted-foreground">
+            On by default. When off, cases have no priority.
           </p>
         </div>
         <Switch
           id="priority-enabled"
+          aria-describedby="priority-enabled-help"
           checked={enabled}
           disabled={disabled}
           onCheckedChange={(v) => onChange({ ...matrix, enabled: v })}

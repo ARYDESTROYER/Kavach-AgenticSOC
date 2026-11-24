@@ -929,8 +929,32 @@ function CasesPerDay({ data }: { data: Metrics }) {
   );
 }
 
+/** One quality score of the analysts' grades: a whole percentage, or `null` when no grade rated it. */
+export interface FeedbackSubScore {
+  label: string;
+  value: number | null;
+}
+
+/**
+ * The three quality scores of the analysts' grades, in a fixed order. The backend averages
+ * each over the grades that rated it and reports `0.0` with a `*_rated` count of 0 when none
+ * did (Round 15 SPEC D4.5), so a count of 0 reads "Not rated", never 0%. A server that sends
+ * no count keeps its average as before.
+ */
+export function feedbackSubScores(fb: Metrics['feedback']): FeedbackSubScore[] {
+  const score = (label: string, avg: number | undefined, rated: number | undefined): FeedbackSubScore => ({
+    label,
+    value: rated === 0 ? null : Math.round((avg || 0) * 100),
+  });
+  return [
+    score('Accuracy', fb.avg_accuracy, fb.accuracy_rated),
+    score('Reasoning quality', fb.avg_reasoning_quality, fb.reasoning_quality_rated),
+    score('Action appropriateness', fb.avg_action_appropriateness, fb.action_appropriateness_rated),
+  ];
+}
+
 /** Analyst feedback: agreement and time saved as figures, then the quality scores. */
-function FeedbackQuality({ feedback: fb }: { feedback: Metrics['feedback'] | undefined }) {
+export function FeedbackQuality({ feedback: fb }: { feedback: Metrics['feedback'] | undefined }) {
   if (!fb || !(fb.graded_cases > 0)) {
     return (
       <ChartEmpty>
@@ -940,6 +964,9 @@ function FeedbackQuality({ feedback: fb }: { feedback: Metrics['feedback'] | und
     );
   }
   const outcomes = rankedItems(fb.outcome_distribution, 'count');
+  const subScores = feedbackSubScores(fb);
+  const rated: BarListItem[] = subScores.flatMap((s) => (s.value === null ? [] : [{ label: s.label, value: s.value }]));
+  const unrated = subScores.filter((s) => s.value === null).map((s) => s.label);
   return (
     <div className="space-y-5">
       <dl className="grid grid-cols-2 gap-x-6 gap-y-3 sm:max-w-md">
@@ -954,14 +981,10 @@ function FeedbackQuality({ feedback: fb }: { feedback: Metrics['feedback'] | und
           </dd>
         </div>
       </dl>
-      <BarList
-        items={[
-          { label: 'Accuracy', value: Math.round((fb.avg_accuracy || 0) * 100) },
-          { label: 'Reasoning quality', value: Math.round((fb.avg_reasoning_quality || 0) * 100) },
-          { label: 'Action appropriateness', value: Math.round((fb.avg_action_appropriateness || 0) * 100) },
-        ]}
-        format={(n) => `${n}%`}
-      />
+      {rated.length ? <BarList items={rated} format={(n) => `${n}%`} /> : null}
+      {unrated.length ? (
+        <p className="text-sm text-muted-foreground">{`Not rated: ${unrated.join(', ')}.`}</p>
+      ) : null}
       {outcomes.length ? (
         <div className="space-y-2">
           <h3 className="text-sm font-semibold text-foreground">Recorded outcomes</h3>

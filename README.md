@@ -114,9 +114,15 @@ What it is not:
 
 ### Work as a team
 
-- **Case Manager:** an Active, Mine and All queue beside the full case, with Overview,
-  Runbook, Timeline, Investigation, Threat context, Collaboration and Chat tabs, plus
-  bulk actions that run as background jobs.
+- **Case Manager:** an Active, Mine, Review and All queue beside the full case, with
+  Overview, Runbook, Investigation, Collaboration and Chat tabs, a close dialog that records
+  the disposition and the actions taken, screenshots on the case, and bulk actions that run
+  as background jobs.
+- **Auto-close review:** a small random sample of the cases the AI agent closed goes to a
+  person to classify (on by default, about 5% and at most 10 a day); the answer is kept as
+  independent ground truth and never changes the case unless the reviewer reopens it.
+- **Team activity:** what each person did per day, counted from the audit log, for SOC
+  managers and auditors (`team:view`), with no ranking or score.
 - **Workspace Chat:** a read-only assistant over cases, logs, metrics, threat intelligence
   and the product itself. Answers cite their lookups, render tables and charts, and can be
   collected into exportable reports. Suggested questions are computed by code from your own
@@ -127,9 +133,9 @@ What it is not:
   every rule name, campaigns, entity baselines, and threshold tuning that proposes changes
   for review.
 - **Identity and notifications:** six built-in roles plus custom roles (role-based access
-  is off by default), TOTP MFA, OIDC SSO (Google, Microsoft or generic), session policy,
-  and alerts by email, Resend, Slack, Teams, PagerDuty, Telegram, webhook or the in-app
-  Inbox.
+  is off by default and is turned on in **Roles & permissions**), TOTP MFA, OIDC SSO
+  (Google, Microsoft or generic), session policy, and alerts by email, Resend, Slack,
+  Teams, PagerDuty, Telegram, webhook or the in-app Inbox.
 
 ### Operate
 
@@ -160,8 +166,8 @@ dark theme by default. Select a thumbnail to open it full size.
 <table>
   <tr>
     <td width="33%" valign="top">
-      <a href="docs/assets/screenshots/case-manager.webp"><img src="docs/assets/screenshots/case-manager.webp" width="280" alt="Case Manager with an escalated true-positive case selected: the Decision card, labelled Code, records why code escalated it, and the advisory AI assessment below gives the model's reading and confidence, above the investigation inputs."></a><br>
-      <sub><b>Case Manager.</b> The decision card (Code) sits above the advisory AI assessment, which only recommends.</sub>
+      <a href="docs/assets/screenshots/case-manager.webp"><img src="docs/assets/screenshots/case-manager.webp" width="280" alt="Case Manager with an escalated true-positive case open on its Investigation tab: the advisory AI assessment, labelled AI, gives the model's reading and findings, and the Decision card below it, labelled Code, records that code routed the case to a person."></a><br>
+      <sub><b>Case Manager.</b> The advisory AI assessment, which only recommends, sits above the decision card (Code).</sub>
     </td>
     <td width="33%" valign="top">
       <a href="docs/assets/screenshots/workspace-chat.webp"><img src="docs/assets/screenshots/workspace-chat.webp" width="280" alt="Workspace Chat at the end of an answer about new cases, showing a new-cases-by-severity table with top rules, the answer's lookups, time and simulated cost, and three suggested follow-up questions."></a><br>
@@ -437,11 +443,11 @@ never commit `.env`):
 > **Role-based access is off by default.** With authentication on, every signed-in account
 > is treated as Super admin until role-based access is turned on, whatever role it was
 > given. **Settings → Security & access → Single sign-on & policy** shows the state in its
-> **Role-based access** row. The 0.1.13 Console has no switch for it: a super administrator
-> turns it on by saving `{"rbac": {"enabled": true}}` through `PUT /api/settings`
-> (permission `settings:manage`). The full command is in
-> [INSTALL.md, Accounts and roles](INSTALL.md#accounts-and-roles). Keep at least one super
-> administrator.
+> **Role-based access** row. A Super admin turns it on in **Settings → Security & access →
+> Roles & permissions** with **Turn on role-based access** (the row's **Manage** opens it),
+> or with `PUT /api/rbac` and `{"enabled": true}` after a recent sign-in. The full command is
+> in [INSTALL.md, Accounts and roles](INSTALL.md#accounts-and-roles). Keep at least one
+> super administrator.
 
 Then open <http://localhost:8080>. With authentication on and `TLSOC_AUTH_ADMIN_PASSWORD` set,
 a fresh install asks you to create the first administrator, then opens a four-stage setup
@@ -458,8 +464,8 @@ wizard: **Workspace**, **Data sources**, **AI runtime** and **Review & launch**.
       <sub><b>2. Choose a workspace.</b> Live environment, or an isolated synthetic demo.</sub>
     </td>
     <td width="33%" valign="top">
-      <a href="docs/assets/screenshots/install-06-setup-review.webp"><img src="docs/assets/screenshots/install-06-setup-review.webp" width="280" alt="Review and launch stage reading Ready with limited capabilities, listing workspace, data sources, AI runtime and automation posture readiness, with the Launch Agentic SOC button."></a><br>
-      <sub><b>3. Review and launch.</b> A readiness summary before you start. Its "mock runtime only" wording is wrong in 0.1.13: without a key, investigations become Needs human cases.</sub>
+      <a href="docs/assets/screenshots/install-06-setup-review.webp"><img src="docs/assets/screenshots/install-06-setup-review.webp" width="280" alt="Review and launch stage reading Ready with limited capabilities: the workspace and one data source are ready, the AI runtime row needs attention and reads No usable provider, cases wait for a person, and automation posture is on by default, above the Launch Agentic SOC button."></a><br>
+      <sub><b>3. Review and launch.</b> A readiness summary before you start. Without a usable provider key, new cases wait for a person.</sub>
     </td>
   </tr>
 </table>
@@ -480,7 +486,9 @@ commit and state backend without exposing secrets. Stop the stack with
 Use `./scripts/agentic-soc-compose.sh` for every lifecycle command. After a supervised
 update it preserves the digest-pinned release override that raw `docker compose` commands
 would bypass. For TLS, backups, SSO, notifications and hardening, read [DEPLOY.md](DEPLOY.md)
-and the [upgrade contract](docs/operations/upgrades.md).
+and the [upgrade contract](docs/operations/upgrades.md). A TLS proxy you put in front of the
+Console must accept request bodies of at least 3 MiB (`client_max_body_size 3m` in nginx),
+because a case screenshot is uploaded as one request of up to 3 MiB.
 
 ## Configuration
 

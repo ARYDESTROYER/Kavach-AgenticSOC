@@ -22,12 +22,13 @@
  * All strings render as plain text (#9), never `dangerouslySetInnerHTML`.
  *
  * Layout (Round 14, SPEC §4.9.2 and §4.9.6): `stacked` (the default, and the only
- * layout this first-paint module draws) puts the label above the control and the
+ * layout this module draws) puts the label above the control and the
  * description below it (Carbon). A row layout is a renderer, `FieldLayoutRenderer`, that
  * places the parts Field has already wired; the Settings rows are two such renderers in
  * the lazy Settings primitives (`inlineFieldLayout` and `wideFieldLayout`,
- * `pages/settings/field-layouts.tsx`), so the Login and Wizard pages, which import Field
- * at first paint, never carry them. A `SettingRow` provides its renderer to every Field
+ * `pages/settings/field-layouts.tsx`), so a page that needs only a stacked Field never
+ * carries them. (Field was first paint until Round 15 moved the wizard's key fields into
+ * the lazy `pages/wizard/RuntimeReviewSteps.tsx`; it now loads with the pages that use it.) A `SettingRow` provides its renderer to every Field
  * inside it through `FieldLayoutContext`, so `NumberField`, `NumPref`, `TextPref` and the
  * other Field-based controls lay out as rows without a prop; `layout` on one Field
  * (a renderer, or `stacked`) wins over the context.

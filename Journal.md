@@ -11859,3 +11859,264 @@
   - The source editor's defaulted required field (`SourceEditor.tsx`).
   - The AI assessment card falling back to `decision_rationale` (`InvestigationPanel.tsx`).
   - The OIDC `redirect_uri` built from the bundled nginx's plain-HTTP hop behind a TLS ingress.
+
+### 2026-11-23 09:00Z - orchestrator - Round 15 start: RBAC switch, wizard copy, team activity, Case Manager
+- Context: the operator asked for (1) a Console switch for role-based access, (2) the setup wizard's mock-runtime wording fixed, (3) user activity tracking for an appropriate role, (4) a navigation page where an admin tracks analysts' daily work, (5) a stronger Case Manager close flow with screenshots on cases and a random post-close review of automatically closed cases to collect analyst feedback, and (6) a cleaner Case Manager design. Branch `claude/round15` from `Testing` at `c4227bd`; PR into `Testing`.
+- Did: started a seven-reader mapping workflow (RBAC and wizard, activity data, Case Manager UI, close flow, review sampling, attachment storage, platform constraints) with a completeness critic.
+- Status: in progress.
+- Next: write the Round 15 SPEC from the maps, then implement in work packages with adversarial reviews.
+
+### 2026-11-23 11:30Z - orchestrator - Round 15 SPEC drafted from the code maps
+- Context: Round 15 (RBAC switch, wizard copy, Team activity, screenshots on cases, auto-close review, Case Manager redesign).
+- Did: the seven-reader mapping workflow and its completeness critic finished; the maps are committed under `docs/research/2026-11-round15/understand/`. Wrote `docs/research/2026-11-round15/SPEC.md` with decisions D1 to D8 (switch on Roles & permissions through a new `PUT /api/rbac` with fresh sign-in, stored Super admin only, and `PUT /api/settings` refusing an `rbac.enabled` change; truthful wizard readiness; Team activity under Analytics behind a new `team:view` for SOC managers and auditors, an exact audit fold with structured case-work actions and an attribution fix; a one-question close with actions taken; KV-only screenshots with stdlib validation; a deterministic, capped auto-close review recorded as independent ground truth with a rollback-safe marker; a five-tab Case Manager with one home per fact) and work packages WP1 to WP8. AGENTS.md and HANDOFF.md name Round 15 as the newest round.
+- Tests: docs records tests pass (52).
+- Status: in progress; an adversarial review of the SPEC against the code is running.
+- Next: fold the review corrections into the SPEC, then run WP1 (foundation) in the main tree.
+
+### 2026-11-23 13:10Z - orchestrator - Round 15 SPEC revised after three code reviews
+- Context: adversarial review of the Round 15 SPEC against the code (backend contracts, Console and UI, safety and statistics), before any implementation.
+- Did: folded every finding into the SPEC and indexed them in its Appendix A; committed the three reports under `docs/research/2026-11-round15/review/`. Main corrections: the close keeps today's derived-agreement grade and never sets `actual_outcome` from the disposition; review notes are fenced precedent like grading comments, and new audit rows keep filenames, captions and notes out of `result_summary`; the review marker and history event are written only for sampled cases; `CaseAction.review_via` is a Literal that never reaches the internal `via`; the carry-over covers all three case builders and carries status for the transition only; `PUT /api/settings` needs `roles:manage` and a fresh sign-in for other `rbac.*` changes; the wizard readiness uses one helper per provider and the public status carries only a boolean; Team activity normalises people, labels environment and Demo accounts, and keeps a role floor while RBAC is off; old `tab=timeline` and `tab=threat` links redirect; the Runbook tab stays second.
+- Tests: docs records tests pass.
+- Status: in progress.
+- Next: WP1 foundation in the main tree.
+
+### 2026-11-23 15:50Z - orchestrator - Round 15 WP1 foundation done
+- Context: Round 15 WP1, the shared backend foundation every feature package builds on (SPEC §4.2).
+- Did: structured `case.*` audit actions with target, request context and outcome on lifecycle, collab and feedback rows (result summaries byte-identical); attribution from the verified principal for comments, tags and assignments (and the stored comment author); bulk `run_id` from the existing batch id through a private contextvar; a family alias table so the legacy Audit filters `status`, `collab` and `feedback` still match new rows on all three stores; catalog entries for all 24 Round 15 actions on both sides; a parameterised view recorder; `CaseAction.actions_taken` (fixed vocabulary) and `review_via` (a Literal kept away from the internal `via`); `FeedbackEntry.origin` and `review_id` with `engine/review_origin.is_review_grade`; review grades excluded from `feedback_stats`, the effectiveness comparisons and the reopen rate (a reopen is hidden only with a ledger-backed review event); rated-only star averages with rated counts and "Not rated" on Metrics; `team:view` for SOC managers and auditors; the `team_activity` and `auto_close_review` settings with clamps and write rejection; a shared carry-over so a reinvestigation keeps the owner, comments, grades, status trail, acknowledgement and an analyst disposition, re-reading the stored case so work done during the run survives. Two adversarial reviews found seven defects; all fixed and tested.
+- Tests: backend 12,702 collected: 12,673 passed, 24 skipped, 5 sandbox-only environment failures (55 of 55 pass with the proxy and AWS variables unset); audit catalog Vitest 171 passed; Metrics Vitest 58 passed; lint, check:types, tsc and ruff fatal clean; `decide()` unchanged (MD5 212873cd...).
+- Status: done.
+- Next: Wave 2 (WP2 to WP6) in isolated worktrees from this commit.
+
+### 2026-11-23 15:40Z - WP5 sub-agent - Round 15 auto-close review
+- Context: Round 15 WP5 (SPEC D6.1 to D6.13, §3.6), on branch `r15-wp5` from the WP1 commit `6713dfd`.
+- Did:
+  - Added the pure sampler (`engine/auto_close_review.py`), the strict compare-and-set ledger (`stores/auto_close_review.py`) and `pipeline.review_sampler`, called after every other post-decision hook and None in the replay stack; real and Demo samplers are wired.
+  - Added `POST /api/cases/{id}/review` (audit first, one grade, history marker only for sampled cases, ledger repair on read, two 409s, disagreement Inbox through `eligible_audience`), the summary and metrics endpoints, and `GET /api/cases?review=`.
+  - Added the cases-reset ledger clear, the export group and the Demo seed of six samples.
+  - Console: the Settings Detection group, the lazy Agent effectiveness module, the unmounted ReviewCard kit, `lib/api-reviews.ts`, and the review source with `isReviewGrade` in `caseOutcome`.
+  - Docs: `automation/auto-close-review.md` (new), analytics, deterministic decisions.
+- Tests: backend full run 12,719 passed, 24 skipped, 7 failed (5 sandbox, 2 expected router counts); WP5 file 49 passed. Webui strict 8,613 to 8,614 passed, with one unrelated chat test flaky in one run. Lint, gates, check:types, check_docs and the knowledge corpus all pass. Entry chunk unchanged at 337,163 B.
+- Status: done; committed `f3b5a17` on `r15-wp5`, not pushed.
+- Next: WP7 mounts the card and the Review scope; the orchestrator updates the router counts; WP3 should not duplicate the seeded review audit rows.
+
+
+### 2026-11-23 16:01Z - WP6a sub-agent - Case Manager queue, header, five tabs and facts rail
+- Context: Round 15 WP6a (SPEC section 2.8, D8.1 to D8.7; section 4.3). The operator found Case Manager cluttered; this is the first half of the redesign, on r15-wp6 after WP1.
+- Did: queue in one control band with the shared FilterBar and a view menu, bulk bar only with a selection, two-line rows, a footer scope line. Header with one primary action from the D8.2 table plus Take action, More options, Details and Back, over a slim meta row. Five tabs (Overview, Runbook, Investigation, Collaboration, Chat) with Alt+1 to Alt+5; old timeline and threat links rewritten by the router (LEGACY_CASE_TABS) to the "What happened" and "Threat context" sections. Facts rail in eight sections with a popover tag editor (T). Dead code removed: panel default layouts, close and confirm_fp definitions, HeadlinePanel, BriefChip, verdictHeadline, BULK_DISPOSITIONS, footer comments; CaseDetail.footer.test.tsx became CaseDetail.header-actions.test.tsx. Docs and the app knowledge corpus updated. decide() untouched; no new dependency.
+- Tests: webui full Vitest 654 files, 8,606 passed, 16 skipped; lint 0/0; tsc, gates and check:types clean; build clean, entry 337,575 B (+412 B over 6713dfd, 335 B over the 337,240 B budget, expected red until merge); check_docs 84 pages; corpus current at 915 chunks; backend 12,673 passed, 24 skipped, 5 known sandbox env failures.
+- Status: done (WP6a), commit 21f6cbf on r15-wp6.
+- Next: WP6b: tab bodies (Overview absorbs Timeline, Investigation absorbs Threat context, G17, Collaboration without the owner picker plus a Files slot, History), close dialog D4.1 to D4.6, bulk exclusion D4.7. WP7 adds the D8.2 review rows and mounts the Review scope.
+
+
+### 2026-11-23 16:40Z - Round 15 WP4 agent - Screenshots on cases
+- Context: Round 15 SPEC D5.1 to D5.12, §3.6 guards, §4.3 WP4, on r15-wp4 from 6713dfd.
+- Did: stdlib image validator and stripper; KV store with a case index, write-once blob and thumb, and a usage total; delete_strict on both KV backends; memory-safe factory purge; the four case file routes with a 3 MiB bounded route class, dedup, rate and concurrency bounds and strict content headers; audit-first file rows; Demo store and caps; cases-tier reset and export regions; ES binary mapping for fresh installs and at bootstrap; nginx 3m location; never-to-a-model guards and sentinel; unmounted webui Files kit; reset and backup docs.
+- Tests: backend full run 12,893 passed, 24 skipped, 7 failed (2 router-count records for the orchestrator, 5 sandbox environment tests that pass without the proxy and AWS variables); webui kit 37 passed; nearby suites 2,757 passed; lint, gates and check:types clean; entry 337,163 B, unchanged.
+- Status: done; commit ffc4eda on r15-wp4, not pushed.
+- Next: WP7 mounts CaseFiles in Collaboration, passes the tab and close dialog as pasteScopeRef, refreshes on case.activity frames that name a file_id, and adds the rollback lane plants; WP8 records and the DangerZone copy.
+
+
+### 2026-11-23 17:25Z - WP3 agent - Round 15 Team activity
+- Context: Round 15 SPEC D3.1 to D3.12, the §3.1 hidden FEATURES removal and the §3.6 guards (WP3).
+- Did: engine/team_activity.py (the pure audit fold: legacy and structured rows, case-insensitive people, environment, Demo, deleted and Not attributed kinds, bulk counts, runbook steps, reviews with N of M and a rate only from 30, the MTTA rule bounded at 5,000 cases, partial flags, 92-day windows in the operator zone); a `search_page` count option and truncated flag on the ES, SQL and fallback audit stores; api/routes_team.py (activity, people, events with a signed cursor; team:view, the role floor while RBAC is off, the team_activity switch, a 60 s per-viewer cache, coalesced team.viewed rows); Demo audit rows for the seeded acknowledgements, closes, comments and assignments; the lazy Team activity page (range control, KPI strip, stacked per-day chart, people table, person sheet, CSV through lib/csv); the Settings group after Posture; 11 hidden duplicate FEATURES entries removed; docs/analyst/team-activity.md; console map and corpus regenerated.
+- Tests: backend WP3 file 40 passed; full backend 12,710 passed, 24 skipped, 7 failed (2 expected router-count records, 5 sandbox environment tests); webui full strict 656 files, 8,614 passed, 1 skipped, then 37 affected files 666 passed, 1 skipped after polish; lint, gates, check:types, tsc and ruff fatal clean; check_docs and build_app_knowledge --check pass; entry 336,718 B (minus 445 B).
+- Status: done on r15-wp3 at 5072c1e.
+- Next: the orchestrator updates the router counts in AGENTS.md and HANDOFF.md, regenerates openapi.json and api-types.gen.ts after merging WP5, and checks the review counts with WP5's seeded rows on the integrated tree.
+
+
+### 2026-11-23 17:55Z - WP2 agent - Round 15 RBAC switch and wizard wording
+- Context: Round 15 SPEC D1.1 to D1.5 and D2.1 to D2.4 (WP2), from the WP1 foundation commit 6713dfd.
+- Did: added routes_rbac.py (GET and PUT /api/rbac, rules 1 to 7 in order, strict fresh sign-in, Access denied row, audited write to RBAC); added the D1.3 guard in put_settings (409 rbac_switch_moved, roles:manage and a fresh sign-in for other rbac changes); added llm/readiness.py per provider with ai_runtime_ready on setup/status and ready plus provider on setup/secrets; added the Role-based access panel with both confirmations on Roles & permissions, the Manage action on the Security posture row, and the live RBAC state for the Remember-me note; rewrote the wizard's three AI states and review row with server readiness; updated users-rbac.md (Console steps, the PUT /api/rbac recipe verified live) and first-run.md (known-issue notes removed); regenerated the API types and the knowledge corpus.
+- Tests: backend 12,723 passed, 24 skipped, 7 failed (5 sandbox environment, 2 router-count records expected until merge); webui full vitest 8,617 passed, 1 skipped, 1 failed (entry budget, expected); lint, gates and check:types clean; check_docs and build_app_knowledge --check pass. Entry +646 B (337,166 to 337,812 B).
+- Status: done, committed on r15-wp2 at cb2c152 (not pushed).
+- Next: the orchestrator merges, updates the router counts and decides the entry budget together with WP3's removal; WP8 updates the remaining docs and screenshots.
+
+
+### 2026-11-23 18:10Z - WP5 reviewer - Round 15 auto-close review: review and fixes
+- Context: independent review of `r15-wp5` (SPEC §2.6, §3.6) on top of `f3b5a17`.
+- Did:
+  - Registered `case.review` in `realtime.SSE_EVENT_TYPES` and the browser `STREAM_CHANNELS`, so the review nudge reaches listeners.
+  - Serialised the review under the ledger lock, so a double submission records one grade and answers 409.
+  - The disagreement Inbox item is muted only when Assignment is switched off.
+  - The summary counts a repaired disagreement on the same read.
+  - Added an `evicted_through` watermark to the ledger, so `ledger_complete` is exact.
+  - Added 6 backend tests and 1 webui test.
+- Tests: backend full 12,725 passed, 24 skipped, 7 failed (5 sandbox, 2 expected router counts); WP5 file 55 passed. Vitest 223 files, 2,975 passed. Lint, gates and check:types pass; the knowledge corpus is current. Entry +14 B (337,177 B).
+- Status: done; committed `b5add40` on `r15-wp5`, not pushed; branch detached.
+- Next:
+  - WP7 refreshes the Review scope on `case.review` and gates the pending band on a terminal case.
+  - WP8 documents the channel in `docs/reference/api.md`.
+  - Follow-up: the same Inbox mute flaw in `dispatch.py`.
+
+
+### 2026-11-23 18:55Z - Round 15 WP4 reviewer - Screenshot validator and Files kit hardening
+- Context: independent adversarial review of r15-wp4 (SPEC 2.5, D5.3, D5.4, D5.12) against validator correctness, storage, routes, lifecycle and the webui kit.
+- Did:
+  - PNG: kept ancillary chunks must sit before the image data with their defined lengths, else dropped.
+  - JPEG: APP14 cut to 12 bytes; table, restart, line-count and scan headers checked against T.81.
+  - WebP: the image must fill its canvas.
+  - Thumbnails held to 640 px a side.
+  - Kit: the grid loads thumbnails only; focus returns after a delete; the live region is always present; drags over a disabled zone are claimed.
+  - Sentinel test now covers the resolved-case RAG chunk; health-backup docs and corpus regenerated.
+- Tests: backend 12,922 passed, 24 skipped, 7 failed (2 router-count records, 5 sandbox environment tests that pass 55 of 55 unset); webui 40 kit tests and 4,099 nearby tests passed; lint, gates, check:types, tsc, check_docs and corpus check clean; entry 337,163 B, unchanged.
+- Status: done; commit a231bb5 on r15-wp4, not pushed.
+- Next: WP7 mounts the kit; WP8 records the 640 px thumbnail limit and the front-proxy body-size note in INSTALL.md and DEPLOY.md.
+
+
+### 2026-11-23 19:35Z - WP6b sub-agent - Case Manager tab bodies, close dialog and bulk exclusion
+- Context: Round 15 WP6b (SPEC D8.3 to D8.5, D4.1 to D4.7, D8.8 docs) on r15-wp6 after WP6a (21f6cbf).
+- Did: the Overview became the brief (AI summary from the model's reasoning, never decision_rationale (G17); What happened absorbed the Timeline tab; key entities, related cases, baseline). Investigation now reads assessment, decision, absorbed Threat context, inputs, trace, gradings. Collaboration gained a Files slot, a Tasks pointer and History with actions taken, and lost the owner picker. All tab bodies are flat PanelSections. The close dialog asks the disposition once, adds Actions taken (11 values, max 8), shows the derived AI agreement as text, requires the note only on an override, collapses "Rate the AI (optional)", never sends actual_outcome, removes tags and resolution, and has a screenshots slot. Case Manager bulk Set status and Set disposition leave out cases the agent closed. Docs: case-manager.md, investigation.md, the Case Manager parts of ui-standard.md; corpus regenerated. Pre-existing em dashes scrubbed from changed code and test files. decide() untouched; no new dependencies.
+- Tests: pytest 12,673 passed, 24 skipped, 5 known sandbox-only failures; test:strict 654 files, 8,607 passed, 16 skipped, zero stderr; lint 0/0; gates pass; check:types no drift; check_docs 84 pages; app knowledge 919 chunks, current.
+- Status: done (commit 97bbf1e on r15-wp6, not pushed).
+- Next: WP7 mounts the WP4 Files section, drop zone and paste into renderFiles/renderScreenshots, adds Review this auto-close and hides Set disposition on agent-closed cases, and the Cases.tsx bulk exclusion. WP8 updates the workspace text in docs/analyst/cases.md and reconciles the remaining dashes in ui-standard.md.
+
+
+### 2026-11-23 19:40Z - WP3 reviewer - Round 15 Team activity review and fixes
+- Context: Independent adversarial review of r15-wp3 (5072c1e) against SPEC §2.3 (D3.1 to D3.12), §3.1 and the ui-standard, from the live Console in both themes.
+- Did: Fixed the activity cache being aged by a later events page after its minute (a fixed-window fold stored under the page's key); counted only `thread post (human)` legacy posts (an AI-labelled post with actor "ai" was a person called ai) and counted empty-actor pre-Round-14 case work as Not attributed; put the person view row's name through `views.plain`; named the switch's real Settings location in the 409 message, the page and the Help Center; stopped the page showing one window's counts under another window's range while loading; put Reviews beside Closed (D3.5); made a zero tile name the range instead of "one at a time"; added a test that the §3.1 removal keeps every route, label, gate and child; regenerated the corpus.
+- Tests: backend WP3 file 45 passed; full backend 12,716 passed, 24 skipped, 7 failed (2 expected router-count records, 5 sandbox environment tests); ruff fatal clean; webui strict 39 files, 653 passed; lint, gates, check:types and tsc clean; check_docs 85 pages and build_app_knowledge --check 923 chunks pass; no entry module changed.
+- Status: done on r15-wp3 at d5d531c.
+- Next: the orchestrator updates the router counts at merge, regenerates the OpenAPI types after WP5, and checks the review counts with WP5's seeded rows on the integrated tree.
+
+
+### 2026-11-23 20:05Z - WP2 reviewer - Round 15 RBAC switch and wizard review fixes
+- Context: adversarial review of r15-wp2 (SPEC D1.1 to D1.5, D2.1 to D2.4): rule order, strict freshness, the D1.3 guard, escalation and lockout paths, readiness, wizard strings, and the docs recipe against a live backend.
+- Did: the wizard reads the sources and the AI readiness again after a Demo or live switch (the review had shown the Demo sources for a live workspace); the provider named from settings is used only when the router and the investigator share it; a real custom-role test for rule 3; a test that the session reads the new RBAC state right after the switch. Checked the PUT /api/rbac recipe and the Console flow live.
+- Tests: backend 12,725 passed, 24 skipped, 7 failed (5 sandbox environment, 2 router-count records expected until merge); webui 142 passed across 12 suites; lint, gates, check:types, ruff fatal, check_docs and build_app_knowledge --check pass. Entry 337,893 B (+81 B in this review, +727 B for WP2 in total).
+- Status: done, committed on r15-wp2 at 3486a81 (not pushed).
+- Next: the orchestrator merges, updates the router counts and decides the entry budget (WP3's removal; optionally shorten the Keys-step sentence); WP8 updates the remaining docs and screenshots.
+
+### 2026-11-23 20:40Z - WP6 review sub-agent - Case Manager redesign review and fixes
+- Context: Round 15 WP6 independent review (SPEC 2.8, 2.4 UI, D8.6 contracts, D4.4, G17, accessibility, visual check against round15/before) of r15-wp6 (21f6cbf, 97bbf1e).
+- Did: Retired tab links now hold their section while content above loads and drop the request after one use. Take action no longer repeats the primary. The tag editor opens on its field. The queue search names its / shortcut, and the first selection is announced. Threat context's parts are set apart by space. Close dialog: D4.4 agreement wording, no duplicate "what did the AI miss" prompt, no rating without an AI verdict. The facts rail reads today's auto-close bar only on open cases. D8.5 fixes plus a tracking-tight gate. Stale comments, dashes and the cases.md workspace text fixed; corpus regenerated. decide() untouched; no new dependency.
+- Tests: webui strict 654 files, 8,626 passed, 1 skipped, 1 expected entry-budget failure (entry 337,700 B, +125 B); lint 0/0; tsc, gates, check:types and build clean. Backend 12,672 passed, 24 skipped, 5 known sandbox failures plus 1 ranking failure fixed after (corpus tests 2,186 passed). check_docs 84 pages; corpus current at 919 chunks.
+- Status: done, commit 170c0b3 on r15-wp6 (not pushed).
+- Next: WP7 mounts the Files section, drop zone and review pieces. The orchestrator rebases the entry budget at merge and decides on the queue status truncation at the default 360 px queue width.
+
+
+### 2026-11-23 21:00Z - orchestrator - Round 15 Wave 2 merged into claude/round15
+- Context: Round 15 Wave 2 (WP2 to WP6), each built in an isolated worktree from the WP1 commit 6713dfd and then independently reviewed and fixed (entries above).
+- Did: merged r15-wp6, r15-wp5, r15-wp4, r15-wp3 and r15-wp2 in that order. Conflicts were additive only (both sides added a function or block in routes_export.py, reset.py and state.py, one doc comment in settings/security.tsx, and the generated knowledge manifest); resolved by keeping both. Regenerated openapi.json and api-types.gen.ts (no drift), the console map (no change) and the help corpus (950 chunks). Counted the four new feature routers (43) in AGENTS.md and HANDOFF.md and named them in HANDOFF.md.
+- Tests: Round 15 backend files plus the records, audit-writer, SSE channel and factory-primitive suites all pass on the merged tree; docs records and app knowledge tests pass. Entry chunk 337,999 B, 759 B over the 337,240 B budget (WP2 +727 B in Wizard.tsx, WP6 +537 B in router.tsx and case-tabs.ts, WP5 +14 B, WP3 -445 B after removing the 11 hidden FEATURES duplicates). SPEC §3.1 forbids an upward rebase, so the bytes come back from the wizard in Wave 3.
+- Status: done; pushed as c3d7cd3.
+- Next: Wave 3 (WP7 integration, the entry fix) and the WP8 docs that do not depend on WP7, then the cross-cutting review.
+
+### 2026-11-23 21:15Z - entry package agent - Round 15 entry bundle: lazy wizard AI runtime and review stages
+- Context: SPEC §3.1 entry budget. The merged Wave 2 tree c3d7cd3 measured 337,999 B against the 337,240 B budget; target at most 336,900 B with no behaviour change.
+- Did: moved KeysStep, ReviewStep, ReadinessRow, KEY_FIELDS, PROVIDERS and their helpers unchanged into the lazy chunk webui/src/soc/pages/wizard/RuntimeReviewSteps.tsx, and the shared stage heading into wizard/StepHeading.tsx. The wizard loads the chunk with retryingLoader behind a LoadingState fallback, prefetches it into the HTTP cache when idle after mount (chunk list mark, never an import), focuses the stage heading when a lazy stage mounts, and shows a focused reload notice if the chunk cannot load. saveKeys builds its body from the typed values. Added Wizard.lazy-steps.round15.test.tsx; the onboarding launch test now waits for the review stage.
+- Tests: npm run test:strict 672 files, 8,785 passed, 1 skipped, zero stderr; bundle-first-paint with REQUIRE_DIST_BUILD=1 25 passed; lint 0 errors and 0 warnings; gates pass; check:types no drift; build:app clean. Entry 329,106 B (-8,893 B). Live check in the seeded Demo, in live mode and on the production build: both stages render, focus their heading and keep their states.
+- Status: done, branch r15-entry at 9e1d841.
+- Next: the independent review, then the orchestrator merges and decides the baseline ratchet.
+
+### 2026-11-23 21:20Z - WP8 agent - Round 15 records and documentation
+- Context: Round 15 SPEC WP8 (§6 Documentation, §7 follow-ups) on r15-wp8 from c3d7cd3, excluding the docs that wait for the Case Manager integration.
+- Did: CHANGELOG Round 15 entry; README, INSTALL and DEPLOY updated for the Roles & permissions switch, the PUT /api/rbac recipe (verified live), truthful wizard wording and the 3 MiB front-proxy upload body. api.md, permissions.md and configuration.md gained the new endpoints, frames, team:view and the team_activity and auto_close_review blocks. known-limitations and upgrades gained the rollback reset, screenshot, Team activity and review bounds; settings, install and quickstart lost the retired wording. ROADMAP gained the Round 15 deferred items; AGENTS §4 and HANDOFF layout lines name the new modules. install-05, install-06 and users-rbac recaptured in the light theme from the live Console; corpus regenerated.
+- Tests: check_docs 86 pages; mkdocs strict build clean; corpus current at 965 chunks; docs and knowledge pytest 266 passed; docs and corpus readers 2,642 passed; chat and demo suites 710 passed; webui Docs and console-map Vitest 29 passed; no banned characters in added lines.
+- Status: done, commit 41e9173 on r15-wp8, merged as 582d005.
+- Next: after WP7 merges, recheck the CHANGELOG, README and known-limitations claims about the mounted Files section, the close-dialog drop zone, the Review scope and the Cases bulk exclusion. The orchestrator owns Journal, SPEC §8, AGENTS §10, the analyst docs and case-manager.webp.
+
+### 2026-11-23 21:55Z - WP7 sub-agent - Round 15 integration: screenshots and auto-close review in the case workspace
+- Context: Round 15 SPEC 4.4 (WP7), on branch r15-wp7 from c3d7cd3.
+- Did:
+  - Mounted CaseFiles (lazy) in the Collaboration tab's Files section, with the tab as paste scope and a count beside the heading.
+  - Mounted a lazy CloseScreenshots drop zone in the close dialog for viewers with cases:comment.
+  - Files refresh on case.activity frames naming a file_id, through CaseThread's existing stream.
+  - Added read-only GET /api/cases/{id}/review (cases:read) for one case's sample state.
+  - Case Manager Review scope: pending count from the summary, review= filter, a footer switch, case.review refresh.
+  - D8.2 in CaseDetail: a pending band and a Start review primary only on a terminal agent-closed pending sample; "Review this auto-close" in place of Set disposition on other agent-closed terminal cases.
+  - The ReviewCard opens in a non-modal side sheet. The rail Outcome shows the recorded review.
+  - Cases bulk exclusion of agent-closed cases (D4.7); rollback lane plants of SPEC 3.7 with offline tests; DangerZone cases-tier copy names screenshots and the review sample; case-manager.md section; corpus regenerated.
+- Tests: backend 13,087 passed, 24 skipped, 5 known sandbox env failures; rollback lane 18 OK; Vitest strict 8,838 passed, 1 skipped, 1 expected bundle-budget failure, 677 files; lint 0/0, gates pass, check:types no drift, check_docs 86 pages. Entry 337,995 B (-4 B). decide() untouched.
+- Status: done; commit 933404d on r15-wp7.
+- Next: the independent review; follow up on the Cases bulk disposition_declared gap.
+
+### 2026-11-23 21:55Z - entry package reviewer - Round 15 entry bundle review: one lazy component for both wizard stages
+- Context: adversarial review of r15-entry (9e1d841) against SPEC §3.1: no behaviour change in the wizard, tests not weakened, first-paint assertions meaningful, doc comment figures correct, entry re-measured.
+- Did: the second stage reached still mounted the loading state, because the two stages were two React.lazy components; fixed with one lazy component (RuntimeReviewStage, LaterStage). Added 6 tests: no loader on the second stage in both orders; the whole first-paint graph from main.tsx keeps RuntimeReviewSteps, SecretField and Field off; the idle warm passes the chunk-list mark and module URL, skips offline, and schedules nothing without requestIdleCallback; the review stage shows the reload notice and launch still completes when the chunk cannot load. Rewrote the bundle-first-paint doc comment with per-file source-map figures.
+- Tests: npm run test:strict 672 files, 8,791 passed, 1 skipped, zero stderr; bundle-first-paint with REQUIRE_DIST_BUILD=1 25 passed; lint 0/0; gates pass; check:types no drift; build:app clean, entry 329,084 B. Live check on the production build in Demo and live mode, light and dark.
+- Status: done, r15-entry at 2ab3a39.
+- Next: the orchestrator merges and decides the PRE_REVAMP_ENTRY_BYTES ratchet; fix the stale Field first-paint comments.
+
+### 2026-11-23 22:55Z - WP7 reviewer - Round 15 WP7 review: lightbox focus, accessible bulk help, upload announcements
+- Context: independent adversarial review of r15-wp7 (933404d on c3d7cd3) against SPEC D4.7, D5.12, 2.6 and 3.7, with a live seeded Console and a real PostgreSQL rollback run.
+- Did: the screenshot lightbox now returns focus to the last-shown thumbnail (Radix sent it to the body because there is no DialogTrigger); finished uploads are announced in the Files section; the Cases bulk Set status and Set disposition triggers carry the D4.7 help text as their accessible description; the review card's Rate the AI disclosure matches the close dialog; the rollback lane reports whether N-1 dropped the grade marker (on PostgreSQL 16 the pinned release drops it and the grade stays excluded through the history event). New tests for the paste scopes, the focus return and the announcement; docs sentence fixed; corpus regenerated.
+- Tests: backend 13,087 passed, 24 skipped, 5 known sandbox failures; rollback lane 19 offline OK, plus both scenarios live on PostgreSQL; test:strict without dist 8,829 passed, 16 skipped, zero stderr; lint 0/0, gates, check:types and tsc clean; check_docs 86 pages; corpus current. decide() untouched.
+- Status: done; commit b804d16 on r15-wp7.
+- Next: follow-ups: a reopened pending sample shows no explanation; the review-state read loads the whole ledger; the Cases bulk disposition_declared gap.
+
+### 2026-11-23 23:00Z - orchestrator - Round 15 Wave 3 merged and the entry baseline ratcheted
+- Context: Round 15 Wave 3 (WP7 integration, the entry package), each built in an isolated worktree from c3d7cd3 and then independently reviewed and fixed (entries above); WP8 merged earlier as 582d005.
+- Did: merged r15-entry and r15-wp7. The only conflict was the generated knowledge manifest; regenerated the console map and the corpus (966 chunks); openapi.json and api-types.gen.ts show no drift. The integrated entry measured 329,080 B, 7,136 B under the Round 14 baseline, so PRE_REVAMP_ENTRY_BYTES was lowered once to 329,080 B as SPEC §3.1 allows; recorded in Round 15 SPEC §8.1 (with a pointer from the Round 14 record) and repointed the test_docs_round12_records.py pin. Fixed the stale Field first-paint comments.
+- Tests: bundle-first-paint with dist and Field layout 35 passed; docs records pytest passed.
+- Status: done; pushed.
+- Next: the cross-cutting adversarial review of the integrated tree, then the remaining docs, SPEC §8, the full gates and the PR into Testing.
+
+### 2026-11-24 00:00Z - orchestrator - Round 15 cross-cutting review launched; SPEC §8 drafted
+- Context: Wave 4 of the Round 15 SPEC (§4.5): one adversarial reviewer per dimension (backend, security, statistics, UI, test honesty, docs) over the integrated tree 8e3e6d4, an independent skeptic per finding, then one fixer per dimension in sequence on a review branch. In parallel, a sub-agent drafted SPEC §8 "As built" from the package reports, reviews, Journal and code.
+- Did: SPEC §8.1 to §8.4 written (contract resolutions, per package, known limitations, a verification placeholder) and the entry attribution corrected (only WP6 changed router.tsx); pushed as 7003d4d. The review run was interrupted by three container restarts and resumed from its cached results each time.
+- Tests: docs records pytest passed; check_docs 86 pages.
+- Status: done for §8; the review continued.
+- Next: merge the review fixes, then the full gates.
+
+### 2026-11-24 01:26Z - backend review fixer - Team activity skips audit-first work never applied
+- Context: Round 15 cross-cutting review, backend dimension. Confirmed: the Team activity fold counted `case.file_attached` and `case.review_recorded` rows whose store write failed after the audit row.
+- Did: engine/team_activity.py holds these writers' rows and counts an action row only when its failure row (same request, actor, case and compatible session) does not follow it, the Audit log inspector's rule. The read covers these rows up to 5 minutes past the window end so a late failure row still pairs; person events apply the same rule. Five tests, including an end-to-end upload race and a failed review.
+- Tests: test_round15_wp3_team_activity.py 50 passed; Round 15 backend 554 passed; audit suites 522 passed, 2 skipped; ruff fatal clean. decide() byte-identical.
+- Status: done, bf12323 on r15-review.
+- Next: optional hardening, the review route could mint a request id when the middleware is missing.
+
+### 2026-11-24 01:59Z - security review fixer - Super admin accounts, review flood, review counts, Team activity floor
+- Context: the four confirmed security findings of the Round 15 cross-cutting review.
+- Did: Super admin accounts are for Super admins only: routes._require_super_admin_for checks the stored role and asks a strict fresh sign-in on POST, PUT and DELETE /api/users and PUT /api/users/{u}/roles when a Super admin account is created, changed, deleted or granted (403 super_admin_only otherwise). One disagreement Inbox fan-out per reviewer and case for unsampled reviews. Team activity counts one review per person and case, and replaced reviews are marked in the person's events. The RBAC-off Team activity floor is documented as a page limit, not an access control; SPEC D3.3, D3.8 and D6.9 amended; CHANGELOG bullets; corpus regenerated.
+- Tests: Round 15 backend 563 passed; neighbouring user, review and team suites passed apart from 9 test_sessions.py order failures that predate the change (they fail the same way without it); knowledge and docs records 251 passed; ruff fatal clean; check_docs 86 pages.
+- Status: done, a0ad9f1 on r15-review.
+- Next: optional, a per-reviewer bound on disagreement fan-outs across many cases.
+
+### 2026-11-24 02:25Z - statistics review fixer - Team activity and review metrics honesty
+- Context: the five confirmed findings of the statistics dimension.
+- Did: runbook step rows pair with their step.*_failed rows; a partial read omits the medians and the agreement rate (`ack_status` partial, a CSV note row, page wording); an assignee change on a lifecycle row counts as Assigned and every lifecycle action is read; Escalate, Hold and Set-status moves are candidates for the median time to acknowledge; GET /api/metrics/auto-close-review repairs the ledger from case history. Docs, corpus, CHANGELOG and SPEC D3.8 updated.
+- Tests: Round 15 backend 572 passed; webui team and lib strict run 398 passed, zero stderr; lint, gates, check:types and tsc clean; check_docs 86 pages; corpus current.
+- Status: done, 2900bc0 on r15-review.
+- Next: merge and run the full gates.
+
+### 2026-11-24 03:03Z - UI review fixer - review card and person sheet focus, queue band, chart colours, copy
+- Context: the UI dimension, 11 defects confirmed by a skeptic (one more was rejected).
+- Did: the review card announces the comparison in a live region and moves focus after Record and Reopen, and its rail wraps on a phone; the Team activity person sheet returns focus to its row, uses the chart's kinds per day and shows event times in the operator zone; the Team chart avoids two near-identical oranges and caps bars at 48 px; the Case Manager queue search narrows in the 360 px pane so the band stays on one row, and every row is the same height; review durations use the shared format; the clustering heading is an h3; StatusDot gains a wrap option for the RBAC state; two strings fixed; team-activity page updated and corpus regenerated.
+- Tests: focused strict run 859 passed, zero stderr; lint, gates, check:types and build:app clean; entry unchanged at 329,080 B; check_docs 86 pages.
+- Status: done, 1274abd on r15-review.
+- Next: overview.kpimodal.a11y.test.tsx was seen writing an act() warning to stderr in a narrowed run; check it in the full strict run.
+
+### 2026-11-24 03:24Z - test-honesty review fixer - pin the rules that survived mutation
+- Context: ten confirmed test-honesty findings.
+- Did: tests only, in the WP2, WP3 and WP5 backend files, CaseDetail.grading.test.tsx and ReviewCard.test.tsx: the runbook step race through the route; the review's precedent refresh and its completed frame; missed threats and the top 10 rules; D1.3 over all five matrix fields plus a pin on the guarded set; active and namesake account counting; the RBAC-on team grant; the cache expiry, the rate at 29 answered reviews and the 200-event page cap; D4.4 grading on resolve and set_disposition; ReviewCard timing from opening the card. The route tests' recent-row helper no longer dates rows yesterday just after midnight UTC. Every new test fails when its rule is reverted.
+- Tests: Round 15 backend 591 passed; webui case directories 621 passed, zero stderr; lint, gates, check:types and tsc clean.
+- Status: done, d151df7 on r15-review.
+- Next: none.
+
+### 2026-11-24 03:43Z - docs review fixer - records match the Round 15 case workspace and routes
+- Context: the 14 confirmed docs findings (one more was rejected).
+- Did: quickstart and README give the Investigation order (AI assessment, then Decision) and case-manager.webp is recaptured from the seeded Demo; GET /api/cases/{case_id}/review documented in api.md, CHANGELOG, AGENTS and permissions; USAGE.md describes the five tabs, the scopes, the header and the request fields; first-case, cases (bulk exclusion), collaboration (Discussion, Files, Tasks, History), ui-standard (review headline and actions), auto-close-review (Review scope controls), team-activity (tags not counted), the automation and analytics overviews, the webui README, the AGENTS and HANDOFF layout lines, testing.md and mitre-threat-context corrected; corpus regenerated (970 chunks); new backend/tests/test_docs_round15_records.py (14 tests that read the fact from the code, all failing on the docs before the fix).
+- Tests: Round 15 backend plus the new records file 605 passed; 18 docs and knowledge files 1,108 passed; check_docs 86 pages; corpus current; docs bundle and theme scripts 7 passed.
+- Status: done, 7cb238a on r15-review.
+- Next: none.
+
+### 2026-11-24 03:45Z - orchestrator - Round 15 cross-cutting review merged
+- Context: Wave 4 results: 50 candidate findings over six dimensions; an independent skeptic confirmed 46 and rejected 4 (one each in backend, security, UI and docs).
+- Did: merged r15-review (six fixer commits) into claude/round15 as b01098f with no conflicts; the corpus (970 chunks) and the generated API types are current; no banned characters in the added lines; pushed.
+- Tests: the full gate run on the merged tree follows.
+- Status: done.
+- Next: the full gates (SPEC §5.2), light and dark screenshots, the remaining records (SPEC §8.4, AGENTS §10, HANDOFF), then the PR into Testing.
+
+### 2026-11-24 04:35Z - orchestrator - Round 15 closing gates and records
+- Context: SPEC §5.2 gates on the integrated tree after the cross-cutting review merge (b01098f), and the closing records (SPEC §8, AGENTS §10, HANDOFF, ROADMAP J).
+- Did: ran every gate one at a time in CI's order. The first strict Console run passed every test but failed on stderr: the Overview axe audits that render the announcer could see its 60 ms timer land mid-audit, outside act() (it also appears on the Round 14 base). Those audits now run inside act(), as Chat.test.tsx does (f7063cf, e917435). Filled SPEC §8.2 (cross-cutting review and closing fixes) and §8.4 (closing gates), updated §8.3; ROADMAP J drops the stale reset-tier leftover and gains the bulk disposition_declared gap, the per-case review read, the Review scope's unloaded rows, the disagreement fan-out bound and two leftovers; AGENTS §10 gains the Round 15 status, bullet and baseline, with the cheatsheet counts; HANDOFF names Round 15 as built.
+- Tests: backend 13,172 tests, 13,143 passed, 24 skipped, 5 sandbox-only failures (their four files pass 55 of 55 with the proxy and AWS variables unset); fatal ruff clean; webui test:strict without a build 679 files, 8,864 passed, 16 skipped, zero stderr; lint 0/0; gates pass; check:types no drift; full build clean, entry 329,093 B stamped (329,080 B with build:app) inside the 329,080 + 1,024 B budget; bundle check with dist passes; docs:check, check_docs (86 pages), corpus (970 chunks), check_version, check_ci_contract, rollback lane and docs bundle tests pass. decide() byte-identical to c4227bd.
+- Status: done; pushed.
+- Next: the final light and dark captures, then the PR into Testing and CI.
+
+### 2026-11-24 06:50Z - orchestrator - Round 15 final screenshot pass and its fixes
+- Context: PR #143 into Testing was green on e6c3c1a (every lane and the CI passed aggregate; Codex's one finding, the time spent lost on a ledger repair, fixed in e6c3c1a and its thread resolved). A light and dark capture of the SPEC §5.3 list on the final tree followed.
+- Did: the capture pass found the Team activity People table overflowing at 1440 by 900, the person sheet hiding its Sign-ins column, and small copy and default issues. A fixer (1f3eb23) and a second round (826bb2b) fixed them; the first independent review found a cut-name regression and two leftovers, the second confirmed all six fixes live in both themes at 1440, 1280 and 390 and caught 17 of 18 reverts. Added the last two follow-ups (a test pinning the Other header's title, the priority switch's help text as its accessible description). SPEC §8.2 records the round.
+- Tests: on 826bb2b, npm run test:strict 680 files, 8,874 passed, 16 skipped, zero stderr; lint 0/0; gates pass; check:types no drift; entry 329,080 B; bundle check 25 passed; corpus current (971 chunks); check_docs 86 pages; docs, knowledge, settings and correlation backend tests pass; fatal ruff clean; decide() unchanged. The follow-ups: TeamActivity and case-policy tests 30 passed, zero stderr; the new description assertion fails without its change.
+- Status: done; pushed.
+- Next: CI on the new head, then the screenshot summary comment on the PR.

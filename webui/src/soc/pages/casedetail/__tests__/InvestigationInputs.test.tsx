@@ -79,8 +79,10 @@ describe('InvestigationInputs', () => {
   it('titles the section and labels each input in sentence case, not tracked capitals', () => {
     const { container } = render(<InvestigationInputs rationale={RATIONALE} />);
 
-    const heading = screen.getByRole('heading', { level: 3, name: 'Investigation inputs' });
-    expect(heading).toHaveClass('text-sm', 'font-semibold', 'text-foreground');
+    // A section of the Investigation tab (Round 15, D8.3): its heading is the tab's
+    // section level, like the AI assessment and the decision above it.
+    const heading = screen.getByRole('heading', { level: 2, name: 'Investigation inputs' });
+    expect(heading).toHaveClass('text-base', 'font-semibold', 'text-foreground');
     expect(heading).not.toHaveClass('uppercase');
 
     const labels = screen.getAllByTestId('investigation-input-label');

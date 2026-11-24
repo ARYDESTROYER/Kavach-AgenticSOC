@@ -5,8 +5,8 @@ description: Interpret ATT&CK mappings, indicator reputation, and related cases 
 
 # MITRE ATT&CK and threat context
 
-The case **Threat context** tab brings together indicator enrichment, MITRE ATT&CK metadata,
-and related cases. The service is fail-open: missing enrichment or mapping data does
+The **Threat context** section of a case's Investigation tab brings together indicator
+enrichment, MITRE ATT&CK metadata, and related cases. The service is fail-open: missing enrichment or mapping data does
 not prevent case handling.
 
 Reading case threat context requires `cases:read`.
@@ -37,7 +37,7 @@ lineage, and evidence before treating two records as one incident.
 
 ## How this case was clustered
 
-The **Threat context** tab's three-node explanation shows **Input alerts → Correlation
+The **Threat context** section's three-node explanation shows **Input alerts → Correlation
 cluster → Opened case** from fields already persisted on the case. Hover or
 keyboard-focus a node to inspect source counts, grouping, matched rule, threshold and
 time window, opened-case status/verdict, and bounded related-case links. It is an

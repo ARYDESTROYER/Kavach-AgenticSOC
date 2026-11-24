@@ -643,6 +643,11 @@ class AuditSearchPage:
     relation: str = "eq"
     exhausted: bool = True
     start: Any = None
+    # Round 15 (SPEC D3.6): the store stopped before the end of the matching rows: an
+    # Elasticsearch read paged by offset (no point-in-time) that reached its 10,000-row
+    # limit, or the bounded scan of a third-party repository that filled. A reader that
+    # folds every page (Team activity) then states its counts as lower bounds.
+    truncated: bool = False
 
 
 #: The generic (third-party repository) read scans at most this many newest rows.
@@ -913,11 +918,20 @@ class AuditRepository(ABC):
         limit: int = 50,
         cursor: Any = None,
         track_total: int = 10_000,
+        count: bool = True,
     ) -> AuditSearchPage:
         """One page of rows matching ``predicate`` (an :mod:`app.audit.query` tree),
         newest first (``desc``) or oldest first (``asc``), after ``cursor`` (a
         ``position`` from a previous page). Raises on a store failure and
-        :class:`AuditCursorExpired` when the cursor's snapshot is gone."""
+        :class:`AuditCursorExpired` when the cursor's snapshot is gone.
+
+        ``count=False`` (Round 15, SPEC D3.6) asks for the page without its total, for a
+        reader that streams every page and never shows one (Team activity): a store that
+        counts separately skips that count and answers the rows on the page as a lower
+        bound (``relation`` ``gte``). This bounded scan counts as it filters, so it keeps
+        its total; it marks the page ``truncated`` when the scan filled, since older
+        matching rows may lie beyond it."""
+        del count  # the scan counts as it filters; nothing to skip
         matched, capped = await self._fallback_rows(predicate, order)
         offset = 0
         if isinstance(cursor, dict):
@@ -938,6 +952,7 @@ class AuditRepository(ABC):
             relation="gte" if capped or (track_total and total > track_total) else "eq",
             exhausted=offset + size >= total,
             start={"offset": offset},
+            truncated=capped,
         )
 
     async def count_matching(self, predicate: Any, *, cap: int) -> tuple[int, str]:

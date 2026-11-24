@@ -1,18 +1,16 @@
 /**
- * SignalProfile — the case's deterministic risk score, the AI confidence and the five
- * recorded risk factors, each with a text equivalent (Round 12: moved out of the
- * Overview into the facts rail so it is visible on every tab, CM-6).
+ * SignalProfile: the case's deterministic risk score and the five recorded risk factors,
+ * each with a text equivalent (Round 12: moved out of the Overview into the facts rail so
+ * it is visible on every tab, CM-6; Round 15: the factors sit behind a disclosure).
  *
  * The risk meter and every factor bar are coloured by VALUE (the one `scoreBand`
  * ladder), never by what kind of thing they are, so a Risk 7 case is never painted red.
- * After a human classified the case the confidence meter is relabelled "AI confidence
- * (at assessment)" so it is not read as the analyst's certainty.
  *
  * SECURITY (#9): factor reasons are composed from numbers and fixed copy; the entity
  * value they may mention is rendered as a plain text node.
  */
 import * as React from 'react';
-import { Gauge, Info } from 'lucide-react';
+import { ChevronRight, Info } from 'lucide-react';
 
 import type { Case } from '@/lib/types';
 import { humanizeToken } from '@/lib/format';
@@ -81,7 +79,7 @@ export const SignalMeter: React.FC<{
 
 /**
  * The severity-token bar color for a 0-100 risk FACTOR. Uses the ONE palette ladder
- * (`scoreBand` — 74/48/22) so a factor bar shares cut-points with every other
+ * (`scoreBand`: 74/48/22) so a factor bar shares cut-points with every other
  * risk-coloured element. Literal class strings so the Tailwind JIT emits them.
  */
 const FACTOR_BAR_COLOR: Record<ScoreBand, string> = {
@@ -302,42 +300,23 @@ export function caseRiskFactors(c: Case, triage: TriageChips | null): RiskFactor
 export interface SignalProfileProps {
   c: Case;
   triage: TriageChips | null;
-  /** True once a person classified the case: the confidence is then the AI's, at assessment. */
-  humanSettled?: boolean;
-  /** The FP auto-close bar the confidence is read against (from the policy). */
-  calibration?: { threshold?: number; note?: string };
   className?: string;
 }
 
-/** The labelled signal-profile block (risk, confidence, recorded factors). */
-export const SignalProfile: React.FC<SignalProfileProps> = ({
-  c,
-  triage,
-  humanSettled = false,
-  calibration,
-  className,
-}) => {
-  const bar =
-    typeof calibration?.threshold === 'number'
-      ? Math.round(calibration.threshold <= 1 ? calibration.threshold * 100 : calibration.threshold)
-      : null;
+/**
+ * The facts rail's risk reading (Round 15, D8.4 "Signal"): the deterministic risk score
+ * as a meter, and the five recorded factors behind one disclosure, so the rail stays a
+ * column of facts and the factor bars are one click away. The AI confidence is part of
+ * the Outcome section's AI line, its one home.
+ */
+export const SignalProfile: React.FC<SignalProfileProps> = ({ c, triage, className }) => {
   const riskVal = typeof triage?.risk?.value === 'number' ? triage.risk.value : c.risk_score;
   const ourRiskBand: ScoreBand | null = typeof riskVal === 'number' ? scoreBand(riskVal) : null;
-  const confidencePercent =
-    typeof c.confidence === 'number'
-      ? boundedScore(c.confidence <= 1 ? c.confidence * 100 : c.confidence)
-      : null;
   const factors = caseRiskFactors(c, triage);
+  const [showFactors, setShowFactors] = React.useState(false);
+  const factorsId = React.useId();
   return (
-    <section
-      aria-label="Case signal profile"
-      data-testid="case-signal-profile"
-      className={cn('space-y-4', className)}
-    >
-      <div className="flex items-center gap-2">
-        <Gauge className="h-4 w-4 text-muted-foreground" aria-hidden />
-        <h3 className="text-sm font-semibold text-foreground">Signal profile</h3>
-      </div>
+    <div data-testid="case-signal-profile" className={cn('space-y-3', className)}>
       {typeof riskVal === 'number' && ourRiskBand ? (
         <SignalMeter
           label="Risk score"
@@ -346,24 +325,29 @@ export const SignalProfile: React.FC<SignalProfileProps> = ({
           tone={ourRiskBand}
           description="Deterministic case input"
         />
+      ) : (
+        <p className="text-xs text-muted-foreground">No risk score recorded.</p>
+      )}
+      {factors.length ? (
+        <div className="space-y-2">
+          <button
+            type="button"
+            aria-expanded={showFactors}
+            aria-controls={factorsId}
+            onClick={() => setShowFactors((open) => !open)}
+            className="inline-flex items-center gap-1 rounded-sm text-xs font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            <ChevronRight
+              className={cn('size-3.5 transition-transform duration-fast', showFactors && 'rotate-90')}
+              aria-hidden
+            />
+            {showFactors ? 'Hide risk factors' : 'Show risk factors'}
+          </button>
+          <div id={factorsId} hidden={!showFactors}>
+            {showFactors ? <RiskFactorProfile factors={factors} /> : null}
+          </div>
+        </div>
       ) : null}
-      {confidencePercent !== null ? (
-        <SignalMeter
-          label={humanSettled ? 'AI confidence (at assessment)' : 'Confidence'}
-          value={confidencePercent}
-          display={`${Math.round(confidencePercent)}%`}
-          tone="primary"
-          description={
-            bar !== null
-              ? `Agent assessment · auto-close bar ${bar}%${calibration?.note ? ` (${calibration.note})` : ''}`
-              : 'Agent assessment'
-          }
-        />
-      ) : null}
-      <RiskFactorProfile factors={factors} />
-      {typeof riskVal !== 'number' && confidencePercent === null && !factors.length ? (
-        <p className="text-sm text-muted-foreground">No scored signals recorded.</p>
-      ) : null}
-    </section>
+    </div>
   );
 };

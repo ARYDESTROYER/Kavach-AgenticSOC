@@ -474,23 +474,26 @@ tooltip.
 
 **Case Manager** sits directly beneath Cases in the Triage rail. It is the newer,
 split-pane way to work the same case data while the table-based Cases surface remains
-available during the migration. The left queue supports **Active / All**, search,
-severity/status filters, latest/highest-risk sorting, and manual refresh. The right
-pane embeds the canonical CaseDetail workflow: the same seven
+available during the migration. The left queue supports **Active / Mine / Review / All**
+(Mine when signed in; Review, with its waiting count, while the auto-close review is on or
+has picks waiting), search, severity/status filters, latest/highest-risk sorting, and
+manual refresh. The right pane embeds the canonical CaseDetail workflow: the same five
 tabs, lifecycle confirmations, deterministic decision card, RBAC gates, reinvestigate,
 runbooks, exports, notifications, collaboration/tasks/activity, and case-scoped chat.
-Its reference-matched header keeps only **Share**, **Take Action**, and the pane-close
-control at the upper-right; every lifecycle and operational command is consolidated
-inside **Take Action**. Timeline and Investigation are already tabs and are not
-repeated in that menu. Opening a row or deep link on **Cases** now announces a short
+Its header holds one primary action for the case's state (for example **Acknowledge &
+investigate**, **Close case**, **Resume**, **Mark resolved**, **Start review** or
+**Reopen**), **Take action** (every other lifecycle and operational command), **More
+options** (copy link, open in new tab) and the pane-close control. What happened and
+Threat context are sections of the Overview and Investigation tabs and are not repeated
+in that menu. Opening a row or deep link on **Cases** now announces a short
 handoff and opens that exact record in Case Manager; `caseId` stays in the URL across
 refresh, history, and bookmarks instead of opening a second detail drawer.
 At tablet/mobile widths the selected case replaces the queue and a **Cases** back control
 returns to the list. Counts explicitly distinguish the loaded 200-case window from the
 backend total when those differ.
 
-For an opened record, **Overview** conditionally adds a flat **Investigation inputs**
-summary when the latest investigation run recorded applicable context: approved
+For an opened record, **Investigation** shows a flat **Investigation inputs** section
+when the latest investigation run recorded applicable context: approved
 operator **memory consulted**, indexed **RAG knowledge retrieved**, **runbook references
 retrieved**, the matched Published **runbook** actually given to the investigator, or a
 deterministic platform threshold
@@ -540,19 +543,23 @@ cohort; use job counts, case history, and Audit for exact accountability.
 ### Case detail + lifecycle
 
 Opening a case loads the **stored** case by id (`GET /api/cases/{id}`) — it does
-**not** re-investigate. `CaseDetail` renders **seven tabs**: **Overview** (a compact
-decision brief, signal profile, persisted risk-factor values, source/agent/code
-provenance, conditional latest-run Investigation inputs, entities, attack story,
-ownership, history, and a **Next step** card for the case's runbook), **Runbook** (the
+**not** re-investigate. `CaseDetail` renders **five tabs** (Round 15): **Overview** (the
+runbook's **Next step** card, the AI summary and its recommended action, **What
+happened**, key entities, related cases and the signature baseline; risk factors and
+severity are in the facts rail's Signal section, the owner is in the header, and the
+status history is on Collaboration's History), **Runbook** (the
 runbook runs on the case, with its progress as the tab count; §12; shown with
-`runbooks:read`), **Timeline** (the
-"what happened" narrative with Risk Assigned and Decision — see §11), **Investigation** (the AI assessment,
-input evidence, pinned deterministic `DecisionCard`, and full agent trace — see §11),
-**Threat context** (§12's threat-context panel), **Collaboration** (§18's threads; tasks
-now sit on the Runbook tab under **Other tasks**), and **Chat** (a case-scoped chat
-follow-up, §5). Alt+1 to Alt+7 move between them.
+`runbooks:read`), **Investigation** (the AI assessment, pinned deterministic
+`DecisionCard`, Threat context, the investigation inputs, and full agent trace, see §11),
+**Collaboration** (§18's threads, the case's screenshots under **Files**, and the
+**History**; tasks now sit on the Runbook tab under **Other tasks**), and **Chat** (a
+case-scoped chat follow-up, §5). The Overview also holds **What happened** (the former
+Timeline tab: the narrative with Risk Assigned and Decision, see §11), and Investigation
+holds **Threat context** (the former Threat context tab, §12's panel); a link to the
+retired `timeline` or `threat` tab opens that section. Alt+1 to Alt+5 move between the
+tabs.
 
-The **Threat context** tab includes **How this case was clustered**, a read-only
+The **Threat context** section of the Investigation tab includes **How this case was clustered**, a read-only
 projection of persisted facts: Input alerts → Correlation cluster → Opened case. Hover or
 focus a node for source counts, grouping, threshold/window, current status/verdict, and
 bounded related-case links. Alert references are stable one-way hashes and are
@@ -587,7 +594,13 @@ the case closes with a required runbook step still open; 1 to 500 characters, wh
 collapsed) and `require_open_steps_reason` (ask the server to refuse with
 `409 runbook_steps_open`, naming the open steps, when that reason is missing). The
 Console's close dialog sends both; an API client that sends neither still closes, and the
-close records that steps were open.
+close records that steps were open. Since Round 15 the body also takes:
+
+- `actions_taken`: what was done about the case, at most 8 values from the fixed
+  vocabulary in `constants.CaseActionTaken` (an unknown value answers 422, and a repeat is
+  kept once), stored on the history entry and in the audit row's `changes`;
+- `review_via`: `"auto_close_review"` or null, single-case only (a bulk body answers
+  422), recorded on the history entry and the audit row only.
 
 **`disposition_declared` (boolean, default `false`) — ground-truth intent.** A
 disposition on the wire says *what* to record, never *who decided it*.
@@ -1111,22 +1124,22 @@ Every case can explain itself, right where you're already looking: `CaseDetail`'
 
 The rationale projection is scoped to the **latest investigation run**. An earlier
 run's memory, retrievals, runbook, tools, or tuning snapshot cannot leak into a later
-re-investigation. Overview defaults to inputs actually consulted/applied; Investigation
-may additionally disclose a persona or runbook that the router selected but a cheap
+re-investigation. Investigation inputs show inputs actually consulted/applied and may
+additionally disclose a persona or runbook that the router selected but a cheap
 route or kill switch prevented from being consulted. It never promotes selected-only
 procedure metadata into consulted provenance. These inputs may inform preprocessing or the model assessment; deterministic
 case policy remains the final close/escalate route authority.
 
-The separate **Timeline** tab is deliberately narrower: it is ONLY the "what
-happened" narrative — a 6-stage story (input → correlate → **Risk Assigned** → triage →
-investigate → **Decision**), backed by `GET /api/cases/{id}/stages`. Expanding Risk
+The Overview's **What happened** section (the former Timeline tab) is deliberately
+narrower: it is ONLY the "what happened" narrative, a 6-stage story (input → correlate →
+**Risk Assigned** → triage → investigate → **Decision**), backed by `GET /api/cases/{id}/stages`. Expanding Risk
 Assigned reconstructs the arithmetic from persisted factor values and current
 configured weights; it preserves the recorded score and warns when historical
 weights cannot be attributed exactly. In Case Manager, the terminal marker alone
 pulses. If the Investigate sentence already repeats the verdict/confidence chips,
 that duplicate sentence is suppressed. Use Investigation
 to audit *how* a verdict was reached and confirm the close/escalate was a
-deterministic policy outcome; use Timeline to see the sequence of events at a
+deterministic policy outcome; use What happened to see the sequence of events at a
 glance.
 
 ### What the agent actually sees per event (case evidence fields)
@@ -1256,7 +1269,7 @@ route, code and grant.
 
 **Threat context** (`GET /api/cases/{id}/threat-context`) assembles a defensive,
 **fail-open** panel for the case (each section degrades independently if its source
-is missing), shown as the **Threat context** tab (§3):
+is missing), shown as the **Threat context** section of the Investigation tab (§3):
 
 - **IOC reputation** — enrichment-provider lookups (§19) for the case's indicators
   (an indicator is flagged malicious above `threat_context.ioc_malicious_threshold`,
@@ -1637,7 +1650,7 @@ provider outage degrades that one signal, never the investigation. Multiple
 providers on the same indicator are fused (default: `max()` across normalised
 scores; an opt-in weighted-fusion mode is available via
 `enrichment.fusion_enabled`). Results feed both the automated investigation (as
-enrichment evidence) and the case-detail **Threat context** tab (§12).
+enrichment evidence) and the case-detail **Threat context** section (§12).
 
 ---
 

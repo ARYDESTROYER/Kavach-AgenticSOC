@@ -49,6 +49,21 @@ describe('StatusDot', () => {
     expect(screen.getByText('Ready').parentElement).toHaveClass('text-muted-foreground');
     expect(container.querySelector('[aria-hidden="true"]')).toHaveClass('bg-muted-foreground/60');
   });
+
+  it('truncates by default and wraps a long status when asked, the dot on its first line', () => {
+    render(<StatusDot>Needs key</StatusDot>);
+    expect(screen.getByText('Needs key')).toHaveClass('truncate');
+    const { container } = render(
+      <StatusDot wrap tone="warning">
+        Off: every signed-in account is treated as Super admin
+      </StatusDot>,
+    );
+    const text = screen.getByText('Off: every signed-in account is treated as Super admin');
+    expect(text).not.toHaveClass('truncate');
+    expect(text).toHaveClass('whitespace-normal');
+    expect(text.parentElement).toHaveClass('items-start');
+    expect(container.querySelector('[aria-hidden="true"]')).toHaveClass('mt-1.5');
+  });
 });
 
 describe('RowActions', () => {

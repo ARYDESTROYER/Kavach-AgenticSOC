@@ -36,6 +36,7 @@ from ..constants import (
     SourceSurface,
     Verdict,
 )
+from ..engine.analyst_outcomes import standing_analyst_disposition
 from ..engine.case_manager import CaseManager
 from ..engine.cost_gate import CaseBudget
 # Read-time classification of an ALREADY-persisted decision, shared with the metrics
@@ -48,7 +49,7 @@ from ..engine.risk import compute_risk
 from ..engine.signatures import find_open_case_for_cluster
 from ..es.base import BaseESClient
 from ..llm.gateway import LLMGateway
-from ..models import Case, Cluster, EnrichmentResult, VerdictResult
+from ..models import Case, Cluster, EnrichmentResult, StatusHistoryEntry, VerdictResult
 from ..stores.cases import CaseStore
 from ..tools.base import ToolRegistry
 from ..tools.enrich import EnrichTool
@@ -206,6 +207,8 @@ RunbookCatalogProvider = Callable[[], Awaitable[Any]]
 #: Attaches the matching runbook to a case the pipeline left needing a person (the
 #: post-investigation trigger of §4.10.4). Never awaited for its result.
 RunbookAttacher = Callable[[Case], Awaitable[Any]]
+# Round 15 (SPEC D6.3): ``engine.auto_close_review.ReviewSampler`` in production.
+ReviewSamplerHook = Callable[[Case, Preferences], Awaitable[Any]]
 
 
 def builtin_runbook_catalog() -> tuple[Any, ...]:
@@ -286,6 +289,7 @@ class InvestigationPipeline:
         fixture_sink: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
         runbook_catalog: RunbookCatalogProvider | None = None,
         runbook_attacher: RunbookAttacher | None = None,
+        review_sampler: ReviewSamplerHook | None = None,
     ) -> None:
         self._es = es
         # The agent's read-only log surface. Defaults to wrapping ``es`` in an
@@ -314,6 +318,12 @@ class InvestigationPipeline:
         # case needs a person. Post-settable, like ``notifier`` and ``automation``.
         # None → no attachment (direct constructions and tests).
         self.runbook_attacher = runbook_attacher
+        # Round 15 (SPEC D6.3): the auto-close review sampler, called once per run
+        # after every other post-decision hook, for a terminal case the agent decided.
+        # It reads the decided case and never changes it (#3). Post-settable, like
+        # ``runbook_attacher``; None (the replay stack, direct constructions) samples
+        # nothing.
+        self.review_sampler = review_sampler
         # Operator MEMORY store (durable trusted facts auto-injected into every
         # investigation). None → no memory injected (today's behaviour).
         self._memory = memory
@@ -595,6 +605,26 @@ class InvestigationPipeline:
         except Exception as exc:  # noqa: BLE001 - attachment never affects the case path
             logger.warning("runbook attachment skipped for %s: %s", case.case_id, exc)
 
+    async def _maybe_sample_review(self, case: Case, prefs: Preferences) -> None:
+        """The auto-close review sample (Round 15 SPEC D6.3): hands a terminal case the
+        agent decided to ``review_sampler``, which picks a small random, capped share
+        of them for a person to review. Runs after ``apply()``, the save and every other
+        post-decision hook, so it only reads a decided case (#3). A no-op without a
+        sampler (the replay stack) and for any other case. Never raises."""
+        sampler = self.review_sampler
+        if sampler is None:
+            return
+        try:
+            from ..constants import TERMINAL_CASE_STATUSES
+
+            if case.decision_by != DecisionBy.AGENT:
+                return
+            if not case.status or case.status.value not in TERMINAL_CASE_STATUSES:
+                return
+            await sampler(case, prefs)
+        except Exception as exc:  # noqa: BLE001 - sampling never affects the case path
+            logger.warning("auto-close review sampling skipped for %s: %s", case.case_id, exc)
+
     async def _maybe_index_resolved(self, case: Case) -> None:
         """Best-effort: index a terminal (closed/resolved) case into the RAG corpus
         as institutional memory (F11). OUTSIDE the decision logic — a failure never
@@ -626,6 +656,36 @@ class InvestigationPipeline:
         except Exception as exc:  # noqa: BLE001 — numbering must never break creation
             logger.warning("Case-number allocation failed (%s); falling back to case_id", exc)
             return ""
+
+    async def _latest_stored_case(self, case_id: str, existing: Case | None) -> Case | None:
+        """The stored case as it stands now, read again just before a rebuild (Round 15
+        SPEC D6.10).
+
+        ``existing`` is read when the run begins, and the run (router, investigator and
+        tool calls) can last up to ``caps.timeout_seconds``. A person may acknowledge,
+        assign, comment on, grade, tag or close the case meanwhile, and the case stores
+        write the whole document, so a rebuild from the copy read at the start would
+        silently erase that work. The rebuild therefore starts from the latest stored copy,
+        and :func:`_carry_case_work` carries the work from it.
+
+        A case a person closed during the run is rebuilt like any other: the run's new
+        events are never dropped, the person's close stays on the carried timeline, and
+        the appended transition names it as the previous status.
+
+        A new case (``existing`` is None) reads nothing. A read that fails, or that finds no
+        case, keeps ``existing``. Never raises; the rebuilt verdict, confidence and risk
+        come from this run, never from the stored copy (#3)."""
+        if existing is None:
+            return None
+        try:
+            latest = await self._cases.get(case_id)
+        except Exception as exc:  # noqa: BLE001 (the rebuild must never fail on this read)
+            logger.warning(
+                "Re-reading case %s before its rebuild failed (%s); using the copy read "
+                "when the run began", case_id, exc,
+            )
+            return existing
+        return latest if isinstance(latest, Case) else existing
 
     async def _platform_tuning_snapshot(
         self, cluster: Cluster, prefs: Preferences
@@ -1119,6 +1179,9 @@ class InvestigationPipeline:
             self._emit_step(case_id, "verdict", status="running",
                             detail=verdict.verdict.value)
 
+            # Round 15 (SPEC D6.10): rebuild on the case as it is stored NOW, so work a
+            # person did while this run was in flight is carried, not overwritten.
+            existing = await self._latest_stored_case(case_id, existing)
             case_number = await self._allocate_case_number(existing, cluster, prefs)
             retrieval_measured = procedure_provenance.get("retrieval_status") == "measured"
             case = self._assemble_case(
@@ -1212,10 +1275,17 @@ class InvestigationPipeline:
             # save (#3). A send (or failure) can never block, delay, or alter the case
             # — create_task detaches it and notify() swallows all errors internally.
             self._maybe_notify(case)
+            # Round 15 (SPEC D6.3): the random auto-close review sample, AFTER every
+            # hook above, only for a terminal case the agent decided. It never writes
+            # to the case and never feeds the decision (#3); a failure is logged.
+            await self._maybe_sample_review(case, prefs)
             return case
         except Exception as exc:  # noqa: BLE001 — never drop an alert
             logger.exception("Pipeline failed for cluster %s; failing to human", cluster.signature)
             retrieval_measured = procedure_provenance.get("retrieval_status") == "measured"
+            # Round 15 (SPEC D6.10): a failed run keeps the work a person did while it was
+            # in flight, too (the run may have failed before the re-read above).
+            existing = await self._latest_stored_case(case_id, existing)
             case = _fail_to_human_case(
                 case_id,
                 cluster,
@@ -1382,8 +1452,6 @@ class InvestigationPipeline:
         status_history = list(existing.status_history) if existing else []
         prev_status = existing.status if existing else None
         if prev_status != CaseStatus.CLOSED:
-            from ..models import StatusHistoryEntry  # local import avoids a cycle
-
             status_history.append(StatusHistoryEntry(
                 from_status=(prev_status.value if prev_status else ""),
                 to_status=CaseStatus.CLOSED.value,
@@ -1544,6 +1612,10 @@ class InvestigationPipeline:
             # cluster, so any stale marker from an earlier close is no longer true.
             analyst_policy=None,
         )
+        # Round 15 (SPEC D6.10): people's work on the case survives the rebuild, and
+        # the timeline names the real previous status if the candidate moved it.
+        _carry_case_work(existing, case)
+        _record_rebuild_transition(existing, case, reason=case.summary)
         await self._cases.save(case)
         await self._audit.record(
             action_type=ActionType.POLL, surface=source_surface.value, actor="poller",
@@ -1602,10 +1674,15 @@ class InvestigationPipeline:
             existing.knowledge_used if existing else [],
             knowledge_used if retrieval_measured else None,
         )
-        return Case(
+        case = Case(
             case_id=case_id,
             case_number=(existing.case_number if existing and existing.case_number else case_number),
             cluster_signature=cluster.signature,
+            # Round 15 (SPEC D6.10): the stored status, used ONLY as ``apply()``'s
+            # previous status (as the analyst-policy path does), so the transition
+            # ``apply()`` appends to the carried timeline names the real previous
+            # status. ``apply()`` sets the decided status; ``decide()`` is untouched.
+            status=(existing.status if existing else CaseStatus.OPEN),
             # Surfaces the REAL upstream cause on a run that failed for a reason the
             # verdict text alone cannot express (e.g. a provider outage behind a
             # timeout). None on every ordinary run, so existing cases are unchanged.
@@ -1676,6 +1753,57 @@ class InvestigationPipeline:
             # set would keep a genuinely investigated case out of every agent statistic.
             analyst_policy=None,
         )
+        return _carry_case_work(existing, case)
+
+
+def _carry_case_work(existing: Case | None, case: Case) -> Case:
+    """Carry people's work on a stored case onto its rebuilt document (Round 15 SPEC
+    D6.10). The one helper of the three builders that rebuild an open case from a
+    cluster: :meth:`InvestigationPipeline._assemble_case`, :func:`_fail_to_human_case`
+    and :meth:`InvestigationPipeline._register_candidate_locked`. The case stores write
+    the whole document, so a field a builder leaves out is erased.
+
+    Carried: ``assignee``, ``comments``, ``feedback`` (a grade is independent ground
+    truth, a review grade included), ``status_history`` (appended to by ``apply()`` or
+    the builder), ``acknowledged_at``, ``status_reason``, ``notifications_sent``, and the
+    disposition ONLY when an analyst explicitly classified it and the case still carries
+    it (:func:`~app.engine.analyst_outcomes.standing_analyst_disposition`); otherwise the
+    disposition stays ``None`` and ``apply()`` fills it from the verdict. ``apply()``
+    fills a disposition only when it is ``None``, so a carried analyst disposition
+    survives a re-verdict.
+
+    NOT carried: ``status`` (``_assemble_case`` sets it only as ``apply()``'s previous
+    status; the other two builders set their own), ``escalation_level`` (a positive
+    value reads as escalated everywhere, which the rebuilt status may not be) and
+    ``decision_by``. Never reads or changes the decision inputs (#3). Returns ``case``."""
+    if existing is None:
+        return case
+    case.assignee = existing.assignee or ""
+    case.comments = list(existing.comments or [])
+    case.feedback = list(existing.feedback or [])
+    case.status_history = list(existing.status_history or [])
+    case.acknowledged_at = existing.acknowledged_at
+    case.status_reason = existing.status_reason or ""
+    case.notifications_sent = list(existing.notifications_sent or [])
+    if standing_analyst_disposition(existing) is not None:
+        case.disposition = existing.disposition
+    return case
+
+
+def _record_rebuild_transition(existing: Case | None, case: Case, *, reason: str) -> None:
+    """Append ``existing.status -> case.status`` to the carried timeline when a builder
+    that sets its own status (no ``apply()`` follows) moved it, by ``system`` (Round 15
+    SPEC D6.10: the appended transition names the real previous status). A new case, or
+    a status that did not move, appends nothing."""
+    if existing is None or existing.status == case.status:
+        return
+    case.status_history.append(StatusHistoryEntry(
+        from_status=(existing.status.value if existing.status else ""),
+        to_status=case.status.value,
+        by=DecisionBy.SYSTEM.value,
+        at=case.updated_at,
+        reason=truncate(reason or "", 500),
+    ))
 
 
 def _trigger(existing: Case | None, cluster: Cluster):
@@ -1762,8 +1890,11 @@ def _fail_to_human_case(
         existing.knowledge_used if existing else [],
         knowledge_used if retrieval_measured else None,
     )
-    return Case(
+    case = Case(
         case_id=case_id,
+        # A failed run keeps the case's display number (Round 15): an empty number here
+        # would make the next run mint a new one, so one case would read under two.
+        case_number=(existing.case_number if existing else ""),
         cluster_signature=cluster.signature,
         **originating_record_provenance(existing),
         created_at=existing.created_at if existing else iso_now(),
@@ -1806,6 +1937,11 @@ def _fail_to_human_case(
         # closed by declaration, so the durable marker does not survive.
         analyst_policy=None,
     )
+    # Round 15 (SPEC D6.10): a failed run keeps people's work on the case (a review
+    # grade included), and the timeline names the real previous status.
+    _carry_case_work(existing, case)
+    _record_rebuild_transition(existing, case, reason=case.recommended_action)
+    return case
 
 
 def _carried_tags(existing: Case | None) -> list[str]:

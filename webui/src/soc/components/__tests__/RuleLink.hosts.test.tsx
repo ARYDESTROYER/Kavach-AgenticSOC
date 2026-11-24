@@ -107,7 +107,7 @@ describe('Case Manager facts rail', () => {
     const user = userEvent.setup();
     render(
       <TooltipProvider>
-        <FactsRail c={CASE} outcome={caseOutcome(CASE)} triage={null} users={[]} canAssign={false} onCaseChange={vi.fn()} />
+        <FactsRail c={CASE} outcome={caseOutcome(CASE)} triage={null} canViewCost={false} onCaseChange={vi.fn()} />
       </TooltipProvider>,
     );
     const source = screen.getByTestId('facts-source');
@@ -131,7 +131,7 @@ describe('Case Manager facts rail', () => {
       const user = userEvent.setup();
       render(
         <TooltipProvider>
-          <FactsRail c={CASE} outcome={caseOutcome(CASE)} triage={null} users={[]} canAssign={false} onCaseChange={vi.fn()} />
+          <FactsRail c={CASE} outcome={caseOutcome(CASE)} triage={null} canViewCost={false} onCaseChange={vi.fn()} />
         </TooltipProvider>,
       );
       const link = screen.getByRole('button', { name: 'Open rule ssh_bruteforce' });

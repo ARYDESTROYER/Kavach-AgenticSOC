@@ -343,6 +343,21 @@ function navigatedToACase(onNavigate: ReturnType<typeof vi.fn>): boolean {
   );
 }
 
+
+/**
+ * axe inside act(), as Chat.test.tsx does: the shell announcer re-sets its live region on a
+ * 60 ms timer (useLiveAnnouncer) and the open panel announces itself, so the update can
+ * land while axe walks the DOM. Outside act() React writes a warning to stderr, which fails
+ * the strict Console gate.
+ */
+async function axeInAct(node: Element) {
+  let results: Awaited<ReturnType<typeof axe>> | undefined;
+  await act(async () => {
+    results = await axe(node);
+  });
+  return results as Awaited<ReturnType<typeof axe>>;
+}
+
 describe('Overview — the command lattice', () => {
   beforeEach(() => {
     forgetPointerEventsMemo(document.body);
@@ -614,6 +629,6 @@ describe('Overview — the command lattice', () => {
     // `document.body`, NOT the render container: the sheet is portalled out of the
     // container and aria-hides the rest of the body, so a container-scoped run would
     // audit a page the operator can no longer reach and call it clean.
-    expect(await axe(document.body)).toHaveNoViolations();
+    expect(await axeInAct(document.body)).toHaveNoViolations();
   });
 });

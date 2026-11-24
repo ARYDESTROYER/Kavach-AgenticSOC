@@ -26,6 +26,7 @@ on a store larger than the fetch bound.
 
 from __future__ import annotations
 
+import math
 from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -48,6 +49,7 @@ from .analyst_outcomes import analyst_confirmed_outcome
 from .case_manager import _entry_for
 from .precedent import is_policy_closed
 from .priority import band_of_case
+from .review_origin import is_review_grade
 
 # A labelled placeholder for a metric that could not be computed because the
 # underlying transition / event never occurred (rather than a misleading 0). The UI
@@ -119,6 +121,10 @@ def _stat_block(samples: list[float], *, missing_reason: str) -> dict[str, Any]:
 _AGREEMENT_ASSESSMENTS = frozenset({"agree", "partial", "disagree"})
 
 
+#: The 0..1 sub-scores a grade may rate (Console stars map to 0.2..1.0; 0.0 is unrated).
+_FEEDBACK_SUBSCORES: tuple[str, ...] = ("accuracy", "reasoning_quality", "action_appropriateness")
+
+
 def feedback_stats(cases: list[Case]) -> dict:
     """Aggregate analyst feedback across cases (the eval/quality loop).
 
@@ -128,17 +134,37 @@ def feedback_stats(cases: list[Case]) -> dict:
     ground truth and is counted as such by the tuner and the precedent projection — it
     is only this AGREEMENT-WITH-THE-AGENT view it must stay out of.
 
+    Round 15 (SPEC D6.8): auto-close REVIEW grades (``engine.review_origin.
+    is_review_grade``) are excluded for the same reason. The review sample is drawn only
+    from automatic closes, so counting it here would shift the population this view
+    describes; the review grade is still ground truth for the tuner and the precedent
+    corpus. A case whose only grades are review grades is not a graded case here.
+
     ``agreement_rate`` is computed over AGREEMENT SIGNALS only — entries whose
     assessment is ``agree``/``partial``/``disagree``. A grade with no assessment (an
     analyst settling a NEEDS_HUMAN hand-off, a duplicate close, a case with no AI
     verdict) compares nothing, so it must neither inflate nor deflate agreement; it
-    still counts toward ``feedback_count`` and the star averages. When there is no
-    agreement signal at all the rate is ``None`` (honest, never a fake 0%) and
-    ``agreement_signals`` says so explicitly.
+    still counts toward ``feedback_count``. When there is no agreement signal at all the
+    rate is ``None`` (honest, never a fake 0%) and ``agreement_signals`` says so
+    explicitly.
+
+    Round 15 (SPEC D4.5): each sub-score average (``avg_accuracy``,
+    ``avg_reasoning_quality``, ``avg_action_appropriateness``) is taken over the
+    entries that RATED it (a value above 0: the Console's stars map to 0.2..1.0 and an
+    unrated sub-score is stored as 0.0), and ``accuracy_rated``,
+    ``reasoning_quality_rated`` and ``action_appropriateness_rated`` count them. An
+    average stays ``0.0`` when nothing rated it, so read it with its count: a ``0.0``
+    sent by an API caller is read as "not rated". The stored grade shape is unchanged.
     """
     cases = [c for c in cases if not is_policy_closed(c)]
-    entries = [fb for c in cases for fb in (c.feedback or [])]
-    graded_cases = sum(1 for c in cases if c.feedback)
+    entries: list[Any] = []
+    graded_cases = 0
+    for case in cases:
+        own = [fb for fb in (case.feedback or []) if not is_review_grade(case, fb)]
+        if own:
+            graded_cases += 1
+            entries.extend(own)
+    rated_zero = {f"{name}_rated": 0 for name in _FEEDBACK_SUBSCORES}
     if not entries:
         return {
             "graded_cases": 0, "feedback_count": 0, "agreement_rate": 0.0,
@@ -146,23 +172,40 @@ def feedback_stats(cases: list[Case]) -> dict:
             "avg_accuracy": 0.0, "avg_reasoning_quality": 0.0,
             "avg_action_appropriateness": 0.0, "time_saved_minutes": 0,
             "outcome_distribution": {},
+            **rated_zero,
         }
     n = len(entries)
     assessments = [(e.assessment or "").strip().lower() for e in entries]
     signals = [a for a in assessments if a in _AGREEMENT_ASSESSMENTS]
     agree = sum(1 for a in signals if a == "agree")
     partial = sum(0.5 for a in signals if a == "partial")
+    averages: dict[str, float] = {}
+    rated: dict[str, int] = {}
+    for name in _FEEDBACK_SUBSCORES:
+        values = [_rated_value(getattr(e, name, 0.0)) for e in entries]
+        given = [v for v in values if v is not None]
+        rated[f"{name}_rated"] = len(given)
+        averages[f"avg_{name}"] = round(sum(given) / len(given), 4) if given else 0.0
     return {
         "graded_cases": graded_cases,
         "feedback_count": n,
         "agreement_signals": len(signals),
         "agreement_rate": round((agree + partial) / len(signals), 4) if signals else None,
-        "avg_accuracy": round(sum(e.accuracy for e in entries) / n, 4),
-        "avg_reasoning_quality": round(sum(e.reasoning_quality for e in entries) / n, 4),
-        "avg_action_appropriateness": round(sum(e.action_appropriateness for e in entries) / n, 4),
+        **averages,
         "time_saved_minutes": int(sum(e.time_saved_minutes for e in entries)),
         "outcome_distribution": dict(Counter(e.actual_outcome for e in entries if e.actual_outcome)),
+        **rated,
     }
+
+
+def _rated_value(value: Any) -> float | None:
+    """A sub-score that was rated (a finite value above 0), else ``None``."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    number = float(value)
+    if not math.isfinite(number) or number <= 0.0:
+        return None
+    return number
 
 
 def retrieval_history(

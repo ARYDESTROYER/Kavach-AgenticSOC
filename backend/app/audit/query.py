@@ -47,6 +47,11 @@ from dataclasses import dataclass, field, fields
 from datetime import datetime, timezone
 from typing import Any, Mapping, Sequence, Union
 
+from ..constants import (
+    CASE_COLLAB_AUDIT_ACTIONS,
+    CASE_GRADED_AUDIT_ACTION,
+    CASE_LIFECYCLE_AUDIT_ACTIONS,
+)
 from ..stored_text import USERNAME_MAX_CHARS, audit_actor_key, single_line
 from ..utils import dotted_get, parse_es_timestamp
 from . import events
@@ -315,14 +320,33 @@ def scope_predicate(scope: str | None, table: EventTable = TABLE) -> Predicate:
     raise ValueError(f"unknown audit scope {scope!r}")
 
 
+#: Round 15 (SPEC D7.4): the structured actions the new rows of a legacy event family
+#: carry. Human case work kept its ``action_type`` (``status``, ``collab``,
+#: ``feedback``) and gained a ``case.*`` action, so a row that carries one no longer
+#: matches the legacy branch (``action`` absent) of its family. This one table maps the
+#: family onto those actions; the Elasticsearch, SQL and Python compilers all interpret
+#: the predicate tree :func:`event_predicate` builds from it, so the three stores agree.
+EVENT_FAMILY_ALIASES: Mapping[str, tuple[str, ...]] = {
+    "status": tuple(sorted(CASE_LIFECYCLE_AUDIT_ACTIONS.values())),
+    "collab": tuple(sorted(CASE_COLLAB_AUDIT_ACTIONS)),
+    "feedback": (CASE_GRADED_AUDIT_ACTION,),
+}
+
+
 def event_predicate(event: str, table: EventTable = TABLE) -> Predicate:
+    """An ``event`` filter: a category id, one structured action (``auth.login``), or an
+    event family (a bare token): rows whose ``action`` starts with ``<token>.``, legacy
+    rows whose ``action_type`` is the token, and the new-shape rows of that family
+    (:data:`EVENT_FAMILY_ALIASES`)."""
     if event in table.category_labels:
         return category_predicate(event, table)
     if "." in event:
         return Eq("action", event)
+    aliases = EVENT_FAMILY_ALIASES.get(event, ())
     return any_of(
         Prefix("action", f"{event}."),
         all_of(missing("action"), Eq("action_type", event)),
+        *((In("action", aliases),) if aliases else ()),
     )
 
 

@@ -124,15 +124,19 @@ the exact request model and every operation under a prefix.
 | Area | Principal operations | Purpose |
 |---|---|---|
 | Service and health | `GET /`, `GET /api/health`, `/live`, `/ready`, `/build-info` | Service discovery, probes, dependency readiness, and release identity |
-| First-run setup | `GET /api/setup/status`; `POST /api/setup/account`, `/secrets`, `/complete` | Bootstrap the first account, submit runtime secrets, and complete setup |
+| First-run setup | `GET /api/setup/status`; `POST /api/setup/account`, `/secrets`, `/complete` | Bootstrap the first account, submit runtime secrets, report whether the AI runtime can be called, and complete setup; see [First-run setup readiness](#first-run-setup-readiness) |
 | Authentication | `/api/auth/login`, `/logout`, `/refresh`, `/reauth`, `/change-password`; `/api/auth/mfa/*`; `/api/auth/sso/*` | Password sessions, MFA, refresh rotation, step-up authentication, and OIDC |
 | Account and sessions | `/api/account/*`, `/api/me/avatar`, `/api/sessions*`, `/api/admin/sessions*` | Profile, effective permissions, activity, and session revocation |
 | Users and roles | `/api/users*`, `/api/roles*` | User lifecycle, built-in/custom roles, permission preview, and simulation |
+| Role-based access | `GET /api/rbac`, `PUT /api/rbac` | Read whether role-based access is on and turn it on or off; see [Role-based access switch](#role-based-access-switch) |
+| Team activity | `GET /api/team/activity`, `GET /api/team/people`, `GET /api/team/people/{username}/events` | Per-person work counts from the audit log; see [Team activity](#team-activity) |
 | Connector catalog | `GET /api/connectors`, `GET /api/connectors/{source_type}`, `POST /api/connectors/test` | Discover connector manifests and test source access |
 | Sources and ingest | `/api/sources*`, `POST /api/ingest/{source_id}`, `POST /api/poll`, `GET /api/logs` | Configure feeds, accept pushed records, poll pull sources, inspect health, and browse logs (with exact `rule`, `severity` and `severity_gte` filters) |
-| Cases | `GET /api/cases`, `GET /api/cases/{case_id}`, `POST /api/cases/{case_id}/action`, `POST /api/cases/bulk` | List, filter (including `q`, `assignee`, `severity`, `status_group`, an exact AI `verdict`, an exact `rule`, and `closed_by`), retrieve, export, and act on cases |
+| Cases | `GET /api/cases`, `GET /api/cases/{case_id}`, `POST /api/cases/{case_id}/action`, `POST /api/cases/bulk` | List, filter (including `q`, `assignee`, `severity`, `status_group`, an exact AI `verdict`, an exact `rule`, `closed_by`, and the auto-close `review` state), retrieve, export, and act on cases |
 | Case investigation | `/api/cases/{case_id}/triage`, `/timeline`, `/trace`, `/stages`, `/rationale`, `/threat-context`, `/forwarding`; `POST /investigate`, `/reinvestigate`, `/feedback` | Explain evidence, agent work, deterministic routing, and analyst feedback |
 | Case collaboration | `/api/cases/{case_id}/thread*`, `/tasks*`, `/activity`, `/comment`, `/assign`, `/tags`, `/notify` | Discussion, reactions, tasks, ownership, activity, and manual notification |
+| Case screenshots | `GET` and `POST /api/cases/{case_id}/files`, `DELETE /api/cases/{case_id}/files/{file_id}`, `GET /api/cases/{case_id}/files/{file_id}/content` | List, add, delete and serve screenshots on a case; see [Case screenshots](#case-screenshots) |
+| Auto-close review | `POST /api/cases/{case_id}/review`, `GET /api/cases/{case_id}/review`, `GET /api/auto-close-review/summary`, `GET /api/metrics/auto-close-review` | Record a person's review of an automatic close, one case's review state, the Review scope badge, and the Agent effectiveness module; see [Auto-close review](#auto-close-review) |
 | Workspace | `POST /api/chat`, `POST /api/chat/stream`, `GET /api/chat/context`, `POST /api/chat/turns/{turn_id}/cancel`, `GET /api/chat/turns/active`, `GET /api/chat/turns/{turn_id}/events`, `POST /api/chat/turns/{turn_id}/seen`, `GET /api/chat/topics/{topic_id}`, `POST /api/chat/entity-question`, `GET /api/chat/starters`, `POST /api/chat/starters/events`, `/api/chat/conversations*`, `/api/chat/feedback*`, `POST /api/investigate`, `POST /api/overview`, `GET /api/search`, `/scans`, `/personas` | Console chat (blocking and streamed) with per-user history, rejoining running answers, suggested questions, the step inspector, answer ratings, entity investigation, cross-surface search, scan queues, and personas |
 | Chat reports | `GET/POST /api/reports`, `GET/PATCH/DELETE /api/reports/{report_id}`, `POST /api/reports/add`, `POST /api/reports/from-answer`, `POST /api/reports/from-conversation`, `POST /api/reports/{report_id}/summary` | Owner-scoped reports built from saved chat answers, with an optional AI summary |
 | Detection and automation | `/api/rules*` (including `GET /api/rules/summary` and `/api/rules/analyst-policies*`), `/api/tuning*`, `/api/baseline*`, `/api/campaigns*`, `/api/batch*`, `/api/proposals*` | Rule lifecycle, safe preview/version rollback, analyst-grounded recommendations, baselines, reconciled campaigns, batch jobs, and approvals |
@@ -562,8 +566,9 @@ answers `503 audit_unavailable`. This applies to `PUT /api/settings`, `PUT
 /api/auth/sso/providers/{id}/secret`, `PUT /api/prefs/user` when it changes
 `misc.dashboards_hidden` or `misc.dismissed_intros`, `POST /api/sources`, `DELETE
 /api/sources/{id}`, `POST /api/sources/{id}/secrets`, `POST /api/setup/secrets`, `POST
-/api/setup/complete`, every runbook and dashboard write, the job submissions that are
-recorded first, and every job file download. The SSO callback redirects with
+/api/setup/complete`, `PUT /api/rbac`, every runbook and dashboard write, adding or
+deleting a case screenshot, recording an auto-close review, the job submissions that
+are recorded first, and every job file download. The SSO callback redirects with
 `sso_error=audit_unavailable`. Sign-in, sign-out and session events are never blocked: a
 row that cannot be written is logged and counted instead.
 
@@ -666,6 +671,183 @@ older cases with no recorded decider). Any other `closed_by` value, `human` incl
 are echoed as `rule_applied` and `closed_by_applied`. Free-text `q` also matches a case's
 rule values.
 
+## First-run setup readiness
+
+`GET /api/setup/status` (public) includes `ai_runtime_ready`: `true` when both the router
+and the investigator models can be called with the credentials the backend holds. For
+OpenAI and Anthropic that is the provider's key; for an OpenAI-compatible endpoint a
+LiteLLM or OpenAI key, or a base URL that resolves for the model (a self-hosted server
+may need no key); for Azure OpenAI a key and an endpoint; for Amazon Bedrock an access key
+id and its secret; for Google Vertex AI a token and a project. The mock provider counts
+as ready only in Demo Mode. This public route never names the provider.
+
+`POST /api/setup/secrets` (`settings:manage`) answers `{ok, configured,
+ai_runtime_ready, ai_runtime_provider}`, read after the keys were applied.
+`ai_runtime_provider` is one of `openai`, `anthropic`, `openai_compatible`, `azure`,
+`bedrock`, `vertex` or `mock`: the provider of the first of the two roles that cannot be
+called, else the investigator's. The setup wizard words its notices from these fields.
+Neither field makes a model call.
+
+## Role-based access switch
+
+`GET /api/rbac` (`roles:read`) returns `RbacStatus`: `enabled`, `auth_enabled`,
+`can_change`, `blockers` (`auth_off`, `not_super_admin`, `read_only_settings`),
+`caller_role` (the role stored for the caller, even while role-based access is off),
+`super_admin_count` (active Super admin accounts, the environment administrator
+included), and `role_counts` (active accounts per stored role) for a caller holding
+`users:manage`, else `null`.
+
+`PUT /api/rbac` takes `{"enabled": true}` or `{"enabled": false}` (a JSON boolean, no
+other field; anything else is `422`). Its rules are checked in this order:
+
+| Order | Rule | Refusal |
+|---|---|---|
+| 1 | Sign-in is on | `409 rbac_auth_required` |
+| 2 | A registered session signed in, or re-authenticated with `POST /api/auth/reauth`, within the session policy's re-authentication window (10 minutes by default); a missing or unknown session, or a session store that cannot be read, is refused too | `401 reauth_required` |
+| 3 | The caller's stored role is `super_admin` (role-based access being off never counts) | `403 rbac_super_admin_only`, with an Access denied row |
+| 4 | Settings are not in read-only mode | `403` "Settings are in read-only mode" |
+| 5 | Turning on: at least one active Super admin account exists | `409 rbac_no_super_admin` |
+| 6 | Already in the requested state | `200` with `changed: false` and no audit row |
+| 7 | The audited settings write (action `settings.updated`, target **RBAC**, `changes` `rbac.enabled` before and after), recorded before it is visible | `409 settings_conflict` after its retries, `503 audit_unavailable` |
+
+The answer is `RbacStatus` plus `changed`. Demo Mode does not change any of this: the
+switch writes the real settings and the control audit.
+
+`PUT /api/settings` no longer changes the switch: a body that would change `rbac.enabled`
+answers `409 rbac_switch_moved` ("Turn role-based access on or off in Roles &
+permissions, or with PUT /api/rbac."). A changed `roles`, `resources`, `custom_roles`,
+`denies` or `default_role` under `rbac` needs `roles:manage` (an Access denied row on a
+refusal) and a fresh sign-in (`401 reauth_required`), checked before the save's audit row;
+with sign-in off both checks pass. A body that sends `rbac` unchanged is saved as before.
+
+## Team activity
+
+Every route needs `team:view` (SOC manager and Auditor by default; Super admin holds every
+grant). While role-based access is off every account holds every grant, so the routes also
+need a stored role of `super_admin`, `soc_manager` or `auditor`, else `403
+team_activity_role_required` with an Access denied row. With `team_activity.enabled` off
+they answer `409 team_activity_off`. A read the audit store cannot answer is `503
+team_activity_unavailable`.
+
+| Operation | Contract |
+| --- | --- |
+| `GET /api/team/activity?window=` | `TeamActivity`: `window`, `timezone`, `days`, `people` (per person: `key`, `username`, `display_name`, `role`, `active`, `kind`, `counts`, `closed_by`, `bulk`, `daily`, `last_active`, `median_ack_seconds`, `ack_samples`, `reviews`), `team` (the same totals plus `people_active` and `ack_status`), `exact`, `partial_reason`, `scanned_rows`, `auth_enabled`, `rbac_enabled`, `demo`, `generated_at` |
+| `GET /api/team/people` | The roster: `username`, `display_name`, `role`, `active` and `kind` (`account`, `environment` or `demo`), with `auth_enabled` and `demo` |
+| `GET /api/team/people/{username}/events?window=&cursor=&limit=` | One person's counted events, newest first: `ts`, `kind`, `label` (worded by the server), `case_id`, `case_number` and `detail` (built from structured fields only). `limit` is 1 to 200 (default 50); follow the signed `next_cursor`. Answers `total`, `exact` and `partial_reason` too |
+
+`window` takes the time-window grammar (`today`, `yesterday`, `now-7d`, a date range
+`A..B`; blank is `today`) in the SLA time zone, at most 92 days (`422
+team_window_too_long`; an unreadable token is `422 team_invalid_window`). The counted
+kinds are `acknowledged`, `closed` (split in `closed_by` into `true_positive`,
+`false_positive`, `benign`, `duplicate` and `other`), `reopened`, `escalated`,
+`commented`, `assigned`, `screenshot_added`, `reviewed`, `runbook_step_done` and
+`signed_in`; `bulk` counts the lifecycle rows written by bulk actions. `reviews` reports
+`completed`, `agreed`, `disagreed`, `unsure`, `answered`, an `agreement_rate` only from 30
+answered reviews, the median time spent on the review card and the median time from the
+pick to the review. People are matched case-insensitively; a person `kind` is `account`,
+`environment`, `demo`, `deleted` or `unattributed` (rows that name nobody, which have no
+events route: `404 team_person_not_found`).
+
+Counts are an exact fold over at most 250,000 audit rows of the window. An Elasticsearch
+read that cannot hold a point in time stops at 10,000 rows and a store without paging
+stops at its own scan limit; the answer then has `exact: false` and `partial_reason`
+`row_limit` or `store_limit`, and its counts are lower bounds. The median time to
+acknowledge covers at most 5,000 cases (`ack_status` `too_many_cases` above that). With
+sign-in off the answer is empty with `auth_enabled: false`. In Demo Mode case work comes
+from the Demo audit and sign-ins from the control audit. Answers are cached per viewer and
+window for 60 seconds. An events cursor is bound to the viewer, the person and the window
+(`400 team_cursor_invalid`, `409 team_cursor_expired`). No answer carries an IP address,
+user agent, session or settings row. Reading writes one `team.viewed` audit row per viewer
+every ten minutes, and one per viewer and person for the events, best-effort.
+
+## Case screenshots
+
+| Operation | Grant | Contract |
+| --- | --- | --- |
+| `GET /api/cases/{case_id}/files` | `cases:read` | `{case_id, files, deleted, count, bytes, can_upload, limits}`: the live screenshots in upload order, deleted ones with their metadata, and the bounds that apply. Each entry has `id`, `position`, `content_type`, `bytes`, `width`, `height`, `sha256`, `caption`, `filename`, `uploaded_by`, `uploaded_at`, `has_thumbnail`, `deleted` and `can_delete` |
+| `POST /api/cases/{case_id}/files` | `cases:comment` | A JSON body `{data_base64, content_type?, thumbnail_base64?, filename?, caption?}` (a `data:` URL is accepted). `201` with `{file, deduplicated: false}`; the same image again answers `200` with the existing entry and `deduplicated: true` and writes nothing. Allowed on closed cases |
+| `DELETE /api/cases/{case_id}/files/{file_id}` | `cases:comment`, and the uploader or a `cases:close` holder | Removes the image and its thumbnail and keeps the metadata as a deleted entry. Anyone else gets `403 case_files_delete_forbidden` and an Access denied row |
+| `GET /api/cases/{case_id}/files/{file_id}/content` | `cases:read` | `variant` is `full` (default) or `thumb`; `download=1` asks for an attachment. The stored bytes with their sniffed `Content-Type`, `X-Content-Type-Options: nosniff`, a server-made file name (`<case number>-<n>.<ext>`, `inline` or with `download=1` `attachment`), a `sandbox` content security policy, `Cache-Control: private, no-store` and `Cross-Origin-Resource-Policy: same-origin`. A missing thumbnail serves the full image |
+
+Limits: PNG, JPEG and WebP only, recognised by their bytes (`415
+case_files_unsupported_type`); at most 2 MiB stored per image after its metadata is removed
+(`413 case_files_too_large`), 8,192 pixels a side and 40 megapixels (`422
+case_files_dimensions`); a thumbnail of at most 48 KiB and 640 pixels a side; 20 images and
+20 MiB per case (`409 case_files_case_full`); 2 GiB in all (`409 case_files_storage_full`);
+in Demo Mode and on the in-memory store 5 images per case and 64 MiB in all. A request body
+over 3 MiB is refused before it is read (`413 case_files_body_too_large`). Each person may
+make 30 uploads a minute and 2 at once (`429 case_files_busy` with `Retry-After`). A caption
+is plain text of at most 200 characters (`422` above that); a file name is cut to its last
+120 characters. Other refusals: `422 case_files_invalid_image` and
+`case_files_invalid_base64`, `404 case_not_found` and `case_file_not_found`, `409
+case_files_duplicate` and `case_files_conflict` for racing writes, and `503
+case_files_unavailable` when the store cannot be read (never a false `404`).
+
+The server validates the structure of each image and strips its metadata but never decodes
+its pixels. Adds and deletes are recorded in the audit log first (`case.file_attached`,
+`case.file_deleted`, and `case.file_attach_failed` or `case.file_delete_failed`), with the
+case as the target and the file named by id, type and size; a summary never carries a file
+name or caption. Screenshots are never on the `Case` document and never reach a model,
+a chat tool, a report or a prompt. The bundled Web UI allows request bodies of 3 MiB on the
+upload path; a proxy in front of it needs the same.
+
+## Auto-close review
+
+`POST /api/cases/{case_id}/review` (`cases:write`) records a person's review of a case the
+AI agent closed automatically. The body is `{classification, note?, accuracy?,
+reasoning_quality?, action_appropriateness?, elapsed_ms?}`: `classification` is
+`true_positive`, `false_positive`, `benign` or `unsure`; `note` at most 1,000 characters;
+each rating above 0 and at most 1; `elapsed_ms` 0 to 86,400,000 (unknown fields are `422`).
+
+- The case must be closed and its first decision an agent close, else `409
+  review_not_agent_closed`; a picked case whose review is recorded answers `409
+  review_already_recorded`. An agent-closed case that was not picked can be reviewed too;
+  that review is an ordinary grade.
+- The `case.review_recorded` audit row is written first (`503 audit_unavailable`, and
+  nothing changes, when it cannot be); then the case gets one feedback entry (the analyst is
+  the signed-in person, `actual_outcome` is `true_positive` for a true positive,
+  `false_positive` for a false positive or benign, `unknown` for unsure); then the ledger is
+  completed. For a picked case the entry also carries `origin: "auto_close_review"` and the
+  `review_id`, and the case gets one `auto_close_review` history event.
+- The review never sets the case's status, decider or disposition. Its note becomes fenced,
+  untrusted precedent text, as a grading comment does.
+- The answer is `{agrees, can_reopen, sampled, review_id}`: `agrees` is `null` for unsure,
+  and `can_reopen` says whether the caller holds `cases:close`. A disagreeing reviewer
+  without `cases:close` sends one Inbox item (category Assignment) to the people who can
+  close cases, at most 200.
+
+`GET /api/cases/{case_id}/review` (`cases:read`) returns `{case_id, agent_closed, state,
+can_record, review_id, sampled_at, expires_at}` for the case workspace: the pending band,
+**Start review** and **Review this auto-close** read it. `state` is `none` (never picked),
+`pending`, `completed` or `expired`, computed on read. `agent_closed` applies the POST's
+own rule, and `can_record` says whether the POST would accept a review now, the caller's
+grants aside. `expires_at` is `null` once the review is completed. A pending or expired
+entry whose case history already holds its review reads as `completed`, and the ledger is
+repaired. It answers `404 case_not_found` and `503 review_ledger_unavailable`. The case
+never changes, and no audit row is written.
+
+`GET /api/auto-close-review/summary` (`cases:read`) returns `{enabled, pending,
+disagreed_open, sampled_today, daily_cap}` for the Case Manager Review scope.
+`GET /api/metrics/auto-close-review?window=` (`metrics:view`, default `now-30d`, `400
+bad_window` for a window it cannot read) returns the Agent effectiveness module over the
+cases picked in the window: the settings, `sampled`, `reviewed`, `pending`, `expired`,
+`unsure`, `agreement` (a rate and a Wilson 95% interval only from 30 reviews, else
+`status: insufficient`), `missed_threats` (a true positive given on an automatic
+false-positive close), `by_rule` (top 10), `time_spent_ms`, `time_to_review_ms`, `by_day`,
+`eligible` (automatic closes by the day of their first agent decision, with `complete`),
+`ledger_complete` and `statement` ("Agreement describes the sampled cases only,
+unweighted. It is not an estimate of auto-close precision.").
+
+`GET /api/cases?review=pending|completed|disagreed|expired` lists the cases of one Review
+state, with the other queue filters, sorting and paging applied, and
+echoes `review_applied` (another value is `400`). It reads at most the 2,000 cases the
+ledger keeps.
+
+Each pick writes one `case.review_requested` audit row (actor `system`, shown in Agent
+activity) and publishes a `case.review` frame. Reopening from a review sends
+`review_via: "auto_close_review"` on `POST /api/cases/{case_id}/action`, recorded on the
+history entry and the audit row only; any other value is `422`, and bulk bodies refuse it.
+
 ## Scheduler and telemetry evidence
 
 `GET /api/schedulers/health` (`automation:read`) returns
@@ -701,11 +883,17 @@ Case listing uses `limit` and `offset`, with optional `status`, `surface`, `enti
 match the case ID or number, title, summary, status, verdict, entity, source, or
 assignee), `assignee`, `severity` (the displayed severity band), an exact AI `verdict`
 (`TRUE_POSITIVE`, `FALSE_POSITIVE`, or `NEEDS_HUMAN`), an exact `rule` and `closed_by`
-(see [Rules: summary and exact filters](#rules-summary-and-exact-filters)), and
+(see [Rules: summary and exact filters](#rules-summary-and-exact-filters)), `review`
+(see [Auto-close review](#auto-close-review)), and
 `sort_field`/`sort_order`; `total` is the exact number of matching cases. Bulk `close` and `resolve` requests accept
 a `disposition` and `disposition_declared: true`, which records the disposition as the
 analyst's classification on every case, as a single close does; the field stays optional
-on the wire for older clients, and the console always sends it. Other list endpoints define their own query parameters;
+on the wire for older clients, and the console always sends it. A case action
+(`POST /api/cases/{case_id}/action`) may carry `actions_taken`, at most 8 of `no_action_needed`, `blocked_indicator`,
+`isolated_host`, `disabled_account`, `reset_credentials`, `removed_malware`,
+`patched_or_hardened`, `notified_owner`, `escalated_externally`, `tuned_detection` and
+`other` (an unknown value is `422`); they are stored on the case history entry and the
+audit row and appear in the case Markdown export. Other list endpoints define their own query parameters;
 do not assume that all collections share one pagination envelope. Follow the OpenAPI
 operation for the endpoint being called.
 
@@ -971,7 +1159,12 @@ converted to zero.
 
 ### Spend and metrics grants
 
-`GET /api/feedback/stats` needs `metrics:view`. `GET /api/usage/summary` (the Cost page,
+`GET /api/feedback/stats` needs `metrics:view`. Each sub-score average (`avg_accuracy`,
+`avg_reasoning_quality`, `avg_action_appropriateness`) is taken over the grades that
+rated it, and `accuracy_rated`, `reasoning_quality_rated` and
+`action_appropriateness_rated` count them: an average of `0.0` with a count of `0` means
+nobody rated it. Grades recorded by an auto-close review are left out of these
+statistics. `GET /api/usage/summary` (the Cost page,
 and one case's spend with `case_id`) needs `cost:view`. `cost:view` also governs the
 spend on the routes that show it beside other figures, which answer everything else to a
 caller without it:
@@ -1013,6 +1206,15 @@ than a synthetic composite score:
 | `analyst_reported_verdict_agreement` | Weighted analyst-reported agreement: `(agree + 0.5 × partial) / unique latest-valid graded cases` | Higher |
 | `material_analyst_correction_rate` | Explicit disagreement or an allow-listed AI-verdict/outcome conflict divided by the same unique graded-case cohort | Lower |
 | `human_review_turnaround` | p50 elapsed time from the first human acknowledgement to the final human terminal transition in the final live episode | Lower |
+
+A grade recorded by an auto-close review (its entry carries
+`origin: "auto_close_review"`, or it matches an `auto_close_review` history event on the
+case by time and analyst) is left out of the graded-case cohort behind agreement and correction,
+and is counted under `exclusions.auto_close_review_grade`. A reopen sent with
+`review_via: "auto_close_review"` on a case that carries a review recorded at or before
+it is not counted as a human reopen after an agent close in the reopen guardrail. Review
+grades stay ground truth for the threshold tuner and the precedent corpus; see
+[Auto-close review](#auto-close-review).
 
 Each metric carries its current and baseline samples, definition, delta, direction,
 minimum sample, and `enough_data`, `insufficient_evidence`, or `unavailable` status.
@@ -1248,7 +1450,12 @@ both on its job stream (`topics=chat,jobs`) and checks `GET /api/chat/turns/acti
 it follows a turn. With authentication disabled it polls that route instead: on load,
 when the tab becomes visible again, and every 5 seconds while it follows a turn. Case
 writes publish `case.changed` on topic `cases` with identifiers, status, and timestamps
-only, so the Case Manager queue can refresh. Runbook run changes publish `case.runbook`
+only, so the Case Manager queue can refresh. An auto-close review pick or a recorded
+review publishes `case.review` (`{case_id, review_id, state}`, `state` `pending` or
+`completed`) on both `cases:{id}` and `cases`, so an open queue refreshes its Review
+count. Adding or deleting a screenshot publishes `case.activity` on `cases:{id}` with
+`{case_id, kind, actor, ref: {file_id}}`, `kind` being `file_attached` or
+`file_deleted`. Runbook run changes publish `case.runbook`
 (`{case_id, run_id, progress, revision}`) on topic `runbooks`, served only to holders of
 both `runbooks:read` and `cases:read`. Ordinary progress is sampled, while
 submission/start/terminal transitions force publication. SSE is a nudge, not the durable registry or Inbox.
@@ -1321,7 +1528,9 @@ stored, and the two removed bundled groups, which now export empty), sanitized f
 Markdown for operator runbooks, and safe metadata (without source content or filesystem
 paths) for the bundled runbooks. A cases export adds each case's runbook runs as
 `case_runbook_runs`, with the rows of a log-search lookup left out and counted in
-`rows_dropped`. The server never
+`rows_dropped`, and each case's screenshot metadata as `case_files` (never the image
+bytes, which the manifest lists as excluded); the automation scope includes the
+auto-close review ledger. The server never
 traverses environment/source credentials, users, sessions, password/MFA material,
 browser tokens, or upstream raw logs; a final recursive sanitizer removes
 credential-shaped fields and common token/private-key patterns. Raw knowledge chunks

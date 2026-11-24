@@ -12,6 +12,154 @@ History is reconstructed from `git log`.
 
 ## [Unreleased]
 
+### Round 15
+
+Six operator asks: a switch for role-based access, truthful setup wording, a Team activity
+page, a stronger close with screenshots, a random review of automatic closes, and a calmer
+Case Manager. `decide()` is unchanged, there is no new model call, no new index, table or
+migration (the new state is in the key-value store), no new dependency, and the version
+stays 0.1.13.
+
+- Role-based access has a switch: **Settings → Security & access → Roles & permissions**
+  opens with a **Role-based access** group that shows the state, the active accounts per
+  role and **Turn on role-based access** (or **Turn off**), each behind a confirmation. Only
+  an account whose stored role is Super admin can change it, after a recent sign-in. The
+  Posture row on **Single sign-on & policy** gains **Manage**, which opens it. The same change
+  is `PUT /api/rbac`; `PUT /api/settings` no longer changes `rbac.enabled`.
+- The setup wizard tells the truth about the AI runtime. Without a key it says "No usable AI
+  provider yet" and that new cases wait for a person as Needs human review; a key the default
+  models cannot use says "Your key does not match the default models"; the review row reads
+  "No usable provider · cases wait for a person", or "Configured:" with every provider family
+  that has a key. **Ready for live triage** needs a source and a provider the default
+  investigation models can call. The "mock runtime" wording stays only in Demo Mode, where it
+  is true.
+- New **Analytics → Team activity** page: what each person did per day (acknowledged, closed
+  by disposition, reopened, escalated, commented, assigned, screenshots added, auto-close
+  reviews, runbook steps completed, sign-ins), counted from the audit log in the operator time
+  zone, with a per-day chart, a person sheet with their events and a CSV download. Counts with
+  context only: no ranking, score, IP address or session. It needs the new `team:view`
+  permission (SOC manager and Auditor; Super admin holds every grant), and while role-based
+  access is off only Super admins, SOC managers and Auditors can open it. An administrator can
+  turn the page off under **Single sign-on & policy → Team activity**.
+- The close dialog asks "what was it" once (the disposition), adds an optional **Actions
+  taken** list (11 fixed values, at most 8), asks for a note only when your classification
+  overrides the AI, and moves the stars and "What did the AI miss?" into a collapsed **Rate
+  the AI (optional)**. The agreement with the AI is shown as text, never asked. Tags moved to
+  the facts rail. The dialog no longer asks "What actually happened?" and never sends an
+  `actual_outcome` with the grade, so a later reclassification is not pinned by it. Sub
+  scores nobody rated show as **Not rated** on Analytics → Metrics and in chat instead of 0%.
+- Screenshots on cases: PNG, JPEG or WebP images on a case's Collaboration tab and in the
+  close dialog (paste, drag and drop or pick a file), with a caption, a lightbox and a
+  download. The server checks each image's structure and strips its metadata. Up to 20
+  screenshots and 20 MiB per case, 2 MiB per image. Uploads stay allowed on closed cases, a
+  close never waits for one, and no screenshot or caption ever reaches a model.
+- Auto-close review, on by default: about 5% of the cases the AI agent closes automatically,
+  at most 10 a day and 3 per rule, are picked at random for a person to classify. Case
+  Manager gains a **Review** scope with a pending count; the reviewer gives their own
+  classification before comparing it with the AI, and the answer is kept as independent ground
+  truth. A review never changes the case unless the reviewer reopens it. Agent effectiveness
+  gains an **Auto-close review** module (agreement with a Wilson interval from 30 reviews,
+  missed threats, rules, time spent). Settings are under **Settings → General → Detection →
+  Auto-close review**.
+- Case Manager redesign: a queue with one control band, two-line rows that show status or
+  outcome (never both) and the scope line in the footer; a header with one primary action
+  for the case's state, **Take action** for every other verb and one meta row; five tabs
+  (Overview, Runbook, Investigation, Collaboration, Chat, with Alt+1 to Alt+5) where Overview
+  absorbs the Timeline and Investigation absorbs Threat context; a facts rail of eight
+  sections. Links to the retired `tab=timeline` and `tab=threat` still work and open the
+  matching section. Bulk Set status and Set disposition leave out cases the AI agent closed
+  ("review them instead").
+- Demo Mode seeds Team activity rows for the Demo analysts and six auto-close reviews (three
+  pending, two agreeing, one disagreeing).
+
+Behaviour changes and fixes:
+
+- **Audit rows for human case work.** New rows from acknowledge, close, confirm false
+  positive, resolve, reopen, escalate, de-escalate, hold, resume, set disposition, set status,
+  assign, tag, comment and grade carry a structured action (`case.acknowledged` to
+  `case.graded`), the case as target, the request context and the changes. Their
+  `action_type`, `surface` and `result_summary` are unchanged, and the Audit log's older
+  `status`, `collab` and `feedback` filters still find them. Rows written by a bulk action
+  carry `run_id` `bulk-<id>`. Older rows are not rewritten.
+- **Attribution.** With sign-in on, the audit actor of a comment, tag change or assignment,
+  the analyst on the "assigned" history entry and the stored comment author are now the
+  signed-in person, never a name the request body sent.
+- **Re-investigation keeps people's work.** Rebuilding a case keeps its owner, comments,
+  grades, status history, acknowledgement, status reason, sent notifications and a
+  disposition an analyst set, instead of erasing them. The stored case is read again just
+  before the rebuild, so work done while the investigation ran survives, and a failed run
+  keeps the case number.
+- **Review grades are not agent statistics.** A grade recorded by an auto-close review feeds
+  ground truth (analyst-confirmed outcomes, threshold tuning, precedent) but is left out of
+  the feedback statistics and the agent-improvement comparisons, and a reopen made from the
+  recorded review of a picked case does not count as a human reopen of an agent close.
+- **Unrated stars are not zero.** `GET /api/feedback/stats` averages each sub-score over the
+  grades that rated it and adds `accuracy_rated`, `reasoning_quality_rated` and
+  `action_appropriateness_rated`. An average of 0.0 with a count of 0 means nobody rated it.
+- **Only a Super admin manages Super admin accounts.** Giving an account the Super admin
+  role, or changing, disabling or deleting an account that has it, through `POST`, `PUT`
+  or `DELETE /api/users` or `PUT /api/users/{username}/roles`, needs a caller whose stored
+  role is Super admin and a sign-in within the re-authentication window. Before, any
+  holder of `users:manage` (a SOC manager by default) could make itself Super admin in
+  one call and then use the role-based access switch, or reset a Super admin's password.
+  Anyone else now gets `403 super_admin_only` and an Access denied row.
+- **Repeated reviews of one case count once.** An agent-closed case that was not picked
+  for review can be reviewed again. Team activity now counts a person's latest review of a
+  case only (an earlier one is listed as replaced), so the agreement rate's 30-review bar
+  is 30 different cases, and a repeat disagreement by the same person sends the people who
+  can close cases no new Inbox item.
+- **The Team activity floor is a page limit.** While role-based access is off, the limit
+  to Super admins, SOC managers and Auditors applies to the Team activity page only: every
+  account still holds `audit:view` and `users:manage`. The documentation now says so.
+- **Team activity counts what was applied, and measures only what it read in full.** A
+  runbook step whose save lost to another change (its record followed by a
+  `step.*_failed` record) is no longer counted, as screenshots and reviews already were
+  not. An owner set in the Escalate dialog counts as Assigned. A case escalated or put on
+  hold without an Acknowledge is in the median time to acknowledge, as on Metrics. A read
+  that stopped before the end of the range now omits the median time to acknowledge
+  (`ack_status` `partial`), the agreement rate and the review times instead of giving
+  those of the oldest part, and its CSV ends with a line that says so.
+- **Agent effectiveness counts a review whose ledger write failed.** The Auto-close review
+  module now restores such a review from the case history itself, on a pending or an
+  expired pick, so a disagreement or a missed threat is not shown as pending or expired
+  until the Case Manager is opened.
+
+Details:
+
+- **New and changed API.** `GET` and `PUT /api/rbac`; `PUT /api/settings` answers `409
+  rbac_switch_moved` to a changed `rbac.enabled` and needs `roles:manage` and a fresh sign-in
+  for any other changed `rbac` field; `ai_runtime_ready` on `GET /api/setup/status`, and
+  `ai_runtime_ready` and `ai_runtime_provider` on `POST /api/setup/secrets`; `GET
+  /api/team/activity`, `GET /api/team/people` and `GET /api/team/people/{username}/events`;
+  `GET` and `POST /api/cases/{id}/files`, `DELETE /api/cases/{id}/files/{file_id}` and `GET
+  /api/cases/{id}/files/{file_id}/content`; `GET` and `POST /api/cases/{id}/review`, `GET
+  /api/auto-close-review/summary` and `GET /api/metrics/auto-close-review`; `review` on `GET
+  /api/cases` (echoed as `review_applied`); `actions_taken` and `review_via` on `POST
+  /api/cases/{id}/action` (bulk bodies refuse `review_via`); `origin` and `review_id` on
+  feedback entries; the `case.review` live frame on `cases:{id}` and `cases`, and a
+  `case.activity` frame naming the file for each screenshot added or deleted. Permission:
+  `team:view`. Settings: `team_activity` and `auto_close_review`. See the
+  [API](docs/reference/api.md), [Permissions](docs/reference/permissions.md) and
+  [Configuration](docs/reference/configuration.md) references.
+- **Screenshot limits.** PNG, JPEG and WebP only, recognised by their bytes; 2 MiB stored per
+  image after stripping, at most 8,192 px a side and 40 megapixels; a thumbnail of at most
+  48 KiB and 640 px a side; 20 images and 20 MiB per case; 2 GiB in all (`409
+  case_files_storage_full`); 5 per case and 64 MiB in all in Demo Mode and on the in-memory
+  store; 30 uploads a minute and 2 at once per person (`429 case_files_busy` with
+  `Retry-After`); a caption of at most 200 characters and a file name of at most 120. The same
+  image again returns the existing entry. The uploader, or anyone who can close cases, can
+  delete a screenshot. Every add and delete is recorded in the audit log first. The bundled
+  web proxy accepts 3 MiB on the upload path; a TLS proxy in front of the Console needs
+  `client_max_body_size 3m` or more. On Elasticsearch the config index maps the new
+  `case_file_data` field as binary (fresh installs, and at startup on an upgrade).
+- **Resets and export.** The cases and sources reset tiers clear screenshots and the review
+  ledger (receipts `kv:case_files:<n>` and `kv:auto_close_review:<n>`), and factory reset
+  removes them. Data export lists screenshot metadata per case without the images and
+  includes the review ledger. Deleting an account keeps the screenshots it added.
+- **Rolling back.** A rollback to the previous release resets the `team_activity` and
+  `auto_close_review` settings to their defaults; see the
+  [known limitations](docs/releases/known-limitations.md).
+
 ### Documentation refresh
 
 Documentation only. No code, configuration default, wire identifier, dependency or release
@@ -47,10 +195,12 @@ identity changes, and the version stays 0.1.13.
     the backend stopped.
   - Without a model provider key, no investigation falls back to a mock model: each
     investigated cluster becomes a **Needs human** case naming the missing key. The
-    setup wizard's "limited mock runtime" wording is recorded as a known 0.1.13 issue.
+    setup wizard's "limited mock runtime" wording is recorded as a known 0.1.13 issue
+    (Round 15 corrects the wording, above).
   - Role-based access is off by default (every signed-in account acts as Super admin), and
     the 0.1.13 Console has no switch for it. INSTALL.md and the new **Turn on role-based
-    access** section of the Users and RBAC page give the tested `PUT /api/settings` call.
+    access** section of the Users and RBAC page give the tested `PUT /api/settings` call
+    (Round 15 adds the switch and replaces that call with `PUT /api/rbac`, above).
   - Smaller corrections: the CA certificate path inside the container, override files and
     the enrichment overlay (the update supervisor does not read them, so apply them again
     after an update), the SSO callback behind a TLS ingress, queue receivers that consume

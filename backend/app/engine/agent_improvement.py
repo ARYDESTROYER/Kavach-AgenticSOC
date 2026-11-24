@@ -17,10 +17,11 @@ from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Any
 
-from ..constants import DecisionBy, TERMINAL_CASE_STATUSES
+from ..constants import REVIEW_VIA_AUTO_CLOSE_REVIEW, DecisionBy, TERMINAL_CASE_STATUSES
 from ..models import Case, FeedbackEntry
 from .metrics import percentile, truncation_marker
 from .priority import band_of_case
+from .review_origin import is_review_grade, review_events
 
 _VALID_ASSESSMENTS = frozenset({"agree", "partial", "disagree"})
 _EVALUABLE_OUTCOMES = frozenset(
@@ -138,6 +139,12 @@ def _select_feedback(
 
     Earlier valid grades are superseded.  That makes each case one unit of evidence
     and intentionally restates older daily points when a later analyst grade arrives.
+
+    Round 15 (SPEC D6.8): an auto-close REVIEW grade (``engine.review_origin.
+    is_review_grade``) is not agent-quality evidence here. The review sample is drawn
+    only from automatic closes, so it would shift the population these comparisons
+    describe; it is left out and counted under ``auto_close_review_grade`` (it stays
+    ground truth for the tuner and the precedent corpus).
     """
     selected: list[_FeedbackSample] = []
     excluded: Counter[str] = Counter()
@@ -162,6 +169,9 @@ def _select_feedback(
                 continue
             if at >= end:
                 case_excluded["feedback_after_as_of"] += 1
+                continue
+            if is_review_grade(case, feedback):
+                case_excluded["auto_close_review_grade"] += 1
                 continue
             if (feedback.assessment or "").strip().lower() not in _VALID_ASSESSMENTS:
                 case_excluded["invalid_feedback_assessment"] += 1
@@ -488,15 +498,58 @@ def _turnaround_summary(samples: list[_TurnaroundSample]) -> dict[str, Any]:
     }
 
 
+def _review_reopen_times(case: Case) -> frozenset[str]:
+    """The times of the reopens a person made from an auto-close review (Round 15 SPEC
+    D6.8, D6.9): the ``ts`` of each ``analyst_action`` history entry that carries
+    ``review_via``. The reopen's status transition is stamped with the same instant
+    (``StatusHistoryEntry.at``), which has no field of its own for the marker.
+
+    ``review_via`` is a marker the caller sends, so it is honoured only when the case
+    carries a ledger-backed review recorded at or before the reopen: an
+    ``auto_close_review`` history event with a non-empty ``review_id``
+    (:func:`~app.engine.review_origin.review_events`), which the review writer appends
+    only for a sampled case. A reopen that names the marker on a case with no such review
+    (an unsampled case, or a marker sent on an ordinary reopen) still counts."""
+    reviewed = [
+        at for at in (_parse_iso(str(event.get("ts") or "")) for event in review_events(case))
+        if at is not None
+    ]
+    if not reviewed:
+        return frozenset()
+    first_review = min(reviewed)
+    out: set[str] = set()
+    for entry in case.history or []:
+        if (
+            isinstance(entry, dict)
+            and entry.get("event") == "analyst_action"
+            and entry.get("review_via") == REVIEW_VIA_AUTO_CLOSE_REVIEW
+            and isinstance(entry.get("ts"), str)
+            and entry["ts"]
+        ):
+            at = _parse_iso(entry["ts"])
+            if at is not None and at >= first_review:
+                out.add(entry["ts"])
+    return frozenset(out)
+
+
 def _agent_reopen_summary(
     cases: list[Case], *, start: datetime, end: datetime, observed_through: datetime
 ) -> dict[str, Any]:
+    """Human reopens within 24 hours of an agent terminal decision.
+
+    Round 15 (SPEC D6.8): a reopen made from an auto-close review (its same-timestamp
+    ``analyst_action`` history entry carries ``review_via``, on a case that carries a
+    ledger-backed review recorded at or before it, :func:`_review_reopen_times`) is not
+    counted as a human reopen. The review sample is drawn at random from automatic
+    closes, so its reopens would move this rate with the sampling cadence rather than
+    with the agent."""
     candidate_terminal = 0
     eligible_terminal = 0
     censored_terminal = 0
     reopened = 0
     horizon = timedelta(hours=_REOPEN_FOLLOW_UP_HOURS)
     for case in cases:
+        review_reopens = _review_reopen_times(case)
         parsed: list[tuple[datetime, int, Any]] = []
         for index, entry in enumerate(case.status_history or []):
             at = _parse_iso(entry.at)
@@ -523,6 +576,7 @@ def _agent_reopen_summary(
                 and (later.from_status or "").strip().lower() in _TERMINAL
                 and (later.to_status or "").strip().lower() not in _TERMINAL
                 and _is_human(later.by)
+                and (later.at or "") not in review_reopens
                 for later_at, _later_index, later in parsed[position + 1 :]
             ):
                 reopened += 1

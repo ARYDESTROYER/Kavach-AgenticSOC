@@ -203,10 +203,15 @@ updates check. For other bootstrap options, see
 Role-based access is off by default. With authentication on and role-based access off,
 every signed-in account is treated as Super admin, whatever role it was given; the
 Console shows "Off: everyone is Super admin" under
-**Settings → Security & access → Single sign-on & policy**. There is no switch for it in
-the 0.1.13 Console: a super administrator turns it on by saving
-`{"rbac": {"enabled": true}}` through `PUT /api/settings`. See
+**Settings → Security & access → Single sign-on & policy**. A Super admin turns it on
+in **Settings → Security & access → Roles & permissions** with **Turn on role-based
+access** (the Posture row's **Manage** opens it), or with `PUT /api/rbac`. See
 [Turn on role-based access](../administration/users-rbac.md#turn-on-role-based-access).
+
+If you put a TLS proxy in front of the Console, let it accept request bodies of at least
+3 MiB (in nginx, `client_max_body_size 3m;`): a case screenshot is uploaded as one
+request of up to 3 MiB, and the default nginx limit of 1 MiB refuses it with HTTP 413.
+The bundled Console proxy already allows it on that path.
 
 !!! warning "Secrets entered later in the UI"
 

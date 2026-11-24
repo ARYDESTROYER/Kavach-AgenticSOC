@@ -469,6 +469,14 @@ class FeedbackEntry(BaseModel):
     comment: str = ""
     ai_verdict: str = ""                    # snapshot of the AI verdict that was graded
     ai_confidence: float = 0.0
+    # Round 15 (SPEC D6.7): where the grade came from. ``"auto_close_review"`` marks a
+    # review of a randomly sampled automatic close (``constants.AUTO_CLOSE_REVIEW_ORIGIN``)
+    # and ``review_id`` names its ledger entry; both stay empty for an ordinary grade.
+    # A previous build drops both on its next full save (unknown keys are ignored) but
+    # keeps ``Case.history``, so ``engine.review_origin.is_review_grade`` also reads the
+    # matching ``auto_close_review`` history event. Additive; no migration, no backfill.
+    origin: str = ""
+    review_id: str = ""
 
 
 class CaseComment(BaseModel):
@@ -2265,7 +2273,9 @@ class AuditDoc(BaseModel):
     target: AuditTarget | None = None
     changes: list[AuditChange] | None = None
     request_id: str | None = Field(default=None, pattern=AUDIT_REQUEST_ID_PATTERN)
-    # One id per investigation run, so the Agent activity scope can group its rows.
+    # The run a row belongs to: ``inv-`` (one investigation, so the Agent activity scope
+    # can group its rows), ``run-`` (a runbook run) or, since Round 15 (SPEC D7.3),
+    # ``bulk-`` (one bulk case action: ``POST /api/cases/bulk`` or a bulk job).
     run_id: str | None = Field(default=None, max_length=AUDIT_RUN_ID_MAX_CHARS)
 
     @field_validator(

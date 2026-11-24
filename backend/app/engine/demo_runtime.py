@@ -264,6 +264,11 @@ class DemoStack:
         # stack is active.
         from ..stores.runbook_runs import RunbookRunStore
         self.runbook_runs = RunbookRunStore(self.kv)
+        # Round 15 (SPEC D6.4, §3.2): Demo automatic closes are sampled for review into
+        # a Demo ledger on the Demo KV, gone when Demo Mode ends. ``AppState.
+        # auto_close_review`` serves it while the stack is active.
+        from ..stores.auto_close_review import AutoCloseReviewStore
+        self.auto_close_review = AutoCloseReviewStore(self.kv)
         self.inbox = InboxStore(self.kv)
         self.shift_handoff = ShiftHandoffStore(self.kv)
         # Durable raw-alert-by-severity ingest counters backing the demo's
@@ -280,6 +285,9 @@ class DemoStack:
         # KV too, so disabling Demo Mode purges them with everything else and no demo
         # report can ever reach the tenant's library.
         self.reports = self._build_reports()
+        # Round 15 WP4 (SPEC D5.3, §3.2): screenshots on Demo cases, on the Demo KV
+        # within the Demo caps (5 a case, 64 MiB in all), gone when Demo Mode ends.
+        self.case_files = self._build_case_files()
         # How many pre-seed "already processed" events were counted (for status/tests).
         self.preseed_events = 0
         # ONE shared vector store for BOTH the pipeline RAG and the chat RAG (the old
@@ -400,7 +408,20 @@ class DemoStack:
         # global singleton (isolation boundary). Without this the pipeline's
         # ``_emit_step`` would fall back to ``get_event_bus()`` and leak demo frames.
         pipeline.event_bus = self.event_bus
+        # Round 15 (SPEC D6.3): the Demo sampler (Demo ledger, Demo audit, Demo bus).
+        pipeline.review_sampler = self._build_review_sampler()
         return pipeline
+
+    def _build_review_sampler(self):
+        """The Demo pipeline's auto-close review sampler: it writes only to this
+        stack's ledger, audit and bus, so nothing it does survives Demo Mode."""
+        from .auto_close_review import ReviewSampler
+
+        return ReviewSampler(
+            store=lambda: self.auto_close_review,
+            audit=lambda: self.audit,
+            bus=lambda: self.event_bus,
+        )
 
     async def runbook_catalog(self) -> tuple[Any, ...]:
         """The Demo pipeline's matchable runbook catalog: the real library's (built-ins
@@ -442,6 +463,13 @@ class DemoStack:
         except ImportError:
             return None
         return ReportStore(self.kv)
+
+    def _build_case_files(self):
+        """Round 15 WP4: ``stores.case_files.CaseFileStore`` over the demo KV with the
+        in-memory caps (``MEMORY_LIMITS``), since the Demo KV lives in process memory."""
+        from ..stores.case_files import MEMORY_LIMITS, CaseFileStore
+
+        return CaseFileStore(self.kv, limits=MEMORY_LIMITS)
 
     def chat_context_extras(
         self,

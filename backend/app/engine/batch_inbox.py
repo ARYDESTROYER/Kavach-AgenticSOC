@@ -54,6 +54,19 @@ async def eligible_batch_audience(state: Any) -> list[BatchInboxAudience]:
     Store outages/malformed documents raise.  The caller persists ``pending`` and
     retries later rather than guessing recipients or blocking provider submission.
     """
+    return await eligible_audience(state, "models", "read")
+
+
+async def eligible_audience(state: Any, resource: str, action: str) -> list[BatchInboxAudience]:
+    """Strict snapshot of the active, generation-bound accounts that hold
+    ``resource:action`` (Round 15 SPEC D6.9 generalised it from
+    :func:`eligible_batch_audience`, which is this call for ``models:read``).
+
+    With sign-in off the one recipient is the shared ``default`` account; with
+    role-based access off every active account qualifies; the environment
+    administrator counts as an account when it has no persisted record. Sorted by
+    username. Store outages and malformed documents raise; callers cap the list
+    (:data:`MAX_BATCH_INBOX_AUDIENCE` recipients)."""
     auth = getattr(state, "auth", None)
     if auth is None or not auth.is_enabled:
         return [BatchInboxAudience(username="default", account_generation="no-auth")]
@@ -91,8 +104,8 @@ async def eligible_batch_audience(state: Any) -> list[BatchInboxAudience]:
         allowed = not bool(getattr(rbac, "enabled", False)) or can_for_roles(
             user.role,
             _custom_roles(user),
-            "models",
-            "read",
+            resource,
+            action,
             matrix=matrix,
         )
         if allowed:

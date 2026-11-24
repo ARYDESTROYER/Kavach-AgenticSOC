@@ -1026,6 +1026,17 @@ export interface SetupStatus {
   user_count?: number;
   seeded_default?: boolean;
   configured: ConfiguredStatus;
+  /**
+   * Round 15 (SPEC D2.1): whether the default investigation models (router and
+   * investigator) can be called with the credentials the backend holds.
+   */
+  ai_runtime_ready?: boolean;
+  /**
+   * Their provider family (`openai`, `anthropic`, `openai_compatible`, `azure`, `bedrock`,
+   * `vertex`, `mock`). Only the authenticated `POST /api/setup/secrets` answer carries it;
+   * the wizard patches it in after saving a key.
+   */
+  ai_runtime_provider?: string;
   data_view_pattern?: string;
   entity_mapping?: {
     source_ip_field?: string;
@@ -2403,6 +2414,17 @@ export interface CaseFeedback {
   /** Estimated analyst minutes saved by the agent. */
   time_saved_minutes?: number;
   comment?: string;
+  /** Snapshot of the AI verdict that was graded. */
+  ai_verdict?: string;
+  ai_confidence?: number;
+  /**
+   * Round 15 (SPEC D6.7): `'auto_close_review'` marks a review of a randomly sampled
+   * automatic close; `review_id` names its ledger entry. Both empty for an ordinary
+   * grade. An older build drops them on save, so a review grade is also recognised
+   * from the case's `auto_close_review` history event (`isReviewGrade`).
+   */
+  origin?: string;
+  review_id?: string;
 }
 
 /** A free-form analyst comment on a case (mirrors backend). */
@@ -2829,7 +2851,33 @@ export interface CaseActionInput {
    * Single-case actions only; a `case_lifecycle` job refuses it (422).
    */
   require_open_steps_reason?: boolean;
+  /**
+   * Round 15 (SPEC D4.2): what the person did about the case, at most 8 values
+   * (`constants.CASE_ACTIONS_TAKEN_MAX`) from the fixed vocabulary (an unknown value
+   * answers 422). Stored on the history entry and the audit row; never model text.
+   */
+  actions_taken?: CaseActionTaken[];
+  /**
+   * Round 15 (SPEC D6.9): the action was taken from an auto-close review ("Reopen
+   * case", "Reopen and escalate"). Recorded only; single-case actions only (a bulk
+   * body that sends it answers 422).
+   */
+  review_via?: 'auto_close_review' | null;
 }
+
+/** Round 15 (SPEC D4.2): the fixed "actions taken" vocabulary (`constants.CASE_ACTIONS_TAKEN`). */
+export type CaseActionTaken =
+  | 'no_action_needed'
+  | 'blocked_indicator'
+  | 'isolated_host'
+  | 'disabled_account'
+  | 'reset_credentials'
+  | 'removed_malware'
+  | 'patched_or_hardened'
+  | 'notified_owner'
+  | 'escalated_externally'
+  | 'tuned_detection'
+  | 'other';
 
 /** Response from POST /api/settings/case-id/preview (F7 live preview). */
 export interface CaseIdPreview {
@@ -3891,10 +3939,18 @@ export interface FeedbackStats {
   agreement_rate: number | null;
   /** How many grades carry an agreement signal (the agreement denominator). */
   agreement_signals?: number;
-  /** 0..1 averages of the per-case quality scores. */
+  /**
+   * 0..1 averages of the per-case quality scores, each over the grades that RATED it
+   * (Round 15 SPEC D4.5). `0.0` when nothing rated it: read it with its `*_rated`
+   * count, and show "not rated" when the count is 0.
+   */
   avg_accuracy: number;
   avg_reasoning_quality: number;
   avg_action_appropriateness: number;
+  /** Round 15 (SPEC D4.5): how many grades rated each sub-score (a value above 0). */
+  accuracy_rated?: number;
+  reasoning_quality_rated?: number;
+  action_appropriateness_rated?: number;
   /** Total analyst minutes saved across graded cases. */
   time_saved_minutes: number;
   /** Distribution of recorded actual outcomes (label → count). */
@@ -6059,6 +6115,33 @@ export interface Preferences {
   campaign?: CampaignConfig;
   /** ORG-level pervasive-customization defaults (terminology / views / dashboards). */
   customization?: CustomizationConfig;
+  /** Round 15 (SPEC D3.4): the Team activity page switch. */
+  team_activity?: TeamActivityConfig;
+  /** Round 15 (SPEC D6.2): the random auto-close review sample. */
+  auto_close_review?: AutoCloseReviewConfig;
+}
+
+/** `Preferences.team_activity` (Round 15 SPEC D3.4). Repaired on load, never rejected. */
+export interface TeamActivityConfig {
+  /** Show the Team activity page (default true). */
+  enabled: boolean;
+}
+
+/**
+ * `Preferences.auto_close_review` (Round 15 SPEC D6.2). Repaired on load; a settings
+ * write out of range answers 422. Never read by `decide()` (#3).
+ */
+export interface AutoCloseReviewConfig {
+  /** Send a small random sample of automatic closes to a person (default true). */
+  enabled: boolean;
+  /** Share of automatic closes picked, 0 to 0.5 (default 0.05). */
+  sample_rate: number;
+  /** Most cases picked a day, 0 to 200 (default 10). */
+  daily_cap: number;
+  /** Most cases of one rule picked a day, 1 to 50 (default 3). */
+  per_rule_daily_cap: number;
+  /** Days a pick waits before it shows as expired, 1 to 30 (default 7). */
+  expiry_days: number;
 }
 
 /**

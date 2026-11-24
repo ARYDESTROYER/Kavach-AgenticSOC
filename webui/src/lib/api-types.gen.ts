@@ -731,6 +731,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/auto-close-review/summary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Auto Close Review Summary
+         * @description The Review scope badge (D6.12). Pending entries whose case already carries its
+         *     review are repaired in the ledger and not counted.
+         */
+        get: operations["auto_close_review_summary_api_auto_close_review_summary_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/baseline/config": {
         parameters: {
             query?: never;
@@ -1325,6 +1346,75 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/cases/{case_id}/files": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Case Files
+         * @description The case's screenshots (metadata only, upload order), its deleted ones (their
+         *     metadata kept), what they take and the bounds that apply.
+         */
+        get: operations["list_case_files_api_cases__case_id__files_get"];
+        put?: never;
+        /**
+         * Upload Case File
+         * @description Attach one screenshot to the case (see the module docstring). Allowed on a
+         *     closed case; never changes the case.
+         */
+        post: operations["upload_case_file_api_cases__case_id__files_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/cases/{case_id}/files/{file_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Delete Case File
+         * @description Delete one screenshot: its bytes go, its metadata stays as a deleted entry. The
+         *     uploader may delete their own; a ``cases:close`` holder anyone's (a refusal
+         *     writes an Access denied row).
+         */
+        delete: operations["delete_case_file_api_cases__case_id__files__file_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/cases/{case_id}/files/{file_id}/content": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Case File Content
+         * @description The image bytes with strict headers (see the module docstring). A thumbnail
+         *     is served when asked for and present, else the full image.
+         */
+        get: operations["get_case_file_content_api_cases__case_id__files__file_id__content_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/cases/{case_id}/forwarding": {
         parameters: {
             query?: never;
@@ -1458,6 +1548,32 @@ export interface paths {
          *     updated Case. 400 (NEUTRAL) if no events remain to rebuild the cluster.
          */
         post: operations["case_reinvestigate_api_cases__case_id__reinvestigate_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/cases/{case_id}/review": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Case Review State
+         * @description One case's auto-close review state (D6.12, D8.2), read by the case workspace.
+         *     A pending entry whose case already carries its review reads as completed (and the
+         *     ledger is repaired, as the summary does). Nothing here changes the case (#3).
+         */
+        get: operations["case_review_state_api_cases__case_id__review_get"];
+        put?: never;
+        /**
+         * Record Auto Close Review
+         * @description Record a person's review of a case the AI agent closed automatically (D6.6).
+         */
+        post: operations["record_auto_close_review_api_cases__case_id__review_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3620,6 +3736,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/metrics/auto-close-review": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Auto Close Review Metrics
+         * @description The Agent effectiveness module (D6.12) over the cases sampled in ``window`` (a
+         *     ``time_windows`` token, default the last 30 days, in the operator zone).
+         */
+        get: operations["auto_close_review_metrics_api_metrics_auto_close_review_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/metrics/breakdown": {
         parameters: {
             query?: never;
@@ -4873,6 +5010,30 @@ export interface paths {
          */
         get: operations["rag_stats_api_rag_stats_get"];
         put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/rbac": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Rbac
+         * @description Whether role-based access is on and whether the caller may change it.
+         */
+        get: operations["get_rbac_api_rbac_get"];
+        /**
+         * Put Rbac
+         * @description Turn role-based access on or off (module doc, rules 1 to 7).
+         */
+        put: operations["put_rbac_api_rbac_put"];
         post?: never;
         delete?: never;
         options?: never;
@@ -6892,6 +7053,57 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/team/activity": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Team Activity */
+        get: operations["team_activity_api_team_activity_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/team/people": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Team People */
+        get: operations["team_people_api_team_people_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/team/people/{username}/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Team Person Events */
+        get: operations["team_person_events_api_team_people__username__events_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/terminology": {
         parameters: {
             query?: never;
@@ -7678,6 +7890,66 @@ export interface components {
             true_positive?: components["schemas"]["VerdictAutoClose"];
         };
         /**
+         * AutoCloseReviewMetrics
+         * @description The Agent effectiveness "Auto-close review" module (D6.12) over the cases sampled
+         *     in ``window``. Never a composite score.
+         */
+        AutoCloseReviewMetrics: {
+            agreement: components["schemas"]["ReviewAgreement"];
+            /** By Day */
+            by_day: components["schemas"]["ReviewDayRow"][];
+            /** By Rule */
+            by_rule: components["schemas"]["ReviewRuleRow"][];
+            /** Daily Cap */
+            daily_cap: number;
+            eligible: components["schemas"]["ReviewEligible"];
+            /** Enabled */
+            enabled: boolean;
+            /** Expired */
+            expired: number;
+            /** Expiry Days */
+            expiry_days: number;
+            /** Generated At */
+            generated_at: string;
+            /** Ledger Complete */
+            ledger_complete: boolean;
+            missed_threats: components["schemas"]["ReviewMissedThreats"];
+            /** Pending */
+            pending: number;
+            /** Per Rule Daily Cap */
+            per_rule_daily_cap: number;
+            /** Reviewed */
+            reviewed: number;
+            /** Sample Rate */
+            sample_rate: number;
+            /** Sampled */
+            sampled: number;
+            /** Statement */
+            statement: string;
+            time_spent_ms: components["schemas"]["ReviewDuration"];
+            time_to_review_ms: components["schemas"]["ReviewDuration"];
+            /** Unsure */
+            unsure: number;
+            window: components["schemas"]["ReviewMetricsWindow"];
+        };
+        /**
+         * AutoCloseReviewSummary
+         * @description The Review scope badge: pending reviews, disagreeing reviews whose case is still
+         *     closed, today's sample against the daily cap.
+         */
+        AutoCloseReviewSummary: {
+            /** Daily Cap */
+            daily_cap: number;
+            /** Disagreed Open */
+            disagreed_open: number;
+            /** Enabled */
+            enabled: boolean;
+            /** Pending */
+            pending: number;
+            /** Sampled Today */
+            sampled_today: number;
+        };
+        /**
          * AvatarBody
          * @description Thin set/clear of just the avatar (empty string clears it).
          */
@@ -7870,11 +8142,17 @@ export interface components {
          * BulkCaseAction
          * @description A :class:`CaseAction` applied to many cases at once. ``ids`` is the set of
          *     target case ids; the action/payload fields are inherited verbatim so a bulk move
-         *     is IDENTICAL to N single-case moves.
+         *     is IDENTICAL to N single-case moves. The one exception is ``review_via`` (Round 15
+         *     SPEC D6.9): a review is about one case, so a bulk body that sends it answers 422.
          */
         BulkCaseAction: {
             /** Action */
             action: string;
+            /**
+             * What was done about the case
+             * @description At most 8 values from the fixed vocabulary; an unknown value answers 422 and a repeated value is kept once.
+             */
+            actions_taken?: ("no_action_needed" | "blocked_indicator" | "isolated_host" | "disabled_account" | "reset_credentials" | "removed_malware" | "patched_or_hardened" | "notified_owner" | "escalated_externally" | "tuned_detection" | "other")[] | null;
             /**
              * Analyst
              * @default analyst
@@ -8122,6 +8400,11 @@ export interface components {
             /** Action */
             action: string;
             /**
+             * What was done about the case
+             * @description At most 8 values from the fixed vocabulary; an unknown value answers 422 and a repeated value is kept once.
+             */
+            actions_taken?: ("no_action_needed" | "blocked_indicator" | "isolated_host" | "disabled_account" | "reset_credentials" | "removed_malware" | "patched_or_hardened" | "notified_owner" | "escalated_externally" | "tuned_detection" | "other")[] | null;
+            /**
              * Analyst
              * @default analyst
              */
@@ -8167,6 +8450,11 @@ export interface components {
             require_open_steps_reason: boolean;
             /** Resolution */
             resolution?: string | null;
+            /**
+             * The action was taken from an auto-close review
+             * @description "auto_close_review" or null; recorded on the history entry and the audit row only.
+             */
+            review_via?: "auto_close_review" | null;
             /** Status */
             status?: string | null;
             /** Tags */
@@ -8241,6 +8529,151 @@ export interface components {
             /** Ts */
             ts?: string;
         };
+        /** CaseFileDeleteResult */
+        CaseFileDeleteResult: {
+            /**
+             * Deleted
+             * @default true
+             */
+            deleted: boolean;
+            file: components["schemas"]["CaseFileEntry"];
+        };
+        /**
+         * CaseFileEntry
+         * @description One screenshot as the API lists it (metadata only, never the bytes).
+         */
+        CaseFileEntry: {
+            /** Bytes */
+            bytes: number;
+            /**
+             * Can Delete
+             * @default false
+             */
+            can_delete: boolean;
+            /**
+             * Caption
+             * @default
+             */
+            caption: string;
+            /** Case Id */
+            case_id: string;
+            /** Content Type */
+            content_type: string;
+            /**
+             * Deleted
+             * @default false
+             */
+            deleted: boolean;
+            /** Deleted At */
+            deleted_at?: string | null;
+            /** Deleted By */
+            deleted_by?: string | null;
+            /**
+             * Filename
+             * @default
+             */
+            filename: string;
+            /**
+             * Has Thumbnail
+             * @default false
+             */
+            has_thumbnail: boolean;
+            /** Height */
+            height: number;
+            /** Id */
+            id: string;
+            /**
+             * Position
+             * @description 1-based number of the screenshot on its case (upload order).
+             */
+            position: number;
+            /** Sha256 */
+            sha256: string;
+            /** Thumbnail Bytes */
+            thumbnail_bytes?: number | null;
+            /**
+             * Uploaded At
+             * @default
+             */
+            uploaded_at: string;
+            /**
+             * Uploaded By
+             * @default
+             */
+            uploaded_by: string;
+            /** Width */
+            width: number;
+        };
+        /** CaseFileLimitsInfo */
+        CaseFileLimitsInfo: {
+            /** Accepted Types */
+            accepted_types: string[];
+            /** Max Caption Chars */
+            max_caption_chars: number;
+            /** Max Case Bytes */
+            max_case_bytes: number;
+            /** Max File Bytes */
+            max_file_bytes: number;
+            /** Max Filename Chars */
+            max_filename_chars: number;
+            /** Max Files */
+            max_files: number;
+            /** Max Pixels */
+            max_pixels: number;
+            /** Max Side Px */
+            max_side_px: number;
+            /** Max Thumbnail Bytes */
+            max_thumbnail_bytes: number;
+        };
+        /** CaseFileList */
+        CaseFileList: {
+            /** Bytes */
+            bytes: number;
+            /** Can Upload */
+            can_upload: boolean;
+            /** Case Id */
+            case_id: string;
+            /** Count */
+            count: number;
+            /** Deleted */
+            deleted: components["schemas"]["CaseFileEntry"][];
+            /** Files */
+            files: components["schemas"]["CaseFileEntry"][];
+            limits: components["schemas"]["CaseFileLimitsInfo"];
+        };
+        /**
+         * CaseFileUploadBody
+         * @description One screenshot upload. ``data_base64`` is the image as base64 (a ``data:``
+         *     URL is accepted too); ``content_type`` the type the client claims (it must match
+         *     the image's magic bytes). A thumbnail is optional (at most 48 KiB once decoded).
+         */
+        CaseFileUploadBody: {
+            /**
+             * Caption
+             * @default
+             */
+            caption: string;
+            /** Content Type */
+            content_type?: string | null;
+            /** Data Base64 */
+            data_base64: string;
+            /**
+             * Filename
+             * @default
+             */
+            filename: string;
+            /** Thumbnail Base64 */
+            thumbnail_base64?: string | null;
+        };
+        /** CaseFileUploadResult */
+        CaseFileUploadResult: {
+            /**
+             * Deduplicated
+             * @default false
+             */
+            deduplicated: boolean;
+            file: components["schemas"]["CaseFileEntry"];
+        };
         /** CaseIdPreviewBody */
         CaseIdPreviewBody: {
             /**
@@ -8268,6 +8701,37 @@ export interface components {
             total: number;
             /** Window Total Exact */
             window_total_exact?: boolean | null;
+        };
+        /**
+         * CaseReviewState
+         * @description One case's place in the auto-close review (Round 15, D6.12, D8.2): what the case
+         *     workspace needs to show the pending band, choose its primary action and offer
+         *     "Review this auto-close". ``state`` is the case's sample entry (``pending``,
+         *     ``completed`` or ``expired``, computed on read) or ``none`` when it was never
+         *     sampled. ``agent_closed`` is the review endpoint's own rule (terminal, first
+         *     decision record an agent close), and ``can_record`` says whether that endpoint
+         *     would accept a review now, the caller's grants aside: a sampled case whose review
+         *     is recorded answers 409, and so does a case that is not (or no longer) closed by
+         *     the agent.
+         */
+        CaseReviewState: {
+            /** Agent Closed */
+            agent_closed: boolean;
+            /** Can Record */
+            can_record: boolean;
+            /** Case Id */
+            case_id: string;
+            /** Expires At */
+            expires_at?: string | null;
+            /** Review Id */
+            review_id?: string | null;
+            /** Sampled At */
+            sampled_at?: string | null;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "none" | "pending" | "completed" | "expired";
         };
         /**
          * CaseRunbooks
@@ -10341,10 +10805,20 @@ export interface components {
              */
             comment: string;
             /**
+             * Origin
+             * @default
+             */
+            origin: string;
+            /**
              * Reasoning Quality
              * @default 0
              */
             reasoning_quality: number;
+            /**
+             * Review Id
+             * @default
+             */
+            review_id: string;
             /**
              * Time Saved Minutes
              * @default 0
@@ -11265,6 +11739,60 @@ export interface components {
             /** Source */
             source?: Record<string, never>;
         };
+        /** PersonActivity */
+        PersonActivity: {
+            /**
+             * Ack Samples
+             * @default 0
+             */
+            ack_samples: number;
+            /**
+             * Active
+             * @default true
+             */
+            active: boolean;
+            /** Bulk */
+            bulk: {
+                [key: string]: number;
+            };
+            /** Closed By */
+            closed_by: {
+                [key: string]: number;
+            };
+            /** Counts */
+            counts: {
+                [key: string]: number;
+            };
+            /** Daily */
+            daily: components["schemas"]["TeamDay"][];
+            /**
+             * Display Name
+             * @default
+             */
+            display_name: string;
+            /**
+             * Key
+             * @description The normalised username; empty for Not attributed.
+             */
+            key: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "account" | "environment" | "demo" | "deleted" | "unattributed";
+            /** Last Active */
+            last_active?: string | null;
+            /** Median Ack Seconds */
+            median_ack_seconds?: number | null;
+            reviews: components["schemas"]["TeamReviews"];
+            /**
+             * Role
+             * @default
+             */
+            role: string;
+            /** Username */
+            username: string;
+        };
         /** PingEvent */
         PingEvent: {
             /**
@@ -11415,6 +11943,109 @@ export interface components {
             text: string;
             /** Title */
             title: string;
+        };
+        /**
+         * RbacStatus
+         * @description The state of role-based access, as ``GET /api/rbac`` reports it.
+         */
+        RbacStatus: {
+            /**
+             * Auth Enabled
+             * @description Whether sign-in is on. Without it roles have no effect.
+             */
+            auth_enabled: boolean;
+            /**
+             * Blockers
+             * @description Why the caller may not change it: auth_off, not_super_admin, read_only_settings.
+             */
+            blockers?: string[];
+            /**
+             * Caller Role
+             * @description The caller's stored role, even while role-based access is off (empty with sign-in off).
+             * @default
+             */
+            caller_role: string;
+            /**
+             * Can Change
+             * @description Whether the caller may turn it on or off now (no blockers).
+             */
+            can_change: boolean;
+            /**
+             * Enabled
+             * @description Whether role-based access is on (``rbac.enabled``).
+             */
+            enabled: boolean;
+            /**
+             * Role Counts
+             * @description Active accounts per stored role (environment accounts included). Only for a caller holding users:manage; null otherwise.
+             */
+            role_counts?: {
+                [key: string]: number;
+            } | null;
+            /**
+             * Super Admin Count
+             * @description Active Super admin accounts: persisted ones, plus the environment administrator when it is configured and no persisted user has its name.
+             * @default 0
+             */
+            super_admin_count: number;
+        };
+        /**
+         * RbacUpdate
+         * @description ``PUT /api/rbac``: the requested state. A JSON boolean only.
+         */
+        RbacUpdate: {
+            /** Enabled */
+            enabled: boolean;
+        };
+        /**
+         * RbacUpdateResult
+         * @description The answer to ``PUT /api/rbac``: the new state and whether it changed.
+         */
+        RbacUpdateResult: {
+            /**
+             * Auth Enabled
+             * @description Whether sign-in is on. Without it roles have no effect.
+             */
+            auth_enabled: boolean;
+            /**
+             * Blockers
+             * @description Why the caller may not change it: auth_off, not_super_admin, read_only_settings.
+             */
+            blockers?: string[];
+            /**
+             * Caller Role
+             * @description The caller's stored role, even while role-based access is off (empty with sign-in off).
+             * @default
+             */
+            caller_role: string;
+            /**
+             * Can Change
+             * @description Whether the caller may turn it on or off now (no blockers).
+             */
+            can_change: boolean;
+            /**
+             * Changed
+             * @description False when role-based access was already in the requested state.
+             */
+            changed: boolean;
+            /**
+             * Enabled
+             * @description Whether role-based access is on (``rbac.enabled``).
+             */
+            enabled: boolean;
+            /**
+             * Role Counts
+             * @description Active accounts per stored role (environment accounts included). Only for a caller holding users:manage; null otherwise.
+             */
+            role_counts?: {
+                [key: string]: number;
+            } | null;
+            /**
+             * Super Admin Count
+             * @description Active Super admin accounts: persisted ones, plus the environment administrator when it is configured and no persisted user has its name.
+             * @default 0
+             */
+            super_admin_count: number;
         };
         /** ReactionBody */
         ReactionBody: {
@@ -11935,6 +12566,157 @@ export interface components {
             confirm: string;
             /** Scope */
             scope: string;
+        };
+        /** ReviewAgreement */
+        ReviewAgreement: {
+            /** Agreed */
+            agreed: number;
+            /** Disagreed */
+            disagreed: number;
+            /** Interval */
+            interval?: {
+                [key: string]: number;
+            } | null;
+            /** Minimum */
+            minimum: number;
+            /** Rate */
+            rate?: number | null;
+            /** Reviews */
+            reviews: number;
+            /** Statement */
+            statement: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "ok" | "insufficient";
+        };
+        /**
+         * ReviewBody
+         * @description A person's review of an automatic close. ``classification`` is their own
+         *     answer, asked before the AI verdict is compared. The optional ratings are stars
+         *     (above 0, at most 1). ``elapsed_ms`` is the time from opening the review card to
+         *     submitting it, measured by the Console.
+         */
+        ReviewBody: {
+            /** Accuracy */
+            accuracy?: number | null;
+            /** Action Appropriateness */
+            action_appropriateness?: number | null;
+            /**
+             * Classification
+             * @enum {string}
+             */
+            classification: "true_positive" | "false_positive" | "benign" | "unsure";
+            /** Elapsed Ms */
+            elapsed_ms?: number | null;
+            /**
+             * Note
+             * @default
+             */
+            note: string;
+            /** Reasoning Quality */
+            reasoning_quality?: number | null;
+        };
+        /** ReviewDayRow */
+        ReviewDayRow: {
+            /** Day */
+            day: string;
+            /** Eligible */
+            eligible: number;
+            /** Sampled */
+            sampled: number;
+        };
+        /** ReviewDuration */
+        ReviewDuration: {
+            /** Median */
+            median?: number | null;
+            /**
+             * Reviews
+             * @default 0
+             */
+            reviews: number;
+        };
+        /** ReviewEligible */
+        ReviewEligible: {
+            /** Complete */
+            complete: boolean;
+            /** Count */
+            count: number;
+        };
+        /** ReviewMetricsWindow */
+        ReviewMetricsWindow: {
+            /** End */
+            end: string;
+            /** Label */
+            label: string;
+            /** Start */
+            start?: string | null;
+            /** Token */
+            token: string;
+            /** Tz */
+            tz: string;
+        };
+        /** ReviewMissedThreat */
+        ReviewMissedThreat: {
+            /** Case Id */
+            case_id: string;
+            /**
+             * Case Number
+             * @default
+             */
+            case_number: string;
+            /**
+             * Completed At
+             * @default
+             */
+            completed_at: string;
+            /**
+             * Rule
+             * @default
+             */
+            rule: string;
+        };
+        /** ReviewMissedThreats */
+        ReviewMissedThreats: {
+            /** Cases */
+            cases?: components["schemas"]["ReviewMissedThreat"][];
+            /** Count */
+            count: number;
+        };
+        /**
+         * ReviewResult
+         * @description The recorded review: ``agrees`` (None for unsure), whether the caller may
+         *     reopen the case (``cases:close``), and the ledger id when the case was sampled.
+         */
+        ReviewResult: {
+            /** Agrees */
+            agrees?: boolean | null;
+            /**
+             * Can Reopen
+             * @default false
+             */
+            can_reopen: boolean;
+            /** Review Id */
+            review_id?: string | null;
+            /**
+             * Sampled
+             * @default false
+             */
+            sampled: boolean;
+        };
+        /** ReviewRuleRow */
+        ReviewRuleRow: {
+            /** Agreed */
+            agreed: number;
+            /** Disagreed */
+            disagreed: number;
+            /** Reviewed */
+            reviewed: number;
+            /** Rule */
+            rule: string;
+            /** Sampled */
+            sampled: number;
         };
         /** RevokeOthersBody */
         RevokeOthersBody: {
@@ -14087,6 +14869,226 @@ export interface components {
             title?: string | null;
         };
         /**
+         * TeamActivity
+         * @description One window of Team activity (SPEC D3.10).
+         */
+        TeamActivity: {
+            /**
+             * Auth Enabled
+             * @default true
+             */
+            auth_enabled: boolean;
+            /** Days */
+            days: string[];
+            /**
+             * Demo
+             * @default false
+             */
+            demo: boolean;
+            /**
+             * Exact
+             * @default true
+             */
+            exact: boolean;
+            /** Generated At */
+            generated_at: string;
+            /** Partial Reason */
+            partial_reason?: ("row_limit" | "store_limit") | null;
+            /** People */
+            people: components["schemas"]["PersonActivity"][];
+            /**
+             * Rbac Enabled
+             * @default false
+             */
+            rbac_enabled: boolean;
+            /**
+             * Scanned Rows
+             * @default 0
+             */
+            scanned_rows: number;
+            team: components["schemas"]["TeamTotals"];
+            /** Timezone */
+            timezone: string;
+            window: components["schemas"]["TeamWindow"];
+        };
+        /** TeamDay */
+        TeamDay: {
+            /** Counts */
+            counts: {
+                [key: string]: number;
+            };
+            /** Date */
+            date: string;
+        };
+        /** TeamEvent */
+        TeamEvent: {
+            /** Case Id */
+            case_id?: string | null;
+            /** Case Number */
+            case_number?: string | null;
+            /**
+             * Detail
+             * @default
+             */
+            detail: string;
+            /** Kind */
+            kind: string;
+            /** Label */
+            label: string;
+            /** Ts */
+            ts: string;
+        };
+        /** TeamEvents */
+        TeamEvents: {
+            /** Events */
+            events: components["schemas"]["TeamEvent"][];
+            /**
+             * Exact
+             * @default true
+             */
+            exact: boolean;
+            /** Next Cursor */
+            next_cursor?: string | null;
+            /** Partial Reason */
+            partial_reason?: ("row_limit" | "store_limit") | null;
+            /** Total */
+            total: number;
+            /** Username */
+            username: string;
+            window: components["schemas"]["TeamWindow"];
+        };
+        /** TeamPeople */
+        TeamPeople: {
+            /**
+             * Auth Enabled
+             * @default true
+             */
+            auth_enabled: boolean;
+            /**
+             * Demo
+             * @default false
+             */
+            demo: boolean;
+            /** People */
+            people: components["schemas"]["TeamPerson"][];
+        };
+        /** TeamPerson */
+        TeamPerson: {
+            /**
+             * Active
+             * @default true
+             */
+            active: boolean;
+            /**
+             * Display Name
+             * @default
+             */
+            display_name: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "account" | "environment" | "demo";
+            /**
+             * Role
+             * @default
+             */
+            role: string;
+            /** Username */
+            username: string;
+        };
+        /** TeamReviews */
+        TeamReviews: {
+            /**
+             * Agreed
+             * @default 0
+             */
+            agreed: number;
+            /**
+             * Agreement Rate
+             * @description Agreed over answered, only from 30 answered reviews.
+             */
+            agreement_rate?: number | null;
+            /**
+             * Answered
+             * @default 0
+             */
+            answered: number;
+            /**
+             * Completed
+             * @default 0
+             */
+            completed: number;
+            /**
+             * Disagreed
+             * @default 0
+             */
+            disagreed: number;
+            /**
+             * Time Spent Median Ms
+             * @description Median time spent on the review card, measured in the Console.
+             */
+            time_spent_median_ms?: number | null;
+            /**
+             * Time To Review Median Seconds
+             * @description Median time from the case being picked for review to the review.
+             */
+            time_to_review_median_seconds?: number | null;
+            /**
+             * Unsure
+             * @default 0
+             */
+            unsure: number;
+        };
+        /** TeamTotals */
+        TeamTotals: {
+            /**
+             * Ack Samples
+             * @default 0
+             */
+            ack_samples: number;
+            /**
+             * Ack Status
+             * @description Whether the median time to acknowledge was measured: too many cases, the cases could not be read, or the audit read stopped before the end of the window (partial). It is omitted unless measured.
+             * @default measured
+             * @enum {string}
+             */
+            ack_status: "measured" | "too_many_cases" | "unavailable" | "partial";
+            /** Bulk */
+            bulk: {
+                [key: string]: number;
+            };
+            /** Closed By */
+            closed_by: {
+                [key: string]: number;
+            };
+            /** Counts */
+            counts: {
+                [key: string]: number;
+            };
+            /** Daily */
+            daily: components["schemas"]["TeamDay"][];
+            /** Median Ack Seconds */
+            median_ack_seconds?: number | null;
+            /**
+             * People Active
+             * @default 0
+             */
+            people_active: number;
+            reviews: components["schemas"]["TeamReviews"];
+        };
+        /** TeamWindow */
+        TeamWindow: {
+            /** End */
+            end: string;
+            /** Label */
+            label: string;
+            /** Start */
+            start?: string | null;
+            /** Token */
+            token: string;
+        };
+        /**
          * TerminologyBody
          * @description The ORG terminology label-override map (admin-only). Every value is plain DATA
          *     rendered as text by the UI (#9). Validated/bounded by CustomizationConfig.
@@ -16108,6 +17110,26 @@ export interface operations {
             };
         };
     };
+    auto_close_review_summary_api_auto_close_review_summary_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AutoCloseReviewSummary"];
+                };
+            };
+        };
+    };
     get_baseline_config_api_baseline_config_get: {
         parameters: {
             query?: never;
@@ -16598,6 +17620,7 @@ export interface operations {
                 verdict?: string | null;
                 rule?: string | null;
                 closed_by?: string | null;
+                review?: string | null;
             };
             header?: never;
             path?: never;
@@ -16926,6 +17949,155 @@ export interface operations {
             };
         };
     };
+    list_case_files_api_cases__case_id__files_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                case_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CaseFileList"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    upload_case_file_api_cases__case_id__files_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                case_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CaseFileUploadBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CaseFileUploadResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_case_file_api_cases__case_id__files__file_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                case_id: string;
+                file_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CaseFileDeleteResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_case_file_content_api_cases__case_id__files__file_id__content_get: {
+        parameters: {
+            query?: {
+                variant?: "full" | "thumb";
+                download?: boolean;
+            };
+            header?: never;
+            path: {
+                case_id: string;
+                file_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The screenshot (or its thumbnail), as stored after validation. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "image/jpeg": string;
+                    "image/png": string;
+                    "image/webp": string;
+                };
+            };
+            /** @description case_not_found or case_file_not_found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description case_files_unavailable: the store could not be read */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     case_forwarding_api_cases__case_id__forwarding_get: {
         parameters: {
             query?: never;
@@ -17076,6 +18248,72 @@ export interface operations {
                 };
                 content: {
                     "application/json": Record<string, never>;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    case_review_state_api_cases__case_id__review_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                case_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CaseReviewState"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    record_auto_close_review_api_cases__case_id__review_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                case_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReviewBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewResult"];
                 };
             };
             /** @description Validation Error */
@@ -20270,6 +21508,37 @@ export interface operations {
             };
         };
     };
+    auto_close_review_metrics_api_metrics_auto_close_review_get: {
+        parameters: {
+            query?: {
+                window?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AutoCloseReviewMetrics"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     metrics_breakdown_api_metrics_breakdown_get: {
         parameters: {
             query: {
@@ -21743,6 +23012,59 @@ export interface operations {
                 };
                 content: {
                     "application/json": Record<string, never>;
+                };
+            };
+        };
+    };
+    get_rbac_api_rbac_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RbacStatus"];
+                };
+            };
+        };
+    };
+    put_rbac_api_rbac_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RbacUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RbacUpdateResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -24958,6 +26280,93 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["UpdateStatus"];
+                };
+            };
+        };
+    };
+    team_activity_api_team_activity_get: {
+        parameters: {
+            query?: {
+                /** @description A time window: today, yesterday, now-7d, or a date range. */
+                window?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TeamActivity"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    team_people_api_team_people_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TeamPeople"];
+                };
+            };
+        };
+    };
+    team_person_events_api_team_people__username__events_get: {
+        parameters: {
+            query?: {
+                window?: string | null;
+                cursor?: string | null;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                username: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TeamEvents"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

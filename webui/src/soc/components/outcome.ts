@@ -23,7 +23,7 @@
  * Every string it returns is fixed, controlled copy built from enum tokens (#9) —
  * the analyst name (`by`) is returned as data for the caller to render as plain text.
  */
-import type { Case, Disposition } from '@/lib/types';
+import type { Case, CaseFeedback, Disposition } from '@/lib/types';
 import { humanizeToken } from '@/lib/format';
 
 /** Who settled the case outcome, in precedence order (first match wins). */
@@ -36,6 +36,11 @@ export type OutcomeSource =
   | 'analyst_unrecorded'
   /** The deterministic auto-close policy closed it on the AI verdict. */
   | 'agent_auto'
+  /**
+   * Round 15 (SPEC D6.12): a person reviewed that automatic close ({@link isReviewGrade}
+   * entries only). The case is still the agent's close; this is the review's reading.
+   */
+  | 'review'
   /** Still open, or routed by the system: the AI assessment is all there is. */
   | 'pending';
 
@@ -155,6 +160,68 @@ export function classificationEntry(c: Pick<Case, 'history'> | Case): Classifica
   return null;
 }
 
+/** Round 15: the marker of an auto-close review (`constants.AUTO_CLOSE_REVIEW_ORIGIN`). */
+const REVIEW = 'auto_close_review';
+const trimmed = (value: unknown): string => (typeof value === 'string' ? value.trim() : '');
+
+/**
+ * Round 15 (SPEC D6.7): is `entry` (a grade of `c`) an auto-close review grade? The
+ * mirror of `backend/app/engine/review_origin.py` `is_review_grade`: its `origin` is
+ * `auto_close_review`, or the case history holds an `auto_close_review` event with a
+ * non-empty `review_id` whose `feedback_ts` and `analyst` equal the entry's `ts` and
+ * `analyst` (an older build drops the entry's own marker on save, never the history).
+ */
+export function isReviewGrade(c: Pick<Case, 'feedback'> | Case, entry: CaseFeedback | null | undefined): boolean {
+  if (!entry) return false;
+  if (trimmed(entry.origin) === REVIEW) return true;
+  const ts = trimmed(entry.ts);
+  if (!ts) return false;
+  const analyst = trimmed(entry.analyst);
+  const history = (c as { history?: unknown }).history;
+  return (
+    Array.isArray(history) &&
+    history.some((h) => {
+      const e = h as Record<string, unknown> | null;
+      return (
+        !!e && e.event === REVIEW && !!trimmed(e.review_id) &&
+        trimmed(e.feedback_ts) === ts && trimmed(e.analyst) === analyst
+      );
+    })
+  );
+}
+
+/** Words for a review's answer: the history event's classification, else the grade's outcome. */
+const REVIEW_WORDS: Record<string, string> = {
+  true_positive: 'true positive',
+  false_positive: 'false positive',
+  benign: 'benign',
+};
+
+/** The newest review grade of `c` with its answer words and agreement, or null. */
+export function latestReview(
+  c: Case,
+): { entry: CaseFeedback; words: string; agrees: boolean | null } | null {
+  const feedback = Array.isArray(c.feedback) ? c.feedback : [];
+  for (let i = feedback.length - 1; i >= 0; i -= 1) {
+    const entry = feedback[i];
+    if (!isReviewGrade(c, entry)) continue;
+    const history = (c as { history?: unknown }).history;
+    const event = Array.isArray(history)
+      ? (history as Record<string, unknown>[]).find(
+          (h) => h && h.event === REVIEW && trimmed(h.feedback_ts) === trimmed(entry.ts),
+        )
+      : undefined;
+    const answer = trimmed(event?.classification) || lower(entry.actual_outcome);
+    const assessment = lower(entry.assessment);
+    return {
+      entry,
+      words: REVIEW_WORDS[answer] ?? 'unsure',
+      agrees: assessment === 'agree' ? true : assessment === 'disagree' ? false : null,
+    };
+  }
+  return null;
+}
+
 /** Relationship between an analyst's disposition and the AI verdict. */
 export function outcomeAgreement(verdict: unknown, disposition: unknown): OutcomeAgreement {
   const v = canonicalVerdict(verdict);
@@ -233,7 +300,8 @@ function aiShortLabel(verdict: unknown, confidence: unknown): string {
  *   1. analyst            — `decision_by === 'analyst'` + a classification entry;
  *   2. analyst_policy     — `decision_by === 'analyst_policy'`;
  *   3. analyst_unrecorded — terminal, `decision_by === 'analyst'`, no classification;
- *   4. agent_auto         — terminal, `decision_by === 'agent'` (AI auto-close);
+ *   4. agent_auto: terminal, `decision_by === 'agent'` (AI auto-close); or review: the
+ *      same, reviewed by a person (Round 15, {@link isReviewGrade});
  *   5. pending            — everything else: the AI assessment, attributed as such.
  */
 export function caseOutcome(c: Case): CaseOutcome {
@@ -292,6 +360,20 @@ export function caseOutcome(c: Case): CaseOutcome {
     };
   }
   if (terminal && decisionBy === 'agent') {
+    // Round 15 (SPEC D6.12): a reviewed automatic close reads as the review.
+    const review = latestReview(c);
+    if (review) {
+      return {
+        ...base,
+        source: 'review',
+        disposition: null,
+        by: trimmed(review.entry.analyst) || undefined,
+        at: trimmed(review.entry.ts) || undefined,
+        agreement: review.agrees === true ? 'agrees' : review.agrees === false ? 'overrides' : null,
+        headline: `${review.agrees === false ? 'Review disagreed' : 'Reviewed'}: ${review.words}`,
+        shortLabel: review.agrees === false ? 'Review disagreed' : 'Reviewed',
+      };
+    }
     const lead =
       aiVerdict === 'FALSE_POSITIVE'
         ? 'Auto-closed as false positive'
@@ -347,6 +429,7 @@ export function outcomeCellText(outcome: CaseOutcome): OutcomeCellText | null {
     }
     case 'analyst_policy':
     case 'agent_auto':
+    case 'review':
       return { label: outcome.shortLabel, full: outcome.headline };
     case 'analyst_unrecorded':
       // "Outcome not recorded" is the row and header word; the column says less.

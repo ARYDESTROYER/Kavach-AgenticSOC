@@ -20,7 +20,7 @@
  * Fully offline; nothing here touches #3 runtime behaviour.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { axe, toHaveNoViolations } from 'jest-axe';
 
@@ -265,6 +265,21 @@ async function optionsOf(testId: string): Promise<string[]> {
   await waitFor(() => expect(screen.queryByRole('listbox')).toBeNull());
   expect(screen.getByTestId('kpi-drilldown')).toBeInTheDocument();
   return labels;
+}
+
+
+/**
+ * axe inside act(), as Chat.test.tsx does: the shell announcer re-sets its live region on a
+ * 60 ms timer (useLiveAnnouncer) and the open panel announces itself, so the update can
+ * land while axe walks the DOM. Outside act() React writes a warning to stderr, which fails
+ * the strict Console gate.
+ */
+async function axeInAct(node: Element) {
+  let results: Awaited<ReturnType<typeof axe>> | undefined;
+  await act(async () => {
+    results = await axe(node);
+  });
+  return results as Awaited<ReturnType<typeof axe>>;
 }
 
 describe('Overview — KPI drill-down depth', () => {
@@ -517,7 +532,7 @@ describe('Overview — KPI drill-down depth', () => {
     // run therefore audits neither the panel nor, meaningfully, the page, and reports
     // success. The probe on the line above the run is what keeps it non-vacuous.
     expect(document.body.querySelector('[data-testid="kpi-drilldown-more"]')).not.toBeNull();
-    expect(await axe(document.body)).toHaveNoViolations();
+    expect(await axeInAct(document.body)).toHaveNoViolations();
 
     // The paging control is a plain <button> inside the layer: it registers no
     // dismissable layer of its own, so Escape reaches Radix's document listener and

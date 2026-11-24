@@ -556,6 +556,125 @@ class AppState:
         self._demo_runbook_runs = (demo, store)
         return store
 
+    # ------------------------------------------------------------------ #
+    # Round 15 auto-close review (SPEC D6.3, D6.4, §3.2). The ledger is built lazily
+    # over the shared KV and rebound when ``_wire()`` swaps the KV; Demo Mode has its
+    # own ledger on the Demo stack's KV.
+    # ------------------------------------------------------------------ #
+    @property
+    def real_auto_close_review(self):
+        """The REAL auto-close review ledger (``stores.auto_close_review``), whatever
+        Demo Mode shows (the cases reset clears it)."""
+        store = getattr(self, "_real_auto_close_review_store", None)
+        kv = getattr(self, "_kv", None)
+        if store is None or store.kv is not kv:
+            from .stores.auto_close_review import AutoCloseReviewStore
+
+            store = AutoCloseReviewStore(kv)
+            self._real_auto_close_review_store = store
+        return store
+
+    @property
+    def auto_close_review(self):
+        """The auto-close review ledger for the active real/Demo boundary (SPEC §3.2):
+        Demo cases are sampled and reviewed in the Demo stack's ledger."""
+        demo = self._demo
+        if demo is None:
+            return self.real_auto_close_review
+        store = getattr(demo, "auto_close_review", None)
+        if store is not None:
+            return store
+        cached = getattr(self, "_demo_auto_close_review", None)
+        if cached is not None and cached[0] is demo:
+            return cached[1]
+        from .stores.auto_close_review import AutoCloseReviewStore
+
+        store = AutoCloseReviewStore(demo.kv)
+        self._demo_auto_close_review = (demo, store)
+        return store
+
+    async def _seed_demo_auto_close_reviews(self, demo_stack, cases, seed: int, now_ms: int) -> int:
+        """Seed the Demo auto-close review sample (SPEC D6.13) into ``demo_stack``'s
+        ledger, case store and audit, when the review is on. Never raises."""
+        try:
+            from .engine.auto_close_review import operator_zone
+            from .engine.demo_generator import seed_demo_auto_close_reviews
+
+            dprefs = demo_stack._demo_prefs()  # noqa: SLF001 - same module owner
+            config = dprefs.auto_close_review
+            if not config.enabled:
+                return 0
+            return await seed_demo_auto_close_reviews(
+                demo_stack.auto_close_review, cases,
+                save=demo_stack.cases.save, audit=demo_stack.audit,
+                seed=seed, now_millis=now_ms, tz=operator_zone(dprefs),
+                expiry_days=int(config.expiry_days),
+            )
+        except Exception as exc:  # noqa: BLE001 - a seeded review never blocks enable
+            logger.warning("demo auto-close review seeding failed: %s", exc)
+            return 0
+
+    def _real_review_sampler(self):
+        """The real pipeline's ``review_sampler`` (SPEC D6.3): the real ledger, the
+        control audit and the process realtime bus, each read when a case is sampled so
+        a ``_wire()`` rebuild is followed."""
+        from .engine.auto_close_review import ReviewSampler
+        from .realtime import get_event_bus
+
+        return ReviewSampler(
+            store=lambda: self.real_auto_close_review,
+            audit=lambda: self._real_audit,
+            bus=get_event_bus,
+        )
+
+    # ------------------------------------------------------------------ #
+    # Round 15 WP4: screenshots on a case (SPEC D5.1 to D5.3, §3.2). Built lazily over
+    # the shared KV and rebound when ``_wire()`` swaps it; Demo Mode serves the Demo
+    # stack's own store (its own KV and the Demo caps).
+    # ------------------------------------------------------------------ #
+    def _case_files_in_memory(self) -> bool:
+        """True when the real KV keeps its documents in process memory (the
+        in-memory Elasticsearch fallback): screenshots then get the Demo caps."""
+        if self._is_sql_backend():
+            return False
+        from .es.fake import InMemoryESClient
+
+        return isinstance(getattr(self, "es", None), InMemoryESClient)
+
+    @property
+    def real_case_files(self):
+        """The REAL screenshot store (``stores.case_files``), whatever Demo Mode shows
+        (the cases reset clears it)."""
+        store = getattr(self, "_real_case_files_store", None)
+        kv = getattr(self, "_kv", None)
+        if store is None or store.kv is not kv:
+            from .stores.case_files import MEMORY_LIMITS, STANDARD_LIMITS, CaseFileStore
+
+            limits = MEMORY_LIMITS if self._case_files_in_memory() else STANDARD_LIMITS
+            store = CaseFileStore(kv, limits=limits)
+            self._real_case_files_store = store
+        return store
+
+    @property
+    def case_files(self):
+        """Screenshots for the active real/Demo boundary (SPEC §3.2): Demo cases have
+        Demo screenshots, on the Demo KV within the Demo caps, gone when Demo Mode
+        ends."""
+        demo = self._demo
+        if demo is None:
+            return self.real_case_files
+        store = getattr(demo, "case_files", None)
+        if store is not None:
+            return store
+        cached = getattr(self, "_demo_case_files", None)
+        if cached is not None and cached[0] is demo:
+            return cached[1]
+        from .stores.case_files import MEMORY_LIMITS, CaseFileStore
+
+        store = CaseFileStore(demo.kv, limits=MEMORY_LIMITS)
+        self._demo_case_files = (demo, store)
+        return store
+
     @property
     def legacy_procedures(self):
         """Read-only access to the retired procedure namespaces (one release): the
@@ -1277,6 +1396,9 @@ class AppState:
             migrated_procedures=migrated_procedures,
         )
         self._real_pipeline.automation = self.automation
+        # Round 15 (SPEC D6.3): the auto-close review sample, after every other
+        # post-decision hook. Real cases, the real ledger and the control audit.
+        self._real_pipeline.review_sampler = self._real_review_sampler()
         # (The realtime EventBus is now injected at pipeline CONSTRUCTION above — Round 5
         # Coupling-F — instead of this post-hoc setter. The bus is the module-global
         # singleton, best-effort + #3/#11-safe, and a no-op when realtime is off.)
@@ -3603,6 +3725,11 @@ class AppState:
         except Exception as exc:  # noqa: BLE001 - a seeded run never blocks enable
             logger.warning("demo runbook seeding failed: %s", exc)
 
+        # Round 15 (SPEC D6.13): about six seeded automatic closes sampled for review
+        # (three pending, two agreeing, one disagreeing) in the Demo ledger, with their
+        # grades, history events and Demo audit rows. Never blocks enable.
+        await self._seed_demo_auto_close_reviews(demo_stack, list(seeded_counter_cases), new_demo.seed, now_ms)
+
         # Seed one coherent, deterministic 24h funnel delta. The transient benign batch
         # contributes inbound volume only. Every seeded case in the current dashboard
         # window contributes one correlated cluster plus at least one source event (or
@@ -3650,6 +3777,17 @@ class AppState:
             await demo_stack.run_capability_pass()
         except Exception as exc:  # noqa: BLE001 — never break enable on a capability pass
             logger.debug("demo initial capability pass failed: %s", exc)
+
+        # Round 15 (SPEC D3.12): the Demo audit rows of the seeded human work (the
+        # acknowledgements, closes, comments and assignments the seeded cases credit to
+        # the Demo SOC team), so Team activity counts what the cases show. Never blocks
+        # enable.
+        try:
+            from .engine.demo_generator import seed_demo_team_activity
+
+            await seed_demo_team_activity(demo_stack.audit, list(seeded_counter_cases), now_millis=now_ms)
+        except Exception as exc:  # noqa: BLE001 - seeded rows never block enable
+            logger.warning("demo team activity seeding failed: %s", exc)
 
         # Commit the fully-built stack. Only the Demo switch is written, onto the LIVE
         # settings read inside the write lock: a real settings save that landed while
