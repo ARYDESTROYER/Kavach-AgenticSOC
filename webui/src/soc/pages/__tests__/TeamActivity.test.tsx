@@ -233,6 +233,10 @@ describe('Team activity', () => {
     const headers = within(table).getAllByRole('columnheader').map((th) => th.textContent?.trim() ?? '');
     // The chart's kinds, the role under the name; sign-ins, each kind of "Other" and the
     // time to acknowledge are on the person sheet and in the CSV.
+    // "Other" names what it adds up on hover: the chart's "Other case work".
+    expect(
+      within(table).getByTitle('Other case work: assigned, screenshots added and runbook steps done'),
+    ).toBeInTheDocument();
     expect(headers).toEqual([
       'Person', 'Closed', 'Reviews', 'Acknowledged', 'Commented', 'Escalated', 'Reopened', 'Other', 'Last active', 'Row actions',
     ]);

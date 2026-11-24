@@ -64,6 +64,8 @@ describe('CasePolicySection — mounts the orphaned G6 editors', () => {
     const toggle = screen.getByRole('switch', { name: /enable priority derivation/i });
     expect(toggle).toHaveAttribute('aria-checked', 'true');
     expect(screen.getByText('On by default. When off, cases have no priority.')).toBeInTheDocument();
+    // The switch reads its help text out, as the cross-source row's does.
+    expect(toggle).toHaveAccessibleDescription('On by default. When off, cases have no priority.');
     expect(screen.queryByText(/Off by default/)).toBeNull();
     fireEvent.click(toggle);
     expect(update).toHaveBeenCalledTimes(1);

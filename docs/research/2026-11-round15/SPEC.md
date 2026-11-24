@@ -1240,6 +1240,26 @@ and AWS variables unset, and the 2 router-count records waited for the merge.
   run inside `act()`, as `Chat.test.tsx` does. The announcer's 60 ms timer could land while axe
   walked the DOM and write React's act warning to stderr, failing the strict gate; it also
   appears on the Round 14 base.
+- **Codex review on the pull request** (`e6c3c1a`): the `auto_close_review` history event
+  carries `elapsed_ms` and the ledger repair restores it, so a review repaired from the history
+  keeps its time spent.
+- **Final screenshot pass** (`1f3eb23`, `826bb2b`, then the follow-ups): a light and dark capture
+  of the §5.3 list on the final tree found, and a fixer and two independent live reviews closed:
+  - The Team activity People table overflowed at 1440 by 900 (1,676 px in a 1,152 px panel). It
+    now fits: the name has its own line with the role and kind under it (a cut name shows its
+    full text as its title), the columns are the chart's kinds (Closed, Reviews, Acknowledged,
+    Commented, Escalated, Reopened, Other, Last active), and the Person column is sticky when a
+    narrower window scrolls. Sign-ins, each kind inside Other and the time to acknowledge are on
+    the person sheet and in the CSV.
+  - The person sheet uses the standard xl width, so its Per day table shows all nine columns.
+  - Reviews is a right-aligned count (0 for none), Last active reads "Not in window", the
+    sheet's lines read "Closed as true positive: 1." and "In bulk actions: 1 acknowledged, 2
+    closed.", and a KPI line gets tabular figures only when it holds a digit, so "auto-close"
+    keeps a normal hyphen.
+  - Settings said "Off by default." for cross-source correlation and priority derivation, which
+    are on by default (`CrossSourceCorrelationConfig.enabled` and `PriorityMatrix.enabled` are
+    `True`), and the editors read an absent value as off. Both say "On by default.", read an
+    absent value as on, and the priority switch reads its help text out.
 
 ### 8.3 Known limitations
 
