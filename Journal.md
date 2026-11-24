@@ -12120,3 +12120,10 @@
 - Tests: on 826bb2b, npm run test:strict 680 files, 8,874 passed, 16 skipped, zero stderr; lint 0/0; gates pass; check:types no drift; entry 329,080 B; bundle check 25 passed; corpus current (971 chunks); check_docs 86 pages; docs, knowledge, settings and correlation backend tests pass; fatal ruff clean; decide() unchanged. The follow-ups: TeamActivity and case-policy tests 30 passed, zero stderr; the new description assertion fails without its change.
 - Status: done; pushed.
 - Next: CI on the new head, then the screenshot summary comment on the PR.
+
+### 2026-11-24 19:00Z - orchestrator - Round 16 start: release 0.1.13, What's new, explainability, cleaner Case Manager and login
+- Context: Round 15 merged into Testing as 3cfd5c0 (PR #143). The operator's Round 16 asks: show when the AI agent is investigating a case (and keep the run's result authoritative), use the wasted space at the top of the Case Manager detail pane, a cleaner and segregated Case Manager from deep research, a cleaner login page and animation with "Remember me" and no duration, a bug hunt across the application, research agents on what to build next (competitors, features, backend), every number explainable on hover or click with its exact math (for example the risk score), a first-login "What's new" screen for each update plus a Communication page that tracks every release with notes and screenshots, and to ship this as the next release (0.1.13, still untagged; main is at 0.1.12).
+- Did: branch claude/round16 from origin/Testing; launched the research and bug-hunt discovery workflows.
+- Tests: none yet.
+- Status: in progress.
+- Next: synthesize the research and confirmed bugs into docs/research/2026-11-round16/SPEC.md, then build, review, gate and prepare the 0.1.13 release.
