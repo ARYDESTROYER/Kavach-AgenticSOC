@@ -532,9 +532,6 @@ Rows written before Round 15 or with sign-in off may name no person; they are gr
 - **A pick on a case reopened outside the review stays pending.** It stays in the Review
   scope and its count, and a review of it is refused with `409 review_not_agent_closed`
   until the case is closed again.
-- **A review repaired from the case history has no time spent.** When the ledger could
-  not be updated after a review, a later read restores the entry from the case's history
-  event, which does not carry the time the reviewer spent; the audit row keeps it.
 - **One review at a time per process.** Recording a review is serialised by a lock in the
   backend process, and the ledger by strict compare-and-set; run one backend replica.
 - **Bulk changes leave out agent-closed cases in the Console only.** Bulk Set status and

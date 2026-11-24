@@ -1258,7 +1258,8 @@ and add what was found after WP8 wrote those pages.
 - **Auto-close review (WP5, WP7).** Not a full blind review. Recording is serialised per backend
   process. `GET /api/cases?review=` reads up to 2,000 whole cases per request, and `GET
   /api/cases/{case_id}/review` loads the whole ledger on each open of an agent-closed case. A
-  ledger entry repaired from the history has no `elapsed_ms`. A pick on a case reopened outside
+  ledger entry repaired from the history keeps its `elapsed_ms`, which the history event carries
+  since a review comment on the pull request. A pick on a case reopened outside
   the review stays pending and listed, with no band or rail line saying why. In Review scope, a
   ledger case hidden by a status filter joins after a status change only on the next `case.review`
   frame or Refresh. The bulk exclusion is client-side only.

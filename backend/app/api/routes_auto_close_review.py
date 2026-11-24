@@ -301,6 +301,11 @@ def _complete_from_history(ledger: ReviewLedger, entries: dict[str, Any]) -> Rev
         classification = event.get("classification")
         if isinstance(classification, str) and classification in CLASSIFICATION_OUTCOME:
             entry.classification = classification
+        # The time spent travels in the history event, so a repaired entry keeps the
+        # measurement a normal completion stores (the request bound, 0 to 24 hours).
+        elapsed = event.get("elapsed_ms")
+        if isinstance(elapsed, int) and not isinstance(elapsed, bool) and 0 <= elapsed <= 86_400_000:
+            entry.elapsed_ms = elapsed
         changed = True
     return ledger if changed else None
 
@@ -632,6 +637,7 @@ async def _record_review_locked(
                 "analyst": actor,
                 "agrees": agrees,
                 "classification": body.classification,
+                "elapsed_ms": body.elapsed_ms,
             })
         fresh.updated_at = now
         await state.cases.save(fresh)

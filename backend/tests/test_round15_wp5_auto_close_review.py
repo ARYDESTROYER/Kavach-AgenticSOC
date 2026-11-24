@@ -805,7 +805,8 @@ def test_a_failed_ledger_write_is_repaired_from_the_case_history(env, monkeypatc
         raise ReviewLedgerUnavailable("down")
 
     monkeypatch.setattr(store, "update", failing)
-    r = c.post("/api/cases/case-rv-repair/review", headers=h["t1"], json={"classification": "false_positive"})
+    r = c.post("/api/cases/case-rv-repair/review", headers=h["t1"],
+               json={"classification": "false_positive", "elapsed_ms": 42_000})
     assert r.status_code == 200 and calls["n"] == 2  # retried once; the review stands
     monkeypatch.setattr(store, "update", original)
     assert _ledger(c, state).entry_by_id(review_id).state == "pending"
@@ -814,6 +815,8 @@ def test_a_failed_ledger_write_is_repaired_from_the_case_history(env, monkeypatc
     assert summary["pending"] == 0
     entry = _ledger(c, state).entry_by_id(review_id)
     assert entry.state == "completed" and entry.reviewer == "t1" and entry.classification == "false_positive"
+    # The repaired entry keeps the time spent the history event carries.
+    assert entry.elapsed_ms == 42_000
     # And the review cannot be recorded twice.
     again = c.post("/api/cases/case-rv-repair/review", headers=h["t1"], json={"classification": "benign"})
     assert again.status_code == 409

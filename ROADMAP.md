@@ -503,8 +503,6 @@ known limitations):**
   has loaded; the bulk API and jobs accept them.
 - ☐ **The Review scope reads by projection**: `GET /api/cases?review=completed` reads up to
   2,000 whole cases per request before it filters and pages them.
-- ☐ **Time spent survives a ledger repair**: a ledger entry restored from the case history
-  has no `elapsed_ms`, because the `auto_close_review` history event does not carry it.
 - ☐ **A pick on a case reopened outside the review**: it stays pending and listed until the
   case is closed again; decide whether to settle or hide it.
 - ☐ **A case a person closes while its investigation runs**: it is rebuilt from the stored
