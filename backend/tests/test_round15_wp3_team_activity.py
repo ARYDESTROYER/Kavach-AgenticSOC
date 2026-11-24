@@ -375,6 +375,36 @@ def test_runbook_steps_count_each_step_marked_done() -> None:
     assert _person(_fold(rows).result([]), "fay")["counts"]["runbook_step_done"] == 5
 
 
+def test_an_owner_set_by_a_lifecycle_action_counts_as_assigned() -> None:
+    """The Escalate dialog's owner field sets the owner in the same action: the
+    lifecycle row records it as an ``assignee`` change, and it is an assignment the
+    person made, counted beside the escalation (and in bulk when a bulk action wrote
+    it). Only a row that changed the owner counts."""
+    t = NOW - timedelta(minutes=30)
+    owner = {"field": "assignee", "before": "alice", "after": "bob"}
+    moved = {"field": "status", "before": "investigating", "after": "escalated"}
+    rows = [
+        _lifecycle("tam", "escalate", "investigating", "escalated", ts=t, case_id="e1", changes=[moved, owner]),
+        _lifecycle("tam", "escalate", "investigating", "escalated", ts=t, case_id="e2", changes=[moved],
+                   run_id="bulk-0000000000000001"),
+        _lifecycle("tam", "escalate", "investigating", "escalated", ts=t, case_id="e3", changes=[moved, owner],
+                   run_id="bulk-0000000000000001"),
+        # An owner set while putting a case on hold (through the API) is an assignment too.
+        _lifecycle("tam", "hold", "investigating", "on_hold", ts=t, case_id="e4",
+                   changes=[{"field": "status", "before": "investigating", "after": "on_hold"},
+                            {"field": "assignee", "before": None, "after": "bob"}]),
+    ]
+    assert [e.kind for e in ta.events_of_row(rows[0])] == ["escalated", "assigned"]
+    tam = _person(_fold(rows).result([]), "tam")
+    assert tam["counts"]["escalated"] == 3 and tam["counts"]["assigned"] == 3
+    assert tam["bulk"]["escalated"] == 2 and tam["bulk"]["assigned"] == 1
+    assert sorted(e["kind"] for e in ta.person_events(rows, _window(), "tam")) == [
+        "assigned", "assigned", "assigned", "escalated", "escalated", "escalated",
+    ]
+    # The rows are read: every lifecycle action is in the case-work read.
+    assert {"case.escalated", "case.held", "case.resumed", "case.deescalated"} <= set(ta.WORK_ACTIONS)
+
+
 def _review(actor: str, agrees: Any, *, ts: datetime, case_id: str, elapsed: int | None = 60_000,
             via_changes: bool = False) -> dict[str, Any]:
     row: dict[str, Any] = {
@@ -574,6 +604,109 @@ def test_only_the_attempt_its_failure_row_follows_is_not_counted() -> None:
                   _attempt(_ATTACH_FAILED, "pia", ts=at(5), request_id=rid, outcome="unknown")]) == 0
 
 
+_STEP_PAIRS = [
+    ("step.updated", "step.update_failed"),
+    ("step.decision_recorded", "step.decision_record_failed"),
+    ("step.action_recorded", "step.action_record_failed"),
+    ("step.approved", "step.approve_failed"),
+]
+
+
+def _step_row(action: str, actor: str, *, ts: datetime, request_id: str, case_id: str = "c1",
+              step: str = "s1") -> dict[str, Any]:
+    """A runbook step row as ``runbook_runs._audited_runs_write`` appends it: the action
+    row with the step's status change, or its failure row (no changes) with the same
+    request id, target and session."""
+    failed = action.endswith("_failed")
+    row: dict[str, Any] = {
+        "ts": _iso(ts), "action_type": "runbook", "surface": "runbook", "actor": actor, "action": action,
+        "actor_type": "human", "outcome": "failure" if failed else "success", "case_id": case_id,
+        "target": {"type": "case", "id": case_id, "label": "CASE-0007"}, "request_id": request_id,
+        "session_ref": "s-1",
+    }
+    if failed:
+        row["result_summary"] = "no_change: Another change got there first; nothing was changed."
+    else:
+        row["changes"] = [{"field": f"steps.{step}.status", "before": "todo", "after": "done"}]
+    return row
+
+
+@pytest.mark.parametrize("action,failed", _STEP_PAIRS)
+def test_a_runbook_step_whose_write_failed_is_not_counted(action: str, failed: str) -> None:
+    """Runbook step changes are audit-first too: two people marking the same step done
+    at once both append their row, and the loser's compare-and-set write fails
+    (``_NoLongerApplies``) with its failure row. That step was not completed by them."""
+    assert ta.NOT_APPLIED_ACTIONS[failed] == action
+    t = NOW - timedelta(minutes=10)
+
+    def at(ms: int) -> datetime:
+        return t + timedelta(milliseconds=ms)
+
+    def done(rows: list[dict[str, Any]]) -> int:
+        return _fold(rows).result([])["team"]["counts"]["runbook_step_done"]
+
+    pair = [_step_row(action, "Uma", ts=at(0), request_id="req-000000s1"),
+            _step_row(failed, "Uma", ts=at(30), request_id="req-000000s1")]
+    for rows in (pair, list(reversed(pair))):
+        assert done(rows) == 0
+        assert ta.person_events(rows, _window(), "uma") == []
+    # The winner of the race (another request) still counts; so does a lone row.
+    winner = _step_row(action, "Vic", ts=at(1), request_id="req-000000s2")
+    assert done([*pair, winner]) == 1
+    assert _nonzero(_fold([*pair, winner]).result([])) == {"vic": {"runbook_step_done": 1}}
+    assert done(pair[:1]) == 1
+    assert [e["kind"] for e in ta.person_events(pair[:1], _window(), "uma")] == ["runbook_step_done"]
+    # A retried write inside one request: action, failure, action. The second applied.
+    assert done([*pair, _step_row(action, "Uma", ts=at(60), request_id="req-000000s1")]) == 1
+    # A failure row of another request or another case cancels nothing.
+    assert done([pair[0], _step_row(failed, "Uma", ts=at(30), request_id="req-000000s3")]) == 1
+    assert done([pair[0], _step_row(failed, "Uma", ts=at(30), request_id="req-000000s1", case_id="c2")]) == 1
+
+
+def test_the_step_writer_s_rows_pair_through_the_audit_store() -> None:
+    """The rows ``audited_write`` itself appends for a runbook step whose store write
+    failed (the action row, then ``step.update_failed``) are read back from the audit
+    store and count nothing; an applied write of the same kind counts."""
+    from app.audit.write import audited_write
+    from app.constants import ActionType
+    from app.models import AuditChange, AuditTarget
+
+    window = _window("today")
+    when = NOW - timedelta(minutes=15)
+
+    async def run() -> dict[str, dict[str, int]]:
+        repo = await _es_repo([])
+
+        async def write_step(request_id: str, write: Any) -> None:
+            await audited_write(
+                None, sink=repo, action="step.updated",
+                target=AuditTarget(type="case", id="c-step", label="CASE-0042"), expected_revision=3,
+                changes=[AuditChange(field="steps.s1.status", before="todo", after="done")],
+                write=write, action_type=ActionType.RUNBOOK, actor="Wes", actor_type="human",
+                surface="runbook", context={"request_id": request_id, "session_ref": "0123456789abcdef"}, case_id="c-step",
+                result_summary="Runbook step Contain marked done.",
+            )
+
+        async def lost() -> None:
+            raise RuntimeError("Another change got there first; nothing was changed.")
+
+        async def applied() -> str:
+            return "ok"
+
+        with pytest.raises(RuntimeError):
+            await write_step("req-0000aa01", lost)
+        await write_step("req-0000aa02", applied)
+        rows, _pages = await _all(repo)
+        assert [r["action"] for r in rows] == ["step.updated", "step.update_failed", "step.updated"]
+        # The store stamps the time it appended; date them inside the fixed window.
+        fold = ta.TeamActivityFold(window)
+        for offset, row in enumerate(rows):
+            fold.add_row({**row, "ts": _iso(when + timedelta(milliseconds=offset))})
+        return _nonzero(fold.result([]))
+
+    assert asyncio.run(run()) == {"wes": {"runbook_step_done": 1}}
+
+
 def test_a_failure_row_just_after_the_window_still_pairs_on_every_audit_store() -> None:
     """The failure row follows its action row by milliseconds, so it can land after the
     window's end: the read takes the two writers' rows a little past the end, on
@@ -763,6 +896,53 @@ def test_time_to_acknowledge_follows_the_metrics_rule_and_the_acknowledger() -> 
     assert result["team"]["median_ack_seconds"] == 1200.0 and result["team"]["ack_status"] == "measured"
     omitted = fold.result([], ack_status="too_many_cases")
     assert omitted["team"]["median_ack_seconds"] is None and _person(omitted, "nia")["median_ack_seconds"] is None
+
+
+def test_a_case_escalated_or_put_on_hold_without_an_acknowledge_is_measured() -> None:
+    """The metrics MTTA rule takes a first human move into Escalated or On hold as the
+    acknowledgement when the case was never acknowledged. Such a case is a candidate
+    here too, so the team median matches the Metrics page instead of leaving those cases
+    out. A move made by the agent, a move into another status and a row that changed no
+    status are not candidates."""
+    from app.engine import metrics
+
+    opened = NOW - timedelta(hours=3)
+    up = _case("m1", created=opened, trail=[
+        StatusHistoryEntry(from_status="open", to_status="escalated", by="xia", at=_iso(opened + timedelta(minutes=10))),
+    ])
+    held = _case("m2", created=opened, trail=[
+        StatusHistoryEntry(from_status="open", to_status="on_hold", by="xia", at=_iso(opened + timedelta(minutes=30))),
+    ])
+    set_to = _case("m3", created=opened, trail=[
+        StatusHistoryEntry(from_status="open", to_status="investigating", by="yan",
+                           at=_iso(opened + timedelta(minutes=50))),
+    ])
+    rows = [
+        _lifecycle("xia", "escalate", "open", "escalated", ts=opened + timedelta(minutes=10), case_id="m1"),
+        _lifecycle("xia", "hold", "open", "on_hold", ts=opened + timedelta(minutes=30), case_id="m2"),
+        _lifecycle("yan", "set_status", "open", "investigating", ts=opened + timedelta(minutes=50), case_id="m3"),
+        # A legacy hold row (no structured action) reads the same.
+        _lifecycle("xia", "hold", "open", "on_hold", ts=opened + timedelta(minutes=30), case_id="m2",
+                   structured=False),
+        # Not candidates: an agent's move, a move to Open, a row that moved nothing.
+        {**_lifecycle("agent", "escalate", "open", "escalated", ts=opened, case_id="m4"), "actor_type": "agent"},
+        _lifecycle("xia", "resume", "on_hold", "open", ts=opened + timedelta(minutes=40), case_id="m5"),
+        _lifecycle("xia", "escalate", "escalated", "escalated", ts=opened + timedelta(minutes=45), case_id="m6"),
+    ]
+    assert [ta.ack_move_of_row(r) for r in rows[4:]] == [None, None, None]
+    fold = _fold(rows)
+    assert fold.acknowledged_case_ids() == ["m1", "m2", "m3"]
+    fold.add_acknowledged_cases({c.case_id: c for c in (up, held, set_to)})
+    result = fold.result([])
+    xia, yan = _person(result, "xia"), _person(result, "yan")
+    assert (xia["ack_samples"], xia["median_ack_seconds"]) == (2, 1200.0)
+    assert (yan["ack_samples"], yan["median_ack_seconds"]) == (1, 3000.0)
+    # Counts are unchanged: an escalation is counted as one, a hold as nothing.
+    assert xia["counts"]["escalated"] == 2 and xia["counts"]["acknowledged"] == 0
+    assert result["team"]["ack_samples"] == 3 and result["team"]["median_ack_seconds"] == 1800.0
+    # The same cases and the same median as the Metrics page's MTTA.
+    mtta = metrics.lifecycle_intervals([up, held, set_to])["mtta_minutes"]
+    assert mtta["count"] == 3 and mtta["p50"] * 60 == result["team"]["median_ack_seconds"]
 
 
 # --------------------------------------------------------------------------- #
@@ -1367,15 +1547,54 @@ def test_the_person_view_row_names_the_person_on_one_plain_line() -> None:
 
 
 def test_a_partial_read_says_so(monkeypatch) -> None:
+    """A read that stopped at its row limit holds the oldest part of the window only:
+    the counts are lower bounds, but a median or a rate of that part is not, so the time
+    to acknowledge reads ``partial`` and is omitted rather than taken from the part."""
     monkeypatch.setattr(ta, "MAX_SCANNED_ROWS", 3)
     with _app() as client:
         admin = _login(client)
+        state = _state(client)
+        created = _recent(120)
+        acked = [_recent(119) if i < 3 else _recent(20) for i in range(6)]
+        for i in range(6):
+            client.portal.call(state.cases.save, _case(
+                f"q-{i}", created=created, acknowledged=acked[i],
+                history=[{"ts": _iso(acked[i]), "event": "analyst_action", "action": "acknowledge",
+                          "analyst": "quin"}],
+            ))
         _write(client, [
-            _lifecycle("quin", "acknowledge", "open", "investigating", ts=_recent(30 - i), case_id=f"q-{i}")
+            _lifecycle("quin", "acknowledge", "open", "investigating", ts=acked[i], case_id=f"q-{i}")
             for i in range(6)
         ])
         body = client.get("/api/team/activity", headers=admin).json()
         assert body["exact"] is False and body["partial_reason"] == "row_limit" and body["scanned_rows"] == 3
+        team, quin = body["team"], _person(body, "quin")
+        assert team["counts"]["acknowledged"] == 3  # at least these
+        assert team["ack_status"] == "partial"
+        assert team["median_ack_seconds"] is None and team["ack_samples"] == 0
+        assert quin["median_ack_seconds"] is None and quin["ack_samples"] == 0
+
+
+def test_a_partial_fold_omits_every_median_and_rate() -> None:
+    """The pure fold: with a partial reason the counts stand and every median and rate
+    is omitted, whatever the caller passed as the acknowledgement status (an unavailable
+    or too-many-cases status keeps its own reason)."""
+    t = NOW - timedelta(hours=1)
+    rows = [_review("zed", True, ts=t, case_id=f"z{i}", elapsed=40_000) for i in range(30)]
+    fold = _fold(rows)
+    fold.add_review_requests([{"ts": _iso(t - timedelta(minutes=5)), "action": "case.review_requested",
+                               "case_id": f"z{i}"} for i in range(30)])
+    exact = fold.result([])
+    assert exact["team"]["reviews"]["agreement_rate"] == 1.0
+    assert exact["team"]["reviews"]["time_spent_median_ms"] == 40_000.0
+    assert exact["team"]["reviews"]["time_to_review_median_seconds"] == 300.0
+    partial = fold.result([], partial_reason="store_limit")
+    for reviews in (partial["team"]["reviews"], _person(partial, "zed")["reviews"]):
+        assert (reviews["completed"], reviews["agreed"], reviews["answered"]) == (30, 30, 30)
+        assert reviews["agreement_rate"] is None
+        assert reviews["time_spent_median_ms"] is None and reviews["time_to_review_median_seconds"] is None
+    assert partial["team"]["ack_status"] == "partial" and partial["exact"] is False
+    assert fold.result([], partial_reason="row_limit", ack_status="unavailable")["team"]["ack_status"] == "unavailable"
 
 
 def test_the_case_bound_omits_the_median(monkeypatch) -> None:

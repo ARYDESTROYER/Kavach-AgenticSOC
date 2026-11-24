@@ -290,9 +290,19 @@ describe('Team activity', () => {
   it('states a partial read, Demo work and a window with no case work', async () => {
     const empty = data({ exact: false, partial_reason: 'row_limit', scanned_rows: 250_000, demo: true });
     empty.team.counts = { ...zeros, signed_in: 2 };
+    // A partial read: the server gives no median, and says why.
+    empty.team.ack_status = 'partial';
+    empty.team.median_ack_seconds = null;
+    empty.team.ack_samples = 0;
     h.activity.mockResolvedValue(empty);
     renderPage();
     expect(await screen.findByTestId('team-partial')).toHaveTextContent('250,000');
+    expect(screen.getByTestId('team-partial')).toHaveTextContent(
+      'The medians and the agreement rate are not measured from part of the window.',
+    );
+    const kpis = within(screen.getByTestId('team-kpis'));
+    expect(kpis.getByText('Not measured')).toBeInTheDocument();
+    expect(kpis.getByText('not measured from a partial read')).toBeInTheDocument();
     expect(screen.getByTestId('team-demo-note')).toHaveTextContent('Demo Mode: showing Demo work.');
     expect(screen.getByText('No case work in this window')).toBeInTheDocument();
     // No closes and no acknowledgements: their tiles name the range, never "one at a time".

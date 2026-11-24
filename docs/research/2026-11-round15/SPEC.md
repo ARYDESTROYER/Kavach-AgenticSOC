@@ -236,6 +236,14 @@ Read as six deliverables:
     (sampled to completed) ([rs] 9, 24). Amended after the cross-cutting security review: a
     person's reviews count once per case (their latest review of it), so M and the 30 bar are
     over distinct cases; an earlier review stays on their events, marked as replaced.
+  - Amended after the cross-cutting stats review: a runbook step row (as a screenshot or a
+    review row) followed by its `step.*_failed` row of the same request was not applied and
+    is not counted; an `assignee` change on a lifecycle row (the Escalate dialog's owner
+    field) counts as assigned, so every lifecycle action is read; the median's candidates
+    include a case a person moved into Escalated or On hold without an Acknowledge (the
+    metrics rule's fallback); and a partial read omits the median (`ack_status` `partial`),
+    the agreement rate and both review times, never computed from the part read, and the
+    CSV ends with a partial-read line.
 - **D3.9 People** ([rb] H3, [rs] 13). The fold keys people by `actor.strip().lower()` (the user
   store's `_norm`). `GET /api/team/people` (under the team gate) returns a narrow projection:
   username, display name, role, active, `kind`:

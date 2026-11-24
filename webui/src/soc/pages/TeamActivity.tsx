@@ -225,10 +225,14 @@ export function sortPeople(people: PersonActivity[], sort: SortState | null): Pe
   return [...sorted, ...rest];
 }
 
+/** Why the medians and the agreement rate are missing from a partial read. */
+const PARTIAL_MEDIANS = 'The medians and the agreement rate are not measured from part of the window.';
+
 function partialLine(data: TeamActivityData): string {
-  return data.partial_reason === 'row_limit'
+  const counts = data.partial_reason === 'row_limit'
     ? `This window holds more audit rows than one read counts (${fmtNumber(data.scanned_rows)} were read), so the counts are at least these. Choose a shorter window for exact counts.`
     : 'The audit log could only be read in part, so the counts are at least these.';
+  return `${counts} ${PARTIAL_MEDIANS}`;
 }
 
 /**
@@ -244,6 +248,7 @@ function ackContext(data: TeamActivityData): string {
   const team = data.team;
   if (team.ack_status === 'too_many_cases') return 'too many cases to measure';
   if (team.ack_status === 'unavailable') return 'cases could not be read';
+  if (team.ack_status === 'partial') return 'not measured from a partial read';
   if (!team.ack_samples) return 'no first acknowledgement';
   return `over ${fmtNumber(team.ack_samples)} ${team.ack_samples === 1 ? 'case' : 'cases'}`;
 }

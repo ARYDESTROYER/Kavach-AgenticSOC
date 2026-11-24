@@ -16072,10 +16072,12 @@
           },
           "ack_status": {
             "default": "measured",
+            "description": "Whether the median time to acknowledge was measured: too many cases, the cases could not be read, or the audit read stopped before the end of the window (partial). It is omitted unless measured.",
             "enum": [
               "measured",
               "too_many_cases",
-              "unavailable"
+              "unavailable",
+              "partial"
             ],
             "title": "Ack Status",
             "type": "string"

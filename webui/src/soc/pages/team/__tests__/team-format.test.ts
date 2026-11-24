@@ -8,6 +8,7 @@ import { describe, expect, it } from 'vitest';
 import type { PersonActivity, TeamActivity } from '@/lib/types-team';
 
 import {
+  CSV_PARTIAL_NOTE,
   TEAM_MAX_DAYS,
   customRangeDays,
   customRangeError,
@@ -154,5 +155,22 @@ describe('the people CSV', () => {
     expect(rows[1][header.indexOf('Median time to acknowledge (minutes)')]).toBe(1.5);
     const none = peopleCsvRows(activity([person()]));
     expect(none[1][header.indexOf('Median time to acknowledge (minutes)')]).toBeNull();
+  });
+
+  it('ends a partial read with a note so a saved copy never reads as exact', () => {
+    const exact = peopleCsvRows(activity([person({ counts: { ...zeros, closed: 2 } })]));
+    expect(exact).toHaveLength(2);
+    expect(exact.flat()).not.toContain(CSV_PARTIAL_NOTE);
+    const partial = activity([person({ counts: { ...zeros, closed: 2 } })]);
+    partial.exact = false;
+    partial.partial_reason = 'row_limit';
+    const rows = peopleCsvRows(partial);
+    expect(rows).toHaveLength(3);
+    expect(rows[0][0]).toBe('Person');
+    expect(rows[2]).toEqual([CSV_PARTIAL_NOTE]);
+    expect(CSV_PARTIAL_NOTE).toContain('at least');
+    const lines = peopleCsv(partial).trimEnd().split('\r\n');
+    expect(lines).toHaveLength(3);
+    expect(lines[2]).toBe(`"${CSV_PARTIAL_NOTE}"`);
   });
 });

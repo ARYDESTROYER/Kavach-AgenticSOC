@@ -111,6 +111,18 @@ Behaviour changes and fixes:
 - **The Team activity floor is a page limit.** While role-based access is off, the limit
   to Super admins, SOC managers and Auditors applies to the Team activity page only: every
   account still holds `audit:view` and `users:manage`. The documentation now says so.
+- **Team activity counts what was applied, and measures only what it read in full.** A
+  runbook step whose save lost to another change (its record followed by a
+  `step.*_failed` record) is no longer counted, as screenshots and reviews already were
+  not. An owner set in the Escalate dialog counts as Assigned. A case escalated or put on
+  hold without an Acknowledge is in the median time to acknowledge, as on Metrics. A read
+  that stopped before the end of the range now omits the median time to acknowledge
+  (`ack_status` `partial`), the agreement rate and the review times instead of giving
+  those of the oldest part, and its CSV ends with a line that says so.
+- **Agent effectiveness counts a review whose ledger write failed.** The Auto-close review
+  module now restores such a review from the case history itself, on a pending or an
+  expired pick, so a disagreement or a missed threat is not shown as pending or expired
+  until the Case Manager is opened.
 
 Details:
 

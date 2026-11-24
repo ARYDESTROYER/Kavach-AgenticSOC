@@ -751,6 +751,55 @@ def test_a_failed_ledger_write_is_repaired_from_the_case_history(env, monkeypatc
     assert again.status_code == 409
 
 
+def test_the_metrics_read_repairs_a_failed_ledger_write_itself(env, monkeypatch) -> None:
+    """A review whose ledger write failed twice still stands on the case. The Agent
+    effectiveness module reads it from the case history itself (it does not wait for the
+    Case Manager's summary read to repair the ledger): a disagreement, and a missed threat
+    (true positive on an automatic false positive close), are counted at once, on a
+    pending pick and on one that expired before it was reviewed. The repair is saved."""
+    c, state, h = env
+    now = datetime.now(timezone.utc)
+    fresh = _agent_closed("case-rv-mrep", decided=now - timedelta(hours=2))
+    stale = _agent_closed("case-rv-mold", decided=now - timedelta(days=9))
+    for case in (fresh, stale):
+        _put(c, state, case)
+    fresh_id = _sample(c, state, fresh, when=now - timedelta(hours=1))
+    stale_id = _sample(c, state, stale, when=now - timedelta(days=8))
+    store = state.real_auto_close_review
+    original = store.update
+
+    async def failing(change: Any, **kw: Any) -> Any:
+        raise ReviewLedgerUnavailable("down")
+
+    monkeypatch.setattr(store, "update", failing)
+    for cid in ("case-rv-mrep", "case-rv-mold"):
+        r = c.post(f"/api/cases/{cid}/review", headers=h["t2"], json={"classification": "true_positive"})
+        assert r.status_code == 200, r.text
+    monkeypatch.setattr(store, "update", original)
+    assert _ledger(c, state).entry_by_id(fresh_id).state == "pending"
+    assert _ledger(c, state).entry_by_id(stale_id).state == "pending"
+    body = c.get("/api/metrics/auto-close-review", headers=h["t1"], params={"window": "now-30d"}).json()
+    assert (body["sampled"], body["reviewed"], body["pending"], body["expired"]) == (2, 2, 0, 0)
+    assert body["agreement"]["reviews"] == 2
+    assert body["missed_threats"]["count"] == 2
+    assert {m["case_id"] for m in body["missed_threats"]["cases"]} == {"case-rv-mrep", "case-rv-mold"}
+    assert body["by_rule"] == [{"rule": "rule-a", "sampled": 2, "reviewed": 2, "agreed": 0, "disagreed": 2}]
+    assert _ledger(c, state).entry_by_id(fresh_id).state == "completed"
+    assert _ledger(c, state).entry_by_id(stale_id).state == "completed"
+    # A repair whose own save fails still counts on that read.
+    other = _agent_closed("case-rv-mnosave", decided=now - timedelta(hours=2))
+    _put(c, state, other)
+    other_id = _sample(c, state, other, when=now - timedelta(minutes=30))
+    monkeypatch.setattr(store, "update", failing)
+    assert c.post("/api/cases/case-rv-mnosave/review", headers=h["t2"],
+                  json={"classification": "false_positive"}).status_code == 200
+    again = c.get("/api/metrics/auto-close-review", headers=h["t1"], params={"window": "now-30d"}).json()
+    monkeypatch.setattr(store, "update", original)
+    assert (again["sampled"], again["reviewed"], again["pending"]) == (3, 3, 0)
+    assert again["agreement"]["reviews"] == 3
+    assert _ledger(c, state).entry_by_id(other_id).state == "pending"
+
+
 def test_a_disagreement_from_someone_who_cannot_reopen_reaches_who_can(env) -> None:
     c, state, h = env
     case = _agent_closed("case-rv-dis", number="CASE-0202")

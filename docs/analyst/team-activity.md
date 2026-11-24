@@ -73,11 +73,15 @@ Below the header:
 | Closed | An action that moved a case to Closed (Close, Confirm false positive, or Set status to Closed), split by the disposition it was closed with: true positive, false positive, benign, duplicate or other. |
 | Reopened, Escalated | The Reopen and Escalate actions. |
 | Commented | A comment or a case thread message written by the person. A thread message labelled as the AI's or the system's is not counted. |
-| Assigned | An owner change the person made. |
+| Assigned | An owner change the person made, on its own or as part of another action (the owner set in the Escalate dialog). |
 | Screenshots added | A screenshot attached to a case. |
 | Reviews | An auto-close review the person recorded: agreed, disagreed or unsure. Each case counts once per person: a later review of the same case replaces their earlier one. |
 | Runbook steps done | A runbook step the person marked done. |
 | Sign-ins | A successful sign-in. |
+
+A screenshot, a review or a runbook step whose save failed after its audit record was
+written is not counted: the Audit log shows that record as "Not applied (see the next
+record)", and this page leaves it out of the counts and the person's events.
 
 Each count of acknowledged, closed, reopened, escalated and assigned cases also says how
 many of its actions came from a bulk action (one action over many selected cases), so
@@ -85,9 +89,11 @@ one click on 200 cases does not read like 200 separate decisions.
 
 **Median time to acknowledge** uses the same rule as the Metrics page: for each case
 whose first acknowledgement by a person fell in the range, the time from the case being
-detected (or created) to that acknowledgement, credited to whoever made it. It is
-measured from up to 5,000 cases; with more, the page says the median was not measured
-rather than guessing.
+detected (or created) to that acknowledgement, credited to whoever made it. The first
+acknowledgement is the Acknowledge action or, for a case nobody acknowledged, the first
+time a person moved it to Investigating, Escalated or On hold (an Escalate or a Put on
+hold, for example). It is measured from up to 5,000 cases; with more, the page says the
+median was not measured rather than guessing.
 
 **Reviews** always read "N of M agreed", where M counts the reviews that agreed or
 disagreed (an unsure review is not an answer). An agreement rate is added only from 30
@@ -138,7 +144,10 @@ nothing here changes a case or the automatic close or escalate decision.
 - A range holds at most 92 days.
 - One read counts at most 250,000 audit rows. A busier range shows "Counts are lower
   bounds" and the counts are at least the figures shown; choose a shorter range for exact
-  counts. The same caveat appears when the audit store can only be read in part.
+  counts. The same caveat appears when the audit store can only be read in part. A median
+  or a rate of part of the range is not a lower bound, so the median time to acknowledge,
+  the agreement rate and the review times then read "not measured", and a downloaded CSV
+  ends with a line that says the read was partial.
 - Answers are kept for 60 seconds, so an action may take up to a minute to show. Use
   refresh after that.
 - Lifecycle and comment records are written just after the change they describe. If the

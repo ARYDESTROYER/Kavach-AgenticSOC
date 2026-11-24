@@ -257,8 +257,15 @@ export function peopleCsvRows(data: TeamActivity): CsvCell[][] {
       person.last_active,
     ]);
   }
+  // A partial read: the file says so, as the page does, so a saved copy never reads as
+  // exact. One trailing note row keeps the header first for a spreadsheet's import.
+  if (!data.exact) rows.push([CSV_PARTIAL_NOTE]);
   return rows;
 }
+
+/** The note a CSV of a partial read ends with. */
+export const CSV_PARTIAL_NOTE =
+  'Partial read: the audit log was read in part, so every count is at least the figure shown and the median time to acknowledge is not measured.';
 
 /** The people table as one CSV document. */
 export function peopleCsv(data: TeamActivity): string {

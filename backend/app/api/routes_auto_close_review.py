@@ -759,6 +759,48 @@ async def auto_close_review_summary(
 # --------------------------------------------------------------------------- #
 # GET /api/metrics/auto-close-review
 # --------------------------------------------------------------------------- #
+async def _repaired_for_window(
+    state: AppState, ledger: ReviewLedger, *, start: datetime | None, end: datetime,
+) -> ReviewLedger:
+    """``ledger`` with every entry sampled in ``[start, end)`` whose case already carries
+    its review marked completed (the ledger write failed after the case save, D6.6), so
+    the module never shows a recorded review as pending or expired, or leaves it out of
+    the agreement and the missed threats, until another read repairs it. Pending and
+    expired entries alike: a review recorded on an expired pick is still a review. The
+    repair is saved (best-effort) and applied to the ledger read here either way. A case
+    read that fails leaves the ledger as it is."""
+    from .routes import _queue_cases_by_id
+
+    def in_window(entry: ReviewEntry) -> bool:
+        at = entry.sampled_instant()
+        return at is not None and (start is None or at >= start) and at < end
+
+    open_entries = [e for e in ledger.entries if e.state != STATE_COMPLETED and in_window(e)]
+    ids = list(dict.fromkeys(e.case_id for e in open_entries))
+    if not ids:
+        return ledger
+    try:
+        found = await _queue_cases_by_id(state.cases, ids)
+    except Exception as exc:  # noqa: BLE001 (the module degrades to the ledger alone)
+        logger.warning("Auto-close review metrics could not read cases: %s", exc)
+        return ledger
+    events: dict[str, Any] = {}
+    for entry in open_entries:
+        case = found.get(entry.case_id)
+        event = history_review(case, entry.review_id) if case is not None else None
+        if event is not None:
+            events[entry.review_id] = event
+    if not events:
+        return ledger
+    await _repair(state, found)
+    try:
+        ledger = await _load(state)
+    except HTTPException:
+        pass  # the ledger read above, completed below
+    # Applied here too, so a repair whose save failed still counts on this read.
+    return _complete_from_history(ledger, events) or ledger
+
+
 @router.get("/metrics/auto-close-review", response_model=AutoCloseReviewMetrics)
 async def auto_close_review_metrics(
     window: str | None = Query(default=None, max_length=200),
@@ -778,7 +820,7 @@ async def auto_close_review_metrics(
         raise _error(400, "bad_window", str(exc)) from exc
     now = now_utc()
     end = (now + timedelta(seconds=1)) if resolved.open_end else resolved.end
-    ledger = await _load(state)
+    ledger = await _repaired_for_window(state, await _load(state), start=resolved.start, end=end)
     population = await fetch_case_population(state.cases, span_hours=None, limit=_ELIGIBLE_FETCH_LIMIT)
     eligible = eligible_closes_by_day(population.cases, start=resolved.start, end=end, tz=tz)
     data = review_metrics(

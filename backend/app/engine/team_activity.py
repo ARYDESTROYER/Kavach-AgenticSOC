@@ -17,7 +17,9 @@ operator time zone (``SlaPolicy.timezone``):
 * ``reopened`` and ``escalated``: the Reopen and Escalate actions;
 * ``commented``: a comment, or a case thread post a person wrote as a person (a post
   labelled as the AI's or the system's is not counted);
-* ``assigned``: an owner change made by the person (as the actor);
+* ``assigned``: an owner change made by the person (as the actor), on an assignment row
+  or on a lifecycle row whose ``changes`` hold an ``assignee`` change (the Escalate
+  dialog's owner field sets one);
 * ``screenshot_added``: a screenshot attached to a case;
 * ``reviewed``: an auto-close review recorded (agreed, disagreed or unsure), once per
   person and case: a later review of the same case by the same person (an agent-closed
@@ -42,20 +44,29 @@ People are keyed by ``actor.strip().lower()`` (the user store's own normalisatio
 Only rows a person made count (recorded or derived ``actor_type`` human) and only rows
 that succeeded (an outcome of success, or none recorded).
 
-Screenshots and reviews are written audit-first (``app.audit.write``, SPEC D5.10, D6.6,
-D7.6): their row is appended before the store write and, when that write then fails, a
-failure row (``case.file_attach_failed``, ``case.review_record_failed``) with the same
-request id follows it. Such an action row was never applied, so it is not counted. The
-fold reads it as the Audit log's inspector does: an action row is not applied when the
-next row of the same request, actor and case (and session, when both name one) among
-that writer's rows is its failure row. These two writers' rows are therefore held until
-the first read, and read a little past the window's end (:data:`PAIRING_HORIZON`), where
-a failure row can land a few milliseconds after the action row it follows.
+Screenshots, reviews and runbook step changes are written audit-first
+(``app.audit.write``, SPEC D5.10, D6.6, D7.6, Round 14 §3.6): their row is appended before
+the store write and, when that write then fails, a failure row (``case.file_attach_failed``,
+``case.review_record_failed``, ``step.update_failed``, ``step.decision_record_failed``,
+``step.action_record_failed``, ``step.approve_failed``) with the same request id follows
+it. Such an action row was never applied, so it is not counted. The fold reads it as the
+Audit log's inspector does: an action row is not applied when the next row of the same
+request, actor and case (and session, when both name one) among that writer's rows is its
+failure row. These writers' rows are therefore held until the first read, and read a
+little past the window's end (:data:`PAIRING_HORIZON`), where a failure row can land a few
+milliseconds after the action row it follows.
+
+The median time to acknowledge follows the metrics MTTA rule: its candidates are the
+cases a person moved, in the window, into Investigating, Escalated or On hold
+(Acknowledge, Escalate, Put on hold, or Set status), and each candidate's first human
+acknowledgement is then measured from the case itself.
 
 Counts come with context and nothing else: there is no ranking, no score and no
 "top performer" (SPEC D3.5). Every honesty flag is kept: a read that stopped at a row
-limit says its counts are lower bounds, and the median time to acknowledge is omitted
-rather than estimated when it would need more than :data:`ACK_CASES_LIMIT` cases.
+limit says its counts are lower bounds, and a median or a rate (the time to acknowledge,
+the agreement rate, the review times) is omitted rather than estimated from that part of
+the window, or when the time to acknowledge would need more than
+:data:`ACK_CASES_LIMIT` cases.
 """
 
 from __future__ import annotations
@@ -179,14 +190,14 @@ REVIEW_RECORDED_ACTION = "case.review_recorded"
 REVIEW_REQUESTED_ACTION = "case.review_requested"
 SIGN_IN_ACTION = "auth.login"
 _LIFECYCLE_VERB_BY_ACTION: Mapping[str, str] = {v: k for k, v in CASE_LIFECYCLE_AUDIT_ACTIONS.items()}
-#: The lifecycle actions whose rows can be counted (the others are read and ignored).
-_COUNTED_LIFECYCLE_ACTIONS: tuple[str, ...] = tuple(sorted(
-    CASE_LIFECYCLE_AUDIT_ACTIONS[verb]
-    for verb in ("acknowledge", "close", "confirm_fp", "reopen", "escalate", "set_status")
-))
-#: Every structured case-work action the fold counts.
+#: Every lifecycle action. Only Acknowledge, Close, Confirm false positive, Reopen,
+#: Escalate and Set status count as a lifecycle kind, but every one is read: any of them
+#: can set the case's owner (counted as Assigned), and Put on hold can be a case's first
+#: human acknowledgement (the MTTA rule).
+_LIFECYCLE_ACTIONS: tuple[str, ...] = tuple(sorted(CASE_LIFECYCLE_AUDIT_ACTIONS.values()))
+#: Every structured case-work action the fold reads.
 WORK_ACTIONS: tuple[str, ...] = tuple(sorted({
-    *_COUNTED_LIFECYCLE_ACTIONS,
+    *_LIFECYCLE_ACTIONS,
     CASE_COMMENTED_AUDIT_ACTION,
     CASE_ASSIGNED_AUDIT_ACTION,
     FILE_ATTACHED_ACTION,
@@ -197,9 +208,12 @@ WORK_ACTIONS: tuple[str, ...] = tuple(sorted({
 _LEGACY_ACTION_TYPES: tuple[str, ...] = ("collab", "status", "thread_post")
 #: The counted writers that append their row before the store write (audit-first): a
 #: row is counted only once the fold has seen that its failure row does not follow it.
-AUDIT_FIRST_ACTIONS: tuple[str, ...] = (FILE_ATTACHED_ACTION, REVIEW_RECORDED_ACTION)
-#: Each one's failure row (``case.file_attach_failed``, ``case.review_record_failed``),
-#: mapped to the action row it says was not applied.
+#: Runbook step changes are written through ``runbook_runs._audited_runs_write``, whose
+#: compare-and-set write fails (and appends the failure row) when another change got
+#: there first.
+AUDIT_FIRST_ACTIONS: tuple[str, ...] = (FILE_ATTACHED_ACTION, REVIEW_RECORDED_ACTION, *_STEP_ACTIONS)
+#: Each one's failure row (``case.file_attach_failed``, ``case.review_record_failed``,
+#: ``step.update_failed`` and so on), mapped to the action row it says was not applied.
 NOT_APPLIED_ACTIONS: Mapping[str, str] = {failure_action(a): a for a in AUDIT_FIRST_ACTIONS}
 #: How far past the window's end these writers' rows are read, so a failure row that
 #: lands just after the end still pairs with the action row it follows.
@@ -510,8 +524,14 @@ def _structured_events(doc: Mapping[str, Any], action: str, base: dict[str, Any]
             from_status, to_status = legacy.group(2), legacy.group(3)
         structured = _change_after(changes, "disposition") or _change_after(changes, "classified_disposition")
         disposition = structured or (legacy.group(4) if legacy is not None else None)
-        return _lifecycle_event(verb, from_status, to_status, disposition, structured,
-                                _actions_taken(changes), base)
+        events = _lifecycle_event(verb, from_status, to_status, disposition, structured,
+                                  _actions_taken(changes), base)
+        # An owner set in the same action (the Escalate dialog's owner field) is an
+        # assignment too. The route records the ``assignee`` change only when the owner
+        # changed, the rule an assignment row follows.
+        if "assignee" in changes:
+            events.append(WorkEvent(kind=ASSIGNED, **base))
+        return events
     if action == CASE_COMMENTED_AUDIT_ACTION:
         return [WorkEvent(kind=COMMENTED, **base)]
     if action == CASE_ASSIGNED_AUDIT_ACTION:
@@ -744,6 +764,43 @@ def first_human_acknowledgement(case: Any) -> tuple[datetime | None, str]:
     return anchor, ""
 
 
+def ack_move_of_row(doc: Mapping[str, Any]) -> tuple[str, datetime, str] | None:
+    """``(case id, time, person key)`` when ``doc`` is a counted lifecycle row (a person
+    made it and it succeeded) that moved a case into Investigating, Escalated or On hold:
+    an Acknowledge, an Escalate, a Put on hold or a Set status. These are the moves the
+    metrics MTTA rule can take as a case's first human acknowledgement, so the case is a
+    candidate for the median time to acknowledge, which :func:`acknowledgement_seconds`
+    then measures from the case itself. ``None`` for any other row. Reads the structured
+    ``changes`` and, for a row without a status change in them (or a legacy row), the
+    fixed leading tokens of its ``result_summary``."""
+    from .metrics import _ACK_STATUSES
+
+    if not isinstance(doc, Mapping):
+        return None
+    action = doc.get("action")
+    structured = isinstance(action, str) and bool(action)
+    if structured and action not in _LIFECYCLE_VERB_BY_ACTION:
+        return None
+    if not structured and (doc.get("surface") != "case" or doc.get("action_type") != "status"):
+        return None
+    legacy = _LEGACY_LIFECYCLE_RE.match(str(doc.get("result_summary") or ""))
+    from_status = to_status = None
+    if structured:
+        changes = _changes(doc)
+        from_status, to_status = _change_before(changes, "status"), _change_after(changes, "status")
+    if to_status is None and legacy is not None:
+        from_status, to_status = legacy.group(2), legacy.group(3)
+    if to_status not in _ACK_STATUSES or to_status == from_status:
+        return None
+    ts = parse_es_timestamp(doc.get("ts"))
+    if ts is None or not counted_row(doc):
+        return None
+    case_id, _number = _case_ref(doc)
+    if not case_id:
+        return None
+    return case_id, ts, person_key(doc.get("actor"))
+
+
 def acknowledgement_seconds(case: Any, window: ResolvedWindow) -> tuple[str, float] | None:
     """``(person key, seconds)`` when the case's first human acknowledgement fell inside
     ``window``: its time minus the case's detection or creation time
@@ -867,7 +924,10 @@ def _counts_view(counter: Counter, kinds: Iterable[str]) -> dict[str, int]:
     return {kind: int(counter.get(kind, 0)) for kind in kinds}
 
 
-def _reviews_view(tally: _Tally) -> dict[str, Any]:
+def _reviews_view(tally: _Tally, measured: bool = True) -> dict[str, Any]:
+    """The review figures. ``measured`` is False when the read stopped before the end of
+    the window: the counts are then lower bounds, but a rate or a median of the part read
+    is not, so those are omitted rather than estimated."""
     answered = tally.agreed + tally.disagreed
     return {
         "completed": tally.agreed + tally.disagreed + tally.unsure,
@@ -876,9 +936,11 @@ def _reviews_view(tally: _Tally) -> dict[str, Any]:
         "unsure": tally.unsure,
         "answered": answered,
         # A rate only from REVIEW_RATE_MIN answered reviews; the counts always.
-        "agreement_rate": (round(tally.agreed / answered, 4) if answered >= REVIEW_RATE_MIN else None),
-        "time_spent_median_ms": _median([float(v) for v in tally.review_elapsed_ms]),
-        "time_to_review_median_seconds": _median(tally.review_turnaround_s),
+        "agreement_rate": (
+            round(tally.agreed / answered, 4) if measured and answered >= REVIEW_RATE_MIN else None
+        ),
+        "time_spent_median_ms": _median([float(v) for v in tally.review_elapsed_ms]) if measured else None,
+        "time_to_review_median_seconds": _median(tally.review_turnaround_s) if measured else None,
     }
 
 
@@ -919,6 +981,9 @@ class TeamActivityFold:
         read when it is the person's latest review of that case)."""
         self.scanned += 1
         kept = [event for event in events_of_row(doc) if self.window.contains(event.ts)]
+        move = ack_move_of_row(doc)
+        if move is not None and self.window.contains(move[1]):
+            self._note_acknowledgement(*move)
         attempt = _attempt_of(doc, self.scanned, kept)
         if attempt is not None:
             key, held = attempt
@@ -958,14 +1023,22 @@ class TeamActivityFold:
             chart = event.kind if event.kind in CHART_KINDS else "other"
             self._team_daily_chart.setdefault(day, Counter())[chart] += 1
         if event.kind == ACKNOWLEDGED and event.case_id:
-            seen = self._acknowledged.get(event.case_id)
-            if seen is None or event.ts < seen[0]:
-                self._acknowledged[event.case_id] = (event.ts, event.person)
+            self._note_acknowledgement(event.case_id, event.ts, event.person)
         if event.kind == REVIEWED and event.case_id:
             self._reviews.setdefault(event.case_id, []).append((event.ts, event.person))
 
+    def _note_acknowledgement(self, case_id: str, ts: datetime, person: str) -> None:
+        """A candidate for the time to acknowledge: the earliest such row of the case in
+        the window, and who made it."""
+        seen = self._acknowledged.get(case_id)
+        if seen is None or ts < seen[0]:
+            self._acknowledged[case_id] = (ts, person)
+
     def acknowledged_case_ids(self) -> list[str]:
-        """The cases acknowledged in the window (the MTTA candidates), oldest first."""
+        """The MTTA candidates, oldest first: the cases acknowledged in the window, and
+        the cases a person moved into Escalated, On hold or Investigating in it
+        (:func:`ack_move_of_row`), so a case escalated or put on hold without an
+        Acknowledge is measured as the Metrics page measures it."""
         self._settle()
         return [cid for cid, _ in sorted(self._acknowledged.items(), key=lambda kv: (kv[1][0], kv[0]))]
 
@@ -996,9 +1069,9 @@ class TeamActivityFold:
                 self._team.review_turnaround_s.append(seconds)
 
     def add_acknowledged_cases(self, cases: Mapping[str, Any]) -> None:
-        """Measure the time to acknowledge from the acknowledged cases (by id). A case
-        whose first human acknowledgement names nobody is credited to whoever made its
-        earliest Acknowledge row in the window."""
+        """Measure the time to acknowledge from the candidate cases (by id). A case whose
+        first human acknowledgement names nobody is credited to whoever made its earliest
+        Acknowledge (or move into Investigating, Escalated or On hold) row in the window."""
         self._settle()
         for case_id in self._acknowledged:
             case = cases.get(case_id)
@@ -1026,7 +1099,8 @@ class TeamActivityFold:
             return []
         return [name for name, _ in sorted(tally.spellings.items(), key=lambda kv: (-kv[1], kv[0]))]
 
-    def _person_view(self, key: str, entry: RosterEntry | None, ack_measured: bool) -> dict[str, Any]:
+    def _person_view(self, key: str, entry: RosterEntry | None, ack_measured: bool,
+                     measured: bool = True) -> dict[str, Any]:
         tally = self._tallies.get(key) or _Tally()
         if key == "":
             username, display, role, active, kind = "", "Not attributed", "", True, KIND_UNATTRIBUTED
@@ -1056,7 +1130,7 @@ class TeamActivityFold:
             "last_active": tally.last_active.astimezone(timezone.utc).isoformat() if tally.last_active else None,
             "median_ack_seconds": _median(tally.ack_seconds) if ack_measured else None,
             "ack_samples": len(tally.ack_seconds) if ack_measured else 0,
-            "reviews": _reviews_view(tally),
+            "reviews": _reviews_view(tally, measured),
         }
 
     def result(
@@ -1069,15 +1143,23 @@ class TeamActivityFold:
         """The answer (``TeamActivity`` without its request flags). Every roster person
         is listed, with zeros when they did nothing in the window; anyone else the rows
         name is a deleted account; Not attributed comes last when it has rows. Ordered by
-        name, never by a count (SPEC D3.5)."""
+        name, never by a count (SPEC D3.5).
+
+        A ``partial_reason`` (the read stopped before the end of the window) makes the
+        counts lower bounds; the medians and the agreement rate are then omitted, never
+        computed from the part read (the oldest part, since rows are read oldest first),
+        and a measured time to acknowledge reads ``partial``."""
         self._settle()
+        measured = partial_reason is None
+        if not measured and ack_status == "measured":
+            ack_status = "partial"
         by_key = {e.key: e for e in roster}
         keys = {k for k, e in by_key.items() if e.active} | {k for k in self._tallies}
         ack_measured = ack_status == "measured"
-        people = [self._person_view(k, by_key.get(k), ack_measured) for k in keys if k != ""]
+        people = [self._person_view(k, by_key.get(k), ack_measured, measured) for k in keys if k != ""]
         people.sort(key=lambda p: ((p["display_name"] or p["username"]).lower(), p["username"].lower()))
         if "" in self._tallies:
-            people.append(self._person_view("", None, ack_measured))
+            people.append(self._person_view("", None, ack_measured, measured))
         active = sum(
             1 for p in people
             if p["kind"] != KIND_UNATTRIBUTED and any(p["counts"].values())
@@ -1094,7 +1176,7 @@ class TeamActivityFold:
             "median_ack_seconds": _median(self._team.ack_seconds) if ack_measured else None,
             "ack_samples": len(self._team.ack_seconds) if ack_measured else 0,
             "ack_status": ack_status,
-            "reviews": _reviews_view(self._team),
+            "reviews": _reviews_view(self._team, measured),
         }
         return {
             "window": {
