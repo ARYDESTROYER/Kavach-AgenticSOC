@@ -634,3 +634,133 @@ def test_settings_an_equal_rbac_block_is_no_change():
         body = {"rbac": state.prefs.rbac.model_dump(mode="json"), "poll_interval_seconds": 50}
         saved = client.put("/api/settings", json=body)
         assert saved.status_code == 200, saved.text
+
+
+# --------------------------------------------------------------------------- #
+# Super admin accounts (Round 15 review, security): users:manage alone never mints or
+# edits a Super admin, so rule 3 of the switch cannot be bypassed through user management
+# --------------------------------------------------------------------------- #
+def _super_admin_denials(client: TestClient, username: str) -> list[dict[str, Any]]:
+    return [r for r in _denials(client) if r.get("actor") == username
+            and r["tool_input"]["permission"] == "role:super_admin"]
+
+
+def _user_rows(client: TestClient, username: str) -> list[dict[str, Any]]:
+    return [r for r in _rows(client) if r.get("actor") == username
+            and str(r.get("action") or "").startswith("user.")]
+
+
+def _stored(client: TestClient, username: str) -> Any:
+    state = _state(client)
+    return client.portal.call(state.users.get, username)
+
+
+def _role_text_of(user: Any) -> str:
+    role = getattr(user, "role", "")
+    return str(getattr(role, "value", role) or "")
+
+
+def _refused_as_super_admin_only(response: Any) -> None:
+    assert response.status_code == 403, response.text
+    assert response.json()["detail"] == {
+        "code": "super_admin_only",
+        "message": "Only a Super admin can give an account the Super admin role or change a "
+                   "Super admin account.",
+    }
+
+
+def test_a_users_manage_holder_cannot_make_itself_super_admin():
+    """A SOC manager holds users:manage by default. One call used to promote it to Super
+    admin (no fresh sign-in either), after which the Super-admin-only switch let it turn
+    role-based access off. Every path that can give the role now refuses, with RBAC on
+    or off, and writes an Access denied row; the switch still refuses after signing in
+    again."""
+    for rbac in (False, True):
+        with TestClient(_app(_secrets(), rbac=rbac)) as client:
+            username = _as(client, "soc_manager", "mgr")
+            _refused_as_super_admin_only(client.put(f"/api/users/{username}", json={"role": "super_admin"}))
+            _refused_as_super_admin_only(
+                client.put(f"/api/users/{username}/roles", json={"role": "super_admin"}))
+            _refused_as_super_admin_only(client.post(
+                "/api/users", json={"username": "mgr-made", "password": PASSWORD, "role": "super_admin"}))
+            assert _role_text_of(_stored(client, username)) == "soc_manager"
+            assert _stored(client, "mgr-made") is None
+            assert len(_super_admin_denials(client, username)) == 3
+            assert _user_rows(client, username) == []
+            client.cookies.clear()
+            signed_in = client.post("/api/auth/login", json={"username": username, "password": PASSWORD})
+            assert signed_in.status_code == 200, signed_in.text
+            refused = client.put("/api/rbac", json={"enabled": not rbac})
+            assert refused.status_code == 403
+            assert refused.json()["detail"]["code"] == "rbac_super_admin_only"
+            assert _state(client).prefs.rbac.enabled is rbac
+            # Other accounts stay the SOC manager's to manage.
+            made = client.post("/api/users", json={"username": "new-analyst", "password": PASSWORD,
+                                                   "role": "analyst_tier1"})
+            assert made.status_code == 200, made.text
+            moved = client.put("/api/users/new-analyst", json={"role": "analyst_tier2"})
+            assert moved.status_code == 200, moved.text
+
+
+def test_a_users_manage_holder_cannot_change_or_delete_a_super_admin_account():
+    """Resetting a Super admin's password would hand the account over, so a change of
+    any kind to a Super admin account, and its deletion, is a Super admin's alone."""
+    with TestClient(_app(_secrets())) as client:
+        _admin(client)
+        made = client.post("/api/users", json={"username": "second-admin", "password": PASSWORD,
+                                               "role": "super_admin"})
+        assert made.status_code == 200, made.text
+        before = _stored(client, "second-admin")
+        username = _as(client, "soc_manager", "mgr")
+        for patch in ({"password": "taken-over-pass-1"}, {"active": False}, {"role": "analyst_tier1"},
+                      {"mfa_required": True}, {"display_name": "Not me"}):
+            _refused_as_super_admin_only(client.put("/api/users/second-admin", json=patch))
+        _refused_as_super_admin_only(client.put("/api/users/second-admin/roles", json={"role": "auditor"}))
+        _refused_as_super_admin_only(client.delete("/api/users/second-admin"))
+        after = _stored(client, "second-admin")
+        assert after is not None
+        assert (after.password_hash, after.active, _role_text_of(after), after.mfa_required,
+                after.display_name) == (before.password_hash, True, "super_admin", before.mfa_required,
+                                        before.display_name)
+        assert len(_super_admin_denials(client, username)) == 7
+        assert _user_rows(client, username) == []
+        client.cookies.clear()
+        signed_in = client.post("/api/auth/login", json={"username": "second-admin", "password": PASSWORD})
+        assert signed_in.status_code == 200, signed_in.text
+
+
+def test_a_super_admin_grants_the_role_with_a_strict_fresh_sign_in():
+    with TestClient(_app(_secrets())) as client:
+        _as(client, "analyst_tier1", "promoted")
+        _admin(client)
+        _backdate_sessions(client, "Admin")
+        for refused in (
+            client.put("/api/users/promoted", json={"role": "super_admin"}),
+            client.post("/api/users", json={"username": "fresh-admin", "password": PASSWORD,
+                                            "role": "super_admin"}),
+        ):
+            assert refused.status_code == 401
+            assert refused.json()["detail"]["code"] == "reauth_required"
+        assert _role_text_of(_stored(client, "promoted")) == "analyst_tier1"
+        assert _stored(client, "fresh-admin") is None
+        # An ordinary change needs no fresh sign-in.
+        assert client.put("/api/users/promoted", json={"display_name": "Promoted"}).status_code == 200
+        assert client.post("/api/auth/reauth", json={"password": "Admin@123"}).status_code == 200
+        granted = client.put("/api/users/promoted", json={"role": "super_admin"})
+        assert granted.status_code == 200, granted.text
+        assert _role_text_of(_stored(client, "promoted")) == "super_admin"
+        assert [r["action"] for r in _user_rows(client, "Admin")].count("user.role_changed") == 1
+        made = client.post("/api/users", json={"username": "fresh-admin", "password": PASSWORD,
+                                               "role": "super_admin"})
+        assert made.status_code == 200, made.text
+        assert client.delete("/api/users/fresh-admin").status_code == 200
+        assert _stored(client, "fresh-admin") is None
+
+
+def test_super_admin_accounts_with_sign_in_off_are_unchanged():
+    with TestClient(_app(_secrets(auth=False))) as client:
+        made = client.post("/api/users", json={"username": "open-admin", "password": PASSWORD,
+                                               "role": "super_admin"})
+        assert made.status_code == 200, made.text
+        assert client.put("/api/users/open-admin", json={"display_name": "Open"}).status_code == 200
+        assert client.delete("/api/users/open-admin").status_code == 409  # the last one

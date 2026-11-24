@@ -74,7 +74,9 @@ reviews that took seconds. It is not a full blind review: the rest of the case p
 shows the AI verdict.
 
 You can also review an agent-closed case that was not picked, with **Review this
-auto-close** in **Take action**. That review is recorded as an ordinary grade.
+auto-close** in **Take action**. That review is recorded as an ordinary grade, and such a
+case can be reviewed again: each review is recorded, and Team activity counts only your
+latest review of the case.
 
 Recording a review needs `cases:write`. It never changes the case's status, who decided
 it or its disposition. Each case in the sample can be reviewed once; a second attempt
@@ -90,7 +92,8 @@ The review is always recorded. What happens next depends on your permissions:
 - Without `cases:close` the card says "Someone who can close cases has been asked to look
   at this." Each person who can close cases gets one Inbox item in the Assignment
   category (at most 200 people). Someone who turned Assignment off in their Inbox
-  settings gets none.
+  settings gets none. They hear about your disagreement with a case once: if you review
+  a case that was not picked again and disagree again, no new Inbox item is sent.
 
 ## What a review feeds
 

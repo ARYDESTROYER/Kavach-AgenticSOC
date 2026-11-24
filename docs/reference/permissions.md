@@ -130,8 +130,11 @@ override that names other resources keeps the default `team` grant.
 While RBAC is off every signed-in account holds every grant, so Team activity adds a
 floor of its own: only an account whose stored role is `super_admin`, `soc_manager` or
 `auditor` can open it (`403 team_activity_role_required`, with an Access denied row,
-for anyone else). The page never shows an IP address, user agent, session or settings
-row; those stay in the audit log under `audit:view`. See
+for anyone else). That floor limits this page only and is not an access control: while
+RBAC is off every account still holds `audit:view` and `users:manage`, so it can read the
+same rows in the Audit log or change its own role (an audited `user.role_changed` row).
+Turn RBAC on to keep per-person work private. The page never shows an IP address, user
+agent, session or settings row; those stay in the audit log under `audit:view`. See
 [Team activity](../analyst/team-activity.md).
 
 ## Screenshots and reviews on a case
@@ -257,7 +260,12 @@ resources and invalid actions are ignored by the policy normalizer; use the role
 preview/simulation endpoints to detect mistakes before assigning a role.
 
 `super_admin` remains hard-allowed even if an override or deny is malformed. Protect
-assignment of that role as a privileged operation.
+assignment of that role as a privileged operation. The server does: giving an account
+the `super_admin` role, or changing, disabling or deleting an account that has it,
+needs a caller whose stored role is `super_admin` and a sign-in within the
+re-authentication window, on `POST`, `PUT` and `DELETE /api/users` and `PUT
+/api/users/{username}/roles`. `users:manage` alone answers `403 super_admin_only` with an
+Access denied row, whether RBAC is on or off.
 
 ## Inspect and test access
 

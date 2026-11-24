@@ -19,7 +19,10 @@ operator time zone (``SlaPolicy.timezone``):
   labelled as the AI's or the system's is not counted);
 * ``assigned``: an owner change made by the person (as the actor);
 * ``screenshot_added``: a screenshot attached to a case;
-* ``reviewed``: an auto-close review recorded (agreed, disagreed or unsure);
+* ``reviewed``: an auto-close review recorded (agreed, disagreed or unsure), once per
+  person and case: a later review of the same case by the same person (an agent-closed
+  case that was not sampled may be reviewed again) replaces the earlier one, so the
+  review counts and the agreement rate's bar are over distinct cases;
 * ``runbook_step_done``: a runbook step marked done (a row whose ``changes`` hold
   ``steps.<id>.status`` with ``after`` ``done``, on ``step.updated``,
   ``step.decision_recorded``, ``step.action_recorded`` or ``step.approved``);
@@ -61,7 +64,7 @@ import json
 import re
 import statistics
 from collections import Counter
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable, Mapping
 
@@ -341,6 +344,9 @@ class WorkEvent:
     #: A review: True, False or None (unsure).
     agrees: bool | None = None
     review_elapsed_ms: int | None = None
+    #: A review the same person replaced with a later review of the same case in the
+    #: window (listed on their events, never counted).
+    superseded: bool = False
 
 
 def person_key(actor: Any) -> str:
@@ -574,6 +580,8 @@ def event_detail(event: WorkEvent) -> str:
             else "Disagreed with the AI" if event.agrees is False
             else "Unsure"
         )
+        if event.superseded:
+            parts.append("Replaced by a later review of this case")
     if event.bulk:
         parts.append("In a bulk action")
     return " · ".join(parts)
@@ -661,6 +669,38 @@ def _applied_events(attempts: Mapping[_AttemptKey, list[_Attempt]]) -> list[Work
                 continue
             out.extend(attempt.events)
     return out
+
+
+# --------------------------------------------------------------------------- #
+# One review per person and case (SPEC D3.8)
+# --------------------------------------------------------------------------- #
+def latest_reviews(events: Iterable[WorkEvent]) -> list[WorkEvent]:
+    """``events`` with every review a person replaced by a later review of the same case
+    marked ``superseded``. A sampled case takes one review (a second answers ``409
+    review_already_recorded``), but an agent-closed case that was not sampled may be
+    reviewed again by the same person; each new answer replaces their earlier one, so
+    only their latest review of a case counts, and the review counts, the agreement and
+    the rate's 30-review bar are over distinct cases. The latest is by time, then by
+    order; a review with no case is never replaced. Order is kept."""
+    listed = list(events)
+    latest: dict[tuple[str, str], int] = {}
+    for index, event in enumerate(listed):
+        if not _held_review(event):
+            continue
+        key = (event.person, str(event.case_id))
+        seen = latest.get(key)
+        if seen is None or event.ts >= listed[seen].ts:
+            latest[key] = index
+    keep = set(latest.values())
+    return [
+        replace(event, superseded=True) if _held_review(event) and index not in keep else event
+        for index, event in enumerate(listed)
+    ]
+
+
+def _held_review(event: WorkEvent) -> bool:
+    """A review of a named case: one of the events :func:`latest_reviews` decides on."""
+    return event.kind == REVIEWED and bool(event.case_id)
 
 
 # --------------------------------------------------------------------------- #
@@ -867,12 +907,16 @@ class TeamActivityFold:
         self._reviews: dict[str, list[tuple[datetime, str]]] = {}
         # The audit-first writers' rows, held until the first read (see _applied_events).
         self._attempts: dict[_AttemptKey, list[_Attempt]] = {}
+        # The reviews of a case, held until the first read: only a person's latest
+        # review of a case counts (see latest_reviews).
+        self._held_reviews: list[WorkEvent] = []
 
     # -- feeding ------------------------------------------------------------
     def add_row(self, doc: Mapping[str, Any]) -> list[WorkEvent]:
         """Count one stored row; returns the events it counted now inside the window (an
         audit-first writer's row is held, and counted at the first read when its failure
-        row does not follow it)."""
+        row does not follow it; a review of a case is held too, and counted at the first
+        read when it is the person's latest review of that case)."""
         self.scanned += 1
         kept = [event for event in events_of_row(doc) if self.window.contains(event.ts)]
         attempt = _attempt_of(doc, self.scanned, kept)
@@ -882,17 +926,31 @@ class TeamActivityFold:
             return []
         for event in kept:
             self._count(event)
-        return kept
+        return [event for event in kept if not _held_review(event)]
 
     def _settle(self) -> None:
-        """Count the held rows of the audit-first writers that were applied."""
-        if not self._attempts:
-            return
-        held, self._attempts = self._attempts, {}
-        for event in _applied_events(held):
-            self._count(event)
+        """Count the held rows of the audit-first writers that were applied, then each
+        person's latest review of each case (an earlier one only lends its spelling of
+        the person's name to the events read)."""
+        if self._attempts:
+            held, self._attempts = self._attempts, {}
+            for event in _applied_events(held):
+                self._count(event)
+        if self._held_reviews:
+            reviews, self._held_reviews = self._held_reviews, []
+            for event in latest_reviews(reviews):
+                if event.superseded:
+                    self._tallies.setdefault(event.person, _Tally()).spellings[event.actor] += 1
+                else:
+                    self._record(event)
 
     def _count(self, event: WorkEvent) -> None:
+        if _held_review(event):
+            self._held_reviews.append(event)
+            return
+        self._record(event)
+
+    def _record(self, event: WorkEvent) -> None:
         day = _day_of(event.ts, self.zone)
         self._tallies.setdefault(event.person, _Tally()).add(event, day)
         self._team.add(event, day)
@@ -1058,7 +1116,9 @@ class TeamActivityFold:
 def person_events(rows: Iterable[Mapping[str, Any]], window: ResolvedWindow, key: str) -> list[dict[str, Any]]:
     """One person's counted events in the window, newest first (SPEC D3.10). An
     audit-first writer's row whose failure row follows it was not applied and is left
-    out, exactly as the counts leave it out."""
+    out, exactly as the counts leave it out. A review the person replaced with a later
+    review of the same case is listed, and says so in its detail; only the latest is
+    counted (:func:`latest_reviews`)."""
     found: list[WorkEvent] = []
     attempts: dict[_AttemptKey, list[_Attempt]] = {}
     for arrival, doc in enumerate(rows):
@@ -1069,5 +1129,6 @@ def person_events(rows: Iterable[Mapping[str, Any]], window: ResolvedWindow, key
             continue
         found.extend(events)
     found.extend(_applied_events(attempts))
+    found = latest_reviews(sorted(found, key=lambda e: e.ts))
     found.sort(key=lambda e: (e.ts, e.kind), reverse=True)
     return [event_view(e) for e in found]

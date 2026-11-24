@@ -96,6 +96,21 @@ Behaviour changes and fixes:
 - **Unrated stars are not zero.** `GET /api/feedback/stats` averages each sub-score over the
   grades that rated it and adds `accuracy_rated`, `reasoning_quality_rated` and
   `action_appropriateness_rated`. An average of 0.0 with a count of 0 means nobody rated it.
+- **Only a Super admin manages Super admin accounts.** Giving an account the Super admin
+  role, or changing, disabling or deleting an account that has it, through `POST`, `PUT`
+  or `DELETE /api/users` or `PUT /api/users/{username}/roles`, needs a caller whose stored
+  role is Super admin and a sign-in within the re-authentication window. Before, any
+  holder of `users:manage` (a SOC manager by default) could make itself Super admin in
+  one call and then use the role-based access switch, or reset a Super admin's password.
+  Anyone else now gets `403 super_admin_only` and an Access denied row.
+- **Repeated reviews of one case count once.** An agent-closed case that was not picked
+  for review can be reviewed again. Team activity now counts a person's latest review of a
+  case only (an earlier one is listed as replaced), so the agreement rate's 30-review bar
+  is 30 different cases, and a repeat disagreement by the same person sends the people who
+  can close cases no new Inbox item.
+- **The Team activity floor is a page limit.** While role-based access is off, the limit
+  to Super admins, SOC managers and Auditors applies to the Team activity page only: every
+  account still holds `audit:view` and `users:manage`. The documentation now says so.
 
 Details:
 

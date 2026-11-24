@@ -43,7 +43,8 @@ every signed-in account is then treated as Super admin, whatever its role.
 The button is unavailable, with the reason under the state, when sign-in is off, when
 your account's role is not Super admin, or while settings are in read-only mode. Only the
 role stored for your account counts: while role-based access is off every account is
-treated as Super admin, but only a real Super admin may change it.
+treated as Super admin, but only a real Super admin may change it. Only a Super admin
+can give an account that role ([Add a local user](#add-a-local-user)).
 
 Each change is recorded in the [Audit log](audit-log.md) as a settings change to **RBAC**,
 with the field `rbac.enabled` before and after. A request that changes nothing writes no
@@ -128,6 +129,15 @@ sees the actions their base role and assigned custom roles allow, and no others.
 
 User creation, update, and deletion use `/api/users`. Role assignment also has a
 dedicated `/api/users/{username}/roles` route. Administrative writes are audited.
+
+Only a Super admin can give an account the Super admin role, or change, disable or
+delete an account that has it (its role, password, MFA, profile or active state), and
+only after signing in within the re-authentication window. `users:manage` alone, which a
+SOC manager holds, is not enough, so it cannot be used to become Super admin or to take
+over a Super admin account. Anyone else gets `403 super_admin_only` and an Access denied
+row in the Audit log; a Super admin whose sign-in is too old gets `401 reauth_required`.
+This holds whether role-based access is on or off, because only the role stored for the
+account counts.
 
 ## Custom roles
 

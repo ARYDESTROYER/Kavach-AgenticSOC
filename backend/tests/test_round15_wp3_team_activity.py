@@ -404,6 +404,60 @@ def test_reviews_say_n_of_m_and_a_rate_only_from_thirty() -> None:
     assert rated["answered"] == 30 and rated["agreement_rate"] == pytest.approx(20 / 30, abs=1e-4)
 
 
+def test_a_person_s_reviews_count_once_per_case() -> None:
+    """An agent-closed case that was not sampled may be reviewed again, and each answer
+    replaces the person's earlier one. Repeating a review must not add up: 35 reviews of
+    one case are one review, so they never reach the 30-review bar for a rate, and the
+    latest answer and its time spent are the ones counted. Someone else's review of the
+    same case is their own review."""
+    start = NOW - timedelta(hours=2)
+    rows = [_review("Gus", True, ts=start + timedelta(minutes=i), case_id="c1", elapsed=1_000)
+            for i in range(34)]
+    rows.append(_review("gus", False, ts=start + timedelta(minutes=40), case_id="c1", elapsed=90_000))
+    rows.append(_review("hal", True, ts=start + timedelta(minutes=41), case_id="c1"))
+    for order in (rows, list(reversed(rows))):  # any read order
+        fold = _fold(order)
+        result = fold.result([])
+        gus = _person(result, "gus")
+        assert gus["counts"]["reviewed"] == 1
+        assert gus["reviews"] == {
+            "completed": 1, "agreed": 0, "disagreed": 1, "unsure": 0, "answered": 1,
+            "agreement_rate": None, "time_spent_median_ms": 90_000.0, "time_to_review_median_seconds": None,
+        }
+        assert sum(day["counts"]["reviewed"] for day in gus["daily"]) == 1
+        assert _person(result, "hal")["counts"]["reviewed"] == 1
+        assert result["team"]["counts"]["reviewed"] == 2
+        assert result["team"]["reviews"]["completed"] == 2 and result["team"]["reviews"]["agreement_rate"] is None
+        assert sum(day["counts"]["reviewed"] for day in result["team"]["daily"]) == 2
+        assert fold.reviewed_case_ids() == ["c1"]
+        # Both spellings of the name still reach the person's events.
+        assert set(fold.spellings("gus")) == {"Gus", "gus"}
+    # The person's events list every review and say which ones were replaced.
+    events = ta.person_events(rows, _window(), "gus")
+    assert len(events) == 35 and all(e["kind"] == "reviewed" for e in events)
+    assert events[0]["detail"] == "Disagreed with the AI"
+    assert all(e["detail"] == "Agreed with the AI · Replaced by a later review of this case" for e in events[1:])
+    # Reviews of distinct cases each count, up to the rate.
+    many = [_review("ivy", True, ts=start, case_id=f"d{i}") for i in range(30)]
+    many += [_review("ivy", True, ts=start + timedelta(minutes=1), case_id=f"d{i}") for i in range(30)]
+    rated = _person(_fold(many).result([]), "ivy")["reviews"]
+    assert rated["completed"] == 30 and rated["agreement_rate"] == 1.0
+
+
+def test_an_applied_audit_first_review_and_a_repeat_count_once() -> None:
+    """The one-per-case rule also covers reviews held for their failure-row pairing."""
+    t = NOW - timedelta(minutes=30)
+    rows = [_attempt(_REVIEWED, "Ola", ts=t, request_id="req-000000e1"),
+            _attempt(_REVIEWED, "Ola", ts=t + timedelta(minutes=5), request_id="req-000000e2"),
+            _attempt(_REVIEW_FAILED, "Ola", ts=t + timedelta(minutes=5, milliseconds=20), request_id="req-000000e2"),
+            _review("Ola", False, ts=t + timedelta(minutes=9), case_id="c1")]
+    ola = _person(_fold(rows).result([]), "ola")
+    assert ola["counts"]["reviewed"] == 1 and ola["reviews"]["disagreed"] == 1
+    assert [e["detail"] for e in ta.person_events(rows, _window(), "ola")] == [
+        "Disagreed with the AI", "Agreed with the AI · Replaced by a later review of this case",
+    ]
+
+
 def test_time_to_review_is_sampled_to_completed() -> None:
     window = _window("today")
     fold = ta.TeamActivityFold(window)
@@ -1065,6 +1119,32 @@ def test_a_screenshot_or_review_whose_save_failed_is_not_counted(monkeypatch) ->
     rcf._RUNTIMES.clear()  # noqa: SLF001
 
 
+def test_repeated_reviews_of_one_unsampled_case_count_as_one() -> None:
+    """Through the routes: 35 reviews of one agent-closed case that was not sampled are
+    35 recorded grades and one review on Team activity, with no agreement rate."""
+    with _app(rbac=True, work_routers=True) as client:
+        admin = _login(client)
+        analyst = _user(client, admin, "t1-repeat", "analyst_tier1")
+        state = _state(client)
+        client.portal.call(state.cases.save, _agent_closed_case("case-wp3-rep"))
+        for _ in range(35):
+            recorded = client.post("/api/cases/case-wp3-rep/review", headers=analyst,
+                                   json={"classification": "false_positive", "elapsed_ms": 1_000})
+            assert recorded.status_code == 200, recorded.text
+        response = client.get("/api/team/activity", params={"window": "today"}, headers=admin)
+        assert response.status_code == 200, response.text
+        person = next(p for p in response.json()["people"] if p["key"] == "t1-repeat")
+        assert person["counts"]["reviewed"] == 1
+        assert (person["reviews"]["completed"], person["reviews"]["agreed"]) == (1, 1)
+        assert person["reviews"]["agreement_rate"] is None
+        assert response.json()["team"]["reviews"]["completed"] == 1
+        events = client.get("/api/team/people/t1-repeat/events", params={"window": "today", "limit": 200},
+                            headers=admin).json()["events"]
+        reviewed = [e for e in events if e["kind"] == "reviewed"]
+        assert len(reviewed) == 35
+        assert sum("Replaced by a later review" in e["detail"] for e in reviewed) == 34
+
+
 def test_the_role_floor_while_rbac_is_off() -> None:
     with _app(rbac=False) as client:
         admin = _login(client)
@@ -1079,6 +1159,38 @@ def test_the_role_floor_while_rbac_is_off() -> None:
         for role in ("soc_manager", "auditor"):
             headers = _user(client, admin, f"{role}-wp3", role)
             assert client.get("/api/team/activity", headers=headers).status_code == 200
+
+
+_FLOOR_DOCS = (
+    "docs/analyst/team-activity.md",
+    "docs/reference/permissions.md",
+    "docs/reference/configuration.md",
+    "docs/operations/upgrades.md",
+)
+
+
+def test_the_rbac_off_floor_limits_this_page_only_and_the_docs_say_so() -> None:
+    """While role-based access is off every account holds every grant, users:manage
+    among them, so the stored-role floor (SPEC D3.3) is a limit on this page, not an
+    access control: an analyst can change its own role (an audited row) and open the
+    page. It cannot make itself Super admin. Every page that describes the floor says
+    this, so an operator does not read it as keeping per-person work private."""
+    with _app(rbac=False) as client:
+        admin = _login(client)
+        analyst = _user(client, admin, "tier1-floor", "analyst_tier1")
+        assert client.get("/api/team/activity", headers=analyst).status_code == 403
+        promoted = client.put("/api/users/tier1-floor", json={"role": "super_admin"}, headers=analyst)
+        assert promoted.status_code == 403 and promoted.json()["detail"]["code"] == "super_admin_only"
+        moved = client.put("/api/users/tier1-floor", json={"role": "auditor"}, headers=analyst)
+        assert moved.status_code == 200, moved.text
+        rows = client.portal.call(lambda: _state(client).control_audit.records(limit=1000))
+        assert any(r.get("action") == "user.role_changed" and r.get("actor") == "tier1-floor" for r in rows)
+        assert client.get("/api/team/activity", headers=analyst).status_code == 200
+    root = Path(__file__).resolve().parents[2]
+    for doc in _FLOOR_DOCS:
+        text = " ".join((root / doc).read_text(encoding="utf-8").split())
+        assert "per-person work private" in text, doc
+        assert "change its own role" in text, doc
 
 
 def test_with_rbac_on_the_team_view_grant_decides() -> None:

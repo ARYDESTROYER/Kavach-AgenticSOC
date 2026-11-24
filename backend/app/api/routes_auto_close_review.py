@@ -496,7 +496,7 @@ async def record_auto_close_review(
     # the Inbox and the live frame follow outside the lock.
     async with store.lock:
         recorded = await _record_review_locked(state, store, case_id, body, request, actor=actor)
-    fresh, agrees, ai_verdict, review_id = recorded
+    fresh, agrees, ai_verdict, review_id, disagreed_before = recorded
 
     # 4. The note becomes fenced untrusted precedent text like any grading comment (#9).
     if _status(fresh) in TERMINAL_CASE_STATUSES:
@@ -505,8 +505,10 @@ async def record_auto_close_review(
         except Exception as exc:  # noqa: BLE001
             logger.warning("Auto-close review RAG refresh failed for %s: %s", case_id[:80], exc)
 
-    # 5. A disagreement from someone who cannot reopen reaches someone who can.
-    if agrees is False and not can_reopen:
+    # 5. A disagreement from someone who cannot reopen reaches someone who can, once per
+    # reviewer and case: a case that was not sampled may be reviewed again, and a repeat
+    # disagreement by the same person sends nothing more (the closers already have it).
+    if agrees is False and not can_reopen and not disagreed_before:
         await notify_disagreement(
             state, fresh, reviewer=actor, classification=body.classification,
             ai_verdict=ai_verdict, review_id=review_id,
@@ -519,11 +521,13 @@ async def record_auto_close_review(
 async def _record_review_locked(
     state: AppState, store: Any, case_id: str, body: ReviewBody, request: Request, *,
     actor: str,
-) -> tuple[Case, bool | None, str, str]:
+) -> tuple[Case, bool | None, str, str, bool]:
     """Steps 1 to 3 of the review with ``store.lock`` held
     (:func:`record_auto_close_review`): the checks, the audit row, the case save and the
-    ledger completion. Returns ``(saved case, agrees, AI verdict, review id)``; the
-    review id is empty for a case that was not sampled."""
+    ledger completion. Returns ``(saved case, agrees, AI verdict, review id, disagreed
+    before)``; the review id is empty for a case that was not sampled, and ``disagreed
+    before`` says the reviewer had already recorded a disagreeing grade of that case (a
+    sampled case takes one review, so it is always False there)."""
     from .routes import _case_audit_fields, _request_audit_context
 
     case = await state.cases.get(case_id)
@@ -594,8 +598,15 @@ async def _record_review_locked(
     # 2. Read the case again and save it with one appended grade (never its status,
     # decider or disposition, #3).
     now = iso_now()
+    reviewer_key = actor.strip().lower()
     try:
         fresh = await state.cases.get(case_id) or case
+        # Read before this review's grade is appended (and under the store lock, so two
+        # concurrent repeats cannot both read "not yet").
+        disagreed_before = not sampled and any(
+            fb.assessment == "disagree" and (fb.analyst or "").strip().lower() == reviewer_key
+            for fb in fresh.feedback
+        )
         grade = FeedbackEntry(
             ts=now,
             analyst=actor,
@@ -653,7 +664,7 @@ async def _record_review_locked(
                     "Auto-close review ledger completion failed for %s (attempt %d): %s",
                     case_id[:80], attempt + 1, exc,
                 )
-    return fresh, agrees, ai_verdict, review_id
+    return fresh, agrees, ai_verdict, review_id, disagreed_before
 
 
 # --------------------------------------------------------------------------- #

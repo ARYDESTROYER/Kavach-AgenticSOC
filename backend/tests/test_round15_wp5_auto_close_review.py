@@ -777,6 +777,43 @@ def test_a_disagreement_from_someone_who_cannot_reopen_reaches_who_can(env) -> N
     assert len([n for n in c.portal.call(inbox.list_for_user, "Admin")[0] if n.category == "assignment"]) == 1
 
 
+def test_a_repeated_disagreement_on_an_unsampled_case_notifies_once(env) -> None:
+    """An agent-closed case that was not sampled takes any number of reviews (each an
+    ordinary grade, D6.6), so a person who cannot close cases could re-review one case to
+    fill the Inbox of everyone who can and push their real items out of its ring. Every
+    review is still recorded, but the closers hear about one person's disagreement with
+    a case once; another person's first disagreement still reaches them."""
+    c, state, h = env
+    _put(c, state, _agent_closed("case-rv-flood", number="CASE-0404"))
+    inbox = state.inbox
+
+    def items(user: str) -> list[Any]:
+        return [n for n in c.portal.call(inbox.list_for_user, user)[0]
+                if n.category == "assignment" and n.case_id == "case-rv-flood"]
+
+    for classification in ("true_positive", "true_positive", "unsure", "true_positive"):
+        r = c.post("/api/cases/case-rv-flood/review", headers=h["t1"], json={"classification": classification})
+        assert r.status_code == 200, r.text
+        assert r.json()["sampled"] is False
+    assert len(items("t2")) == 1 and len(items("Admin")) == 1 and len(items("boss")) == 1
+    stored: Case = c.portal.call(state.cases.get, "case-rv-flood")
+    assert len(stored.feedback) == 4  # every review is recorded
+    rows = c.portal.call(lambda: state.audit.records_for_case("case-rv-flood"))
+    assert len([x for x in rows if x.get("action") == "case.review_recorded"]) == 4
+    assert len([x for x in rows if x.get("action_type") == "inapp_notify"]) == 3
+    # An agreement first, then a disagreement by someone else, is their first one.
+    made = c.post("/api/users", headers=h["admin"],
+                  json={"username": "t1b", "password": "t1b-password-1", "role": "analyst_tier1"})
+    assert made.status_code in (200, 201), made.text
+    t1b = _login(c, "t1b", "t1b-password-1")
+    assert c.post("/api/cases/case-rv-flood/review", headers=t1b,
+                  json={"classification": "false_positive"}).json()["agrees"] is True
+    assert len(items("t2")) == 1
+    assert c.post("/api/cases/case-rv-flood/review", headers=t1b,
+                  json={"classification": "true_positive"}).json()["agrees"] is False
+    assert len(items("t2")) == 2 and len(items("Admin")) == 2
+
+
 def test_the_summary_counts_pending_open_disagreements_and_today(env) -> None:
     c, state, h = env
     now = datetime.now(timezone.utc)

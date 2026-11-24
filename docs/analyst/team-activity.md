@@ -27,6 +27,12 @@ only an account whose role is Super admin, SOC manager or Auditor can open it, a
 page shows a warning that says so with a link to **Roles & permissions**. Anyone else
 who opens the page is refused, and the refusal is written to the audit log.
 
+This limit applies to this page only and is not an access control. While role-based
+access is off, every account still holds `audit:view` and `users:manage`, so it can read
+the same rows in the [Audit log](../administration/audit-log.md), or change its own role
+to SOC manager or Auditor (an audited `user.role_changed` row) and then open the page.
+Turn on role-based access to keep per-person work private.
+
 With sign-in off, no work can be attributed to a person, so the page says "Sign-in is
 off, so work cannot be attributed to people." instead of showing counts.
 
@@ -69,7 +75,7 @@ Below the header:
 | Commented | A comment or a case thread message written by the person. A thread message labelled as the AI's or the system's is not counted. |
 | Assigned | An owner change the person made. |
 | Screenshots added | A screenshot attached to a case. |
-| Reviews | An auto-close review the person recorded: agreed, disagreed or unsure. |
+| Reviews | An auto-close review the person recorded: agreed, disagreed or unsure. Each case counts once per person: a later review of the same case replaces their earlier one. |
 | Runbook steps done | A runbook step the person marked done. |
 | Sign-ins | A successful sign-in. |
 
@@ -85,7 +91,10 @@ rather than guessing.
 
 **Reviews** always read "N of M agreed", where M counts the reviews that agreed or
 disagreed (an unsure review is not an answer). An agreement rate is added only from 30
-answered reviews, because fewer would say more than the reviews can. The person sheet
+answered reviews, because fewer would say more than the reviews can. A case that was not
+picked for review can be reviewed again; only the person's latest review of a case counts,
+so the 30 are 30 different cases, and an earlier review shows in their events as
+"Replaced by a later review of this case". The person sheet
 also shows the median **time spent reviewing** (measured while the review card was open)
 and, separately, the median **time to review** (from the case being picked for review to
 the review).
