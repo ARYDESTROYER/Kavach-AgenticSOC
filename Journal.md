@@ -12050,3 +12050,59 @@
 - Tests: bundle-first-paint with dist and Field layout 35 passed; docs records pytest passed.
 - Status: done; pushed.
 - Next: the cross-cutting adversarial review of the integrated tree, then the remaining docs, SPEC §8, the full gates and the PR into Testing.
+
+### 2026-11-24 00:00Z - orchestrator - Round 15 cross-cutting review launched; SPEC §8 drafted
+- Context: Wave 4 of the Round 15 SPEC (§4.5): one adversarial reviewer per dimension (backend, security, statistics, UI, test honesty, docs) over the integrated tree 8e3e6d4, an independent skeptic per finding, then one fixer per dimension in sequence on a review branch. In parallel, a sub-agent drafted SPEC §8 "As built" from the package reports, reviews, Journal and code.
+- Did: SPEC §8.1 to §8.4 written (contract resolutions, per package, known limitations, a verification placeholder) and the entry attribution corrected (only WP6 changed router.tsx); pushed as 7003d4d. The review run was interrupted by three container restarts and resumed from its cached results each time.
+- Tests: docs records pytest passed; check_docs 86 pages.
+- Status: done for §8; the review continued.
+- Next: merge the review fixes, then the full gates.
+
+### 2026-11-24 01:26Z - backend review fixer - Team activity skips audit-first work never applied
+- Context: Round 15 cross-cutting review, backend dimension. Confirmed: the Team activity fold counted `case.file_attached` and `case.review_recorded` rows whose store write failed after the audit row.
+- Did: engine/team_activity.py holds these writers' rows and counts an action row only when its failure row (same request, actor, case and compatible session) does not follow it, the Audit log inspector's rule. The read covers these rows up to 5 minutes past the window end so a late failure row still pairs; person events apply the same rule. Five tests, including an end-to-end upload race and a failed review.
+- Tests: test_round15_wp3_team_activity.py 50 passed; Round 15 backend 554 passed; audit suites 522 passed, 2 skipped; ruff fatal clean. decide() byte-identical.
+- Status: done, bf12323 on r15-review.
+- Next: optional hardening, the review route could mint a request id when the middleware is missing.
+
+### 2026-11-24 01:59Z - security review fixer - Super admin accounts, review flood, review counts, Team activity floor
+- Context: the four confirmed security findings of the Round 15 cross-cutting review.
+- Did: Super admin accounts are for Super admins only: routes._require_super_admin_for checks the stored role and asks a strict fresh sign-in on POST, PUT and DELETE /api/users and PUT /api/users/{u}/roles when a Super admin account is created, changed, deleted or granted (403 super_admin_only otherwise). One disagreement Inbox fan-out per reviewer and case for unsampled reviews. Team activity counts one review per person and case, and replaced reviews are marked in the person's events. The RBAC-off Team activity floor is documented as a page limit, not an access control; SPEC D3.3, D3.8 and D6.9 amended; CHANGELOG bullets; corpus regenerated.
+- Tests: Round 15 backend 563 passed; neighbouring user, review and team suites passed apart from 9 test_sessions.py order failures that predate the change (they fail the same way without it); knowledge and docs records 251 passed; ruff fatal clean; check_docs 86 pages.
+- Status: done, a0ad9f1 on r15-review.
+- Next: optional, a per-reviewer bound on disagreement fan-outs across many cases.
+
+### 2026-11-24 02:25Z - statistics review fixer - Team activity and review metrics honesty
+- Context: the five confirmed findings of the statistics dimension.
+- Did: runbook step rows pair with their step.*_failed rows; a partial read omits the medians and the agreement rate (`ack_status` partial, a CSV note row, page wording); an assignee change on a lifecycle row counts as Assigned and every lifecycle action is read; Escalate, Hold and Set-status moves are candidates for the median time to acknowledge; GET /api/metrics/auto-close-review repairs the ledger from case history. Docs, corpus, CHANGELOG and SPEC D3.8 updated.
+- Tests: Round 15 backend 572 passed; webui team and lib strict run 398 passed, zero stderr; lint, gates, check:types and tsc clean; check_docs 86 pages; corpus current.
+- Status: done, 2900bc0 on r15-review.
+- Next: merge and run the full gates.
+
+### 2026-11-24 03:03Z - UI review fixer - review card and person sheet focus, queue band, chart colours, copy
+- Context: the UI dimension, 11 defects confirmed by a skeptic (one more was rejected).
+- Did: the review card announces the comparison in a live region and moves focus after Record and Reopen, and its rail wraps on a phone; the Team activity person sheet returns focus to its row, uses the chart's kinds per day and shows event times in the operator zone; the Team chart avoids two near-identical oranges and caps bars at 48 px; the Case Manager queue search narrows in the 360 px pane so the band stays on one row, and every row is the same height; review durations use the shared format; the clustering heading is an h3; StatusDot gains a wrap option for the RBAC state; two strings fixed; team-activity page updated and corpus regenerated.
+- Tests: focused strict run 859 passed, zero stderr; lint, gates, check:types and build:app clean; entry unchanged at 329,080 B; check_docs 86 pages.
+- Status: done, 1274abd on r15-review.
+- Next: overview.kpimodal.a11y.test.tsx was seen writing an act() warning to stderr in a narrowed run; check it in the full strict run.
+
+### 2026-11-24 03:24Z - test-honesty review fixer - pin the rules that survived mutation
+- Context: ten confirmed test-honesty findings.
+- Did: tests only, in the WP2, WP3 and WP5 backend files, CaseDetail.grading.test.tsx and ReviewCard.test.tsx: the runbook step race through the route; the review's precedent refresh and its completed frame; missed threats and the top 10 rules; D1.3 over all five matrix fields plus a pin on the guarded set; active and namesake account counting; the RBAC-on team grant; the cache expiry, the rate at 29 answered reviews and the 200-event page cap; D4.4 grading on resolve and set_disposition; ReviewCard timing from opening the card. The route tests' recent-row helper no longer dates rows yesterday just after midnight UTC. Every new test fails when its rule is reverted.
+- Tests: Round 15 backend 591 passed; webui case directories 621 passed, zero stderr; lint, gates, check:types and tsc clean.
+- Status: done, d151df7 on r15-review.
+- Next: none.
+
+### 2026-11-24 03:43Z - docs review fixer - records match the Round 15 case workspace and routes
+- Context: the 14 confirmed docs findings (one more was rejected).
+- Did: quickstart and README give the Investigation order (AI assessment, then Decision) and case-manager.webp is recaptured from the seeded Demo; GET /api/cases/{case_id}/review documented in api.md, CHANGELOG, AGENTS and permissions; USAGE.md describes the five tabs, the scopes, the header and the request fields; first-case, cases (bulk exclusion), collaboration (Discussion, Files, Tasks, History), ui-standard (review headline and actions), auto-close-review (Review scope controls), team-activity (tags not counted), the automation and analytics overviews, the webui README, the AGENTS and HANDOFF layout lines, testing.md and mitre-threat-context corrected; corpus regenerated (970 chunks); new backend/tests/test_docs_round15_records.py (14 tests that read the fact from the code, all failing on the docs before the fix).
+- Tests: Round 15 backend plus the new records file 605 passed; 18 docs and knowledge files 1,108 passed; check_docs 86 pages; corpus current; docs bundle and theme scripts 7 passed.
+- Status: done, 7cb238a on r15-review.
+- Next: none.
+
+### 2026-11-24 03:45Z - orchestrator - Round 15 cross-cutting review merged
+- Context: Wave 4 results: 50 candidate findings over six dimensions; an independent skeptic confirmed 46 and rejected 4 (one each in backend, security, UI and docs).
+- Did: merged r15-review (six fixer commits) into claude/round15 as b01098f with no conflicts; the corpus (970 chunks) and the generated API types are current; no banned characters in the added lines; pushed.
+- Tests: the full gate run on the merged tree follows.
+- Status: done.
+- Next: the full gates (SPEC §5.2), light and dark screenshots, the remaining records (SPEC §8.4, AGENTS §10, HANDOFF), then the PR into Testing.
