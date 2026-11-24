@@ -183,6 +183,11 @@ backend/app/
                      the migration, or dropped when they had no effect) +
                      `Secrets.trusted_proxies` (Round 14 `TRUSTED_PROXIES`: the only
                      peers whose forwarded header names the audit client address)
+                     + Round 15 `team_activity` (TeamActivityConfig: one switch, on by
+                     default; off, the team routes answer `409 team_activity_off`) +
+                     `auto_close_review` (AutoCloseReviewConfig: enabled, sample_rate,
+                     daily_cap, per_rule_daily_cap, expiry_days; repaired on load, 422
+                     on an out-of-range write)
                      + BrandingConfig.login_*
                      bounded plain-text white-label [validator rejects any `<`, #9];
                      AutomationRule → CaseAutomationRule (alias kept, wire key
@@ -200,7 +205,9 @@ backend/app/
                      Round 13 chat starters section (ChatStarter + ChatStarterRef,
                      ChatCatchUp, ChatStartersInfo, ChatStarterEvent) and the
                      `UserPrefs.misc` `chat_suggest_start`/`chat_suggest_follow_ups`
-                     switches (absent = on)
+                     switches (absent = on); Round 15 `FeedbackEntry.origin`/`review_id`
+                     (the auto-close review grade marker, read through
+                     `engine/review_origin.is_review_grade`)
   utils.py           dotted_get, time helpers, extract_json, coerce_float, ...
   evidence_fields.py The ONE definition of which raw-record paths count as case
                      evidence: the ECS default projection, the wildcard/whole-record
@@ -616,7 +623,8 @@ backend/app/
                      dedup, per-person rate bound, strict content headers, audit-first] ·
                      routes_auto_close_review [Round 15: `POST /api/cases/{id}/review`
                      (audit first, one grade, never the case's status or disposition),
-                     `GET /api/auto-close-review/summary`, `GET
+                     `GET /api/cases/{id}/review` (one case's review state, repaired
+                     on read), `GET /api/auto-close-review/summary`, `GET
                      /api/metrics/auto-close-review`; `case.review` frames] ·
                      routes_reports [`/api/reports*` owner-scoped reports,
                      server-resolved add, one-call AI summary with dry-run estimate;
@@ -648,8 +656,8 @@ webui/               PRIMARY surface: standalone Vite+React+TS+Tailwind+shadcn/R
                      Effectiveness owns the full Agent-health diagnostics while Overview
                      is degradation-only; Cost exposes actual Standard/Flex/Batch/
                      Unconfirmed ledger tiers) + CaseDetail chips/trace/collab +
-                     CaseManager (canonical detail workspace; Active/All split-pane
-                     queue, persisted accessible desktop resize, selection +
+                     CaseManager (canonical detail workspace; Active/Mine/Review/All
+                     split-pane queue, persisted accessible desktop resize, selection +
                      permission-gated bulk work submitted as immutable background-job
                      snapshots, full five-tab detail since Round 15; Cases list
                      hands an opened row to the exact Case Manager record) + Chat

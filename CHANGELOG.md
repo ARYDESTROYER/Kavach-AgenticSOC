@@ -132,7 +132,7 @@ Details:
   `ai_runtime_ready` and `ai_runtime_provider` on `POST /api/setup/secrets`; `GET
   /api/team/activity`, `GET /api/team/people` and `GET /api/team/people/{username}/events`;
   `GET` and `POST /api/cases/{id}/files`, `DELETE /api/cases/{id}/files/{file_id}` and `GET
-  /api/cases/{id}/files/{file_id}/content`; `POST /api/cases/{id}/review`, `GET
+  /api/cases/{id}/files/{file_id}/content`; `GET` and `POST /api/cases/{id}/review`, `GET
   /api/auto-close-review/summary` and `GET /api/metrics/auto-close-review`; `review` on `GET
   /api/cases` (echoed as `review_applied`); `actions_taken` and `review_via` on `POST
   /api/cases/{id}/action` (bulk bodies refuse `review_via`); `origin` and `review_id` on

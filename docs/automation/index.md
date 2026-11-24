@@ -20,7 +20,10 @@ Fresh v0.1 preferences enable:
 - cross-source related-case linking;
 - threshold tuning with shadow evaluation;
 - baselines, campaign correlation, SLA, and priority policy;
-- realtime updates; and
+- realtime updates;
+- a random review sample of automatic closes (5%, at most 10 a day and 3 per rule),
+  queued for a person to classify and never changing the case (see
+  [Auto-close review](auto-close-review.md)); and
 - the case-automation engine with an empty rule set.
 
 Batch inference is off by default. Notifications and case-automation rules (including

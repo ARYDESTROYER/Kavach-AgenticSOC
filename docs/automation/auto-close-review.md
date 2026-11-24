@@ -128,9 +128,11 @@ it is recognised even after a rollback to an older build drops the grade's own m
   decision. It always says: "Agreement describes the sampled cases only, unweighted. It is
   not an estimate of auto-close precision." The daily caps mean each day's cases are not
   equally likely to be picked, so no rate here describes every automatic close.
-- **Case Manager**: the Review scope (pending, with links to completed, disagreed and
-  expired reviews), and the review's result in the case's Outcome facts
-  ("Reviewed: false positive", "Review disagreed: true positive").
+- **Case Manager**: the Review scope (the waiting reviews, with **Show completed
+  reviews** at the foot of the list; a link opens it on the reviews that disagreed or
+  expired: `#/case_manager?review=disagreed` or `#/case_manager?review=expired`), and
+  the review's result in the case's Outcome facts ("Reviewed: false positive", "Review
+  disagreed: true positive").
 - **Team activity** counts the reviews each person completed, with how many agreed and
   the time they spent.
 - The **audit log** has an **Auto-close review recorded** row per review, by the person

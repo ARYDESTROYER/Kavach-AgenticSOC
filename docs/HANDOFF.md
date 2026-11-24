@@ -566,9 +566,10 @@ backend/app/
   threat/          bundled compact MITRE ATT&CK technique map (+ refresh script)
 webui/src/
   soc/pages/       Login, Cases (Round-9c: 6-tile summary strip + monogram Assignee column),
-                   CaseManager (additive Active/All split-pane queue using the shared
-                   CaseDetail orchestrator in embedded mode; reference-matched top-right
-                   Share/Take Action/close controls; selection + permission-gated bulk work;
+                   CaseManager (additive Active/Mine/Review/All split-pane queue using the
+                   shared CaseDetail orchestrator in embedded mode; one primary action,
+                   Take action, More options and close controls in the header (Round 15);
+                   selection + permission-gated bulk work;
                    Acknowledge/Assign/Add tag/Set status/Set disposition/Reinvestigate/Resolve;
                    successes deselect, failures remain selected; accessible persisted
                    desktop queue resize; the Cases table hands opened rows to this

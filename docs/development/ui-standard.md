@@ -625,7 +625,11 @@ and the AI verdict answers "what did the model think"; the three never share a s
 tag, the AI verdict an outline chip with the AI glyph). Once an analyst classifies a
 case (the classification history entry, exactly as the ground-truth authority reads
 it), the classification is the headline ("Closed as false positive") and the AI verdict
-stays as a labelled secondary line. One shared helper decides it for the case header,
+stays as a labelled secondary line. On a case the AI agent closed, a recorded auto-close
+review grade (the same `isReviewGrade` test the statistics read) is the headline instead:
+"Reviewed: false positive" when the reviewer agreed or was unsure, "Review disagreed: true
+positive" when not, with the AI verdict still secondary. Ordinary feedback never becomes
+the headline. One shared helper decides it for the case header,
 queue rows, the Cases list, hover cards and grading; a disposition value alone is never
 treated as an analyst's call.
 
@@ -640,7 +644,11 @@ in the facts rail; T and "Edit tags" open the Details sheet first when the rail 
 The primary action follows the status: Acknowledge when new; Close case while open,
 investigating or awaiting an analyst (Escalate is in Take action, and C opens the close
 dialog wherever a close is allowed); Resume when on hold; Mark resolved when escalated;
-Close case when resolved; Reopen when closed. Facts about the case live once, in a facts
+Close case when resolved; Reopen when closed. A case the AI agent closed whose auto-close
+review is pending shows Start review instead, and Reopen moves into Take action; on any
+other case the agent closed, Take action offers "Review this auto-close" in place of Set
+disposition while a review can still be recorded (Set disposition stays hidden either
+way). Facts about the case live once, in a facts
 rail beside every tab (a non-blocking Details sheet in a narrow pane): eight sections
 divided by hairlines, with no icon headings (Outcome, Signal, Runbook, Times, Tags with
 the campaign, Source with the primary entity, Related cases, Record). The record

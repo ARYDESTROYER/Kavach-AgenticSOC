@@ -147,7 +147,7 @@
   },
   "analyst/collaboration.md": {
    "title": "Case collaboration",
-   "description": "Coordinate analysts with case ownership, discussion, activity, and tasks.",
+   "description": "Coordinate analysts with case ownership, discussion, screenshots, tasks, and history.",
    "nav": [
     "Use the product",
     "User and analyst guide",
@@ -907,7 +907,7 @@
    "page": "getting-started/quickstart.md",
    "anchor": "verify-the-workflow",
    "heading": "Verify the workflow",
-   "text": "- **Sources** shows configuration and health signals.\n- **Logs** shows normalized records and source attribution.\n- **Cases** separates source facts, investigator findings, and policy decisions.\n- **Cost** records each model call through the single gateway.\n- **Audit log** records state-changing analyst and agent actions.\n\nThe screenshots below come from the demo. On **Sources**, each connected source shows\nits type, status, enabled switch, last event, and protocol.\n\nSources in the demo: five connected sources, all ready.\n\nIn **Case Manager**, a case's Investigation tab shows the **Decision** card, labelled\n**Code**, above the **AI assessment**, labelled **AI** and marked advisory. The close or\nescalate decision is made by deterministic code against the operator policy, never by\nthe model.\n\nCase Manager: the code decision above the advisory AI assessment.",
+   "text": "- **Sources** shows configuration and health signals.\n- **Logs** shows normalized records and source attribution.\n- **Cases** separates source facts, investigator findings, and policy decisions.\n- **Cost** records each model call through the single gateway.\n- **Audit log** records state-changing analyst and agent actions.\n\nThe screenshots below come from the demo. On **Sources**, each connected source shows\nits type, status, enabled switch, last event, and protocol.\n\nSources in the demo: five connected sources, all ready.\n\nIn **Case Manager**, a case's Investigation tab shows the **AI assessment**, labelled\n**AI** and marked advisory, then the **Decision** card, labelled **Code**. The close or\nescalate decision is made by deterministic code against the operator policy, never by\nthe model.\n\nCase Manager: the advisory AI assessment, then the code decision.",
    "console": []
   },
   {
@@ -1174,7 +1174,7 @@
    "page": "getting-started/first-case.md",
    "anchor": "3-inspect-the-case",
    "heading": "3. Inspect the case",
-   "text": "Open **Case Manager** (or the established **Cases** table) and select the case for\nthe synthetic entity. Verify the separation\nbetween:\n\n- what the source reported;\n- what deterministic correlation and risk logic computed;\n- what the model assessed, if the candidate was admitted to investigation; and\n- what deterministic policy decided.\n\nIn Case Manager, the Overview separates the decision brief and provenance, and its\n**What happened** section expands **Risk Assigned** into the stored score factors and\nends at **Decision**; Investigation carries the model evidence plus the pinned\ndeterministic result, and its **Threat context** section the intelligence.\n\nAn event-feed candidate can remain visible without a model call when it does not\ncross the investigation gate. That is expected and costs `$0`. An alert feed is\nprioritized for investigation, subject to the global budget and safety controls.",
+   "text": "Open **Case Manager** (or the established **Cases** table) and select the case for\nthe synthetic entity. Verify the separation\nbetween:\n\n- what the source reported;\n- what deterministic correlation and risk logic computed;\n- what the model assessed, if the candidate was admitted to investigation; and\n- what deterministic policy decided.\n\nIn Case Manager, the Overview gives the AI's summary (tagged AI), and its **What\nhappened** section expands **Risk Assigned** into the stored score factors and ends at\n**Decision**; Investigation carries the AI assessment plus the pinned deterministic\n**Decision**, and its **Threat context** section the intelligence.\n\nAn event-feed candidate can remain visible without a model call when it does not\ncross the investigation gate. That is expected and costs `$0`. An alert feed is\nprioritized for investigation, subject to the global budget and safety controls.",
    "console": []
   },
   {
@@ -1527,7 +1527,18 @@
    "page": "analyst/cases.md",
    "anchor": "find-the-work-that-matters",
    "heading": "Find the work that matters",
-   "text": "Selecting rows opens bulk actions. Closing or resolving cases, from the bulk bar or with\na row's one-click **Close** (shown only on an open row, and only with `cases:close`),\nopens a dialog that requires a disposition, so every closed case records what it was.\nWhen a case's runbook still has required steps open, the dialog also asks why; the close\nis never blocked (see Runbooks). Bulk changes are unavailable in Demo Mode. Long-running Case\nManager operations snapshot the\nselected case IDs and submit one server-owned background job. The dialog closes after\n`202 Accepted`; work continues across navigation or reload and reports progress in\n**Analytics → Jobs** and **Inbox**. A partial terminal result keeps successful changes\nand reports bounded per-case failures rather than rolling the whole selection back.\n\nThe terminal action opens a safely allow-listed Cases context such as active status,\nresulting status, assignee, or tag. That destination is a useful current filter, not\nan immutable cohort of every attempted ID: cases can change again and other cases can\nmatch the same filter. Use job counts, case history, and Audit for exact accountability.",
+   "text": "Selecting rows opens bulk actions. Closing or resolving cases, from the bulk bar or with\na row's one-click **Close** (shown only on an open row, and only with `cases:close`),\nopens a dialog that requires a disposition, so every closed case records what it was.\nWhen a case's runbook still has required steps open, the dialog also asks why; the close\nis never blocked (see Runbooks). Bulk **Set status** and\n**Set disposition** leave out the cases the AI agent closed (a terminal case whose first\ndecision was the agent's automatic close): \"Cases the AI agent closed are left out; review\nthem instead.\" The menus say how many of the selected cases that is, the confirmation\nrepeats it, and when every selected case is one of them nothing is queued; review such a\ncase on its own (see Cases the agent closed).\nBulk changes are unavailable in Demo Mode. Long-running Case\nManager operations snapshot the\nselected case IDs and submit one server-owned background job. The dialog closes after\n`202 Accepted`; work continues across navigation or reload and reports progress in\n**Analytics → Jobs** and **Inbox**. A partial terminal result keeps successful changes\nand reports bounded per-case failures rather than rolling the whole selection back.",
+   "console": [
+    "page:cases",
+    "page:batchjobs"
+   ]
+  },
+  {
+   "id": "analyst/cases#find-the-work-that-matters:5",
+   "page": "analyst/cases.md",
+   "anchor": "find-the-work-that-matters",
+   "heading": "Find the work that matters",
+   "text": "The terminal action opens a safely allow-listed Cases context such as active status,\nresulting status, assignee, or tag. That destination is a useful current filter, not\nan immutable cohort of every attempted ID: cases can change again and other cases can\nmatch the same filter. Use job counts, case history, and Audit for exact accountability.",
    "console": [
     "page:cases",
     "page:batchjobs"
@@ -2905,7 +2916,7 @@
    "page": "analyst/collaboration.md",
    "anchor": "",
    "heading": "",
-   "text": "The **Collaboration** tab keeps human coordination beside the evidence and decision it\nconcerns. Collaboration data is case state; it does not alter the deterministic\nclose policy.",
+   "text": "The **Collaboration** tab keeps human coordination beside the evidence and decision it\nconcerns, in four sections: Discussion, Files, Tasks and History. Collaboration data is\ncase state; it does not alter the deterministic close policy.",
    "console": []
   },
   {
@@ -2913,7 +2924,7 @@
    "page": "analyst/collaboration.md",
    "anchor": "ownership-tags-and-comments",
    "heading": "Ownership, tags, and comments",
-   "text": "- Assign a case to an analyst or team so the queue has a visible owner.\n- Add short tags for routing and review. Tags are deduplicated and bounded.\n- Use a case comment for a simple note that should appear in exports.\n- Use the threaded discussion for replies, reactions, and mentions.\n\nAssignment requires `cases:assign`. Comments and thread mutations require\n`cases:comment`. Editing or deleting a thread message is limited to its author or an\nauthorized moderator.",
+   "text": "- Change a case's owner in the case header (select the owner, or press **M**), not on\n  this tab, so the queue has a visible owner.\n- Edit short tags for routing and review in the facts rail (**Edit tags**, or **T**).\n  Tags are deduplicated and bounded.\n- Use a case comment for a simple note that should appear in exports.\n- Use the threaded discussion for replies, reactions, and mentions.\n\nAssignment requires `cases:assign`. Comments and thread mutations require\n`cases:comment`. Editing or deleting a thread message is limited to its author or an\nauthorized moderator.",
    "console": []
   },
   {
@@ -2925,6 +2936,14 @@
    "console": []
   },
   {
+   "id": "analyst/collaboration#files:0",
+   "page": "analyst/collaboration.md",
+   "anchor": "files",
+   "heading": "Files",
+   "text": "The **Files** section holds the screenshots on the case. Add them by dropping them,\npasting while the Collaboration tab has focus, or choosing them (PNG, JPEG or WebP).\nAnyone with `cases:comment` can add one; the person who added it, or anyone with\n`cases:close`, can delete it. See Case Manager for the details.",
+   "console": []
+  },
+  {
    "id": "analyst/collaboration#tasks:0",
    "page": "analyst/collaboration.md",
    "anchor": "tasks",
@@ -2933,11 +2952,11 @@
    "console": []
   },
   {
-   "id": "analyst/collaboration#activity-and-audit:0",
+   "id": "analyst/collaboration#history-and-audit:0",
    "page": "analyst/collaboration.md",
-   "anchor": "activity-and-audit",
-   "heading": "Activity and audit",
-   "text": "The case activity stream brings collaboration events into one chronological view,\nnewest first. Each row reads as one plain sentence, with the system's internal names\nshown as names (\"Case manager\") rather than codes; the text exactly as the audit log\nrecorded it is one click away under **Details**. **Show activity by** filters the stream\nto **All**, **Human**, **AI** or **System**. While an investigation is running, its\nsteps appear above the stream as they happen; they are a live narration, not part of the\nrecord. Lifecycle changes also remain in the case's append-only status history. The platform\naudit log is the authority for privileged or state-changing actions; the discussion\nthread is not a substitute for it.",
+   "anchor": "history-and-audit",
+   "heading": "History and audit",
+   "text": "**History** lists each lifecycle change with who made it, when, and the actions taken.\n**Show all activity** opens the full case activity stream below it, which brings\ncollaboration events into one chronological view, newest first. Each row reads as one\nplain sentence, with the system's internal names shown as names (\"Case manager\") rather\nthan codes; the text exactly as the audit log\nrecorded it is one click away under **Details**. **Show activity by** filters the stream\nto **All**, **Human**, **AI** or **System**. While an investigation is running, its\nsteps appear above the stream as they happen; they are a live narration, not part of the\nrecord. Lifecycle changes also remain in the case's append-only status history. The platform\naudit log is the authority for privileged or state-changing actions; the discussion\nthread is not a substitute for it.",
    "console": []
   },
   {
@@ -2989,7 +3008,7 @@
    "page": "analyst/analytics.md",
    "anchor": "",
    "heading": "",
-   "text": "The **Analytics** group in the navigation opens three pages, each titled by its\nnavigation label: **Metrics** (`#/metrics`), **Agent effectiveness**\n(`#/effectiveness`) and **Cost** (`#/cost`). **Overview → Standup** holds the current\naction queue. Analytics are advisory: they describe stored cases and ingest counters but\nnever feed the case decision policy.\n\nPosture and ATT&CK endpoints require `metrics:view` when RBAC is enabled.",
+   "text": "The **Analytics** group in the navigation opens three pages, each titled by its\nnavigation label: **Metrics** (`#/metrics`), **Agent effectiveness**\n(`#/effectiveness`) and **Cost** (`#/cost`). The group also opens **Team activity**\n(`#/team`, `team:view`), per-person work counts from the audit log; see\nTeam activity. **Overview → Standup** holds the current\naction queue. Analytics are advisory: they describe stored cases and ingest counters but\nnever feed the case decision policy.\n\nPosture and ATT&CK endpoints require `metrics:view` when RBAC is enabled.",
    "console": [
     "page:standup"
    ]
@@ -3295,7 +3314,7 @@
    "page": "analyst/team-activity.md",
    "anchor": "limits",
    "heading": "Limits",
-   "text": "- A range holds at most 92 days.\n- One read counts at most 250,000 audit rows. A busier range shows \"Counts are lower\n  bounds\" and the counts are at least the figures shown; choose a shorter range for exact\n  counts. The same caveat appears when the audit store can only be read in part. A median\n  or a rate of part of the range is not a lower bound, so the median time to acknowledge,\n  the agreement rate and the review times then read \"not measured\", and a downloaded CSV\n  ends with a line that says the read was partial.\n- Answers are kept for 60 seconds, so an action may take up to a minute to show. Use\n  refresh after that.\n- Lifecycle and comment records are written just after the change they describe. If the\n  audit store is down at that moment, the case changes but its record, and so its count\n  here, is missing.\n- Before this release, assignments and tag changes made from the Console were recorded\n  without the person's name; they are counted under Not attributed.\n- Demo Mode: the page counts the Demo work only (the seeded cases' acknowledgements,\n  closes, comments, assignments and reviews), with real sign-ins, and says \"Demo Mode:\n  showing Demo work.\"",
+   "text": "- A range holds at most 92 days.\n- One read counts at most 250,000 audit rows. A busier range shows \"Counts are lower\n  bounds\" and the counts are at least the figures shown; choose a shorter range for exact\n  counts. The same caveat appears when the audit store can only be read in part. A median\n  or a rate of part of the range is not a lower bound, so the median time to acknowledge,\n  the agreement rate and the review times then read \"not measured\", and a downloaded CSV\n  ends with a line that says the read was partial.\n- Answers are kept for 60 seconds, so an action may take up to a minute to show. Use\n  refresh after that.\n- Lifecycle and comment records are written just after the change they describe. If the\n  audit store is down at that moment, the case changes but its record, and so its count\n  here, is missing.\n- Before this release, assignments made from the Console were recorded without the\n  person's name; they are counted under Not attributed. Tag changes are not counted on\n  this page.\n- Demo Mode: the page counts the Demo work only (the seeded cases' acknowledgements,\n  closes, comments, assignments and reviews), with real sign-ins, and says \"Demo Mode:\n  showing Demo work.\"",
    "console": []
   },
   {
@@ -3491,7 +3510,7 @@
    "page": "automation/index.md",
    "anchor": "default-posture",
    "heading": "Default posture",
-   "text": "Fresh v0.1 preferences enable:\n\n- polling and background scanning;\n- event correlation and risk scoring;\n- a risk-gated automatic investigation path for event feeds;\n- cross-source related-case linking;\n- threshold tuning with shadow evaluation;\n- baselines, campaign correlation, SLA, and priority policy;\n- realtime updates; and\n- the case-automation engine with an empty rule set.\n\nBatch inference is off by default. Notifications and case-automation rules (including\nrules that attach a runbook) are operator choices rather than hidden defaults. Attaching\nthe matching runbook to cases that need a person is on by default; a runbook is a\nchecklist and never decides a case.",
+   "text": "Fresh v0.1 preferences enable:\n\n- polling and background scanning;\n- event correlation and risk scoring;\n- a risk-gated automatic investigation path for event feeds;\n- cross-source related-case linking;\n- threshold tuning with shadow evaluation;\n- baselines, campaign correlation, SLA, and priority policy;\n- realtime updates;\n- a random review sample of automatic closes (5%, at most 10 a day and 3 per rule),\n  queued for a person to classify and never changing the case (see\n  Auto-close review); and\n- the case-automation engine with an empty rule set.\n\nBatch inference is off by default. Notifications and case-automation rules (including\nrules that attach a runbook) are operator choices rather than hidden defaults. Attaching\nthe matching runbook to cases that need a person is on by default; a runbook is a\nchecklist and never decides a case.",
    "console": []
   },
   {
@@ -3801,7 +3820,7 @@
    "page": "automation/auto-close-review.md",
    "anchor": "where-the-results-show",
    "heading": "Where the results show",
-   "text": "- **Agent effectiveness** has an **Auto-close review** module for the page's range: how\n  many cases were sampled, reviewed, pending and expired; how many reviews agreed with\n  the AI (\"N of M agreed\"); an agreement rate with its 95% interval once there are at\n  least 30 reviews, and \"Not enough reviews yet\" before that; the threats reviewers found\n  (they said true positive on an automatic false positive close), with links to the\n  cases; the rules sampled most; the median time spent reviewing and the median time from\n  picked to reviewed; and how many automatic closes there were, by the day of their first\n  decision. It always says: \"Agreement describes the sampled cases only, unweighted. It is\n  not an estimate of auto-close precision.\" The daily caps mean each day's cases are not\n  equally likely to be picked, so no rate here describes every automatic close.\n- **Case Manager**: the Review scope (pending, with links to completed, disagreed and\n  expired reviews), and the review's result in the case's Outcome facts\n  (\"Reviewed: false positive\", \"Review disagreed: true positive\").\n- **Team activity** counts the reviews each person completed, with how many agreed and\n  the time they spent.\n- The **audit log** has an **Auto-close review recorded** row per review, by the person\n  who recorded it. Its summary carries ids and codes only, never the note.",
+   "text": "- **Agent effectiveness** has an **Auto-close review** module for the page's range: how\n  many cases were sampled, reviewed, pending and expired; how many reviews agreed with\n  the AI (\"N of M agreed\"); an agreement rate with its 95% interval once there are at\n  least 30 reviews, and \"Not enough reviews yet\" before that; the threats reviewers found\n  (they said true positive on an automatic false positive close), with links to the\n  cases; the rules sampled most; the median time spent reviewing and the median time from\n  picked to reviewed; and how many automatic closes there were, by the day of their first\n  decision. It always says: \"Agreement describes the sampled cases only, unweighted. It is\n  not an estimate of auto-close precision.\" The daily caps mean each day's cases are not\n  equally likely to be picked, so no rate here describes every automatic close.\n- **Case Manager**: the Review scope (the waiting reviews, with **Show completed\n  reviews** at the foot of the list; a link opens it on the reviews that disagreed or\n  expired: `#/case_manager?review=disagreed` or `#/case_manager?review=expired`), and\n  the review's result in the case's Outcome facts (\"Reviewed: false positive\", \"Review\n  disagreed: true positive\").\n- **Team activity** counts the reviews each person completed, with how many agreed and\n  the time they spent.\n- The **audit log** has an **Auto-close review recorded** row per review, by the person\n  who recorded it. Its summary carries ids and codes only, never the note.",
    "console": []
   },
   {
@@ -4202,7 +4221,7 @@
    "page": "intelligence/mitre-threat-context.md",
    "anchor": "",
    "heading": "",
-   "text": "The case **Threat context** tab brings together indicator enrichment, MITRE ATT&CK metadata,\nand related cases. The service is fail-open: missing enrichment or mapping data does\nnot prevent case handling.\n\nReading case threat context requires `cases:read`.",
+   "text": "The **Threat context** section of a case's Investigation tab brings together indicator\nenrichment, MITRE ATT&CK metadata, and related cases. The service is fail-open: missing enrichment or mapping data does\nnot prevent case handling.\n\nReading case threat context requires `cases:read`.",
    "console": []
   },
   {
@@ -4236,7 +4255,7 @@
    "page": "intelligence/mitre-threat-context.md",
    "anchor": "how-this-case-was-clustered",
    "heading": "How this case was clustered",
-   "text": "The **Threat context** tab's three-node explanation shows **Input alerts → Correlation\ncluster → Opened case** from fields already persisted on the case. Hover or\nkeyboard-focus a node to inspect source counts, grouping, matched rule, threshold and\ntime window, opened-case status/verdict, and bounded related-case links. It is an\nexplanation of the original correlation, not a second correlation run and not a path\nthat can change risk or the deterministic decision.\n\nMember alert references are stable one-way hashes and are capped at 12; the response\nreports any additional truncated count. Raw source event identifiers and payloads are\nnot returned. Explicit cross-source links and prior same-entity resolved cases remain\nrelationships, not force-merges. An older case can truthfully show limited or no\ncluster explanation when its persisted metadata predates the feature.",
+   "text": "The **Threat context** section's three-node explanation shows **Input alerts → Correlation\ncluster → Opened case** from fields already persisted on the case. Hover or\nkeyboard-focus a node to inspect source counts, grouping, matched rule, threshold and\ntime window, opened-case status/verdict, and bounded related-case links. It is an\nexplanation of the original correlation, not a second correlation run and not a path\nthat can change risk or the deterministic decision.\n\nMember alert references are stable one-way hashes and are capped at 12; the response\nreports any additional truncated count. Raw source event identifiers and payloads are\nnot returned. Explicit cross-source links and prior same-entity resolved cases remain\nrelationships, not force-merges. An older case can truthfully show limited or no\ncluster explanation when its persisted metadata predates the feature.",
    "console": []
   },
   {
@@ -8160,7 +8179,7 @@
    "page": "reference/permissions.md",
    "anchor": "screenshots-and-reviews-on-a-case",
    "heading": "Screenshots and reviews on a case",
-   "text": "| Action | Grant |\n|---|---|\n| List and view a case's screenshots | `cases:read` |\n| Add a screenshot, or delete one you added | `cases:comment` |\n| Delete a screenshot someone else added | `cases:comment` and `cases:close` |\n| Record a review of a case the AI agent closed | `cases:write` |\n| Reopen a case from that review | `cases:close` |\n| The Review scope count in Case Manager | `cases:read` |\n| The review module on Agent effectiveness | `metrics:view` |\n| The Team activity switch and the review sample settings | `settings:manage` |\n\nA refused screenshot delete writes an Access denied row. See\nAuto-close review.",
+   "text": "| Action | Grant |\n|---|---|\n| List and view a case's screenshots | `cases:read` |\n| Add a screenshot, or delete one you added | `cases:comment` |\n| Delete a screenshot someone else added | `cases:comment` and `cases:close` |\n| Record a review of a case the AI agent closed | `cases:write` |\n| Reopen a case from that review | `cases:close` |\n| See one case's review state | `cases:read` |\n| The Review scope count in Case Manager | `cases:read` |\n| The review module on Agent effectiveness | `metrics:view` |\n| The Team activity switch and the review sample settings | `settings:manage` |\n\nA refused screenshot delete writes an Access denied row. See\nAuto-close review.",
    "console": []
   },
   {

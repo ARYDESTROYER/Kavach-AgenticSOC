@@ -158,8 +158,9 @@ nothing here changes a case or the automatic close or escalate decision.
 - Lifecycle and comment records are written just after the change they describe. If the
   audit store is down at that moment, the case changes but its record, and so its count
   here, is missing.
-- Before this release, assignments and tag changes made from the Console were recorded
-  without the person's name; they are counted under Not attributed.
+- Before this release, assignments made from the Console were recorded without the
+  person's name; they are counted under Not attributed. Tag changes are not counted on
+  this page.
 - Demo Mode: the page counts the Demo work only (the seeded cases' acknowledgements,
   closes, comments, assignments and reviews), with real sign-ins, and says "Demo Mode:
   showing Demo work."

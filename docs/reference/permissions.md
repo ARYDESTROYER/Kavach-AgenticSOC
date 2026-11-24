@@ -146,6 +146,7 @@ agent, session or settings row; those stay in the audit log under `audit:view`. 
 | Delete a screenshot someone else added | `cases:comment` and `cases:close` |
 | Record a review of a case the AI agent closed | `cases:write` |
 | Reopen a case from that review | `cases:close` |
+| See one case's review state | `cases:read` |
 | The Review scope count in Case Manager | `cases:read` |
 | The review module on Agent effectiveness | `metrics:view` |
 | The Team activity switch and the review sample settings | `settings:manage` |
