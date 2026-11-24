@@ -189,7 +189,12 @@ Read as six deliverables:
   `soc_manager` or `auditor` (`principal.role`) while RBAC is off; otherwise
   `403 team_activity_role_required` with an Access denied row. The page also shows a warning
   `Callout`: "Role-based access is off. Only Super admins, SOC managers and Auditors can open
-  this page until it is on." with a link to Roles & permissions.
+  this page until it is on." with a link to Roles & permissions. Amended after the
+  cross-cutting security review: the floor limits this page only and is not an access
+  control (while RBAC is off every account still holds `audit:view` and `users:manage`, so
+  it can read the same rows in the Audit log or change its own role); the Help Center pages
+  that describe it say so. Granting or changing a Super admin account needs a stored
+  `super_admin` caller and a strict fresh sign-in (`routes._require_super_admin_for`).
 - **D3.4 Operator switch.** `Preferences.team_activity.enabled` (default `true`). WP3 adds a
   "Team activity" group with one switch row ("Team activity page") after Posture in
   `settings/security.tsx`, adds `team_activity` to `CURATED_SECTIONS`
@@ -228,7 +233,17 @@ Read as six deliverables:
     through `get_many`, exact up to 5,000 such cases, else `partial` and omitted ([rs] 25);
   - reviews: "N of M agreed" always; an agreement rate only when M is at least 30; "Time spent
     reviewing" (median client-measured `elapsed_ms`) and, labelled separately, "Time to review"
-    (sampled to completed) ([rs] 9, 24).
+    (sampled to completed) ([rs] 9, 24). Amended after the cross-cutting security review: a
+    person's reviews count once per case (their latest review of it), so M and the 30 bar are
+    over distinct cases; an earlier review stays on their events, marked as replaced.
+  - Amended after the cross-cutting stats review: a runbook step row (as a screenshot or a
+    review row) followed by its `step.*_failed` row of the same request was not applied and
+    is not counted; an `assignee` change on a lifecycle row (the Escalate dialog's owner
+    field) counts as assigned, so every lifecycle action is read; the median's candidates
+    include a case a person moved into Escalated or On hold without an Acknowledge (the
+    metrics rule's fallback); and a partial read omits the median (`ack_status` `partial`),
+    the agreement rate and both review times, never computed from the part read, and the
+    CSV ends with a partial-read line.
 - **D3.9 People** ([rb] H3, [rs] 13). The fold keys people by `actor.strip().lower()` (the user
   store's `_norm`). `GET /api/team/people` (under the team gate) returns a narrow projection:
   username, display name, role, active, `kind`:
@@ -473,7 +488,9 @@ Read as six deliverables:
     this." and the backend sends one Inbox item per disagreement to holders of `cases:close`
     through a new parameterised `eligible_audience(state, resource, action)` (generalising
     `eligible_batch_audience`, at most 200 recipients), category `assignment`, honouring each
-    recipient's category preference.
+    recipient's category preference. Amended after the cross-cutting security review: once per
+    reviewer and case, so a repeat disagreeing review of an unsampled case by the same person
+    sends nothing more (a sampled case already answers `409` to a second review).
 - **D6.10 Carry-over on reinvestigation** ([crit] G2; [rb] M4; [rs] 4). One shared helper
   `_carry_case_work(existing, new)` in `agents/pipeline.py`, used by `_assemble_case`,
   `_fail_to_human_case` and `_register_candidate_locked`, carries `assignee`, `comments`,

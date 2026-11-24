@@ -26,8 +26,10 @@ event's ``detail`` is built from structured fields only, never from a row's summ
 **Bounds** (SPEC D3.6): a window of at most 92 days (``422 team_window_too_long``), at
 most 250,000 rows scanned, every page read without its total (``search_page`` with
 ``count=False``); an Elasticsearch read without point-in-time that reaches its
-10,000-row limit, or a third-party store's bounded scan that fills, marks the answer
-partial with "at least" counts. Answers are cached per viewer and window for 60 seconds.
+10,000-row limit, or a third-party store's bounded scan that fills (or the 250,000-row
+budget), marks the answer partial with "at least" counts, and its medians and agreement
+rate are omitted (``ack_status`` ``partial``), never computed from the part read.
+Answers are cached per viewer and window for 60 seconds.
 
 **Demo Mode** (SPEC D3.6, §3.2): case work comes from the Demo audit only and sign-ins
 from the real control audit, so a real case never appears under the Demo badge.
@@ -145,7 +147,14 @@ class TeamTotals(BaseModel):
     daily: list[TeamDay]
     median_ack_seconds: float | None = None
     ack_samples: int = 0
-    ack_status: Literal["measured", "too_many_cases", "unavailable"] = "measured"
+    ack_status: Literal["measured", "too_many_cases", "unavailable", "partial"] = Field(
+        default="measured",
+        description=(
+            "Whether the median time to acknowledge was measured: too many cases, the cases "
+            "could not be read, or the audit read stopped before the end of the window "
+            "(partial). It is omitted unless measured."
+        ),
+    )
     reviews: TeamReviews
 
 
@@ -520,19 +529,28 @@ class _Computed:
 async def _compute_activity(state: AppState, window: Any) -> _Computed:
     fold, reason = await _fold(state, window)
     work_store = next((repo for repo, work, _ in _sources(state) if work), None)
-    # "Time to review": the sample row of each reviewed case (bounded).
+    # A read that stopped before the end of the window holds only its oldest part: the
+    # counts are lower bounds, but a median of that part is not one, so the medians are
+    # not measured (the fold omits them; nothing more is read for them here).
+    # "Time to review": the sample row of each reviewed case (bounded). A sample read that
+    # stops early would leave later reviews without their sample, so it is not used.
     reviewed = fold.reviewed_case_ids()
-    if reviewed and len(reviewed) <= REVIEW_CASES_LIMIT and work_store is not None:
+    if reason is None and reviewed and len(reviewed) <= REVIEW_CASES_LIMIT and work_store is not None:
         rows: list[dict[str, Any]] = []
         try:
-            await _stream(work_store, ta.review_request_predicate(window, reviewed), rows.append, 10 * REVIEW_CASES_LIMIT)
-            fold.add_review_requests(rows)
+            _read, sampled_partial = await _stream(
+                work_store, ta.review_request_predicate(window, reviewed), rows.append, 10 * REVIEW_CASES_LIMIT,
+            )
+            if sampled_partial is None:
+                fold.add_review_requests(rows)
         except Exception as exc:  # noqa: BLE001 (the reviews keep their counts)
             logger.warning("team activity: review sample rows could not be read: %s", exc)
     # The median time to acknowledge: exact up to ACK_CASES_LIMIT cases, else omitted.
     acknowledged = fold.acknowledged_case_ids()
     ack_status = "measured"
-    if len(acknowledged) > ta.ACK_CASES_LIMIT:
+    if reason is not None:
+        ack_status = "partial"
+    elif len(acknowledged) > ta.ACK_CASES_LIMIT:
         ack_status = "too_many_cases"
     elif acknowledged:
         try:

@@ -7,7 +7,9 @@ description: Interpret v0.1 posture, timing, noise reduction, ATT&CK coverage, c
 
 The **Analytics** group in the navigation opens three pages, each titled by its
 navigation label: **Metrics** (`#/metrics`), **Agent effectiveness**
-(`#/effectiveness`) and **Cost** (`#/cost`). **Overview → Standup** holds the current
+(`#/effectiveness`) and **Cost** (`#/cost`). The group also opens **Team activity**
+(`#/team`, `team:view`), per-person work counts from the audit log; see
+[Team activity](team-activity.md). **Overview → Standup** holds the current
 action queue. Analytics are advisory: they describe stored cases and ingest counters but
 never feed the case decision policy.
 

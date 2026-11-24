@@ -34,6 +34,8 @@ import {
   PERSON_KIND_WORDS,
   UNATTRIBUTED_HELP,
   dayLabel,
+  eventClock,
+  eventTimeLabel,
   fmtSeconds,
   personName,
   personRole,
@@ -43,8 +45,9 @@ import {
 const NOTE = 'text-sm text-muted-foreground';
 
 /**
- * The per-day table's columns, with short headers that fit the sheet. "Other" is the
- * rest of the case work (reopened, escalated, assigned, screenshots), so a day with any
+ * The per-day table's columns, with short headers that fit the sheet: the chart's kinds,
+ * so "Other" here is the chart's "Other case work" (assigned, screenshots added and
+ * runbook steps done) and the two can be read against each other. A day with any
  * counted work never reads as a row of zeros. Reviews sit beside closes (SPEC D3.5).
  */
 const DAY_COLUMNS: ReadonlyArray<readonly [string, string, readonly TeamKind[]]> = [
@@ -52,23 +55,11 @@ const DAY_COLUMNS: ReadonlyArray<readonly [string, string, readonly TeamKind[]]>
   ['reviewed', 'Reviews', ['reviewed']],
   ['acknowledged', 'Acknowledged', ['acknowledged']],
   ['commented', 'Commented', ['commented']],
-  ['runbook_step_done', 'Steps done', ['runbook_step_done']],
-  ['other', 'Other', ['reopened', 'escalated', 'assigned', 'screenshot_added']],
+  ['escalated', 'Escalated', ['escalated']],
+  ['reopened', 'Reopened', ['reopened']],
+  ['other', 'Other', ['assigned', 'screenshot_added', 'runbook_step_done']],
   ['signed_in', 'Sign-ins', ['signed_in']],
 ];
-
-const EVENT_TIME = new Intl.DateTimeFormat(undefined, {
-  day: 'numeric',
-  month: 'short',
-  hour: '2-digit',
-  minute: '2-digit',
-});
-
-/** "23 Nov, 17:01" in the viewer's own time, the full instant in the title. */
-function eventTime(iso: string): string {
-  const ms = Date.parse(iso);
-  return Number.isNaN(ms) ? iso : EVENT_TIME.format(new Date(ms));
-}
 const SECTION = 'space-y-2 border-t border-border pt-4';
 const HEADING = 'text-sm font-semibold text-foreground';
 
@@ -160,14 +151,27 @@ export interface PersonSheetProps {
   timezone: string;
   canViewAudit: boolean;
   onOpenChange: (open: boolean) => void;
+  /** Where focus goes when the sheet closes (the row that opened it); see `useReturnFocus`. */
+  onCloseAutoFocus?: (event: Event) => void;
 }
 
-export function PersonSheet({ person, window, windowLabel, timezone, canViewAudit, onOpenChange }: PersonSheetProps) {
+export function PersonSheet({
+  person,
+  window,
+  windowLabel,
+  timezone,
+  canViewAudit,
+  onOpenChange,
+  onCloseAutoFocus,
+}: PersonSheetProps) {
   const open = person !== null;
   const titleRef = React.useRef<HTMLHeadingElement>(null);
   const attributable = person !== null && person.kind !== 'unattributed';
   const events = usePersonEvents(attributable ? person.username : null, window);
   const now = React.useMemo(() => new Date(), []);
+  // The server counts days in the operator zone (SPEC D3.7); event times are shown in the
+  // same zone, so an event and its day agree. Both are named on the sheet.
+  const timesZone = eventClock(timezone).zone;
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
@@ -180,6 +184,7 @@ export function PersonSheet({ person, window, windowLabel, timezone, canViewAudi
           event.preventDefault();
           titleRef.current?.focus();
         }}
+        onCloseAutoFocus={onCloseAutoFocus}
       >
         {person ? (
           <div className="space-y-4 p-5 sm:p-6">
@@ -265,6 +270,7 @@ export function PersonSheet({ person, window, windowLabel, timezone, canViewAudi
               <h3 id="team-person-days" className={HEADING}>
                 Per day
               </h3>
+              {person.daily.length > 0 ? <p className={NOTE}>Days in {timezone}.</p> : null}
               {person.daily.length === 0 ? (
                 <p className={NOTE}>Nothing recorded in this window.</p>
               ) : (
@@ -316,11 +322,12 @@ export function PersonSheet({ person, window, windowLabel, timezone, canViewAudi
                   <EmptyState compact state="no-data" title="No events in this window" />
                 ) : (
                   <>
+                    <p className={NOTE}>Times in {timesZone}.</p>
                     <ol className="divide-y divide-border" aria-label={`Events of ${personName(person)}`}>
                       {events.events.map((event, index) => (
                         <li key={`${event.ts}-${index}`} className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 py-2 text-sm">
                           <span className="w-28 shrink-0 whitespace-nowrap tabular-nums text-muted-foreground" title={formatTimestamp(event.ts)}>
-                            {eventTime(event.ts)}
+                            {eventTimeLabel(event.ts, timezone)}
                           </span>
                           <span className="font-medium text-foreground">{event.label}</span>
                           {event.case_id ? (

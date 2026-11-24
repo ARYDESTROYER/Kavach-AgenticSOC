@@ -5888,6 +5888,45 @@ def _validate_role(role: str) -> str:
     return role
 
 
+SUPER_ADMIN_ACCOUNT_MESSAGE = (
+    "Only a Super admin can give an account the Super admin role or change a Super admin "
+    "account."
+)
+
+
+def _role_text(role: Any) -> str:
+    return str(getattr(role, "value", role) or "")
+
+
+async def _require_super_admin_for(request: Request, state: AppState) -> None:
+    """Granting the Super admin role, or changing, disabling or deleting a Super admin
+    account, is for a Super admin only (Round 15 review, security). ``users:manage``
+    alone is not enough: a SOC manager holds it by default, and a Super admin account
+    is the one boundary of the role-based access switch (``PUT /api/rbac``) and of
+    system updates, both of which trust the STORED role. So this reads the verified
+    principal's stored role, never the RBAC-off "everyone is Super admin" view, writes
+    an Access denied row and answers ``403 super_admin_only`` otherwise, then asks the
+    strict fresh sign-in the switch asks (``401 reauth_required``). Called before the
+    audited write, so a refusal changes nothing. A no-op with sign-in off."""
+    auth = getattr(state, "auth", None)
+    if auth is None or not auth.is_enabled:
+        return
+    user = current_user(request)
+    if user is None:
+        raise HTTPException(status_code=401, detail="authentication required")
+    if _role_text(getattr(user, "role", "")) != UserRole.SUPER_ADMIN.value:
+        from .deps import record_access_denied
+
+        await record_access_denied(request, "role:super_admin")
+        raise HTTPException(
+            status_code=403,
+            detail={"code": "super_admin_only", "message": SUPER_ADMIN_ACCOUNT_MESSAGE},
+        )
+    from .routes_rbac import require_strict_fresh_sign_in
+
+    await require_strict_fresh_sign_in(request, state)
+
+
 def _validate_email_text(value: str) -> str:
     """Lenient contact-email sanity: capped plain text that contains an ``@`` and no
     whitespace. Contact metadata, not an auth identifier — kept deliberately loose."""
@@ -5977,6 +6016,8 @@ async def create_user(
     display_name = _validate_profile_text((body.display_name or "").strip(), "display_name")
     email = _validate_email_text(body.email)
     phone = _validate_phone_text(body.phone)
+    if body.role == UserRole.SUPER_ADMIN.value:
+        await _require_super_admin_for(request, state)
     # Custom roles at creation: validated exactly like the assign path and carried
     # in prefs["custom_roles"] (the same shape PUT /users/{u}/roles writes). No
     # lockout guard is needed here — creation can only ADD grants, never remove.
@@ -6102,6 +6143,10 @@ async def update_user(
         patch["phone"] = _validate_phone_text(body.phone)
     if not patch:
         raise HTTPException(status_code=400, detail="no changes provided")
+    if UserRole.SUPER_ADMIN.value in (_role_text(target.role), body.role):
+        # Granting the role, or any change to a Super admin account (its role, active
+        # state, password, MFA or profile): a Super admin only.
+        await _require_super_admin_for(request, state)
     demoting = body.role is not None and body.role != UserRole.SUPER_ADMIN.value
     disabling = body.active is False
     if await _would_orphan_super_admin(state, target, demoting=demoting, disabling=disabling):
@@ -6145,6 +6190,8 @@ async def delete_user(
     target = await state.users.get(username)
     if target is None:
         raise HTTPException(status_code=404, detail="user not found")
+    if _role_text(target.role) == UserRole.SUPER_ADMIN.value:
+        await _require_super_admin_for(request, state)
     if await _would_orphan_super_admin(state, target, demoting=True, disabling=True):
         raise HTTPException(status_code=409, detail="cannot delete the last active super_admin")
     from ..engine.jobs import account_generation

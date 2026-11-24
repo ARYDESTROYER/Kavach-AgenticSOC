@@ -147,7 +147,7 @@
   },
   "analyst/collaboration.md": {
    "title": "Case collaboration",
-   "description": "Coordinate analysts with case ownership, discussion, activity, and tasks.",
+   "description": "Coordinate analysts with case ownership, discussion, screenshots, tasks, and history.",
    "nav": [
     "Use the product",
     "User and analyst guide",
@@ -907,7 +907,7 @@
    "page": "getting-started/quickstart.md",
    "anchor": "verify-the-workflow",
    "heading": "Verify the workflow",
-   "text": "- **Sources** shows configuration and health signals.\n- **Logs** shows normalized records and source attribution.\n- **Cases** separates source facts, investigator findings, and policy decisions.\n- **Cost** records each model call through the single gateway.\n- **Audit log** records state-changing analyst and agent actions.\n\nThe screenshots below come from the demo. On **Sources**, each connected source shows\nits type, status, enabled switch, last event, and protocol.\n\nSources in the demo: five connected sources, all ready.\n\nIn **Case Manager**, a case's Investigation tab shows the **Decision** card, labelled\n**Code**, above the **AI assessment**, labelled **AI** and marked advisory. The close or\nescalate decision is made by deterministic code against the operator policy, never by\nthe model.\n\nCase Manager: the code decision above the advisory AI assessment.",
+   "text": "- **Sources** shows configuration and health signals.\n- **Logs** shows normalized records and source attribution.\n- **Cases** separates source facts, investigator findings, and policy decisions.\n- **Cost** records each model call through the single gateway.\n- **Audit log** records state-changing analyst and agent actions.\n\nThe screenshots below come from the demo. On **Sources**, each connected source shows\nits type, status, enabled switch, last event, and protocol.\n\nSources in the demo: five connected sources, all ready.\n\nIn **Case Manager**, a case's Investigation tab shows the **AI assessment**, labelled\n**AI** and marked advisory, then the **Decision** card, labelled **Code**. The close or\nescalate decision is made by deterministic code against the operator policy, never by\nthe model.\n\nCase Manager: the advisory AI assessment, then the code decision.",
    "console": []
   },
   {
@@ -1174,7 +1174,7 @@
    "page": "getting-started/first-case.md",
    "anchor": "3-inspect-the-case",
    "heading": "3. Inspect the case",
-   "text": "Open **Case Manager** (or the established **Cases** table) and select the case for\nthe synthetic entity. Verify the separation\nbetween:\n\n- what the source reported;\n- what deterministic correlation and risk logic computed;\n- what the model assessed, if the candidate was admitted to investigation; and\n- what deterministic policy decided.\n\nIn Case Manager, the Overview separates the decision brief and provenance, and its\n**What happened** section expands **Risk Assigned** into the stored score factors and\nends at **Decision**; Investigation carries the model evidence plus the pinned\ndeterministic result, and its **Threat context** section the intelligence.\n\nAn event-feed candidate can remain visible without a model call when it does not\ncross the investigation gate. That is expected and costs `$0`. An alert feed is\nprioritized for investigation, subject to the global budget and safety controls.",
+   "text": "Open **Case Manager** (or the established **Cases** table) and select the case for\nthe synthetic entity. Verify the separation\nbetween:\n\n- what the source reported;\n- what deterministic correlation and risk logic computed;\n- what the model assessed, if the candidate was admitted to investigation; and\n- what deterministic policy decided.\n\nIn Case Manager, the Overview gives the AI's summary (tagged AI), and its **What\nhappened** section expands **Risk Assigned** into the stored score factors and ends at\n**Decision**; Investigation carries the AI assessment plus the pinned deterministic\n**Decision**, and its **Threat context** section the intelligence.\n\nAn event-feed candidate can remain visible without a model call when it does not\ncross the investigation gate. That is expected and costs `$0`. An alert feed is\nprioritized for investigation, subject to the global budget and safety controls.",
    "console": []
   },
   {
@@ -1527,7 +1527,18 @@
    "page": "analyst/cases.md",
    "anchor": "find-the-work-that-matters",
    "heading": "Find the work that matters",
-   "text": "Selecting rows opens bulk actions. Closing or resolving cases, from the bulk bar or with\na row's one-click **Close** (shown only on an open row, and only with `cases:close`),\nopens a dialog that requires a disposition, so every closed case records what it was.\nWhen a case's runbook still has required steps open, the dialog also asks why; the close\nis never blocked (see Runbooks). Bulk changes are unavailable in Demo Mode. Long-running Case\nManager operations snapshot the\nselected case IDs and submit one server-owned background job. The dialog closes after\n`202 Accepted`; work continues across navigation or reload and reports progress in\n**Analytics → Jobs** and **Inbox**. A partial terminal result keeps successful changes\nand reports bounded per-case failures rather than rolling the whole selection back.\n\nThe terminal action opens a safely allow-listed Cases context such as active status,\nresulting status, assignee, or tag. That destination is a useful current filter, not\nan immutable cohort of every attempted ID: cases can change again and other cases can\nmatch the same filter. Use job counts, case history, and Audit for exact accountability.",
+   "text": "Selecting rows opens bulk actions. Closing or resolving cases, from the bulk bar or with\na row's one-click **Close** (shown only on an open row, and only with `cases:close`),\nopens a dialog that requires a disposition, so every closed case records what it was.\nWhen a case's runbook still has required steps open, the dialog also asks why; the close\nis never blocked (see Runbooks). Bulk **Set status** and\n**Set disposition** leave out the cases the AI agent closed (a terminal case whose first\ndecision was the agent's automatic close): \"Cases the AI agent closed are left out; review\nthem instead.\" The menus say how many of the selected cases that is, the confirmation\nrepeats it, and when every selected case is one of them nothing is queued; review such a\ncase on its own (see Cases the agent closed).\nBulk changes are unavailable in Demo Mode. Long-running Case\nManager operations snapshot the\nselected case IDs and submit one server-owned background job. The dialog closes after\n`202 Accepted`; work continues across navigation or reload and reports progress in\n**Analytics → Jobs** and **Inbox**. A partial terminal result keeps successful changes\nand reports bounded per-case failures rather than rolling the whole selection back.",
+   "console": [
+    "page:cases",
+    "page:batchjobs"
+   ]
+  },
+  {
+   "id": "analyst/cases#find-the-work-that-matters:5",
+   "page": "analyst/cases.md",
+   "anchor": "find-the-work-that-matters",
+   "heading": "Find the work that matters",
+   "text": "The terminal action opens a safely allow-listed Cases context such as active status,\nresulting status, assignee, or tag. That destination is a useful current filter, not\nan immutable cohort of every attempted ID: cases can change again and other cases can\nmatch the same filter. Use job counts, case history, and Audit for exact accountability.",
    "console": [
     "page:cases",
     "page:batchjobs"
@@ -2905,7 +2916,7 @@
    "page": "analyst/collaboration.md",
    "anchor": "",
    "heading": "",
-   "text": "The **Collaboration** tab keeps human coordination beside the evidence and decision it\nconcerns. Collaboration data is case state; it does not alter the deterministic\nclose policy.",
+   "text": "The **Collaboration** tab keeps human coordination beside the evidence and decision it\nconcerns, in four sections: Discussion, Files, Tasks and History. Collaboration data is\ncase state; it does not alter the deterministic close policy.",
    "console": []
   },
   {
@@ -2913,7 +2924,7 @@
    "page": "analyst/collaboration.md",
    "anchor": "ownership-tags-and-comments",
    "heading": "Ownership, tags, and comments",
-   "text": "- Assign a case to an analyst or team so the queue has a visible owner.\n- Add short tags for routing and review. Tags are deduplicated and bounded.\n- Use a case comment for a simple note that should appear in exports.\n- Use the threaded discussion for replies, reactions, and mentions.\n\nAssignment requires `cases:assign`. Comments and thread mutations require\n`cases:comment`. Editing or deleting a thread message is limited to its author or an\nauthorized moderator.",
+   "text": "- Change a case's owner in the case header (select the owner, or press **M**), not on\n  this tab, so the queue has a visible owner.\n- Edit short tags for routing and review in the facts rail (**Edit tags**, or **T**).\n  Tags are deduplicated and bounded.\n- Use a case comment for a simple note that should appear in exports.\n- Use the threaded discussion for replies, reactions, and mentions.\n\nAssignment requires `cases:assign`. Comments and thread mutations require\n`cases:comment`. Editing or deleting a thread message is limited to its author or an\nauthorized moderator.",
    "console": []
   },
   {
@@ -2925,6 +2936,14 @@
    "console": []
   },
   {
+   "id": "analyst/collaboration#files:0",
+   "page": "analyst/collaboration.md",
+   "anchor": "files",
+   "heading": "Files",
+   "text": "The **Files** section holds the screenshots on the case. Add them by dropping them,\npasting while the Collaboration tab has focus, or choosing them (PNG, JPEG or WebP).\nAnyone with `cases:comment` can add one; the person who added it, or anyone with\n`cases:close`, can delete it. See Case Manager for the details.",
+   "console": []
+  },
+  {
    "id": "analyst/collaboration#tasks:0",
    "page": "analyst/collaboration.md",
    "anchor": "tasks",
@@ -2933,11 +2952,11 @@
    "console": []
   },
   {
-   "id": "analyst/collaboration#activity-and-audit:0",
+   "id": "analyst/collaboration#history-and-audit:0",
    "page": "analyst/collaboration.md",
-   "anchor": "activity-and-audit",
-   "heading": "Activity and audit",
-   "text": "The case activity stream brings collaboration events into one chronological view,\nnewest first. Each row reads as one plain sentence, with the system's internal names\nshown as names (\"Case manager\") rather than codes; the text exactly as the audit log\nrecorded it is one click away under **Details**. **Show activity by** filters the stream\nto **All**, **Human**, **AI** or **System**. While an investigation is running, its\nsteps appear above the stream as they happen; they are a live narration, not part of the\nrecord. Lifecycle changes also remain in the case's append-only status history. The platform\naudit log is the authority for privileged or state-changing actions; the discussion\nthread is not a substitute for it.",
+   "anchor": "history-and-audit",
+   "heading": "History and audit",
+   "text": "**History** lists each lifecycle change with who made it, when, and the actions taken.\n**Show all activity** opens the full case activity stream below it, which brings\ncollaboration events into one chronological view, newest first. Each row reads as one\nplain sentence, with the system's internal names shown as names (\"Case manager\") rather\nthan codes; the text exactly as the audit log\nrecorded it is one click away under **Details**. **Show activity by** filters the stream\nto **All**, **Human**, **AI** or **System**. While an investigation is running, its\nsteps appear above the stream as they happen; they are a live narration, not part of the\nrecord. Lifecycle changes also remain in the case's append-only status history. The platform\naudit log is the authority for privileged or state-changing actions; the discussion\nthread is not a substitute for it.",
    "console": []
   },
   {
@@ -2989,7 +3008,7 @@
    "page": "analyst/analytics.md",
    "anchor": "",
    "heading": "",
-   "text": "The **Analytics** group in the navigation opens three pages, each titled by its\nnavigation label: **Metrics** (`#/metrics`), **Agent effectiveness**\n(`#/effectiveness`) and **Cost** (`#/cost`). **Overview → Standup** holds the current\naction queue. Analytics are advisory: they describe stored cases and ingest counters but\nnever feed the case decision policy.\n\nPosture and ATT&CK endpoints require `metrics:view` when RBAC is enabled.",
+   "text": "The **Analytics** group in the navigation opens three pages, each titled by its\nnavigation label: **Metrics** (`#/metrics`), **Agent effectiveness**\n(`#/effectiveness`) and **Cost** (`#/cost`). The group also opens **Team activity**\n(`#/team`, `team:view`), per-person work counts from the audit log; see\nTeam activity. **Overview → Standup** holds the current\naction queue. Analytics are advisory: they describe stored cases and ingest counters but\nnever feed the case decision policy.\n\nPosture and ATT&CK endpoints require `metrics:view` when RBAC is enabled.",
    "console": [
     "page:standup"
    ]
@@ -3223,7 +3242,7 @@
    "page": "analyst/team-activity.md",
    "anchor": "who-can-open-it",
    "heading": "Who can open it",
-   "text": "Reading the page needs the `team:view` permission. A **SOC manager** holds it by default\nso they can track the team, and an **Auditor** holds it so they can read it. Analysts\nand responders do not. A Super admin holds every permission.\n\nWhile role-based access is off, every signed-in account is treated as a Super admin and\nso holds every permission. Team activity is stricter: until role-based access is on,\nonly an account whose role is Super admin, SOC manager or Auditor can open it, and the\npage shows a warning that says so with a link to **Roles & permissions**. Anyone else\nwho opens the page is refused, and the refusal is written to the audit log.\n\nWith sign-in off, no work can be attributed to a person, so the page says \"Sign-in is\noff, so work cannot be attributed to people.\" instead of showing counts.",
+   "text": "Reading the page needs the `team:view` permission. A **SOC manager** holds it by default\nso they can track the team, and an **Auditor** holds it so they can read it. Analysts\nand responders do not. A Super admin holds every permission.\n\nWhile role-based access is off, every signed-in account is treated as a Super admin and\nso holds every permission. Team activity is stricter: until role-based access is on,\nonly an account whose role is Super admin, SOC manager or Auditor can open it, and the\npage shows a warning that says so with a link to **Roles & permissions**. Anyone else\nwho opens the page is refused, and the refusal is written to the audit log.\n\nThis limit applies to this page only and is not an access control. While role-based\naccess is off, every account still holds `audit:view` and `users:manage`, so it can read\nthe same rows in the Audit log, or change its own role\nto SOC manager or Auditor (an audited `user.role_changed` row) and then open the page.\nTurn on role-based access to keep per-person work private.\n\nWith sign-in off, no work can be attributed to a person, so the page says \"Sign-in is\noff, so work cannot be attributed to people.\" instead of showing counts.",
    "console": []
   },
   {
@@ -3247,7 +3266,7 @@
    "page": "analyst/team-activity.md",
    "anchor": "what-each-count-means",
    "heading": "What each count means",
-   "text": "| Count | What is counted |\n|---|---|\n| Acknowledged | An Acknowledge action on a case. |\n| Closed | An action that moved a case to Closed (Close, Confirm false positive, or Set status to Closed), split by the disposition it was closed with: true positive, false positive, benign, duplicate or other. |\n| Reopened, Escalated | The Reopen and Escalate actions. |\n| Commented | A comment or a case thread message written by the person. A thread message labelled as the AI's or the system's is not counted. |\n| Assigned | An owner change the person made. |\n| Screenshots added | A screenshot attached to a case. |\n| Reviews | An auto-close review the person recorded: agreed, disagreed or unsure. |\n| Runbook steps done | A runbook step the person marked done. |\n| Sign-ins | A successful sign-in. |\n\nEach count of acknowledged, closed, reopened, escalated and assigned cases also says how\nmany of its actions came from a bulk action (one action over many selected cases), so\none click on 200 cases does not read like 200 separate decisions.",
+   "text": "| Count | What is counted |\n|---|---|\n| Acknowledged | An Acknowledge action on a case. |\n| Closed | An action that moved a case to Closed (Close, Confirm false positive, or Set status to Closed), split by the disposition it was closed with: true positive, false positive, benign, duplicate or other. |\n| Reopened, Escalated | The Reopen and Escalate actions. |\n| Commented | A comment or a case thread message written by the person. A thread message labelled as the AI's or the system's is not counted. |\n| Assigned | An owner change the person made, on its own or as part of another action (the owner set in the Escalate dialog). |\n| Screenshots added | A screenshot attached to a case. |\n| Reviews | An auto-close review the person recorded: agreed, disagreed or unsure. Each case counts once per person: a later review of the same case replaces their earlier one. |\n| Runbook steps done | A runbook step the person marked done. |\n| Sign-ins | A successful sign-in. |\n\nA screenshot, a review or a runbook step whose save failed after its audit record was\nwritten is not counted: the Audit log shows that record as \"Not applied (see the next\nrecord)\", and this page leaves it out of the counts and the person's events.",
    "console": []
   },
   {
@@ -3255,7 +3274,15 @@
    "page": "analyst/team-activity.md",
    "anchor": "what-each-count-means",
    "heading": "What each count means",
-   "text": "**Median time to acknowledge** uses the same rule as the Metrics page: for each case\nwhose first acknowledgement by a person fell in the range, the time from the case being\ndetected (or created) to that acknowledgement, credited to whoever made it. It is\nmeasured from up to 5,000 cases; with more, the page says the median was not measured\nrather than guessing.\n\n**Reviews** always read \"N of M agreed\", where M counts the reviews that agreed or\ndisagreed (an unsure review is not an answer). An agreement rate is added only from 30\nanswered reviews, because fewer would say more than the reviews can. The person sheet\nalso shows the median **time spent reviewing** (measured while the review card was open)\nand, separately, the median **time to review** (from the case being picked for review to\nthe review).",
+   "text": "Each count of acknowledged, closed, reopened, escalated and assigned cases also says how\nmany of its actions came from a bulk action (one action over many selected cases), so\none click on 200 cases does not read like 200 separate decisions.\n\n**Median time to acknowledge** uses the same rule as the Metrics page: for each case\nwhose first acknowledgement by a person fell in the range, the time from the case being\ndetected (or created) to that acknowledgement, credited to whoever made it. The first\nacknowledgement is the Acknowledge action or, for a case nobody acknowledged, the first\ntime a person moved it to Investigating, Escalated or On hold (an Escalate or a Put on\nhold, for example). It is measured from up to 5,000 cases; with more, the page says the\nmedian was not measured rather than guessing.",
+   "console": []
+  },
+  {
+   "id": "analyst/team-activity#what-each-count-means:2",
+   "page": "analyst/team-activity.md",
+   "anchor": "what-each-count-means",
+   "heading": "What each count means",
+   "text": "**Reviews** always read \"N of M agreed\", where M counts the reviews that agreed or\ndisagreed (an unsure review is not an answer). An agreement rate is added only from 30\nanswered reviews, because fewer would say more than the reviews can. A case that was not\npicked for review can be reviewed again; only the person's latest review of a case counts,\nso the 30 are 30 different cases, and an earlier review shows in their events as\n\"Replaced by a later review of this case\". The person sheet\nalso shows the median **time spent reviewing** (measured while the review card was open)\nand, separately, the median **time to review** (from the case being picked for review to\nthe review).",
    "console": []
   },
   {
@@ -3263,7 +3290,7 @@
    "page": "analyst/team-activity.md",
    "anchor": "a-persons-sheet",
    "heading": "A person's sheet",
-   "text": "The sheet shows the person's counts for the range, their closes by disposition and how\nmany came from bulk actions, their reviews, a table per day and their events, newest\nfirst, with a link to each case. **Load more** reads the next 50 events. A viewer who can\nread the Audit log also gets **Open in Audit log**, which opens that person's records.\n\nAn event names what was done (\"Closed a case\"), the case and a short detail built from\nthe record's structured fields: the disposition, the actions taken and a review's answer.\nFree text from a record (a reason a person typed) is not shown here.",
+   "text": "The sheet shows the person's counts for the range, their closes by disposition and how\nmany came from bulk actions, their reviews, a table per day and their events, newest\nfirst, with a link to each case. **Load more** reads the next 50 events. A viewer who can\nread the Audit log also gets **Open in Audit log**, which opens that person's records.\n\nThe table per day has the same kinds as **Work per day**, so its **Other** is the same\nassignments, screenshots and runbook steps. Its days and the event times are both in the\noperator time zone, which the sheet names, so an event is listed on the day it is\ncounted on.\n\nAn event names what was done (\"Closed a case\"), the case and a short detail built from\nthe record's structured fields: the disposition, the actions taken and a review's answer.\nFree text from a record (a reason a person typed) is not shown here.",
    "console": []
   },
   {
@@ -3287,7 +3314,7 @@
    "page": "analyst/team-activity.md",
    "anchor": "limits",
    "heading": "Limits",
-   "text": "- A range holds at most 92 days.\n- One read counts at most 250,000 audit rows. A busier range shows \"Counts are lower\n  bounds\" and the counts are at least the figures shown; choose a shorter range for exact\n  counts. The same caveat appears when the audit store can only be read in part.\n- Answers are kept for 60 seconds, so an action may take up to a minute to show. Use\n  refresh after that.\n- Lifecycle and comment records are written just after the change they describe. If the\n  audit store is down at that moment, the case changes but its record, and so its count\n  here, is missing.\n- Before this release, assignments and tag changes made from the Console were recorded\n  without the person's name; they are counted under Not attributed.\n- Demo Mode: the page counts the Demo work only (the seeded cases' acknowledgements,\n  closes, comments, assignments and reviews), with real sign-ins, and says \"Demo Mode:\n  showing Demo work.\"",
+   "text": "- A range holds at most 92 days.\n- One read counts at most 250,000 audit rows. A busier range shows \"Counts are lower\n  bounds\" and the counts are at least the figures shown; choose a shorter range for exact\n  counts. The same caveat appears when the audit store can only be read in part. A median\n  or a rate of part of the range is not a lower bound, so the median time to acknowledge,\n  the agreement rate and the review times then read \"not measured\", and a downloaded CSV\n  ends with a line that says the read was partial.\n- Answers are kept for 60 seconds, so an action may take up to a minute to show. Use\n  refresh after that.\n- Lifecycle and comment records are written just after the change they describe. If the\n  audit store is down at that moment, the case changes but its record, and so its count\n  here, is missing.\n- Before this release, assignments made from the Console were recorded without the\n  person's name; they are counted under Not attributed. Tag changes are not counted on\n  this page.\n- Demo Mode: the page counts the Demo work only (the seeded cases' acknowledgements,\n  closes, comments, assignments and reviews), with real sign-ins, and says \"Demo Mode:\n  showing Demo work.\"",
    "console": []
   },
   {
@@ -3483,7 +3510,7 @@
    "page": "automation/index.md",
    "anchor": "default-posture",
    "heading": "Default posture",
-   "text": "Fresh v0.1 preferences enable:\n\n- polling and background scanning;\n- event correlation and risk scoring;\n- a risk-gated automatic investigation path for event feeds;\n- cross-source related-case linking;\n- threshold tuning with shadow evaluation;\n- baselines, campaign correlation, SLA, and priority policy;\n- realtime updates; and\n- the case-automation engine with an empty rule set.\n\nBatch inference is off by default. Notifications and case-automation rules (including\nrules that attach a runbook) are operator choices rather than hidden defaults. Attaching\nthe matching runbook to cases that need a person is on by default; a runbook is a\nchecklist and never decides a case.",
+   "text": "Fresh v0.1 preferences enable:\n\n- polling and background scanning;\n- event correlation and risk scoring;\n- a risk-gated automatic investigation path for event feeds;\n- cross-source related-case linking;\n- threshold tuning with shadow evaluation;\n- baselines, campaign correlation, SLA, and priority policy;\n- realtime updates;\n- a random review sample of automatic closes (5%, at most 10 a day and 3 per rule),\n  queued for a person to classify and never changing the case (see\n  Auto-close review); and\n- the case-automation engine with an empty rule set.\n\nBatch inference is off by default. Notifications and case-automation rules (including\nrules that attach a runbook) are operator choices rather than hidden defaults. Attaching\nthe matching runbook to cases that need a person is on by default; a runbook is a\nchecklist and never decides a case.",
    "console": []
   },
   {
@@ -3761,7 +3788,15 @@
    "page": "automation/auto-close-review.md",
    "anchor": "reviewing-a-case",
    "heading": "Reviewing a case",
-   "text": "Picked cases wait in the Case Manager's **Review** scope, with the number still pending\nbeside it. A picked case shows a band under its header: \"Picked at random for auto-close\nreview. Classify it yourself, then compare with the AI.\" Choose **Start review**.\n\n1. **What was it?** Choose True positive, False positive, Benign or Unsure. Nothing is\n   chosen for you.\n2. Add a note if you like. The note is kept as precedent for future investigations,\n   like any grading comment, and is always treated as untrusted text.\n3. Optionally rate the AI's accuracy, reasoning and recommended action.\n4. Choose **Compare with the AI**. Only now does the card show the AI verdict and whether\n   your answer agrees with it. Your answer is locked from this point.\n5. Choose **Record review**.\n\nThe card measures the time from opening it to recording the review, so a manager can see\nreviews that took seconds. It is not a full blind review: the rest of the case page still\nshows the AI verdict.\n\nYou can also review an agent-closed case that was not picked, with **Review this\nauto-close** in **Take action**. That review is recorded as an ordinary grade.\n\nRecording a review needs `cases:write`. It never changes the case's status, who decided\nit or its disposition. Each case in the sample can be reviewed once; a second attempt\nanswers that the review is already recorded.",
+   "text": "Picked cases wait in the Case Manager's **Review** scope, with the number still pending\nbeside it. A picked case shows a band under its header: \"Picked at random for auto-close\nreview. Classify it yourself, then compare with the AI.\" Choose **Start review**.\n\n1. **What was it?** Choose True positive, False positive, Benign or Unsure. Nothing is\n   chosen for you.\n2. Add a note if you like. The note is kept as precedent for future investigations,\n   like any grading comment, and is always treated as untrusted text.\n3. Optionally rate the AI's accuracy, reasoning and recommended action.\n4. Choose **Compare with the AI**. Only now does the card show the AI verdict and whether\n   your answer agrees with it. Your answer is locked from this point.\n5. Choose **Record review**.\n\nThe card measures the time from opening it to recording the review, so a manager can see\nreviews that took seconds. It is not a full blind review: the rest of the case page still\nshows the AI verdict.\n\nYou can also review an agent-closed case that was not picked, with **Review this\nauto-close** in **Take action**. That review is recorded as an ordinary grade, and such a\ncase can be reviewed again: each review is recorded, and Team activity counts only your\nlatest review of the case.",
+   "console": []
+  },
+  {
+   "id": "automation/auto-close-review#reviewing-a-case:1",
+   "page": "automation/auto-close-review.md",
+   "anchor": "reviewing-a-case",
+   "heading": "Reviewing a case",
+   "text": "Recording a review needs `cases:write`. It never changes the case's status, who decided\nit or its disposition. Each case in the sample can be reviewed once; a second attempt\nanswers that the review is already recorded.",
    "console": []
   },
   {
@@ -3769,7 +3804,7 @@
    "page": "automation/auto-close-review.md",
    "anchor": "when-you-disagree-with-the-ai",
    "heading": "When you disagree with the AI",
-   "text": "The review is always recorded. What happens next depends on your permissions:\n\n- With `cases:close` you are offered **Reopen case** and **Reopen and escalate**. The\n  second is two steps; if the escalation fails, the case stays reopened and the card\n  says so. Nothing is ever reopened automatically.\n- Without `cases:close` the card says \"Someone who can close cases has been asked to look\n  at this.\" Each person who can close cases gets one Inbox item in the Assignment\n  category (at most 200 people). Someone who turned Assignment off in their Inbox\n  settings gets none.",
+   "text": "The review is always recorded. What happens next depends on your permissions:\n\n- With `cases:close` you are offered **Reopen case** and **Reopen and escalate**. The\n  second is two steps; if the escalation fails, the case stays reopened and the card\n  says so. Nothing is ever reopened automatically.\n- Without `cases:close` the card says \"Someone who can close cases has been asked to look\n  at this.\" Each person who can close cases gets one Inbox item in the Assignment\n  category (at most 200 people). Someone who turned Assignment off in their Inbox\n  settings gets none. They hear about your disagreement with a case once: if you review\n  a case that was not picked again and disagree again, no new Inbox item is sent.",
    "console": []
   },
   {
@@ -3785,7 +3820,7 @@
    "page": "automation/auto-close-review.md",
    "anchor": "where-the-results-show",
    "heading": "Where the results show",
-   "text": "- **Agent effectiveness** has an **Auto-close review** module for the page's range: how\n  many cases were sampled, reviewed, pending and expired; how many reviews agreed with\n  the AI (\"N of M agreed\"); an agreement rate with its 95% interval once there are at\n  least 30 reviews, and \"Not enough reviews yet\" before that; the threats reviewers found\n  (they said true positive on an automatic false positive close), with links to the\n  cases; the rules sampled most; the median time spent reviewing and the median time from\n  picked to reviewed; and how many automatic closes there were, by the day of their first\n  decision. It always says: \"Agreement describes the sampled cases only, unweighted. It is\n  not an estimate of auto-close precision.\" The daily caps mean each day's cases are not\n  equally likely to be picked, so no rate here describes every automatic close.\n- **Case Manager**: the Review scope (pending, with links to completed, disagreed and\n  expired reviews), and the review's result in the case's Outcome facts\n  (\"Reviewed: false positive\", \"Review disagreed: true positive\").\n- **Team activity** counts the reviews each person completed, with how many agreed and\n  the time they spent.\n- The **audit log** has an **Auto-close review recorded** row per review, by the person\n  who recorded it. Its summary carries ids and codes only, never the note.",
+   "text": "- **Agent effectiveness** has an **Auto-close review** module for the page's range: how\n  many cases were sampled, reviewed, pending and expired; how many reviews agreed with\n  the AI (\"N of M agreed\"); an agreement rate with its 95% interval once there are at\n  least 30 reviews, and \"Not enough reviews yet\" before that; the threats reviewers found\n  (they said true positive on an automatic false positive close), with links to the\n  cases; the rules sampled most; the median time spent reviewing and the median time from\n  picked to reviewed; and how many automatic closes there were, by the day of their first\n  decision. It always says: \"Agreement describes the sampled cases only, unweighted. It is\n  not an estimate of auto-close precision.\" The daily caps mean each day's cases are not\n  equally likely to be picked, so no rate here describes every automatic close.\n- **Case Manager**: the Review scope (the waiting reviews, with **Show completed\n  reviews** at the foot of the list; a link opens it on the reviews that disagreed or\n  expired: `#/case_manager?review=disagreed` or `#/case_manager?review=expired`), and\n  the review's result in the case's Outcome facts (\"Reviewed: false positive\", \"Review\n  disagreed: true positive\").\n- **Team activity** counts the reviews each person completed, with how many agreed and\n  the time they spent.\n- The **audit log** has an **Auto-close review recorded** row per review, by the person\n  who recorded it. Its summary carries ids and codes only, never the note.",
    "console": []
   },
   {
@@ -4186,7 +4221,7 @@
    "page": "intelligence/mitre-threat-context.md",
    "anchor": "",
    "heading": "",
-   "text": "The case **Threat context** tab brings together indicator enrichment, MITRE ATT&CK metadata,\nand related cases. The service is fail-open: missing enrichment or mapping data does\nnot prevent case handling.\n\nReading case threat context requires `cases:read`.",
+   "text": "The **Threat context** section of a case's Investigation tab brings together indicator\nenrichment, MITRE ATT&CK metadata, and related cases. The service is fail-open: missing enrichment or mapping data does\nnot prevent case handling.\n\nReading case threat context requires `cases:read`.",
    "console": []
   },
   {
@@ -4220,7 +4255,7 @@
    "page": "intelligence/mitre-threat-context.md",
    "anchor": "how-this-case-was-clustered",
    "heading": "How this case was clustered",
-   "text": "The **Threat context** tab's three-node explanation shows **Input alerts → Correlation\ncluster → Opened case** from fields already persisted on the case. Hover or\nkeyboard-focus a node to inspect source counts, grouping, matched rule, threshold and\ntime window, opened-case status/verdict, and bounded related-case links. It is an\nexplanation of the original correlation, not a second correlation run and not a path\nthat can change risk or the deterministic decision.\n\nMember alert references are stable one-way hashes and are capped at 12; the response\nreports any additional truncated count. Raw source event identifiers and payloads are\nnot returned. Explicit cross-source links and prior same-entity resolved cases remain\nrelationships, not force-merges. An older case can truthfully show limited or no\ncluster explanation when its persisted metadata predates the feature.",
+   "text": "The **Threat context** section's three-node explanation shows **Input alerts → Correlation\ncluster → Opened case** from fields already persisted on the case. Hover or\nkeyboard-focus a node to inspect source counts, grouping, matched rule, threshold and\ntime window, opened-case status/verdict, and bounded related-case links. It is an\nexplanation of the original correlation, not a second correlation run and not a path\nthat can change risk or the deterministic decision.\n\nMember alert references are stable one-way hashes and are capped at 12; the response\nreports any additional truncated count. Raw source event identifiers and payloads are\nnot returned. Explicit cross-source links and prior same-entity resolved cases remain\nrelationships, not force-merges. An older case can truthfully show limited or no\ncluster explanation when its persisted metadata predates the feature.",
    "console": []
   },
   {
@@ -4612,7 +4647,7 @@
    "page": "administration/users-rbac.md",
    "anchor": "in-the-console",
    "heading": "In the Console",
-   "text": "The button is unavailable, with the reason under the state, when sign-in is off, when\nyour account's role is not Super admin, or while settings are in read-only mode. Only the\nrole stored for your account counts: while role-based access is off every account is\ntreated as Super admin, but only a real Super admin may change it.\n\nEach change is recorded in the Audit log as a settings change to **RBAC**,\nwith the field `rbac.enabled` before and after. A request that changes nothing writes no\nrow.",
+   "text": "The button is unavailable, with the reason under the state, when sign-in is off, when\nyour account's role is not Super admin, or while settings are in read-only mode. Only the\nrole stored for your account counts: while role-based access is off every account is\ntreated as Super admin, but only a real Super admin may change it. Only a Super admin\ncan give an account that role (Add a local user).\n\nEach change is recorded in the Audit log as a settings change to **RBAC**,\nwith the field `rbac.enabled` before and after. A request that changes nothing writes no\nrow.",
    "console": [
     "settings:roles"
    ]
@@ -4654,7 +4689,7 @@
    "page": "administration/users-rbac.md",
    "anchor": "add-a-local-user",
    "heading": "Add a local user",
-   "text": "1. Open **Settings → Security & access → Users**.\n2. Create a unique username and a strong initial password.\n3. Assign the smallest built-in or custom role that covers the user's duties.\n4. Require a password change when appropriate.\n5. Ask the user to enroll MFA and review their active sessions.\n\nUser creation, update, and deletion use `/api/users`. Role assignment also has a\ndedicated `/api/users/{username}/roles` route. Administrative writes are audited.",
+   "text": "1. Open **Settings → Security & access → Users**.\n2. Create a unique username and a strong initial password.\n3. Assign the smallest built-in or custom role that covers the user's duties.\n4. Require a password change when appropriate.\n5. Ask the user to enroll MFA and review their active sessions.\n\nUser creation, update, and deletion use `/api/users`. Role assignment also has a\ndedicated `/api/users/{username}/roles` route. Administrative writes are audited.\n\nOnly a Super admin can give an account the Super admin role, or change, disable or\ndelete an account that has it (its role, password, MFA, profile or active state), and\nonly after signing in within the re-authentication window. `users:manage` alone, which a\nSOC manager holds, is not enough, so it cannot be used to become Super admin or to take\nover a Super admin account. Anyone else gets `403 super_admin_only` and an Access denied\nrow in the Audit log; a Super admin whose sign-in is too old gets `401 reauth_required`.\nThis holds whether role-based access is on or off, because only the role stored for the\naccount counts.",
    "console": [
     "settings:admin_users"
    ]
@@ -6766,7 +6801,7 @@
    "page": "operations/upgrades.md",
    "anchor": "round-15-changes",
    "heading": "Round 15 changes",
-   "text": "- **Role-based access has its own switch.** **Settings → Security & access → Roles &\n  permissions** turns it on or off, and so does `PUT /api/rbac` (stored role Super admin\n  and a recent sign-in). `PUT /api/settings` answers `409 rbac_switch_moved` when a body\n  would change `rbac.enabled`, and any other changed `rbac` field (`roles`, `resources`,\n  `custom_roles`, `denies`, `default_role`) now needs `roles:manage` and a fresh sign-in.\n  A script that sends the whole settings document with `rbac.enabled` unchanged keeps\n  working. See Turn on role-based access.\n- **New permission `team:view`.** SOC managers and Auditors get it by default (Super\n  admins hold every grant). A stored role override that names other resources keeps it.\n  While role-based access is off, Team activity is still limited to accounts whose\n  stored role is Super admin, SOC manager or Auditor.\n- **Two new settings, on by default.** `team_activity.enabled` (the Team activity page)\n  and `auto_close_review` (5% of automatic closes, at most 10 a day and 3 per rule,\n  expiring after 7 days). The review sample starts with the first automatic close after\n  the upgrade; earlier closes are never sampled. Neither changes a case decision.\n- **Front proxy body size.** A case screenshot is uploaded as one request of up to\n  3 MiB. The bundled Web UI allows it on that path; a TLS proxy in front of the Console",
+   "text": "- **Role-based access has its own switch.** **Settings → Security & access → Roles &\n  permissions** turns it on or off, and so does `PUT /api/rbac` (stored role Super admin\n  and a recent sign-in). `PUT /api/settings` answers `409 rbac_switch_moved` when a body\n  would change `rbac.enabled`, and any other changed `rbac` field (`roles`, `resources`,\n  `custom_roles`, `denies`, `default_role`) now needs `roles:manage` and a fresh sign-in.\n  A script that sends the whole settings document with `rbac.enabled` unchanged keeps\n  working. See Turn on role-based access.\n- **New permission `team:view`.** SOC managers and Auditors get it by default (Super\n  admins hold every grant). A stored role override that names other resources keeps it.\n  While role-based access is off, Team activity is still limited to accounts whose\n  stored role is Super admin, SOC manager or Auditor. That limit covers the page only:\n  every account then still holds `audit:view` and `users:manage`, so it can read the same\n  rows in the Audit log or change its own role. Turn role-based access on to keep\n  per-person work private.\n- **Only a Super admin manages Super admin accounts.** Giving an account the Super admin\n  role, or changing, disabling or deleting an account that has it, now needs a caller\n  whose stored role is Super admin and a recent sign-in (`403 super_admin_only`",
    "console": []
   },
   {
@@ -6774,7 +6809,7 @@
    "page": "operations/upgrades.md",
    "anchor": "round-15-changes",
    "heading": "Round 15 changes",
-   "text": "needs `client_max_body_size 3m` or more, or uploads fail with HTTP 413.\n- **Elasticsearch config index.** At startup the backend adds the `binary` mapping of the\n  new `case_file_data` field to the config index; there is no operator step. If it cannot,\n  it logs a warning and uploads still work, at the indexing cost described in\n  Health, backup, and restore.\n- **Audit rows for human case work.** New rows from case actions, assignments, tags,\n  comments and grades carry a structured `case.*` action, the case as target, the request\n  context and the changes; bulk actions add `run_id` `bulk-`. Their `action_type`,\n  `surface` and `result_summary` are unchanged, so existing filters and parsers keep\n  working, and older rows are not rewritten.\n- **Attribution and re-investigation.** With sign-in on, the actor of a comment, tag\n  change or assignment, and the stored comment author, are the signed-in person. Rebuilding\n  a case after a new investigation keeps its owner, comments, grades, status history,\n  acknowledgement and an analyst's disposition.\n- **Feedback statistics.** `GET /api/feedback/stats` averages each sub-score over the\n  grades that rated it and adds three `*_rated` counts; grades recorded by an auto-close\n  review are left out of it.",
+   "text": "otherwise). A script that used a SOC manager's account for this needs a Super admin's.\n- **Two new settings, on by default.** `team_activity.enabled` (the Team activity page)\n  and `auto_close_review` (5% of automatic closes, at most 10 a day and 3 per rule,\n  expiring after 7 days). The review sample starts with the first automatic close after\n  the upgrade; earlier closes are never sampled. Neither changes a case decision.\n- **Front proxy body size.** A case screenshot is uploaded as one request of up to\n  3 MiB. The bundled Web UI allows it on that path; a TLS proxy in front of the Console\n  needs `client_max_body_size 3m` or more, or uploads fail with HTTP 413.\n- **Elasticsearch config index.** At startup the backend adds the `binary` mapping of the\n  new `case_file_data` field to the config index; there is no operator step. If it cannot,\n  it logs a warning and uploads still work, at the indexing cost described in\n  Health, backup, and restore.\n- **Audit rows for human case work.** New rows from case actions, assignments, tags,\n  comments and grades carry a structured `case.*` action, the case as target, the request\n  context and the changes; bulk actions add `run_id` `bulk-`. Their `action_type`,\n  `surface` and `result_summary` are unchanged, so existing filters and parsers keep\n  working, and older rows are not rewritten.\n- **Attribution and re-investigation.** With sign-in on, the actor of a comment, tag\n  change or assignment, and the stored comment author, are the signed-in person. Rebuilding\n  a case after a new investigation keeps its owner, comments, grades, status history,\n  acknowledgement and an analyst's disposition.\n- **Feedback statistics.** `GET /api/feedback/stats` averages each sub-score over the\n  grades that rated it and adds three `*_rated` counts; grades recorded by an auto-close\n  review are left out of it.",
    "console": []
   },
   {
@@ -8014,7 +8049,7 @@
    "page": "reference/configuration.md",
    "anchor": "team-activity",
    "heading": "Team activity",
-   "text": "`team_activity` has one switch, edited under **Settings → Security & access → Single\nsign-on & policy → Team activity**:\n\n| Key | Default | Meaning |\n|---|---|---|\n| `team_activity.enabled` | `true` | Show the Team activity page. Off, nobody can open it and its routes answer `409 team_activity_off` |\n\nReading the page also needs `team:view`, and while role-based access is off a stored role\nof Super admin, SOC manager or Auditor. A malformed stored value is repaired to `true`,\nnever rejected. See Team activity.",
+   "text": "`team_activity` has one switch, edited under **Settings → Security & access → Single\nsign-on & policy → Team activity**:\n\n| Key | Default | Meaning |\n|---|---|---|\n| `team_activity.enabled` | `true` | Show the Team activity page. Off, nobody can open it and its routes answer `409 team_activity_off` |\n\nReading the page also needs `team:view`, and while role-based access is off a stored role\nof Super admin, SOC manager or Auditor. That limit covers this page only and is not an\naccess control: while role-based access is off every account still holds `audit:view`\nand `users:manage`, so it can read the same rows in the Audit log or change its own role.\nTurn role-based access on to keep per-person work private. A malformed stored value is\nrepaired to `true`, never rejected. See Team activity.",
    "console": []
   },
   {
@@ -8134,7 +8169,7 @@
    "page": "reference/permissions.md",
    "anchor": "team-activity",
    "heading": "Team activity",
-   "text": "`team:view` opens **Analytics → Team activity** and its API (`/api/team/*`): what each\nperson did per day, counted from the audit log. A SOC manager tracks the team and an\nauditor may read it; analysts and responders do not get it by default. A stored role\noverride that names other resources keeps the default `team` grant.\n\nWhile RBAC is off every signed-in account holds every grant, so Team activity adds a\nfloor of its own: only an account whose stored role is `super_admin`, `soc_manager` or\n`auditor` can open it (`403 team_activity_role_required`, with an Access denied row,\nfor anyone else). The page never shows an IP address, user agent, session or settings\nrow; those stay in the audit log under `audit:view`. See\nTeam activity.",
+   "text": "`team:view` opens **Analytics → Team activity** and its API (`/api/team/*`): what each\nperson did per day, counted from the audit log. A SOC manager tracks the team and an\nauditor may read it; analysts and responders do not get it by default. A stored role\noverride that names other resources keeps the default `team` grant.\n\nWhile RBAC is off every signed-in account holds every grant, so Team activity adds a\nfloor of its own: only an account whose stored role is `super_admin`, `soc_manager` or\n`auditor` can open it (`403 team_activity_role_required`, with an Access denied row,\nfor anyone else). That floor limits this page only and is not an access control: while\nRBAC is off every account still holds `audit:view` and `users:manage`, so it can read the\nsame rows in the Audit log or change its own role (an audited `user.role_changed` row).\nTurn RBAC on to keep per-person work private. The page never shows an IP address, user\nagent, session or settings row; those stay in the audit log under `audit:view`. See\nTeam activity.",
    "console": [
     "page:team"
    ]
@@ -8144,7 +8179,7 @@
    "page": "reference/permissions.md",
    "anchor": "screenshots-and-reviews-on-a-case",
    "heading": "Screenshots and reviews on a case",
-   "text": "| Action | Grant |\n|---|---|\n| List and view a case's screenshots | `cases:read` |\n| Add a screenshot, or delete one you added | `cases:comment` |\n| Delete a screenshot someone else added | `cases:comment` and `cases:close` |\n| Record a review of a case the AI agent closed | `cases:write` |\n| Reopen a case from that review | `cases:close` |\n| The Review scope count in Case Manager | `cases:read` |\n| The review module on Agent effectiveness | `metrics:view` |\n| The Team activity switch and the review sample settings | `settings:manage` |\n\nA refused screenshot delete writes an Access denied row. See\nAuto-close review.",
+   "text": "| Action | Grant |\n|---|---|\n| List and view a case's screenshots | `cases:read` |\n| Add a screenshot, or delete one you added | `cases:comment` |\n| Delete a screenshot someone else added | `cases:comment` and `cases:close` |\n| Record a review of a case the AI agent closed | `cases:write` |\n| Reopen a case from that review | `cases:close` |\n| See one case's review state | `cases:read` |\n| The Review scope count in Case Manager | `cases:read` |\n| The review module on Agent effectiveness | `metrics:view` |\n| The Team activity switch and the review sample settings | `settings:manage` |\n\nA refused screenshot delete writes an Access denied row. See\nAuto-close review.",
    "console": []
   },
   {
@@ -8200,7 +8235,7 @@
    "page": "reference/permissions.md",
    "anchor": "custom-roles-and-overrides",
    "heading": "Custom roles and overrides",
-   "text": "The RBAC configuration supports four layers:\n\n1. the built-in default matrix;\n2. per-built-in-role `roles` replacements for named resources;\n3. custom roles with cycle-guarded inheritance and additive grants;\n4. explicit role/resource denies, applied last with **deny-wins** precedence.\n\nA wildcard grant expands to the concrete action set when a narrow deny is applied,\nso denying `cases:close` from a role that inherited `cases:*` takes effect. Unknown\nresources and invalid actions are ignored by the policy normalizer; use the role\npreview/simulation endpoints to detect mistakes before assigning a role.\n\n`super_admin` remains hard-allowed even if an override or deny is malformed. Protect\nassignment of that role as a privileged operation.",
+   "text": "The RBAC configuration supports four layers:\n\n1. the built-in default matrix;\n2. per-built-in-role `roles` replacements for named resources;\n3. custom roles with cycle-guarded inheritance and additive grants;\n4. explicit role/resource denies, applied last with **deny-wins** precedence.\n\nA wildcard grant expands to the concrete action set when a narrow deny is applied,\nso denying `cases:close` from a role that inherited `cases:*` takes effect. Unknown\nresources and invalid actions are ignored by the policy normalizer; use the role\npreview/simulation endpoints to detect mistakes before assigning a role.\n\n`super_admin` remains hard-allowed even if an override or deny is malformed. Protect\nassignment of that role as a privileged operation. The server does: giving an account\nthe `super_admin` role, or changing, disabling or deleting an account that has it,\nneeds a caller whose stored role is `super_admin` and a sign-in within the\nre-authentication window, on `POST`, `PUT` and `DELETE /api/users` and `PUT\n/api/users/{username}/roles`. `users:manage` alone answers `403 super_admin_only` with an\nAccess denied row, whether RBAC is on or off.",
    "console": []
   },
   {

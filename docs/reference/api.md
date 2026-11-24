@@ -136,7 +136,7 @@ the exact request model and every operation under a prefix.
 | Case investigation | `/api/cases/{case_id}/triage`, `/timeline`, `/trace`, `/stages`, `/rationale`, `/threat-context`, `/forwarding`; `POST /investigate`, `/reinvestigate`, `/feedback` | Explain evidence, agent work, deterministic routing, and analyst feedback |
 | Case collaboration | `/api/cases/{case_id}/thread*`, `/tasks*`, `/activity`, `/comment`, `/assign`, `/tags`, `/notify` | Discussion, reactions, tasks, ownership, activity, and manual notification |
 | Case screenshots | `GET` and `POST /api/cases/{case_id}/files`, `DELETE /api/cases/{case_id}/files/{file_id}`, `GET /api/cases/{case_id}/files/{file_id}/content` | List, add, delete and serve screenshots on a case; see [Case screenshots](#case-screenshots) |
-| Auto-close review | `POST /api/cases/{case_id}/review`, `GET /api/auto-close-review/summary`, `GET /api/metrics/auto-close-review` | Record a person's review of an automatic close, the Review scope badge, and the Agent effectiveness module; see [Auto-close review](#auto-close-review) |
+| Auto-close review | `POST /api/cases/{case_id}/review`, `GET /api/cases/{case_id}/review`, `GET /api/auto-close-review/summary`, `GET /api/metrics/auto-close-review` | Record a person's review of an automatic close, one case's review state, the Review scope badge, and the Agent effectiveness module; see [Auto-close review](#auto-close-review) |
 | Workspace | `POST /api/chat`, `POST /api/chat/stream`, `GET /api/chat/context`, `POST /api/chat/turns/{turn_id}/cancel`, `GET /api/chat/turns/active`, `GET /api/chat/turns/{turn_id}/events`, `POST /api/chat/turns/{turn_id}/seen`, `GET /api/chat/topics/{topic_id}`, `POST /api/chat/entity-question`, `GET /api/chat/starters`, `POST /api/chat/starters/events`, `/api/chat/conversations*`, `/api/chat/feedback*`, `POST /api/investigate`, `POST /api/overview`, `GET /api/search`, `/scans`, `/personas` | Console chat (blocking and streamed) with per-user history, rejoining running answers, suggested questions, the step inspector, answer ratings, entity investigation, cross-surface search, scan queues, and personas |
 | Chat reports | `GET/POST /api/reports`, `GET/PATCH/DELETE /api/reports/{report_id}`, `POST /api/reports/add`, `POST /api/reports/from-answer`, `POST /api/reports/from-conversation`, `POST /api/reports/{report_id}/summary` | Owner-scoped reports built from saved chat answers, with an optional AI summary |
 | Detection and automation | `/api/rules*` (including `GET /api/rules/summary` and `/api/rules/analyst-policies*`), `/api/tuning*`, `/api/baseline*`, `/api/campaigns*`, `/api/batch*`, `/api/proposals*` | Rule lifecycle, safe preview/version rollback, analyst-grounded recommendations, baselines, reconciled campaigns, batch jobs, and approvals |
@@ -816,6 +816,16 @@ each rating above 0 and at most 1; `elapsed_ms` 0 to 86,400,000 (unknown fields 
   without `cases:close` sends one Inbox item (category Assignment) to the people who can
   close cases, at most 200.
 
+`GET /api/cases/{case_id}/review` (`cases:read`) returns `{case_id, agent_closed, state,
+can_record, review_id, sampled_at, expires_at}` for the case workspace: the pending band,
+**Start review** and **Review this auto-close** read it. `state` is `none` (never picked),
+`pending`, `completed` or `expired`, computed on read. `agent_closed` applies the POST's
+own rule, and `can_record` says whether the POST would accept a review now, the caller's
+grants aside. `expires_at` is `null` once the review is completed. A pending or expired
+entry whose case history already holds its review reads as `completed`, and the ledger is
+repaired. It answers `404 case_not_found` and `503 review_ledger_unavailable`. The case
+never changes, and no audit row is written.
+
 `GET /api/auto-close-review/summary` (`cases:read`) returns `{enabled, pending,
 disagreed_open, sampled_today, daily_cap}` for the Case Manager Review scope.
 `GET /api/metrics/auto-close-review?window=` (`metrics:view`, default `now-30d`, `400
@@ -1196,6 +1206,15 @@ than a synthetic composite score:
 | `analyst_reported_verdict_agreement` | Weighted analyst-reported agreement: `(agree + 0.5 × partial) / unique latest-valid graded cases` | Higher |
 | `material_analyst_correction_rate` | Explicit disagreement or an allow-listed AI-verdict/outcome conflict divided by the same unique graded-case cohort | Lower |
 | `human_review_turnaround` | p50 elapsed time from the first human acknowledgement to the final human terminal transition in the final live episode | Lower |
+
+A grade recorded by an auto-close review (its entry carries
+`origin: "auto_close_review"`, or it matches an `auto_close_review` history event on the
+case by time and analyst) is left out of the graded-case cohort behind agreement and correction,
+and is counted under `exclusions.auto_close_review_grade`. A reopen sent with
+`review_via: "auto_close_review"` on a case that carries a review recorded at or before
+it is not counted as a human reopen after an agent close in the reopen guardrail. Review
+grades stay ground truth for the threshold tuner and the precedent corpus; see
+[Auto-close review](#auto-close-review).
 
 Each metric carries its current and baseline samples, definition, delta, direction,
 minimum sample, and `enough_data`, `insufficient_evidence`, or `unavailable` status.

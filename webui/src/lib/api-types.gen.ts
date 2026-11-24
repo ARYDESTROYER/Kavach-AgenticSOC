@@ -15049,10 +15049,11 @@ export interface components {
             ack_samples: number;
             /**
              * Ack Status
+             * @description Whether the median time to acknowledge was measured: too many cases, the cases could not be read, or the audit read stopped before the end of the window (partial). It is omitted unless measured.
              * @default measured
              * @enum {string}
              */
-            ack_status: "measured" | "too_many_cases" | "unavailable";
+            ack_status: "measured" | "too_many_cases" | "unavailable" | "partial";
             /** Bulk */
             bulk: {
                 [key: string]: number;

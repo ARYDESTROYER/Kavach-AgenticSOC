@@ -10,6 +10,9 @@
  * - Honest states: the switch off (`409 team_activity_off`), the role floor while
  *   role-based access is off (`403`), sign-in off, a partial read, a window with no work.
  * - The CSV goes through the shared encoder.
+ * - Escape or Close on a person's sheet hands focus back to the row's action; the sheet's
+ *   per-day table uses the chart's kinds, and event times are in the operator zone the
+ *   days are counted in, which the sheet names.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
@@ -235,6 +238,48 @@ describe('Team activity', () => {
     expect(within(sheet).getByRole('link', { name: /Open in Audit log/ })).toHaveAttribute('href', '#/audit?actor=zoe');
   });
 
+  it.each(['Escape', 'Close'] as const)('hands focus back to the row action when %s closes the sheet', async (how) => {
+    renderPage();
+    await screen.findByTestId('team-kpis');
+    const opener = screen.getByRole('button', { name: 'Open the activity of Zoe Adams' });
+    opener.focus();
+    fireEvent.click(opener);
+    const sheet = await screen.findByTestId('team-person-sheet');
+    await waitFor(() => expect(document.activeElement).toBe(within(sheet).getByRole('heading', { name: 'Zoe Adams' })));
+    if (how === 'Escape') fireEvent.keyDown(sheet, { key: 'Escape' });
+    else fireEvent.click(within(sheet).getByRole('button', { name: 'Close' }));
+    await waitFor(() => expect(screen.queryByTestId('team-person-sheet')).toBeNull());
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Open the activity of Zoe Adams' }));
+  });
+
+  it("counts the sheet's days by the chart's kinds and shows event times in the operator zone", async () => {
+    const zoe = person('zoe', {
+      display_name: 'Zoe Adams',
+      counts: { ...zeros, reopened: 1, screenshot_added: 2 },
+      daily: [{ date: '2026-11-23', counts: { ...zeros, reopened: 1, screenshot_added: 2 } }],
+    });
+    h.activity.mockResolvedValue(data({ timezone: 'UTC', people: [zoe] }));
+    h.events.mockResolvedValue({
+      ...EVENTS,
+      events: [{ ts: '2026-11-23T20:00:00+00:00', kind: 'reopened', label: 'Reopened a case', case_id: 'case-1', case_number: 'CASE-0001', detail: '' }],
+    });
+    renderPage();
+    await screen.findByTestId('team-kpis');
+    fireEvent.click(screen.getByRole('button', { name: 'Open the activity of Zoe Adams' }));
+    const sheet = await screen.findByTestId('team-person-sheet');
+    const table = within(sheet).getByRole('table', { name: 'Work per day, days in UTC' });
+    const headers = within(table).getAllByRole('columnheader').map((th) => th.textContent?.trim());
+    expect(headers).toEqual(['Day', 'Closed', 'Reviews', 'Acknowledged', 'Commented', 'Escalated', 'Reopened', 'Other', 'Sign-ins']);
+    const cells = within(within(table).getAllByRole('row')[1]).getAllByRole('cell').map((td) => td.textContent);
+    // The reopen has its own column, as on the chart; "Other" holds the two screenshots.
+    expect(cells[headers.indexOf('Reopened')]).toBe('1');
+    expect(cells[headers.indexOf('Other')]).toBe('2');
+    expect(within(sheet).getByText('Days in UTC.')).toBeInTheDocument();
+    // 20:00Z is listed on 23 Nov, the day the table counts it on, whatever the viewer's zone.
+    expect(await within(sheet).findByText('23 Nov, 20:00')).toBeInTheDocument();
+    expect(within(sheet).getByText('Times in UTC.')).toBeInTheDocument();
+  });
+
   it('gives Not attributed no events and no Audit log link', async () => {
     h.grants = new Set(['team:view']);
     renderPage();
@@ -290,9 +335,19 @@ describe('Team activity', () => {
   it('states a partial read, Demo work and a window with no case work', async () => {
     const empty = data({ exact: false, partial_reason: 'row_limit', scanned_rows: 250_000, demo: true });
     empty.team.counts = { ...zeros, signed_in: 2 };
+    // A partial read: the server gives no median, and says why.
+    empty.team.ack_status = 'partial';
+    empty.team.median_ack_seconds = null;
+    empty.team.ack_samples = 0;
     h.activity.mockResolvedValue(empty);
     renderPage();
     expect(await screen.findByTestId('team-partial')).toHaveTextContent('250,000');
+    expect(screen.getByTestId('team-partial')).toHaveTextContent(
+      'The medians and the agreement rate are not measured from part of the window.',
+    );
+    const kpis = within(screen.getByTestId('team-kpis'));
+    expect(kpis.getByText('Not measured')).toBeInTheDocument();
+    expect(kpis.getByText('not measured from a partial read')).toBeInTheDocument();
     expect(screen.getByTestId('team-demo-note')).toHaveTextContent('Demo Mode: showing Demo work.');
     expect(screen.getByText('No case work in this window')).toBeInTheDocument();
     // No closes and no acknowledgements: their tiles name the range, never "one at a time".

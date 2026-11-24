@@ -496,7 +496,7 @@ async def record_auto_close_review(
     # the Inbox and the live frame follow outside the lock.
     async with store.lock:
         recorded = await _record_review_locked(state, store, case_id, body, request, actor=actor)
-    fresh, agrees, ai_verdict, review_id = recorded
+    fresh, agrees, ai_verdict, review_id, disagreed_before = recorded
 
     # 4. The note becomes fenced untrusted precedent text like any grading comment (#9).
     if _status(fresh) in TERMINAL_CASE_STATUSES:
@@ -505,8 +505,10 @@ async def record_auto_close_review(
         except Exception as exc:  # noqa: BLE001
             logger.warning("Auto-close review RAG refresh failed for %s: %s", case_id[:80], exc)
 
-    # 5. A disagreement from someone who cannot reopen reaches someone who can.
-    if agrees is False and not can_reopen:
+    # 5. A disagreement from someone who cannot reopen reaches someone who can, once per
+    # reviewer and case: a case that was not sampled may be reviewed again, and a repeat
+    # disagreement by the same person sends nothing more (the closers already have it).
+    if agrees is False and not can_reopen and not disagreed_before:
         await notify_disagreement(
             state, fresh, reviewer=actor, classification=body.classification,
             ai_verdict=ai_verdict, review_id=review_id,
@@ -519,11 +521,13 @@ async def record_auto_close_review(
 async def _record_review_locked(
     state: AppState, store: Any, case_id: str, body: ReviewBody, request: Request, *,
     actor: str,
-) -> tuple[Case, bool | None, str, str]:
+) -> tuple[Case, bool | None, str, str, bool]:
     """Steps 1 to 3 of the review with ``store.lock`` held
     (:func:`record_auto_close_review`): the checks, the audit row, the case save and the
-    ledger completion. Returns ``(saved case, agrees, AI verdict, review id)``; the
-    review id is empty for a case that was not sampled."""
+    ledger completion. Returns ``(saved case, agrees, AI verdict, review id, disagreed
+    before)``; the review id is empty for a case that was not sampled, and ``disagreed
+    before`` says the reviewer had already recorded a disagreeing grade of that case (a
+    sampled case takes one review, so it is always False there)."""
     from .routes import _case_audit_fields, _request_audit_context
 
     case = await state.cases.get(case_id)
@@ -594,8 +598,15 @@ async def _record_review_locked(
     # 2. Read the case again and save it with one appended grade (never its status,
     # decider or disposition, #3).
     now = iso_now()
+    reviewer_key = actor.strip().lower()
     try:
         fresh = await state.cases.get(case_id) or case
+        # Read before this review's grade is appended (and under the store lock, so two
+        # concurrent repeats cannot both read "not yet").
+        disagreed_before = not sampled and any(
+            fb.assessment == "disagree" and (fb.analyst or "").strip().lower() == reviewer_key
+            for fb in fresh.feedback
+        )
         grade = FeedbackEntry(
             ts=now,
             analyst=actor,
@@ -653,7 +664,7 @@ async def _record_review_locked(
                     "Auto-close review ledger completion failed for %s (attempt %d): %s",
                     case_id[:80], attempt + 1, exc,
                 )
-    return fresh, agrees, ai_verdict, review_id
+    return fresh, agrees, ai_verdict, review_id, disagreed_before
 
 
 # --------------------------------------------------------------------------- #
@@ -748,6 +759,48 @@ async def auto_close_review_summary(
 # --------------------------------------------------------------------------- #
 # GET /api/metrics/auto-close-review
 # --------------------------------------------------------------------------- #
+async def _repaired_for_window(
+    state: AppState, ledger: ReviewLedger, *, start: datetime | None, end: datetime,
+) -> ReviewLedger:
+    """``ledger`` with every entry sampled in ``[start, end)`` whose case already carries
+    its review marked completed (the ledger write failed after the case save, D6.6), so
+    the module never shows a recorded review as pending or expired, or leaves it out of
+    the agreement and the missed threats, until another read repairs it. Pending and
+    expired entries alike: a review recorded on an expired pick is still a review. The
+    repair is saved (best-effort) and applied to the ledger read here either way. A case
+    read that fails leaves the ledger as it is."""
+    from .routes import _queue_cases_by_id
+
+    def in_window(entry: ReviewEntry) -> bool:
+        at = entry.sampled_instant()
+        return at is not None and (start is None or at >= start) and at < end
+
+    open_entries = [e for e in ledger.entries if e.state != STATE_COMPLETED and in_window(e)]
+    ids = list(dict.fromkeys(e.case_id for e in open_entries))
+    if not ids:
+        return ledger
+    try:
+        found = await _queue_cases_by_id(state.cases, ids)
+    except Exception as exc:  # noqa: BLE001 (the module degrades to the ledger alone)
+        logger.warning("Auto-close review metrics could not read cases: %s", exc)
+        return ledger
+    events: dict[str, Any] = {}
+    for entry in open_entries:
+        case = found.get(entry.case_id)
+        event = history_review(case, entry.review_id) if case is not None else None
+        if event is not None:
+            events[entry.review_id] = event
+    if not events:
+        return ledger
+    await _repair(state, found)
+    try:
+        ledger = await _load(state)
+    except HTTPException:
+        pass  # the ledger read above, completed below
+    # Applied here too, so a repair whose save failed still counts on this read.
+    return _complete_from_history(ledger, events) or ledger
+
+
 @router.get("/metrics/auto-close-review", response_model=AutoCloseReviewMetrics)
 async def auto_close_review_metrics(
     window: str | None = Query(default=None, max_length=200),
@@ -767,7 +820,7 @@ async def auto_close_review_metrics(
         raise _error(400, "bad_window", str(exc)) from exc
     now = now_utc()
     end = (now + timedelta(seconds=1)) if resolved.open_end else resolved.end
-    ledger = await _load(state)
+    ledger = await _repaired_for_window(state, await _load(state), start=resolved.start, end=end)
     population = await fetch_case_population(state.cases, span_hours=None, limit=_ELIGIBLE_FETCH_LIMIT)
     eligible = eligible_closes_by_day(population.cases, start=resolved.start, end=end, tz=tz)
     data = review_metrics(

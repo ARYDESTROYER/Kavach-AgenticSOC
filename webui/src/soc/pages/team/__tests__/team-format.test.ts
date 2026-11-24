@@ -8,9 +8,12 @@ import { describe, expect, it } from 'vitest';
 import type { PersonActivity, TeamActivity } from '@/lib/types-team';
 
 import {
+  CSV_PARTIAL_NOTE,
   TEAM_MAX_DAYS,
   customRangeDays,
   customRangeError,
+  eventClock,
+  eventTimeLabel,
   fmtSeconds,
   peopleCsv,
   peopleCsvRows,
@@ -154,5 +157,39 @@ describe('the people CSV', () => {
     expect(rows[1][header.indexOf('Median time to acknowledge (minutes)')]).toBe(1.5);
     const none = peopleCsvRows(activity([person()]));
     expect(none[1][header.indexOf('Median time to acknowledge (minutes)')]).toBeNull();
+  });
+
+  it('ends a partial read with a note so a saved copy never reads as exact', () => {
+    const exact = peopleCsvRows(activity([person({ counts: { ...zeros, closed: 2 } })]));
+    expect(exact).toHaveLength(2);
+    expect(exact.flat()).not.toContain(CSV_PARTIAL_NOTE);
+    const partial = activity([person({ counts: { ...zeros, closed: 2 } })]);
+    partial.exact = false;
+    partial.partial_reason = 'row_limit';
+    const rows = peopleCsvRows(partial);
+    expect(rows).toHaveLength(3);
+    expect(rows[0][0]).toBe('Person');
+    expect(rows[2]).toEqual([CSV_PARTIAL_NOTE]);
+    expect(CSV_PARTIAL_NOTE).toContain('at least');
+    const lines = peopleCsv(partial).trimEnd().split('\r\n');
+    expect(lines).toHaveLength(3);
+    expect(lines[2]).toBe(`"${CSV_PARTIAL_NOTE}"`);
+  });
+});
+
+describe('event times in the operator zone (SPEC D3.7)', () => {
+  const at = '2026-11-23T20:00:00+00:00';
+  it('formats in the named zone, not the viewer zone', () => {
+    expect(eventTimeLabel(at, 'UTC')).toBe('23 Nov, 20:00');
+    expect(eventTimeLabel(at, 'Asia/Kolkata')).toBe('24 Nov, 01:30');
+    expect(eventClock('Asia/Kolkata').zone).toBe('Asia/Kolkata');
+  });
+
+  it('applies a fixed offset by hand and falls back to UTC for an unknown zone', () => {
+    expect(eventTimeLabel(at, '+05:30')).toBe('24 Nov, 01:30');
+    expect(eventTimeLabel(at, '-0400')).toBe('23 Nov, 16:00');
+    expect(eventClock('Not/AZone').zone).toBe('UTC');
+    expect(eventTimeLabel(at, 'Not/AZone')).toBe('23 Nov, 20:00');
+    expect(eventTimeLabel('not a time', 'UTC')).toBe('not a time');
   });
 });

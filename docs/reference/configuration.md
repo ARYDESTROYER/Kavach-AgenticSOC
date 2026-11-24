@@ -447,8 +447,11 @@ sign-on & policy → Team activity**:
 | `team_activity.enabled` | `true` | Show the Team activity page. Off, nobody can open it and its routes answer `409 team_activity_off` |
 
 Reading the page also needs `team:view`, and while role-based access is off a stored role
-of Super admin, SOC manager or Auditor. A malformed stored value is repaired to `true`,
-never rejected. See [Team activity](../analyst/team-activity.md).
+of Super admin, SOC manager or Auditor. That limit covers this page only and is not an
+access control: while role-based access is off every account still holds `audit:view`
+and `users:manage`, so it can read the same rows in the Audit log or change its own role.
+Turn role-based access on to keep per-person work private. A malformed stored value is
+repaired to `true`, never rejected. See [Team activity](../analyst/team-activity.md).
 
 ### Auto-close review
 

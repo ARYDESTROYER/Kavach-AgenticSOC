@@ -121,7 +121,11 @@ describe('Role-based access switch (Round 15)', () => {
   it('opens the section with the state, the accounts per role and one button', async () => {
     renderRoles();
     const group = await panel();
-    expect(within(group).getByText('Off: every signed-in account is treated as Super admin')).toBeInTheDocument();
+    const state = within(group).getByText('Off: every signed-in account is treated as Super admin');
+    expect(state).toBeInTheDocument();
+    // The security state is never cut short: on a phone it wraps (no hover shows the rest).
+    expect(state).not.toHaveClass('truncate');
+    expect(state).toHaveClass('whitespace-normal');
     expect(
       within(group).getByText('Active accounts: Super admin (1), SOC manager (2), Analyst Tier 1 (1,234).'),
     ).toBeInTheDocument();
@@ -162,6 +166,8 @@ describe('Role-based access switch (Round 15)', () => {
     await user.click(within(group).getByRole('button', { name: 'Turn on role-based access' }));
 
     const dialog = await screen.findByRole('alertdialog', { name: 'Turn on role-based access?' });
+    // The effects alone: no lead sentence repeating the first one.
+    expect(within(dialog).queryByText('Each account gets the permissions of its role.')).toBeNull();
     for (const effect of [
       'Every account gets its role’s permissions on its next request.',
       'A background job started by an account that loses a permission stops at its next item.',

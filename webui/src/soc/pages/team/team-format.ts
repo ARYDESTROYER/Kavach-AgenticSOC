@@ -98,6 +98,61 @@ export function dayLabel(iso: string, now: Date = new Date()): string {
   return date.getUTCFullYear() === now.getUTCFullYear() ? DAY_FORMAT.format(date) : DAY_YEAR_FORMAT.format(date);
 }
 
+/** A fixed offset the server may name the operator zone with ("+05:30", "-0400"). */
+const OFFSET_ZONE = /^([+-])(\d{2}):?(\d{2})$/;
+
+const EVENT_OPTIONS: Intl.DateTimeFormatOptions = {
+  day: 'numeric',
+  month: 'short',
+  hour: '2-digit',
+  minute: '2-digit',
+  hourCycle: 'h23',
+};
+
+/** An event-time formatter and the zone it really uses. */
+export interface EventClock {
+  /** "23 Nov, 17:01" for an instant in milliseconds. */
+  format: (ms: number) => string;
+  /** The zone the times are in: the operator zone, or UTC when the browser does not know it. */
+  zone: string;
+}
+
+const EVENT_CLOCKS = new Map<string, EventClock>();
+
+/**
+ * The person sheet's event times in the operator zone, the zone the per-day table's
+ * days are counted in (SPEC D3.7), so an event and its day never disagree. A fixed
+ * offset is applied by hand (not every browser takes one as a time zone); a zone the
+ * browser does not know falls back to UTC, and `zone` then says UTC.
+ */
+export function eventClock(timezone: string): EventClock {
+  const tz = timezone.trim() || 'UTC';
+  const cached = EVENT_CLOCKS.get(tz);
+  if (cached) return cached;
+  const utc = new Intl.DateTimeFormat('en-GB', { ...EVENT_OPTIONS, timeZone: 'UTC' });
+  let clock: EventClock = { format: (ms) => utc.format(new Date(ms)), zone: 'UTC' };
+  const offset = OFFSET_ZONE.exec(tz);
+  if (offset) {
+    const shift = (offset[1] === '-' ? -1 : 1) * (Number(offset[2]) * 60 + Number(offset[3])) * 60_000;
+    clock = { format: (ms) => utc.format(new Date(ms + shift)), zone: tz };
+  } else if (tz !== 'UTC') {
+    try {
+      const fmt = new Intl.DateTimeFormat('en-GB', { ...EVENT_OPTIONS, timeZone: tz });
+      clock = { format: (ms) => fmt.format(new Date(ms)), zone: tz };
+    } catch {
+      // Unknown to this browser: the UTC clock, and the sheet says UTC.
+    }
+  }
+  EVENT_CLOCKS.set(tz, clock);
+  return clock;
+}
+
+/** An event's time in the operator zone ("23 Nov, 17:01"); the raw value when it does not parse. */
+export function eventTimeLabel(iso: string, timezone: string): string {
+  const ms = Date.parse(iso);
+  return Number.isNaN(ms) ? iso : eventClock(timezone).format(ms);
+}
+
 /** The words the range control shows. */
 export function rangeLabel(range: TeamRange, now: Date = new Date()): string {
   if (range.kind === 'preset') return TEAM_PRESETS.find((p) => p.id === range.preset)?.label ?? 'Today';
@@ -257,8 +312,15 @@ export function peopleCsvRows(data: TeamActivity): CsvCell[][] {
       person.last_active,
     ]);
   }
+  // A partial read: the file says so, as the page does, so a saved copy never reads as
+  // exact. One trailing note row keeps the header first for a spreadsheet's import.
+  if (!data.exact) rows.push([CSV_PARTIAL_NOTE]);
   return rows;
 }
+
+/** The note a CSV of a partial read ends with. */
+export const CSV_PARTIAL_NOTE =
+  'Partial read: the audit log was read in part, so every count is at least the figure shown and the median time to acknowledge is not measured.';
 
 /** The people table as one CSV document. */
 export function peopleCsv(data: TeamActivity): string {

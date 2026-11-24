@@ -634,6 +634,15 @@ async def assign_user_roles(
     if not patch:
         raise HTTPException(status_code=400, detail="no changes provided")
 
+    # Granting the Super admin role, or changing a Super admin account's roles, is for
+    # a Super admin with a strict fresh sign-in (routes._require_super_admin_for):
+    # ``users:manage`` alone, which a SOC manager holds, never mints or edits one.
+    from .routes import _require_super_admin_for
+
+    old_base = target.role.value if isinstance(target.role, UserRole) else str(target.role)
+    if UserRole.SUPER_ADMIN.value in (old_base, body.role):
+        await _require_super_admin_for(request, state)
+
     # SUPER-ADMIN ORPHAN GUARD — the last active super_admin can never be demoted out
     # of the super_admin role through this surface (mirrors the sibling guard on
     # ``PUT/DELETE /api/users/{u}`` in routes.py). This is ORTHOGONAL to the generic

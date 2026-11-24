@@ -487,7 +487,14 @@ screenshots and the auto-close review ledger live in two new key-value namespace
 - **New permission `team:view`.** SOC managers and Auditors get it by default (Super
   admins hold every grant). A stored role override that names other resources keeps it.
   While role-based access is off, Team activity is still limited to accounts whose
-  stored role is Super admin, SOC manager or Auditor.
+  stored role is Super admin, SOC manager or Auditor. That limit covers the page only:
+  every account then still holds `audit:view` and `users:manage`, so it can read the same
+  rows in the Audit log or change its own role. Turn role-based access on to keep
+  per-person work private.
+- **Only a Super admin manages Super admin accounts.** Giving an account the Super admin
+  role, or changing, disabling or deleting an account that has it, now needs a caller
+  whose stored role is Super admin and a recent sign-in (`403 super_admin_only`
+  otherwise). A script that used a SOC manager's account for this needs a Super admin's.
 - **Two new settings, on by default.** `team_activity.enabled` (the Team activity page)
   and `auto_close_review` (5% of automatic closes, at most 10 a day and 3 per rule,
   expiring after 7 days). The review sample starts with the first automatic close after

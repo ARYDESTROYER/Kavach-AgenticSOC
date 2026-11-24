@@ -18,16 +18,24 @@ import { CHART_ORDER, CHART_WORDS, dayLabel } from './team-format';
 
 const AXIS_TICK = { fill: 'hsl(var(--muted-foreground))', fontSize: 11 } as const;
 
-/** The ramp slot of each kind: one colour per kind, "other" on the neutral grey. */
+/**
+ * The ramp slot of each kind: one colour per kind, "other" on the neutral grey. Six of
+ * the seven colours: `--chart-6` (slot 5) is skipped because in the light theme it nearly
+ * matches `--chart-2` (acknowledged), worst under deuteranopia; `--chart-7` is the best
+ * six-of-seven choice across both themes and every colour-vision type.
+ */
 const SLOT: Readonly<Record<TeamChartKind, number>> = {
   closed: 0,
   acknowledged: 1,
   commented: 2,
   reviewed: 3,
   escalated: 4,
-  reopened: 5,
+  reopened: 6,
   other: 7,
 };
+
+/** The widest a day's bar is drawn, so a one-day range is a bar, not a slab. */
+export const TEAM_BAR_MAX_PX = 48;
 
 export function kindColor(kind: TeamChartKind): string {
   return categorical(SLOT[kind]);
@@ -99,7 +107,12 @@ export function TeamDailyChart({ days, height = 240 }: TeamDailyChartProps) {
       data-testid="team-daily-chart"
     >
       <ResponsiveContainer width="100%" height="100%">
-        <BarChart data={data} margin={{ top: 8, right: 8, bottom: 0, left: -16 }} barCategoryGap="20%">
+        <BarChart
+          data={data}
+          margin={{ top: 8, right: 8, bottom: 0, left: -16 }}
+          barCategoryGap="20%"
+          maxBarSize={TEAM_BAR_MAX_PX}
+        >
           <CartesianGrid vertical={false} stroke="hsl(var(--border))" strokeDasharray="3 3" />
           <XAxis dataKey="day" tick={AXIS_TICK} tickLine={false} axisLine={false} interval="preserveStartEnd" minTickGap={12} />
           <YAxis tick={AXIS_TICK} tickLine={false} axisLine={false} allowDecimals={false} width={44} />

@@ -14,6 +14,11 @@
  * calls; when the second fails the case stays reopened and the card says so). Anyone
  * else reads that someone who can close cases has been asked to look. Every string is
  * fixed copy; the note is plain text the person typed (#9).
+ *
+ * Focus and announcements (WCAG 2.4.3, 4.1.3): the comparison appears in a polite live
+ * region that is always mounted, so the AI verdict and the agreement are read out while
+ * focus stays on the button. Record review and Reopen replace the control that was used,
+ * so focus moves to the line that says what happened instead of dropping to the page.
  */
 import * as React from 'react';
 import { ChevronDown, Star } from 'lucide-react';
@@ -139,6 +144,16 @@ export function ReviewCard({
   const noteId = React.useId();
   const rateId = React.useId();
   const answerHelpId = React.useId();
+  // The line that says what happened takes focus once the control that did it is gone.
+  const resultRef = React.useRef<HTMLParagraphElement | null>(null);
+  const reopenResultRef = React.useRef<HTMLParagraphElement | null>(null);
+
+  React.useEffect(() => {
+    if (stage === 'recorded') resultRef.current?.focus();
+  }, [stage]);
+  React.useEffect(() => {
+    if (reopen === 'reopened' || reopen === 'escalated' || reopen === 'partial') reopenResultRef.current?.focus();
+  }, [reopen]);
 
   const agrees = answer ? reviewAgrees(answer, caseData.verdict) : null;
   const aiLine = aiVerdictLine(caseData.verdict, caseData.confidence) ?? 'AI verdict: Not yet assessed';
@@ -202,7 +217,7 @@ export function ReviewCard({
     const disagreed = result.agrees === false;
     return (
       <section aria-label="Auto-close review" className="space-y-3" data-testid="review-card">
-        <p className="text-sm font-medium text-foreground" role="status">
+        <p ref={resultRef} tabIndex={-1} className="text-sm font-medium text-foreground outline-none" role="status">
           {result.agrees === true
             ? 'Review recorded. Your classification agrees with the AI.'
             : disagreed
@@ -216,11 +231,15 @@ export function ReviewCard({
         ) : null}
         {disagreed && (result.can_reopen ?? canReopen) ? (
           reopen === 'reopened' ? (
-            <p className="text-sm text-foreground" role="status">The case is reopened.</p>
+            <p ref={reopenResultRef} tabIndex={-1} className="text-sm text-foreground outline-none" role="status">
+              The case is reopened.
+            </p>
           ) : reopen === 'escalated' ? (
-            <p className="text-sm text-foreground" role="status">The case is reopened and escalated.</p>
+            <p ref={reopenResultRef} tabIndex={-1} className="text-sm text-foreground outline-none" role="status">
+              The case is reopened and escalated.
+            </p>
           ) : reopen === 'partial' ? (
-            <p className="text-sm text-warning-text" role="alert">
+            <p ref={reopenResultRef} tabIndex={-1} className="text-sm text-warning-text outline-none" role="alert">
               The case is reopened, but it could not be escalated: {reopenError} Escalate it from Take action.
             </p>
           ) : (
@@ -258,7 +277,9 @@ export function ReviewCard({
           aria-label="Your classification"
           aria-describedby={answerHelpId}
           orientation="both"
-          className="flex-wrap"
+          // The rail keeps its 36px height and grows when the answers wrap on a phone, so
+          // "Unsure" stays inside it.
+          className="h-auto min-h-9 flex-wrap"
           disabled={compared}
         />
       </div>
@@ -300,34 +321,40 @@ export function ReviewCard({
           />
         </div>
       </div>
-      {compared ? (
-        <div className="space-y-1" data-testid="review-comparison">
-          <p className="text-sm text-foreground">{aiLine}</p>
-          <p className={cn('text-sm', agrees === false ? 'font-medium text-warning-text' : 'text-muted-foreground')}>
-            {comparisonText(agrees)}
-          </p>
+      {/* One block, so the always-mounted live region adds no space while it is empty: the
+          comparison and the error carry their own gap to the buttons. */}
+      <div>
+        <div aria-live="polite" data-testid="review-comparison-live">
+          {compared ? (
+            <div className="mb-4 space-y-1" data-testid="review-comparison">
+              <p className="text-sm text-foreground">{aiLine}</p>
+              <p className={cn('text-sm', agrees === false ? 'font-medium text-warning-text' : 'text-muted-foreground')}>
+                {comparisonText(agrees)}
+              </p>
+            </div>
+          ) : null}
         </div>
-      ) : null}
-      {error ? (
-        <p className="text-sm text-critical-text" role="alert">
-          {error}
-        </p>
-      ) : null}
-      <div className="flex flex-wrap items-center gap-2">
-        {compared ? (
-          <Button onClick={() => void submit()} disabled={stage === 'saving'}>
-            {stage === 'saving' ? 'Recording' : 'Record review'}
-          </Button>
-        ) : (
-          <Button onClick={() => setStage('compared')} disabled={!answer}>
-            Compare with the AI
-          </Button>
-        )}
-        {onCancel ? (
-          <Button variant="outline" onClick={onCancel} disabled={stage === 'saving'}>
-            Cancel
-          </Button>
+        {error ? (
+          <p className="mb-4 text-sm text-critical-text" role="alert">
+            {error}
+          </p>
         ) : null}
+        <div className="flex flex-wrap items-center gap-2">
+          {compared ? (
+            <Button onClick={() => void submit()} disabled={stage === 'saving'}>
+              {stage === 'saving' ? 'Recording' : 'Record review'}
+            </Button>
+          ) : (
+            <Button onClick={() => setStage('compared')} disabled={!answer}>
+              Compare with the AI
+            </Button>
+          )}
+          {onCancel ? (
+            <Button variant="outline" onClick={onCancel} disabled={stage === 'saving'}>
+              Cancel
+            </Button>
+          ) : null}
+        </div>
       </div>
     </section>
   );

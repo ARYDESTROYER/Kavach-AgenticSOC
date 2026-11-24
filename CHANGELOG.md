@@ -96,6 +96,33 @@ Behaviour changes and fixes:
 - **Unrated stars are not zero.** `GET /api/feedback/stats` averages each sub-score over the
   grades that rated it and adds `accuracy_rated`, `reasoning_quality_rated` and
   `action_appropriateness_rated`. An average of 0.0 with a count of 0 means nobody rated it.
+- **Only a Super admin manages Super admin accounts.** Giving an account the Super admin
+  role, or changing, disabling or deleting an account that has it, through `POST`, `PUT`
+  or `DELETE /api/users` or `PUT /api/users/{username}/roles`, needs a caller whose stored
+  role is Super admin and a sign-in within the re-authentication window. Before, any
+  holder of `users:manage` (a SOC manager by default) could make itself Super admin in
+  one call and then use the role-based access switch, or reset a Super admin's password.
+  Anyone else now gets `403 super_admin_only` and an Access denied row.
+- **Repeated reviews of one case count once.** An agent-closed case that was not picked
+  for review can be reviewed again. Team activity now counts a person's latest review of a
+  case only (an earlier one is listed as replaced), so the agreement rate's 30-review bar
+  is 30 different cases, and a repeat disagreement by the same person sends the people who
+  can close cases no new Inbox item.
+- **The Team activity floor is a page limit.** While role-based access is off, the limit
+  to Super admins, SOC managers and Auditors applies to the Team activity page only: every
+  account still holds `audit:view` and `users:manage`. The documentation now says so.
+- **Team activity counts what was applied, and measures only what it read in full.** A
+  runbook step whose save lost to another change (its record followed by a
+  `step.*_failed` record) is no longer counted, as screenshots and reviews already were
+  not. An owner set in the Escalate dialog counts as Assigned. A case escalated or put on
+  hold without an Acknowledge is in the median time to acknowledge, as on Metrics. A read
+  that stopped before the end of the range now omits the median time to acknowledge
+  (`ack_status` `partial`), the agreement rate and the review times instead of giving
+  those of the oldest part, and its CSV ends with a line that says so.
+- **Agent effectiveness counts a review whose ledger write failed.** The Auto-close review
+  module now restores such a review from the case history itself, on a pending or an
+  expired pick, so a disagreement or a missed threat is not shown as pending or expired
+  until the Case Manager is opened.
 
 Details:
 
@@ -105,7 +132,7 @@ Details:
   `ai_runtime_ready` and `ai_runtime_provider` on `POST /api/setup/secrets`; `GET
   /api/team/activity`, `GET /api/team/people` and `GET /api/team/people/{username}/events`;
   `GET` and `POST /api/cases/{id}/files`, `DELETE /api/cases/{id}/files/{file_id}` and `GET
-  /api/cases/{id}/files/{file_id}/content`; `POST /api/cases/{id}/review`, `GET
+  /api/cases/{id}/files/{file_id}/content`; `GET` and `POST /api/cases/{id}/review`, `GET
   /api/auto-close-review/summary` and `GET /api/metrics/auto-close-review`; `review` on `GET
   /api/cases` (echoed as `review_applied`); `actions_taken` and `review_via` on `POST
   /api/cases/{id}/action` (bulk bodies refuse `review_via`); `origin` and `review_id` on

@@ -34,9 +34,17 @@ from app.api.deps import require_auth
 from app.api.routes import router as monolith_router
 from app.api.routes_team import router as team_router
 from app.audit.audit_log import AuditLogger
-from app.audit.query import TRUE, all_of
+from app.audit.query import TRUE, In, all_of
 from app.config import Secrets
-from app.constants import AUDIT_WRITE_ALIAS, CaseStatus, EntityType, SourceSurface, Verdict
+from app.constants import (
+    AUDIT_WRITE_ALIAS,
+    CaseStatus,
+    DecisionBy,
+    Disposition,
+    EntityType,
+    SourceSurface,
+    Verdict,
+)
 from app.engine import team_activity as ta
 from app.es.fake import InMemoryESClient
 from app.es.indices import bootstrap_indices
@@ -367,6 +375,36 @@ def test_runbook_steps_count_each_step_marked_done() -> None:
     assert _person(_fold(rows).result([]), "fay")["counts"]["runbook_step_done"] == 5
 
 
+def test_an_owner_set_by_a_lifecycle_action_counts_as_assigned() -> None:
+    """The Escalate dialog's owner field sets the owner in the same action: the
+    lifecycle row records it as an ``assignee`` change, and it is an assignment the
+    person made, counted beside the escalation (and in bulk when a bulk action wrote
+    it). Only a row that changed the owner counts."""
+    t = NOW - timedelta(minutes=30)
+    owner = {"field": "assignee", "before": "alice", "after": "bob"}
+    moved = {"field": "status", "before": "investigating", "after": "escalated"}
+    rows = [
+        _lifecycle("tam", "escalate", "investigating", "escalated", ts=t, case_id="e1", changes=[moved, owner]),
+        _lifecycle("tam", "escalate", "investigating", "escalated", ts=t, case_id="e2", changes=[moved],
+                   run_id="bulk-0000000000000001"),
+        _lifecycle("tam", "escalate", "investigating", "escalated", ts=t, case_id="e3", changes=[moved, owner],
+                   run_id="bulk-0000000000000001"),
+        # An owner set while putting a case on hold (through the API) is an assignment too.
+        _lifecycle("tam", "hold", "investigating", "on_hold", ts=t, case_id="e4",
+                   changes=[{"field": "status", "before": "investigating", "after": "on_hold"},
+                            {"field": "assignee", "before": None, "after": "bob"}]),
+    ]
+    assert [e.kind for e in ta.events_of_row(rows[0])] == ["escalated", "assigned"]
+    tam = _person(_fold(rows).result([]), "tam")
+    assert tam["counts"]["escalated"] == 3 and tam["counts"]["assigned"] == 3
+    assert tam["bulk"]["escalated"] == 2 and tam["bulk"]["assigned"] == 1
+    assert sorted(e["kind"] for e in ta.person_events(rows, _window(), "tam")) == [
+        "assigned", "assigned", "assigned", "escalated", "escalated", "escalated",
+    ]
+    # The rows are read: every lifecycle action is in the case-work read.
+    assert {"case.escalated", "case.held", "case.resumed", "case.deescalated"} <= set(ta.WORK_ACTIONS)
+
+
 def _review(actor: str, agrees: Any, *, ts: datetime, case_id: str, elapsed: int | None = 60_000,
             via_changes: bool = False) -> dict[str, Any]:
     row: dict[str, Any] = {
@@ -394,6 +432,64 @@ def test_reviews_say_n_of_m_and_a_rate_only_from_thirty() -> None:
     many = [_review("hal", i % 3 != 0, ts=t, case_id=f"c{i}") for i in range(30)]
     rated = _person(_fold(many).result([]), "hal")["reviews"]
     assert rated["answered"] == 30 and rated["agreement_rate"] == pytest.approx(20 / 30, abs=1e-4)
+    # One short of the bar (D3.8, "only when M is at least 30"): the counts, no rate.
+    assert ta.REVIEW_RATE_MIN == 30
+    short = _person(_fold(many[:29]).result([]), "hal")["reviews"]
+    assert short["answered"] == 29 and short["agreed"] == 19 and short["agreement_rate"] is None
+
+
+def test_a_person_s_reviews_count_once_per_case() -> None:
+    """An agent-closed case that was not sampled may be reviewed again, and each answer
+    replaces the person's earlier one. Repeating a review must not add up: 35 reviews of
+    one case are one review, so they never reach the 30-review bar for a rate, and the
+    latest answer and its time spent are the ones counted. Someone else's review of the
+    same case is their own review."""
+    start = NOW - timedelta(hours=2)
+    rows = [_review("Gus", True, ts=start + timedelta(minutes=i), case_id="c1", elapsed=1_000)
+            for i in range(34)]
+    rows.append(_review("gus", False, ts=start + timedelta(minutes=40), case_id="c1", elapsed=90_000))
+    rows.append(_review("hal", True, ts=start + timedelta(minutes=41), case_id="c1"))
+    for order in (rows, list(reversed(rows))):  # any read order
+        fold = _fold(order)
+        result = fold.result([])
+        gus = _person(result, "gus")
+        assert gus["counts"]["reviewed"] == 1
+        assert gus["reviews"] == {
+            "completed": 1, "agreed": 0, "disagreed": 1, "unsure": 0, "answered": 1,
+            "agreement_rate": None, "time_spent_median_ms": 90_000.0, "time_to_review_median_seconds": None,
+        }
+        assert sum(day["counts"]["reviewed"] for day in gus["daily"]) == 1
+        assert _person(result, "hal")["counts"]["reviewed"] == 1
+        assert result["team"]["counts"]["reviewed"] == 2
+        assert result["team"]["reviews"]["completed"] == 2 and result["team"]["reviews"]["agreement_rate"] is None
+        assert sum(day["counts"]["reviewed"] for day in result["team"]["daily"]) == 2
+        assert fold.reviewed_case_ids() == ["c1"]
+        # Both spellings of the name still reach the person's events.
+        assert set(fold.spellings("gus")) == {"Gus", "gus"}
+    # The person's events list every review and say which ones were replaced.
+    events = ta.person_events(rows, _window(), "gus")
+    assert len(events) == 35 and all(e["kind"] == "reviewed" for e in events)
+    assert events[0]["detail"] == "Disagreed with the AI"
+    assert all(e["detail"] == "Agreed with the AI · Replaced by a later review of this case" for e in events[1:])
+    # Reviews of distinct cases each count, up to the rate.
+    many = [_review("ivy", True, ts=start, case_id=f"d{i}") for i in range(30)]
+    many += [_review("ivy", True, ts=start + timedelta(minutes=1), case_id=f"d{i}") for i in range(30)]
+    rated = _person(_fold(many).result([]), "ivy")["reviews"]
+    assert rated["completed"] == 30 and rated["agreement_rate"] == 1.0
+
+
+def test_an_applied_audit_first_review_and_a_repeat_count_once() -> None:
+    """The one-per-case rule also covers reviews held for their failure-row pairing."""
+    t = NOW - timedelta(minutes=30)
+    rows = [_attempt(_REVIEWED, "Ola", ts=t, request_id="req-000000e1"),
+            _attempt(_REVIEWED, "Ola", ts=t + timedelta(minutes=5), request_id="req-000000e2"),
+            _attempt(_REVIEW_FAILED, "Ola", ts=t + timedelta(minutes=5, milliseconds=20), request_id="req-000000e2"),
+            _review("Ola", False, ts=t + timedelta(minutes=9), case_id="c1")]
+    ola = _person(_fold(rows).result([]), "ola")
+    assert ola["counts"]["reviewed"] == 1 and ola["reviews"]["disagreed"] == 1
+    assert [e["detail"] for e in ta.person_events(rows, _window(), "ola")] == [
+        "Disagreed with the AI", "Agreed with the AI · Replaced by a later review of this case",
+    ]
 
 
 def test_time_to_review_is_sampled_to_completed() -> None:
@@ -408,6 +504,267 @@ def test_time_to_review_is_sampled_to_completed() -> None:
     ])
     reviews = _person(fold.result([]), "ivy")["reviews"]
     assert reviews["time_to_review_median_seconds"] == 90 * 60
+
+
+# --------------------------------------------------------------------------- #
+# Audit-first writers: an action row whose write then failed counts nothing
+# --------------------------------------------------------------------------- #
+def _attempt(action: str, actor: str, *, ts: datetime, request_id: str | None, case_id: str = "c1",
+             session: str | None = None, outcome: str | None = None) -> dict[str, Any]:
+    """A screenshot or review row as the audit-first writers append it: the action row
+    (``outcome`` success), or its failure row (``..._failed``, outcome failure) with the
+    same request id."""
+    failed = action.endswith("_failed")
+    row: dict[str, Any] = {
+        "ts": _iso(ts), "action_type": "feedback" if "review" in action else "collab", "surface": "case",
+        "actor": actor, "action": action, "actor_type": "human",
+        "outcome": outcome or ("failure" if failed else "success"), "case_id": case_id,
+        "target": {"type": "case", "id": case_id, "label": "CASE-0007"},
+        "result_summary": f"{action.split('.', 1)[1]} code=x",
+    }
+    if "review" in action:
+        row["tool_input"] = {"agrees": True, "elapsed_ms": 30_000}
+    if request_id is not None:
+        row["request_id"] = request_id
+    if session is not None:
+        row["session_ref"] = session
+    return row
+
+
+_ATTACH, _ATTACH_FAILED = "case.file_attached", "case.file_attach_failed"
+_REVIEWED, _REVIEW_FAILED = "case.review_recorded", "case.review_record_failed"
+
+
+@pytest.mark.parametrize("action,failed,kind", [
+    (_ATTACH, _ATTACH_FAILED, "screenshot_added"),
+    (_REVIEWED, _REVIEW_FAILED, "reviewed"),
+])
+def test_an_audit_first_row_followed_by_its_failure_row_is_not_counted(
+    action: str, failed: str, kind: str,
+) -> None:
+    """Uploads and reviews append their row before the store write and, when the write
+    fails, a failure row with the same request id (SPEC D5.10, D6.6, D7.6). The pair is
+    one attempt that was not applied, as the Audit log's inspector reads it, so neither
+    the counts, the reviews nor the person's events show it."""
+    t = NOW - timedelta(minutes=10)
+    pair = [_attempt(action, "Ola", ts=t, request_id="req-00000001"),
+            _attempt(failed, "Ola", ts=t + timedelta(milliseconds=40), request_id="req-00000001")]
+    for rows in (pair, list(reversed(pair))):  # the fold is order-agnostic
+        fold = _fold(rows)
+        result = fold.result([])
+        assert result["team"]["counts"][kind] == 0
+        assert result["team"]["reviews"]["completed"] == result["team"]["reviews"]["agreed"] == 0
+        assert fold.people_keys() == set() and fold.reviewed_case_ids() == []
+        assert ta.person_events(rows, _window(), "ola") == []
+    # The same rows with different request ids, or a lone action row, still count.
+    apart = [_attempt(action, "Ola", ts=t, request_id="req-00000001"),
+             _attempt(failed, "Ola", ts=t + timedelta(milliseconds=40), request_id="req-00000002")]
+    for rows in (apart, pair[:1]):
+        ola = _person(_fold(rows).result([]), "ola")
+        assert ola["counts"][kind] == 1
+        assert [e["kind"] for e in ta.person_events(rows, _window(), "ola")] == [kind]
+    if kind == "reviewed":
+        assert _person(_fold(pair[:1]).result([]), "ola")["reviews"]["agreed"] == 1
+
+
+def test_only_the_attempt_its_failure_row_follows_is_not_counted() -> None:
+    """The inspector's rule: an action row is not applied when the next row of the same
+    request, actor and case (and session, when both name one) is its failure row."""
+    t = NOW - timedelta(minutes=10)
+
+    def at(ms: int) -> datetime:
+        return t + timedelta(milliseconds=ms)
+
+    def count(rows: list[dict[str, Any]]) -> int:
+        return _fold(rows).result([])["team"]["counts"]["screenshot_added"]
+
+    rid = "req-00000009"
+    # A retried save inside one request: action, failure, action. The second applied.
+    assert count([_attempt(_ATTACH, "pia", ts=at(0), request_id=rid),
+                  _attempt(_ATTACH_FAILED, "pia", ts=at(5), request_id=rid),
+                  _attempt(_ATTACH, "pia", ts=at(9), request_id=rid)]) == 1
+    # A failure row of another person, another case or another named session pairs with
+    # nothing here.
+    assert count([_attempt(_ATTACH, "pia", ts=at(0), request_id=rid),
+                  _attempt(_ATTACH_FAILED, "quin", ts=at(5), request_id=rid)]) == 1
+    assert count([_attempt(_ATTACH, "pia", ts=at(0), request_id=rid),
+                  _attempt(_ATTACH_FAILED, "pia", ts=at(5), request_id=rid, case_id="c2")]) == 1
+    assert count([_attempt(_ATTACH, "pia", ts=at(0), request_id=rid, session="s-1"),
+                  _attempt(_ATTACH_FAILED, "pia", ts=at(5), request_id=rid, session="s-2")]) == 1
+    assert count([_attempt(_ATTACH, "pia", ts=at(0), request_id=rid, session="s-1"),
+                  _attempt(_ATTACH_FAILED, "pia", ts=at(5), request_id=rid)]) == 0
+    # A failure row before the action row, or a row with no request id, pairs with nothing.
+    assert count([_attempt(_ATTACH_FAILED, "pia", ts=at(0), request_id=rid),
+                  _attempt(_ATTACH, "pia", ts=at(5), request_id=rid)]) == 1
+    assert count([_attempt(_ATTACH, "pia", ts=at(0), request_id=None),
+                  _attempt(_ATTACH_FAILED, "pia", ts=at(5), request_id=None)]) == 1
+    # Two rows stored at the same instant: a failure row never comes before its action row.
+    assert count([_attempt(_ATTACH_FAILED, "pia", ts=at(0), request_id=rid),
+                  _attempt(_ATTACH, "pia", ts=at(0), request_id=rid)]) == 0
+    # A write cancelled at shutdown (outcome unknown) is not counted either: the
+    # inspector shows its action row as not applied, and the page never counts work it
+    # cannot confirm.
+    assert count([_attempt(_ATTACH, "pia", ts=at(0), request_id=rid),
+                  _attempt(_ATTACH_FAILED, "pia", ts=at(5), request_id=rid, outcome="unknown")]) == 0
+
+
+_STEP_PAIRS = [
+    ("step.updated", "step.update_failed"),
+    ("step.decision_recorded", "step.decision_record_failed"),
+    ("step.action_recorded", "step.action_record_failed"),
+    ("step.approved", "step.approve_failed"),
+]
+
+
+def _step_row(action: str, actor: str, *, ts: datetime, request_id: str, case_id: str = "c1",
+              step: str = "s1") -> dict[str, Any]:
+    """A runbook step row as ``runbook_runs._audited_runs_write`` appends it: the action
+    row with the step's status change, or its failure row (no changes) with the same
+    request id, target and session."""
+    failed = action.endswith("_failed")
+    row: dict[str, Any] = {
+        "ts": _iso(ts), "action_type": "runbook", "surface": "runbook", "actor": actor, "action": action,
+        "actor_type": "human", "outcome": "failure" if failed else "success", "case_id": case_id,
+        "target": {"type": "case", "id": case_id, "label": "CASE-0007"}, "request_id": request_id,
+        "session_ref": "s-1",
+    }
+    if failed:
+        row["result_summary"] = "no_change: Another change got there first; nothing was changed."
+    else:
+        row["changes"] = [{"field": f"steps.{step}.status", "before": "todo", "after": "done"}]
+    return row
+
+
+@pytest.mark.parametrize("action,failed", _STEP_PAIRS)
+def test_a_runbook_step_whose_write_failed_is_not_counted(action: str, failed: str) -> None:
+    """Runbook step changes are audit-first too: two people marking the same step done
+    at once both append their row, and the loser's compare-and-set write fails
+    (``_NoLongerApplies``) with its failure row. That step was not completed by them."""
+    assert ta.NOT_APPLIED_ACTIONS[failed] == action
+    t = NOW - timedelta(minutes=10)
+
+    def at(ms: int) -> datetime:
+        return t + timedelta(milliseconds=ms)
+
+    def done(rows: list[dict[str, Any]]) -> int:
+        return _fold(rows).result([])["team"]["counts"]["runbook_step_done"]
+
+    pair = [_step_row(action, "Uma", ts=at(0), request_id="req-000000s1"),
+            _step_row(failed, "Uma", ts=at(30), request_id="req-000000s1")]
+    for rows in (pair, list(reversed(pair))):
+        assert done(rows) == 0
+        assert ta.person_events(rows, _window(), "uma") == []
+    # The winner of the race (another request) still counts; so does a lone row.
+    winner = _step_row(action, "Vic", ts=at(1), request_id="req-000000s2")
+    assert done([*pair, winner]) == 1
+    assert _nonzero(_fold([*pair, winner]).result([])) == {"vic": {"runbook_step_done": 1}}
+    assert done(pair[:1]) == 1
+    assert [e["kind"] for e in ta.person_events(pair[:1], _window(), "uma")] == ["runbook_step_done"]
+    # A retried write inside one request: action, failure, action. The second applied.
+    assert done([*pair, _step_row(action, "Uma", ts=at(60), request_id="req-000000s1")]) == 1
+    # A failure row of another request or another case cancels nothing.
+    assert done([pair[0], _step_row(failed, "Uma", ts=at(30), request_id="req-000000s3")]) == 1
+    assert done([pair[0], _step_row(failed, "Uma", ts=at(30), request_id="req-000000s1", case_id="c2")]) == 1
+
+
+def test_the_step_writer_s_rows_pair_through_the_audit_store() -> None:
+    """The rows ``audited_write`` itself appends for a runbook step whose store write
+    failed (the action row, then ``step.update_failed``) are read back from the audit
+    store and count nothing; an applied write of the same kind counts."""
+    from app.audit.write import audited_write
+    from app.constants import ActionType
+    from app.models import AuditChange, AuditTarget
+
+    window = _window("today")
+    when = NOW - timedelta(minutes=15)
+
+    async def run() -> dict[str, dict[str, int]]:
+        repo = await _es_repo([])
+
+        async def write_step(request_id: str, write: Any) -> None:
+            await audited_write(
+                None, sink=repo, action="step.updated",
+                target=AuditTarget(type="case", id="c-step", label="CASE-0042"), expected_revision=3,
+                changes=[AuditChange(field="steps.s1.status", before="todo", after="done")],
+                write=write, action_type=ActionType.RUNBOOK, actor="Wes", actor_type="human",
+                surface="runbook", context={"request_id": request_id, "session_ref": "0123456789abcdef"}, case_id="c-step",
+                result_summary="Runbook step Contain marked done.",
+            )
+
+        async def lost() -> None:
+            raise RuntimeError("Another change got there first; nothing was changed.")
+
+        async def applied() -> str:
+            return "ok"
+
+        with pytest.raises(RuntimeError):
+            await write_step("req-0000aa01", lost)
+        await write_step("req-0000aa02", applied)
+        rows, _pages = await _all(repo)
+        assert [r["action"] for r in rows] == ["step.updated", "step.update_failed", "step.updated"]
+        # The store stamps the time it appended; date them inside the fixed window.
+        fold = ta.TeamActivityFold(window)
+        for offset, row in enumerate(rows):
+            fold.add_row({**row, "ts": _iso(when + timedelta(milliseconds=offset))})
+        return _nonzero(fold.result([]))
+
+    assert asyncio.run(run()) == {"wes": {"runbook_step_done": 1}}
+
+
+def test_a_failure_row_just_after_the_window_still_pairs_on_every_audit_store() -> None:
+    """The failure row follows its action row by milliseconds, so it can land after the
+    window's end: the read takes the two writers' rows a little past the end, on
+    Elasticsearch, SQL and a third-party store's bounded scan alike."""
+    window = _window("yesterday")
+    end = window.end
+    rows = [
+        _attempt(_ATTACH, "ray", ts=end - timedelta(milliseconds=5), request_id="req-0000000a"),
+        _attempt(_ATTACH_FAILED, "ray", ts=end + timedelta(milliseconds=30), request_id="req-0000000a"),
+        _attempt(_REVIEWED, "ray", ts=end - timedelta(milliseconds=4), request_id="req-0000000b"),
+        _attempt(_REVIEW_FAILED, "ray", ts=end + timedelta(seconds=20), request_id="req-0000000b"),
+        # Applied, inside the window: counted.
+        _attempt(_ATTACH, "ray", ts=end - timedelta(hours=1), request_id="req-0000000c"),
+        # Applied, after the window: read for the pairing, never counted.
+        _attempt(_ATTACH, "ray", ts=end + timedelta(seconds=1), request_id="req-0000000d"),
+    ]
+
+    async def through(repo: Any) -> tuple[dict[str, int], list[str]]:
+        fold = ta.TeamActivityFold(window)
+        _read, reason = await routes_team._stream(  # noqa: SLF001
+            repo, ta.counted_predicate(window), fold.add_row, 1000,
+        )
+        assert reason is None
+        seen: list[dict[str, Any]] = []
+        await routes_team._stream(  # noqa: SLF001
+            repo, all_of(ta.counted_predicate(window), In("actor", ("ray",))), seen.append, 1000,
+        )
+        return _nonzero(fold.result([])), [e["kind"] for e in ta.person_events(seen, window, "ray")]
+
+    expected = ({"ray": {"screenshot_added": 1}}, ["screenshot_added"])
+
+    class Third(AuditRepository):
+        async def write(self, doc: Any) -> None:  # pragma: no cover
+            pass
+
+        async def record(self, **kw: Any) -> None:  # pragma: no cover
+            pass
+
+        async def records_for_case(self, case_id: str, limit: int = 500) -> list[dict[str, Any]]:
+            return []
+
+        async def records(self, *, limit: int = 100, **kw: Any) -> list[dict[str, Any]]:
+            return sorted(rows, key=lambda r: r["ts"], reverse=True)[:limit]
+
+    async def run() -> None:
+        assert await through(await _es_repo(rows)) == expected
+        sql, engine = await _sql_repo(rows)
+        try:
+            assert await through(sql) == expected
+        finally:
+            await engine.dispose()
+        assert await through(Third()) == expected
+
+    asyncio.run(run())
 
 
 def test_days_are_operator_zone_calendar_days_and_zero_filled() -> None:
@@ -543,6 +900,53 @@ def test_time_to_acknowledge_follows_the_metrics_rule_and_the_acknowledger() -> 
     assert result["team"]["median_ack_seconds"] == 1200.0 and result["team"]["ack_status"] == "measured"
     omitted = fold.result([], ack_status="too_many_cases")
     assert omitted["team"]["median_ack_seconds"] is None and _person(omitted, "nia")["median_ack_seconds"] is None
+
+
+def test_a_case_escalated_or_put_on_hold_without_an_acknowledge_is_measured() -> None:
+    """The metrics MTTA rule takes a first human move into Escalated or On hold as the
+    acknowledgement when the case was never acknowledged. Such a case is a candidate
+    here too, so the team median matches the Metrics page instead of leaving those cases
+    out. A move made by the agent, a move into another status and a row that changed no
+    status are not candidates."""
+    from app.engine import metrics
+
+    opened = NOW - timedelta(hours=3)
+    up = _case("m1", created=opened, trail=[
+        StatusHistoryEntry(from_status="open", to_status="escalated", by="xia", at=_iso(opened + timedelta(minutes=10))),
+    ])
+    held = _case("m2", created=opened, trail=[
+        StatusHistoryEntry(from_status="open", to_status="on_hold", by="xia", at=_iso(opened + timedelta(minutes=30))),
+    ])
+    set_to = _case("m3", created=opened, trail=[
+        StatusHistoryEntry(from_status="open", to_status="investigating", by="yan",
+                           at=_iso(opened + timedelta(minutes=50))),
+    ])
+    rows = [
+        _lifecycle("xia", "escalate", "open", "escalated", ts=opened + timedelta(minutes=10), case_id="m1"),
+        _lifecycle("xia", "hold", "open", "on_hold", ts=opened + timedelta(minutes=30), case_id="m2"),
+        _lifecycle("yan", "set_status", "open", "investigating", ts=opened + timedelta(minutes=50), case_id="m3"),
+        # A legacy hold row (no structured action) reads the same.
+        _lifecycle("xia", "hold", "open", "on_hold", ts=opened + timedelta(minutes=30), case_id="m2",
+                   structured=False),
+        # Not candidates: an agent's move, a move to Open, a row that moved nothing.
+        {**_lifecycle("agent", "escalate", "open", "escalated", ts=opened, case_id="m4"), "actor_type": "agent"},
+        _lifecycle("xia", "resume", "on_hold", "open", ts=opened + timedelta(minutes=40), case_id="m5"),
+        _lifecycle("xia", "escalate", "escalated", "escalated", ts=opened + timedelta(minutes=45), case_id="m6"),
+    ]
+    assert [ta.ack_move_of_row(r) for r in rows[4:]] == [None, None, None]
+    fold = _fold(rows)
+    assert fold.acknowledged_case_ids() == ["m1", "m2", "m3"]
+    fold.add_acknowledged_cases({c.case_id: c for c in (up, held, set_to)})
+    result = fold.result([])
+    xia, yan = _person(result, "xia"), _person(result, "yan")
+    assert (xia["ack_samples"], xia["median_ack_seconds"]) == (2, 1200.0)
+    assert (yan["ack_samples"], yan["median_ack_seconds"]) == (1, 3000.0)
+    # Counts are unchanged: an escalation is counted as one, a hold as nothing.
+    assert xia["counts"]["escalated"] == 2 and xia["counts"]["acknowledged"] == 0
+    assert result["team"]["ack_samples"] == 3 and result["team"]["median_ack_seconds"] == 1800.0
+    # The same cases and the same median as the Metrics page's MTTA.
+    mtta = metrics.lifecycle_intervals([up, held, set_to])["mtta_minutes"]
+    assert mtta["count"] == 3 and mtta["p50"] * 60 == result["team"]["median_ack_seconds"]
 
 
 # --------------------------------------------------------------------------- #
@@ -701,7 +1105,7 @@ def test_the_stream_marks_the_row_limit_and_closes_its_snapshot() -> None:
 # --------------------------------------------------------------------------- #
 # The routes
 # --------------------------------------------------------------------------- #
-def _app(*, auth: bool = True, rbac: bool = False) -> TestClient:
+def _app(*, auth: bool = True, rbac: bool = False, work_routers: bool = False) -> TestClient:
     secrets = Secrets(
         _env_file=None, es_store_enabled=False, redis_url="",
         anthropic_api_key=None, openai_api_key=None,
@@ -726,6 +1130,14 @@ def _app(*, auth: bool = True, rbac: bool = False) -> TestClient:
     deps = [Depends(require_auth)] if auth else []
     api.include_router(monolith_router, dependencies=deps)
     api.include_router(team_router, dependencies=deps)
+    if work_routers:
+        from app.api.routes_auto_close_review import router as review_router
+        from app.api.routes_case_files import router as files_router
+        from app.api.routes_case_runbooks import router as runbooks_router
+
+        api.include_router(files_router, dependencies=deps)
+        api.include_router(review_router, dependencies=deps)
+        api.include_router(runbooks_router, dependencies=deps)
     mount_moved_routers(api, dependencies=deps)
     api.add_middleware(RequestIdMiddleware)
     return TestClient(api)
@@ -761,8 +1173,21 @@ def _write(client: TestClient, rows: list[dict[str, Any]], store: str = "control
     client.portal.call(go)
 
 
+#: Longer than any offset a route test asks of :func:`_recent`.
+_RECENT_SPAN = timedelta(hours=3)
+
+
 def _recent(minutes: int = 5) -> datetime:
-    return datetime.now(timezone.utc) - timedelta(minutes=minutes)
+    """``minutes`` before now, kept inside today (UTC, the default operator zone): most
+    route tests read the window ``today``. In the first hours after midnight the offsets
+    are scaled into the part of the day that has passed, in the same order, so a row is
+    never dated yesterday."""
+    now = datetime.now(timezone.utc)
+    offset = timedelta(minutes=minutes)
+    elapsed = now - now.replace(hour=0, minute=0, second=0, microsecond=0)
+    if elapsed <= _RECENT_SPAN:
+        offset = elapsed * (offset / _RECENT_SPAN)
+    return now - offset
 
 
 def test_a_super_admin_reads_the_team_and_actions_are_counted() -> None:
@@ -796,6 +1221,187 @@ def test_a_super_admin_reads_the_team_and_actions_are_counted() -> None:
         assert "testclient" not in text and "session_ref" not in text and "user_agent" not in text
 
 
+def _agent_closed_case(cid: str) -> Case:
+    """A case the AI agent closed automatically on its first decision (reviewable)."""
+    at = _iso(_recent(60))
+    return Case(
+        case_id=cid, case_number=cid.upper(), cluster_signature=f"sig-{cid}",
+        source_surface=SourceSurface.AUTOMATED_SCAN, entity=Entity(type=EntityType.IP, value="198.51.100.9"),
+        verdict=Verdict.FALSE_POSITIVE, confidence=0.93, risk_score=12.0, status=CaseStatus.CLOSED,
+        decision_by=DecisionBy.AGENT, disposition=Disposition.FALSE_POSITIVE, created_at=at, updated_at=at,
+        status_history=[StatusHistoryEntry(from_status="new", to_status="closed", by="agent", at=at)],
+        history=[{"ts": at, "event": "decision", "status": "closed", "decision_by": "agent",
+                  "escalate": False, "rationale": "FALSE_POSITIVE auto-closed"}],
+    )
+
+
+def test_a_screenshot_or_review_whose_save_failed_is_not_counted(monkeypatch) -> None:
+    """End to end: an upload whose store write failed after its audit row (a duplicate
+    that landed meanwhile), and a review whose case save failed, answer an error and
+    leave nothing on the case. Their pair of audit rows (the action row, then its failure
+    row with the same request id) counts nothing; the attempts that were saved count."""
+    import base64
+    import struct
+    import zlib
+
+    from app.api import routes_case_files as rcf
+    from app.stores import case_files as cf
+
+    def png(seed: int) -> bytes:
+        def chunk(ctype: bytes, body: bytes) -> bytes:
+            return (struct.pack(">I", len(body)) + ctype + body
+                    + struct.pack(">I", zlib.crc32(ctype + body) & 0xFFFFFFFF))
+
+        rows = b"".join(b"\x00" + bytes((seed + x) % 256 for x in range(12)) for _ in range(3))
+        return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 4, 3, 8, 2, 0, 0, 0))
+                + chunk(b"IDAT", zlib.compress(rows, 0)) + chunk(b"IEND", b""))
+
+    def upload(seed: int) -> Any:
+        return client.post("/api/cases/case-wp3-files/files", headers=admin, json={
+            "data_base64": base64.b64encode(png(seed)).decode(), "content_type": "image/png",
+        })
+
+    rcf._RUNTIMES.clear()  # noqa: SLF001 (a fresh upload rate bound)
+    with _app(work_routers=True) as client:
+        admin = _login(client)
+        state = _state(client)
+        client.portal.call(state.cases.save, _case("case-wp3-files", created=_recent(30)))
+        for cid in ("case-wp3-rv1", "case-wp3-rv2"):
+            client.portal.call(state.cases.save, _agent_closed_case(cid))
+        assert upload(1).status_code == 201
+        store = state.case_files
+        applied = store._append  # noqa: SLF001
+
+        async def raced(*_a: Any, **_k: Any) -> None:
+            raise cf.CaseFilesConflict("The same screenshot was added to this case meanwhile.",
+                                       code="case_files_duplicate")
+
+        monkeypatch.setattr(store, "_append", raced)
+        refused = upload(2)
+        assert refused.status_code == 409 and refused.json()["detail"]["code"] == "case_files_duplicate"
+        monkeypatch.setattr(store, "_append", applied)
+        live = client.portal.call(store.index, "case-wp3-files").live
+        assert len(live) == 1
+
+        cases = state.cases
+        saved = cases.save
+        recorded = client.post("/api/cases/case-wp3-rv1/review", headers=admin,
+                               json={"classification": "false_positive", "elapsed_ms": 20_000})
+        assert recorded.status_code == 200, recorded.text
+
+        async def down(*_a: Any, **_k: Any) -> None:
+            raise RuntimeError("case store down")
+
+        monkeypatch.setattr(cases, "save", down)
+        failed = client.post("/api/cases/case-wp3-rv2/review", headers=admin,
+                             json={"classification": "true_positive"})
+        assert failed.status_code == 503 and failed.json()["detail"]["code"] == "case_store_unavailable"
+        monkeypatch.setattr(cases, "save", saved)
+        assert client.portal.call(cases.get, "case-wp3-rv2").feedback == []
+
+        rows = client.portal.call(lambda: state.control_audit.records(limit=1000))
+        actions = [r.get("action") for r in rows]
+        assert actions.count("case.file_attached") == 2 and actions.count("case.file_attach_failed") == 1
+        assert actions.count("case.review_recorded") == 2 and actions.count("case.review_record_failed") == 1
+
+        response = client.get("/api/team/activity", params={"window": "today"}, headers=admin)
+        assert response.status_code == 200, response.text
+        me = next(p for p in response.json()["people"] if p["key"] == "admin")
+        assert me["counts"]["screenshot_added"] == 1
+        assert me["counts"]["reviewed"] == 1
+        assert (me["reviews"]["completed"], me["reviews"]["agreed"], me["reviews"]["disagreed"]) == (1, 1, 0)
+        events = client.get("/api/team/people/admin/events", params={"window": "today"}, headers=admin)
+        assert events.status_code == 200, events.text
+        kinds = [e["kind"] for e in events.json()["events"]]
+        assert kinds.count("screenshot_added") == 1 and kinds.count("reviewed") == 1
+        assert [e["case_id"] for e in events.json()["events"] if e["kind"] == "reviewed"] == ["case-wp3-rv1"]
+    rcf._RUNTIMES.clear()  # noqa: SLF001
+
+
+def test_a_runbook_step_that_lost_a_race_is_not_counted(monkeypatch) -> None:
+    """End to end: two people mark the same runbook step done at once. Both pre-checks
+    pass, and the loser's compare-and-set write finds the step already changed, so its
+    action row (``step.updated``) is followed by its failure row (``step.update_failed``)
+    with the same request id. That attempt counts nothing on Team activity or in the
+    person's events; the step the same person did complete counts."""
+    from app.engine import runbook_runs
+    from app.models import LookupResult
+
+    async def no_source_read(_state: Any, _case: Any, template: Any, **_kw: Any) -> LookupResult:
+        return LookupResult(tool=template.tool, status="empty", count=0, ran_at=_iso(_recent(1)),
+                            ran_by="system", facts=[])
+
+    monkeypatch.setattr(runbook_runs, "execute_lookup", no_source_read)
+    with _app(work_routers=True) as client:
+        admin = _login(client)
+        state = _state(client)
+        client.portal.call(state.cases.save, _case("case-wp3-steps", created=_recent(30)))
+        attached = client.post("/api/cases/case-wp3-steps/runbooks", headers=admin,
+                               json={"runbook_id": "generic-incident"})
+        assert attached.status_code == 201, attached.text
+        # The on-attach lookups write to the runs too; let them settle before the race.
+        client.portal.call(runbook_runs.wait_for_background_lookups, 10)
+        base = f"/api/cases/case-wp3-steps/runbooks/{attached.json()['run']['run_id']}/steps"
+        runs = state.runbook_runs
+        original = runs.mutate
+        raced = {"done": False}
+
+        async def other_writer_first(case_id: str, change: Any, **kw: Any) -> Any:
+            # Another process stores the same step change just before this one writes.
+            if not raced["done"]:
+                raced["done"] = True
+                await original(case_id, change, **kw)
+            return await original(case_id, change, **kw)
+
+        monkeypatch.setattr(runs, "mutate", other_writer_first)
+        lost = client.patch(f"{base}/incident-lead", headers=admin, json={"expected_revision": 0, "status": "done"})
+        assert lost.status_code == 409 and lost.json()["detail"]["code"] == "runbook_conflict", lost.text
+        monkeypatch.setattr(runs, "mutate", original)
+        done = client.patch(f"{base}/what-happened", headers=admin,
+                            json={"expected_revision": 0, "status": "done", "note": "Seen on one host."})
+        assert done.status_code == 200, done.text
+
+        rows = client.portal.call(lambda: state.control_audit.records(limit=1000))
+        steps = [r for r in rows if r.get("action") in ("step.updated", "step.update_failed")]
+        assert sorted(r["action"] for r in steps) == ["step.update_failed", "step.updated", "step.updated"]
+        failed = next(r for r in steps if r["action"] == "step.update_failed")
+        assert sum(1 for r in steps if r.get("request_id") == failed.get("request_id")) == 2
+
+        response = client.get("/api/team/activity", params={"window": "today"}, headers=admin)
+        assert response.status_code == 200, response.text
+        me = next(p for p in response.json()["people"] if p["key"] == "admin")
+        assert me["counts"]["runbook_step_done"] == 1
+        events = client.get("/api/team/people/admin/events", params={"window": "today"}, headers=admin)
+        assert events.status_code == 200, events.text
+        assert [e["kind"] for e in events.json()["events"]].count("runbook_step_done") == 1
+
+
+def test_repeated_reviews_of_one_unsampled_case_count_as_one() -> None:
+    """Through the routes: 35 reviews of one agent-closed case that was not sampled are
+    35 recorded grades and one review on Team activity, with no agreement rate."""
+    with _app(rbac=True, work_routers=True) as client:
+        admin = _login(client)
+        analyst = _user(client, admin, "t1-repeat", "analyst_tier1")
+        state = _state(client)
+        client.portal.call(state.cases.save, _agent_closed_case("case-wp3-rep"))
+        for _ in range(35):
+            recorded = client.post("/api/cases/case-wp3-rep/review", headers=analyst,
+                                   json={"classification": "false_positive", "elapsed_ms": 1_000})
+            assert recorded.status_code == 200, recorded.text
+        response = client.get("/api/team/activity", params={"window": "today"}, headers=admin)
+        assert response.status_code == 200, response.text
+        person = next(p for p in response.json()["people"] if p["key"] == "t1-repeat")
+        assert person["counts"]["reviewed"] == 1
+        assert (person["reviews"]["completed"], person["reviews"]["agreed"]) == (1, 1)
+        assert person["reviews"]["agreement_rate"] is None
+        assert response.json()["team"]["reviews"]["completed"] == 1
+        events = client.get("/api/team/people/t1-repeat/events", params={"window": "today", "limit": 200},
+                            headers=admin).json()["events"]
+        reviewed = [e for e in events if e["kind"] == "reviewed"]
+        assert len(reviewed) == 35
+        assert sum("Replaced by a later review" in e["detail"] for e in reviewed) == 34
+
+
 def test_the_role_floor_while_rbac_is_off() -> None:
     with _app(rbac=False) as client:
         admin = _login(client)
@@ -812,6 +1418,38 @@ def test_the_role_floor_while_rbac_is_off() -> None:
             assert client.get("/api/team/activity", headers=headers).status_code == 200
 
 
+_FLOOR_DOCS = (
+    "docs/analyst/team-activity.md",
+    "docs/reference/permissions.md",
+    "docs/reference/configuration.md",
+    "docs/operations/upgrades.md",
+)
+
+
+def test_the_rbac_off_floor_limits_this_page_only_and_the_docs_say_so() -> None:
+    """While role-based access is off every account holds every grant, users:manage
+    among them, so the stored-role floor (SPEC D3.3) is a limit on this page, not an
+    access control: an analyst can change its own role (an audited row) and open the
+    page. It cannot make itself Super admin. Every page that describes the floor says
+    this, so an operator does not read it as keeping per-person work private."""
+    with _app(rbac=False) as client:
+        admin = _login(client)
+        analyst = _user(client, admin, "tier1-floor", "analyst_tier1")
+        assert client.get("/api/team/activity", headers=analyst).status_code == 403
+        promoted = client.put("/api/users/tier1-floor", json={"role": "super_admin"}, headers=analyst)
+        assert promoted.status_code == 403 and promoted.json()["detail"]["code"] == "super_admin_only"
+        moved = client.put("/api/users/tier1-floor", json={"role": "auditor"}, headers=analyst)
+        assert moved.status_code == 200, moved.text
+        rows = client.portal.call(lambda: _state(client).control_audit.records(limit=1000))
+        assert any(r.get("action") == "user.role_changed" and r.get("actor") == "tier1-floor" for r in rows)
+        assert client.get("/api/team/activity", headers=analyst).status_code == 200
+    root = Path(__file__).resolve().parents[2]
+    for doc in _FLOOR_DOCS:
+        text = " ".join((root / doc).read_text(encoding="utf-8").split())
+        assert "per-person work private" in text, doc
+        assert "change its own role" in text, doc
+
+
 def test_with_rbac_on_the_team_view_grant_decides() -> None:
     with _app(rbac=True) as client:
         admin = _login(client)
@@ -822,6 +1460,24 @@ def test_with_rbac_on_the_team_view_grant_decides() -> None:
         assert client.get("/api/team/activity", headers=manager).status_code == 200
         auditor = _user(client, admin, "auditor-wp3", "auditor")
         assert client.get("/api/team/activity", headers=auditor).status_code == 200
+
+
+def test_with_rbac_on_a_role_outside_the_floor_reads_the_team_once_granted() -> None:
+    """D3.2, D3.3: the stored-role floor applies only while role-based access is off.
+    With it on, ``team:view`` is an ordinary grant: a team lead's role (here a Tier 2
+    analyst) given it through a role override opens every team route."""
+    with _app(rbac=True) as client:
+        admin = _login(client)
+        state = _state(client)
+        lead = _user(client, admin, "lead-wp3", "analyst_tier2")
+        assert client.get("/api/team/activity", headers=lead).status_code == 403
+        prefs = state.prefs.model_copy(deep=True)
+        prefs.rbac.roles = {**prefs.rbac.roles, "analyst_tier2": {"team": ["view"]}}
+        client.portal.call(state.update_prefs, prefs)
+        for path in ("/api/team/activity", "/api/team/people", "/api/team/people/admin/events"):
+            response = client.get(path, headers=lead)
+            assert response.status_code == 200, (path, response.text)
+        assert client.get("/api/team/activity", headers=lead).json()["rbac_enabled"] is True
 
 
 def test_the_switch_and_the_window_bounds() -> None:
@@ -838,6 +1494,48 @@ def test_the_switch_and_the_window_bounds() -> None:
         for path in ("/api/team/activity", "/api/team/people", "/api/team/people/admin/events"):
             off = client.get(path, headers=admin)
             assert off.status_code == 409 and off.json()["detail"]["code"] == "team_activity_off"
+
+
+def test_a_person_s_events_page_holds_at_most_two_hundred() -> None:
+    """D3.10: at most 200 events a page; a larger limit is refused, not served."""
+    assert routes_team.EVENTS_PAGE_MAX == 200
+    with _app() as client:
+        admin = _login(client)
+        _write(client, [
+            _lifecycle("max", "acknowledge", "open", "investigating", ts=_recent(30), case_id=f"m-{i}")
+            for i in range(201)
+        ])
+        too_many = client.get("/api/team/people/max/events", params={"window": "today", "limit": 201},
+                              headers=admin)
+        assert too_many.status_code == 422, too_many.text[:200]
+        page = client.get("/api/team/people/max/events", params={"window": "today", "limit": 200}, headers=admin)
+        assert page.status_code == 200, page.text
+        assert len(page.json()["events"]) == 200 and page.json()["next_cursor"]
+
+
+def test_a_cached_answer_expires_after_sixty_seconds() -> None:
+    """D3.6: an answer is reused for 60 seconds per viewer and window, then computed
+    again. The "today" window starts at the same instant all day, so an answer that
+    never expired would freeze the day's counts at the first read."""
+    now = [0.0]
+    computed: list[float] = []
+    cache = routes_team._AnswerCache(clock=lambda: now[0])  # noqa: SLF001
+
+    async def compute() -> int:
+        computed.append(now[0])
+        return len(computed)
+
+    async def run() -> list[int]:
+        seen = [await cache.get(("viewer", "today"), compute)]
+        now[0] = 59.999
+        seen.append(await cache.get(("viewer", "today"), compute))
+        seen.append(await cache.get(("other-viewer", "today"), compute))
+        now[0] = 60.0
+        seen.append(await cache.get(("viewer", "today"), compute))
+        return seen
+
+    assert asyncio.run(run()) == [1, 1, 2, 3]
+    assert computed == [0.0, 59.999, 60.0]
 
 
 def test_sign_in_off_answers_an_empty_page() -> None:
@@ -986,15 +1684,54 @@ def test_the_person_view_row_names_the_person_on_one_plain_line() -> None:
 
 
 def test_a_partial_read_says_so(monkeypatch) -> None:
+    """A read that stopped at its row limit holds the oldest part of the window only:
+    the counts are lower bounds, but a median or a rate of that part is not, so the time
+    to acknowledge reads ``partial`` and is omitted rather than taken from the part."""
     monkeypatch.setattr(ta, "MAX_SCANNED_ROWS", 3)
     with _app() as client:
         admin = _login(client)
+        state = _state(client)
+        created = _recent(120)
+        acked = [_recent(119) if i < 3 else _recent(20) for i in range(6)]
+        for i in range(6):
+            client.portal.call(state.cases.save, _case(
+                f"q-{i}", created=created, acknowledged=acked[i],
+                history=[{"ts": _iso(acked[i]), "event": "analyst_action", "action": "acknowledge",
+                          "analyst": "quin"}],
+            ))
         _write(client, [
-            _lifecycle("quin", "acknowledge", "open", "investigating", ts=_recent(30 - i), case_id=f"q-{i}")
+            _lifecycle("quin", "acknowledge", "open", "investigating", ts=acked[i], case_id=f"q-{i}")
             for i in range(6)
         ])
         body = client.get("/api/team/activity", headers=admin).json()
         assert body["exact"] is False and body["partial_reason"] == "row_limit" and body["scanned_rows"] == 3
+        team, quin = body["team"], _person(body, "quin")
+        assert team["counts"]["acknowledged"] == 3  # at least these
+        assert team["ack_status"] == "partial"
+        assert team["median_ack_seconds"] is None and team["ack_samples"] == 0
+        assert quin["median_ack_seconds"] is None and quin["ack_samples"] == 0
+
+
+def test_a_partial_fold_omits_every_median_and_rate() -> None:
+    """The pure fold: with a partial reason the counts stand and every median and rate
+    is omitted, whatever the caller passed as the acknowledgement status (an unavailable
+    or too-many-cases status keeps its own reason)."""
+    t = NOW - timedelta(hours=1)
+    rows = [_review("zed", True, ts=t, case_id=f"z{i}", elapsed=40_000) for i in range(30)]
+    fold = _fold(rows)
+    fold.add_review_requests([{"ts": _iso(t - timedelta(minutes=5)), "action": "case.review_requested",
+                               "case_id": f"z{i}"} for i in range(30)])
+    exact = fold.result([])
+    assert exact["team"]["reviews"]["agreement_rate"] == 1.0
+    assert exact["team"]["reviews"]["time_spent_median_ms"] == 40_000.0
+    assert exact["team"]["reviews"]["time_to_review_median_seconds"] == 300.0
+    partial = fold.result([], partial_reason="store_limit")
+    for reviews in (partial["team"]["reviews"], _person(partial, "zed")["reviews"]):
+        assert (reviews["completed"], reviews["agreed"], reviews["answered"]) == (30, 30, 30)
+        assert reviews["agreement_rate"] is None
+        assert reviews["time_spent_median_ms"] is None and reviews["time_to_review_median_seconds"] is None
+    assert partial["team"]["ack_status"] == "partial" and partial["exact"] is False
+    assert fold.result([], partial_reason="row_limit", ack_status="unavailable")["team"]["ack_status"] == "unavailable"
 
 
 def test_the_case_bound_omits_the_median(monkeypatch) -> None:

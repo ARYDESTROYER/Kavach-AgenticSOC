@@ -516,6 +516,20 @@ describe('CaseManager', () => {
 
     // No tracked capitals anywhere in a row.
     for (const row of rows) expect(row.querySelectorAll('.uppercase')).toHaveLength(0);
+    // Line two is a fixed 20px line, so a row with an owner monogram or an outcome badge
+    // (20px) is as tall as one with only the status words (16px).
+    for (const row of rows) expect(within(row).getByTestId('case-queue-meta')).toHaveClass('h-5');
+  });
+
+  it('lets the queue search and "Filters 1" share a row in the 360px pane', async () => {
+    // At 360px the row has 308px: a 12rem (192px) search, the gap and "Filters 1" (109px)
+    // would need 309px, so the queue lowers the search minimum to 10rem (SPEC D8.1).
+    render(<CaseManager />);
+    await screen.findByText('Suspicious S3 bucket exfiltration');
+    const bar = screen.getByRole('group', { name: 'Case queue filters' });
+    const search = bar.querySelector('[data-filter-search]');
+    expect(search).toHaveClass('min-w-[10rem]');
+    expect(search).not.toHaveClass('min-w-[12rem]');
   });
 
   it('omits an entity the title already names, and falls back to the source name', async () => {

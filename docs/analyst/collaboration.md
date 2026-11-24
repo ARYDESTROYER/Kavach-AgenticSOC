@@ -1,18 +1,20 @@
 ---
 title: Case collaboration
-description: Coordinate analysts with case ownership, discussion, activity, and tasks.
+description: Coordinate analysts with case ownership, discussion, screenshots, tasks, and history.
 ---
 
 # Case collaboration
 
 The **Collaboration** tab keeps human coordination beside the evidence and decision it
-concerns. Collaboration data is case state; it does not alter the deterministic
-close policy.
+concerns, in four sections: Discussion, Files, Tasks and History. Collaboration data is
+case state; it does not alter the deterministic close policy.
 
 ## Ownership, tags, and comments
 
-- Assign a case to an analyst or team so the queue has a visible owner.
-- Add short tags for routing and review. Tags are deduplicated and bounded.
+- Change a case's owner in the case header (select the owner, or press **M**), not on
+  this tab, so the queue has a visible owner.
+- Edit short tags for routing and review in the facts rail (**Edit tags**, or **T**).
+  Tags are deduplicated and bounded.
 - Use a case comment for a simple note that should appear in exports.
 - Use the threaded discussion for replies, reactions, and mentions.
 
@@ -29,6 +31,13 @@ delivered to the in-app inbox when applicable.
 Keep messages factual and attributable. Source-derived strings remain untrusted
 data even when pasted into a discussion.
 
+## Files
+
+The **Files** section holds the screenshots on the case. Add them by dropping them,
+pasting while the Collaboration tab has focus, or choosing them (PNG, JPEG or WebP).
+Anyone with `cases:comment` can add one; the person who added it, or anyone with
+`cases:close`, can delete it. See [Case Manager](case-manager.md) for the details.
+
 ## Tasks
 
 Case tasks live on the **Runbook** tab, under **Other tasks**, beside the case's runbook
@@ -43,11 +52,13 @@ that needs an owner or a visible completion state and is not a runbook step:
 
 Creating, editing, and logging tasks requires `cases:write`.
 
-## Activity and audit
+## History and audit
 
-The case activity stream brings collaboration events into one chronological view,
-newest first. Each row reads as one plain sentence, with the system's internal names
-shown as names ("Case manager") rather than codes; the text exactly as the audit log
+**History** lists each lifecycle change with who made it, when, and the actions taken.
+**Show all activity** opens the full case activity stream below it, which brings
+collaboration events into one chronological view, newest first. Each row reads as one
+plain sentence, with the system's internal names shown as names ("Case manager") rather
+than codes; the text exactly as the audit log
 recorded it is one click away under **Details**. **Show activity by** filters the stream
 to **All**, **Human**, **AI** or **System**. While an investigation is running, its
 steps appear above the stream as they happen; they are a live narration, not part of the

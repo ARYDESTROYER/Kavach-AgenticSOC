@@ -166,8 +166,8 @@ dark theme by default. Select a thumbnail to open it full size.
 <table>
   <tr>
     <td width="33%" valign="top">
-      <a href="docs/assets/screenshots/case-manager.webp"><img src="docs/assets/screenshots/case-manager.webp" width="280" alt="Case Manager with an escalated true-positive case selected: the Decision card, labelled Code, records why code escalated it, and the advisory AI assessment below gives the model's reading and confidence, above the investigation inputs."></a><br>
-      <sub><b>Case Manager.</b> The decision card (Code) sits above the advisory AI assessment, which only recommends.</sub>
+      <a href="docs/assets/screenshots/case-manager.webp"><img src="docs/assets/screenshots/case-manager.webp" width="280" alt="Case Manager with an escalated true-positive case open on its Investigation tab: the advisory AI assessment, labelled AI, gives the model's reading and findings, and the Decision card below it, labelled Code, records that code routed the case to a person."></a><br>
+      <sub><b>Case Manager.</b> The advisory AI assessment, which only recommends, sits above the decision card (Code).</sub>
     </td>
     <td width="33%" valign="top">
       <a href="docs/assets/screenshots/workspace-chat.webp"><img src="docs/assets/screenshots/workspace-chat.webp" width="280" alt="Workspace Chat at the end of an answer about new cases, showing a new-cases-by-severity table with top rules, the answer's lookups, time and simulated cost, and three suggested follow-up questions."></a><br>

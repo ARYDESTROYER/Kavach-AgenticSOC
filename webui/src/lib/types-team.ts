@@ -43,11 +43,11 @@ export interface TeamReviews {
   unsure: number;
   /** Agreed plus disagreed (an unsure review is not an answer). */
   answered: number;
-  /** Agreed over answered, only from 30 answered reviews. */
+  /** Agreed over answered, only from 30 answered reviews; null on a partial read. */
   agreement_rate: number | null;
-  /** Median time spent on the review card, measured in the Console. */
+  /** Median time spent on the review card, measured in the Console; null on a partial read. */
   time_spent_median_ms: number | null;
-  /** Median time from the case being picked for review to the review. */
+  /** Median time from the case being picked for review to the review; null on a partial read. */
   time_to_review_median_seconds: number | null;
 }
 
@@ -85,7 +85,11 @@ export interface TeamTotals {
   daily: TeamDay<TeamChartKind>[];
   median_ack_seconds: number | null;
   ack_samples: number;
-  ack_status: 'measured' | 'too_many_cases' | 'unavailable';
+  /**
+   * Whether the median time to acknowledge was measured. `partial`: the audit read stopped
+   * before the end of the window, so a median of the part read is not given.
+   */
+  ack_status: 'measured' | 'too_many_cases' | 'unavailable' | 'partial';
   reviews: TeamReviews;
 }
 

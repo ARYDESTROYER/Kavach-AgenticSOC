@@ -522,7 +522,12 @@ const QueueRow: React.FC<{
               <span className="shrink-0 text-xs tabular-nums text-muted-foreground">{age}</span>
             </span>
 
-            <span className="mt-1.5 flex min-w-0 items-center gap-1 text-xs text-muted-foreground">
+            {/* A fixed 20px line: the owner monogram and the outcome badge are 20px, the
+                status words 16px, so without it rows step between 64px and 68px. */}
+            <span
+              data-testid="case-queue-meta"
+              className="mt-1.5 flex h-5 min-w-0 items-center gap-1 text-xs text-muted-foreground"
+            >
               <span
                 data-testid="case-queue-severity"
                 className={cn('inline-flex shrink-0 items-center gap-1', SEVERITY_WORD[severity])}
@@ -2307,6 +2312,9 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
                         ref={filterBarRef}
                         aria-label="Case queue filters"
                         primaryCount={0}
+                        // The 360px queue pane: with the 12rem minimum, "Filters 1" (wider
+                        // than "Filters") would wrap onto a row of its own once a filter is on.
+                        searchClassName="min-w-[10rem]"
                         search={{
                           value: searchInput,
                           onChange: setSearchInput,

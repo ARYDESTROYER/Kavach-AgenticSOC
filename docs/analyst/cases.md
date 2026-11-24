@@ -76,7 +76,13 @@ Selecting rows opens bulk actions. Closing or resolving cases, from the bulk bar
 a row's one-click **Close** (shown only on an open row, and only with `cases:close`),
 opens a dialog that requires a disposition, so every closed case records what it was.
 When a case's runbook still has required steps open, the dialog also asks why; the close
-is never blocked (see [Runbooks](../intelligence/runbooks.md)). Bulk changes are unavailable in Demo Mode. Long-running Case
+is never blocked (see [Runbooks](../intelligence/runbooks.md)). Bulk **Set status** and
+**Set disposition** leave out the cases the AI agent closed (a terminal case whose first
+decision was the agent's automatic close): "Cases the AI agent closed are left out; review
+them instead." The menus say how many of the selected cases that is, the confirmation
+repeats it, and when every selected case is one of them nothing is queued; review such a
+case on its own (see [Cases the agent closed](case-manager.md#cases-the-agent-closed)).
+Bulk changes are unavailable in Demo Mode. Long-running Case
 Manager operations snapshot the
 selected case IDs and submit one server-owned background job. The dialog closes after
 `202 Accepted`; work continues across navigation or reload and reports progress in

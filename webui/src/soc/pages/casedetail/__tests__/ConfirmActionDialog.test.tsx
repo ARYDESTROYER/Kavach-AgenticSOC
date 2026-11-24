@@ -16,7 +16,7 @@ import {
   type ConfirmActionDialogProps,
 } from '../ConfirmActionDialog';
 import { ALL_ACTIONS, ACTIONS_TAKEN_MAX, DURABLE_CONTEXT_NOTE, type ActionDef, type WireActionTaken } from '../shared';
-import { toggleActionTaken } from '../ActionsTakenField';
+import { ActionsTakenField, toggleActionTaken } from '../ActionsTakenField';
 import { emptyGradingDraft } from '../grading';
 
 function Harness(
@@ -214,6 +214,21 @@ describe('Round 15 close dialog: actions taken (D4.2)', () => {
       'escalated_externally',
     ];
     expect(toggleActionTaken(eight, 'tuned_detection')).toEqual(eight);
+  });
+
+  it('says plainly when the cap is reached', () => {
+    const eight: WireActionTaken[] = [
+      'blocked_indicator',
+      'isolated_host',
+      'disabled_account',
+      'reset_credentials',
+      'removed_malware',
+      'patched_or_hardened',
+      'notified_owner',
+      'escalated_externally',
+    ];
+    render(<ActionsTakenField value={eight} onChange={vi.fn()} />);
+    expect(screen.getByText(`You can record up to ${ACTIONS_TAKEN_MAX} actions.`)).toBeInTheDocument();
   });
 
   it('is not offered on an action that ends nothing (escalate)', () => {

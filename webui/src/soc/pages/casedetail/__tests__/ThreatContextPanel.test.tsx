@@ -200,7 +200,11 @@ describe('ThreatContextPanel: the flat sections layout', () => {
     expect(within(criticalityRow as HTMLElement).getByText('4')).toBeInTheDocument();
     expect(screen.getByText('Internal asset')).toBeInTheDocument();
     expect(screen.getByText('No')).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: 'How this case was clustered' })).toBeInTheDocument();
+    // Every part of the section, clustering included, is a part heading (h3) under the
+    // Investigation tab's Threat context h2, so none reads as a sibling section.
+    expect(screen.getByRole('heading', { level: 3, name: 'How this case was clustered' })).toHaveClass('text-sm');
+    expect(screen.getByRole('heading', { level: 3, name: 'Asset context' })).toBeInTheDocument();
+    expect(container.querySelectorAll('h1, h2')).toHaveLength(0);
     expect(screen.getByText('3 matched signals')).toBeInTheDocument();
     expect(screen.getByText('cluster-b8d8524f531b')).toBeInTheDocument();
     expect(screen.getByText('CASE-000001')).toBeInTheDocument();
