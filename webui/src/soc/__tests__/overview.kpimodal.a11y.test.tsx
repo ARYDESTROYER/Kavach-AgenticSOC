@@ -248,6 +248,18 @@ function renderOverview() {
   );
 }
 
+/**
+ * Let the live region's pending announcement land inside act(). The announcer re-sets its
+ * text on a 60 ms timer (useLiveAnnouncer), and the panel announces itself on open; an axe
+ * run takes longer than that, so without this the timer fires mid-audit, outside act(),
+ * and React writes a warning to stderr that fails the strict gate.
+ */
+async function settleAnnouncements() {
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 80));
+  });
+}
+
 /** Render the dashboard, open one tile's panel, and wait for its first page to land. */
 async function openPanel(user: ReturnType<typeof makeUser>, testId: string) {
   renderOverview();
@@ -559,6 +571,7 @@ describe('KPI deep-inspection modal', () => {
     // container, so a container-scoped audit would be green while auditing nothing.
     // The probe is the non-vacuity guard.
     expect(document.body.querySelector('[data-testid="kpi-drilldown"]')).not.toBeNull();
+    await settleAnnouncements();
     expect(await axe(document.body)).toHaveNoViolations();
   });
 
@@ -581,6 +594,7 @@ describe('KPI deep-inspection modal', () => {
     );
     expect(partition!.querySelectorAll(':scope > dd')).toHaveLength(4);
 
+    await settleAnnouncements();
     expect(await axe(document.body)).toHaveNoViolations();
   });
 });
