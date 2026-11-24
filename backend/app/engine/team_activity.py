@@ -39,6 +39,16 @@ People are keyed by ``actor.strip().lower()`` (the user store's own normalisatio
 Only rows a person made count (recorded or derived ``actor_type`` human) and only rows
 that succeeded (an outcome of success, or none recorded).
 
+Screenshots and reviews are written audit-first (``app.audit.write``, SPEC D5.10, D6.6,
+D7.6): their row is appended before the store write and, when that write then fails, a
+failure row (``case.file_attach_failed``, ``case.review_record_failed``) with the same
+request id follows it. Such an action row was never applied, so it is not counted. The
+fold reads it as the Audit log's inspector does: an action row is not applied when the
+next row of the same request, actor and case (and session, when both name one) among
+that writer's rows is its failure row. These two writers' rows are therefore held until
+the first read, and read a little past the window's end (:data:`PAIRING_HORIZON`), where
+a failure row can land a few milliseconds after the action row it follows.
+
 Counts come with context and nothing else: there is no ranking, no score and no
 "top performer" (SPEC D3.5). Every honesty flag is kept: a read that stopped at a row
 limit says its counts are lower bounds, and the median time to acknowledge is omitted
@@ -66,6 +76,7 @@ from ..audit.query import (
     any_of,
     missing,
 )
+from ..audit.write import failure_action
 from ..constants import (
     BULK_RUN_ID_PREFIX,
     CASE_ACTIONS_TAKEN,
@@ -181,6 +192,15 @@ WORK_ACTIONS: tuple[str, ...] = tuple(sorted({
 }))
 #: The legacy (no ``action``) case rows whose summary the fold reads.
 _LEGACY_ACTION_TYPES: tuple[str, ...] = ("collab", "status", "thread_post")
+#: The counted writers that append their row before the store write (audit-first): a
+#: row is counted only once the fold has seen that its failure row does not follow it.
+AUDIT_FIRST_ACTIONS: tuple[str, ...] = (FILE_ATTACHED_ACTION, REVIEW_RECORDED_ACTION)
+#: Each one's failure row (``case.file_attach_failed``, ``case.review_record_failed``),
+#: mapped to the action row it says was not applied.
+NOT_APPLIED_ACTIONS: Mapping[str, str] = {failure_action(a): a for a in AUDIT_FIRST_ACTIONS}
+#: How far past the window's end these writers' rows are read, so a failure row that
+#: lands just after the end still pairs with the action row it follows.
+PAIRING_HORIZON = timedelta(minutes=5)
 
 _LEGACY_LIFECYCLE_RE = re.compile(
     r"^action=([a-z_]{1,32}) status ([a-z_?]{1,32})\u2192([a-z_]{1,32}) disposition=([a-z_]{1,32})"
@@ -213,14 +233,27 @@ def sign_in_predicate() -> Predicate:
     return Eq("action", SIGN_IN_ACTION)
 
 
+def pairing_predicate(window: ResolvedWindow) -> Predicate:
+    """The audit-first writers' rows and their failure rows, from the window's start
+    to :data:`PAIRING_HORIZON` past its end (only the rows inside the window count; the
+    later ones tell whether those were applied)."""
+    upper = None if window.open_end else window.end + PAIRING_HORIZON - timedelta(microseconds=1)
+    return all_of(
+        TsRange(window.start, upper),
+        In("action", tuple(sorted({*AUDIT_FIRST_ACTIONS, *NOT_APPLIED_ACTIONS}))),
+    )
+
+
 def counted_predicate(window: ResolvedWindow, *, work: bool = True, sign_ins: bool = True) -> Predicate:
-    """The rows one store is read for: the window and the counted kinds."""
+    """The rows one store is read for: the window and the counted kinds, and with the
+    case work the rows that pair with its audit-first writers (:func:`pairing_predicate`)."""
     kinds: list[Predicate] = []
     if work:
         kinds.append(work_predicate())
     if sign_ins:
         kinds.append(sign_in_predicate())
-    return all_of(window_predicate(window), any_of(*kinds))
+    counted = all_of(window_predicate(window), any_of(*kinds))
+    return any_of(counted, pairing_predicate(window)) if work else counted
 
 
 def review_request_predicate(window: ResolvedWindow, case_ids: Iterable[str]) -> Predicate:
@@ -560,6 +593,77 @@ def event_view(event: WorkEvent) -> dict[str, Any]:
 
 
 # --------------------------------------------------------------------------- #
+# Audit-first writers: was the action row applied? (SPEC D5.10, D6.6, D7.6)
+# --------------------------------------------------------------------------- #
+#: The rows of one request that pair up: (action row's action, request id, actor, case).
+_AttemptKey = tuple[str, str, str, str | None]
+
+
+@dataclass(frozen=True)
+class _Attempt:
+    """One row of an audit-first writer, held until the fold knows whether the action
+    row's write was applied: the action row with the events it counts, or its failure
+    row. ``arrival`` orders rows stored at the same instant as they were read."""
+
+    instant: datetime
+    failed: bool
+    arrival: int
+    session: str
+    events: tuple[WorkEvent, ...] = ()
+
+
+def _attempt_of(doc: Mapping[str, Any], arrival: int,
+                events: Iterable[WorkEvent]) -> tuple[_AttemptKey, _Attempt] | None:
+    """``doc`` as an attempt of an audit-first writer, or ``None`` when it is not one of
+    their rows or carries no request id (an action row without one is counted as is:
+    nothing can say it was not applied, the inspector's rule too)."""
+    action = doc.get("action") if isinstance(doc, Mapping) else None
+    if not isinstance(action, str):
+        return None
+    if action in AUDIT_FIRST_ACTIONS:
+        written, failed = action, False
+    elif action in NOT_APPLIED_ACTIONS:
+        written, failed = NOT_APPLIED_ACTIONS[action], True
+    else:
+        return None
+    request_id = doc.get("request_id")
+    instant = parse_es_timestamp(doc.get("ts"))
+    if not isinstance(request_id, str) or not request_id or instant is None:
+        return None
+    target = doc.get("target")
+    target_id = target.get("id") if isinstance(target, Mapping) else None
+    session = doc.get("session_ref")
+    key: _AttemptKey = (written, request_id, str(doc.get("actor") or ""),
+                        target_id if isinstance(target_id, str) else None)
+    return key, _Attempt(instant=instant, failed=failed, arrival=arrival,
+                         session=session if isinstance(session, str) else "",
+                         events=() if failed else tuple(events))
+
+
+def _applied_events(attempts: Mapping[_AttemptKey, list[_Attempt]]) -> list[WorkEvent]:
+    """The events of the action rows that were applied. An action row was not applied
+    when the next row after it of the same request, actor and case (and session, when
+    both rows name one) is its failure row, the Audit log inspector's rule. Rows stored at
+    the same instant keep their read order, a failure row after its action row."""
+    out: list[WorkEvent] = []
+    for rows in attempts.values():
+        ordered = sorted(rows, key=lambda a: (a.instant, a.failed, a.arrival))
+        for index, attempt in enumerate(ordered):
+            if attempt.failed or not attempt.events:
+                continue
+            follower = None
+            for later in range(index + 1, len(ordered)):
+                other = ordered[later]
+                if not attempt.session or not other.session or attempt.session == other.session:
+                    follower = other
+                    break
+            if follower is not None and follower.failed:
+                continue
+            out.extend(attempt.events)
+    return out
+
+
+# --------------------------------------------------------------------------- #
 # The time to acknowledge (SPEC D3.8, the metrics MTTA rule)
 # --------------------------------------------------------------------------- #
 def first_human_acknowledgement(case: Any) -> tuple[datetime | None, str]:
@@ -744,7 +848,10 @@ class TeamActivityFold:
     Feed it rows with :meth:`add_row` (any order); then, optionally, the reviewed cases'
     sample rows (:meth:`add_review_requests`) and the acknowledged cases
     (:meth:`add_acknowledged_cases`); then read :meth:`result`. A row outside the window
-    is ignored; a row a person did not make, or that failed, counts nothing."""
+    is ignored; a row a person did not make, or that failed, counts nothing; an
+    audit-first writer's row whose failure row follows it was not applied and counts
+    nothing either. Those writers' rows are counted at the first read, so every row is
+    fed before anything is read."""
 
     def __init__(self, window: ResolvedWindow) -> None:
         self.window = window
@@ -758,18 +865,32 @@ class TeamActivityFold:
         self._acknowledged: dict[str, tuple[datetime, str]] = {}
         # case id -> [(review time, person)] for "Time to review".
         self._reviews: dict[str, list[tuple[datetime, str]]] = {}
+        # The audit-first writers' rows, held until the first read (see _applied_events).
+        self._attempts: dict[_AttemptKey, list[_Attempt]] = {}
 
     # -- feeding ------------------------------------------------------------
     def add_row(self, doc: Mapping[str, Any]) -> list[WorkEvent]:
-        """Count one stored row; returns the events it recorded inside the window."""
+        """Count one stored row; returns the events it counted now inside the window (an
+        audit-first writer's row is held, and counted at the first read when its failure
+        row does not follow it)."""
         self.scanned += 1
-        kept: list[WorkEvent] = []
-        for event in events_of_row(doc):
-            if not self.window.contains(event.ts):
-                continue
+        kept = [event for event in events_of_row(doc) if self.window.contains(event.ts)]
+        attempt = _attempt_of(doc, self.scanned, kept)
+        if attempt is not None:
+            key, held = attempt
+            self._attempts.setdefault(key, []).append(held)
+            return []
+        for event in kept:
             self._count(event)
-            kept.append(event)
         return kept
+
+    def _settle(self) -> None:
+        """Count the held rows of the audit-first writers that were applied."""
+        if not self._attempts:
+            return
+        held, self._attempts = self._attempts, {}
+        for event in _applied_events(held):
+            self._count(event)
 
     def _count(self, event: WorkEvent) -> None:
         day = _day_of(event.ts, self.zone)
@@ -787,14 +908,17 @@ class TeamActivityFold:
 
     def acknowledged_case_ids(self) -> list[str]:
         """The cases acknowledged in the window (the MTTA candidates), oldest first."""
+        self._settle()
         return [cid for cid, _ in sorted(self._acknowledged.items(), key=lambda kv: (kv[1][0], kv[0]))]
 
     def reviewed_case_ids(self) -> list[str]:
+        self._settle()
         return sorted(self._reviews)
 
     def add_review_requests(self, docs: Iterable[Mapping[str, Any]]) -> None:
         """The ``case.review_requested`` rows of the reviewed cases: each review's time
         to review is its time minus the latest sample of its case before it."""
+        self._settle()
         sampled: dict[str, list[datetime]] = {}
         for doc in docs:
             if not isinstance(doc, Mapping) or doc.get("action") != REVIEW_REQUESTED_ACTION:
@@ -817,6 +941,7 @@ class TeamActivityFold:
         """Measure the time to acknowledge from the acknowledged cases (by id). A case
         whose first human acknowledgement names nobody is credited to whoever made its
         earliest Acknowledge row in the window."""
+        self._settle()
         for case_id in self._acknowledged:
             case = cases.get(case_id)
             if case is None:
@@ -832,10 +957,12 @@ class TeamActivityFold:
 
     # -- reading ------------------------------------------------------------
     def people_keys(self) -> set[str]:
+        self._settle()
         return set(self._tallies)
 
     def spellings(self, key: str) -> list[str]:
         """Every spelling of ``key``'s actor the window's rows recorded, most used first."""
+        self._settle()
         tally = self._tallies.get(key)
         if tally is None:
             return []
@@ -885,6 +1012,7 @@ class TeamActivityFold:
         is listed, with zeros when they did nothing in the window; anyone else the rows
         name is a deleted account; Not attributed comes last when it has rows. Ordered by
         name, never by a count (SPEC D3.5)."""
+        self._settle()
         by_key = {e.key: e for e in roster}
         keys = {k for k, e in by_key.items() if e.active} | {k for k in self._tallies}
         ack_measured = ack_status == "measured"
@@ -928,11 +1056,18 @@ class TeamActivityFold:
 
 
 def person_events(rows: Iterable[Mapping[str, Any]], window: ResolvedWindow, key: str) -> list[dict[str, Any]]:
-    """One person's counted events in the window, newest first (SPEC D3.10)."""
+    """One person's counted events in the window, newest first (SPEC D3.10). An
+    audit-first writer's row whose failure row follows it was not applied and is left
+    out, exactly as the counts leave it out."""
     found: list[WorkEvent] = []
-    for doc in rows:
-        for event in events_of_row(doc):
-            if event.person == key and window.contains(event.ts):
-                found.append(event)
+    attempts: dict[_AttemptKey, list[_Attempt]] = {}
+    for arrival, doc in enumerate(rows):
+        events = [e for e in events_of_row(doc) if e.person == key and window.contains(e.ts)]
+        attempt = _attempt_of(doc, arrival, events)
+        if attempt is not None:
+            attempts.setdefault(attempt[0], []).append(attempt[1])
+            continue
+        found.extend(events)
+    found.extend(_applied_events(attempts))
     found.sort(key=lambda e: (e.ts, e.kind), reverse=True)
     return [event_view(e) for e in found]

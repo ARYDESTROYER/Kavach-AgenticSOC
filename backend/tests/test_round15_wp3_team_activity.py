@@ -34,9 +34,17 @@ from app.api.deps import require_auth
 from app.api.routes import router as monolith_router
 from app.api.routes_team import router as team_router
 from app.audit.audit_log import AuditLogger
-from app.audit.query import TRUE, all_of
+from app.audit.query import TRUE, In, all_of
 from app.config import Secrets
-from app.constants import AUDIT_WRITE_ALIAS, CaseStatus, EntityType, SourceSurface, Verdict
+from app.constants import (
+    AUDIT_WRITE_ALIAS,
+    CaseStatus,
+    DecisionBy,
+    Disposition,
+    EntityType,
+    SourceSurface,
+    Verdict,
+)
 from app.engine import team_activity as ta
 from app.es.fake import InMemoryESClient
 from app.es.indices import bootstrap_indices
@@ -410,6 +418,164 @@ def test_time_to_review_is_sampled_to_completed() -> None:
     assert reviews["time_to_review_median_seconds"] == 90 * 60
 
 
+# --------------------------------------------------------------------------- #
+# Audit-first writers: an action row whose write then failed counts nothing
+# --------------------------------------------------------------------------- #
+def _attempt(action: str, actor: str, *, ts: datetime, request_id: str | None, case_id: str = "c1",
+             session: str | None = None, outcome: str | None = None) -> dict[str, Any]:
+    """A screenshot or review row as the audit-first writers append it: the action row
+    (``outcome`` success), or its failure row (``..._failed``, outcome failure) with the
+    same request id."""
+    failed = action.endswith("_failed")
+    row: dict[str, Any] = {
+        "ts": _iso(ts), "action_type": "feedback" if "review" in action else "collab", "surface": "case",
+        "actor": actor, "action": action, "actor_type": "human",
+        "outcome": outcome or ("failure" if failed else "success"), "case_id": case_id,
+        "target": {"type": "case", "id": case_id, "label": "CASE-0007"},
+        "result_summary": f"{action.split('.', 1)[1]} code=x",
+    }
+    if "review" in action:
+        row["tool_input"] = {"agrees": True, "elapsed_ms": 30_000}
+    if request_id is not None:
+        row["request_id"] = request_id
+    if session is not None:
+        row["session_ref"] = session
+    return row
+
+
+_ATTACH, _ATTACH_FAILED = "case.file_attached", "case.file_attach_failed"
+_REVIEWED, _REVIEW_FAILED = "case.review_recorded", "case.review_record_failed"
+
+
+@pytest.mark.parametrize("action,failed,kind", [
+    (_ATTACH, _ATTACH_FAILED, "screenshot_added"),
+    (_REVIEWED, _REVIEW_FAILED, "reviewed"),
+])
+def test_an_audit_first_row_followed_by_its_failure_row_is_not_counted(
+    action: str, failed: str, kind: str,
+) -> None:
+    """Uploads and reviews append their row before the store write and, when the write
+    fails, a failure row with the same request id (SPEC D5.10, D6.6, D7.6). The pair is
+    one attempt that was not applied, as the Audit log's inspector reads it, so neither
+    the counts, the reviews nor the person's events show it."""
+    t = NOW - timedelta(minutes=10)
+    pair = [_attempt(action, "Ola", ts=t, request_id="req-00000001"),
+            _attempt(failed, "Ola", ts=t + timedelta(milliseconds=40), request_id="req-00000001")]
+    for rows in (pair, list(reversed(pair))):  # the fold is order-agnostic
+        fold = _fold(rows)
+        result = fold.result([])
+        assert result["team"]["counts"][kind] == 0
+        assert result["team"]["reviews"]["completed"] == result["team"]["reviews"]["agreed"] == 0
+        assert fold.people_keys() == set() and fold.reviewed_case_ids() == []
+        assert ta.person_events(rows, _window(), "ola") == []
+    # The same rows with different request ids, or a lone action row, still count.
+    apart = [_attempt(action, "Ola", ts=t, request_id="req-00000001"),
+             _attempt(failed, "Ola", ts=t + timedelta(milliseconds=40), request_id="req-00000002")]
+    for rows in (apart, pair[:1]):
+        ola = _person(_fold(rows).result([]), "ola")
+        assert ola["counts"][kind] == 1
+        assert [e["kind"] for e in ta.person_events(rows, _window(), "ola")] == [kind]
+    if kind == "reviewed":
+        assert _person(_fold(pair[:1]).result([]), "ola")["reviews"]["agreed"] == 1
+
+
+def test_only_the_attempt_its_failure_row_follows_is_not_counted() -> None:
+    """The inspector's rule: an action row is not applied when the next row of the same
+    request, actor and case (and session, when both name one) is its failure row."""
+    t = NOW - timedelta(minutes=10)
+
+    def at(ms: int) -> datetime:
+        return t + timedelta(milliseconds=ms)
+
+    def count(rows: list[dict[str, Any]]) -> int:
+        return _fold(rows).result([])["team"]["counts"]["screenshot_added"]
+
+    rid = "req-00000009"
+    # A retried save inside one request: action, failure, action. The second applied.
+    assert count([_attempt(_ATTACH, "pia", ts=at(0), request_id=rid),
+                  _attempt(_ATTACH_FAILED, "pia", ts=at(5), request_id=rid),
+                  _attempt(_ATTACH, "pia", ts=at(9), request_id=rid)]) == 1
+    # A failure row of another person, another case or another named session pairs with
+    # nothing here.
+    assert count([_attempt(_ATTACH, "pia", ts=at(0), request_id=rid),
+                  _attempt(_ATTACH_FAILED, "quin", ts=at(5), request_id=rid)]) == 1
+    assert count([_attempt(_ATTACH, "pia", ts=at(0), request_id=rid),
+                  _attempt(_ATTACH_FAILED, "pia", ts=at(5), request_id=rid, case_id="c2")]) == 1
+    assert count([_attempt(_ATTACH, "pia", ts=at(0), request_id=rid, session="s-1"),
+                  _attempt(_ATTACH_FAILED, "pia", ts=at(5), request_id=rid, session="s-2")]) == 1
+    assert count([_attempt(_ATTACH, "pia", ts=at(0), request_id=rid, session="s-1"),
+                  _attempt(_ATTACH_FAILED, "pia", ts=at(5), request_id=rid)]) == 0
+    # A failure row before the action row, or a row with no request id, pairs with nothing.
+    assert count([_attempt(_ATTACH_FAILED, "pia", ts=at(0), request_id=rid),
+                  _attempt(_ATTACH, "pia", ts=at(5), request_id=rid)]) == 1
+    assert count([_attempt(_ATTACH, "pia", ts=at(0), request_id=None),
+                  _attempt(_ATTACH_FAILED, "pia", ts=at(5), request_id=None)]) == 1
+    # Two rows stored at the same instant: a failure row never comes before its action row.
+    assert count([_attempt(_ATTACH_FAILED, "pia", ts=at(0), request_id=rid),
+                  _attempt(_ATTACH, "pia", ts=at(0), request_id=rid)]) == 0
+    # A write cancelled at shutdown (outcome unknown) is not counted either: the
+    # inspector shows its action row as not applied, and the page never counts work it
+    # cannot confirm.
+    assert count([_attempt(_ATTACH, "pia", ts=at(0), request_id=rid),
+                  _attempt(_ATTACH_FAILED, "pia", ts=at(5), request_id=rid, outcome="unknown")]) == 0
+
+
+def test_a_failure_row_just_after_the_window_still_pairs_on_every_audit_store() -> None:
+    """The failure row follows its action row by milliseconds, so it can land after the
+    window's end: the read takes the two writers' rows a little past the end, on
+    Elasticsearch, SQL and a third-party store's bounded scan alike."""
+    window = _window("yesterday")
+    end = window.end
+    rows = [
+        _attempt(_ATTACH, "ray", ts=end - timedelta(milliseconds=5), request_id="req-0000000a"),
+        _attempt(_ATTACH_FAILED, "ray", ts=end + timedelta(milliseconds=30), request_id="req-0000000a"),
+        _attempt(_REVIEWED, "ray", ts=end - timedelta(milliseconds=4), request_id="req-0000000b"),
+        _attempt(_REVIEW_FAILED, "ray", ts=end + timedelta(seconds=20), request_id="req-0000000b"),
+        # Applied, inside the window: counted.
+        _attempt(_ATTACH, "ray", ts=end - timedelta(hours=1), request_id="req-0000000c"),
+        # Applied, after the window: read for the pairing, never counted.
+        _attempt(_ATTACH, "ray", ts=end + timedelta(seconds=1), request_id="req-0000000d"),
+    ]
+
+    async def through(repo: Any) -> tuple[dict[str, int], list[str]]:
+        fold = ta.TeamActivityFold(window)
+        _read, reason = await routes_team._stream(  # noqa: SLF001
+            repo, ta.counted_predicate(window), fold.add_row, 1000,
+        )
+        assert reason is None
+        seen: list[dict[str, Any]] = []
+        await routes_team._stream(  # noqa: SLF001
+            repo, all_of(ta.counted_predicate(window), In("actor", ("ray",))), seen.append, 1000,
+        )
+        return _nonzero(fold.result([])), [e["kind"] for e in ta.person_events(seen, window, "ray")]
+
+    expected = ({"ray": {"screenshot_added": 1}}, ["screenshot_added"])
+
+    class Third(AuditRepository):
+        async def write(self, doc: Any) -> None:  # pragma: no cover
+            pass
+
+        async def record(self, **kw: Any) -> None:  # pragma: no cover
+            pass
+
+        async def records_for_case(self, case_id: str, limit: int = 500) -> list[dict[str, Any]]:
+            return []
+
+        async def records(self, *, limit: int = 100, **kw: Any) -> list[dict[str, Any]]:
+            return sorted(rows, key=lambda r: r["ts"], reverse=True)[:limit]
+
+    async def run() -> None:
+        assert await through(await _es_repo(rows)) == expected
+        sql, engine = await _sql_repo(rows)
+        try:
+            assert await through(sql) == expected
+        finally:
+            await engine.dispose()
+        assert await through(Third()) == expected
+
+    asyncio.run(run())
+
+
 def test_days_are_operator_zone_calendar_days_and_zero_filled() -> None:
     window = ta.resolve_team_window("now-7d", tz="Asia/Kolkata", now=NOW)
     days = ta.day_list(window)
@@ -701,7 +867,7 @@ def test_the_stream_marks_the_row_limit_and_closes_its_snapshot() -> None:
 # --------------------------------------------------------------------------- #
 # The routes
 # --------------------------------------------------------------------------- #
-def _app(*, auth: bool = True, rbac: bool = False) -> TestClient:
+def _app(*, auth: bool = True, rbac: bool = False, work_routers: bool = False) -> TestClient:
     secrets = Secrets(
         _env_file=None, es_store_enabled=False, redis_url="",
         anthropic_api_key=None, openai_api_key=None,
@@ -726,6 +892,12 @@ def _app(*, auth: bool = True, rbac: bool = False) -> TestClient:
     deps = [Depends(require_auth)] if auth else []
     api.include_router(monolith_router, dependencies=deps)
     api.include_router(team_router, dependencies=deps)
+    if work_routers:
+        from app.api.routes_auto_close_review import router as review_router
+        from app.api.routes_case_files import router as files_router
+
+        api.include_router(files_router, dependencies=deps)
+        api.include_router(review_router, dependencies=deps)
     mount_moved_routers(api, dependencies=deps)
     api.add_middleware(RequestIdMiddleware)
     return TestClient(api)
@@ -794,6 +966,103 @@ def test_a_super_admin_reads_the_team_and_actions_are_counted() -> None:
         # Never an IP address, a user agent or a session on this page.
         text = response.text
         assert "testclient" not in text and "session_ref" not in text and "user_agent" not in text
+
+
+def _agent_closed_case(cid: str) -> Case:
+    """A case the AI agent closed automatically on its first decision (reviewable)."""
+    at = _iso(_recent(60))
+    return Case(
+        case_id=cid, case_number=cid.upper(), cluster_signature=f"sig-{cid}",
+        source_surface=SourceSurface.AUTOMATED_SCAN, entity=Entity(type=EntityType.IP, value="198.51.100.9"),
+        verdict=Verdict.FALSE_POSITIVE, confidence=0.93, risk_score=12.0, status=CaseStatus.CLOSED,
+        decision_by=DecisionBy.AGENT, disposition=Disposition.FALSE_POSITIVE, created_at=at, updated_at=at,
+        status_history=[StatusHistoryEntry(from_status="new", to_status="closed", by="agent", at=at)],
+        history=[{"ts": at, "event": "decision", "status": "closed", "decision_by": "agent",
+                  "escalate": False, "rationale": "FALSE_POSITIVE auto-closed"}],
+    )
+
+
+def test_a_screenshot_or_review_whose_save_failed_is_not_counted(monkeypatch) -> None:
+    """End to end: an upload whose store write failed after its audit row (a duplicate
+    that landed meanwhile), and a review whose case save failed, answer an error and
+    leave nothing on the case. Their pair of audit rows (the action row, then its failure
+    row with the same request id) counts nothing; the attempts that were saved count."""
+    import base64
+    import struct
+    import zlib
+
+    from app.api import routes_case_files as rcf
+    from app.stores import case_files as cf
+
+    def png(seed: int) -> bytes:
+        def chunk(ctype: bytes, body: bytes) -> bytes:
+            return (struct.pack(">I", len(body)) + ctype + body
+                    + struct.pack(">I", zlib.crc32(ctype + body) & 0xFFFFFFFF))
+
+        rows = b"".join(b"\x00" + bytes((seed + x) % 256 for x in range(12)) for _ in range(3))
+        return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 4, 3, 8, 2, 0, 0, 0))
+                + chunk(b"IDAT", zlib.compress(rows, 0)) + chunk(b"IEND", b""))
+
+    def upload(seed: int) -> Any:
+        return client.post("/api/cases/case-wp3-files/files", headers=admin, json={
+            "data_base64": base64.b64encode(png(seed)).decode(), "content_type": "image/png",
+        })
+
+    rcf._RUNTIMES.clear()  # noqa: SLF001 (a fresh upload rate bound)
+    with _app(work_routers=True) as client:
+        admin = _login(client)
+        state = _state(client)
+        client.portal.call(state.cases.save, _case("case-wp3-files", created=_recent(30)))
+        for cid in ("case-wp3-rv1", "case-wp3-rv2"):
+            client.portal.call(state.cases.save, _agent_closed_case(cid))
+        assert upload(1).status_code == 201
+        store = state.case_files
+        applied = store._append  # noqa: SLF001
+
+        async def raced(*_a: Any, **_k: Any) -> None:
+            raise cf.CaseFilesConflict("The same screenshot was added to this case meanwhile.",
+                                       code="case_files_duplicate")
+
+        monkeypatch.setattr(store, "_append", raced)
+        refused = upload(2)
+        assert refused.status_code == 409 and refused.json()["detail"]["code"] == "case_files_duplicate"
+        monkeypatch.setattr(store, "_append", applied)
+        live = client.portal.call(store.index, "case-wp3-files").live
+        assert len(live) == 1
+
+        cases = state.cases
+        saved = cases.save
+        recorded = client.post("/api/cases/case-wp3-rv1/review", headers=admin,
+                               json={"classification": "false_positive", "elapsed_ms": 20_000})
+        assert recorded.status_code == 200, recorded.text
+
+        async def down(*_a: Any, **_k: Any) -> None:
+            raise RuntimeError("case store down")
+
+        monkeypatch.setattr(cases, "save", down)
+        failed = client.post("/api/cases/case-wp3-rv2/review", headers=admin,
+                             json={"classification": "true_positive"})
+        assert failed.status_code == 503 and failed.json()["detail"]["code"] == "case_store_unavailable"
+        monkeypatch.setattr(cases, "save", saved)
+        assert client.portal.call(cases.get, "case-wp3-rv2").feedback == []
+
+        rows = client.portal.call(lambda: state.control_audit.records(limit=1000))
+        actions = [r.get("action") for r in rows]
+        assert actions.count("case.file_attached") == 2 and actions.count("case.file_attach_failed") == 1
+        assert actions.count("case.review_recorded") == 2 and actions.count("case.review_record_failed") == 1
+
+        response = client.get("/api/team/activity", params={"window": "today"}, headers=admin)
+        assert response.status_code == 200, response.text
+        me = next(p for p in response.json()["people"] if p["key"] == "admin")
+        assert me["counts"]["screenshot_added"] == 1
+        assert me["counts"]["reviewed"] == 1
+        assert (me["reviews"]["completed"], me["reviews"]["agreed"], me["reviews"]["disagreed"]) == (1, 1, 0)
+        events = client.get("/api/team/people/admin/events", params={"window": "today"}, headers=admin)
+        assert events.status_code == 200, events.text
+        kinds = [e["kind"] for e in events.json()["events"]]
+        assert kinds.count("screenshot_added") == 1 and kinds.count("reviewed") == 1
+        assert [e["case_id"] for e in events.json()["events"] if e["kind"] == "reviewed"] == ["case-wp3-rv1"]
+    rcf._RUNTIMES.clear()  # noqa: SLF001
 
 
 def test_the_role_floor_while_rbac_is_off() -> None:
