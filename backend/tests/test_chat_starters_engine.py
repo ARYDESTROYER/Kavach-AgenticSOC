@@ -180,7 +180,8 @@ async def test_my_cases_needs_auth(app_state) -> None:
 
 async def test_sla_breached_and_close_and_disabled(app_state, as_alice) -> None:
     now = datetime.now(UTC)
-    # The default response target of a case without a priority is 120 minutes.
+    # A case without a stored priority is scored at the level it projects to (Round 16
+    # B60): risk 50 on an unmapped asset is P3, a 120-minute response target.
     await _seed(app_state,
                 _case("s1", created=now - timedelta(hours=5), number="CASE-50"),
                 _case("s2", created=now - timedelta(hours=4)),
@@ -234,16 +235,16 @@ async def test_sla_is_skipped_when_a_status_outgrows_the_shift_snapshot(app_stat
     monkeypatch.setattr(standup, "OPEN_FETCH_LIMIT", 3)
     # 3 breached in "open" and 3 in "investigating": no status over the bound.
     await _seed(app_state,
-                *[_case(f"o{i}", created=now - timedelta(hours=5, minutes=i), risk=float(10 + i)) for i in range(3)],
+                *[_case(f"o{i}", created=now - timedelta(hours=5, minutes=i), risk=float(55 + i)) for i in range(3)],
                 *[_case(f"v{i}", created=now - timedelta(hours=6, minutes=i), status=CaseStatus.INVESTIGATING,
-                        risk=float(20 + i)) for i in range(3)])
+                        risk=float(65 + i)) for i in range(3)])
     card = _card(await _build(app_state, now=now), "sla")
     assert card is not None and card.template == "sla_breached"
     parsed = text.parse_starter_question(card.prompt)
     assert parsed is not None and parsed[1]["n"] == 6 == await _shift_report_breached(app_state)
     # Five more breached "open" cases, older and riskier: the snapshot's two reads of
     # "open" return the same 3, so the answer would count 6 of the 11 breached cases.
-    await _seed(app_state, *[_case(f"e{i}", created=now - timedelta(hours=8, minutes=i), risk=float(50 + i))
+    await _seed(app_state, *[_case(f"e{i}", created=now - timedelta(hours=8, minutes=i), risk=float(80 + i))
                              for i in range(5)])
     assert await _shift_report_breached(app_state) == 6
     assert "sla" not in _ids(await _build(app_state, now=now))
@@ -256,7 +257,7 @@ async def test_sla_count_agrees_with_shift_report_at_the_real_bound(app_state, a
 
     now = datetime.now(UTC)
     bound = standup.OPEN_FETCH_LIMIT
-    cases = [_case(f"s{i:04d}", created=now - timedelta(hours=5, minutes=i % 300), risk=float(i % 97))
+    cases = [_case(f"s{i:04d}", created=now - timedelta(hours=5, minutes=i % 300), risk=float(50 + i % 50))
              for i in range(bound)]
     await _seed(app_state, *cases)
     card = _card(await _build(app_state, now=now), "sla")

@@ -9136,9 +9136,17 @@ def _deep_update(dst: dict[str, Any], src: dict[str, Any]) -> dict[str, Any]:
 
 
 def _millis_to_iso(millis: int) -> str:
+    """Epoch millis as ISO-8601 UTC. An instant outside the representable range clamps
+    to its first or last instant (``utils.millis_to_iso_utc``) instead of raising, so
+    an out-of-range ``since`` answers 200 (Round 16 B02)."""
     from datetime import datetime, timezone
 
-    return datetime.fromtimestamp(millis / 1000.0, tz=timezone.utc).isoformat()
+    from ..utils import millis_to_iso_utc
+
+    try:
+        return datetime.fromtimestamp(millis / 1000.0, tz=timezone.utc).isoformat()
+    except (OverflowError, ValueError, OSError):
+        return millis_to_iso_utc(int(millis))
 
 
 # The auto-widen ladder and the entity-query helpers (``_WIDEN_LADDER``,

@@ -202,10 +202,15 @@ async def chat_feedback_summary(
     """The caller's own answer ratings as aggregates (P1-4): thumbs up and down, the
     thumbs-down reasons and how many carried a comment — never a comment or which
     answer it was. Owner-scoped; never used to train a model."""
+    # Round 16 B03: the store compares ``since`` as an instant, whatever its zone
+    # spelling, and raises ValueError for a value that is not an ISO-8601 instant,
+    # which answers 422 invalid_since.
     try:
         counts = await feedback_store(state).breakdown(current_username(request), since=since)
     except ChatHistoryUnavailable as exc:
         raise _history_unavailable(exc) from exc
+    except ValueError as exc:
+        raise _http(422, "invalid_since", "since must be an ISO-8601 instant.") from exc
     reasons = counts.get("down_by_reason") or {}
     return ChatFeedbackSummary(
         up=counts.get("up", 0), down=counts.get("down", 0), total=counts.get("total", 0),

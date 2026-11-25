@@ -1405,9 +1405,11 @@ def _case_breakdown(
         ))
     other = None
     if result.other:
+        # Round 16 B68: "N more rules" counts only the trimmed groups with cases in
+        # the window, never one that only holds older open cases.
         other = MetricsBreakdownOther(
             count=int((result.other.get("metrics") or {}).get("count") or 0),
-            groups=int(result.other.get("groups") or 0),
+            groups=int(result.other.get("groups_counted", result.other.get("groups")) or 0),
         )
     exact = bool(result.exact)
     reason = None

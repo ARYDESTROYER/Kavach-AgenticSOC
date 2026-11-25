@@ -2736,8 +2736,8 @@ def test_a_case_closed_after_its_card_was_made_is_answered_as_closed(starter_cli
 #: The analyst the signed-in Demo app logs in as, and how many open cases it owns there.
 _ME, _MY_OPEN = "Admin", 3
 #: Ages (minutes) of the open cases the signed-in Demo app adds close to their response
-#: target: a case with no priority has a 120-minute target, and "close" is the last
-#: quarter of it (Round 13 polish).
+#: target: risk 50 on an unmapped host projects to P3, a 120-minute target (Round 16
+#: B60), and "close" is the last quarter of it (Round 13 polish).
 _NEAR_AGES = (91, 95, 98, 101, 104, 107, 110)
 
 
@@ -2756,7 +2756,7 @@ def _near_target_cases(numbered: list[Any]) -> list[Any]:
         out.append(Case(
             case_id=f"golden-near-{i}", cluster_signature=f"golden-near-{i}",
             source_surface=SourceSurface.INVESTIGATE, entity=Entity(type=EntityType.HOST, value=f"ws-near-{i}"),
-            status=CaseStatus.OPEN, verdict=Verdict.NEEDS_HUMAN, risk_score=20.0, created_at=created,
+            status=CaseStatus.OPEN, verdict=Verdict.NEEDS_HUMAN, risk_score=50.0, created_at=created,
             updated_at=created, assignee="dsingh" if i % 2 else "", case_number=f"CASE-{last + 1 + i:06d}",
             rule_ids=["demo_near_target"], title=f"host:ws-near-{i} \u00b7 demo_near_target",
         ))

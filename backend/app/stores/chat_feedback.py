@@ -23,6 +23,7 @@ import copy
 import json
 import weakref
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any, Callable, TypeVar, get_args
 
 from ..models import ChatFeedbackReason, ChatFeedbackRequest
@@ -79,6 +80,27 @@ def _entry(raw: Any) -> ChatFeedbackEntry | None:
         rating=request.rating, reason=request.reason, comment=request.comment,
         created_at=created, updated_at=str(raw.get("updated_at") or created),
     )
+
+
+def _instant(value: Any) -> datetime | None:
+    """An ISO-8601 string as an aware UTC instant, or ``None`` when it does not parse.
+    A value without a zone (a date alone, for example) is read as UTC. An instant just
+    outside the representable range clamps to its first or last instant. Never raises."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.strip())
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    try:
+        return parsed.astimezone(timezone.utc)
+    except OverflowError:
+        # Year 1 with a positive offset, or year 9999 with a negative one, lies just
+        # outside the representable range: clamp to that edge, as the case windows do.
+        edge = datetime.min if parsed.year == 1 else datetime.max
+        return edge.replace(tzinfo=timezone.utc)
 
 
 def _entries(doc: dict[str, Any] | None) -> list[ChatFeedbackEntry]:
@@ -221,15 +243,30 @@ class ChatFeedbackStore:
         """The owner's ratings as AGGREGATES only (SYNTHESIS-chat P1-4): totals, the
         thumbs-down reasons and how many came with a comment — never a comment, a
         conversation or a message id. ``since``/``until`` (ISO): only ratings given or
-        changed in ``[since, until]``. Never used to train or tune a model (#3)."""
+        changed in ``[since, until]``. Never used to train or tune a model (#3).
+
+        The bounds are compared as instants, not as text (Round 16 B03): ``Z``,
+        ``+05:30`` and ``-05:00`` spellings, a date alone (midnight UTC) and the
+        stored ``+00:00`` stamps all land on the same time line. Raises
+        ``ValueError`` when ``since`` or ``until`` is not an ISO-8601 instant. With a
+        bound set, a stored rating whose time cannot be read is left out: it cannot
+        be placed inside the window."""
+        since_at = _instant(since) if since else None
+        until_at = _instant(until) if until else None
+        if (since and since_at is None) or (until and until_at is None):
+            raise ValueError("since and until must be ISO-8601 instants")
         reasons = {reason: 0 for reason in FEEDBACK_REASONS}
         out: dict[str, Any] = {"up": 0, "down": 0, "total": 0, "with_comment": 0,
                                "down_by_reason": reasons, "down_without_reason": 0}
         for entry in await self.list(owner):
-            if since and entry.updated_at < since:
-                continue
-            if until and entry.updated_at > until:
-                continue
+            if since_at is not None or until_at is not None:
+                at = _instant(entry.updated_at)
+                if at is None:
+                    continue
+                if since_at is not None and at < since_at:
+                    continue
+                if until_at is not None and at > until_at:
+                    continue
             out["total"] += 1
             out[entry.rating] = out.get(entry.rating, 0) + 1
             if entry.comment.strip():
