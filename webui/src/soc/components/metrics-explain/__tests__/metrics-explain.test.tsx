@@ -19,11 +19,13 @@ const { explainMock } = vi.hoisted(() => ({ explainMock: vi.fn() }));
 vi.mock('@/lib/api-metrics-explain', () => ({ getMetricExplain: explainMock }));
 
 import { KpiTile } from '@/soc/components/KpiTile';
-import { agreementContext, operationalMttr } from '@/soc/pages/Metrics';
+import { agreementContext, metricsReadAt, operationalMttr } from '@/soc/pages/Metrics';
 import type { Metrics } from '@/lib/types';
 
 import {
   deciderSteps,
+  nounFor,
+  rankLineOverRun,
   explainAgreement,
   explainAlertReduction,
   explainCount,
@@ -162,6 +164,87 @@ describe('metric explanation builders', () => {
   });
 });
 
+/*
+ * WP12 review: more than 200 samples list only the run around the median, so the rank
+ * lines must read the ranks of ALL the samples (from `samples_offset`). Reading the
+ * ranks inside the listed run printed a median and a p90 that differ from the figure.
+ */
+describe('timing rank lines over a truncated list', () => {
+  // 251 samples of 1..251 minutes: p50 is rank 125 (126 minutes), p90 rank 225 (226).
+  const all = Array.from({ length: 251 }, (_, i) => i + 1);
+  const big: StatBlock = { p50: 126, p90: 226, mean: 126, max: 251, count: 251, available: true, reason: '' };
+  // The server lists 200 rows starting at rank 26 (`_select_rows`).
+  const offset = 26;
+  const listed = all.slice(offset, offset + 200);
+
+  it('prints the median of all the samples, not of the listed run', () => {
+    const e = explainTiming({
+      metric: 'mttr', title: 'MTTR', block: big, window: 'w', definition: 'd',
+      samples: listed, sampleCount: 251, samplesOffset: offset,
+    })!;
+    const p50 = e.steps.find((step) => step.label === 'p50')!;
+    expect(p50.expression).toBe('rank 0.5 x (251 - 1) = 125, the value at that rank');
+    expect(p50.result).toBe('126 minutes');
+    const p90 = e.steps.find((step) => step.label === 'p90')!;
+    expect(p90.expression).toBe('rank 0.9 x (251 - 1) = 225, the value at that rank');
+    expect(p90.result).toBe('226 minutes');
+    expect(e.caveats[0]).toBe('The list holds ranks 27 to 226 of 251, the cases around the median.');
+  });
+
+  it('leaves out a percentile whose ranks are not listed, and says so', () => {
+    const n = 401;
+    const run = Array.from({ length: 200 }, (_, i) => 101 + i + 1);
+    const e = explainTiming({
+      metric: 'mtta', title: 'MTTA', block: { ...big, count: n, p50: 201 }, window: 'w', definition: 'd',
+      samples: run, sampleCount: n, samplesOffset: 101,
+    })!;
+    expect(e.steps.map((step) => step.label)).toEqual(['p50']);
+    expect(e.steps[0].result).toBe('201 minutes');
+    expect(e.caveats).toContain('The p90 ranks fall outside the listed cases, so its line is not shown.');
+    expect(rankLineOverRun('p50', 0.5, run, 300, n)).toBeNull();
+  });
+
+  it('names where an all-time window comes from', () => {
+    const e = explainTiming({
+      metric: 'mttr', title: 'MTTR', block: BLOCK, window: 'all time', definition: 'd',
+      windowSource: 'Every case analysed, whatever the time range above',
+    })!;
+    expect(e.inputs.find((input) => input.key === 'window')).toMatchObject({
+      value: 'all time',
+      source: 'Every case analysed, whatever the time range above',
+    });
+  });
+});
+
+/*
+ * WP12 review (WP06 carry-forward): the Analytics "Updated" stamp says when the server
+ * read the all-time cases, not when the page settled, so a served 60 s copy never reads
+ * "just now".
+ */
+describe('Analytics read time', () => {
+  it('uses the server read time when it is older than now', () => {
+    const now = Date.parse('2026-11-25T12:01:00Z');
+    expect(metricsReadAt({ generated_at: '2026-11-25T12:00:00Z' }, now)).toBe('2026-11-25T12:00:00.000Z');
+    // An older server sends no stamp, and a stamp from the future (clock skew) is not
+    // trusted: the settle time stands in.
+    expect(metricsReadAt({}, now)).toBe('2026-11-25T12:01:00.000Z');
+    expect(metricsReadAt({ generated_at: '2026-11-25T12:05:00Z' }, now)).toBe('2026-11-25T12:01:00.000Z');
+    expect(metricsReadAt({ generated_at: 'garbage' }, now)).toBe('2026-11-25T12:01:00.000Z');
+  });
+});
+
+/* WP12 review: a count of one takes the singular noun. */
+describe('share wording for a count of one', () => {
+  it('says "1 false positive verdict of 1 verdicted case"', () => {
+    const e = explainKpiShare({ ...base(), numerator: 1, denominator: 1, numeratorLabel: 'false positive verdicts', denominatorLabel: 'verdicted cases', window: 'the last 24 hours' })!;
+    expect(e.summary).toBe('1 false positive verdict of 1 verdicted case = 100%, the last 24 hours.');
+    expect(nounFor(1, 'open cases whose AI verdict is Needs human')).toBe('open case whose AI verdict is Needs human');
+    expect(nounFor(1, 'agent-worked closes')).toBe('agent-worked close');
+    expect(nounFor(2, 'verdicted cases')).toBe('verdicted cases');
+    expect(nounFor(1, 'closed by the AI agent')).toBe('closed by the AI agent');
+  });
+});
+
 function base() {
   return {
     metric: 'm',
@@ -238,6 +321,37 @@ describe('TimingExplain', () => {
     mount();
     await user.click(screen.getByRole('button', { name: /^20m ?, explain$/ }));
     expect(await screen.findByText('The figure changed since it was shown. Refresh to list its cases.')).toBeInTheDocument();
+  });
+
+  it('prints the rank lines of all the samples when only the run around the median is listed', async () => {
+    const minutes = Array.from({ length: 200 }, (_, i) => 27 + i);
+    explainMock.mockResolvedValue(
+      response({
+        stat: { p50: 126, p90: 226, mean: 126, max: 251, count: 251, available: true, reason: '' },
+        sample_count: 251,
+        visible_count: 251,
+        samples_offset: 26,
+        samples_truncated: true,
+        samples: minutes.map((m, i) => ({ ...response().samples[0], case_id: `t${i}`, case_number: `CASE-T${i}`, value: m, minutes: m })),
+      }),
+    );
+    const user = userEvent.setup();
+    render(
+      <TimingExplain metric="mttr" title="MTTR" block={{ p50: 126, p90: 226, mean: 126, max: 251, count: 251, available: true, reason: '' }} windowHours={24} window="the last 24 hours">
+        2h 6m
+      </TimingExplain>,
+    );
+    await user.click(screen.getByRole('button', { name: /^2h 6m ?, explain$/ }));
+    const panel = await screen.findByTestId('explain-panel');
+    await waitFor(() => expect(within(panel).getByTestId('explain-steps')).toHaveTextContent('rank 0.5 x (251 - 1) = 125'));
+    expect(within(panel).getByTestId('explain-steps')).not.toHaveTextContent('(200 - 1)');
+    await user.click(within(panel).getByRole('button', { name: 'Show 200 of 251' }));
+    const sheet = await screen.findByTestId('metric-samples-sheet');
+    // The sheet is wide enough on a desktop for every column (Decided by was clipped).
+    expect(sheet.closest('[role="dialog"]')?.className).toContain('lg:max-w-5xl');
+    const median = within(sheet).getAllByTestId('metric-sample-row').filter((r) => r.hasAttribute('data-median'));
+    expect(median).toHaveLength(1);
+    expect(median[0]).toHaveTextContent('126');
   });
 
   it('says so when the cases could not be read', async () => {

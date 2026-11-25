@@ -400,7 +400,7 @@ function MetricsView({ onNavigate, tab: tabProp, onTabChange }: MetricsProps) {
         posture: post,
         mitre: mit,
         openByVerdict: verdicts,
-        updatedAt: new Date().toISOString(),
+        updatedAt: metricsReadAt(m),
       });
     } catch (e) {
       if (request === requestRef.current) setError(e);
@@ -551,6 +551,19 @@ export function operationalMttr(data: Metrics): {
   };
 }
 
+/**
+ * When the figures on the page were read (Round 16 WP06 and WP12). `GET /api/metrics`
+ * reads the all-time population the server keeps for 60 s, and says when it read it in
+ * `generated_at`; the page's "Updated" stamp is that read time when it is older than now,
+ * so a served copy never reads as "just now". An older server sends no stamp, and then
+ * the settle time stands in.
+ */
+export function metricsReadAt(data: unknown, now: number = Date.now()): string {
+  const stamp = (data as MetricsExplainFields | null)?.generated_at;
+  const read = typeof stamp === 'string' ? Date.parse(stamp) : Number.NaN;
+  return new Date(Number.isFinite(read) && read < now ? read : now).toISOString();
+}
+
 /** The Agreement rate's context: its own population (grade entries), not graded cases (D10). */
 export function agreementContext(fb: Metrics['feedback'] | undefined, population: string): string {
   if (!fb) return population;
@@ -661,6 +674,7 @@ function OperationalTab({ data, rag, memory, openByVerdict, loading, failed, hou
                     block={mttr.block}
                     windowHours={0}
                     window={population === 'all time' ? 'all time' : `the ${population}`}
+                    windowSource="Every case analysed, whatever the time range above"
                     byDecider={mttr.byDecider}
                   >
                     {numeral}

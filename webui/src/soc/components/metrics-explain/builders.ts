@@ -100,7 +100,7 @@ export function explainKpiShare(input: ShareExplainInput): Explanation | null {
     summary:
       share === null
         ? `No ${input.denominatorLabel} in ${input.window}, so there is no share.`
-        : `${count(numerator)} ${input.numeratorLabel} of ${count(denominator)} ${input.denominatorLabel} = ${share}, ${input.window}.`,
+        : `${count(numerator)} ${nounFor(numerator, input.numeratorLabel)} of ${count(denominator)} ${nounFor(denominator, input.denominatorLabel)} = ${share}, ${input.window}.`,
     inputs: [
       { key: 'numerator', label: capitalise(input.numeratorLabel), value: count(numerator), source: 'Server count' },
       { key: 'denominator', label: capitalise(input.denominatorLabel), value: count(denominator), source: 'Server count' },
@@ -112,6 +112,18 @@ export function explainKpiShare(input: ShareExplainInput): Explanation | null {
     caveats: [...base.caveats, ...(input.caveats ?? [])],
     link: input.link,
   };
+}
+
+const SINGULAR: Record<string, string> = { cases: 'case', verdicts: 'verdict', closes: 'close' };
+
+/**
+ * A counted noun phrase for its count: "1 verdicted case", never "1 verdicted cases".
+ * Only the first counted noun of the phrase changes ("open cases whose AI verdict is
+ * Needs human" reads "open case whose ...").
+ */
+export function nounFor(n: number, plural: string): string {
+  if (n !== 1) return plural;
+  return plural.replace(/\b(cases|verdicts|closes)\b/, (word) => SINGULAR[word] ?? word);
 }
 
 /** Alert reduction: one minus cases opened over alerts ingested (research R11). */
@@ -183,7 +195,43 @@ export interface TimingExplainInput {
   byDecider?: MttrByDecider;
   /** How many samples exist when only some are listed. */
   sampleCount?: number;
+  /**
+   * The rank (0-based, in the sorted times of all `sampleCount` samples) of the first
+   * listed sample. A long list is the run around the median, so the rank lines read the
+   * ranks of the whole population, never the ranks inside the listed run.
+   */
+  samplesOffset?: number;
+  /** Where the window comes from ("The time range above" when omitted). */
+  windowSource?: string;
   link?: ExplanationLink;
+}
+
+/**
+ * One percentile's rank line over ALL `total` sorted samples, when only the run
+ * `listed` (sorted, starting at rank `offset`) is in hand. `null` when either rank the
+ * percentile interpolates between falls outside the listed run: no line is better than a
+ * line that computes a different number from the one shown.
+ */
+export function rankLineOverRun(
+  name: string,
+  q: number,
+  listed: readonly number[],
+  offset: number,
+  total: number,
+): ExplanationStep | null {
+  if (!(total > 0) || !listed.length) return null;
+  const rank = q * (total - 1);
+  const lower = Math.floor(rank);
+  const upper = Math.ceil(rank);
+  const lo = listed[lower - offset];
+  const hi = listed[upper - offset];
+  if (lower < offset || upper - offset >= listed.length || lo === undefined || hi === undefined) return null;
+  const result = lo + (rank - lower) * (hi - lo);
+  const expression =
+    lower === upper
+      ? `rank ${trimmed(q, 2)} x (${count(total)} - 1) = ${trimmed(rank)}, the value at that rank`
+      : `rank ${trimmed(q, 2)} x (${count(total)} - 1) = ${trimmed(rank)}; ${trimmed(lo)} + ${trimmed(rank - lower)} x (${trimmed(hi)} - ${trimmed(lo)})`;
+  return { label: name, expression, result: `${trimmed(result)} minutes` };
 }
 
 /**
@@ -205,16 +253,28 @@ export function explainTiming(input: TimingExplainInput): Explanation | null {
       summary: `${input.title} is not measured for ${input.window}: ${block.reason || 'no case made this transition'}.`,
       formula: TIMING_FORMULA,
       provenanceNote: `${input.definition} Computed by the server from each case's own timestamps.`,
-      inputs: [{ key: 'window', label: 'Window', value: input.window, source: 'The time range above' }],
+      inputs: [{ key: 'window', label: 'Window', value: input.window, source: input.windowSource ?? 'The time range above' }],
       caveats: [],
       link: input.link,
     };
   }
   const n = block.count;
   const decider = deciderSteps(input.byDecider);
-  const caveats = [...base.caveats];
-  if (input.samples && input.sampleCount && input.samples.length < input.sampleCount) {
-    caveats.splice(0, caveats.length, `The rank lines use the ${count(input.samples.length)} listed samples around the median, of ${count(input.sampleCount)}.`);
+  let caveats = [...base.caveats];
+  let rankLines = base.steps;
+  const listed = input.samples;
+  if (listed && input.sampleCount && listed.length < input.sampleCount) {
+    // Only the run around the median is listed: the rank lines read the ranks of all
+    // `sampleCount` samples (from `samplesOffset`), so they reproduce the shown figure.
+    const offset = Math.max(0, Math.floor(input.samplesOffset ?? 0));
+    const sorted = listed.filter((v) => Number.isFinite(v)).slice().sort((a, b) => a - b);
+    const p50 = rankLineOverRun('p50', 0.5, sorted, offset, input.sampleCount);
+    const p90 = rankLineOverRun('p90', 0.9, sorted, offset, input.sampleCount);
+    rankLines = [p50, p90].filter((line): line is ExplanationStep => line !== null);
+    caveats = [
+      `The list holds ranks ${count(offset + 1)} to ${count(offset + sorted.length)} of ${count(input.sampleCount)}, the cases around the median.`,
+      ...(p90 ? [] : ['The p90 ranks fall outside the listed cases, so its line is not shown.']),
+    ];
   }
   if (decider.length) {
     caveats.push('Who closed a case is the last decider the case records, not proof of who did the work.');
@@ -231,9 +291,9 @@ export function explainTiming(input: TimingExplainInput): Explanation | null {
       { key: 'p90', label: 'p90', value: humanizeMinutes(block.p90), source: 'Server' },
       { key: 'mean', label: 'Mean', value: humanizeMinutes(block.mean), source: 'Server' },
       { key: 'max', label: 'Longest', value: humanizeMinutes(block.max), source: 'Server' },
-      { key: 'window', label: 'Window', value: input.window, source: 'The time range above' },
+      { key: 'window', label: 'Window', value: input.window, source: input.windowSource ?? 'The time range above' },
     ],
-    steps: [...base.steps, ...decider],
+    steps: [...rankLines, ...decider],
     rounding: 'The server rounds each figure to one decimal of a minute; durations are shown in whole minutes.',
     provenance: 'server_computed',
     // The clock's definition is prose, so it sits with the provenance, not in the formula.

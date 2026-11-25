@@ -86,7 +86,7 @@ export function SamplesSheet({ open, onOpenChange, title, data, onCloseAutoFocus
   );
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent side="right" className="flex w-full flex-col sm:max-w-3xl" onCloseAutoFocus={onCloseAutoFocus}>
+      <SheetContent side="right" className="flex w-full flex-col sm:max-w-3xl lg:max-w-5xl" onCloseAutoFocus={onCloseAutoFocus}>
         <SheetHeader>
           <SheetTitle>{`${title}: the cases behind it`}</SheetTitle>
           <SheetDescription>{data ? `${data.population} Window: ${data.window}.` : 'Loading the cases.'}</SheetDescription>

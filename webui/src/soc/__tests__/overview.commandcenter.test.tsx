@@ -649,14 +649,14 @@ describe('Overview — Cyber Defence Center', () => {
     await user.hover(tile);
     const card = await screen.findByTestId('metric-trend-card');
     expect(within(card).getByTestId('metric-trend-formula')).toHaveTextContent(
-      '1 false positive verdicts of 2 verdicted cases = 50%, the last 24 hours.',
+      '1 false positive verdict of 2 verdicted cases = 50%, the last 24 hours.',
     );
     await user.unhover(tile);
 
     await user.click(tile);
     const dialog = await screen.findByRole('dialog');
     expect(within(dialog).getByTestId('kpi-drilldown-formula')).toHaveTextContent(
-      '1 false positive verdicts of 2 verdicted cases = 50%, the last 24 hours.',
+      '1 false positive verdict of 2 verdicted cases = 50%, the last 24 hours.',
     );
     await user.click(within(dialog).getByRole('button', { name: 'Show the calculation' }));
     const panel = within(dialog).getByTestId('explain-panel');

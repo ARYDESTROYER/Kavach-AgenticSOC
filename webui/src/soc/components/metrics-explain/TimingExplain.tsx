@@ -36,6 +36,8 @@ export interface TimingExplainProps {
   windowHours: number;
   /** The same window in words ("the last 24 hours"). */
   window: string;
+  /** Where the window comes from, when it is not the time range above (an all-time tile). */
+  windowSource?: string;
   byDecider?: MttrByDecider;
   /** The shown duration. */
   children: React.ReactNode;
@@ -52,6 +54,7 @@ export function TimingExplain({
   block,
   windowHours,
   window,
+  windowSource,
   byDecider,
   children,
   onOpenChange,
@@ -99,8 +102,10 @@ export function TimingExplain({
         byDecider: matching?.by_decider ?? byDecider,
         samples: matching && !matching.hidden_by_scope ? matching.samples.map((s) => s.minutes ?? s.value) : undefined,
         sampleCount: matching?.sample_count,
+        samplesOffset: matching?.samples_offset,
+        windowSource,
       }),
-    [metric, title, block, window, byDecider, matching],
+    [metric, title, block, window, windowSource, byDecider, matching],
   );
   if (!explanation) return <>{children}</>;
 

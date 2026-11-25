@@ -404,11 +404,26 @@ function DrilldownCalculation({ explanation }: { explanation: Explanation }) {
           {open ? 'Hide the calculation' : 'Show the calculation'}
         </button>
       </p>
+      {/* The calculation sits in the panel's fixed identity band, so it scrolls in its own
+          bounded port: unbounded, it grew the band past the dialog's fixed height and left
+          the evidence list a 12px sliver (0px on a phone) until it was hidden again. The
+          port takes the keyboard like the evidence port (WCAG 2.1.1). */}
+      {/* eslint-disable jsx-a11y/no-noninteractive-tabindex -- a SCROLLABLE region is the
+          documented exception: WCAG 2.1.1 requires a container that scrolls to be
+          keyboard-operable, and an accessible name is how that is done. */}
       {open ? (
-        <div id={regionId} className="mt-2 max-w-xl rounded-md border border-border/70 p-3">
+        <div
+          id={regionId}
+          role="group"
+          tabIndex={0}
+          aria-label={`How ${explanation.title ?? 'this figure'} is calculated, scrollable`}
+          data-testid="kpi-drilldown-calculation-panel"
+          className="mt-2 max-h-[min(30dvh,22rem)] max-w-xl overflow-y-auto overscroll-contain rounded-md border border-border/70 p-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
           <ExplainPanel explanation={explanation} />
         </div>
       ) : null}
+      {/* eslint-enable jsx-a11y/no-noninteractive-tabindex */}
     </div>
   );
 }
