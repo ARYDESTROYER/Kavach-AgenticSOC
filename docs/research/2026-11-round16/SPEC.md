@@ -253,7 +253,7 @@ subject (the identity accents) is deleted.
 - Code fact and correction: there is no `users:read` permission; `RESOURCES["users"]` is
   `["manage"]` (`backend/app/rbac/policy.py:55`). The SPEC uses **`users:manage`**, the existing
   grant that lists accounts (built in for super_admin and soc_manager). No new permission is
-  minted. The name never rides an SSE frame; only the caller-scoped route adds it (§4.6 WP08).
+  minted. The name never rides an SSE frame; only the caller-scoped route adds it (§4.5 WP08).
 
 **D11. Standup.** `GET /api/standup` and the standup reads in `routes_standup.py`
 (`/standup/report` at line 104, `/standup/action-items` at 168, `/standup/acknowledgements` at
@@ -482,10 +482,10 @@ defaulted, each a fixed key set:
 
 ### 3.7 Rollback
 
-- Every new stored field is additive. The pinned previous release (`45a4c31`,
-  `scripts/rollback_previous_release.json`) uses Pydantic's default `extra` handling on
-  `RiskBreakdown`, `User` and `UsageDoc`, so it loads new documents and drops the new fields when it
-  rewrites one. Losses on rollback, documented in `known-limitations.md` and the rollback docs:
+- Every new stored field is additive. At `3cd362c`, `RiskBreakdown`, `User` and `UsageDoc` use
+  Pydantic's default `extra` handling (they ignore unknown fields), and the pinned previous release
+  (`45a4c31`, `scripts/rollback_previous_release.json`) is expected to behave the same: it loads
+  new documents and drops the new fields when it rewrites one. The lane plants below prove it. Losses on rollback, documented in `known-limitations.md` and the rollback docs:
   recorded risk inputs on cases the old build rewrites (they then read "not recorded"); MFA
   lockout counters (reset); the route gating and the server-side forced password change (they
   revert). Ledger rows are append-only and keep their rate fields. `UserPrefs.misc` is a free
@@ -607,7 +607,7 @@ everything on the integrated tree.
 | WP12 | Metrics explained | 1 | M to L | WP01, WP15C, WP11 primitive | 4 (B29, B64, B66, B67) |
 | WP13 | Case records reachable: backend | 1 | M | WP01 | 0 |
 | WP14 | Case records reachable: Console | 1 | M | WP01; live with WP13, WP10 | 2 (B30, B31) |
-| WP15D | Demo Mode correctness | 1 | M | WP01, WP15B | 5 (B34, B35 with B47 and B65, B41, B48 with B69, B61) plus the B62 Demo hunk |
+| WP15D | Demo Mode correctness | 1 | M | WP01, WP15B; merges after WP08 | 5 (B34, B35 with B47 and B65, B41, B48 with B69, B61) plus the B62 Demo hunk |
 | WP15E | Console fixes: setup, settings, administration | 0 (part 1) and 1 | M to L | WP01; part 2 also WP03, WP15B | 10 (B36, B37, B43, B44, B45, B46, B49, B53, B56, B57) |
 | WP15F | Accessibility fixes | 1 | M | the feature packages that own the files (merge late) | 11 (B71 to B81) |
 | WP15G | Chat and local-model fixes | 1 | S to M | WP01 | 3 (B38, B40, B42) plus [oss] B1 and B3 |
@@ -637,16 +637,18 @@ Total: 75 fixes plus 6 merged duplicates, 81 bug ids (Appendix A).
   - `backend/tests/test_route_auth_coverage.py` and the new `backend/tests/test_round16_security.py`;
   - `webui/src/soc/pages/Sessions.tsx` (B55);
   - `webui/src/soc/pages/settings/case-policy.tsx` and `settings/general.tsx` (B51 inline errors);
-  - docs: `SECURITY.md` (the refresh section), `docs/administration/authentication.md`, `DEMO.md`
-    (line 129), the auth passages of `docs/USAGE.md` (about lines 2000 to 2004, 2373 to 2374 and
-    §27) and `DEPLOY.md` (about line 1158).
+  - docs: `SECURITY.md` (line 20 and the "Refresh-token rotation & reuse (theft) detection"
+    section at line 506), `docs/administration/authentication.md` (line 35), `DEMO.md` (line
+    129), the auth passages of `docs/USAGE.md` (about lines 2001 to 2004, 2373 to 2374 and 2476
+    to 2490) and `DEPLOY.md` (the `refresh_ttl` rows near line 1120 and line 1158).
 - **Allowed hunks in shared files.**
   - `backend/app/api/routes.py`: the auth, MFA, session, account, users and SSO handlers (from
-    `_register_session`, about line 3919, to `set_sso_provider_secret`, about line 5784, plus
-    `create_user` at 5999 and the admin reset path); `get_settings` (1770); `put_settings`
-    (`_guard_sso_settings_change` beside `_guard_rbac_settings_change`, and
-    `_reject_incoherent_settings` beside `_reject_out_of_range_caps`); `account_activity` (about
-    line 4557); the case read GETs `case_export` (8192), `case_trace` (8499), `case_rationale`
+    `_register_session`, line 3919, to `set_sso_provider_secret`, line 5784, plus `create_user`
+    at 5999 and the administrator reset in `update_user`, `PUT /api/users/{username}`, at 6098);
+    `get_settings` (1770); `put_settings` (2089: a new `_guard_sso_settings_change` beside
+    `_guard_rbac_settings_change` at 2048, and a new `_reject_incoherent_settings` beside
+    `_reject_out_of_range_caps` at 1874); `account_activity`
+    (4558); the case read GETs `case_export` (8192), `case_trace` (8499), `case_rationale`
     (8518), `scans` (8580), `scan_notifications` (8592) and `standup` (8604).
   - `backend/app/models.py`: the `User` class only.
   - `backend/app/audit/event_categories.json` and `webui/src/soc/components/audit/events.ts`:
@@ -684,8 +686,9 @@ Total: 75 fixes plus 6 merged duplicates, 81 bug ids (Appendix A).
     session of the target; both write `session.revoked` rows and return `sessions_revoked`.
   - **Session IP (B22).** `session_metadata` derives the IP with `audit_client_ip`
     (`audit/context.py`, `TRUSTED_PROXIES`), never the leftmost `X-Forwarded-For` entry.
-  - **Refresh tokens (B24).** No sign-in issues one. `POST /api/auth/refresh` stays, marked
-    `deprecated=True`, answering 401 `unknown_refresh`. The docs say a session lasts until its
+  - **Refresh tokens (B24).** No sign-in issues one. `POST /api/auth/refresh` (line 4435) stays,
+    marked `deprecated=True`, answering 401 `{"code": "session_invalid", "reason":
+    "unknown_refresh"}` as it does today (line 4481). The docs say a session lasts until its
     access token expires within the idle and absolute limits.
   - **SSO (B15, B16).** Link by verified email only to an account already linked to the same
     provider; otherwise refuse and write the `auth.login_failed` denied row. A provider is
@@ -776,8 +779,8 @@ Total: 75 fixes plus 6 merged duplicates, 81 bug ids (Appendix A).
     Elasticsearch with no socket it is false and `postgres_state_required` is among the blockers,
     so the top bar shows "Updates unavailable".
   - B54: `PUBLIC_STABLE_DOCS_URL` points at `https://arydestroyer.github.io/Kavach-AgenticSOC/stable/`;
-    the false sentence "Stable site does not exist yet" (`Docs.tsx:603-617`) is removed and the
-    Latest Stable link always renders.
+    the false Testing-channel sentence "Stable site publishes with the first Stable release"
+    (`Docs.tsx`, about lines 603 to 617) is removed and the Latest Stable link always renders.
   - GHCR visibility runbook text ([rel] B2) in `channels.md` and the 0.2.0 release page.
 - **Bugs fixed.** B52, B54.
 - **Tests.** The [rel] B1 test list; the bootstrap shell test refuses both bad `.env` cases; the
@@ -1065,7 +1068,8 @@ Total: 75 fixes plus 6 merged duplicates, 81 bug ids (Appendix A).
   - `webui/src/lib/docs-url.ts` (moved from `Docs.tsx`, re-exported there) and
     `webui/src/lib/semver.ts` (from `upstream-release.ts`).
   - `webui/src/soc/prefs.tsx` (a `loaded` flag, [wn] F3); `webui/vite.config.ts` (the
-    `__TLSOC_WHATS_NEW_LATEST__` define) and `webui/src/vite-env.d.ts`.
+    `__AGENTIC_SOC_WHATS_NEW_LATEST__` define; a new name, because no new compatibility-prefixed
+    identifier is minted) and `webui/src/vite-env.d.ts`.
   - `backend/app/whats_new.py` (`latest_update_id()`, fail-open to `None`).
   - The personal Settings switch "Show What's new after updates" (the Appearance group of the
     personal Settings section).
@@ -1095,8 +1099,9 @@ Total: 75 fixes plus 6 merged duplicates, 81 bug ids (Appendix A).
   - The show rule of D7 and [wn] §4.2 (without the eligibility route). Never shown over sign-in,
     setup, a forced password change, the wizard, re-authentication, another open dialog, or a deep
     link to a record (a deep link defers to the next landing page). Any close writes the marker
-    once; a `localStorage` mirror (`tlsoc_whats_new_seen:<user>`, try/catch) is the fallback when
-    the write fails.
+    once; a `localStorage` mirror (`soc.whatsNew.seen:<user>`, try/catch, in the existing `soc.`
+    key style such as `soc.nav.collapsed`, never a new `tlsoc_` name) is the fallback when the
+    write fails.
   - The dialog ([wn] §4.3): 40rem, focus on the title, closing focus to `#socMain`, at most 5
     highlights, a theme-matched hero figure, "See all changes" and "Got it"; announces the six tabs
     and the Alt+2 and Alt+4 change (D8).
@@ -1169,7 +1174,7 @@ Total: 75 fixes plus 6 merged duplicates, 81 bug ids (Appendix A).
     (the header EventID names an event type), so LEEF events take the hash-plus-ordinal fallback;
     the record shape and `rec["event_id"]` stay (saved mappings and the Demo use it).
 - **Bugs fixed.** B04, B05, B06, B07, B08, B09, B10, B11, B12, B14, B33.
-- **Tests.** One regression per bug (the [bugs] repro scripts as fixtures), and
+- **Tests.** One regression per bug, modelled on the [bugs] reproduction, and
   `test_round15_wp1_carry.py` extended to the new carried fields in all three builders.
   `test_wave6_decide_guard.py` stays green.
 - **Acceptance.** Every probe flips; no model call added; the §3.6 guards pass.
@@ -1437,7 +1442,7 @@ configuration. Contracts and tests are in §4.5 WP15E.
     `source_name || source_id`; a `source_name` CSV column is added before `detection_source`.
   - **B64.** A Simple-view stage whose share mixes a counter parent with a case-tally stage reads
     "not measured: partial coverage" when `counters.incomplete` is true (the
-    `PARTIAL_COVERAGE_NOTE` wording).
+    `PARTIAL_COVERAGE_NOTE` wording of `webui/src/soc/dashboard/widgets/detection.tsx`).
   - **B66.** The Respond sub-line and help say "First human acknowledgement, or a move to
     investigating, escalated or on hold"; assignment alone does not stop the clock; MTTD help says
     "Median (p50)".
@@ -1526,8 +1531,9 @@ configuration. Contracts and tests are in §4.5 WP15E.
     open; the first projection includes the analyst-confirmed seeded cases.
   - **B48 (with B69).** The rng draw stays (determinism); each seeded case with `token_cost > 0`
     gets one UsageDoc in the Demo usage store: `role: investigator`, its `case_id`, `ts` its
-    `created_at`, its cost, prompt tokens derived at `_DEMO_IN_RATE`, the WP01 rate fields and
-    `price_basis: "demo_simulated"`. The demo docs say Demo spend is simulated.
+    `created_at`, its cost, prompt tokens derived at the gateway's `_DEMO_IN_RATE`
+    (`llm/gateway.py:361`), the WP01 rate fields and `price_basis: "demo_simulated"`. The demo
+    docs say Demo spend is simulated.
   - **B61.** `_with_seeded_decision` appends the `analyst_action` history entry with the classified
     disposition for an analyst-closed case, as the live close writes.
   - **B62 (the Demo hunk of B13).** Each seeded case's breakdown comes from `compute_risk` and
@@ -1545,7 +1551,7 @@ configuration. Contracts and tests are in §4.5 WP15E.
 - **Acceptance.** A fresh seeded Demo shows no "Agent health needs attention" banner, the Executive
   "Confirmed threats" counts the analyst true-positive closes, and every seeded risk popover
   reproduces.
-- **Depends on.** WP01 (the rate fields and `RiskInputs`), WP15B.
+- **Depends on.** WP01 (the rate fields and `RiskInputs`), WP15B; merges after WP08 (`state.py`).
 - **Effort.** M.
 
 #### WP15E. Console fixes: setup, settings and administration (M to L)
@@ -1744,8 +1750,8 @@ Merge order into `claude/round16`:
 5. WP04, WP06 (independent).
 6. WP07, then WP05 part 2 (the notes guard needs the skeleton).
 7. WP15E part 1 (B43, B46).
-8. WP08, then WP10 (shared `pipeline.py`); WP15D after WP10 (it uses `explain_risk` and the rate
-   fields, and its `state.py` hunk follows WP08's).
+8. WP08, then WP10 (shared `pipeline.py`); WP15D after WP08 (its `state.py` hunk follows
+   WP08's).
 9. WP13.
 10. WP02, then WP03.
 11. WP09, WP11, WP12, WP14, WP15E part 2, WP15G.
