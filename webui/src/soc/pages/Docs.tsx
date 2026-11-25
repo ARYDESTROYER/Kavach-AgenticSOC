@@ -80,6 +80,14 @@ interface DocsCategory {
   articles: readonly DocsArticle[];
 }
 
+/**
+ * The release-line page of the Help Center bundled with this Console: `releases/0.2/` for
+ * any 0.2.x build. The bundle and the Console are built from one VERSION, and
+ * `scripts/check_version.py` requires `docs/releases/<line>.md`, so the page always
+ * exists and the link follows the next minor line without an edit.
+ */
+export const RELEASE_LINE_PAGE = `releases/${docsVersionLine(CONSOLE_RELEASE_IDENTITY.version)}/`;
+
 export const DOC_CATEGORIES: readonly DocsCategory[] = [
   {
     id: 'use',
@@ -317,7 +325,7 @@ export const DOC_CATEGORIES: readonly DocsCategory[] = [
       {
         title: 'Release notes',
         description: 'See what changed in this documentation and application release line.',
-        path: 'releases/0.1/',
+        path: RELEASE_LINE_PAGE,
         keywords: ['changelog', 'what is new', 'known issues'],
       },
       {

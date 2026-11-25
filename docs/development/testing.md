@@ -299,10 +299,13 @@ python3 scripts/check_version.py
 For the 0.2 line it checks that the root `VERSION` (`0.2.0`) agrees with backend,
 Console, lockfile, OpenAPI, Compose image/build metadata, release records, and the
 MkDocs/Mike documentation line (`0.2`). It also requires the Apache-2.0 license label in
-all three shipping Dockerfiles. On `main`, on a `v*` tag, and on a pull request into
-`main` (`GITHUB_BASE_REF=main`), it further requires the `[Unreleased]` body to read
-exactly `No changes yet.` and the GitHub Release body to stay at most 100,000
-characters. To rehearse those release checks locally:
+all three shipping Dockerfiles and the curated What's new notes
+`docs/releases/notes/<VERSION>.json` (schema 1, naming `VERSION`). On `main`, on a `v*`
+tag, and on a pull request into `main` (`GITHUB_BASE_REF=main`), it further requires
+the `[Unreleased]` body to read exactly `No changes yet.`, the GitHub Release body to
+stay at most 100,000 characters, and the notes to read `"status": "released"` with the
+date of the dated CHANGELOG heading on the release and on every update. To rehearse
+those release checks locally:
 
 ```bash
 TLSOC_SOURCE_REF=refs/heads/main TLSOC_RELEASE_CHANNEL=stable python3 scripts/check_version.py

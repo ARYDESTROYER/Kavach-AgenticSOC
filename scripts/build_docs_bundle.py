@@ -31,6 +31,10 @@ LEGACY_DOC_LINES = ("0.1",)
 #: The page that stored chat citations name with a fragment (``#sources``). The
 #: bundle check requires its redirect page whenever the current tree has the page.
 ANCHORED_STUB_PAGE = "analyst/chat/"
+#: Folders under ``docs/`` that are generator input, not Help Center files. Each is in
+#: the ``exclude_docs`` block of ``mkdocs.yml``; the bundle check refuses a tree that
+#: still carries one (the curated What's new notes, ``docs/releases/notes/*.json``).
+NON_BUNDLED_DOC_DIRS = ("releases/notes",)
 SEMVER = re.compile(
     r"^(0|[1-9]\d*)\."
     r"(0|[1-9]\d*)\."
@@ -247,6 +251,16 @@ def validate_bundle(
                 f"documentation manifest {key} mismatch: "
                 f"expected {value!r}, found {manifest.get(key)!r}"
             )
+    leaked = [
+        f"/docs/{docs_version}/{folder}/"
+        for folder in NON_BUNDLED_DOC_DIRS
+        if (output / docs_version / folder).exists()
+    ]
+    if leaked:
+        raise RuntimeError(
+            "documentation bundle carries generator input that mkdocs.yml excludes: "
+            + ", ".join(leaked)
+        )
     validate_legacy_redirects(output, docs_version=docs_version)
 
 

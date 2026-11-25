@@ -161,6 +161,36 @@ class LegacyRedirectTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "does not redirect"):
                 bundle.validate_bundle(output, version="0.2.0", docs_version="0.2")
 
+    def test_the_curated_release_notes_never_reach_the_bundle(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_temp:
+            output = Path(raw_temp)
+            self._bundle(output)
+            notes = output / "0.2" / "releases" / "notes"
+            notes.mkdir(parents=True)
+            (notes / "0.2.0.json").write_text('{"schema": 1}', encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, r"/docs/0\.2/releases/notes/"):
+                bundle.validate_bundle(output, version="0.2.0", docs_version="0.2")
+
+    def test_mkdocs_excludes_every_folder_the_bundle_check_refuses(self) -> None:
+        """The ``exclude_docs`` block names ``releases/notes/``, so MkDocs never copies
+        the curated What's new notes into the Help Center (and so into the image)."""
+        excluded: set[str] = set()
+        inside = False
+        for line in (bundle.ROOT / "mkdocs.yml").read_text(encoding="utf-8").splitlines():
+            if line.startswith("exclude_docs:"):
+                inside = True
+                continue
+            if inside:
+                if line and not line.startswith(" "):
+                    break
+                entry = line.strip()
+                if entry and not entry.startswith("#"):
+                    excluded.add(entry)
+        self.assertTrue(excluded, "mkdocs.yml has no exclude_docs block")
+        for folder in bundle.NON_BUNDLED_DOC_DIRS:
+            self.assertIn(f"{folder}/", excluded)
+            self.assertTrue((bundle.ROOT / "docs" / folder).is_dir(), folder)
+
     def test_the_target_can_never_close_the_script(self) -> None:
         script = bundle._fragment_script("/docs/0.2/</script><b>/")
         self.assertTrue(script.startswith("<script>") and script.endswith("</script>"))

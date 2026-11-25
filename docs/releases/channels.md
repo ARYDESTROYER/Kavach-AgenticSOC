@@ -211,17 +211,23 @@ As part of the final frozen release-preparation change:
 1. move the accepted entries out of `[Unreleased]` under `[X.Y.Z]` with the release
    date;
 2. open a new, empty `[Unreleased]` section above it;
-3. promote and verify that exact prepared tree on `main`; and
-4. tag that exact verified commit immediately.
+3. set `docs/releases/notes/X.Y.Z.json` to `"status": "released"` with the same date
+   on the release and on every update, then run `scripts/build_release_notes.py`;
+4. promote and verify that exact prepared tree on `main`; and
+5. tag that exact verified commit immediately.
 
 If promotion is abandoned, revert the prepared release heading rather than leaving
 a Testing snapshot that reads as though it were published.
 
-On `main`, on a `v*` tag and on a pull request into `main`, `scripts/check_version.py`
-requires the `[Unreleased]` body to read exactly `No changes yet.`, and it requires
-the GitHub Release body (the release-commit marker plus `docs/releases/X.Y.Z.md`) to
-stay at most 100,000 characters. A release can therefore not ship with its notes left
-under `[Unreleased]`. Never keep multiple
+On every ref, `scripts/check_version.py` requires the curated What's new notes
+`docs/releases/notes/X.Y.Z.json` (schema 1, naming the `VERSION`); on `Testing` they
+may read `"status": "testing"` with no date. On `main`, on a `v*` tag and on a pull
+request into `main`, it requires the `[Unreleased]` body to read exactly
+`No changes yet.`, the GitHub Release body (the release-commit marker plus
+`docs/releases/X.Y.Z.md`) to stay at most 100,000 characters, and the notes to read
+`"status": "released"` with the date of the dated `[X.Y.Z]` heading and a date on
+every update. A release can therefore not ship with its notes left under
+`[Unreleased]` or its What's new still marked Testing. Never keep multiple
 top-level `[Unreleased]` sections as a dated work log; the development journal and
 Development snapshot headings hold that history.
 
