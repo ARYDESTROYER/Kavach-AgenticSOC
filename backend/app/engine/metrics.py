@@ -1001,9 +1001,15 @@ def _sla_clock(
         state = "at_risk"
     else:
         state = "ok"
+    try:
+        due_at = start + timedelta(minutes=target_minutes)
+    except (OverflowError, ValueError):
+        # A target so large its due instant is past the last representable time
+        # (SlaTarget has no upper bound): the clock is simply never due.
+        due_at = datetime.max.replace(tzinfo=timezone.utc)
     return SlaClockReading(
         clock=clock, target_minutes=target_minutes, start=start,
-        due_at=start + timedelta(minutes=target_minutes), stop=stop,
+        due_at=due_at, stop=stop,
         stop_source=stop_source if stop is not None else "", elapsed_minutes=elapsed,
         running=running, state=state,
     )

@@ -84,7 +84,8 @@ def _entry(raw: Any) -> ChatFeedbackEntry | None:
 
 def _instant(value: Any) -> datetime | None:
     """An ISO-8601 string as an aware UTC instant, or ``None`` when it does not parse.
-    A value without a zone (a date alone, for example) is read as UTC."""
+    A value without a zone (a date alone, for example) is read as UTC. An instant just
+    outside the representable range clamps to its first or last instant. Never raises."""
     if not isinstance(value, str) or not value.strip():
         return None
     try:
@@ -92,8 +93,14 @@ def _instant(value: Any) -> datetime | None:
     except ValueError:
         return None
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
+        return parsed.replace(tzinfo=timezone.utc)
+    try:
+        return parsed.astimezone(timezone.utc)
+    except OverflowError:
+        # Year 1 with a positive offset, or year 9999 with a negative one, lies just
+        # outside the representable range: clamp to that edge, as the case windows do.
+        edge = datetime.min if parsed.year == 1 else datetime.max
+        return edge.replace(tzinfo=timezone.utc)
 
 
 def _entries(doc: dict[str, Any] | None) -> list[ChatFeedbackEntry]:

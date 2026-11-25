@@ -188,6 +188,27 @@ def test_a_terminal_case_with_no_readable_instant_never_runs_a_live_clock() -> N
     assert out["evaluated"] == 1 and out["breaching"] == [] and out["attainment_pct"] == 100.0
 
 
+@pytest.mark.parametrize("target", [10**10, 10**13])
+def test_a_target_past_the_last_representable_instant_is_never_due(target: int) -> None:
+    # SlaTarget has no upper bound, so an operator can type a very large target. The
+    # case reading must not raise on its due instant: posture would answer 500.
+    from app.config import SlaTarget
+
+    policy = SlaPolicy(targets={"P4": SlaTarget(response_minutes=target, resolve_minutes=target)})
+    created = NOW - timedelta(hours=1)
+    cases = [
+        _case("open", created=created),
+        _case("closed", created=created, status=CaseStatus.CLOSED,
+              history=[("closed", "agent", created + timedelta(minutes=5))]),
+    ]
+    out = M.sla_metrics(cases, policy, now=NOW)
+    assert out["evaluated"] == 2 and out["breaching"] == [] and out["attainment_pct"] == 100.0
+    reading = M.sla_case_reading(cases[0], policy.targets["P4"], M._CaseTimings(cases[0]), now=NOW)
+    assert reading.response is not None and reading.response.state == "ok"
+    assert reading.response.due_at == datetime.max.replace(tzinfo=UTC)
+    assert reading.as_dict()["response"]["due_at"] == datetime.max.replace(tzinfo=UTC).isoformat()
+
+
 @pytest.mark.parametrize(
     "vector", CONTRACT["sla"]["vectors"],
     ids=lambda v: f"{v['elapsed_minutes']}m-{'responded' if v['responded'] else 'open'}",
@@ -558,6 +579,38 @@ async def test_feedback_breakdown_compares_instants(
         "2026-11-24T10:00:00.500000+00:00", "2026-11-24T15:00:00.500000+00:00",
     ])
     assert (await store.breakdown("lia", since=since, until=until))["total"] == expected
+
+
+@pytest.mark.parametrize(
+    "since, expected",
+    [
+        # Year 1 with a positive offset is before the first representable UTC instant.
+        ("0001-01-01T00:00:00+05:30", 2),
+        # Year 9999 with a negative offset is after the last one.
+        ("9999-12-31T23:59:59-05:00", 0),
+    ],
+)
+async def test_feedback_breakdown_clamps_an_instant_at_the_edge_of_the_range(
+    monkeypatch: pytest.MonkeyPatch, since: str, expected: int,
+) -> None:
+    store = await _feedback_store_with(monkeypatch, [
+        "2026-11-24T10:00:00.500000+00:00", "2026-11-24T15:00:00.500000+00:00",
+    ])
+    assert (await store.breakdown("lia", since=since))["total"] == expected
+    assert (await store.breakdown("lia", until=since))["total"] == 2 - expected
+
+
+async def test_feedback_summary_route_answers_200_at_the_edge_of_the_range(app_state) -> None:
+    from app.api.routes_chat_library import router as library_router
+
+    api = FastAPI()
+    api.include_router(library_router)
+    api.state.tlsoc = app_state
+    async with AsyncClient(transport=ASGITransport(app=api), base_url="http://test") as client:
+        early = await client.get("/api/chat/feedback/summary", params={"since": "0001-01-01T00:00:00+05:30"})
+        late = await client.get("/api/chat/feedback/summary", params={"since": "9999-12-31T23:59:59-05:00"})
+    assert early.status_code == 200, early.text
+    assert late.status_code == 200, late.text
 
 
 async def test_feedback_breakdown_refuses_an_unreadable_bound(monkeypatch: pytest.MonkeyPatch) -> None:
