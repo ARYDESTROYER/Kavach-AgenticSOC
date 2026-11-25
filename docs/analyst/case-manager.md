@@ -13,9 +13,10 @@ link from Cases shows a short announced **Taking you to Case Manager…** handof
 opens that exact case here. The `caseId` remains in the Case Manager URL so refresh,
 browser history, and bookmarks preserve the selected record.
 
-The page header holds the title, a help tip, **Live** while the queue is receiving live
-updates, and **Refresh case queue**. The queue and the open case sit side by side on one
-panel.
+The page has no header of its own: the top bar already names it. **Live** (while the
+queue is receiving live updates), **Refresh case queue** and **About Case Manager** sit in
+the first row of the queue's controls. The queue and the open case sit side by side on
+one panel.
 
 ## The outcome of a case
 
@@ -62,9 +63,11 @@ the foot of the list always states how many cases are loaded out of the exact to
 example "1 of 68 active · 50 loaded", and **Load more** beside it pages through the rest,
 50 at a time.
 
-Above the list, the queue has two rows of controls: the scope and a view menu (the sort
-order, **Compact rows** and the keyboard shortcuts), then **Select visible** (for a role
-that may do bulk work), the search, and one **Filters** control. The queue provides:
+Above the list, the queue has two rows of controls. The first holds the scope, **Live**,
+**Refresh case queue**, a view menu (the sort order, **Compact rows**, **Hide queue** and
+the keyboard shortcuts) and **About Case Manager**; in a queue narrower than 400 px,
+Refresh and About move into the view menu. The second holds **Select visible** (for a
+role that may do bulk work), the search, and one **Filters** control. The queue provides:
 
 - search across the case ID and number, title, summary, status, AI verdict, entity,
   source, and assignee (every word you type must match);
@@ -77,28 +80,34 @@ that may do bulk work), the search, and one **Filters** control. The queue provi
   lives in the address as `closedBy` (`#/case_manager?closedBy=agent`), so a link keeps
   it, and the server answers it over every matching case;
 - latest-updated, highest-risk, newest-created, and title ordering in the view menu;
-- **Refresh case queue** in the page header, plus live updates: a case that changes
+- **Refresh case queue** in the queue's controls, plus live updates: a case that changes
   elsewhere updates its row, and a case that no longer matches the view leaves it.
 
 A link can also open a case on one of its tabs, for example
-`#/case_manager?caseId=<id>&tab=investigation`. `tab` is one of `overview`, `runbook`,
-`investigation`, `collab` or `chat`. `investigation` also opens the case's trace, and
-`runbook` opens only for people who can read runbooks (anyone else sees the Overview
-tab). An older link to the retired `timeline` or `threat` tab still opens the case: it
-lands on the Overview's **What happened** section or Investigation's **Threat context**
-section, and the address is rewritten to the new tab. A link with any other `tab` value,
-opened in a new tab or from another page, opens Case Manager without the case; followed
-while Case Manager is already open, it opens the case and keeps the tab you are on
-(Overview when no case was open).
+`#/case_manager?caseId=<id>&tab=investigation`. `tab` is one of `overview` (Brief),
+`evidence`, `investigation` (AI investigation), `runbook` (Response), `collab`
+(Activity) or `chat`. `investigation` also opens the case's trace. Every tab opens for
+everyone who can read the case. An older link still opens the case on the tab that
+holds its content now: the retired `timeline` tab lands on Evidence's **What happened**
+section, the retired `threat` tab on Evidence's **Threat context** section, and the
+address is rewritten to the new tab. A link with any other `tab` value, opened in a new
+tab or from another page, opens Case Manager without the case; followed while Case
+Manager is already open, it opens the case and keeps the tab you are on (the Brief when
+no case was open).
 
-Each row has two lines: the title and its age, then the severity, the risk, the case
-number, and the status of an open case or the outcome of one that ended (never both),
-with the owner's initial at the end. The runbook's progress is on the case's Runbook tab
-and in its facts rail.
+Each row has two lines: the title and its age, then the severity, the risk ("Risk 72"),
+the case number, and the status of an open case or the outcome of one that ended (never
+both), with the owner's initial at the end. A small severity mark leads the row. For a
+role that may do bulk work it turns into the row's checkbox when you point at or focus
+the row, and it stays a checkbox while any case is selected, while a bulk job runs, and
+on a touch screen. The runbook's progress is on the case's Response tab and in the
+Brief's People lane.
 Selecting a row opens the case in the workspace without leaving the queue, and switching
 cases never blanks the pane: the new case shows at once from its row and fills in as the
 full record arrives. On a narrow viewport, the queue is the complete first screen and
-the case workspace opens after selection.
+the case workspace opens after selection. With no case open, the case pane says **No case
+open** and offers up to three counted shortcuts into the queue, such as "4 critical
+cases", "2 cases awaiting an analyst" or "1 review waiting".
 
 ## Keyboard
 
@@ -109,6 +118,7 @@ your role can use:
 | Keys | Action |
 |---|---|
 | ↑ ↓ or K J | Move through the queue and open the case |
+| [ | Hide or show the queue (desktop width) |
 | Home, End | First or last loaded case |
 | X or Space | Select or clear the focused case |
 | Shift+↑ ↓ or Shift+X | Extend the selection |
@@ -118,7 +128,13 @@ your role can use:
 | A, C, E, H | Acknowledge, close, escalate, or hold the open case |
 | R | Reinvestigate the open case |
 | M, T | Change the owner or edit tags |
-| Alt+1 to Alt+5 | Switch case tabs (Alt+2 is the Runbook tab) |
+| Alt+1 to Alt+6 | Switch case tabs |
+
+Alt+1 to Alt+6 open the case tabs in order: Brief, Evidence, AI investigation, Response,
+Activity and Chat. Three keys changed meaning in version 0.2: Alt+2 opens Evidence (it
+opened Runbook), Alt+4 opens Response (it opened Collaboration) and Alt+5 opens Activity
+(it opened Chat). Chat moved to Alt+6. In the open case, **]** shows or hides the case
+facts.
 
 Shortcuts never fire while you type in a field, and an action you lack the permission for
 does nothing. After a dialog closes, focus returns to the control or row that opened it.
@@ -128,15 +144,27 @@ does nothing. After a dialog closes, focus returns to the control or row that op
 At desktop width, drag **Resize case queue** between the queue and detail panes.
 Keyboard users can focus the divider and use Left/Right Arrow in 24-pixel steps,
 Shift+Arrow in 48-pixel steps, Home/End for the allowed minimum/maximum, or
-double-click to reset. The queue defaults to 400 px, stays between 320 and 680 px,
-and never consumes the detail pane's 560 px minimum. The chosen width is stored in
-this browser. Below the desktop breakpoint, the selected detail replaces the queue
-and the **Cases** back control returns to it instead of exposing a resize handle.
+double-click to reset. Until you choose a width, the queue takes 28% of the board,
+between 340 and 520 px. A chosen width stays between 320 and 680 px and never consumes
+the detail pane's 560 px minimum. The chosen width is stored in this browser. Below the
+desktop breakpoint, the selected case replaces the queue, and the back arrow at the
+start of the case header returns to it instead of exposing a resize handle.
+
+## Hide the queue
+
+In **Triage → Case Manager** at desktop width, press **[** (or choose **Hide queue** in
+the queue's view menu) to fold the queue into a narrow strip, so the case gets the width.
+The strip keeps **Show
+queue**, **Previous case** and **Next case**, and J and K still move through the cases.
+Press **[** again, or select **Show queue**, to bring the queue back. The choice is
+stored in this browser.
 
 ## Read the workspace
 
-The case header stays in view while you scroll. Its first line holds the title (one line;
-the full title is on hover) and one primary action chosen for the case's state:
+The case header stays in view while you scroll, and it is the same height for every
+case. Its first line holds the title (one line; the full title is on hover), one primary
+action chosen for the case's state, **Take action**, **Ask AI**, **More options** and
+**Case facts**, which shows or hides the case facts:
 
 | Case state | Primary action |
 | --- | --- |
@@ -155,65 +183,85 @@ when Close case is not the primary action. On a resolved or closed case, **Take 
 still offers **Set disposition**, so an outcome that reads **Outcome not recorded** can be
 recorded without reopening the case. A case the AI agent closed is reviewed instead of
 relabelled: **Review this auto-close** takes the place of Set disposition, and a case
-picked for review shows a band under its header ("Picked at random for auto-close review.
-Classify it yourself, then compare with the AI.") with **Start review** as its primary
-action. Both open the review in a side sheet; the case stays readable beside it, and
-recording the review never changes the case unless you reopen it. When the title is long, the actions move to their
-own line rather than squeezing it. Its second line holds the facts every tab needs: the
-case number with a copy button, the severity, the status of an open case or the outcome of
-one that ended, the AI verdict, the owner (select to reassign; this is the one place to
-change it), the age and, while the case is open, the SLA.
+picked for review shows a review chip in its header and a note at the top of the Brief
+("Picked at random for auto-close review. Classify it yourself, then compare with the
+AI.") with **Start review** as its primary action. Both open the review in a side sheet;
+the case stays readable beside it, and recording the review never changes the case
+unless you reopen it. In a narrow pane the primary action and **Take action** show as
+icons and **Ask AI** hides; **Ask about this case** in **Take action** opens the same
+chat.
 
-Beside every tab, the **facts rail** lists what is known about the case in one place, in
-eight sections:
+The second line of the header holds the facts every tab needs, on one line at every
+width: the case number with a copy button, the severity, the status of an open case or
+the outcome of one that ended, the risk, the AI verdict, the owner (select to reassign,
+or **Assign to me**; this is the one place to change it), the SLA while the case is
+open, and the review chip on a case waiting for its auto-close review. In a narrow pane
+the later items hide first and the owner always stays; a hidden SLA is still in the case
+facts' **Signal** section. The tabs sit under it.
+
+### Case facts
+
+The **case facts** list what is known about the case in one place, beside every tab.
+When the case pane is about 52rem (832 px) wide or wider, they are a column on the
+right; press **]** or select **Case facts** in the header to show or hide the column,
+and the choice is stored in this browser. In a narrower pane, **Case facts** (or **]**)
+opens the same facts in a side sheet that leaves the case usable. They come in six sections, each
+folding open or closed and remembered in this browser:
 
 - **Outcome**: the outcome of record (the analyst's classification, with who classified
-  it and when), the AI verdict and confidence (read against today's auto-close bar while
-  the case is open; once it ended, Investigation's Decision names the bar it was decided
-  against), how they relate,
+  it and when), the AI verdict and confidence (read against the auto-close bar for its
+  verdict while the case is open; once it ended, the Brief's Decision lane names the bar
+  it was decided against), how they relate,
   who decided, the objection window and, on a case the AI agent closed, its auto-close
   review (who reviewed it and when, or that the review expired);
 - **Signal**: the risk score (its recorded factors behind **Show risk factors**), the
-  severity and whether the source reported it, the priority, impact and urgency;
-- **Runbook**: the runbook, its version, its progress, and its phases with their counts
-  (select a phase to open the Runbook tab on it);
-- **Times**: every lifecycle clock, including when the case closed, and the SLA;
-- **Tags**: the case's tags (**Edit tags**, or **T**) and the campaign it belongs to;
-- **Source**: where the case came from, its detection rules, and the primary entity;
-- **Related cases**;
-- **Record**: the case number (with **Ask AI**), the Sample mark for demo data, cost,
-  build, notifications sent, and the classification and verdict history.
+  severity and whether the source reported it, the priority, impact and urgency, and the
+  SLA;
+- **Times**: every lifecycle clock, including when the case closed;
+- **Source and entity**: where the case came from, its detection rules, the primary
+  entity, and the related cases (select the count to open them on Evidence);
+- **Tags and campaign**: the case's tags (**Edit tags**, or **T**) and the campaign it
+  belongs to;
+- **Record**, folded at first: the case number (with **Ask AI**), the Sample mark for
+  demo data, cost, build, profile, the investigator runbook, the classification and AI
+  verdict history, and the notifications sent.
 
-On a narrow pane the same rail opens from **Details** in the header; **T** and **Edit
-tags** open it there first. Entity values offer **Ask AI**, which opens a Workspace chat
-about that value (see [Workspace Chat](chat.md#ask-ai-from-other-pages)).
+**T** and **Edit tags** open the case facts first when they are hidden. Entity values
+offer **Ask AI**, which opens a Workspace chat about that value (see
+[Workspace Chat](chat.md#ask-ai-from-other-pages)).
 
-| Tab | Purpose |
-| --- | --- |
-| Overview | The case's brief, top to bottom: the runbook's Next step card when one is attached to an open case; **Summary**, the AI's assessment in two or three sentences with its recommended action (the recommendation it made at triage once the case ended); **What happened**, why the detection fired and the six-stage input-to-decision story (Risk Assigned reconstructs the arithmetic from persisted factor values and current weights, flags a historical-weight mismatch honestly, and pulses only the final marker); **Key entities**, the primary entity with its scope, type and enrichment, to copy or ask about; **Related cases**; and the signature's anomaly baseline when it has one |
-| Runbook | The runbook on the case: its strip, progress, Next step card, phases and steps, and Other tasks (see [Work the runbook](#work-the-runbook)) |
-| Investigation | **AI assessment**: the model's reasoning, what it found and ruled out, the reproduction query, and the full assessment evidence one click away. **Decision**: what decided the case and why, with the authority sentence, the auto-close reading and any automation applied (the policy inputs one click away). Then **Threat context** (IOC reputation, MITRE ATT&CK mapping, and the redacted persisted alert → correlation cluster → opened case explanation), the detailed Investigation inputs, the collapsible full trace, and earlier gradings of the AI |
-| Collaboration | **Discussion**, the case thread with reactions; **Files**, the screenshots on the case; **Tasks**, a pointer to the Runbook tab's Other tasks; and **History**, every lifecycle change with who made it, when, and the actions taken, with the full activity feed behind **Show all activity**. The owner is changed in the case header, not here |
-| Chat | Case-scoped use of the shared AI Analyst chat engine; its transcript stays when you switch tabs. Asked about the runbook, it names the same next step as the Next step card, by the same rule |
+### The six tabs
 
-In **Files**, add screenshots by dropping them, pasting while the Collaboration tab has
+| Tab | Key | Purpose |
+| --- | --- | --- |
+| Brief | Alt+1 | The case at a glance, top to bottom: the review note on a case waiting for its auto-close review; the runbook's **Next step** row on an open case with a runbook; then four lanes, each tagged with where it comes from; Evidence, AI and People link to the tabs that hold their detail. **Evidence** (SIEM) says why the detection fired, with one line of counts and times. **AI** gives the model's summary and its recommended action (on a case that ended, the recommendation it made at triage, folded). **Decision** (Code; named **Analyst resolved** and tagged Analyst when a person settled the case, or **Analyst policy** when an operator's declared-benign policy closed it) gives the decision line, the auto-close reading, the authority sentence, **Policy inputs** and **Automation applied**. **People** (Analyst) gives the runbook progress, the discussion and files, and the last human action. Last, **How this case was built** folds the six-stage input-to-decision story (Risk Assigned reconstructs the arithmetic from persisted factor values and current weights, flags a historical-weight mismatch honestly, and pulses only the final marker) |
+| Evidence | Alt+2 | What the sources said: **What happened** (why the detection fired and the source evidence, shown as untrusted data), **Entities** (the primary entity with its scope, type and enrichment, to copy or ask about), **Threat context** (IOC reputation, MITRE ATT&CK mapping, and the redacted persisted alert → correlation cluster → opened case explanation), then the related cases (grouped across sources, never merged) and the signature's anomaly baseline when it has one |
+| AI investigation | Alt+3 | The AI's work only, under one advisory line: **AI assessment** (the model's reasoning, what it found and ruled out, the reproduction query, and the full assessment evidence one click away), the detailed **Investigation inputs**, the **Investigation trace** (folded; **Show trace**, a filter by Agent, Tool or Code, and **Jump to decision**), and earlier gradings of the AI |
+| Response | Alt+4 | For people who can read runbooks, the runbook on the case: its strip, progress, Next step card and phases (see [Work the runbook](#work-the-runbook)), then **Other tasks**, the case's free-form tasks. Everyone else sees the tasks alone, under **Tasks** |
+| Activity | Alt+5 | **Discussion**, the case thread with reactions; **Files**, the screenshots on the case; and **History**, every lifecycle change with who made it, when, and the actions taken, with the full activity feed behind **Show all activity**. The owner is changed in the case header, not here |
+| Chat | Alt+6 | Case-scoped use of the shared AI Analyst chat engine; its transcript stays when you switch tabs. Asked about the runbook, it names the same next step as the Next step card, by the same rule |
+
+In **Files**, add screenshots by dropping them, pasting while the Activity tab has
 focus, or choosing them (PNG, JPEG or WebP; each is resized to fit 2 MB). Anyone who can
 comment on cases can add them; the person who added one, or anyone who can close cases,
 can delete it. Select a screenshot to see it full size, step through the others, or
 download it. The list updates when a teammate adds or deletes one.
 
-Each fact has one home, so a figure shown in the header or the rail is not repeated in
-a tab. The risk views (the rail's risk factors and the Risk Assigned stage under What
-happened) are explanatory, not a second scoring engine. They render the score,
-confidence, and factors already recorded on the case. If a factor was
+Each fact has one home, so a figure shown in the header or the case facts is not
+repeated in a tab: the Brief's lanes never repeat the verdict, confidence, risk, status
+or owner. The header's risk and the Signal section's risk meter are the one pair that
+shows the same number twice, because the case facts are a column beside the tabs, not a
+tab. The risk views (the Signal section's risk factors and the Risk Assigned stage under
+How this case was built) are explanatory, not a second scoring engine. They render the
+score, confidence, and factors already recorded on the case. If a factor was
 not persisted, the UI does not manufacture a contribution to make the chart look full.
 
-The Overview's summary is always the model's own reasoning, tagged as AI. It is never
-the deterministic decision's text: that sentence belongs to the code and is shown, as
-the code's, under Investigation's **Decision**. A case the AI did not assess shows its
-system summary instead, without the AI tag.
+The Brief's AI lane is always the model's own reasoning, tagged as AI. It is never the
+deterministic decision's text: that sentence belongs to the code and is shown, as the
+code's, in the Decision lane. A case the AI did not assess says "The AI did not assess
+this case." and shows its system summary under it.
 
-**Investigation inputs**, on the Investigation tab, is also an evidence projection, not
+**Investigation inputs**, on the AI investigation tab, is also an evidence projection, not
 a feature-enabled list. It appears only when the latest investigation run recorded
 applicable context. It distinguishes approved operator **memory consulted**, indexed
 **RAG knowledge retrieved**, **runbook references retrieved**, the **runbook whose
@@ -235,7 +283,7 @@ does), and the version that attached stays pinned to the case. It guides people;
 never closes the case and never changes its verdict, and every step change is recorded
 in the audit log.
 
-The **Runbook** tab opens with:
+The **Response** tab opens with:
 
 - **The strip**: the runbook's title, its version, how and when it attached ("Matched
   automatically · 12:52 UTC", "Fallback", "Added by Asha Rao", "Suggested by the AI,
@@ -275,7 +323,7 @@ The **Runbook** tab opens with:
   **Not applicable** and **Blocked** (each asks a reason), **Assign**, and **Reopen
   step**.
 - **Other tasks**: the case's free-form tasks, with who added each one. They never count
-  toward runbook progress. **Open the Runbook tab** in Collaboration brings you here.
+  toward runbook progress.
 
 **Lookups** read logs, enrichment, related cases, campaigns, or ATT&CK under your own
 permissions. Their results are evidence shown as untrusted data, never as instructions;
@@ -299,15 +347,15 @@ matched. Each is one metered call with a dry-run estimate on hover; a draft is l
 done, approves anything, or attaches a runbook by itself.
 
 To start a runbook on a case, open the case in **Triage → Case Manager** and choose
-**Start runbook** in **Take action**, or on the Runbook tab of a case with no runbook. It
+**Start runbook** in **Take action**, or on the Response tab of a case with no runbook. It
 lists the best match with why it matched, then other matches, the fallback, and every other
 Published runbook, with a preview of the selected one's phases and an optional note. On
 a phone the dialog takes the full height and the selected runbook shows its phases under
 its own entry. A case with no runbook says "No runbook is attached to this case.", and
-rules with no runbook are listed on the Runbooks page. The tab's count reads **None**
-then, or **Abandoned** when the only runs on the case were abandoned.
+rules with no runbook are listed on the Runbooks page. The Response tab shows no count
+then, and **Abandoned** when the only runs on the case were abandoned.
 
-Without `runbooks:run` the tab is read only and says "You can view this runbook but not
+Without `runbooks:run` the steps are read only, and the tab says "You can view this runbook but not
 update it." While runbooks are turned off in Settings no runbook starts and the runs on
 the case are read only too: "Runbooks are turned off in Settings, so steps cannot
 change." A step that changed since you opened it shows the latest version with "This
@@ -345,14 +393,14 @@ screen the classification is on the left and what you did is on the right:
 - **Analyst note**: optional, unless your disposition overrides the AI verdict. Then the
   note is required ("Say why you disagree with the AI."), because it is kept as
   precedent for later investigations; the footer says so until you write it.
-- **Screenshots** (optional): images added here go to the case's **Files** in
-  Collaboration. The close never waits for an upload.
+- **Screenshots** (optional): images added here go to the case's **Files** on the
+  Activity tab. The close never waits for an upload.
 - **Rate the AI (optional)**, collapsed: stars for the AI's work and, on an override,
   **What did the AI miss?**. Whether you agree with the AI is worked out from your
   disposition, never asked, and recorded whether or not you open it. Grading is a
   separate step after the close: a failed grading never undoes the close.
 
-Tags are edited in the facts rail, not in this dialog. Its buttons stay in view however
+Tags are edited in the case facts, not in this dialog. Its buttons stay in view however
 long the form is.
 
 - **Close & next** (or **Resolve & next**) records the outcome and opens the next case
@@ -396,7 +444,7 @@ A bulk close or resolve records the chosen disposition on every case as that ana
 classification, exactly as a single close does. When some of the selected cases have
 required runbook steps open, the dialog says how many and takes one optional shared
 reason; a bulk close never fails a case for open steps. Screenshots are not taken in
-bulk: the dialog says they are added on each case, in its Collaboration tab.
+bulk: add them on each case, under **Files** on its Activity tab.
 
 **Set status** and **Set disposition** leave out the cases the AI agent closed (a
 terminal case whose first decision was the agent's automatic close): "Cases the AI agent

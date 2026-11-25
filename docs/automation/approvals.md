@@ -35,7 +35,7 @@ days, and an expired proposal can no longer be approved (ask for a new one). A s
 proposal's expiry is the end date of the rule it would create, not a review deadline.
 
 Runbook step approvals are a different thing. When step approvals are on in the Runbooks
-settings, an Action or Record step can wait for an approver inside the case's Runbook tab;
+settings, an Action or Record step can wait for an approver inside the case's Response tab;
 those approvals never appear on this page. See [Runbooks](../intelligence/runbooks.md).
 
 ## Review the queue

@@ -71,10 +71,12 @@ between:
 - what the model assessed, if the candidate was admitted to investigation; and
 - what deterministic policy decided.
 
-In Case Manager, the Overview gives the AI's summary (tagged AI), and its **What
-happened** section expands **Risk Assigned** into the stored score factors and ends at
-**Decision**; Investigation carries the AI assessment plus the pinned deterministic
-**Decision**, and its **Threat context** section the intelligence.
+In Case Manager, the Brief keeps the four apart in lanes: Evidence (tagged SIEM), the
+AI's summary (tagged AI), the deterministic Decision (tagged Code, with its policy
+inputs) and People. Its folded **How this case was built** expands **Risk Assigned**
+into the stored score factors and ends at **Decision**. The Evidence tab carries **What
+happened** and, in its **Threat context** section, the intelligence; the AI
+investigation tab carries the AI assessment and the trace.
 
 An event-feed candidate can remain visible without a model call when it does not
 cross the investigation gate. That is expected and costs `$0`. An alert feed is

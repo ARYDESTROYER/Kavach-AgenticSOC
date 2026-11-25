@@ -366,7 +366,7 @@ cursors. It is **fully reversible in one click**.
 ### 3k. The self-improving detection loop — campaigns, entity baseline & auto-tuning
 - **Campaigns** (*Triage → Campaigns*): a daily deterministic pass groups
   already-created cases that share an entity into a `Campaign` — show one, and a
-  case's campaign chip on its Overview tab. Talking point: a campaign only
+  case's campaign chip in its case facts. Talking point: a campaign only
   **references** case ids — it never re-clusters, closes, or escalates a member
   case.
 - **Entity baseline** (*Analytics → Baseline*): an online per-signature anomaly

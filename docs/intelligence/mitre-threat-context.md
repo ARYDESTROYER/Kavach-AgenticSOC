@@ -5,7 +5,7 @@ description: Interpret ATT&CK mappings, indicator reputation, and related cases 
 
 # MITRE ATT&CK and threat context
 
-The **Threat context** section of a case's Investigation tab brings together indicator
+The **Threat context** section of a case's Evidence tab brings together indicator
 enrichment, MITRE ATT&CK metadata, and related cases. The service is fail-open: missing enrichment or mapping data does
 not prevent case handling.
 

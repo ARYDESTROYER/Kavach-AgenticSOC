@@ -474,8 +474,9 @@ rather than mixing dimensions. Local fallback records the actual provider/model 
 The latest investigation's `procedure_provenance` audit row distinguishes selected
 from consulted persona and runbook state, selection reason, consultation path, retrieval
 query groups, and retrieved knowledge source/score/document id/revision/content hash
-with a bounded snippet. Rationale and Case Manager Overview project the latest run;
-selected-only inputs are never presented as consulted/applied.
+with a bounded snippet. The rationale and the case's **Investigation inputs** (on its AI
+investigation tab) project the latest run; selected-only inputs are never presented as
+consulted/applied.
 
 Its `retrieval_status` and `retrieval_reason` describe that run only. `measured` means
 every configured retrieval query group completed, including a measured empty result;

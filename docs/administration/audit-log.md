@@ -112,8 +112,8 @@ column folds away; every value is still in the record.
 
 In **Agent activity**, the steps of one investigation fold into one row that names the
 case it worked on, how many steps it took and how it ended (for example "10 steps · closed
-as false positive"), with **Open case trace**, which opens the case on its Investigation
-tab with the trace open (for people who can read cases). Open the row to list its steps.
+as false positive"), with **Open case trace**, which opens the case on its AI
+investigation tab with the trace open (for people who can read cases). Open the row to list its steps.
 The group's outcome follows how the investigation ended: Failed when it ended in an error
 (Denied when that error was a refusal and no decision followed it), Success when it
 reached its verdict or decision and every step succeeded, and Partial when it reached its
@@ -195,7 +195,7 @@ The record has six sections:
 6. **Related.** Links that apply a filter: the same actor within 15 minutes, all events
    for this target, all events for this case, and the actor's sign-ins in the 30 days
    before this event. For people who can read cases, **Open case trace** opens the case
-   on its Investigation tab with the trace open.
+   on its AI investigation tab with the trace open.
 
 **Copy link** copies the address of this record with the page's filters. When a change was
 recorded but its save then failed, the record says "Not applied (see the next record)":

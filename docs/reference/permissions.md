@@ -76,7 +76,7 @@ the Executive board, chat's spending answers, the spend part of `GET /api/metric
 empty), the spent and remaining amounts of the AI budget (`GET /api/budget/status` keeps
 the caps and settings for `models:read`), the cost and tokens on a case's agent timeline,
 a case's own investigation cost (`token_cost` is `null` on every case the API returns,
-and the case page, its facts rail and Entity investigation leave it out), and the
+and the case page, its case facts and Entity investigation leave it out), and the
 recorded case cost in Agent effectiveness (shown as unavailable). A role without
 `cost:view` still reads everything else on those pages.
 

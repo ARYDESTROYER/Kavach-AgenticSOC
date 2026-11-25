@@ -5,16 +5,17 @@ description: Coordinate analysts with case ownership, discussion, screenshots, t
 
 # Case collaboration
 
-The **Collaboration** tab keeps human coordination beside the evidence and decision it
-concerns, in four sections: Discussion, Files, Tasks and History. Collaboration data is
-case state; it does not alter the deterministic close policy.
+A case's **Activity** tab keeps human coordination beside the evidence and decision it
+concerns, in three sections: Discussion, Files and History. Case tasks are on the
+**Response** tab. Collaboration data is case state; it does not alter the deterministic
+close policy.
 
 ## Ownership, tags, and comments
 
 - Change a case's owner in the case header (select the owner, or press **M**), not on
   this tab, so the queue has a visible owner.
-- Edit short tags for routing and review in the facts rail (**Edit tags**, or **T**).
-  Tags are deduplicated and bounded.
+- Edit short tags for routing and review in the case facts' **Tags and campaign**
+  section (**Edit tags**, or **T**). Tags are deduplicated and bounded.
 - Use a case comment for a simple note that should appear in exports.
 - Use the threaded discussion for replies, reactions, and mentions.
 
@@ -34,16 +35,17 @@ data even when pasted into a discussion.
 ## Files
 
 The **Files** section holds the screenshots on the case. Add them by dropping them,
-pasting while the Collaboration tab has focus, or choosing them (PNG, JPEG or WebP).
+pasting while the Activity tab has focus, or choosing them (PNG, JPEG or WebP).
 Anyone with `cases:comment` can add one; the person who added it, or anyone with
 `cases:close`, can delete it. See [Case Manager](case-manager.md) for the details.
 
 ## Tasks
 
-Case tasks live on the **Runbook** tab, under **Other tasks**, beside the case's runbook
-steps; **Open the Runbook tab** in Collaboration takes you there. Each task shows who
-added it and when, and tasks never count toward runbook progress. Use tasks for work
-that needs an owner or a visible completion state and is not a runbook step:
+Case tasks live on the **Response** tab (Alt+4), under **Other tasks**, beside the case's
+runbook steps. Someone who cannot read runbooks sees the same tasks there, under
+**Tasks**. Each task shows who added it and when, and tasks never count toward runbook
+progress. Use tasks for work that needs an owner or a visible completion state and is
+not a runbook step:
 
 1. Add a concise task with its assignee and context.
 2. Update its state as work progresses.

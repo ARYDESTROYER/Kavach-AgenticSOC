@@ -241,10 +241,12 @@ its type, status, enabled switch, last event, and protocol.
 <figcaption>Sources in the demo: five connected sources, all ready.</figcaption>
 </figure>
 
-In **Case Manager**, a case's Investigation tab shows the **AI assessment**, labelled
-**AI** and marked advisory, then the **Decision** card, labelled **Code**. The close or
-escalate decision is made by deterministic code against the operator policy, never by
-the model.
+In **Case Manager**, a case's Brief tab shows the **AI** lane, labelled **AI**, and then
+the **Decision** lane, labelled **Code**. The AI investigation tab holds the advisory
+**AI assessment** and the trace; the decision's policy inputs are one click away in the
+Decision lane. The close or escalate decision is made by deterministic code against the
+operator policy, never by the model. The screenshot below is from version 0.1.13, where
+the assessment and the decision card shared one tab.
 
 <figure markdown="span">
 [![Case Manager with an escalated true-positive case open on its Investigation tab: the advisory AI assessment, labelled AI, gives the model's reading and findings, and the Decision card below it, labelled Code, records that code routed the case to a person.](../assets/screenshots/case-manager.webp) ](../assets/screenshots/case-manager.webp)
