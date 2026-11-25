@@ -2163,8 +2163,9 @@ class Case(BaseModel):
     # Deterministic "why was this triggered" explanation (Feature 3).
     trigger_reason: TriggerReason | None = None
     # Append-only record of outbound notifications fired for this case (F5). Each
-    # entry is ``{ts, trigger, channel_id, channel_type, ok, detail}`` — the detail
-    # is redacted (never a secret). Additive + defaulted so old cases load unchanged.
+    # entry is ``{ts, trigger, channel_id, type, ok, detail}`` (``type`` is the channel
+    # type, as ``notifications/dispatch.py`` writes it); the detail is redacted
+    # (never a secret). Additive + defaulted so old cases load unchanged.
     notifications_sent: list[dict[str, Any]] = Field(default_factory=list)
     # Cross-source correlation (Wave 5 / F6). ALL additive/defaulted — the per-cluster
     # 1:1 signature stays intact; cross-source linking only ADDS these RELATED markers

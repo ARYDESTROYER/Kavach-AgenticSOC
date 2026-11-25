@@ -1319,6 +1319,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/cases/{case_id}/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Case Events
+         * @description The raw events behind a case, read again from its source (see the module
+         *     docstring). 404 for an unknown case; 400 for a cursor this route never returned.
+         */
+        get: operations["case_events_api_cases__case_id__events_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/cases/{case_id}/export": {
         parameters: {
             query?: never;
@@ -2144,6 +2165,29 @@ export interface paths {
          *     (#3: advisory only, never feeds the decision).
          */
         get: operations["case_triage_api_cases__case_id__triage_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/cases/{case_id}/usage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Case Usage
+         * @description The case's ledger rows and its spend split (see the module docstring). 404 for an
+         *     unknown case; 503 ``case_usage_unavailable`` when the ledger cannot be read (never a
+         *     false "no spend"); 501 ``case_usage_unsupported`` for a ledger that has no per-case
+         *     read.
+         */
+        get: operations["case_usage_api_cases__case_id__usage_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -8555,6 +8599,56 @@ export interface components {
             /** Ts */
             ts?: string;
         };
+        /**
+         * CaseEventsPage
+         * @description ``GET /api/cases/{case_id}/events`` (Round 16 SPEC §4.5 WP13, [dv] R2).
+         *
+         *     The raw records behind a case, read on demand through the read-only log client (#1)
+         *     and kept only when their source-qualified key is one of the case's
+         *     ``member_event_keys``. ``available`` is false with a ``reason`` when the source could
+         *     not answer; ``expected`` is the case's member count, ``returned`` the rows on this
+         *     page and ``truncated`` true when more remain (``next_cursor``). Each row is the
+         *     ``/api/logs`` row contract (``engine/log_rows.log_row``: ``id``, ``ts``,
+         *     ``source_ip``, ``user``, ``host``, ``rule``, ``severity``, ``message``, ``_raw``)
+         *     plus ``index``, ``source_id`` and ``in_evidence`` (the finding indexes that cite
+         *     it). Every value is source-controlled UNTRUSTED data: a reader renders it as text,
+         *     never as markup (#9), and it is never sent to a model (#7).
+         */
+        CaseEventsPage: {
+            /**
+             * Available
+             * @default false
+             */
+            available: boolean;
+            /** Case Id */
+            case_id: string;
+            /**
+             * Expected
+             * @default 0
+             */
+            expected: number;
+            /**
+             * Limit
+             * @default 50
+             */
+            limit: number;
+            /** Next Cursor */
+            next_cursor?: string | null;
+            /** Reason */
+            reason?: ("aged_out" | "push_source_not_retrievable" | "source_unavailable") | null;
+            /**
+             * Returned
+             * @default 0
+             */
+            returned: number;
+            /** Rows */
+            rows?: Record<string, never>[];
+            /**
+             * Truncated
+             * @default false
+             */
+            truncated: boolean;
+        };
         /** CaseFileDeleteResult */
         CaseFileDeleteResult: {
             /**
@@ -8843,6 +8937,64 @@ export interface components {
              * @default
              */
             title: string;
+        };
+        /**
+         * CaseUsagePage
+         * @description ``GET /api/cases/{case_id}/usage`` (Round 16 SPEC §4.5 WP13, [dv] R3 and R14).
+         *
+         *     ``rows``: the case's ledger rows, newest first, at most :data:`CASE_USAGE_MAX_ROWS`.
+         *     ``rows_total`` is the exact count when the store could prove it (else ``None``) and
+         *     ``truncated`` is true when rows exist beyond ``rows``. ``totals`` are lifetime sums
+         *     over every row of the case, not only the returned page; ``token_cost`` is the case's
+         *     recorded investigation cost and ``reconciles`` says whether ``totals.pipeline``
+         *     equals it within the display epsilon. Served only with ``cost:view``.
+         */
+        CaseUsagePage: {
+            /** Case Id */
+            case_id: string;
+            /** Reconciles */
+            reconciles?: boolean | null;
+            /**
+             * Returned
+             * @default 0
+             */
+            returned: number;
+            /** Rows */
+            rows?: components["schemas"]["UsageDoc"][];
+            /** Rows Total */
+            rows_total?: number | null;
+            /** Token Cost */
+            token_cost?: number | null;
+            totals?: components["schemas"]["CaseUsageTotals"];
+            /**
+             * Truncated
+             * @default false
+             */
+            truncated: boolean;
+        };
+        /**
+         * CaseUsageTotals
+         * @description A case's ledger spend in USD, split as the Console shows it: ``pipeline`` (the
+         *     investigation roles, ``constants.CASE_PIPELINE_USAGE_ROLES``, the figure
+         *     ``Case.token_cost`` records) and ``chat`` (case chat on this case, never part of the
+         *     investigation cost); ``other`` holds anything else written with the case id.
+         */
+        CaseUsageTotals: {
+            /**
+             * Chat
+             * @default 0
+             */
+            chat: number;
+            /**
+             * Other
+             * @default 0
+             */
+            other: number;
+            /**
+             * Pipeline
+             * @default 0
+             */
+            pipeline: number;
         };
         /** ChangePasswordBody */
         ChangePasswordBody: {
@@ -15998,6 +16150,118 @@ export interface components {
             last_job?: components["schemas"]["UpdateJob"] | null;
             release_discovery: components["schemas"]["UpdateReleaseDiscovery"];
         };
+        /** UsageDoc */
+        UsageDoc: {
+            /** App Version */
+            app_version?: string | null;
+            /**
+             * Attempts
+             * @default 1
+             */
+            attempts: number;
+            /**
+             * Batch
+             * @default false
+             */
+            batch: boolean;
+            /** Build Sha */
+            build_sha?: string | null;
+            /** Cache Read Rate Per Million */
+            cache_read_rate_per_million?: number | null;
+            /**
+             * Cache Read Tokens
+             * @default 0
+             */
+            cache_read_tokens: number;
+            /** Cache Write Rate Per Million */
+            cache_write_rate_per_million?: number | null;
+            /**
+             * Cache Write Tokens
+             * @default 0
+             */
+            cache_write_tokens: number;
+            /** Cache Write Ttl */
+            cache_write_ttl?: string | null;
+            /** Case Id */
+            case_id?: string | null;
+            /**
+             * Completion Tokens
+             * @default 0
+             */
+            completion_tokens: number;
+            /**
+             * Cost
+             * @default 0
+             */
+            cost: number;
+            /**
+             * Currency
+             * @default USD
+             */
+            currency: string;
+            /**
+             * Failure Class
+             * @default
+             */
+            failure_class: string;
+            /** Idempotency Key */
+            idempotency_key?: string | null;
+            /** Input Rate Per Million */
+            input_rate_per_million?: number | null;
+            /**
+             * Latency Ms
+             * @default 0
+             */
+            latency_ms: number;
+            /**
+             * Model
+             * @default
+             */
+            model: string;
+            /** @default ok */
+            outcome: components["schemas"]["UsageOutcome"];
+            /** Output Rate Per Million */
+            output_rate_per_million?: number | null;
+            /** Price Basis */
+            price_basis?: string | null;
+            /**
+             * Pricing Source
+             * @default exact
+             */
+            pricing_source: string;
+            /**
+             * Processing Tier
+             * @default standard
+             */
+            processing_tier: string;
+            /**
+             * Prompt Tokens
+             * @default 0
+             */
+            prompt_tokens: number;
+            /**
+             * Role
+             * @default
+             */
+            role: string;
+            /**
+             * Surface
+             * @default
+             */
+            surface: string;
+            /**
+             * Total Tokens
+             * @default 0
+             */
+            total_tokens: number;
+            /** Ts */
+            ts?: string;
+            /**
+             * Usage Estimated
+             * @default false
+             */
+            usage_estimated: boolean;
+        };
         /**
          * UsageEvent
          * @description Running totals after a model call (the meter ticks on every one).
@@ -16010,6 +16274,11 @@ export interface components {
              */
             type: "usage";
         };
+        /**
+         * UsageOutcome
+         * @enum {string}
+         */
+        UsageOutcome: "ok" | "error" | "capped";
         /** UserCreateBody */
         UserCreateBody: {
             /** Custom Roles */
@@ -18067,6 +18336,42 @@ export interface operations {
             };
         };
     };
+    case_events_api_cases__case_id__events_get: {
+        parameters: {
+            query?: {
+                /** @description Member events per page, 1 to 200. */
+                limit?: number;
+                /** @description The previous page's next_cursor. */
+                cursor?: string | null;
+            };
+            header?: never;
+            path: {
+                case_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CaseEventsPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     case_export_api_cases__case_id__export_get: {
         parameters: {
             query?: {
@@ -19414,6 +19719,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": Record<string, never>;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    case_usage_api_cases__case_id__usage_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                case_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CaseUsagePage"];
                 };
             };
             /** @description Validation Error */
