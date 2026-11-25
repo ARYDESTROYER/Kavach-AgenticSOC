@@ -7,7 +7,8 @@ cost-metered cases a person can review.**<br>
 The model recommends a verdict. Deterministic code makes the close or escalate decision.
 
 [![CI](https://github.com/ARYDESTROYER/Kavach-AgenticSOC/actions/workflows/ci.yml/badge.svg?branch=Testing)](https://github.com/ARYDESTROYER/Kavach-AgenticSOC/actions/workflows/ci.yml?query=branch%3ATesting)
-[![Version 0.1.13](https://img.shields.io/badge/version-0.1.13-2f81f7)](docs/releases/0.1.13.md)
+[![Version 0.2.0](https://img.shields.io/badge/version-0.2.0-2f81f7)](docs/releases/0.2.0.md)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-2f81f7)](LICENSE)
 [![Docs: Help Center](https://img.shields.io/badge/docs-Help%20Center-0a7ea4)](docs/index.md)
 
 </div>
@@ -154,7 +155,7 @@ What it is not:
   fails (a database restore stays a manual step). A stack built from source is upgraded
   manually.
 - **A complete Console:** first-run setup, light and dark themes (dark by default), and a
-  version-matched Help Center that works offline at `/docs/0.1/`.
+  version-matched Help Center that works offline at `/docs/0.2/`.
 
 ## Screenshots
 
@@ -386,11 +387,11 @@ internet access and takes a few minutes.
 > deployment that turns on authentication without setting `TLSOC_AUTH_ADMIN_PASSWORD`
 > seeds this same account, so always set it (see [Installation](#installation)).
 
-Check the API from a second terminal. This is the real output from a demo run of 0.1.13:
+Check the API from a second terminal. This is the real output from a demo run of 0.2.0:
 
 ```console
 $ curl -s http://127.0.0.1:8088/api/health/live
-{"status":"ok","service":"tlsoc-agentic-triage","version":"0.1.13"}
+{"status":"ok","service":"tlsoc-agentic-triage","version":"0.2.0"}
 ```
 
 The `service` value is a compatibility identifier, not a product name.
@@ -614,18 +615,21 @@ check and how to run it locally.
 | **Testing** | `Testing` | Integrated candidates for acceptance testing. May contain changes that have not passed release acceptance. |
 | **Stable** | `main`, plus an immutable annotated `vX.Y.Z` tag | Accepted releases with signed, digest-pinned images and versioned documentation. |
 
-- The current source version is **0.1.13** (documentation line 0.1). The Console header
-  always shows the running version and channel, for example `v0.1.13 · Testing`.
+- The current source version is **0.2.0** (documentation line 0.2). The Console header
+  always shows the running version and channel, for example `v0.2.0 · Testing`.
 - A tag is installable only when its signed GitHub Release, public digest-pinned images and
-  canonical runtime acceptance all exist. Until 0.1.13 passes that gate, `v0.1.1` remains
+  canonical runtime acceptance all exist. Until 0.2.0 passes that gate, `v0.1.1` remains
   the last Stable tag verified as installable.
+- The repository is `ARYDESTROYER/Kavach-AgenticSOC`, and releases from 0.2.0 on are signed
+  under that name. Before you bootstrap supervised updates, set
+  `AGENTIC_SOC_UPDATE_REPOSITORY=ARYDESTROYER/Kavach-AgenticSOC` in `.env`.
 - The tags `v0.1.4` to `v0.1.12` are immutable historical records and are not installation
   sources. The [release pages](docs/releases/) explain each one.
 
 Known limits of 0.1: one backend replica; HTTP push has no durable receipt inbox, so senders
 must retry; secrets entered in the Console are held in memory; several queue connectors
 still need transport-level validation. See [Release channels](docs/releases/channels.md),
-the [0.1.13 release notes](docs/releases/0.1.13.md), [Known limitations](docs/releases/known-limitations.md)
+the [0.2.0 release notes](docs/releases/0.2.0.md), [Known limitations](docs/releases/known-limitations.md)
 and [CHANGELOG.md](CHANGELOG.md).
 
 ## Roadmap
@@ -646,9 +650,24 @@ QRadar, Google Chronicle, CrowdStrike, SentinelOne and Microsoft Defender.
 
 ## License
 
-This repository does not publish a license file. Source availability does not grant
-permission to use, modify or redistribute the code. An explicit license must be added before
-the project is represented as open source.
+Agentic SOC is licensed under the [Apache License, Version 2.0](LICENSE). You may use,
+modify and redistribute it under those terms. Each shipping image carries the license text
+at `/usr/share/doc/agentic-soc/LICENSE` and the label
+`org.opencontainers.image.licenses="Apache-2.0"`.
+
+### Third-party notices
+
+Some bundled material keeps its own license:
+
+- The Console bundles the Inter and JetBrains Mono fonts (`@fontsource-variable/inter`,
+  `@fontsource/jetbrains-mono`) under the SIL Open Font License 1.1.
+- `backend/app/agents/chat_role_lookalikes.py` holds data derived from the Unicode
+  `confusables.txt` of UTS #39. Unicode data is © Unicode, Inc. and used under the
+  [Unicode License](https://www.unicode.org/terms_of_use.html).
+- `backend/app/threat/` bundles a compact subset of MITRE ATT&CK, © The MITRE Corporation,
+  under the ATT&CK [Terms of Use](https://attack.mitre.org/resources/legal-and-branding/terms-of-use/).
+
+Other dependencies are installed by the package managers under their own licenses.
 
 ## Acknowledgements
 

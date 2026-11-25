@@ -5,18 +5,18 @@ description: Supported runtimes, state backends, telemetry sources, providers, d
 
 # Compatibility
 
-This matrix describes application **0.1.13** and documentation line **0.1**. It
+This matrix describes application **0.2.0** and documentation line **0.2**. It
 distinguishes implemented support from enum placeholders and archived components.
 
 ## Runtime and build matrix
 
-| Component | Version 0.1 baseline | Notes |
+| Component | Version 0.2 baseline | Notes |
 |---|---|---|
 | Agentic SOC API | Python 3.11 or newer | Dependency pins are in `backend/requirements.txt`; project metadata requires Python `>=3.11` |
 | Agentic SOC Console | Node 22 for install/build | React 18, Vite 5, TypeScript 5.6, Tailwind, and Radix/shadcn-style primitives |
 | Container frontend | nginx | Serves the compiled SPA, version-matched `/docs/<major.minor>/` Help Center, and relative `/api/*` proxy |
 | Event schema | OCSF 1.4.0 | Every connector normalizes before the engine processes an event |
-| Documentation | MkDocs Material; Mike history plus native GitHub Pages deployment | Every app serves its installed 0.1 guide at `/docs/0.1/`; the public selector uses `0.1`; packages/images use `0.1.13` |
+| Documentation | MkDocs Material; Mike history plus native GitHub Pages deployment | Every app serves its installed 0.2 guide at `/docs/0.2/` and redirects `/docs/0.1/` pages to it; the public selector uses `0.2`; packages/images use `0.2.0` |
 
 The Agentic SOC Console is the only supported primary UI. It does not require Kibana. The
 former Kibana plugin is archived, frozen, and excluded from current build/test/release
@@ -91,7 +91,7 @@ path.
 
 ## API and stored-data compatibility
 
-Version 0.1 currently uses Semantic Version `0.1.13`. As a pre-1.0 product, it prioritizes
+Version 0.2 currently uses Semantic Version `0.2.0`. As a pre-1.0 product, it prioritizes
 additive API and model changes but does not promise indefinite wire or storage
 compatibility across future minor versions.
 

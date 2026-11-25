@@ -55,8 +55,8 @@ The values use the same non-secret release identity as `GET /api/health/build-in
 as `unknown`. This is record provenance, not proof that an artifact was accepted as Stable.
 
 PostgreSQL and SQLite already store the affected domain records as JSON, so this additive
-metadata requires no SQL migration. It also does not change the source version from
-`0.1.13`.
+metadata requires no SQL migration. It arrived with the 0.1.13 candidate and ships in
+`0.2.0` with no version change of its own.
 
 The repositories enforce the boundary for direct callers as well as the product
 pipeline. Elasticsearch CaseStore checks the document id before applying its defensive

@@ -8,17 +8,17 @@ description: Backend, Console, API-contract, version, documentation, and release
 Agentic SOC changes are accepted on `Testing` only after the relevant offline, contract,
 build, and documentation gates pass. Stable promotion moves that accepted source
 tree through a protected pull request to `main`; the resulting commit is gated again
-before application version `v0.1.13` is tagged.
+before application version `v0.2.0` is tagged.
 
-The latest fully recorded local baseline is **7,526 backend tests** (4 skipped) and **4,750
-Console tests (1 skipped) across 466 files**. The
+The latest fully recorded local baseline is **13,143 backend tests** passed (24 skipped)
+and **8,864 Console tests** passed (16 skipped) across 679 files. The
 Console baseline also has zero stderr bytes and zero Vitest-captured console stdout
 blocks under `npm run test:strict`. Counts rise as coverage is added; the commands
 and zero-failure result are the contract, not a frozen target.
 
 The remote uses `Testing` for integration and default `main` for accepted Stable
-source. Version 0.1.13 is a candidate on `Testing` and is Stable only when the
-resulting verified `main` commit has the immutable `v0.1.13` tag and matching
+source. Version 0.2.0 is a candidate on `Testing` and is Stable only when the
+resulting verified `main` commit has the immutable `v0.2.0` tag and matching
 artifacts. Branch protection, required checks,
 Pages source selection, and `github-pages` environment policy are repository settings;
 verify them independently before treating a merge or deployment as accepted.
@@ -185,18 +185,18 @@ dump remains available for an explicit break-glass recovery rehearsal, but is ne
 consumed automatically. Any plan with a migration strategy other than `none` must fail
 preflight.
 
-Verify the one-time pre-supervisor/source-built→v0.1.13 bootstrap separately from
+Verify the one-time pre-supervisor/source-built to v0.2.0 bootstrap separately from
 later Console updates:
 it must refuse a dirty checkout, a lightweight/mismatched tag, a tag whose commit is
 not contained in `origin/main`, missing durable secrets, an unsupported running
 topology, an active job, and unreadable/invalid existing supervisor state. Prove it
 reuses a protocol-compatible idle supervisor only when its reported updater version
-also exactly matches 0.1.13, and replaces an inspectable idle older supervisor while
+also exactly matches 0.2.0, and replaces an inspectable idle older supervisor while
 preserving/restoring the active digest override. Repeat the replacement test
 without an active override and prove bootstrap captures the exact immutable prior
 updater image ID, restores it after an injected replacement failure, and removes the
 temporary recovery override only after confirmed success. Its happy path installs only
-the initial supervisor transport before delegating the full v0.1.13 transition to the
+the initial supervisor transport before delegating the full v0.2.0 transition to the
 signed state machine. Afterward, prove
 `scripts/agentic-soc-compose.sh` layers the active digest override and document raw
 Compose lifecycle commands as unsupported. Verify a known dirty Runbook or Settings
@@ -296,9 +296,17 @@ Run the repository's standard-library metadata gate from the root:
 python3 scripts/check_version.py
 ```
 
-For the 0.1 line it checks that the root `VERSION` (`0.1.13`) agrees with backend,
+For the 0.2 line it checks that the root `VERSION` (`0.2.0`) agrees with backend,
 Console, lockfile, OpenAPI, Compose image/build metadata, release records, and the
-MkDocs/Mike documentation line (`0.1`).
+MkDocs/Mike documentation line (`0.2`). It also requires the Apache-2.0 license label in
+all three shipping Dockerfiles. On `main`, on a `v*` tag, and on a pull request into
+`main` (`GITHUB_BASE_REF=main`), it further requires the `[Unreleased]` body to read
+exactly `No changes yet.` and the GitHub Release body to stay at most 100,000
+characters. To rehearse those release checks locally:
+
+```bash
+TLSOC_SOURCE_REF=refs/heads/main TLSOC_RELEASE_CHANNEL=stable python3 scripts/check_version.py
+```
 
 ## Documentation
 
@@ -317,7 +325,8 @@ The final `npm run build` is the canonical docs-plus-application acceptance gate
 `npm run build:app` alone is insufficient for release acceptance. Strict mode catches
 missing pages, invalid internal links, and configuration warnings.
 Review the rendered desktop and narrow layouts, dark/light themes, search, navigation,
-code copy, the installed `/docs/0.1/` base path, and the public 0.1 version selector.
+code copy, the installed `/docs/0.2/` base path, the `/docs/0.1/` redirect pages, and
+the public 0.2 version selector.
 Confirm that **Use the product** is the default navigation path and that in-app links
 stay on the application origin. Internal development records are deliberately excluded
 from the Help Center build.
@@ -422,8 +431,8 @@ Before promoting `Testing` to Stable:
    release gate again on the resulting `main` commit.
 5. Build and stamp the verified commit with the correct channel, exact SHA, build
    date, and source URL.
-6. Create the immutable `v0.1.13` tag and publish matching application artifacts by
-   digest; let the Documentation workflow publish the accepted public 0.1 line from
+6. Create the immutable `v0.2.0` tag and publish matching application artifacts by
+   digest; let the Documentation workflow publish the accepted public 0.2 line from
    `main`.
 7. Verify all three GHCR packages are public and anonymously pullable by the exact
    backend, Web, and updater digests in the signed plan. Confirm the GitHub Release

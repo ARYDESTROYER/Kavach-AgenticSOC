@@ -14,7 +14,7 @@ Quick triage:
 ```bash
 # Backend health (the agnostic stack publishes :8088; or exec into the container)
 curl -s localhost:8088/api/health ; echo
-#   -> {"status":"ok","version":"0.1.13","es_connected":...,"store_type":"...","setup_complete":...}
+#   -> {"status":"ok","version":"0.2.0","es_connected":...,"store_type":"...","setup_complete":...}
 
 # Same health THROUGH the web UI's nginx proxy (proves the SPA → backend path)
 curl -fsS http://localhost:8080/api/health ; echo

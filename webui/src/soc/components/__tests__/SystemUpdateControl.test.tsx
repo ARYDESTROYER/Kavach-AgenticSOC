@@ -28,7 +28,7 @@ const release = {
   tag: 'v0.1.3',
   commit_sha: 'd'.repeat(40),
   channel: 'stable' as const,
-  repository_url: 'https://github.com/ARYDESTROYER/Agentic-Kibana',
+  repository_url: 'https://github.com/ARYDESTROYER/Kavach-AgenticSOC',
 };
 
 const observedRelease = {
@@ -335,6 +335,46 @@ describe('SystemUpdateControl', () => {
     render(<SystemUpdateControl upgrade={bootstrap} hasUnsavedChanges={false} canRollback />);
     fireEvent.click(screen.getByRole('button', { name: /one-time update supervisor setup is required/i }));
     expect(bootstrap.setProgressOpen).toHaveBeenCalledWith(true);
+  });
+
+  it('says "Updates unavailable" when the state backend can never update itself', () => {
+    const manual = upgrade({
+      status: {
+        ...status,
+        capability: {
+          ...capability,
+          supported: false,
+          bootstrap_required: false,
+          supervisor: { available: false },
+          scope: { ...capability.scope, state_backend: 'sqlite' },
+          blockers: [
+            {
+              code: 'postgres_state_required',
+              message: 'One-click updates currently support only PostgreSQL application state.',
+              remediation: 'Use the documented manual upgrade procedure for this state backend.',
+            },
+          ],
+        },
+      },
+      progressOpen: true,
+    });
+    render(<SystemUpdateControl upgrade={manual} hasUnsavedChanges={false} canRollback />);
+    expect(screen.getAllByText('Updates unavailable').length).toBeGreaterThan(0);
+    expect(screen.queryByText('Enable updates')).not.toBeInTheDocument();
+    expect(screen.getByText('This deployment cannot update itself')).toBeInTheDocument();
+    // No job exists, so the panel does not talk about one.
+    expect(
+      screen.queryByText('Closing this panel does not stop the durable update job.'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('keeps the closing note while a durable job exists', () => {
+    render(
+      <SystemUpdateControl upgrade={upgrade({ job, progressOpen: true })} hasUnsavedChanges={false} canRollback />,
+    );
+    expect(
+      screen.getByText('Closing this panel does not stop the durable update job.'),
+    ).toBeInTheDocument();
   });
 
   it('does not let a mutable candidate outrank an unsupported runtime', () => {

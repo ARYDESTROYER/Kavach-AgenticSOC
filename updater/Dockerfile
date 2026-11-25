@@ -6,7 +6,7 @@ ARG TLSOC_VERSION=unknown
 ARG TLSOC_RELEASE_CHANNEL=testing
 ARG TLSOC_BUILD_SHA=unknown
 ARG TLSOC_BUILD_DATE=unknown
-ARG TLSOC_SOURCE_URL=https://github.com/ARYDESTROYER/Agentic-Kibana
+ARG TLSOC_SOURCE_URL=https://github.com/ARYDESTROYER/Kavach-AgenticSOC
 
 LABEL org.opencontainers.image.title="Agentic SOC Update Supervisor" \
       org.opencontainers.image.description="Private host supervisor for signed Agentic SOC Compose updates" \
@@ -15,6 +15,7 @@ LABEL org.opencontainers.image.title="Agentic SOC Update Supervisor" \
       org.opencontainers.image.revision="${TLSOC_BUILD_SHA}" \
       org.opencontainers.image.created="${TLSOC_BUILD_DATE}" \
       org.opencontainers.image.source="${TLSOC_SOURCE_URL}" \
+      org.opencontainers.image.licenses="Apache-2.0" \
       io.agentic-soc.state.schema="1" \
       io.agentic-soc.update-protocol="1"
 
@@ -27,6 +28,7 @@ RUN apk add --no-cache python3 docker-cli-compose ca-certificates \
 
 COPY --from=cosign /ko-app/cosign /usr/local/bin/cosign
 COPY agentic_soc_updater /opt/agentic-soc-updater/agentic_soc_updater
+COPY LICENSE /usr/share/doc/agentic-soc/LICENSE
 
 ENV PYTHONPATH=/opt/agentic-soc-updater \
     PYTHONUNBUFFERED=1 \

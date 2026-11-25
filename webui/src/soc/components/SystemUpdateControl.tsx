@@ -595,9 +595,13 @@ export function SystemUpdateControl({
           </ScrollArea>
 
           <SheetFooter className="items-center justify-between sm:justify-between">
-            <p className="text-xs text-muted-foreground">
-              Closing this panel does not stop the durable update job.
-            </p>
+            {job ? (
+              <p className="text-xs text-muted-foreground">
+                Closing this panel does not stop the durable update job.
+              </p>
+            ) : (
+              <span aria-hidden />
+            )}
             <div className="flex flex-wrap justify-end gap-2">
               {canCancel ? (
                 <Button type="button" variant="outline" size="sm" onClick={() => void upgrade.cancel()}>

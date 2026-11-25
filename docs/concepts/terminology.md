@@ -18,8 +18,10 @@ operator procedures, API integrations, and support requests.
 | **TLSOC** | Compatibility namespace retained in technical identifiers; not the operator-facing product name |
 | **Testing** | Integration branch and pre-stable validation channel |
 | **Stable** | Supported release channel built from the `main` branch |
-| **0.1** | Documentation and human-facing release line |
-| **0.1.13** | Current SemVer artifact version; immutable tag `v0.1.13` only after verified Stable promotion and complete signed/public artifact publication |
+| **0.2** | Current documentation and human-facing release line |
+| **0.2.0** | Current SemVer artifact version; immutable tag `v0.2.0` only after verified Stable promotion and complete signed/public artifact publication |
+| **0.1** | Previous documentation and release line; its pages redirect to the same page of 0.2 |
+| **0.1.13** | Never-tagged candidate of the 0.1 line; its correction is folded into 0.2.0 |
 | **0.1.12** | Immutable complete signed-publication record; canonical v0.1.1 bootstrap failed closed before application mutation because matching absent legacy schema labels were normalized asymmetrically |
 | **0.1.11** | Immutable failed-publication record; images and plan verified, including inside the constrained updater, but post-verification cleanup failed before the canonical Release and assets existed |
 | **0.1.10** | Immutable failed-publication record; superseded and non-installable because its signed-release job stopped before a complete public release existed |

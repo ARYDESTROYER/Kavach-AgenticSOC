@@ -55,18 +55,18 @@ ones you configure. The container names keep their compatibility identifiers.
 The deterministic demo does not require a provider key. See [Run the demo](demo.md)
 when infrastructure and external model calls are not part of your evaluation.
 
-## 1. Check out version 0.1
+## 1. Check out version 0.2
 
 After its complete signed publication and canonical runtime acceptance succeed, use
-the immutable `v0.1.13` Stable tag. Use `Testing` only for an explicitly unreleased
+the immutable `v0.2.0` Stable tag. Use `Testing` only for an explicitly unreleased
 evaluation.
 
-=== "Stable 0.1.13 (after acceptance)"
+=== "Stable 0.2.0 (after acceptance)"
 
     ```bash
     git clone https://github.com/ARYDESTROYER/Kavach-AgenticSOC.git
     cd Kavach-AgenticSOC
-    git checkout v0.1.13
+    git checkout v0.2.0
     ```
 
 === "Testing (unreleased preview)"
@@ -85,7 +85,7 @@ current accepted Stable source, not the next Testing candidate. Repository prote
 and required checks must still be verified independently. Do not create or move a
 release tag locally.
 
-Use `v0.1.13` only when its canonical GitHub Release, plan signature, public image
+Use `v0.2.0` only when its canonical GitHub Release, plan signature, public image
 digests, and canonical PostgreSQL Compose runtime acceptance all verify. Otherwise use a
 previously verified Stable release, or Testing only for an explicitly unreleased
 evaluation.
@@ -112,14 +112,17 @@ evaluation.
       canonical v0.1.1 bootstrap failed closed before application mutation because
       matching absent legacy state-schema labels were normalized asymmetrically.
 
-??? note "What the 0.1.13 build changes"
+??? note "What the 0.2.0 build carries"
 
-    Version 0.1.13 retains the writable updater trust cache and least-privilege
+    Version 0.2.0 retains the writable updater trust cache and least-privilege
     verification assets, and moves only architecture-neutral Console builder work to
     BuildKit's native platform. The final nginx runtime remains target-platform-specific.
     It also restores the runner-owned verification fixture to private mode only after
-    verifier exit. It changes no schema, protocol, identity, privilege, trust predicate,
-    or frozen-base bytes.
+    verifier exit, and folds in the never-tagged 0.1.13 legacy bootstrap correction. It
+    changes no schema, protocol, privilege or frozen-base bytes. It does change the
+    publisher identity: the repository is now `ARYDESTROYER/Kavach-AgenticSOC`, so set
+    `AGENTIC_SOC_UPDATE_REPOSITORY=ARYDESTROYER/Kavach-AgenticSOC` in `.env` before you
+    bootstrap. The project is licensed under Apache-2.0.
 
 ## 2. Prepare configuration
 
@@ -267,14 +270,14 @@ curl --fail http://localhost:8080/api/health/build-info
     {
         "status": "ok",
         "service": "tlsoc-agentic-triage",
-        "version": "0.1.13"
+        "version": "0.2.0"
     }
 
     $ curl -s http://127.0.0.1:8088/api/health/ready | python3 -m json.tool
     {
         "status": "ready",
         "ready": true,
-        "version": "0.1.13",
+        "version": "0.2.0",
         "store_type": "InMemoryESClient",
         "checks": {
             "state_store": true
@@ -284,10 +287,10 @@ curl --fail http://localhost:8080/api/health/build-info
     $ curl -s http://127.0.0.1:8088/api/health/build-info | python3 -m json.tool
     {
         "service": "tlsoc-agentic-triage",
-        "version": "0.1.13",
+        "version": "0.2.0",
         "release_channel": "testing",
-        "commit_sha": "4cb849a9092d115845000b64efa388e3864964d7",
-        "build_time": "2026-11-11T22:34:11+05:30",
+        "commit_sha": "f82e5906f3d969ef23d01ffec1c3c67ca008baa1",
+        "build_time": "2026-11-25T07:28:10+00:00",
         "state_backend": "elasticsearch",
         "ocsf_version": "1.4.0",
         "provenance_complete": true,
@@ -301,7 +304,7 @@ curl --fail http://localhost:8080/api/health/build-info
     time. `"service": "tlsoc-agentic-triage"` is a compatibility identifier.
 
 Open **Help Center** from the bottom of the Console rail, select **Browse all guides**,
-and confirm the browser stays on this deployment at `/docs/0.1/`. That bundled Help
+and confirm the browser stays on this deployment at `/docs/0.2/`. That bundled Help
 Center matches the installed application and remains usable without access to GitHub
 or the public docs site.
 

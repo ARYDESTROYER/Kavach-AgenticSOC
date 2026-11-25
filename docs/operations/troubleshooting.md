@@ -149,7 +149,7 @@ ROLLBACK;
 
 Verify backend readiness through the nginx `/api` proxy, then inspect browser network
 status and console errors. Confirm the web and backend artifacts are both version
-`0.1.13`. Clear only browser cache/site data needed to rule out stale assets; do not
+`0.2.0`. Clear only browser cache/site data needed to rule out stale assets; do not
 factory-reset application state for a presentation problem.
 
 ## A rule keeps routing to a human no matter how many cases we confirm

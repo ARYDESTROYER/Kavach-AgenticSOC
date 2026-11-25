@@ -7,8 +7,8 @@ There are **two distinct environments**. Confusing them causes most build/deploy
 pain, so they are documented separately.
 
 > **Branch topology:** the remote uses `Testing` for integration and default
-> `main` for accepted Stable source. Version 0.1.13 is Stable only when the exact
-> verified `main` commit has the immutable `v0.1.13` tag and matching signed/public
+> `main` for accepted Stable source. Version 0.2.0 is Stable only when the exact
+> verified `main` commit has the immutable `v0.2.0` tag and matching signed/public
 > artifacts. The immutable `v0.1.10` and `v0.1.11` tags are superseded,
 > non-installable failed-publication records. The immutable `v0.1.12` tag completed
 > its signed/public publication but is bootstrap-blocked by its legacy installed-
@@ -203,12 +203,12 @@ prefixed Docker build/runtime metadata rather than `Secrets` fields:
 
 | Build/runtime value | Default | Purpose |
 |---|---|---|
-| `TLSOC_VERSION` | `0.1.13` in Compose | Machine SemVer for images and API identity |
+| `TLSOC_VERSION` | `0.2.0` in Compose | Machine SemVer for images and API identity |
 | `TLSOC_RELEASE_CHANNEL` | `testing` | Independent promotion stamp; use `stable` only for the accepted main/tag build |
 | `TLSOC_BUILD_SHA` | derived by the wrapper; `unknown` otherwise | Exact source revision. `scripts/agentic-soc-compose.sh` and `scripts/run-demo.sh` both source `scripts/lib/build-identity.sh`, which derives it from the checkout — but only when nothing supplied it. A supplied release identity (the supervised bootstrap) and a non-empty, non-`unknown` `.env` pin both win. An uncommitted **tracked** change is reported as `<sha>-dirty`; untracked files are ignored, so an operator note in the deployment directory does not mark the build dirty |
 | `TLSOC_BUILD_DATE` | derived by the wrapper; `unknown` otherwise | Reproducible-build timestamp supplied by the builder, derived from the HEAD commit date on the same terms as `TLSOC_BUILD_SHA` |
 | `TLSOC_SOURCE_URL` | repository URL in each Dockerfile | Canonical source URL embedded in OCI image metadata; the reference Compose files do not map an `.env` override |
-| `AGENTIC_SOC_UPDATE_REPOSITORY` | `ARYDESTROYER/Agentic-Kibana` | Repository whose tag-bound release workflow the host supervisor trusts; configure before bootstrap, not per browser request |
+| `AGENTIC_SOC_UPDATE_REPOSITORY` | Set it to `ARYDESTROYER/Kavach-AgenticSOC` in `.env` (the frozen Compose base still defaults to the repository's former name, which the bootstrap refuses) | Repository whose tag-bound release workflow the host supervisor trusts; the exact letter case matters; configure before bootstrap, not per browser request |
 
 The Console compiles the same version/channel/SHA/date stamp and always displays
 `vX.Y.Z · Testing|Stable` in the shell. Its popover reconciles that immutable

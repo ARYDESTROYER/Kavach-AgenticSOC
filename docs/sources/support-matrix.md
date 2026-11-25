@@ -20,7 +20,7 @@ certified this release or that its transport durability has passed a live matrix
 
 All sources should be validated against a non-production tenant and a synthetic
 alert before wider rollout. Packaging and offline contract tests do not constitute
-live-vendor certification for Agentic SOC `0.1.13`.
+live-vendor certification for Agentic SOC `0.2.0`.
 
 ## Pull sources
 

@@ -18,6 +18,16 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+#: The GitHub Release body is this marker followed by the release page
+#: (``scripts/release_asset_state.py`` ``canonical_release_body``). GitHub accepts
+#: 125,000 characters; the release records keep a margin below that.
+RELEASE_COMMIT_MARKER = "<!-- agentic-soc-release-commit:{sha} -->\n\n"
+RELEASE_BODY_MAX_CHARACTERS = 100_000
+#: The only body an empty ``[Unreleased]`` section may have on a release ref.
+EMPTY_UNRELEASED_BODY = "No changes yet."
+#: Every shipping image declares the project license.
+LICENSE_LABEL = 'org.opencontainers.image.licenses="Apache-2.0"'
+SHIPPING_DOCKERFILES = ("backend/Dockerfile", "webui/Dockerfile", "updater/Dockerfile")
 SEMVER = re.compile(
     r"^(0|[1-9]\d*)\."
     r"(0|[1-9]\d*)\."
@@ -70,6 +80,53 @@ def _executable_lines(source: str) -> list[str]:
         line for line in source.splitlines() if not line.lstrip().startswith("#")
     )
     return _logical_lines(code)
+
+
+def _is_release_context(source_ref: str, base_ref: str) -> bool:
+    """``main``, a ``v*`` tag, or a pull request into ``main``.
+
+    GitHub sets ``GITHUB_BASE_REF`` on ``pull_request`` events only, so a pull request
+    into ``main`` is recognised without a workflow change.
+    """
+    return (
+        source_ref == "refs/heads/main"
+        or source_ref.startswith("refs/tags/v")
+        or base_ref == "main"
+    )
+
+
+def _unreleased_body(changelog_source: str) -> str | None:
+    """The text between ``## [Unreleased]`` and the next ``## `` heading, stripped."""
+    match = re.search(
+        r"^## \[Unreleased\]\s*$\n(?P<body>.*?)(?=^## |\Z)",
+        changelog_source,
+        re.MULTILINE | re.DOTALL,
+    )
+    return match.group("body").strip() if match else None
+
+
+def _release_guard_failures(version: str, changelog_source: str) -> list[str]:
+    """The records a release ref must carry, beyond what every ref carries."""
+    failures: list[str] = []
+    body = _unreleased_body(changelog_source)
+    if body is not None and body != EMPTY_UNRELEASED_BODY:
+        failures.append(
+            "CHANGELOG.md: on a release ref the [Unreleased] section must read exactly "
+            f"{EMPTY_UNRELEASED_BODY!r}; move its notes under the dated {version!r} "
+            "heading in the frozen release preparation"
+        )
+    release_page = ROOT / f"docs/releases/{version}.md"
+    if release_page.is_file():
+        release_body = RELEASE_COMMIT_MARKER.format(sha="0" * 40) + release_page.read_text(
+            encoding="utf-8"
+        )
+        if len(release_body) > RELEASE_BODY_MAX_CHARACTERS:
+            failures.append(
+                f"docs/releases/{version}.md: the GitHub Release body would be "
+                f"{len(release_body):,} characters; keep it at most "
+                f"{RELEASE_BODY_MAX_CHARACTERS:,}"
+            )
+    return failures
 
 
 def main() -> int:
@@ -203,6 +260,10 @@ def main() -> int:
         ):
             if marker not in source:
                 failures.append(f"{relative}: missing release metadata marker {marker!r}")
+    for relative in SHIPPING_DOCKERFILES:
+        source = (ROOT / relative).read_text(encoding="utf-8")
+        if LICENSE_LABEL not in source:
+            failures.append(f"{relative}: missing license label {LICENSE_LABEL!r}")
 
     web_docker_source = (ROOT / "webui/Dockerfile").read_text(encoding="utf-8")
     for marker in (
@@ -661,6 +722,9 @@ def main() -> int:
         failures.append(
             f"CHANGELOG.md: missing dated canonical release heading for {version!r}"
         )
+
+    if _is_release_context(source_ref, os.getenv("GITHUB_BASE_REF", "").strip()):
+        failures.extend(_release_guard_failures(version, changelog_source))
 
     release_page = ROOT / f"docs/releases/{version}.md"
     if not release_page.is_file():

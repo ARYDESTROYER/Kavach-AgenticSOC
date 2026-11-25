@@ -14,7 +14,7 @@ and previewing future work.
 
 | Destination | What it represents | Use it for |
 | --- | --- | --- |
-| **Installed version** | The Help Center built from the same accepted source as the running application and served on that application origin at `/docs/0.1/` | Daily use, administration, troubleshooting, and every decision about the running build |
+| **Installed version** | The Help Center built from the same accepted source as the running application and served on that application origin at `/docs/0.2/` | Daily use, administration, troubleshooting, and every decision about the running build |
 | **Latest Stable** | Documentation built from the latest immutable release tag on the verified `main` source for the supported release line | Upgrade evaluation, current supported guidance, and comparison with an older installation |
 | **Development** | Documentation source integrated on `Testing` but not yet promoted and tagged | Preview and review only; never assume it describes the installed application |
 
@@ -26,8 +26,8 @@ for newer material; it is not the primary product-help destination.
 
 Every application build carries two related identifiers:
 
-- the full product SemVer, such as **0.1.13**; and
-- the compatible documentation line, such as **0.1**.
+- the full product SemVer, such as **0.2.0**; and
+- the compatible documentation line, such as **0.2**.
 
 The documentation build and the application build originate from the same source
 commit. The web image includes the generated static Help Center and serves it from
@@ -47,7 +47,9 @@ newer Stable or Development material.
 
 | Documentation label | Application SemVer | Source identity | Channel |
 | --- | --- | --- | --- |
-| 0.1 installed Testing guide | 0.1.13 | candidate commit on `Testing` | Testing |
+| 0.2 installed Testing guide | 0.2.0 | candidate commit on `Testing` | Testing |
+| 0.2 prospective 0.2.0 Stable guide | 0.2.0 | exact verified `main` commit after it is tagged `v0.2.0` and all signed/public artifacts plus updater runtime and canonical deployment acceptance pass | Candidate; Stable only after full acceptance |
+| 0.2 public Stable guide | 0.2.x | current immutable release tag for the supported 0.2 line | Stable |
 | 0.1 installed prior Stable guide | 0.1.1 | verified `main` commit tagged `v0.1.1` | Stable |
 | 0.1 historical Testing guide | 0.1.2 | unpublished Testing snapshot; not a Stable tag or operational bootstrap source | Testing archive |
 | 0.1 historical Testing guide | 0.1.3 | unpublished Testing snapshot; not a Stable tag or artifact source | Testing archive |
@@ -60,8 +62,8 @@ newer Stable or Development material.
 | 0.1 failed-publication guide | 0.1.10 | immutable `v0.1.10` tag and green exact-tag source CI; signed-release job timed out during the emulated Web Console builder before the complete signed artifact set, canonical Release, or Stable documentation existed | Historical, non-installable |
 | 0.1 failed-publication guide | 0.1.11 | immutable `v0.1.11` tag plus public signed digest images and a generated signed plan that verified on the host and inside the constrained updater; post-verification cleanup failed before attestations, GitHub Release, plan assets, Stable tags, or Stable documentation | Historical, non-installable |
 | 0.1 published-but-bootstrap-blocked guide | 0.1.12 | immutable `v0.1.12` tag plus the complete public signed release, canonical plan and bundle, Stable documentation, anonymous digest reads, and verified keyless signatures; canonical v0.1.1 bootstrap rejected matching absent legacy schema labels before application mutation | Historical, superseded; not a supported bootstrap source |
-| 0.1 prospective 0.1.13 Stable guide | 0.1.13 | exact verified `main` commit after it is tagged `v0.1.13` and all signed/public artifacts plus updater runtime and canonical deployment acceptance pass | Candidate; Stable only after full acceptance |
-| 0.1 public Stable guide | 0.1.x | current immutable release tag for the supported 0.1 line | Stable |
+| 0.1 historical candidate guide | 0.1.13 | never tagged; its correction is folded into 0.2.0 | Testing archive |
+| 0.1 public Stable guide | 0.1.x | last immutable release tag of the 0.1 line | Stable, superseded by 0.2 |
 
 The shorter documentation label keeps patch-compatible guidance together. When a
 patch changes behavior or an operational procedure, the 0.1 Help Center is rebuilt
@@ -70,11 +72,21 @@ incompatible or feature release receives a new documentation line rather than
 rewriting 0.1 silently.
 
 The channel is independent of SemVer. A Testing candidate and a Stable artifact may
-both report application version `0.1.13`; only accepted `main`/tag provenance may
+both report application version `0.2.0`; only accepted `main`/tag provenance may
 claim a Stable application build. Public documentation can receive corrections on
 `Testing`, but a published Stable correction receives a new patch version and tag.
 The installed Help Center therefore remains authoritative for the exact binaries
 running in a deployment.
+
+## Older installed addresses
+
+A new documentation line moves the installed Help Center to a new address. The
+installed bundle keeps a small redirect page at every page address of each earlier
+line, so `/docs/0.1/analyst/case-manager/` opens `/docs/0.2/analyst/case-manager/`.
+The redirect keeps the part after `#`, so a saved chat citation such as
+`/docs/0.1/analyst/chat/#sources` lands on the same section. Without JavaScript, a
+plain refresh still opens the new page, without the `#` part. Images and other assets
+are not redirected.
 
 ## Confirm what is installed
 
@@ -108,8 +120,11 @@ feature branches → Testing review → main verification → exact-tag Stable p
   line after its release.
 - Previously published version directories remain available for older deployments.
 
-The Stable publication maintains `/0.1/`; `/stable/`, `/latest/`, and the public-site
-root resolve to that supported line. A public version selector
+The Stable publication keeps `/0.1/` and adds `/0.2/` with the `v0.2.0` tag;
+`/stable/`, `/latest/`, and the public-site root then resolve to the 0.2 line. The
+public site is `https://arydestroyer.github.io/Kavach-AgenticSOC/`. GitHub does not
+redirect project Pages after a repository rename, so addresses under the former
+`arydestroyer.github.io/Agentic-Kibana/` answer 404. A public version selector
 attempts to preserve the current page in the selected release line and falls back to
 that line's home page when the article did not exist.
 
@@ -165,5 +180,6 @@ because both contain the same Markdown. The local rendered article is version-ma
 searchable, themed, and available with the application; “View source” and “Edit this
 page” are secondary contributor actions.
 
-See [Agentic SOC 0.1](0.1.md), [Release channels and versioning](channels.md), and
+See [Agentic SOC 0.2](0.2.md), [Agentic SOC 0.1](0.1.md),
+[Release channels and versioning](channels.md), and
 [Upgrades](../operations/upgrades.md).

@@ -6,8 +6,8 @@ description: Curated Agentic SOC API endpoint groups, authentication, pagination
 # API reference
 
 The **Agentic SOC API** is the FastAPI service behind the Agentic SOC Console. This page covers
-the public HTTP surface in application version **0.1.13** and documentation line
-**0.1**. The API is mounted at `/api`; the service root is `/`.
+the public HTTP surface in application version **0.2.0** and documentation line
+**0.2**. The API is mounted at `/api`; the service root is `/`.
 
 ## Interactive and machine-readable specifications
 
@@ -19,7 +19,7 @@ Each running API publishes:
 
 Build information reports the application version, independent release channel,
 commit SHA, build time, state backend, and OCSF version. A Testing candidate and its
-Stable promotion both remain `0.1.13`; `TLSOC_RELEASE_CHANNEL` distinguishes
+Stable promotion both remain `0.2.0`; `TLSOC_RELEASE_CHANNEL` distinguishes
 `testing` from the accepted `stable` build.
 
 The same identity is persisted on newly produced operational records. A Case's
@@ -27,8 +27,8 @@ nullable `app_version` and `build_sha` identify the build that created the case 
 remain unchanged across later updates or re-investigation. Each newly appended AuditDoc
 and UsageDoc records the build that first appended it, with idempotent retries preserving
 that first-writer stamp. Legacy records are not backfilled and therefore return `null`;
-an unset current build SHA is the explicit string `unknown`, not `null`. This is additive
-under application version `0.1.13` and requires no SQL migration.
+an unset current build SHA is the explicit string `unknown`, not `null`. This is additive:
+it arrived with the 0.1.13 candidate, ships in `0.2.0` and requires no SQL migration.
 
 The committed 0.1 OpenAPI snapshot contains 221 paths. It is the
 best source for current request-body models, enums, parameters, and operation IDs.
@@ -867,7 +867,7 @@ not marked gated merely because pull polling is disabled.
 returns `status`, `recommendations`, `scanned_cases`, `truncated`,
 `evidence_schema="agentic-soc.telemetry-gap/v1"`, and an explicit
 `not_available_reason`. It also returns `capture_status` and
-`capture_not_available_reason`; v0.1.13 reports capture unavailable rather than
+`capture_not_available_reason`; v0.2.0 reports capture unavailable rather than
 claiming that uncontrolled legacy text is evidence. It accepts only stored structured
 history from a controlled producer after a bounded query/tool attempt with result `field_missing`,
 `query_unsupported`, or `source_unqueryable`. The v1 allowlist maps outbound DNS,

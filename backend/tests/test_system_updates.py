@@ -66,7 +66,7 @@ def _release() -> UpdateRelease:
         version="0.1.3",
         tag="v0.1.3",
         commit_sha=_SHA,
-        repository_url="https://github.com/ARYDESTROYER/Agentic-Kibana",
+        repository_url="https://github.com/ARYDESTROYER/Kavach-AgenticSOC",
     )
 
 
@@ -928,7 +928,7 @@ class _Discovery:
     async def discover(self, _config):
         return ReleaseDiscoveryResponse(
             enabled=True,
-            repository_url="https://github.com/ARYDESTROYER/Agentic-Kibana",
+            repository_url="https://github.com/ARYDESTROYER/Kavach-AgenticSOC",
             checked_at="2026-08-03T00:00:00Z",
             cache=ReleaseCacheStatus(hit=False, stale=False, max_age_seconds=3600),
             channels={
@@ -1039,6 +1039,45 @@ async def test_source_or_unstamped_build_requires_host_bootstrap(
     }
 
 
+class _AbsentSupervisorClient:
+    """No supervisor socket on the host: the bootstrap has never run."""
+
+    def socket_is_available(self) -> bool:
+        return False
+
+    async def status(self) -> SupervisorStatus:
+        return SupervisorStatus(available=False, message="Not installed")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("state_backend", "bootstrap_required"),
+    [("sqlite", False), ("elasticsearch", False), ("postgres", True)],
+)
+async def test_bootstrap_is_offered_only_where_it_can_enable_updates(
+    monkeypatch: pytest.MonkeyPatch,
+    state_backend: str,
+    bootstrap_required: bool,
+) -> None:
+    """B52: a deployment that can never update itself must not offer the bootstrap.
+
+    Without a supervisor socket the status used to report ``bootstrap_required``
+    on every state backend, so the top bar offered "Enable updates" on SQLite and
+    Elasticsearch deployments that the bootstrap cannot support.
+    """
+    service = _policy_service(monkeypatch, _Discovery())
+    service.state.secrets.state_backend = state_backend
+    service.client = _AbsentSupervisorClient()
+
+    status = await service.status()
+
+    codes = {issue.code for issue in status.capability.blockers}
+    assert status.capability.supported is False
+    assert "supervisor_unavailable" in codes
+    assert status.capability.bootstrap_required is bootstrap_required
+    assert ("postgres_state_required" in codes) is (state_backend != "postgres")
+
+
 @pytest.mark.asyncio
 async def test_capability_uses_stable_only_and_truthfully_includes_updater(
     monkeypatch: pytest.MonkeyPatch,
@@ -1074,7 +1113,7 @@ async def test_candidate_uses_immutable_annotated_tag_when_main_advances(
     tag_sha = "c" * 40
     response = ReleaseDiscoveryResponse(
         enabled=True,
-        repository_url="https://github.com/ARYDESTROYER/Agentic-Kibana",
+        repository_url="https://github.com/ARYDESTROYER/Kavach-AgenticSOC",
         checked_at="2026-08-03T00:00:00Z",
         cache=ReleaseCacheStatus(hit=False, stale=False, max_age_seconds=3600),
         channels={
@@ -1193,7 +1232,7 @@ async def test_release_discovery_projection_is_explicit_and_untrusted(
 ) -> None:
     response = ReleaseDiscoveryResponse(
         enabled=True,
-        repository_url="https://github.com/ARYDESTROYER/Agentic-Kibana",
+        repository_url="https://github.com/ARYDESTROYER/Kavach-AgenticSOC",
         checked_at="2026-08-03T00:00:00Z",
         cache=ReleaseCacheStatus(
             hit=False, stale=cache_stale, max_age_seconds=3600

@@ -48,14 +48,14 @@ rule. The image/build pipeline passes these names directly:
 
 | Variable | Meaning |
 |---|---|
-| `TLSOC_VERSION` | Compose image tag/build argument; must match the code's Semantic Version (`0.1.13`) |
+| `TLSOC_VERSION` | Compose image tag/build argument; must match the code's Semantic Version (`0.2.0`) |
 | `TLSOC_RELEASE_CHANNEL` | `testing` by default; set to `stable` only for the accepted `main`/tag build |
 | `TLSOC_BUILD_SHA` | Exact source commit embedded in `/api/health/build-info`, image metadata, and newly produced operational records. The shipped Compose and demo wrappers derive it from the checkout via `scripts/lib/build-identity.sh`; a value supplied by the supervised bootstrap, or pinned to a non-empty, non-`unknown` value in `.env`, is used unchanged. Only when every source is absent does it remain the literal `unknown` |
 | `TLSOC_BUILD_DATE` | Build timestamp embedded in `/api/health/build-info` and image metadata, derived on the same terms as `TLSOC_BUILD_SHA`. Supply BOTH or neither: a half-stamped pair identifies no reproducible build |
 | `TLSOC_SOURCE_URL` | Dockerfile build argument for the canonical source URL embedded in OCI image metadata; the reference Compose files currently use the Dockerfile's repository default |
 
 The release channel is independent of SemVer: both the accepted Testing candidate and
-its Stable promotion are application `0.1.13`. Promotion changes provenance/channel,
+its Stable promotion are application `0.2.0`. Promotion changes provenance/channel,
 not the source version.
 
 `GET /api/health/build-info` answers two deliberately different questions about the
@@ -187,7 +187,7 @@ always off.
 This is desired policy, not a cross-provider promise. The status/preview API reports
 the effective state and blockers before any mutation:
 
-| State backend | Effective 0.1.13 behavior |
+| State backend | Effective 0.2.0 behavior |
 |---|---|
 | Elasticsearch | Explicit Apply can install ILM for append-only `tlsoc-agent-audit-*` and `tlsoc-agent-usage-*` only, after the cluster/privilege/tier probe succeeds |
 | PostgreSQL | Advisory; no built-in partitions, tablespace movement, or archive scheduler |
@@ -208,7 +208,7 @@ repository. It is enabled on fresh installations with this configuration:
 {
   "release_updates": {
     "enabled": true,
-    "repository_url": "https://github.com/ARYDESTROYER/Agentic-Kibana",
+    "repository_url": "https://github.com/ARYDESTROYER/Kavach-AgenticSOC",
     "stable_branch": "main",
     "testing_branch": "Testing",
     "check_interval_minutes": 360

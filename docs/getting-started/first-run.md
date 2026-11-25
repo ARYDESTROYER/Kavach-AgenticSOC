@@ -218,7 +218,7 @@ Fill in the top of the form:
 !!! warning "Give a file path, not pasted certificate text"
 
     The field also takes pasted text, and **Select a .pem / .crt file** pastes a file's
-    text into it. The 0.1.13 backend reads the value only as a file path: with pasted
+    text into it. The 0.2.0 backend reads the value only as a file path: with pasted
     text it cannot build the source's own connection and falls back to the shared one,
     so **Test connection** and polling do not use your source's URL and key. Mount the
     CA file and give its path instead.

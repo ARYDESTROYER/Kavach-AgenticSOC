@@ -11,6 +11,10 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+#: The installed documentation line, derived from VERSION as the bundler does.
+DOCS_LINE = ".".join(
+    (ROOT / "VERSION").read_text(encoding="utf-8").strip().split("-", 1)[0].split(".")[:2]
+)
 
 
 class DocsThemeContractTests(unittest.TestCase):
@@ -66,7 +70,7 @@ class DocsThemeContractTests(unittest.TestCase):
             )
             self.assertEqual(0, result.returncode, result.stdout + result.stderr)
 
-            index = (output / "0.1" / "index.html").read_text(encoding="utf-8")
+            index = (output / DOCS_LINE / "index.html").read_text(encoding="utf-8")
             head_end = index.index("</head>")
             body_start = index.index("<body")
             bridge = index.index('localStorage.getItem("soc.theme")')

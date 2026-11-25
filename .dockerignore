@@ -2,6 +2,7 @@
 # compile the root-level MkDocs source. Keep that context intentionally narrow.
 **
 
+!LICENSE
 !VERSION
 !mkdocs.yml
 !docs/
