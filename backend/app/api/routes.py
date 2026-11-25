@@ -442,15 +442,20 @@ async def health_build_info(state: AppState = Depends(get_state)) -> BuildInfoRe
 # Topics the UI may subscribe to. A single case-detail view may also request
 # 'cases:{case_id}' (exact-match topic) — allowed via the prefix below. ``chat``
 # (Round 12) carries only owner-targeted ``chat.turn`` frames (``realtime.publish_chat_turn``).
-_REALTIME_TOPICS = frozenset({"notifications", "inbox", "jobs", "cases", "agent", "chat", "runbooks"})
+_REALTIME_TOPICS = frozenset({
+    "notifications", "inbox", "jobs", "cases", "agent", "chat", "runbooks", "investigations",
+})
 
 # The grants a principal must hold for a topic to be served (Round 12 WP-CM: case
 # topics carry case ids and lifecycle status; Round 14 SPEC §4.10.15: the ``runbooks``
-# topic carries ``case.runbook`` progress frames, served only with BOTH grants). A topic
-# not listed here needs no grant beyond the stream itself.
+# topic carries ``case.runbook`` progress frames, served only with BOTH grants; Round 16
+# SPEC §4.5 WP08: the low-volume ``investigations`` topic carries ``case.investigation``
+# frames, ids and enums of AI runs, for the navigation count). A topic not listed here
+# needs no grant beyond the stream itself.
 _REALTIME_TOPIC_GRANTS: dict[str, tuple[tuple[str, str], ...]] = {
     "cases": (("cases", "read"),),
     "runbooks": (("runbooks", "read"), ("cases", "read")),
+    "investigations": (("cases", "read"),),
 }
 
 
@@ -7940,6 +7945,14 @@ def _case_audit_fields(case: Any, context: Any = None, *, batch_id: str = "") ->
     return fields
 
 
+def _case_write_lock(state: Any, case_id: str) -> Any:
+    """The case's write lock (Round 16 SPEC §4.5 WP08): a person's action holds it
+    alone, across its read and save; an AI run takes it only inside its signature lock.
+    A state without one (a stub) gets a no-op context."""
+    lock_for = getattr(state, "case_lock", None)
+    return lock_for(case_id) if callable(lock_for) else contextlib.nullcontext()
+
+
 def _case_work_actor(user: Any, fallback: str | None) -> str:
     """The audit actor of a human case-work row (Round 15 SPEC D7.2): the verified
     principal when the request has one, else the body or caller value (a job passes
@@ -7983,192 +7996,196 @@ async def _perform_case_action(
     ``case.closed_with_open_steps`` row (a job has none). The runbook state is read
     only on this human path: automatic closes never read it and ``decide()`` /
     ``AutoClosePolicy`` are untouched (#3)."""
-    case = await state.cases.get(case_id)
-    if not case:
-        raise HTTPException(status_code=404, detail="Case not found")
-    if body.action not in _ACTION_STATUS:
-        raise HTTPException(status_code=400, detail=f"Unknown action: {body.action}")
-    # Checked before anything changes, so a refused tag leaves the case untouched.
-    merged_tags = (
-        _merge_case_tags(case.tags, body.tags, replace=False) if body.tags is not None else None
-    )
-    previous_tags = list(case.tags or [])
+    # Round 16 (SPEC §4.5 WP08, research R11): the read, the change and the save hold
+    # the case's write lock, so an AI run that re-reads the case just before its own
+    # save cannot erase this action (and this action cannot erase the run's save).
+    async with _case_write_lock(state, case_id):
+        case = await state.cases.get(case_id)
+        if not case:
+            raise HTTPException(status_code=404, detail="Case not found")
+        if body.action not in _ACTION_STATUS:
+            raise HTTPException(status_code=400, detail=f"Unknown action: {body.action}")
+        # Checked before anything changes, so a refused tag leaves the case untouched.
+        merged_tags = (
+            _merge_case_tags(case.tags, body.tags, replace=False) if body.tags is not None else None
+        )
+        previous_tags = list(case.tags or [])
 
-    prev_status = case.status
-    # Round 15 (SPEC D7.1): the values the audit row's ``changes`` compare against.
-    prev_disposition = case.disposition
-    prev_acknowledged_at = case.acknowledged_at
-    prev_assignee = case.assignee or ""
+        prev_status = case.status
+        # Round 15 (SPEC D7.1): the values the audit row's ``changes`` compare against.
+        prev_disposition = case.disposition
+        prev_acknowledged_at = case.acknowledged_at
+        prev_assignee = case.assignee or ""
 
-    # Resolve the lifecycle target.
-    target = _ACTION_STATUS[body.action]
-    if body.action == "set_status":
-        if not body.status:
-            raise HTTPException(status_code=400, detail="set_status requires a status")
-        try:
-            target = CaseStatus(body.status)
-        except ValueError:
-            raise HTTPException(status_code=400, detail=f"unknown status: {body.status}")
-    if body.action == "escalate" and body.level is not None:
-        case.escalation_level = max(int(body.level), 1)
-    elif body.action == "escalate":
-        case.escalation_level = max(case.escalation_level, 1)
-    elif body.action == "deescalate":
-        case.escalation_level = 0
-    # BUG #3 (R4W4): stamp the acknowledgement instant for SLA/MTTA derivation. Note
-    # the Case model asymmetry — created_at/updated_at are ISO STRINGS, but
-    # acknowledged_at is a ``datetime | None`` (the SLA-interval anchors), so use a
-    # datetime here, only on the first acknowledge (idempotent).
-    if body.action == "acknowledge" and case.acknowledged_at is None:
-        case.acknowledged_at = now_utc()
+        # Resolve the lifecycle target.
+        target = _ACTION_STATUS[body.action]
+        if body.action == "set_status":
+            if not body.status:
+                raise HTTPException(status_code=400, detail="set_status requires a status")
+            try:
+                target = CaseStatus(body.status)
+            except ValueError:
+                raise HTTPException(status_code=400, detail=f"unknown status: {body.status}")
+        if body.action == "escalate" and body.level is not None:
+            case.escalation_level = max(int(body.level), 1)
+        elif body.action == "escalate":
+            case.escalation_level = max(case.escalation_level, 1)
+        elif body.action == "deescalate":
+            case.escalation_level = 0
+        # BUG #3 (R4W4): stamp the acknowledgement instant for SLA/MTTA derivation. Note
+        # the Case model asymmetry: created_at/updated_at are ISO STRINGS, but
+        # acknowledged_at is a ``datetime | None`` (the SLA-interval anchors), so use a
+        # datetime here, only on the first acknowledge (idempotent).
+        if body.action == "acknowledge" and case.acknowledged_at is None:
+            case.acknowledged_at = now_utc()
 
-    _guard_transition(body.action, prev_status, target)
+        _guard_transition(body.action, prev_status, target)
 
-    # The request is validated in full before the runbook check below, so a request
-    # that can never succeed is answered with its own 400, never with the close
-    # dialog's 409 (a reason would not make it valid). Nothing is applied here.
-    if body.action == "set_disposition" and not body.disposition:
-        raise HTTPException(status_code=400, detail="set_disposition requires a disposition")
-    requested_disposition: Disposition | None = None
-    if body.action in _DISPOSITION_ACTIONS and body.disposition:
-        try:
-            requested_disposition = Disposition(body.disposition)
-        except ValueError:
-            raise HTTPException(status_code=400, detail=f"unknown disposition: {body.disposition}")
-    # "Mark duplicate" (SPEC §4.10.15): a terminal move that carries the duplicate
-    # disposition. Decided once from the request, so the 409 exemption and the audit
-    # row's ``via`` and note always agree, whatever the case carried before.
-    marks_duplicate = requested_disposition == Disposition.DUPLICATE
+        # The request is validated in full before the runbook check below, so a request
+        # that can never succeed is answered with its own 400, never with the close
+        # dialog's 409 (a reason would not make it valid). Nothing is applied here.
+        if body.action == "set_disposition" and not body.disposition:
+            raise HTTPException(status_code=400, detail="set_disposition requires a disposition")
+        requested_disposition: Disposition | None = None
+        if body.action in _DISPOSITION_ACTIONS and body.disposition:
+            try:
+                requested_disposition = Disposition(body.disposition)
+            except ValueError:
+                raise HTTPException(status_code=400, detail=f"unknown disposition: {body.disposition}")
+        # "Mark duplicate" (SPEC §4.10.15): a terminal move that carries the duplicate
+        # disposition. Decided once from the request, so the 409 exemption and the audit
+        # row's ``via`` and note always agree, whatever the case carried before.
+        marks_duplicate = requested_disposition == Disposition.DUPLICATE
 
-    # Round 14 (D34): the first terminal move of a case with required runbook steps
-    # still open. Read before anything changes so a 409 leaves the case untouched; an
-    # unreadable run store never blocks a close (``None``).
-    open_steps = None
-    if target is not None and target in _TERMINAL and prev_status not in _TERMINAL:
-        from ..engine import runbook_runs
+        # Round 14 (D34): the first terminal move of a case with required runbook steps
+        # still open. Read before anything changes so a 409 leaves the case untouched; an
+        # unreadable run store never blocks a close (``None``).
+        open_steps = None
+        if target is not None and target in _TERMINAL and prev_status not in _TERMINAL:
+            from ..engine import runbook_runs
 
-        open_steps = await runbook_runs.open_required_steps(state, case_id)
-        if (open_steps and body.require_open_steps_reason and not body.open_steps_reason
-                and via != "bulk" and not marks_duplicate):
-            raise HTTPException(status_code=409, detail={
-                "code": "runbook_steps_open",
-                "message": (
-                    f"{len(open_steps)} required runbook "
-                    f"{'step is' if len(open_steps) == 1 else 'steps are'} still open. "
-                    "Say why you are closing the case."
-                ),
-                "required_open": len(open_steps),
-                "steps": [step.model_dump(mode="json") for step in open_steps],
-            })
+            open_steps = await runbook_runs.open_required_steps(state, case_id)
+            if (open_steps and body.require_open_steps_reason and not body.open_steps_reason
+                    and via != "bulk" and not marks_duplicate):
+                raise HTTPException(status_code=409, detail={
+                    "code": "runbook_steps_open",
+                    "message": (
+                        f"{len(open_steps)} required runbook "
+                        f"{'step is' if len(open_steps) == 1 else 'steps are'} still open. "
+                        "Say why you are closing the case."
+                    ),
+                    "required_open": len(open_steps),
+                    "steps": [step.model_dump(mode="json") for step in open_steps],
+                })
 
-    # A disposition supplied with the action. ``set_disposition`` requires one; ``close``
-    # accepts one (the Console's unified Close-with-disposition flow sends it).
-    #
-    # APPLY and CLASSIFY are separated on purpose. Applying is unconditional: the case
-    # carries the disposition the caller sent, which is what the dialog has always
-    # claimed to do. Classifying is what makes ``engine.analyst_outcomes`` treat that
-    # disposition as INDEPENDENT ground truth, and the presence of the field cannot
-    # establish it — ``case_manager.apply()`` derives a disposition from the LLM verdict,
-    # so a client echoing the stored value back is quoting the model to itself. Only the
-    # verb (``set_disposition``) or an affirmative ``disposition_declared`` says a human
-    # chose it. Absent both, the case is applied-but-unlabelled, exactly as before this
-    # path existed.
-    #
-    # One exception keeps the analyst's word final: an UNDECLARED value never replaces a
-    # disposition an analyst explicitly classified and the case still carries
-    # (``standing_analyst_disposition``). It may be the model-derived value read off the
-    # case before the analyst classified it and posted back, and applying it would turn
-    # the analyst's label into the model's while the classification entry still vouches
-    # for it. The lifecycle move itself still happens; only the echo is not applied.
-    classified_disposition = ""
-    if requested_disposition is not None:
-        if body.action in _SELF_DECLARING_ACTIONS or body.disposition_declared:
-            case.disposition = requested_disposition
-            classified_disposition = requested_disposition.value
-        elif standing_analyst_disposition(case) is None:
-            case.disposition = requested_disposition
+        # A disposition supplied with the action. ``set_disposition`` requires one; ``close``
+        # accepts one (the Console's unified Close-with-disposition flow sends it).
+        #
+        # APPLY and CLASSIFY are separated on purpose. Applying is unconditional: the case
+        # carries the disposition the caller sent, which is what the dialog has always
+        # claimed to do. Classifying is what makes ``engine.analyst_outcomes`` treat that
+        # disposition as INDEPENDENT ground truth, and the presence of the field cannot
+        # establish it: ``case_manager.apply()`` derives a disposition from the LLM verdict,
+        # so a client echoing the stored value back is quoting the model to itself. Only the
+        # verb (``set_disposition``) or an affirmative ``disposition_declared`` says a human
+        # chose it. Absent both, the case is applied-but-unlabelled, exactly as before this
+        # path existed.
+        #
+        # One exception keeps the analyst's word final: an UNDECLARED value never replaces a
+        # disposition an analyst explicitly classified and the case still carries
+        # (``standing_analyst_disposition``). It may be the model-derived value read off the
+        # case before the analyst classified it and posted back, and applying it would turn
+        # the analyst's label into the model's while the classification entry still vouches
+        # for it. The lifecycle move itself still happens; only the echo is not applied.
+        classified_disposition = ""
+        if requested_disposition is not None:
+            if body.action in _SELF_DECLARING_ACTIONS or body.disposition_declared:
+                case.disposition = requested_disposition
+                classified_disposition = requested_disposition.value
+            elif standing_analyst_disposition(case) is None:
+                case.disposition = requested_disposition
 
-    # confirm_fp is its own classification: the verb IS the analyst's declaration (it is
-    # in ``analyst_outcomes.CLASSIFICATION_ACTIONS``), and the newest decision wins. It
-    # therefore replaces every non-false-positive disposition, including the
-    # ``true_positive`` that ``case_manager.apply()`` mapped from a TRUE_POSITIVE verdict
-    # and any earlier analyst value, and keeps ``benign``, which is the analyst's
-    # false-positive-class refinement. Stamping the value on the history entry makes the
-    # entry self-describing, so ``caseOutcome``, the facts rail and
-    # ``analyst_confirmed_outcome`` all read the same false-positive class.
-    if body.action == "confirm_fp":
-        if case.disposition not in (Disposition.FALSE_POSITIVE, Disposition.BENIGN):
-            case.disposition = Disposition.FALSE_POSITIVE
-        classified_disposition = case.disposition.value
+        # confirm_fp is its own classification: the verb IS the analyst's declaration (it is
+        # in ``analyst_outcomes.CLASSIFICATION_ACTIONS``), and the newest decision wins. It
+        # therefore replaces every non-false-positive disposition, including the
+        # ``true_positive`` that ``case_manager.apply()`` mapped from a TRUE_POSITIVE verdict
+        # and any earlier analyst value, and keeps ``benign``, which is the analyst's
+        # false-positive-class refinement. Stamping the value on the history entry makes the
+        # entry self-describing, so ``caseOutcome``, the facts rail and
+        # ``analyst_confirmed_outcome`` all read the same false-positive class.
+        if body.action == "confirm_fp":
+            if case.disposition not in (Disposition.FALSE_POSITIVE, Disposition.BENIGN):
+                case.disposition = Disposition.FALSE_POSITIVE
+            classified_disposition = case.disposition.value
 
-    # Apply the lifecycle status move (analyst layer — NOT decide()/#3).
-    if target is not None:
-        case.status = target
-    case.decision_by = DecisionBy.ANALYST
-    case.updated_at = iso_now()
-    reason = (body.reason or body.note or "").strip()[:500]
-    if reason and body.action in ("hold", "resolve", "set_status"):
-        case.status_reason = reason
+        # Apply the lifecycle status move (analyst layer, NOT decide()/#3).
+        if target is not None:
+            case.status = target
+        case.decision_by = DecisionBy.ANALYST
+        case.updated_at = iso_now()
+        reason = (body.reason or body.note or "").strip()[:500]
+        if reason and body.action in ("hold", "resolve", "set_status"):
+            case.status_reason = reason
 
-    # --- Additive optional fields (persisted without touching status logic) -----
-    # assignee → set the case owner when provided (non-empty).
-    assigned = None
-    if body.assignee is not None:
-        assigned = str(body.assignee).strip()[:80]
-        # The same owner again (trimmed, any letter case) changes nothing and records
-        # no new assignment time.
-        assigned = assigned if _owner_changed(case.assignee, assigned) else None
+        # --- Additive optional fields (persisted without touching status logic) -----
+        # assignee → set the case owner when provided (non-empty).
+        assigned = None
+        if body.assignee is not None:
+            assigned = str(body.assignee).strip()[:80]
+            # The same owner again (trimmed, any letter case) changes nothing and records
+            # no new assignment time.
+            assigned = assigned if _owner_changed(case.assignee, assigned) else None
+            if assigned is not None:
+                case.assignee = assigned
+        # tags → merge into the case's tags (trim, de-dupe, bounded; the same rules as
+        # the dedicated /tags route, checked above by ``_merge_case_tags``).
+        if merged_tags is not None:
+            case.tags = merged_tags
+
+        # Record the lifecycle transition on the append-only status timeline.
+        if case.status != prev_status:
+            case.status_history.append(StatusHistoryEntry(
+                from_status=(prev_status.value if prev_status else ""),
+                to_status=case.status.value,
+                by=actor,
+                at=case.updated_at,
+                reason=reason,
+            ))
+
+        # Build the history entry, recording resolution/priority when supplied (they
+        # have no dedicated Case field, so the audited history entry is their home).
+        entry: dict[str, Any] = {
+            "ts": case.updated_at, "event": "analyst_action", "action": body.action,
+            "analyst": actor, "note": body.note,
+        }
+        if batch_id:
+            entry["batch"] = batch_id
+        if classified_disposition:
+            # The DECLARED classification made by THIS action (see the apply/classify split
+            # above: set only for a self-declaring verb or an affirmative
+            # ``disposition_declared``). The action token alone cannot carry it, because the
+            # primary close posts ``action="close"``, which is not a classification verb, so
+            # ``engine.analyst_outcomes.is_classification_entry`` reads this key instead.
+            # Append-only (#2): a new key on a NEW entry; no existing history row is
+            # rewritten and no past case is relabelled.
+            entry[CLASSIFIED_DISPOSITION_KEY] = classified_disposition
+        if body.resolution is not None:
+            entry["resolution"] = str(body.resolution)
+        if body.priority is not None:
+            entry["priority"] = str(body.priority)
         if assigned is not None:
-            case.assignee = assigned
-    # tags → merge into the case's tags (trim, de-dupe, bounded; the same rules as
-    # the dedicated /tags route, checked above by ``_merge_case_tags``).
-    if merged_tags is not None:
-        case.tags = merged_tags
-
-    # Record the lifecycle transition on the append-only status timeline.
-    if case.status != prev_status:
-        case.status_history.append(StatusHistoryEntry(
-            from_status=(prev_status.value if prev_status else ""),
-            to_status=case.status.value,
-            by=actor,
-            at=case.updated_at,
-            reason=reason,
-        ))
-
-    # Build the history entry, recording resolution/priority when supplied (they
-    # have no dedicated Case field, so the audited history entry is their home).
-    entry: dict[str, Any] = {
-        "ts": case.updated_at, "event": "analyst_action", "action": body.action,
-        "analyst": actor, "note": body.note,
-    }
-    if batch_id:
-        entry["batch"] = batch_id
-    if classified_disposition:
-        # The DECLARED classification made by THIS action (see the apply/classify split
-        # above — set only for a self-declaring verb or an affirmative
-        # ``disposition_declared``). The action token alone cannot carry it, because the
-        # primary close posts ``action="close"``, which is not a classification verb, so
-        # ``engine.analyst_outcomes.is_classification_entry`` reads this key instead.
-        # Append-only (#2): a new key on a NEW entry; no existing history row is
-        # rewritten and no past case is relabelled.
-        entry[CLASSIFIED_DISPOSITION_KEY] = classified_disposition
-    if body.resolution is not None:
-        entry["resolution"] = str(body.resolution)
-    if body.priority is not None:
-        entry["priority"] = str(body.priority)
-    if assigned is not None:
-        # A new owner set by this action: its time, for the "my cases" starter.
-        entry["assignee"] = assigned
-    # Round 15 (SPEC D4.2, D6.9): what the person did, from the fixed vocabulary, and
-    # whether they acted from an auto-close review. Both new keys on a NEW entry only
-    # (#2); ``review_via`` is recorded and never read by the close logic above.
-    if body.actions_taken:
-        entry["actions_taken"] = list(body.actions_taken)
-    review_via = getattr(body, "review_via", None)
-    if review_via:
-        entry["review_via"] = review_via
-    case.history.append(entry)
-    await state.cases.save(case)
+            # A new owner set by this action: its time, for the "my cases" starter.
+            entry["assignee"] = assigned
+        # Round 15 (SPEC D4.2, D6.9): what the person did, from the fixed vocabulary, and
+        # whether they acted from an auto-close review. Both new keys on a NEW entry only
+        # (#2); ``review_via`` is recorded and never read by the close logic above.
+        if body.actions_taken:
+            entry["actions_taken"] = list(body.actions_taken)
+        review_via = getattr(body, "review_via", None)
+        if review_via:
+            entry["review_via"] = review_via
+        case.history.append(entry)
+        await state.cases.save(case)
     # Round 15 (SPEC D7.1): the row's structured fields. ``action_type``, ``surface`` and
     # the positional ``result_summary`` below stay byte-identical.
     changes: list[AuditChange] = []
@@ -8425,24 +8442,26 @@ async def case_feedback(
 
         user = await _enforce(request, "cases", "write")
     actor = getattr(user, "username", "") or body.analyst or "analyst"
-    case = await state.cases.get(case_id)
-    if not case:
-        raise HTTPException(status_code=404, detail="Case not found")
-    entry = FeedbackEntry(
-        analyst=actor,
-        assessment=body.assessment,
-        accuracy=max(0.0, min(1.0, body.accuracy)),
-        reasoning_quality=max(0.0, min(1.0, body.reasoning_quality)),
-        action_appropriateness=max(0.0, min(1.0, body.action_appropriateness)),
-        actual_outcome=body.actual_outcome.value,
-        time_saved_minutes=max(0, int(body.time_saved_minutes)),
-        comment=body.comment,
-        ai_verdict=case.verdict.value if case.verdict else "",
-        ai_confidence=case.confidence,
-    )
-    case.feedback.append(entry)
-    case.updated_at = iso_now()
-    await state.cases.save(case)
+    # Round 16 (WP08): read, change and save under the case's write lock.
+    async with _case_write_lock(state, case_id):
+        case = await state.cases.get(case_id)
+        if not case:
+            raise HTTPException(status_code=404, detail="Case not found")
+        entry = FeedbackEntry(
+            analyst=actor,
+            assessment=body.assessment,
+            accuracy=max(0.0, min(1.0, body.accuracy)),
+            reasoning_quality=max(0.0, min(1.0, body.reasoning_quality)),
+            action_appropriateness=max(0.0, min(1.0, body.action_appropriateness)),
+            actual_outcome=body.actual_outcome.value,
+            time_saved_minutes=max(0, int(body.time_saved_minutes)),
+            comment=body.comment,
+            ai_verdict=case.verdict.value if case.verdict else "",
+            ai_confidence=case.confidence,
+        )
+        case.feedback.append(entry)
+        case.updated_at = iso_now()
+        await state.cases.save(case)
     await state.audit.record(
         action_type=ActionType.FEEDBACK, surface="case", actor=actor,
         actor_type="human", outcome="success", action=CASE_GRADED_AUDIT_ACTION,
@@ -8480,18 +8499,20 @@ async def case_comment(
     # Round 15 (SPEC D7.2): the audit actor is the verified principal when the request
     # has one, never a name the body claims; the body value only without sign-in.
     actor = _case_work_actor(user, body.author)
-    case = await state.cases.get(case_id)
-    if not case:
-        raise HTTPException(status_code=404, detail="Case not found")
-    if not body.body.strip():
-        raise HTTPException(status_code=400, detail="comment body is required")
-    # The stored author follows the same rule as the audit actor, so a signed-in user
-    # cannot post a comment the case shows as someone else's. Without sign-in the body
-    # value is stored exactly as before.
-    author = str(getattr(user, "username", "") or "") or body.author
-    case.comments.append(CaseComment(author=author, body=body.body.strip()[:4000]))
-    case.updated_at = iso_now()
-    await state.cases.save(case)
+    # Round 16 (WP08): read, change and save under the case's write lock.
+    async with _case_write_lock(state, case_id):
+        case = await state.cases.get(case_id)
+        if not case:
+            raise HTTPException(status_code=404, detail="Case not found")
+        if not body.body.strip():
+            raise HTTPException(status_code=400, detail="comment body is required")
+        # The stored author follows the same rule as the audit actor, so a signed-in user
+        # cannot post a comment the case shows as someone else's. Without sign-in the body
+        # value is stored exactly as before.
+        author = str(getattr(user, "username", "") or "") or body.author
+        case.comments.append(CaseComment(author=author, body=body.body.strip()[:4000]))
+        case.updated_at = iso_now()
+        await state.cases.save(case)
     await state.audit.record(
         action_type=ActionType.COLLAB, surface="case", actor=actor,
         actor_type="human", outcome="success", action=CASE_COMMENTED_AUDIT_ACTION,
@@ -8518,15 +8539,17 @@ async def case_tags(
     # Round 15 (SPEC D7.2): the verified principal, else the body or caller value (the
     # ``case_tag`` job passes ``job.actor``, verified at submit).
     actor = _case_work_actor(user, body.analyst)
-    case = await state.cases.get(case_id)
-    if not case:
-        raise HTTPException(status_code=404, detail="Case not found")
-    # De-dupe, trim and bound the count; a new tag over the length limit is refused,
-    # never cut (``_merge_case_tags``).
-    previous_tags = list(case.tags or [])
-    case.tags = _merge_case_tags(case.tags, body.tags, replace=True)
-    case.updated_at = iso_now()
-    await state.cases.save(case)
+    # Round 16 (WP08): read, change and save under the case's write lock.
+    async with _case_write_lock(state, case_id):
+        case = await state.cases.get(case_id)
+        if not case:
+            raise HTTPException(status_code=404, detail="Case not found")
+        # De-dupe, trim and bound the count; a new tag over the length limit is refused,
+        # never cut (``_merge_case_tags``).
+        previous_tags = list(case.tags or [])
+        case.tags = _merge_case_tags(case.tags, body.tags, replace=True)
+        case.updated_at = iso_now()
+        await state.cases.save(case)
     tag_changes = (
         [AuditChange(field="tags", before=previous_tags, after=list(case.tags or []))]
         if list(case.tags or []) != previous_tags else None
@@ -8565,24 +8588,26 @@ async def case_assign(
     # ``case_assign`` job passes ``job.actor``, verified at submit). It is the audit actor
     # and the ``analyst`` of the "assigned" history entry.
     actor = _case_work_actor(user, body.analyst)
-    case = await state.cases.get(case_id)
-    if not case:
-        raise HTTPException(status_code=404, detail="Case not found")
-    new_owner = body.assignee.strip()[:80]
-    previous_owner = case.assignee or ""
-    changed = _owner_changed(case.assignee, new_owner)
-    if changed:
-        case.assignee = new_owner
-    case.updated_at = iso_now()
-    # The assignment time, on the case's append-only history (Round 13 polish PB3): the
-    # "my cases" starter states how long the oldest of a caller's cases has been theirs
-    # only from this record ("Oldest assigned …"), never from the case's age. Recorded
-    # only when the owner changes: assigning a case to its current owner (Assign again,
-    # or a bulk assign over cases the person already holds) keeps the earlier time.
-    if changed:
-        case.history.append({"ts": case.updated_at, "event": "assigned", "assignee": case.assignee,
-                             "analyst": actor})
-    await state.cases.save(case)
+    # Round 16 (WP08): read, change and save under the case's write lock.
+    async with _case_write_lock(state, case_id):
+        case = await state.cases.get(case_id)
+        if not case:
+            raise HTTPException(status_code=404, detail="Case not found")
+        new_owner = body.assignee.strip()[:80]
+        previous_owner = case.assignee or ""
+        changed = _owner_changed(case.assignee, new_owner)
+        if changed:
+            case.assignee = new_owner
+        case.updated_at = iso_now()
+        # The assignment time, on the case's append-only history (Round 13 polish PB3): the
+        # "my cases" starter states how long the oldest of a caller's cases has been theirs
+        # only from this record ("Oldest assigned …"), never from the case's age. Recorded
+        # only when the owner changes: assigning a case to its current owner (Assign again,
+        # or a bulk assign over cases the person already holds) keeps the earlier time.
+        if changed:
+            case.history.append({"ts": case.updated_at, "event": "assigned", "assignee": case.assignee,
+                                 "analyst": actor})
+        await state.cases.save(case)
     await state.audit.record(
         action_type=ActionType.COLLAB, surface="case", actor=actor,
         actor_type="human", outcome="success", action=CASE_ASSIGNED_AUDIT_ACTION,
@@ -8723,50 +8748,91 @@ def _case_actions_taken_lines(case) -> list[str]:
 async def case_investigate(
     case_id: str,
     state: AppState = Depends(get_state),
-    _=Depends(require_permission("cases", "reinvestigate")),
+    principal=Depends(require_permission("cases", "reinvestigate")),
     request: Request = None,  # type: ignore[assignment]
 ) -> dict[str, Any]:
     """Human-triggered (re-)investigation of a stored case (C3-4).
 
-    Rebuilds the cluster from the case — preferring an exact id-based re-query,
-    falling back to a config-windowed entity re-query — then re-runs the SAME
+    Rebuilds the cluster from the case (preferring an exact id-based re-query,
+    falling back to a config-windowed entity re-query), then re-runs the SAME
     shared pipeline with ``force=True`` so an already-investigated OPEN case is
     re-investigated in place. The case's ORIGINAL provenance (``source_surface`` /
     ``origin_surface``) is preserved by the pipeline, so an automated-scan case
     stays in the Automated Scans tab. Returns a NEUTRAL 400 if no events remain
     (the cluster aged out of the configured window).
+
+    Round 16 (SPEC §4.5 WP08): a closed case is investigated in place unless an open
+    case holds its signature (``409 open_case_exists``), and a second request while a
+    run on the case is queued or running answers ``409 investigation_running``; both
+    are checked before the rebuild.
     """
     case = await state.cases.get(case_id)
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
-    query_source = state.active_source_for_id(case.source_id)
-    cluster = await _cluster_for_case(
-        state, case, query_source=query_source
+    from ..agents.pipeline import INVESTIGATION_RUN_PREFIX
+    from .routes_investigations import open_case_conflict, reserve_manual_run
+
+    await open_case_conflict(state.cases, case)
+    run_id = new_id(INVESTIGATION_RUN_PREFIX)
+    requested_by = str(getattr(principal, "username", "") or "") or None
+    reservation = await reserve_manual_run(
+        request, state.investigations, case, run_id=run_id, requested_by=requested_by,
     )
-    if cluster is None:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"No events remain for {case.entity.type.value} {case.entity.value} "
-                f"in the last {state.prefs.investigate_lookback}; the activity may have "
-                "aged out of the retained log window."
-            ),
+    try:
+        query_source = state.active_source_for_id(case.source_id)
+        cluster = await _cluster_for_case(
+            state, case, query_source=query_source
         )
-    # force=True so an already-investigated OPEN case is genuinely re-investigated.
-    updated = await state.pipeline.investigate_cluster(
-        cluster, case.source_surface, state.execution_prefs,
-        force=True, query_source=query_source,
-    )
+        if cluster is None:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"No events remain for {case.entity.type.value} {case.entity.value} "
+                    f"in the last {state.prefs.investigate_lookback}; the activity may have "
+                    "aged out of the retained log window."
+                ),
+            )
+        # force=True so an already-investigated OPEN case is genuinely re-investigated.
+        updated = await state.pipeline.investigate_cluster(
+            cluster, case.source_surface, state.execution_prefs,
+            force=True, query_source=query_source,
+            trigger="manual", requested_by=requested_by, known_case_id=case_id,
+            target_case_id=case_id, run_id=run_id,
+        )
+    finally:
+        reservation.release()
     return _case_view(updated, state, spend=await _case_spend_visible(request))
 
 
 class ReinvestigateRequest(BaseModel):
     """Re-run the investigation on an existing case. Optional ``model`` overrides
     the investigation-role models (router/investigator/formatter) for THIS run via a
-    prefs copy (the per-call model-override technique) — no gateway plumbing change."""
+    prefs copy (the per-call model-override technique); no gateway plumbing change.
+
+    ``wait`` (Round 16 SPEC §4.5 WP08): true (the default) answers when the run ends,
+    with the updated case; false answers ``202 {run_id, case_id, state: "queued"}`` at
+    once and the run goes on in the background (its result arrives as a case update,
+    a ``case.investigation`` frame and an Inbox notice)."""
 
     model: str | None = None
     analyst: str = "analyst"
+    wait: bool = True
+
+
+async def _run_manual_investigation(pipeline: Any, cluster: Any, surface: Any, prefs: Any, *,
+                                    query_source: Any, reservation: Any, **tracking: Any) -> None:
+    """A ``wait=false`` reinvestigation, run as a tracked task (factory reset cancels
+    it). The pipeline never raises for a failed investigation (it routes the case to a
+    person); anything else is logged. The reservation ends with the run."""
+    try:
+        await pipeline.investigate_cluster(
+            cluster, surface, prefs, force=True, query_source=query_source, **tracking,
+        )
+    except Exception as exc:  # noqa: BLE001 - the 202 is answered; the run is logged
+        logger.warning("Background reinvestigation of %s failed: %s",
+                       tracking.get("target_case_id"), exc)
+    finally:
+        reservation.release()
 
 
 @router.post("/cases/{case_id}/reinvestigate")
@@ -8776,60 +8842,101 @@ async def case_reinvestigate(
     state: AppState = Depends(get_state),
     principal=Depends(require_permission("cases", "reinvestigate")),
     request: Request = None,  # type: ignore[assignment]
-) -> dict[str, Any]:
+) -> Any:
     """Manually re-run the SHARED investigation pipeline on a stored case (force).
 
     Loads the case (404 if missing), reconstructs the cluster from the case's stored
     fields (member event ids → exact id re-query, else a config-windowed entity
-    re-query — via the same robust ``_cluster_for_case`` helper the legacy
+    re-query, via the same robust ``_cluster_for_case`` helper the legacy
     ``/investigate`` route uses), then calls ``investigate_cluster(..., force=True)``
     so it re-runs even on an already-verdicted case. An optional ``{"model": "<id>"}``
     body overrides the investigation-role models for this run only via a prefs copy
     (still through the one gateway, #6). The case's ORIGINAL provenance
     (``source_surface``) is preserved by the pipeline. The deterministic
     close/escalate decision in the Case Manager is untouched (#3). Returns the
-    updated Case. 400 (NEUTRAL) if no events remain to rebuild the cluster."""
+    updated Case. 400 (NEUTRAL) if no events remain to rebuild the cluster.
+
+    Round 16 (SPEC §4.5 WP08, D10), each checked before the audit row and the rebuild:
+    a closed case is reinvestigated IN PLACE unless an open case holds its signature
+    (``409 open_case_exists`` with that case's id); a second request while a run on the
+    case or its signature is queued or running answers ``409 investigation_running``
+    with the run. ``wait=false`` answers ``202 {run_id, case_id, state}`` at once."""
     body = body or ReinvestigateRequest()
     case = await state.cases.get(case_id)
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
-    # Rebuild the cluster from live logs; if the events aged out, fall back to a
-    # minimal reconstruction from the case's STORED evidence so the re-investigation
-    # runs over what we retained rather than dead-ending (#3 untouched).
-    query_source = state.active_source_for_id(case.source_id)
-    cluster = await _cluster_for_case(
-        state, case, allow_stored_reconstruction=True, query_source=query_source
+    from ..agents.pipeline import INVESTIGATION_RUN_PREFIX
+    from .routes_investigations import open_case_conflict, reserve_manual_run
+
+    await open_case_conflict(state.cases, case)
+    run_id = new_id(INVESTIGATION_RUN_PREFIX)
+    requested_by = str(getattr(principal, "username", "") or "") or None
+    reservation = await reserve_manual_run(
+        request, state.investigations, case, run_id=run_id, requested_by=requested_by,
     )
-    if cluster is None:
-        raise HTTPException(
-            status_code=400,
-            detail="This case has no stored evidence to reinvestigate.",
+    spawned = False
+    try:
+        # Rebuild the cluster from live logs; if the events aged out, fall back to a
+        # minimal reconstruction from the case's STORED evidence so the re-investigation
+        # runs over what we retained rather than dead-ending (#3 untouched).
+        query_source = state.active_source_for_id(case.source_id)
+        cluster = await _cluster_for_case(
+            state, case, allow_stored_reconstruction=True, query_source=query_source
         )
-    # Per-call model override (additive): swap the investigation-role models for this
-    # run only. Unchanged when body.model is None.
-    prefs_eff = _override_models(
-        state.execution_prefs, body.model, ("router", "investigator", "formatter")
-    )
-    # Audit the manual reinvestigation BEFORE the run so the trigger is recorded even
-    # if the pipeline later fails-to-human (the pipeline never raises).
-    await state.audit.record(
-        action_type=ActionType.DECISION, surface=case.source_surface.value,
-        actor="reinvestigate", case_id=case_id,
-        # The agent pipeline's own token (``audit/event_categories.json``): the row
-        # stays in Agent activity, as before; the person is named in the summary.
-        actor_type="agent", outcome="success",
-        result_summary=(
-            # Round 15 (SPEC D7.2): the verified principal when the request has one,
-            # else the body value; only this name changes, the row stays the agent's.
-            f"manual reinvestigation requested by {_case_work_actor(principal, body.analyst)}"
-            + (f"; model override={body.model}" if body.model else "")
-        ),
-    )
-    # force=True so an already-verdicted case is genuinely re-investigated in place;
-    # the pipeline preserves the original source_surface/origin_surface.
-    updated = await state.pipeline.investigate_cluster(
-        cluster, case.source_surface, prefs_eff, force=True, query_source=query_source
-    )
+        if cluster is None:
+            raise HTTPException(
+                status_code=400,
+                detail="This case has no stored evidence to reinvestigate.",
+            )
+        # Per-call model override (additive): swap the investigation-role models for this
+        # run only. Unchanged when body.model is None.
+        prefs_eff = _override_models(
+            state.execution_prefs, body.model, ("router", "investigator", "formatter")
+        )
+        # Audit the manual reinvestigation BEFORE the run so the trigger is recorded even
+        # if the pipeline later fails-to-human (the pipeline never raises).
+        await state.audit.record(
+            action_type=ActionType.DECISION, surface=case.source_surface.value,
+            actor="reinvestigate", case_id=case_id,
+            # The agent pipeline's own token (``audit/event_categories.json``): the row
+            # stays in Agent activity, as before; the person is named in the summary.
+            actor_type="agent", outcome="success", run_id=run_id,
+            result_summary=(
+                # Round 15 (SPEC D7.2): the verified principal when the request has one,
+                # else the body value; only this name changes, the row stays the agent's.
+                f"manual reinvestigation requested by {_case_work_actor(principal, body.analyst)}"
+                + (f"; model override={body.model}" if body.model else "")
+            ),
+        )
+        tracking = {
+            "trigger": "manual", "requested_by": requested_by, "known_case_id": case_id,
+            "target_case_id": case_id, "run_id": run_id,
+        }
+        if not body.wait:
+            # Round 16 (WP08, research R4): the run goes on as a tracked task (factory
+            # reset cancels it); the Console follows it through the registry route and
+            # the ``case.investigation`` frames.
+            state.spawn_mutation_task(
+                _run_manual_investigation(
+                    state.pipeline, cluster, case.source_surface, prefs_eff,
+                    query_source=query_source, reservation=reservation, **tracking,
+                ),
+                name=f"case-reinvestigate:{case_id}",
+            )
+            spawned = True
+            return JSONResponse(
+                status_code=202,
+                content={"run_id": run_id, "case_id": case_id, "state": "queued"},
+            )
+        # force=True so an already-verdicted case is genuinely re-investigated in place;
+        # the pipeline preserves the original source_surface/origin_surface.
+        updated = await state.pipeline.investigate_cluster(
+            cluster, case.source_surface, prefs_eff, force=True, query_source=query_source,
+            **tracking,
+        )
+    finally:
+        if not spawned:
+            reservation.release()
     return _case_view(updated, state, spend=await _case_spend_visible(request))
 
 

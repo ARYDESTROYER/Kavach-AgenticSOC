@@ -212,7 +212,9 @@ class DemoStack:
                  runbook_catalog: Callable[[], Awaitable[Any]] | None = None,
                  runbook_attacher: Callable[[Any], Awaitable[Any]] | None = None,
                  runbook_library: Callable[[], Any] | None = None,
-                 runbook_automation: tuple[Any, Any] | None = None) -> None:
+                 runbook_automation: tuple[Any, Any] | None = None,
+                 case_locks: Any = None,
+                 on_investigation_finished: Callable[[Any], Any] | None = None) -> None:
         # A FRESH in-memory ES client — physically separate from the real store.
         self.es = InMemoryESClient()
         self.run_id = run_id
@@ -351,6 +353,17 @@ class DemoStack:
         self.sources = build_native_demo_sources(
             seed, get_prefs(), now_millis=to_millis(now_utc()), prime_count=12,
         )
+        # Round 16 (SPEC §3.2, §4.5 WP08): the Demo stack's OWN investigation registry,
+        # bound to the Demo bus (so ``GET /api/investigations/active`` and the
+        # ``case.investigation`` frames show Demo runs only while Demo Mode is on), and
+        # the per-case write locks AppState shares with the real pipeline (a person's
+        # case action takes the same lock whichever stack is active).
+        from .investigation_registry import InvestigationRegistry
+
+        self.investigation_registry = InvestigationRegistry(
+            lambda: self.event_bus, on_finished=on_investigation_finished,
+        )
+        self._case_locks = case_locks
         # Lazily built so we avoid importing the (heavy) pipeline at module import.
         self.pipeline = self._build_pipeline(secrets)
         # A handle on the pipeline's RagService so demo /api/rag/* + the shared-store
@@ -403,6 +416,8 @@ class DemoStack:
             tuning_store=self.tuning_store, seq_store=self.case_seq,
             runbook_catalog=self.runbook_catalog,
             runbook_attacher=self._runbook_attacher,
+            investigation_registry=self.investigation_registry,
+            case_locks=self._case_locks,
         )
         # Bind the demo's ISOLATED bus so live ``agent.step`` frames never touch the
         # global singleton (isolation boundary). Without this the pipeline's
