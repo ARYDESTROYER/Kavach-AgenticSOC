@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -417,3 +418,50 @@ def cost_for(model: str, prompt_tokens: int, completion_tokens: int,
     if batch:
         total *= 0.5
     return round(total, 8)
+
+
+# --------------------------------------------------------------------------- #
+# Round 16 (SPEC §3.4, §4.5 WP13): the rates behind one call's cost, so a ledger row
+# can carry the inputs of its price. Pure, and read-only over the same lookups
+# ``cost_for`` makes: ``cost_for`` itself is unchanged, so no stored or new cost moves.
+# --------------------------------------------------------------------------- #
+#: The cache-write TTL ``cost_for`` bills when its caller names none (the gateway never
+#: names one today).
+DEFAULT_CACHE_WRITE_TTL = "5m"
+
+
+@dataclass(frozen=True)
+class CallRates:
+    """The undiscounted USD-per-million rates ``cost_for`` bills one call at.
+
+    ``cache_write_per_million`` is the rate for ``cache_write_ttl`` (the 5 minute or
+    the 1 hour write). The Batch factor is not folded in: a ledger row's own ``batch``
+    flag applies it, so the cost re-derives as
+    ``round((prompt * input + completion * output + cache_read * cache_read_rate +
+    cache_write * cache_write_rate) / 1e6 * (0.5 if batch else 1), 8)``."""
+
+    input_per_million: float
+    output_per_million: float
+    cache_read_per_million: float
+    cache_write_per_million: float
+    cache_write_ttl: str = DEFAULT_CACHE_WRITE_TTL
+
+
+def rates_for(model: str, overlay: tuple[float, float] | None = None, *,
+              cache_write_ttl: str = DEFAULT_CACHE_WRITE_TTL) -> CallRates:
+    """The rates :func:`cost_for` resolves for ``model`` with the same ``overlay``:
+    ``resolve_price`` for input and output, ``cache_rates`` of that input rate for the
+    cache read and the ``cache_write_ttl`` write. The mock provider is free, every rate
+    ``0.0``, as ``cost_for`` returns ``0.0`` for it whatever the overlay says."""
+    ttl = "1h" if str(cache_write_ttl) == "1h" else DEFAULT_CACHE_WRITE_TTL
+    if model.startswith("mock"):
+        return CallRates(0.0, 0.0, 0.0, 0.0, ttl)
+    in_price, out_price = resolve_price(model, overlay)
+    read_rate, write_5m, write_1h = cache_rates(model, in_price)
+    return CallRates(
+        input_per_million=float(in_price),
+        output_per_million=float(out_price),
+        cache_read_per_million=float(read_rate),
+        cache_write_per_million=float(write_1h if ttl == "1h" else write_5m),
+        cache_write_ttl=ttl,
+    )

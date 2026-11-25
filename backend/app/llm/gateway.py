@@ -27,7 +27,15 @@ from ..config import ModelConfig, Provider, Secrets
 from ..constants import Role, UsageOutcome
 from ..models import UsageDoc
 from ..stores.usage import UsageStore
-from .pricing import base_url_for, cost_for, pricing_source, resolve_price
+from .pricing import (
+    DEFAULT_CACHE_WRITE_TTL,
+    CallRates,
+    base_url_for,
+    cost_for,
+    pricing_source,
+    rates_for,
+    resolve_price,
+)
 from .providers import (
     PROVIDER_REGISTRY,
     BaseProvider,
@@ -984,12 +992,14 @@ class LLMGateway:
         cache_write = int(getattr(result, "cache_write_tokens", 0) or 0)
         is_batch = bool(getattr(result, "batch", False))
         processing_tier = str(getattr(result, "processing_tier", "standard") or "standard")
+        price: tuple[tuple[float, float] | None, str] | None = None
         if self._demo:
             # $0 mock run, but stamp a small PLAUSIBLE synthetic cost for the cost page.
             cost = _demo_synthetic_cost(result.prompt_tokens, result.completion_tokens)
         else:
+            price = await self._call_price(model_used)
             cost = cost_for(model_used, result.prompt_tokens, result.completion_tokens,
-                            await self._effective_price_tuple(model_used),
+                            price[0],
                             cache_read_tokens=cache_read, cache_write_tokens=cache_write,
                             batch=is_batch)
         result.cost = cost  # let callers roll up per-case cost (Case.token_cost)
@@ -999,7 +1009,7 @@ class LLMGateway:
             cache_read_tokens=cache_read, cache_write_tokens=cache_write, batch=is_batch,
             processing_tier=processing_tier, attempts=attempts,
             usage_estimated=bool(getattr(result, "usage_estimated", False)),
-            receipt=usage_receipt,
+            receipt=usage_receipt, price=price,
         )
         # Per-step usage for callers (the chat meter) without re-deriving either value:
         # the price provenance the ledger row was stamped with, and the latency it holds.
@@ -1165,15 +1175,16 @@ class LLMGateway:
             provider_used = "mock"
             model_used = "mock-embed"
             latency = int((time.perf_counter() - started) * 1000)
+            price = None if self._demo else await self._call_price(model_used)
             cost = (
                 _demo_synthetic_cost(result.tokens, 0)
-                if self._demo
-                else cost_for(model_used, result.tokens, 0,
-                              await self._effective_price_tuple(model_used))
+                if price is None
+                else cost_for(model_used, result.tokens, 0, price[0])
             )
             await self._record(embed_role, surface, case_id, model_used,
                                result.tokens, 0, latency, UsageOutcome.OK, cost,
-                               failure_class=fallback_reason, receipt=usage_receipt)
+                               failure_class=fallback_reason, receipt=usage_receipt,
+                               price=price)
             return EmbeddingBatch(
                 vectors=result.vectors,
                 provider=provider_used,
@@ -1223,6 +1234,7 @@ class LLMGateway:
             model_used = "mock-embed"
             fallback = True
         latency = int((time.perf_counter() - started) * 1000)
+        price = None
         if self._demo:
             # $0 mock run — embeddings are input-only, so the synthetic cost mirrors
             # complete()'s demo branch (and _record's demo fallback) so a demo embed
@@ -1230,12 +1242,13 @@ class LLMGateway:
             # of carrying the real $0.02/1M table rate.
             cost = _demo_synthetic_cost(result.tokens, 0)
         else:
-            cost = cost_for(model_used, result.tokens, 0,
-                            await self._effective_price_tuple(model_used))
+            price = await self._call_price(model_used)
+            cost = cost_for(model_used, result.tokens, 0, price[0])
         await self._record(embed_role, surface, case_id, model_used,
                            result.tokens, 0, latency, UsageOutcome.OK, cost,
                            failure_class=fallback_reason,
-                           attempts=last_attempt_count(), receipt=usage_receipt)
+                           attempts=last_attempt_count(), receipt=usage_receipt,
+                           price=price)
         return EmbeddingBatch(
             vectors=result.vectors,
             provider=provider_used,
@@ -1290,17 +1303,28 @@ class LLMGateway:
         model meters a real $0 even if its overlay row was lost — and it never changes a
         non-custom model's price (an unregistered model returns exactly what
         ``_overlay_tuple`` returned). Best-effort: a store glitch degrades to None."""
+        return (await self._call_price(model))[0]
+
+    async def _call_price(self, model: str) -> tuple[tuple[float, float] | None, str]:
+        """The price tuple :meth:`_effective_price_tuple` returns for ``model`` and
+        where it came from, the ledger row's ``price_basis`` (Round 16 SPEC §4.5 WP13):
+        ``overlay`` (an operator PriceOverlay row), ``custom`` (a registered
+        self-hosted / LiteLLM model, ``(0.0, 0.0)``), ``mock`` (the free mock provider,
+        which ``cost_for`` prices at ``0.0`` whatever the tuple) or ``catalog`` (no tuple:
+        the bundled table, registry or heuristic). One lookup, so a call's cost and its
+        recorded rates always come from the same answer. Demo Mode is the caller's
+        branch (``demo_simulated``), never resolved here."""
         tup = await self._overlay_tuple(model)
-        if tup is not None:
-            return tup
-        if self._custom_models is None:
-            return None
-        try:
-            if await self._custom_models.get_model(model):
-                return (0.0, 0.0)
-        except Exception as exc:  # noqa: BLE001 — custom-model store is advisory to the ledger
-            logger.warning("custom-model price lookup failed (%s); using built-in rate", exc)
-        return None
+        basis = "overlay" if tup is not None else "catalog"
+        if tup is None and self._custom_models is not None:
+            try:
+                if await self._custom_models.get_model(model):
+                    tup, basis = (0.0, 0.0), "custom"
+            except Exception as exc:  # noqa: BLE001 (the custom-model store is advisory to the ledger)
+                logger.warning("custom-model price lookup failed (%s); using built-in rate", exc)
+        if model.startswith("mock"):
+            basis = "mock"
+        return tup, basis
 
     async def _budget_preflight(self, role: str, messages: list[dict[str, str]],
                                 model_cfg: ModelConfig, *, surface: str = "") -> None:
@@ -1365,6 +1389,7 @@ class LLMGateway:
         attempts: int = 1,
         usage_estimated: bool = False,
         receipt: UsageReceipt | None = None,
+        price: tuple[tuple[float, float] | None, str] | None = None,
     ) -> str:
         """Write the ONE UsageDoc for a call and return its ``pricing_source``.
 
@@ -1372,7 +1397,15 @@ class LLMGateway:
         (chars/4) rather than read from provider usage; it is persisted once the
         ledger contract carries the column (see :data:`_USAGE_DOC_HAS_ESTIMATED`).
         ``receipt`` (the caller's :class:`UsageReceipt`) absorbs the finished row just
-        before the store write, so the caller's figures are the ledger's figures."""
+        before the store write, so the caller's figures are the ledger's figures.
+
+        Round 16 (SPEC §3.4, §4.5 WP13): the row also carries the inputs of its price,
+        the four undiscounted per-million rates, the cache-write TTL and the
+        ``price_basis`` (``llm.pricing.rates_for`` over the same price answer the cost
+        was computed from: ``price`` when the caller already resolved it with
+        :meth:`_call_price`, else resolved here once). A Demo row records the synthetic
+        rates ``_demo_synthetic_cost`` charges (no cache rate) as ``demo_simulated``.
+        Still exactly one row per call (#6)."""
         total = prompt_tokens + completion_tokens
         # Demo Mode: a $0 mock run — pricing_source is ALWAYS 'zero' (the cost is
         # synthetic, not a verified rate), so the cost page can badge it "simulated".
@@ -1380,21 +1413,24 @@ class LLMGateway:
         # verified, operator-supplied contract price) — it overrides the table source.
         if self._demo:
             price_src = "zero"
-        elif await self._effective_price_tuple(model) is not None:
-            # An operator overlay OR a registered self-hosted / LiteLLM model — either
-            # is a verified, operator-supplied rate (a local model's real $0).
-            price_src = "exact"
+            rates = CallRates(_DEMO_IN_RATE * 1_000_000.0, _DEMO_OUT_RATE * 1_000_000.0,
+                              0.0, 0.0, DEFAULT_CACHE_WRITE_TTL)
+            price_basis = "demo_simulated"
+            if cost is None:
+                cost = _demo_synthetic_cost(prompt_tokens, completion_tokens)
         else:
-            price_src = pricing_source(model)
-        if cost is None:
-            cost = (
-                _demo_synthetic_cost(prompt_tokens, completion_tokens)
-                if self._demo
-                else cost_for(model, prompt_tokens, completion_tokens,
-                              await self._effective_price_tuple(model),
-                              cache_read_tokens=cache_read_tokens,
-                              cache_write_tokens=cache_write_tokens, batch=batch)
-            )
+            overlay, price_basis = price if price is not None else await self._call_price(model)
+            if overlay is not None:
+                # An operator overlay OR a registered self-hosted / LiteLLM model:
+                # either is a verified, operator-supplied rate (a local model's real $0).
+                price_src = "exact"
+            else:
+                price_src = pricing_source(model)
+            if cost is None:
+                cost = cost_for(model, prompt_tokens, completion_tokens, overlay,
+                                cache_read_tokens=cache_read_tokens,
+                                cache_write_tokens=cache_write_tokens, batch=batch)
+            rates = rates_for(model, overlay, cache_write_ttl=DEFAULT_CACHE_WRITE_TTL)
         optional: dict[str, Any] = {}
         if _USAGE_DOC_HAS_ESTIMATED:
             optional["usage_estimated"] = bool(usage_estimated)
@@ -1422,6 +1458,12 @@ class LLMGateway:
             # defaulted, so #6 still holds — one row per call, just a wider row.
             failure_class=str(failure_class or ""),
             attempts=max(1, int(attempts or 1)),
+            input_rate_per_million=rates.input_per_million,
+            output_rate_per_million=rates.output_per_million,
+            cache_read_rate_per_million=rates.cache_read_per_million,
+            cache_write_rate_per_million=rates.cache_write_per_million,
+            cache_write_ttl=rates.cache_write_ttl,
+            price_basis=price_basis,
         )
         if receipt is not None:
             # No await between building the row and this: the receipt can never miss a

@@ -2268,6 +2268,79 @@
         "title": "CaseComment",
         "type": "object"
       },
+      "CaseEventsPage": {
+        "description": "``GET /api/cases/{case_id}/events`` (Round 16 SPEC §4.5 WP13, [dv] R2).\n\nThe raw records behind a case, read on demand through the read-only log client (#1)\nand kept only when their source-qualified key is one of the case's\n``member_event_keys``. ``available`` is false with a ``reason`` when the source could\nnot answer; ``expected`` is the case's member count, ``returned`` the rows on this\npage and ``truncated`` true when more remain (``next_cursor``). Each row is the\n``/api/logs`` row contract (``engine/log_rows.log_row``: ``id``, ``ts``,\n``source_ip``, ``user``, ``host``, ``rule``, ``severity``, ``message``, ``_raw``)\nplus ``index``, ``source_id`` and ``in_evidence`` (the finding indexes that cite\nit). Every value is source-controlled UNTRUSTED data: a reader renders it as text,\nnever as markup (#9), and it is never sent to a model (#7).",
+        "properties": {
+          "available": {
+            "default": false,
+            "title": "Available",
+            "type": "boolean"
+          },
+          "case_id": {
+            "title": "Case Id",
+            "type": "string"
+          },
+          "expected": {
+            "default": 0,
+            "title": "Expected",
+            "type": "integer"
+          },
+          "limit": {
+            "default": 50,
+            "title": "Limit",
+            "type": "integer"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "enum": [
+                  "aged_out",
+                  "push_source_not_retrievable",
+                  "source_unavailable"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "returned": {
+            "default": 0,
+            "title": "Returned",
+            "type": "integer"
+          },
+          "rows": {
+            "items": {
+              "type": "object"
+            },
+            "title": "Rows",
+            "type": "array"
+          },
+          "truncated": {
+            "default": false,
+            "title": "Truncated",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "case_id"
+        ],
+        "title": "CaseEventsPage",
+        "type": "object"
+      },
       "CaseFileDeleteResult": {
         "properties": {
           "deleted": {
@@ -2814,6 +2887,95 @@
           }
         },
         "title": "CaseTask",
+        "type": "object"
+      },
+      "CaseUsagePage": {
+        "description": "``GET /api/cases/{case_id}/usage`` (Round 16 SPEC §4.5 WP13, [dv] R3 and R14).\n\n``rows``: the case's ledger rows, newest first, at most :data:`CASE_USAGE_MAX_ROWS`.\n``rows_total`` is the exact count when the store could prove it (else ``None``) and\n``truncated`` is true when rows exist beyond ``rows``. ``totals`` are lifetime sums\nover every row of the case, not only the returned page; ``token_cost`` is the case's\nrecorded investigation cost and ``reconciles`` says whether ``totals.pipeline``\nequals it within the display epsilon. Served only with ``cost:view``.",
+        "properties": {
+          "case_id": {
+            "title": "Case Id",
+            "type": "string"
+          },
+          "reconciles": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reconciles"
+          },
+          "returned": {
+            "default": 0,
+            "title": "Returned",
+            "type": "integer"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/UsageDoc"
+            },
+            "title": "Rows",
+            "type": "array"
+          },
+          "rows_total": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rows Total"
+          },
+          "token_cost": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Token Cost"
+          },
+          "totals": {
+            "$ref": "#/components/schemas/CaseUsageTotals"
+          },
+          "truncated": {
+            "default": false,
+            "title": "Truncated",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "case_id"
+        ],
+        "title": "CaseUsagePage",
+        "type": "object"
+      },
+      "CaseUsageTotals": {
+        "description": "A case's ledger spend in USD, split as the Console shows it: ``pipeline`` (the\ninvestigation roles, ``constants.CASE_PIPELINE_USAGE_ROLES``, the figure\n``Case.token_cost`` records) and ``chat`` (case chat on this case, never part of the\ninvestigation cost); ``other`` holds anything else written with the case id.",
+        "properties": {
+          "chat": {
+            "default": 0.0,
+            "title": "Chat",
+            "type": "number"
+          },
+          "other": {
+            "default": 0.0,
+            "title": "Other",
+            "type": "number"
+          },
+          "pipeline": {
+            "default": 0.0,
+            "title": "Pipeline",
+            "type": "number"
+          }
+        },
+        "title": "CaseUsageTotals",
         "type": "object"
       },
       "ChangePasswordBody": {
@@ -17869,6 +18031,219 @@
         "title": "UpdateStatus",
         "type": "object"
       },
+      "UsageDoc": {
+        "properties": {
+          "app_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "App Version"
+          },
+          "attempts": {
+            "default": 1,
+            "title": "Attempts",
+            "type": "integer"
+          },
+          "batch": {
+            "default": false,
+            "title": "Batch",
+            "type": "boolean"
+          },
+          "build_sha": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Build Sha"
+          },
+          "cache_read_rate_per_million": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cache Read Rate Per Million"
+          },
+          "cache_read_tokens": {
+            "default": 0,
+            "title": "Cache Read Tokens",
+            "type": "integer"
+          },
+          "cache_write_rate_per_million": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cache Write Rate Per Million"
+          },
+          "cache_write_tokens": {
+            "default": 0,
+            "title": "Cache Write Tokens",
+            "type": "integer"
+          },
+          "cache_write_ttl": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cache Write Ttl"
+          },
+          "case_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Case Id"
+          },
+          "completion_tokens": {
+            "default": 0,
+            "title": "Completion Tokens",
+            "type": "integer"
+          },
+          "cost": {
+            "default": 0.0,
+            "title": "Cost",
+            "type": "number"
+          },
+          "currency": {
+            "default": "USD",
+            "title": "Currency",
+            "type": "string"
+          },
+          "failure_class": {
+            "default": "",
+            "title": "Failure Class",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          },
+          "input_rate_per_million": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Input Rate Per Million"
+          },
+          "latency_ms": {
+            "default": 0,
+            "title": "Latency Ms",
+            "type": "integer"
+          },
+          "model": {
+            "default": "",
+            "title": "Model",
+            "type": "string"
+          },
+          "outcome": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/UsageOutcome"
+              }
+            ],
+            "default": "ok"
+          },
+          "output_rate_per_million": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Output Rate Per Million"
+          },
+          "price_basis": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Price Basis"
+          },
+          "pricing_source": {
+            "default": "exact",
+            "title": "Pricing Source",
+            "type": "string"
+          },
+          "processing_tier": {
+            "default": "standard",
+            "title": "Processing Tier",
+            "type": "string"
+          },
+          "prompt_tokens": {
+            "default": 0,
+            "title": "Prompt Tokens",
+            "type": "integer"
+          },
+          "role": {
+            "default": "",
+            "title": "Role",
+            "type": "string"
+          },
+          "surface": {
+            "default": "",
+            "title": "Surface",
+            "type": "string"
+          },
+          "total_tokens": {
+            "default": 0,
+            "title": "Total Tokens",
+            "type": "integer"
+          },
+          "ts": {
+            "title": "Ts",
+            "type": "string"
+          },
+          "usage_estimated": {
+            "default": false,
+            "title": "Usage Estimated",
+            "type": "boolean"
+          }
+        },
+        "title": "UsageDoc",
+        "type": "object"
+      },
       "UsageEvent": {
         "additionalProperties": false,
         "description": "Running totals after a model call (the meter ticks on every one).",
@@ -17887,6 +18262,15 @@
         ],
         "title": "UsageEvent",
         "type": "object"
+      },
+      "UsageOutcome": {
+        "enum": [
+          "ok",
+          "error",
+          "capped"
+        ],
+        "title": "UsageOutcome",
+        "type": "string"
       },
       "UserCreateBody": {
         "properties": {
@@ -21724,6 +22108,79 @@
         "summary": "Case Comment"
       }
     },
+    "/api/cases/{case_id}/events": {
+      "get": {
+        "description": "The raw events behind a case, read again from its source (see the module\ndocstring). 404 for an unknown case; 400 for a cursor this route never returned.",
+        "operationId": "case_events_api_cases__case_id__events_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "case_id",
+            "required": true,
+            "schema": {
+              "title": "Case Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Member events per page, 1 to 200.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "description": "Member events per page, 1 to 200.",
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "The previous page's next_cursor.",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 9,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The previous page's next_cursor.",
+              "title": "Cursor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CaseEventsPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Case Events"
+      }
+    },
     "/api/cases/{case_id}/export": {
       "get": {
         "description": "Export a case for handoff/ticketing as JSON or a Markdown report. Returns\n``{filename, content_type, content}`` so the UI can trigger a download. The JSON\nleaves ``token_cost`` out (``null``) for a caller without ``cost:view``; the\nMarkdown report carries no spend.",
@@ -23790,6 +24247,46 @@
           }
         },
         "summary": "Case Triage"
+      }
+    },
+    "/api/cases/{case_id}/usage": {
+      "get": {
+        "description": "The case's ledger rows and its spend split (see the module docstring). 404 for an\nunknown case; 503 ``case_usage_unavailable`` when the ledger cannot be read (never a\nfalse \"no spend\"); 501 ``case_usage_unsupported`` for a ledger that has no per-case\nread.",
+        "operationId": "case_usage_api_cases__case_id__usage_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "case_id",
+            "required": true,
+            "schema": {
+              "title": "Case Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CaseUsagePage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Case Usage"
       }
     },
     "/api/chat": {
