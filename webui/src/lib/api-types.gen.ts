@@ -3922,6 +3922,42 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/metrics/explain": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Metrics Explain
+         * @description The cases behind one dashboard figure, so a reader can cross-check it (Round 16
+         *     WP12; research explainability D-API-4).
+         *
+         *     ``metric`` is ``mtta``, ``mttr``, ``dwell`` or ``mttd`` (the posture lifecycle
+         *     median for ``window_hours``), ``active_risk_index`` (the ``GET /api/metrics`` index,
+         *     all time, ``window_hours`` ignored), ``fp_rate`` (the posture AI-verdict false
+         *     positive rate) or ``sla_attainment`` (the posture SLA attainment). The figure is
+         *     computed from the SAME population (``fetch_case_population``) and the SAME code as
+         *     the figure it explains (``engine.metrics.explain_metric``), so its value equals
+         *     the posture value for the same window. Up to 200 case rows; ``sample_count`` is how
+         *     many cases the figure counts (for a timing, the stat block's ``count``).
+         *
+         *     Needs ``metrics:view``; the case rows also need ``cases:read`` (without it they are
+         *     withheld and ``samples_withheld`` says why), and with row-level data scope on each
+         *     row is checked with ``can_object`` (``hidden_by_scope`` counts the rows left out;
+         *     they still count in the figure). Ids, enums and our own numbers only (#7). An
+         *     unreadable store is a 503, never a figure of zero. Advisory (#3).
+         */
+        get: operations["metrics_explain_api_metrics_explain_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/metrics/noise-reduction": {
         parameters: {
             query?: never;
@@ -22276,6 +22312,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["MetricsBreakdown"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    metrics_explain_api_metrics_explain_get: {
+        parameters: {
+            query: {
+                /** @description One of mtta, mttr, dwell, mttd, active_risk_index, fp_rate, sla_attainment. */
+                metric: string;
+                window_hours?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
                 };
             };
             /** @description Validation Error */

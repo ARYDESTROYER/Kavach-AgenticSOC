@@ -190,9 +190,10 @@ def test_posture_exposes_real_mttd() -> None:
         }
     )
     intervals = M.lifecycle_intervals([detected])
-    # The lifecycle rollup now carries all FOUR interval keys.
+    # The lifecycle rollup now carries all FOUR interval keys, plus (Round 16 WP12)
+    # the additive MTTR split by decider.
     assert set(intervals.keys()) == {
-        "mtta_minutes", "mttr_minutes", "dwell_minutes", "mttd_minutes",
+        "mtta_minutes", "mttr_minutes", "dwell_minutes", "mttd_minutes", "mttr_by_decider",
     }
     # Real detection latency: 30 minutes.
     assert intervals["mttd_minutes"]["available"] is True

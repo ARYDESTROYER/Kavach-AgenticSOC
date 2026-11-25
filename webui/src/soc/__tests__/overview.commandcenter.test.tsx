@@ -40,7 +40,7 @@ vi.mock('@/lib/api', () => ({
   },
 }));
 
-import Overview, { PAGE_TITLE } from '../pages/Overview';
+import Overview, { METRICS_LIVE_MIN_MS, PAGE_TITLE } from '../pages/Overview';
 import type { PostureResponse } from '../pages/Metrics.posture.api';
 import type { Case, Metrics, NoiseReduction } from '@/lib/types';
 
@@ -589,5 +589,100 @@ describe('Overview — Cyber Defence Center', () => {
       expect(within(screen.getByTestId('kpi-llm-spend-detail')).queryByText('Unavailable')).toBeNull(),
     );
     expect(within(screen.getByTestId('kpi-llm-spend-detail')).getByText('$1.25')).toBeInTheDocument();
+  });
+
+  /*
+   * Round 16 (WP12, backend roadmap R2 layer 3): `GET /api/metrics` reads the all-time
+   * population, which the server keeps for 60 s, so a LIVE tick re-reads it at most once
+   * per 30 s. The cases and the rest of the page still refresh on every tick.
+   */
+  it('re-reads the all-time metrics at most once per 30 s on LIVE ticks', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    let now = Date.parse('2026-07-01T08:00:00Z');
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    try {
+      render(<Overview onNavigate={vi.fn()} />);
+      await screen.findByTestId('noise-funnel');
+      await waitFor(() => expect(getMetricsMock).toHaveBeenCalledTimes(1));
+      expect(METRICS_LIVE_MIN_MS).toBe(30_000);
+
+      const cases = listCasesMock.mock.calls.length;
+      now += 5_000;
+      await act(async () => {
+        vi.advanceTimersByTime(5_000);
+      });
+      await waitFor(() => expect(listCasesMock.mock.calls.length).toBeGreaterThan(cases));
+      expect(getMetricsMock).toHaveBeenCalledTimes(1);
+
+      now += 30_000;
+      await act(async () => {
+        vi.advanceTimersByTime(5_000);
+      });
+      await waitFor(() => expect(getMetricsMock).toHaveBeenCalledTimes(2));
+    } finally {
+      clock.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it('reads the metrics on a pressed refresh even inside the LIVE cadence', async () => {
+    const user = userEvent.setup();
+    render(<Overview onNavigate={vi.fn()} />);
+    await screen.findByTestId('noise-funnel');
+    await waitFor(() => expect(getMetricsMock).toHaveBeenCalledTimes(1));
+    const refresh = screen.getByRole('button', { name: 'Refresh dashboard' });
+    await waitFor(() => expect(refresh).toBeEnabled());
+    await user.click(refresh);
+    await waitFor(() => expect(getMetricsMock).toHaveBeenCalledTimes(2));
+  });
+
+  /*
+   * Round 16 (WP12): each strip tile explains its numeral. The hover card prints the
+   * arithmetic with the real counts; the drill-down opens the formula, the numerator,
+   * the denominator and the window.
+   */
+  it('explains a share tile: the hover arithmetic and the drill-down calculation', async () => {
+    const user = userEvent.setup();
+    render(<Overview onNavigate={vi.fn()} />);
+    await screen.findByTestId('noise-funnel');
+    const tile = await screen.findByTestId('kpi-false-positive-rate');
+    await user.hover(tile);
+    const card = await screen.findByTestId('metric-trend-card');
+    expect(within(card).getByTestId('metric-trend-formula')).toHaveTextContent(
+      '1 false positive verdicts of 2 verdicted cases = 50%, the last 24 hours.',
+    );
+    await user.unhover(tile);
+
+    await user.click(tile);
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByTestId('kpi-drilldown-formula')).toHaveTextContent(
+      '1 false positive verdicts of 2 verdicted cases = 50%, the last 24 hours.',
+    );
+    await user.click(within(dialog).getByRole('button', { name: 'Show the calculation' }));
+    const panel = within(dialog).getByTestId('explain-panel');
+    expect(within(panel).getByTestId('explain-inputs')).toHaveTextContent('False positive verdicts1');
+    expect(within(panel).getByTestId('explain-inputs')).toHaveTextContent('Verdicted cases2');
+    expect(within(panel).getByTestId('explain-inputs')).toHaveTextContent('Windowthe last 24 hours');
+    expect(within(panel).getByTestId('explain-steps')).toHaveTextContent('1 / 2');
+  });
+
+  it('gives a tile with no trend series a hover card with its arithmetic', async () => {
+    const user = userEvent.setup();
+    fetchPostureMock.mockResolvedValue({
+      ...POSTURE,
+      open_now: { count: 2, window_exempt: true, as_of: '2026-07-01T08:00:00Z', complete: true, reason: '' },
+    });
+    render(<Overview onNavigate={vi.fn()} />);
+    await screen.findByTestId('noise-funnel');
+    const tile = await screen.findByTestId('kpi-open-cases');
+    // A preview, not a trend affordance: its own trigger and card.
+    expect(tile.closest('[data-testid="metric-preview-trigger"]')).not.toBeNull();
+    expect(tile.closest('[data-testid="metric-trend-trigger"]')).toBeNull();
+    await user.hover(tile);
+    const card = await screen.findByTestId('metric-preview-card');
+    expect(within(card).getByTestId('metric-trend-formula')).toHaveTextContent('2 cases are open now, whenever they arrived.');
+    // No borrowed series: the card holds no trend body for a stock.
+    expect(within(card).queryByText('No trend data yet.')).toBeNull();
+    expect(screen.queryByTestId('metric-trend-card')).toBeNull();
   });
 });

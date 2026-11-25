@@ -28087,6 +28087,60 @@
         "summary": "Metrics Breakdown"
       }
     },
+    "/api/metrics/explain": {
+      "get": {
+        "description": "The cases behind one dashboard figure, so a reader can cross-check it (Round 16\nWP12; research explainability D-API-4).\n\n``metric`` is ``mtta``, ``mttr``, ``dwell`` or ``mttd`` (the posture lifecycle\nmedian for ``window_hours``), ``active_risk_index`` (the ``GET /api/metrics`` index,\nall time, ``window_hours`` ignored), ``fp_rate`` (the posture AI-verdict false\npositive rate) or ``sla_attainment`` (the posture SLA attainment). The figure is\ncomputed from the SAME population (``fetch_case_population``) and the SAME code as\nthe figure it explains (``engine.metrics.explain_metric``), so its value equals\nthe posture value for the same window. Up to 200 case rows; ``sample_count`` is how\nmany cases the figure counts (for a timing, the stat block's ``count``).\n\nNeeds ``metrics:view``; the case rows also need ``cases:read`` (without it they are\nwithheld and ``samples_withheld`` says why), and with row-level data scope on each\nrow is checked with ``can_object`` (``hidden_by_scope`` counts the rows left out;\nthey still count in the figure). Ids, enums and our own numbers only (#7). An\nunreadable store is a 503, never a figure of zero. Advisory (#3).",
+        "operationId": "metrics_explain_api_metrics_explain_get",
+        "parameters": [
+          {
+            "description": "One of mtta, mttr, dwell, mttd, active_risk_index, fp_rate, sla_attainment.",
+            "in": "query",
+            "name": "metric",
+            "required": true,
+            "schema": {
+              "description": "One of mtta, mttr, dwell, mttd, active_risk_index, fp_rate, sla_attainment.",
+              "maxLength": 32,
+              "title": "Metric",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "window_hours",
+            "required": false,
+            "schema": {
+              "default": 24,
+              "title": "Window Hours",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Metrics Explain Api Metrics Explain Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Metrics Explain"
+      }
+    },
     "/api/metrics/noise-reduction": {
       "get": {
         "description": "The Noise-Reduction funnel over the last ``window_hours`` (default 24) — \"total\nalerts by severity → what the AI reduced it to\".\n\n``ingested``/``clustered`` come from the DURABLE ``noise_counters`` store (raw-alert-by-\nseverity, so they reflect the TRUE inbound volume even after low-value events are\ndropped at ingest); ``cases`` + the MECE outcomes (needs_human > escalated >\nauto_cleared > true_positive residual) come from a tally over every case in the window\n(``cases_meta.truncated`` is True when the window holds more cases than\n``_STORE_FETCH_LIMIT`` or the read failed partway — the outcome tallies are then a\nlower bound and ``store_total``/``fetched`` say by how much). When the counters are still warming\nup (``counters.available: false``) the ingested/clustered totals are ``null`` and the\nheadline ``reduction.overall_pct`` is a DASH, so the UI degrades to a case-only funnel.\n\n``events_per_min`` (Round 14, SPEC §4.4.3, the detection board's \"Events per minute\")\nis the mean raw alerts per minute over the whole hours the counters summed\n(:func:`_events_per_min`), rounded to 0.01. When the counters began inside the\nwindow (``counters.incomplete``, a fresh install, a Demo) the hour they began in is\nleft out, because it can hold a backfilled burst (a cold-start lookback, the Demo's\nhistory written at once): the rate then covers the hours after it. ``null`` while\n``counters.available`` is false or less than five minutes are measured, never a\nmade-up 0 and never a burst read as a rate. ``events_per_min_since`` is the ISO\nstart of the span the rate covers (``null`` with no rate) and\n``events_per_min_reason`` a plain sentence saying why the rate is not measured or,\nwhen the counters began inside the window, that it covers only the time since the\nend of the hour they began in (``null`` when the rate covers the whole window).\n\nDETERMINISTIC + advisory: nothing here is read by ``case_manager.decide()`` (#3); every\nband name is plain framework data the UI renders escaped.",

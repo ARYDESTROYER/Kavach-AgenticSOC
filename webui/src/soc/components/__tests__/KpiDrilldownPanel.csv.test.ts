@@ -30,7 +30,8 @@ const fixture = JSON.parse(
 
 const textCases = fixture.cases.filter((c): c is FixtureCase & { value: string } => typeof c.value === 'string');
 
-const HEADER = '"case_id","case_number","created_at","title","detection_source","severity_band","risk_score","status","assignee"';
+const HEADER =
+  '"case_id","case_number","created_at","title","source_name","detection_source","severity_band","risk_score","status","assignee"';
 
 /** Split one CSV record into fields, honouring RFC-4180 quotes (a field may hold CR/LF). */
 function fields(record: string): string[] {
@@ -62,7 +63,8 @@ const row = (overrides: Partial<Case>): Case =>
     case_number: 'SOC-1',
     created_at: '2026-10-25T15:09:15Z',
     title: 'Brute force on vpn-gw-2',
-    detection_source: 'Wazuh',
+    source_name: 'Wazuh manager',
+    detection_source: 'rule',
     severity_band: 'high',
     risk_score: 73,
     status: 'open',
@@ -79,7 +81,8 @@ describe('drilldownCsv uses the shared spreadsheet encoder', () => {
       '"SOC-1"',
       '"2026-10-25T15:09:15Z"',
       '"Brute force on vpn-gw-2"',
-      '"Wazuh"',
+      '"Wazuh manager"',
+      '"rule"',
       '"high"',
       '73',
       '"open"',
@@ -91,7 +94,7 @@ describe('drilldownCsv uses the shared spreadsheet encoder', () => {
   it.each(textCases.map((c) => [c.note, c] as const))('assignee %s', (_note, c) => {
     const csv = drilldownCsv([row({ assignee: c.value })]);
     const record = csv.slice(HEADER.length + 2, -2);
-    expect(fields(record)[8]).toBe(c.csv);
+    expect(fields(record)[9]).toBe(c.csv);
   });
 
   it('defuses the leads its old encoder let through', () => {
@@ -105,7 +108,7 @@ describe('drilldownCsv uses the shared spreadsheet encoder', () => {
       [' \tcmd', '"\' \tcmd"'],
     ] as const) {
       const record = drilldownCsv([row({ detection_source: value })]).slice(HEADER.length + 2, -2);
-      expect(fields(record)[4], JSON.stringify(value)).toBe(expected);
+      expect(fields(record)[5], JSON.stringify(value)).toBe(expected);
     }
   });
 
@@ -119,6 +122,18 @@ describe('drilldownCsv uses the shared spreadsheet encoder', () => {
 
   it('leaves an absent risk score empty instead of writing a number', () => {
     const record = drilldownCsv([row({ risk_score: undefined })]).slice(HEADER.length + 2, -2);
-    expect(fields(record)[6]).toBe('""');
+    expect(fields(record)[7]).toBe('""');
+  });
+
+  // Round 16 B29: an alert-sourced case has no detection_source, only its source; the
+  // CSV's source column names it (source_name, else source_id) instead of staying empty.
+  it('names the source of an alert-sourced case, falling back to its source id', () => {
+    const named = drilldownCsv([row({ detection_source: null, source_name: 'Splunk Enterprise Security (HEC)' })]);
+    expect(fields(named.slice(HEADER.length + 2, -2)).slice(4, 6)).toEqual(['"Splunk Enterprise Security (HEC)"', '""']);
+    const byId = drilldownCsv([row({ detection_source: null, source_name: null, source_id: 'splunk-hec' })]);
+    expect(fields(byId.slice(HEADER.length + 2, -2))[4]).toBe('"splunk-hec"');
+    // A source name is operator text: a formula lead is defused like every text cell.
+    const formula = drilldownCsv([row({ source_name: '=1+1' })]);
+    expect(fields(formula.slice(HEADER.length + 2, -2))[4]).toBe('"\'=1+1"');
   });
 });

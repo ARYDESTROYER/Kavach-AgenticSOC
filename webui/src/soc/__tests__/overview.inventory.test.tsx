@@ -87,19 +87,19 @@ const iso = (minsAgo: number) => new Date(NOW - minsAgo * 60_000).toISOString();
 const CASES: Case[] = [
   {
     case_id: 'c-open', case_number: 'CASE-1001', status: 'open', risk_score: 88,
-    severity_band: 'critical', title: 'Impossible travel', detection_source: 'rule',
+    severity_band: 'critical', title: 'Impossible travel', detection_source: 'rule', source_name: 'Edge firewall',
     created_at: iso(30), updated_at: iso(5), entity: { type: 'ip', value: '10.0.0.1' },
   },
   {
     case_id: 'c-human', case_number: 'CASE-1002', status: 'needs_human', risk_score: 65,
-    severity_band: 'high', title: 'Brute force', detection_source: 'rule',
+    severity_band: 'high', title: 'Brute force', detection_source: 'rule', source_name: 'Edge firewall',
     created_at: iso(40), updated_at: iso(10), entity: { type: 'host', value: 'web-01' },
   },
   {
     // The AI called it a false positive and an analyst CLASSIFIED it so: the queue row
     // states the outcome of record, and the FP drill-down lists it.
     case_id: 'c-fp', case_number: 'CASE-1003', status: 'closed', risk_score: 20,
-    severity_band: 'low', title: 'Benign admin login', detection_source: 'anomaly',
+    severity_band: 'low', title: 'Benign admin login', detection_source: 'anomaly', source_name: 'Directory audit',
     verdict: 'FALSE_POSITIVE', decision_by: 'analyst', disposition: 'false_positive',
     history: [{ event: 'analyst_action', action: 'set_disposition', classified_disposition: 'false_positive', analyst: 'alice', ts: iso(15) }],
     created_at: iso(50), updated_at: iso(15), entity: { type: 'user', value: 'alice' },
@@ -323,6 +323,11 @@ describe('Overview — Round 12 data inventory (every datum survives the redesig
     expect(trended('kpi-resolved-closed')).toBe(true);
     expect(trended('kpi-total-critical')).toBe(false);
     expect(trended('kpi-open-cases')).toBe(false);
+    // Round 16 (WP12): those two still hover for their arithmetic, as a preview card.
+    const previewed = (id: string) =>
+      screen.getByTestId(id).closest('[data-testid="metric-preview-trigger"]') !== null;
+    expect(previewed('kpi-total-critical')).toBe(true);
+    expect(previewed('kpi-open-cases')).toBe(true);
   });
 
   it('Flow row: title, window, flow controls, every stage, open-cases action, annotations', async () => {
@@ -474,7 +479,14 @@ describe('Overview — Round 12 data inventory (every datum survives the redesig
     expect(within(timing).getByText('9m')).toBeInTheDocument();
     expect(within(timing).getByText('45m')).toBeInTheDocument();
     expect(within(timing).getByText('Detect · log arrival → case')).toBeInTheDocument();
-    expect(within(timing).getByText(/First human action, e\.g\. assignment or acknowledgement/)).toBeInTheDocument();
+    // B66: the Respond line names what stops the clock; assignment alone does not.
+    expect(
+      within(timing).getByText('First human acknowledgement, or a move to investigating, escalated or on hold · same clock as MTTA'),
+    ).toBeInTheDocument();
+    expect(within(timing).queryByText(/assignment or acknowledgement/)).toBeNull();
+    expect(within(timing).getByTitle(/^Median \(p50\) time to detect:/)).toBeInTheDocument();
+    expect(within(timing).getByTitle(/^Median \(p50\) time to respond: .*Assigning a case alone does not stop this clock\.$/)).toBeInTheDocument();
+    expect(within(timing).queryByTitle(/^Mean time/)).toBeNull();
     expect(within(timing).getByText('p50 · 3 samples · p90 30m')).toBeInTheDocument();
     expect(within(timing).getByText('p50 · 2 samples · p90 2h')).toBeInTheDocument();
     expect(within(timing).getByRole('button', { name: 'Detail →' })).toBeInTheDocument();
@@ -488,7 +500,9 @@ describe('Overview — Round 12 data inventory (every datum survives the redesig
     expect(rows).toHaveLength(3);
     const fpRow = within(queue).getByRole('button', { name: /Open case Benign admin login \(CASE-1003\)/ });
     expect(within(fpRow).getByText('CASE-1003')).toBeInTheDocument();
-    expect(within(fpRow).getByText('Resolved')).toBeInTheDocument();
+    // B67: CASE-1003 is closed, and the Overview says Closed like the queue does.
+    expect(within(fpRow).getByText('Closed')).toBeInTheDocument();
+    expect(within(fpRow).queryByText('Resolved')).toBeNull();
     expect(within(fpRow).getByTestId('latest-case-outcome')).toHaveTextContent('False positive');
     // The 160px id cap is gone: the id truncates only against the real space.
     expect(within(fpRow).getByText('CASE-1003')).not.toHaveClass('max-w-40');
@@ -972,7 +986,7 @@ describe('Overview — Round 12 review: layout and keyboard contracts', () => {
     const fpRow = within(queue).getByRole('button', { name: /Open case Benign admin login \(CASE-1003\)/ });
     const outcome = within(fpRow).getByTestId('latest-case-outcome');
     const id = within(fpRow).getByText('CASE-1003');
-    expect(outcome.parentElement).toContainElement(within(fpRow).getByText('Resolved'));
+    expect(outcome.parentElement).toContainElement(within(fpRow).getByText('Closed'));
     expect(id.parentElement).not.toContainElement(outcome);
   });
 

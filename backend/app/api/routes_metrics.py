@@ -46,9 +46,11 @@ from ..constants import ActionType
 from ..engine.agent_improvement import agent_improvement_metrics
 from ..engine.clustering_explain import build_case_lineage
 from ..engine.metrics import (
+    EXPLAIN_METRICS,
     _window_filter,
     auto_close_health,
     compute_metrics,
+    explain_metric,
     posture_metrics,
     recorded_auto_close_health,
     trend_metrics,
@@ -154,6 +156,20 @@ async def _load_cases_ok(state: AppState) -> tuple[list, int, bool]:
     return population.cases, population.scope_total, population.load_ok
 
 
+def _stamp_read_time(payload: dict[str, Any], population: CasePopulation) -> dict[str, Any]:
+    """Stamp an ALL-TIME payload with when its cases were read (Round 16, WP06 and
+    WP12). The all-time population lives 60 s and can then be served stale while one
+    background read replaces it, so ``generated_at`` is the read time
+    (``CasePopulation.generated_at``), never the time the route answered, and
+    ``case_population`` (``read_at``, ``age_seconds``, ``stale``) says how old the
+    figures are. A population that read nothing keeps the payload's own stamp."""
+    read_at = population.generated_at
+    if read_at:
+        payload["generated_at"] = read_at
+    payload["case_population"] = population.freshness()
+    return payload
+
+
 async def legacy_metrics_payload(state: AppState, window_hours: int) -> dict[str, Any]:
     """The body of ``GET /api/metrics`` (the Metrics page tiles and the custom-dashboard
     KPI widgets; the route itself lives in the base router).
@@ -191,7 +207,7 @@ async def legacy_metrics_payload(state: AppState, window_hours: int) -> dict[str
         out["cost"] = await state.usage_store.summary(window_hours=max(1, int(window_hours)))
     except Exception:  # noqa: BLE001 — cost is best-effort on the metrics view
         out["cost"] = {}
-    return out
+    return _stamp_read_time(out, population)
 
 
 def _subtract_counter_bands(
@@ -538,7 +554,7 @@ async def metrics_posture(
     span = (wh * 2 if mode == "prev" else wh) if wh > 0 else None
     population = await _population(state, span)
     sla_policy = getattr(state.prefs, "sla", None)
-    return await _rollup(
+    rollup = await _rollup(
         posture_metrics,
         population.cases,
         sla_policy=sla_policy,
@@ -557,6 +573,90 @@ async def metrics_posture(
         read_error=(population.read_error or None) if not population.complete else None,
         newest_first=population.newest_first,
     )
+    # All time reads the shared 60 s population: say when it was read (WP06, WP12).
+    return _stamp_read_time(rollup, population) if span is None else rollup
+
+
+#: Why an explanation lists no case rows for a caller without ``cases:read``.
+EXPLAIN_SAMPLES_WITHHELD = "The cases behind this figure need the cases:read permission."
+
+
+@router.get("/metrics/explain")
+async def metrics_explain(
+    request: Request,
+    metric: str = Query(
+        ..., max_length=32,
+        description="One of " + ", ".join(EXPLAIN_METRICS) + ".",
+    ),
+    window_hours: int = 24,
+    state: AppState = Depends(get_state),
+    _=Depends(require_permission("metrics", "view")),
+) -> dict[str, Any]:
+    """The cases behind one dashboard figure, so a reader can cross-check it (Round 16
+    WP12; research explainability D-API-4).
+
+    ``metric`` is ``mtta``, ``mttr``, ``dwell`` or ``mttd`` (the posture lifecycle
+    median for ``window_hours``), ``active_risk_index`` (the ``GET /api/metrics`` index,
+    all time, ``window_hours`` ignored), ``fp_rate`` (the posture AI-verdict false
+    positive rate) or ``sla_attainment`` (the posture SLA attainment). The figure is
+    computed from the SAME population (``fetch_case_population``) and the SAME code as
+    the figure it explains (``engine.metrics.explain_metric``), so its value equals
+    the posture value for the same window. Up to 200 case rows; ``sample_count`` is how
+    many cases the figure counts (for a timing, the stat block's ``count``).
+
+    Needs ``metrics:view``; the case rows also need ``cases:read`` (without it they are
+    withheld and ``samples_withheld`` says why), and with row-level data scope on each
+    row is checked with ``can_object`` (``hidden_by_scope`` counts the rows left out;
+    they still count in the figure). Ids, enums and our own numbers only (#7). An
+    unreadable store is a 503, never a figure of zero. Advisory (#3)."""
+    key = (metric or "").strip().lower()
+    if key not in EXPLAIN_METRICS:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "explain_metric_unknown",
+                    "message": "metric must be one of " + ", ".join(EXPLAIN_METRICS) + "."},
+        )
+    wh = _window(window_hours)
+    span = None if key == "active_risk_index" or wh <= 0 else wh
+    population = await _population(state, span)
+    if not population.load_ok:
+        raise HTTPException(status_code=503, detail="The case store could not be read")
+
+    withheld = ""
+    visible: Callable[[Any], bool] | None = None
+    if not await has_permission(request, "cases", "read"):
+        withheld = EXPLAIN_SAMPLES_WITHHELD
+        visible = lambda _case: False  # noqa: E731 -- no row is shown
+    elif _object_scoped(state, request):
+        from ..rbac.policy import can_object
+        from .deps import current_user
+
+        user = current_user(request)
+        rbac = getattr(getattr(state, "prefs", None), "rbac", None)
+
+        def scoped(case: Any) -> bool:
+            try:
+                return bool(can_object(user, "cases", "read", case, rbac_config=rbac))
+            except Exception:  # noqa: BLE001 -- fail closed for one row
+                return False
+
+        visible = scoped
+
+    out = await _rollup(
+        explain_metric,
+        population.cases,
+        key,
+        window_hours=wh,
+        sla_policy=getattr(state.prefs, "sla", None),
+        prefs=state.prefs,
+        visible=visible,
+    )
+    out["samples_withheld"] = withheld
+    out.update(truncation_marker(population.fetched, population.scope_total))
+    out["case_population"] = population.freshness()
+    if population.generated_at:
+        out["generated_at"] = population.generated_at
+    return out
 
 
 @router.get("/metrics/trends")
@@ -639,13 +739,14 @@ async def metrics_auto_close_health(
     # Decision-time windows plus a "lifetime" tally: a case created long ago can be
     # decided today, so this rollup reads the ALL-TIME population.
     population = await _population(state, None)
-    return await _rollup(
+    health = await _rollup(
         auto_close_health,
         population.cases,
         window_hours=int(window_hours),
         policy=getattr(getattr(state, "prefs", None), "auto_close", None),
         store_total=population.scope_total,
     )
+    return _stamp_read_time(health, population)
 
 
 # How many ``case_manager`` DECISION audit rows the recorded rollup reads. Bounded for
@@ -782,7 +883,7 @@ async def metrics_auto_close_health_recorded(
     population = await _population(state, None)
     decision_audit_rows = await _load_decision_audit(state, window_hours=int(window_hours))
     rag_health = await _rag_health_record(state)
-    return await _rollup(
+    recorded = await _rollup(
         recorded_auto_close_health,
         population.cases,
         window_hours=int(window_hours),
@@ -794,6 +895,7 @@ async def metrics_auto_close_health_recorded(
         provider_health=_provider_health_snapshot(state),
         rag_health=rag_health,
     )
+    return _stamp_read_time(recorded, population)
 
 
 @router.get("/metrics/agent-improvement")
@@ -865,7 +967,7 @@ async def metrics_agent_improvement(
     )
     if not show_cost:
         _withhold_case_cost(report)
-    return report
+    return _stamp_read_time(report, population)
 
 
 #: The reason an agent-improvement cost block gives a caller without ``cost:view``.
@@ -1768,7 +1870,7 @@ async def metrics_noise_reduction(
     payload["events_per_min"] = rate.per_min
     payload["events_per_min_since"] = rate.since
     payload["events_per_min_reason"] = rate.reason
-    return payload
+    return _stamp_read_time(payload, population) if not wh else payload
 
 
 def _ingested_total(payload: dict[str, Any]) -> int | None:
@@ -1910,7 +2012,7 @@ async def metrics_noise_reduction_lineage(
     prefs = state.execution_prefs
     rows = [build_case_lineage(case, prefs) for case in window_cases[:limit]]
     store_truncated = not population.complete
-    return {
+    lineage = {
         "window_hours": wh,
         "generated_at": iso_now(),
         "rows": rows,
@@ -1931,6 +2033,7 @@ async def metrics_noise_reduction_lineage(
             "a case are represented only by the aggregate counters."
         ),
     }
+    return _stamp_read_time(lineage, population) if not wh else lineage
 
 
 @router.get("/mitre/coverage")
@@ -1955,7 +2058,7 @@ async def mitre_coverage(
         cases, store_total=population.scope_total, fetched_count=population.fetched
     )
     out["window_hours"] = wh
-    return out
+    return _stamp_read_time(out, population) if not wh else out
 
 
 @router.get("/mitre/coverage/navigator.layer.json")

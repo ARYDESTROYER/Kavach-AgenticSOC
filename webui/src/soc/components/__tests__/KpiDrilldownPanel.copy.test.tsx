@@ -46,8 +46,9 @@ const THREE_CASES = [1, 2, 3].map((n) => ({
   severity_band: 'high',
   risk_score: 70 + n,
   status: 'open',
-  // A detection source on the rows read is what mounts the source filter, so its
-  // accessible name is checked with the others.
+  // A source on the rows read is what mounts the source filter, so its accessible name
+  // is checked with the others (Round 16 B29: the source is `source_name`).
+  source_name: 'Wazuh manager',
   detection_source: 'rule',
 })) as unknown as Case[];
 
@@ -170,7 +171,7 @@ describe('KpiDrilldownPanel copy', () => {
       'kpi-drilldown-search': 'Filter Total cases',
       'kpi-drilldown-severity': 'Filter Total cases by severity',
       'kpi-drilldown-status': 'Filter Total cases by status',
-      'kpi-drilldown-source': 'Filter Total cases by detection source',
+      'kpi-drilldown-source': 'Filter Total cases by source',
       'kpi-drilldown-sort': 'Sort Total cases',
       'kpi-drilldown-range': 'Time range for Total cases',
       'kpi-drilldown-scroll': 'Total cases, scrollable evidence',
@@ -202,7 +203,7 @@ describe('KpiDrilldownPanel copy', () => {
       'kpi-drilldown-search': 'Filter Awaiting a decision cases',
       'kpi-drilldown-severity': 'Filter Awaiting a decision cases by severity',
       'kpi-drilldown-status': 'Filter Awaiting a decision cases by status',
-      'kpi-drilldown-source': 'Filter Awaiting a decision cases by detection source',
+      'kpi-drilldown-source': 'Filter Awaiting a decision cases by source',
       'kpi-drilldown-sort': 'Sort Awaiting a decision cases',
       'kpi-drilldown-range': 'Time range for Awaiting a decision cases',
       'kpi-drilldown-scroll': 'Awaiting a decision cases, scrollable evidence',
