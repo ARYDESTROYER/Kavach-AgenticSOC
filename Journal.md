@@ -12527,3 +12527,24 @@
 - Tests: on the merged tree, check_version (app 0.2.0, docs 0.2), build_release_notes --check, the docs bundle unit tests, and the release guard, build identity and knowledge tests: 344 passed.
 - Status: done.
 - Next: merge WP10, WP11, WP18A, WP14, WP15E part 2, WP09 and WP15D as their reviews finish, then WP12 and WP15F, then WP16.
+
+### 2026-11-25 18:10Z - WP18A sub-agent - Case workspace docs for the six tabs
+- Context: Round 16 WP18A, an early slice of WP18 (SPEC 4.7, 6.1, 6.2): five tests in test_docs_round15_records.py still pinned the Round 15 five-tab layout after WP02 and WP03 merged.
+- Did: rewrote the case workspace descriptions from the merged code. Case Manager page: band row 1 (Live, Refresh, About), deep-link ids, queue rows, the [ fold, the empty pane, queue width, the header and meta strip, the case facts (52rem column, ] toggle, sheet, six sections), and a six-tab table on Alt+1 to Alt+6 with the Alt+2, Alt+4 and Alt+5 changes. Also USAGE, quickstart, README, first case, demo tour, Cases, Investigation, Collaboration, the testing.md Triage row, one-line tab fixes in six other Help Center pages, and DEMO.md. The five records tests now pin Round 16 and read the code first. Added test_the_docs_name_the_six_case_tabs_in_the_code_order. Regenerated the knowledge corpus and fixed two ranking regressions in the wording. Console map unchanged.
+- Tests: backend 13,439 passed, 29 skipped, 5 sandbox-only env failures (55 of 55 pass with proxy and AWS unset). Docs records tests fail on the old docs and pass on the new ones. test:strict had 65 failures under load average 20 (55 timeouts); the 20 failing files rerun at 2 workers gave 632 passed and 1 load-dependent failure that passes alone. npm run build, docs:check, check_version, check_ci_contract, check_docs and build_app_knowledge --check pass.
+- Status: done on r16-wp18a, commit 8adb164, detached.
+- Next: WP17 refreshes case-manager.webp and its alt text in README and quickstart. WP18 does AGENTS, HANDOFF, ROADMAP and CHANGELOG. Owners should fix the stale Console strings and the shortcut list (see the report).
+
+### 2026-11-25 19:40Z - WP18A reviewer (resumed) - case workspace docs review closed
+- Context: Resume the adversarial review of WP18A (six case tabs, compact header, case facts, queue fold docs, Round 15 records tests) after a container restart stopped the previous reviewer while the backend suite ran.
+- Did: Read the previous review fix 8b59c0f and checked its claims against the code (DecisionLane, OverviewPanel lane links, CaseDetail toggleInspector and the ] key, AI investigation inputs). Ran the records tests against the 5e21367 docs (7 fail) and the 8adb164 docs (the 2 new tests fail), then against the branch docs (16 pass). Spot-checked tab order, Alt keys, Response tab count, legacy tab links and queue widths in the docs against the code. decide() and risk.py are unchanged. No forbidden characters in added lines, and no inbound links to renamed headings. No new defects, so no new commit; the branch head stays at 8b59c0f.
+- Tests: backend 13,440 passed, 29 skipped, 5 failed (the known sandbox-only environment tests, 55 of 55 pass with the proxy and AWS variables unset); check_version, check_ci_contract, check_docs (89 pages), build_app_knowledge --check (1000 chunks), strict MkDocs bundle and docs:check all pass.
+- Status: done.
+- Next: The orchestrator merges r16-wp18a. Carry the builder's left_undone items to their owners: retired tab names in Console copy (WP09 BulkCloseDialog; runbooks NextStepCard, AnalystPreview and RunbookRail); ] missing from caseManagerShortcuts (WP02); the "Runbook (before Round 14)" label in FactsRail (WP03); "facts rail" in ui-standard.md (WP16); the CaseDetail.structure test flake (WP03); the case-manager.webp refresh (WP17); the rest of WP18.
+
+### 2026-11-25 19:05Z - orchestrator - WP18A merged; router counts brought to 46
+- Context: the early slice of WP18 for the case workspace docs (six tabs, the compact header, the case facts inspector, the queue's focus mode), after WP02 and WP03 merged.
+- Did: merged review 8b59c0f into claude/round16; the knowledge corpus (1,000 chunks) and manifest were regenerated. AGENTS.md §4 and HANDOFF now count 46 feature routers and name the three Round 16 routers (routes_investigations, routes_case_events, routes_case_usage), so the records tests are green again on the branch.
+- Tests: on the merged tree, the Round 13 and Round 15 records tests 35 passed, with the knowledge and chat knowledge tests earlier 258 passed; build_app_knowledge --check current; check_docs (89 pages) passes.
+- Status: done.
+- Next: the rest of WP18 after WP16; merges of WP10, WP11, WP14, WP15E part 2, WP09 and WP15D as their reviews finish.

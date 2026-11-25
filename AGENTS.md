@@ -512,7 +512,7 @@ backend/app/
                      POST /chat + per-user /chat/conversations list/detail/rename/delete;
                      Round-4: acknowledge → INVESTIGATING + GET /api/logs [unified
                      scatter-gather over browse-capable sources] + /cases/{id}/forwarding
-                     + /sources/health) + **43 `routes_*.py` feature routers** (Round 12 added routes_chat_library and routes_chat_entity; Round 13 added routes_chat_starters; Round 14 added routes_audit, routes_rule_summary and routes_case_runbooks; Round 15 added routes_rbac, routes_team, routes_case_files and routes_auto_close_review), ALL
+                     + /sources/health) + **46 `routes_*.py` feature routers** (Round 12 added routes_chat_library and routes_chat_entity; Round 13 added routes_chat_starters; Round 14 added routes_audit, routes_rule_summary and routes_case_runbooks; Round 15 added routes_rbac, routes_team, routes_case_files and routes_auto_close_review; Round 16 added routes_investigations, routes_case_events and routes_case_usage), ALL
                      auto-discovered at boot (`main.py::discover_feature_routers()` walks
                      `app.api.routes_*`, requires a top-level `router: APIRouter` — no
                      manual registration needed): Round-3's routes_metrics ·
