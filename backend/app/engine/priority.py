@@ -38,6 +38,7 @@ from ..config import Preferences, PriorityMatrix
 from ..constants import DEFAULT_SEVERITY_SCALE_MAX, SEVERITY_BANDS
 from ..models import Case
 from ..ocsf.model import project_severity_magnitude, resolve_severity_scale_max
+from ..utils import round_half_up
 from .risk import _asset_criticality
 
 logger = logging.getLogger(__name__)
@@ -100,6 +101,62 @@ def _band_from_magnitude(magnitude: float) -> str:
     if magnitude >= _BAND_MED_CUT:
         return _MEDIUM
     return _LOW
+
+
+def _score_band(display: int) -> str:
+    """The FOUR-band risk score ladder (critical >= 74, high >= 48, medium >= 22, else
+    low) on the SHOWN integer, the published integer ranges of ``palette.SCORE_BANDS``
+    that the risk badge, the queue row and the meter use (Round 16 D4, D7). Advisory
+    display only: it never feeds ``decide()`` (#3), which compares the unrounded score."""
+    if display >= _BAND_CRIT_CUT:
+        return _CRITICAL
+    if display >= _BAND_HIGH_CUT:
+        return _HIGH
+    if display >= _BAND_MED_CUT:
+        return _MEDIUM
+    return _LOW
+
+
+#: The five risk factors in the score's order, with the plain words the chip uses.
+_RISK_FACTORS: tuple[str, ...] = (
+    "volume", "velocity", "reputation", "diversity", "asset_criticality",
+)
+_RISK_FACTOR_WORDS: dict[str, str] = {
+    "volume": "Volume ({share}): how many events, log-scaled so it levels off near 50.",
+    "velocity": "Velocity ({share}): events per minute, full near 10 per minute, 0 below 3 events.",
+    "reputation": "Reputation ({share}): the threat-intel reputation of the entity when it is an IP address.",
+    "diversity": "Diversity ({share}): distinct rule types, full at 5.",
+    "asset_criticality": "Asset criticality ({share}): how important the asset is, 0 when it is not listed.",
+}
+
+
+def _share(weight: float, total: float) -> str:
+    """A weight as its share of the weight total ("25%", "12.5%")."""
+    if total <= 0:
+        return "0%"
+    pct = round(100.0 * weight / total, 1)
+    return f"{pct:g}%"
+
+
+def _risk_definition(weights: Any, *, recorded: bool) -> str:
+    """The risk chip's definition from the weights that scored the case: the ones
+    recorded at scoring, or today's for a case that did not record them (Round 16 D7:
+    never the hard-coded defaults)."""
+    values = {key: float(getattr(weights, key, 0.0) or 0.0) for key in _RISK_FACTORS}
+    total = sum(values[key] for key in _RISK_FACTORS)
+    parts = " ".join(
+        _RISK_FACTOR_WORDS[key].format(share=_share(values[key], total)) for key in _RISK_FACTORS
+    )
+    basis = (
+        "The weights are the ones recorded when this case was scored."
+        if recorded else
+        "The weights are today's settings: this case did not record the ones it was scored with."
+    )
+    return (
+        "Deterministic 0 to 100 risk score: a weighted blend of five factors. "
+        f"{parts} {basis} The risk score ranks what is investigated first; it never "
+        "closes or escalates a case on its own."
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -451,22 +508,22 @@ def derive_triage(case: Case, prefs: Preferences) -> dict[str, Any]:
     priority = derive_priority(impact["band"], urgency["band"], prefs.priority_matrix)
 
     rb = case.risk_breakdown.model_dump(mode="json") if case.risk_breakdown else {}
+    recorded = getattr(case.risk_breakdown, "inputs", None) if case.risk_breakdown else None
+    weights = recorded.weights if recorded is not None else prefs.risk_weights
+    score = max(0.0, min(100.0, float(case.risk_score)))
+    display = round_half_up(score)
     risk_chip = {
         "value": round(float(case.risk_score), 2),
-        "band": _band_from_magnitude(max(0.0, min(100.0, float(case.risk_score)))),
+        # Round 16 (D7, D4): the four-band score ladder every Console surface uses,
+        # banding the shown integer (rounded half up), never the 3-band chip ladder.
+        "band": _score_band(display),
+        "display": display,
         "breakdown": rb,
+        "inputs_status": "recorded" if recorded is not None else "not_recorded",
         "inputs": {
-            "definition": (
-                "Deterministic 0-100 risk score, a weighted blend of 5 factors: "
-                "Volume (25%, how many events, log-normalised so it levels off ~50), "
-                "Velocity (20%, events/min, full near 10/min, 0 below 3 events or a "
-                "sub-second window), Reputation (30%, heaviest: the worst threat-intel "
-                "reputation among the cluster's IPs, 0 if no IP), Diversity (15%, "
-                "distinct rule types, maxes at 5) and Asset criticality (10%, how "
-                "important the targeted asset is; 0 if uncatalogued). The risk score "
-                "only ranks what's investigated first; it never closes or escalates a "
-                "case on its own."
-            ),
+            "definition": _risk_definition(weights, recorded=recorded is not None),
+            "weights": {key: float(getattr(weights, key, 0.0) or 0.0) for key in _RISK_FACTORS},
+            "weights_basis": "recorded_at_scoring" if recorded is not None else "current_preferences",
         },
     }
     severity_chip = {

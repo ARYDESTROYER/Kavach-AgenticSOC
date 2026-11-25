@@ -55,6 +55,7 @@ from ..stores.auto_close_review import (
 )
 from ..utils import new_id
 from .metrics import decision_record
+from . import stats
 from .precedent import case_rule_identity, is_policy_closed
 from .time_windows import zone_for
 
@@ -278,15 +279,10 @@ def history_review(case: Any, review_id: str) -> Mapping[str, Any] | None:
 
 
 def wilson_interval(successes: int, total: int) -> dict[str, float] | None:
-    """The Wilson score 95% interval of ``successes`` of ``total`` (None for 0)."""
-    if total <= 0:
-        return None
-    z = 1.96
-    p = successes / total
-    denom = 1.0 + z * z / total
-    centre = (p + z * z / (2.0 * total)) / denom
-    margin = z * ((p * (1.0 - p) / total + z * z / (4.0 * total * total)) ** 0.5) / denom
-    return {"low": round(max(0.0, centre - margin), 4), "high": round(min(1.0, centre + margin), 4)}
+    """The Wilson score 95% interval of ``successes`` of ``total`` (None for 0), rounded
+    to 4 decimals here from the one implementation (``engine/stats.py``, Round 16)."""
+    interval = stats.wilson_interval(successes, total)
+    return None if interval is None else {"low": round(interval[0], 4), "high": round(interval[1], 4)}
 
 
 # --------------------------------------------------------------------------- #

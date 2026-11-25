@@ -39,7 +39,7 @@ from ..constants import (
     Verdict,
 )
 from ..engine.analyst_outcomes import standing_analyst_disposition
-from ..engine.case_manager import CaseManager
+from ..engine.case_manager import CaseManager, _entry_for
 from ..engine.cost_gate import CaseBudget
 from ..engine.ingest import attach_cluster, is_attach_only
 # Read-time classification of an ALREADY-persisted decision, shared with the metrics
@@ -49,6 +49,7 @@ from ..engine.metrics import classify_auto_close_gate
 from ..engine.precedent import match_analyst_rule_policy
 from ..engine.priority import band_of_case
 from ..engine.risk import compute_risk
+from ..engine.risk_explain import explain_risk
 from ..engine.signatures import find_open_case_for_cluster
 from ..es.base import BaseESClient
 from ..llm.gateway import LLMGateway
@@ -1267,6 +1268,14 @@ class InvestigationPipeline:
                 enrichment = await enrich.enrich_ip(cluster.entity.value)
                 reputation = enrichment.reputation_score
             breakdown = compute_risk(cluster, prefs, reputation)
+            # Round 16 (B13): what the score was computed from, recorded beside it.
+            breakdown.inputs = explain_risk(
+                cluster, prefs, reputation, scored_at=iso_now(),
+                reputation_source=(
+                    "not_ip_entity" if cluster.entity.type != EntityType.IP
+                    else "enrichment" if prefs.enrichment.enabled else "enrichment_off"
+                ),
+            )
             cluster.risk_score = breakdown.total
             cluster.risk_breakdown = breakdown
 
@@ -1550,6 +1559,8 @@ class InvestigationPipeline:
             if ledger_proves_current_run:
                 case.token_cost = recorded_cost
             CaseManager(prefs).apply(case)
+            # Round 16 (WP10, C18): pair apply()'s decision entry with this run's gate row.
+            case.history[-1]["run_id"] = current_investigation_run_id()
             await self._cases.save(case)
             write_hold.release()
             # Round 16 (WP08): a new case exists now; a person's close made while this
@@ -1571,6 +1582,9 @@ class InvestigationPipeline:
             gate_outcome = classify_auto_close_gate(
                 prefs.auto_close, case.verdict, case.confidence, case.risk_score,
             )
+            # Round 16 (WP10, D-API-2): the entry decide() compared, the same closable-class
+            # test classify_auto_close_gate uses (None for NEEDS_HUMAN and no verdict).
+            gate_entry = _entry_for(prefs.auto_close, case.verdict)
             await self._audit.record(
                 action_type=ActionType.DECISION, surface=source_surface.value,
                 actor="case_manager", case_id=case_id,
@@ -1580,6 +1594,24 @@ class InvestigationPipeline:
                     f"risk={case.risk_score} cost={round(cost, 6)} "
                     f"confidence={case.confidence} auto_close_gate={gate_outcome}"
                 ),
+                # Round 16 (WP10, D-API-2): what the gate compared, recorded after apply()
+                # for the Decision explanation; nothing reads it to decide (#3).
+                tool_input={"gate": {
+                    "verdict": case.verdict.value if case.verdict else None,
+                    "confidence": case.confidence,
+                    "risk_score": case.risk_score,
+                    "class_enabled": bool(gate_entry is not None and gate_entry.enabled),
+                    "min_confidence": gate_entry.min_confidence if gate_entry else None,
+                    "max_risk_score": gate_entry.max_risk_score if gate_entry else None,
+                    "objection_window_minutes": (
+                        gate_entry.objection_window_minutes if gate_entry else None
+                    ),
+                    "escalation_confidence": prefs.escalation_confidence,
+                    "critical_severity": prefs.critical_severity,
+                    "outcome": gate_outcome,
+                    # The Demo case store tags every case it saves (``demo_runtime.DEMO_TAG``).
+                    "demo": "demo" in (case.tags or []),
+                }},
             )
             # Live progress: TERMINAL ``decision`` frame, emitted AFTER apply()+save +
             # the audit record so it only REPORTS the already-decided, already-persisted
@@ -1770,6 +1802,10 @@ class InvestigationPipeline:
         # The risk ceiling is compared against the SAME deterministic risk the case
         # will carry, so it must be computed before the match rather than after it.
         breakdown = compute_risk(cluster, prefs, 0.0)
+        # Round 16 (B13): what the score was computed from, recorded beside it.
+        breakdown.inputs = explain_risk(
+            cluster, prefs, 0.0, reputation_source="not_looked_up", scored_at=iso_now(),
+        )
         cluster.risk_score = breakdown.total
         cluster.risk_breakdown = breakdown
         try:
@@ -1928,6 +1964,10 @@ class InvestigationPipeline:
             await attach_cluster(self._cases, existing, cluster, pipeline=self)
             return existing
         breakdown = compute_risk(cluster, prefs, 0.0)
+        # Round 16 (B13): what the score was computed from, recorded beside it.
+        breakdown.inputs = explain_risk(
+            cluster, prefs, 0.0, reputation_source="not_looked_up", scored_at=iso_now(),
+        )
         cluster.risk_score = breakdown.total
         cluster.risk_breakdown = breakdown
         member_ids = list(dict.fromkeys(

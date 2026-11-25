@@ -19,6 +19,7 @@ from typing import Any
 
 from ..constants import REVIEW_VIA_AUTO_CLOSE_REVIEW, DecisionBy, TERMINAL_CASE_STATUSES
 from ..models import Case, FeedbackEntry
+from . import stats
 from .metrics import percentile, truncation_marker
 from .priority import band_of_case
 from .review_origin import is_review_grade, review_events
@@ -194,18 +195,9 @@ def _select_feedback(
 
 
 def _wilson(successes: float, total: int) -> dict[str, float] | None:
-    if total <= 0:
-        return None
-    z = 1.96
-    proportion = successes / total
-    denom = 1.0 + z * z / total
-    centre = (proportion + z * z / (2.0 * total)) / denom
-    margin = (
-        z
-        * ((proportion * (1.0 - proportion) / total + z * z / (4.0 * total * total)) ** 0.5)
-        / denom
-    )
-    return {"low": round(max(0.0, centre - margin), 4), "high": round(min(1.0, centre + margin), 4)}
+    # The one Wilson implementation (``engine/stats.py``, Round 16), rounded here.
+    interval = stats.wilson_interval(successes, total)
+    return None if interval is None else {"low": round(interval[0], 4), "high": round(interval[1], 4)}
 
 
 def _quality_summary(samples: list[_FeedbackSample]) -> dict[str, Any]:

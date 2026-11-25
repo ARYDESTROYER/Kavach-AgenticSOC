@@ -200,6 +200,37 @@ class RealESClient(BaseESClient):
                     return
             raise
 
+    async def get_index_template(self, name: str) -> dict[str, Any] | None:
+        """``GET _index_template/<name>`` through the management credential (Round 16
+        SPEC §3.4, WP10): the stored composable template body, unwrapped from
+        ``index_templates`` as the in-memory client answers, or ``None`` when the answer
+        names no such template. Read only: it changes nothing.
+
+        With it, bootstrap can prove an upgraded deployment's cases template stores
+        ``risk_breakdown.inputs`` safely, and the Round 14 audit upgrade can add what
+        the audit template lacks (both purely additive, ``app/es/indices.py``). When
+        the management key may not read templates (403), or the cluster has no such
+        template or no composable template API (404), this raises
+        ``NotImplementedError``: the callers then take their "unsupported" path, which
+        never fails the boot and leaves the recorded risk inputs out of stored cases."""
+        client = self._require_mgmt()
+        try:
+            resp = await client.indices.get_index_template(name=name)
+        except Exception as exc:  # noqa: BLE001
+            if _is_not_found(exc) or _elastic_status(exc) == 403:
+                raise NotImplementedError(
+                    f"index template {name} cannot be read with the management key "
+                    f"(HTTP {_elastic_status(exc) or 404})"
+                ) from exc
+            raise
+        body = resp.body if hasattr(resp, "body") else resp
+        templates = (body or {}).get("index_templates") if isinstance(body, dict) else None
+        for entry in templates or []:
+            if isinstance(entry, dict) and entry.get("name") == name:
+                template = entry.get("index_template")
+                return dict(template) if isinstance(template, dict) else None
+        return None
+
     async def get_index_mapping(self, index: str) -> dict[str, dict[str, Any]]:
         """``GET <index>/_mapping`` through the management credential (Round 15 SPEC
         D5.7): ``{concrete index: {"mappings": ...}}``; a missing index is absent from
