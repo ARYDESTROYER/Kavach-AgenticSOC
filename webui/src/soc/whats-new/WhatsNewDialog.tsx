@@ -5,8 +5,9 @@
  * - 40rem wide, the shared scrim and panel; below 640 px it fills the screen.
  * - Focus starts on the title (the content is a list, so no control is focused first);
  *   closing returns focus to the main landmark (`#socMain`), since an automatic dialog
- *   has no invoker. Escape, an outside press, Got it, See all changes and Open all close
- *   it, and the host writes the marker once for any of them.
+ *   has no invoker; a re-open on demand returns it to the control that opened it.
+ *   Escape, an outside press, Got it, See all changes and Open all close it, and the
+ *   host writes the marker once for any of them.
  * - At most five highlights: an area tile, the title and a one-line summary. When two or
  *   more have a screenshot, pressing a row shows its screenshot as the hero
  *   (`aria-pressed`); there is no carousel and nothing moves on its own.
@@ -41,6 +42,11 @@ export interface WhatsNewDialogProps {
   channelLabel: string;
   /** Whether "Open" may be offered for a highlight's page. */
   canOpen: (page: string | null) => page is PageId;
+  /**
+   * The control that opened the dialog on demand; closing returns focus to it while it
+   * is still on the page. Without one (the automatic welcome), focus goes to `#socMain`.
+   */
+  returnFocusTo?: HTMLElement | null;
   /** Any close; `target` when the person chose a page to go to. */
   onClose: (target?: WhatsNewTarget) => void;
 }
@@ -57,6 +63,7 @@ export function WhatsNewDialog({
   runningVersion,
   channelLabel,
   canOpen,
+  returnFocusTo = null,
   onClose,
 }: WhatsNewDialogProps): React.ReactElement {
   const titleRef = React.useRef<HTMLHeadingElement>(null);
@@ -92,7 +99,7 @@ export function WhatsNewDialog({
         }}
         onCloseAutoFocus={(event) => {
           event.preventDefault();
-          document.getElementById('socMain')?.focus();
+          (returnFocusTo?.isConnected ? returnFocusTo : document.getElementById('socMain'))?.focus();
         }}
       >
         <div className="space-y-1.5 px-6 pb-4 pr-12 pt-6">

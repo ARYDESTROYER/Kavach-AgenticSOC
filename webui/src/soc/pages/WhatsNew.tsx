@@ -33,9 +33,10 @@ import {
   AREA_LABEL,
   RELEASE_NOTES,
   allUpdates,
+  clearMarkerBeforeClose,
   pageOpenable,
+  peekMarkerBeforeClose,
   shortDate,
-  takeMarkerBeforeClose,
   type HighlightArea,
   type NotesHighlight,
   type NotesRelease,
@@ -77,7 +78,9 @@ export default function WhatsNew(): React.ReactElement {
 
   // The marker the person had when the page opened: what the dialog saw if it just closed
   // ("See all changes"), else the stored one once preferences are read.
-  const [baseline, setBaseline] = React.useState<string | null | undefined>(() => takeMarkerBeforeClose());
+  const [baseline, setBaseline] = React.useState<string | null | undefined>(() => peekMarkerBeforeClose());
+  // Read while mounting, cleared once mounted: a mount React renders twice reads it twice.
+  React.useEffect(() => clearMarkerBeforeClose(), []);
   React.useEffect(() => {
     if (baseline === undefined && loaded) setBaseline((prefs.misc?.whats_new_seen as string | undefined) ?? null);
   }, [baseline, loaded, prefs.misc]);

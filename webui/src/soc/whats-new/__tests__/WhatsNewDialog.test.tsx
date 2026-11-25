@@ -226,6 +226,32 @@ describe('when the host shows nothing, or waits', () => {
     expect(state.patchMisc).not.toHaveBeenCalled();
   });
 
+  it('returns focus to the control that re-opened it, not to the page', async () => {
+    // "Show the welcome screen" opens it on demand: unlike the automatic welcome, it has
+    // an invoker, and closing must not drop the person back at the top of the page.
+    state.misc = { whats_new_seen: '0.3.0.2027-02-01' };
+    function Reopen() {
+      const [open, setOpen] = React.useState(false);
+      return (
+        <>
+          <main id="socMain" tabIndex={-1}>
+            <button type="button" onClick={() => setOpen(true)}>
+              Show the welcome screen
+            </button>
+          </main>
+          {open ? <WhatsNewHost force onDone={() => setOpen(false)} /> : null}
+        </>
+      );
+    }
+    render(<Reopen />);
+    const invoker = screen.getByRole('button', { name: 'Show the welcome screen' });
+    await userEvent.click(invoker);
+    await dialog();
+    await userEvent.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByTestId('whats-new-dialog')).toBeNull());
+    await waitFor(() => expect(invoker).toHaveFocus());
+  });
+
   it('waits while another dialog is open', async () => {
     const other = document.createElement('div');
     other.setAttribute('role', 'dialog');

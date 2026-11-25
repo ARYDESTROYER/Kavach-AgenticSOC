@@ -71,6 +71,12 @@ export default function WhatsNewHost({
   const [plan] = React.useState<WhatsNewPlan | null>(() =>
     decideWhatsNew(RELEASE_NOTES, marker, { has: hasPermission, force }),
   );
+  // A re-open on demand has an invoker (the page's "Show the welcome screen"): closing
+  // returns focus there. The automatic welcome has none, so it returns to `#socMain`.
+  const [invoker] = React.useState<HTMLElement | null>(() => {
+    const active = force ? document.activeElement : null;
+    return active instanceof HTMLElement && active !== document.body ? active : null;
+  });
   const [open, setOpen] = React.useState(false);
   const closed = React.useRef(false);
   const done = React.useRef(onDone);
@@ -137,6 +143,7 @@ export default function WhatsNewHost({
       runningVersion={release.version}
       channelLabel={release.channelLabel}
       canOpen={(page): page is PageId => pageOpenable(page, hasPermission)}
+      returnFocusTo={invoker}
       onClose={close}
     />
   );

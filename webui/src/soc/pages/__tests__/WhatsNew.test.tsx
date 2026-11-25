@@ -86,6 +86,7 @@ vi.mock('@/soc/whats-new/WhatsNewHost', () => ({
 }));
 
 import WhatsNew from '../WhatsNew';
+import { rememberMarkerBeforeClose } from '@/soc/whats-new/notes';
 
 beforeEach(() => {
   state.opts = undefined;
@@ -165,6 +166,29 @@ describe('the release tracker', () => {
       .filter((el) => within(el).queryByTestId('whats-new-new-badge'))
       .map((el) => el.getAttribute('data-highlight'));
     expect(marked).toEqual(['tabs', 'team']);
+  });
+
+  it('after "See all changes", marks what the dialog showed, also when React renders twice (StrictMode)', () => {
+    // The dialog has already written the newest marker; the page must still mark what
+    // was new to the person. The Console renders under StrictMode, which runs a state
+    // initializer twice, so the hand-off must survive a second read in the same mount.
+    state.misc = { whats_new_seen: '0.3.0.2027-02-01' };
+    rememberMarkerBeforeClose('0.3.0.2027-01-10');
+    const marked = () =>
+      screen
+        .queryAllByTestId('whats-new-highlight')
+        .filter((el) => within(el).queryByTestId('whats-new-new-badge'))
+        .map((el) => el.getAttribute('data-highlight'));
+    const { unmount } = render(
+      <React.StrictMode>
+        <WhatsNew />
+      </React.StrictMode>,
+    );
+    expect(marked()).toEqual(['tabs', 'team']);
+    unmount();
+    // Used once: the next visit reads the stored marker, which is the newest.
+    render(<WhatsNew />);
+    expect(marked()).toEqual([]);
   });
 
   it('marks nothing as new for an account with no marker yet', () => {

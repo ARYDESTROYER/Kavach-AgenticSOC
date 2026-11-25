@@ -398,6 +398,18 @@ class RejectionTests(ReleaseNotesTestCase):
                 data = valid_release()
                 data["updates"][0]["highlights"][0]["summary"] = text
                 self.assertRejects(data, fragment)
+        for text in ("Open data:text/html,x", "See file:///etc/hosts", "Mail mailto:soc@example.test",
+                     "Run javascript:alert(1)", "FTP ftp://host"):
+            with self.subTest(text=text):
+                data = valid_release()
+                data["updates"][0]["highlights"][0]["summary"] = text
+                self.assertRejects(data, "raw URL")
+        # A word that only looks like a scheme, followed by a colon and a space, is prose.
+        for text in ("Export your data: CSV or JSON Lines.", "Each file: one case.", "Mail: the digest."):
+            with self.subTest(text=text):
+                data = valid_release()
+                data["updates"][0]["highlights"][0]["summary"] = text
+                self.assertEqual(self.validate(data)["updates"][0]["highlights"][0]["summary"], text)
         data = valid_release()
         data["updates"][0]["title"] = "Round up"
         self.assertRejects(data, "never says 'Round'")

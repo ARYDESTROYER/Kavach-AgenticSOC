@@ -171,7 +171,10 @@ export function opensRecord(opts: Partial<Record<(typeof RECORD_KEYS)[number], u
  * writes the newest update id when it closes, and "See all changes" opens the
  * Communication, What's new page at the same moment, so the page would otherwise read the
  * new marker and mark nothing as new. The host records the old marker first; the page
- * reads it once as its baseline. Memory only: a reload starts from the stored marker.
+ * reads it as its baseline while it mounts and then clears it, once mounted. Reading and
+ * clearing are separate because React may render a mount twice (StrictMode does, and
+ * the Console runs under it): a read that also cleared would hand the second render
+ * nothing. Memory only: a reload starts from the stored marker.
  */
 let markerBeforeClose: { value: string | null } | null = null;
 
@@ -179,11 +182,14 @@ export function rememberMarkerBeforeClose(value: unknown): void {
   markerBeforeClose = { value: typeof value === 'string' ? value : null };
 }
 
-/** The remembered marker, once; `undefined` when the dialog did not run this page view. */
-export function takeMarkerBeforeClose(): string | null | undefined {
-  const remembered = markerBeforeClose;
+/** The remembered marker; `undefined` when the dialog did not run this page view. */
+export function peekMarkerBeforeClose(): string | null | undefined {
+  return markerBeforeClose ? markerBeforeClose.value : undefined;
+}
+
+/** Forget the remembered marker (the page calls it once it has mounted). */
+export function clearMarkerBeforeClose(): void {
   markerBeforeClose = null;
-  return remembered ? remembered.value : undefined;
 }
 
 const DATE_FORMAT = new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' });

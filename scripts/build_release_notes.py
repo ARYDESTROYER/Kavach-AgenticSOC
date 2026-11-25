@@ -120,7 +120,9 @@ _BANNED_CHARACTERS = {
     ">": "markup (>)",
     "\\": "a backslash",
 }
-_RAW_URL_RE = re.compile(r"(?i)\b(?:https?|ftp|file|mailto|javascript|data):|www\.|://")
+# A scheme counts only when something follows its colon at once ("data:text/html", not
+# the prose "your data: CSV"); "://" and "www." count anywhere.
+_RAW_URL_RE = re.compile(r"(?i)\b(?:https?|ftp|file|mailto|javascript|data):(?=\S)|www\.|://")
 _MARKDOWN_LINK_RE = re.compile(r"\]\(|\]\[|^\s*[#>]|!\[")
 _ROUND_RE = re.compile(r"\bRound\b")
 _RETIRED_WORD_RE = re.compile(r"(?i)playbook")
