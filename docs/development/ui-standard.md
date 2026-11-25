@@ -557,10 +557,17 @@ presentation preference locally, and remove the handle below the desktop breakpo
 compact layouts use an explicit back-to-list path.
 
 A routed split workspace may reclaim the shared shell gutter down to a consistent
-16px operational inset, but it remains framed rather than touching the navigation or
-viewport edge. Inside the detail pane, header, tabs, and every tab panel share one
-responsive 16 to 24px content rail. Do not stack page, pane, and panel padding into
-separate 32px gutters; the resizable detail pane must spend its width on evidence.
+16px operational inset on every side, but it remains framed rather than touching the
+navigation or viewport edge. Such a workspace may own its frame as Chat does: no routed
+page header (the top bar's breadcrumb already names the page) and an `sr-only` h1. The
+Case Manager does both (Round 16): its board takes 8px of the shell's 24px top and
+bottom inset back (`-my-2`, `h-[calc(100dvh-5.5rem)]`), so the split frame starts 72px
+from the top of the window and the page never scrolls. Below the split, its back-to-list
+bar steps aside once the case header carries a Back of its own (marked
+`data-case-header-back`), so a phone keeps one back path. Inside the detail pane, header,
+tabs, and every tab panel share one responsive 16 to 24px content rail. Do not stack
+page, pane, and panel padding into separate 32px gutters; the resizable detail pane must
+spend its width on evidence.
 
 Queue rows are a divided list, not boxed cards. A row has two lines: the title and its
 relative age, then the severity word, risk score, display id, and the status as
@@ -572,43 +579,66 @@ light tint) and open (a stronger tint, a primary edge rail and `aria-current`) n
 look alike. Labels and titles are sentence case, never tracked capitals. Panels inside a
 resizable pane lay out against the pane width with container queries, not the viewport.
 
-The Case Manager queue (Round 12, calmed in Round 15) keeps that grammar and adds to it.
-Its scope (Active, Mine, Review with its pending count, All), filters, search and sort
-are answered by the server over every case, paged with Load more, and the scope line in
-the list footer, beside Load more, always states loaded against total ("1 of 68 active ·
-50 loaded"); a client-side filter of a recent window is never the queue. Above the list
-is one control band of two rows: the scope `SegmentedControl` and a view menu (sort,
-compact density and the keyboard shortcuts, outside the filter count); then, for a role
-that may do bulk work, the "Select visible" checkbox, and a `FilterBar` with the search
-and `primaryCount={0}`, so Severity, Status and Closed by sit behind its one "Filters
-(n)" control with their removable chips and Clear all. Live and Refresh stay in the page
-header. A bulk bar with the selection count appears only while something is selected (or
-a bulk job runs or reports). Rows are two lines: the title (one line, its full value
-accessible) and the age; then the severity word, "Risk N" (coloured by `scoreBand`), the
+The Case Manager queue (Round 12, calmed in Rounds 15 and 16) keeps that grammar and
+adds to it. Its scope (Active, Mine, Review with its pending count, All), filters, search
+and sort are answered by the server over every case, paged with Load more, and the scope
+line in the list footer, beside Load more, always states loaded against total ("1 of 68
+active · 50 loaded"); a client-side filter of a recent window is never the queue. Its
+default width is 28% of the board, 340 to 520px. Above the list is one control band of
+two 32px rows in 10px padding with an 8px gap (92px inside its hairline). Row 1 holds the
+scope `SegmentedControl`, then Live (a dot, with its word once the queue is 28rem wide),
+Refresh, a view menu (sort, compact density, Hide queue where the split shows, and the
+keyboard shortcuts) and the "About Case Manager" help tip; below a 400px queue the scope
+fills the row, so Refresh and "About Case Manager" move into the view menu. Row 2 holds,
+for a role that may do bulk work, the "Select visible" checkbox, then a `FilterBar` with
+the search and `primaryCount={0}`, so Severity, Status and Closed by sit behind its one
+"Filters (n)" control with their removable chips and Clear all. The AI queue notice ("N
+new alerts under investigation") is the band's third line, one 16px line that takes no
+room while it has nothing to say, so the band grows by 20px at most. A bulk bar with the
+selection count appears only while something is selected (or a bulk job runs or
+reports). Rows are two lines beside a 40px leading slot. The slot shows the severity
+glyph; for a role that may do bulk work it becomes the row checkbox on hover and focus,
+and stays the checkbox while anything is selected or a bulk job runs, and always on a
+touch screen (a role with no bulk action keeps the glyph). Line one is the title (one
+line, its full value accessible) and the age; line two the severity word, "Risk N", the
 case number, and either the status of an open case or the outcome badge of a case that
-ended, never both, with the owner monogram at the end. The runbook chip and the source
-fact are not on the row. A compact density is one line. The list is one tab stop with a
-roving focus (↑/↓ or J/K move and open, X or Space select,
+ended, never both, with the owner monogram at the end. "Risk N" is neutral
+(`text-foreground/80`): the severity word and the rail carry the row's colour, and the
+risk keeps its band colour in the case header and the facts rail. It wears the risk
+explainer's mouse-only row hover card, with no focusable content inside the row; the
+row's accessible name carries the number. While the AI investigates a case, its run mark
+takes the status glyph's place inside the status node, never the case chat glyph's slot
+before the age, so a row can show both, and the row's accessible name says so. The
+runbook chip and the source fact are not on the row. A compact density is one line. The
+list is one tab stop with a roving focus (↑/↓ or J/K move and open, X or Space select,
 Enter moves into the case, / searches, ? lists the shortcuts) and rows update live from
-the `cases` realtime topic. A live change is checked against the whole view (scope,
-status, owner, search, severity): a row that no longer matches leaves the window and the
-total, a case that now lists inside the loaded window appears, and Load more re-reads the
-window rather than skip a case when the live order has shifted. "N new cases · Show"
-re-reads the window grown by the new cases, never just the first page, so rows the
-analyst loaded (and the open case) keep their place. When the open case leaves the view
-(a plain Close, or a live change), the roving stop moves to the row that took its place
-and the first J/↓ (K/↑ when the last row closed) or Enter opens that row rather than
-skipping it. A count that claims an exact total (the Cases "Needs human" tile) is made
-from structured filters (status, AI verdict), never the free-text search. A single-letter shortcut
-never fires while focus is in a control that takes letters itself (text, a select, a
-menu, a radio group).
+the `cases` realtime topic. Where the split shows, `[` (or Hide queue) folds the queue to
+a 44px strip with Show queue, Previous and Next and the open case's position; while it is
+folded, J and K step through the cases from anywhere on the page, / shows the queue and
+searches it, and the choice is kept per viewer. A live change is checked against the
+whole view (scope, status, owner, search, severity): a row that no longer matches leaves
+the window and the total, a case that now lists inside the loaded window appears, and
+Load more re-reads the window rather than skip a case when the live order has shifted.
+"N new cases · Show" re-reads the window grown by the new cases, never just the first
+page, so rows the analyst loaded (and the open case) keep their place. When the open case
+leaves the view (a plain Close, or a live change), the roving stop moves to the row that
+took its place and the first J/↓ (K/↑ when the last row closed) or Enter opens that row
+rather than skipping it. With no case open, the detail pane says "No case open" and
+offers up to three counted shortcuts into the queue (critical cases, cases awaiting an
+analyst, reviews waiting); each count is the server's exact total for the filter its
+button applies, and an unknown or zero count leaves its button out. A count that claims
+an exact total (the Cases "Needs human" tile) is made from structured filters (status, AI
+verdict), never the free-text search. A single-letter shortcut never fires while focus is
+in a control that takes letters itself (text, a select, a menu, a radio group), and the
+shortcuts sheet lists only the keys the viewer's role and layout can use.
 
 Row selection is independent of row navigation. “Select visible” means the filtered
 rows in the loaded client window and never implies every server match; "Select all N
 matching" is a separate, explicit control that snapshots the server's matches. A row
 checkbox is a sibling of the row's open control, never nested in it; it may appear on
 hover or focus, but stays visible on touch screens and once anything is selected (the
-Case Manager shows it always). Mixed bulk operations expose progress and per-record
+Case Manager shows it in the row's leading slot; X or Space selects a row whose checkbox
+is not showing yet). Mixed bulk operations expose progress and per-record
 partial failures; successful records leave the selection while failures remain
 retryable. Every bulk or single path that ends a case (close, resolve) collects a
 disposition first. Permission hiding in the Console is guidance; the API must recheck
