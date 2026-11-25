@@ -89,9 +89,9 @@ def explain_risk(
     ``enrichment_off`` or ``not_looked_up`` (the caller knows how it obtained the
     reputation; any other value is recorded as ``not_looked_up``, so a caller's mistake
     never raises into a run); ``scored_at`` is an ISO timestamp. ``reputation_input``
-    is the value passed in, before clamping; a value that is not a finite number is
-    recorded as the clamped factor ``compute_risk`` used, so the record stays valid
-    JSON."""
+    and ``asset_value`` are the values before clamping; one that is not a finite number
+    is recorded as the clamped factor ``compute_risk`` used, so the record stays valid
+    JSON and still re-derives the score."""
     if reputation_source not in RISK_REPUTATION_SOURCES:
         reputation_source = "not_looked_up"
     weights = prefs.risk_weights
@@ -109,7 +109,11 @@ def explain_risk(
     reputation_input = _finite(reputation, clamped_reputation)
 
     entity_value = cluster.entity.value
-    asset_value = _finite(_asset_criticality(entity_value, prefs), 0.0)
+    # The same clamp as ``compute_risk``: a NaN or +infinity criticality scores 100 there
+    # (``min(100.0, nan)`` is 100.0), so a value that is not finite is recorded as that
+    # clamped factor, never as a 0 the score did not use.
+    raw_asset = _asset_criticality(entity_value, prefs)
+    asset_value = _finite(raw_asset, max(0.0, min(100.0, raw_asset)))
 
     # The same terms, in the same order, as ``compute_risk``'s denominator, so the sum
     # is bit-identical to the one the score divided by.

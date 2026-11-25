@@ -132,6 +132,25 @@ def test_explain_risk_records_the_asset_match_and_never_the_range() -> None:
     assert "cidr" not in RiskInputs.model_fields and "asset_cidr" not in RiskInputs.model_fields
 
 
+@pytest.mark.parametrize("raw", [float("nan"), float("inf"), float("-inf"), 150.0, -20.0])
+def test_a_non_finite_or_out_of_range_asset_value_records_the_factor_the_score_used(raw: float) -> None:
+    """``Preferences.asset_criticality`` accepts any float, NaN and infinity included
+    (a JSON body may carry ``NaN`` or ``Infinity``). ``compute_risk`` clamps it, so NaN
+    and +infinity score asset criticality 100. The recorded input must re-derive that
+    same factor and total, never a 0 that the score did not use."""
+    prefs = Preferences()
+    prefs.asset_criticality = {"10.0.4.12": raw}
+    cluster = _cluster(10, 60, 2)
+    stored = compute_risk(cluster, prefs, 50.0)
+    inputs = explain_risk(cluster, prefs, 50.0, reputation_source="enrichment", scored_at=SCORED_AT)
+    full = factors_from_inputs(inputs)
+    assert round(full["asset_criticality"], 2) == stored.asset_criticality
+    assert abs(full["total"] - stored.total) <= 0.005 + 1e-9
+    # The record stays valid JSON that loads back with the same inputs.
+    again = RiskBreakdown.model_validate({**stored.model_dump(), "inputs": inputs.model_dump(mode="json")})
+    assert again.inputs == inputs
+
+
 def test_risk_inputs_record_at_most_50_distinct_rule_values_but_count_them_all() -> None:
     cluster = _cluster(10, 60, 0)
     cluster.rule_values = [f"r{i}" for i in range(70)] + ["x" * 400]
