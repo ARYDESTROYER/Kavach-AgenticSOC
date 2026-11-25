@@ -413,6 +413,7 @@ async def get_case_activity(
     case_id: str,
     state: AppState = Depends(get_state),
     limit: int = 200,
+    _=Depends(require_permission("cases", "read")),
 ) -> dict[str, Any]:
     """The case ACTIVITY timeline — the authoritative audit rows for the case UNIONed
     with the friendly ``CaseActivityStore`` feed, NEWEST first. The audit trail stays
@@ -463,6 +464,7 @@ async def get_case_thread(
     case_id: str,
     state: AppState = Depends(get_state),
     include_deleted: bool = True,
+    _=Depends(require_permission("cases", "read")),
 ) -> dict[str, Any]:
     """The case THREAD (chronological). Legacy ``Case.comments`` are migrated-on-read
     into root messages first. Tombstoned messages are included by default (the UI
@@ -709,6 +711,7 @@ async def react_case_message(
 async def get_case_tasks(
     case_id: str,
     state: AppState = Depends(get_state),
+    _=Depends(require_permission("cases", "read")),
 ) -> dict[str, Any]:
     """The case task checklist, sorted by manual ``order`` then creation. Titles +
     log notes are plain data (#9)."""

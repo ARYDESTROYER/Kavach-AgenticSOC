@@ -26,7 +26,9 @@ import type {
 } from '@/lib/types';
 
 import { ConfirmDialog } from '@/soc/components/ConfirmDialog';
+import { Field } from '@/soc/components/Field';
 import { NumberField } from '@/soc/components/NumberField';
+import { Input } from '@/ui/input';
 import {
   PriorityMatrixEditor,
   AnalystPolicyBuilder,
@@ -34,7 +36,7 @@ import {
 } from '@/soc/components/rules';
 
 import { minutesReading } from './duration';
-import { SettingRow, SettingsGroup, SettingsSection, TextPref, type SecProps } from './primitives';
+import { SettingRow, SettingsGroup, SettingsSection, type SecProps } from './primitives';
 
 /** The four priority tiers, in descending urgency, with their names. */
 export const SLA_LEVELS: ReadonlyArray<{ level: string; name: string }> = [
@@ -55,6 +57,33 @@ export const SLA_DEFAULT_TARGETS: Record<string, { response: number; resolve: nu
   P3: { response: 120, resolve: 1440 },
   P4: { response: 480, resolve: 4320 },
 };
+
+/**
+ * The inline check of the SLA timezone, the grammar the server accepts on save: UTC, Z,
+ * a +HH:MM offset below 24 hours, or a time zone name. A value the browser does not
+ * know reads as unknown here; the server's answer stays the final word.
+ */
+export function slaTimezoneError(value: string | undefined): string | undefined {
+  const tz = (value ?? '').trim();
+  if (!tz || /^(utc|z)$/i.test(tz)) return undefined;
+  const offset = /^([+-])(\d{2}):?(\d{2})$/.exec(tz);
+  if (offset) {
+    return Number(offset[2]) <= 23 && Number(offset[3]) <= 59
+      ? undefined
+      : 'Use an offset between -23:59 and +23:59.';
+  }
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: tz });
+    return undefined;
+  } catch {
+    return 'Unknown time zone. Use UTC, an offset such as +05:30, or a name such as Europe/London.';
+  }
+}
+
+/** The inline check of one tier: a case cannot be due a response after it is due resolved. */
+export function slaTargetError(respond: number, resolve: number): string | undefined {
+  return respond > resolve ? 'Respond must not be later than resolve.' : undefined;
+}
 
 /**
  * One priority: its name, then the respond and resolve targets in minutes on the row's
@@ -96,6 +125,7 @@ function SlaTargetRow({
             size="sm"
             empty="keep"
             disabled={disabled}
+            error={slaTargetError(respond, resolve)}
             onChange={(v) => onChange({ response_minutes: v })}
           />
           <NumberField
@@ -152,14 +182,19 @@ function SlaGroup({ policy, onChange }: { policy: SlaPolicy; onChange: (next: Sl
           />
         ))}
         <SettingRow variant="field" controlWidth="16rem" mono>
-          <TextPref
+          <Field
             label="Timezone"
-            help="The IANA timezone the SLA clock runs in, for example UTC or America/New_York."
-            value={policy.timezone ?? 'UTC'}
-            placeholder="UTC"
-            disabled={!enabled}
-            onChange={(v) => onChange({ ...policy, timezone: v })}
-          />
+            description="The IANA timezone the SLA clock runs in, for example UTC or America/New_York."
+            error={slaTimezoneError(policy.timezone)}
+            className="min-w-0"
+          >
+            <Input
+              value={policy.timezone ?? 'UTC'}
+              placeholder="UTC"
+              disabled={!enabled}
+              onChange={(e) => onChange({ ...policy, timezone: e.target.value })}
+            />
+          </Field>
         </SettingRow>
         <SettingRow
           variant="switch"

@@ -75,6 +75,7 @@ from app.state import AppState
 from app.stores.base import AuditCursorExpired, AuditHit, AuditSearchPage
 from app.stores.jobs import idempotency_hash
 from app.utils import iso_now
+from tests._auth_helpers import ready_user
 
 REPO = Path(__file__).resolve().parents[2]
 FIXTURE = REPO / "webui" / "src" / "lib" / "csv-formula.contract.json"
@@ -1411,6 +1412,7 @@ def _as(client: TestClient, role: str) -> str:
     created = client.post("/api/users", json={"username": username, "password": "audit-export-pass-1",
                                               "role": role})
     assert created.status_code == 200, created.text
+    ready_user(client, username, "audit-export-pass-1")
     client.cookies.clear()
     login = client.post("/api/auth/login", json={"username": username, "password": "audit-export-pass-1"})
     assert login.status_code == 200, login.text

@@ -247,4 +247,16 @@ describe('Users admin page', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: 'Delete' }));
     await waitFor(() => expect(usersRemoveMock).toHaveBeenCalledWith('bob'));
   });
+
+  it('still lists the accounts when the roles read is refused (users:manage without roles:read)', async () => {
+    rolesGetMock.mockRejectedValue(Object.assign(new Error('permission denied: roles:read'), { status: 403 }));
+    renderUsers();
+    expect(await screen.findByText('alice')).toBeInTheDocument();
+    expect(screen.getByText('bob')).toBeInTheDocument();
+    expect(screen.queryByText("Couldn't load users")).not.toBeInTheDocument();
+    // The roles a new account can take are the built-in ones, and no summary is shown.
+    fireEvent.click(screen.getByRole('button', { name: 'Add user' }));
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).queryByTestId('role-permission-summary')).not.toBeInTheDocument();
+  });
 });

@@ -115,11 +115,17 @@ def test_identity_from_google_and_microsoft():
     assert idg["sub"] == "g1" and idg["domain"] == "corp.com"
 
     m = oidc.OidcProvider(_generic_provider(type="microsoft"))
-    idm = m.identity_from({"sub": "pairwise", "oid": "oid-1", "tid": "TENANT-A", "email": "y@corp.com"})
+    idm = m.identity_from({
+        "sub": "pairwise", "oid": "oid-1", "tid": "TENANT-A", "email": "y@corp.com",
+        "xms_edov": True,
+    })
     # Microsoft prefers the immutable oid as the subject; tenant lower-cased.
     assert idm["sub"] == "oid-1" and idm["tenant"] == "tenant-a"
-    # Email domain fills `domain` when there is no `hd`.
+    # The VERIFIED email domain fills `domain` (Round 16: `hd` is Google only).
     assert idm["domain"] == "corp.com"
+    # An unverified email gives no domain, so `allowed_domains` cannot be passed.
+    idu = m.identity_from({"sub": "pairwise", "oid": "oid-2", "email": "y@corp.com"})
+    assert idu["domain"] == ""
 
 
 def test_domain_allowlist():
@@ -301,6 +307,11 @@ async def test_sso_unverified_email_is_not_used_as_account_key(monkeypatch, sso_
     # account is keyed on the non-spoofable provider:sub instead.
     claims = {"sub": "sub-unv", "email": "victim@corp.com", "name": "U"}  # no email_verified
     _patch_http(monkeypatch, claims=claims)
+    # Round 16: an unverified email has no domain, so a domain allowlist refuses it
+    # (tests/test_round16_security.py). Without one, the keying rule is what is tested.
+    prefs = sso_state.prefs.model_copy()
+    prefs.sso.providers[0].allowed_domains = []
+    await sso_state.update_prefs(prefs)
     from app.api import routes as routes_mod
 
     class _Req:
@@ -356,7 +367,7 @@ async def test_callback_no_auto_create_rejects(monkeypatch, sso_state):
     prefs = sso_state.prefs.model_copy()
     prefs.sso.providers[0].auto_create_users = False
     await sso_state.update_prefs(prefs)
-    claims = {"sub": "s3", "email": "newbie@corp.com", "name": "N"}
+    claims = {"sub": "s3", "email": "newbie@corp.com", "name": "N", "email_verified": True}
     _patch_http(monkeypatch, claims=claims)
     from app.api import routes as routes_mod
 

@@ -19757,7 +19757,7 @@
     },
     "/api/auth/change-password": {
       "post": {
-        "description": "Self-service password change (requires a valid session). Verifies the current\npassword, sets the new one and clears ``must_change_password``. Works only for\nmulti-user accounts; the env single-admin has no persisted record to update.",
+        "description": "Self-service password change (requires a valid session). Verifies the current\npassword, sets the new one and clears ``must_change_password``. Works only for\nmulti-user accounts; the env single-admin has no persisted record to update.\n\nRound 16 (B21): a successful change signs out the caller's other sessions (this\none stays) and stops their chat answers, writes a ``session.revoked`` row and\nreturns ``sessions_revoked``.",
         "operationId": "auth_change_password_api_auth_change_password_post",
         "requestBody": {
           "content": {
@@ -19875,7 +19875,7 @@
     },
     "/api/auth/mfa/confirm": {
       "post": {
-        "description": "Confirm MFA enrollment (self): verify a TOTP code against the PENDING secret,\nthen persist the obfuscated secret + hashed recovery codes and set\n``mfa_enabled=True``. Idempotent only in that a wrong code 400s and leaves MFA off.",
+        "description": "Confirm MFA enrollment (self): verify a TOTP code against the PENDING secret,\nthen persist the obfuscated secret + hashed recovery codes and set\n``mfa_enabled=True``. Idempotent only in that a wrong code 400s and leaves MFA off.\n\nRound 16: needs a fresh sign-in and answers 409 for an enrolled account (B17); a\nwrong code counts toward the account's second-factor bound (B19).",
         "operationId": "mfa_confirm_api_auth_mfa_confirm_post",
         "requestBody": {
           "content": {
@@ -19915,7 +19915,7 @@
     },
     "/api/auth/mfa/disable": {
       "post": {
-        "description": "Disable MFA for the calling user (self). Requires a valid CURRENT TOTP or a\nsingle-use recovery code (so a hijacked session alone cannot turn MFA off).\nClears the secret + recovery hashes. (A super_admin can force-disable another\nuser via PUT /api/users/{username} {mfa_enabled:false}.)",
+        "description": "Disable MFA for the calling user (self). Requires a valid CURRENT TOTP or a\nsingle-use recovery code (so a hijacked session alone cannot turn MFA off).\nClears the secret + recovery hashes. (A super_admin can force-disable another\nuser via PUT /api/users/{username} {mfa_enabled:false}.)\n\nRound 16 (B19): needs a fresh sign-in, and a wrong code counts toward the\naccount's second-factor bound, so a session cannot guess codes without limit.",
         "operationId": "mfa_disable_api_auth_mfa_disable_post",
         "requestBody": {
           "content": {
@@ -20035,7 +20035,7 @@
     },
     "/api/auth/mfa/setup": {
       "post": {
-        "description": "Begin MFA enrollment (self, authenticated). Generates a PENDING TOTP secret +\nrecovery codes and returns them ONCE (the secret + otpauth URI for the QR, and the\nplaintext recovery codes for the user to save). Does NOT enable MFA — the user must\nprove possession via /auth/mfa/confirm. Re-calling regenerates the pending secret.",
+        "description": "Begin MFA enrollment (self, authenticated). Generates a PENDING TOTP secret +\nrecovery codes and returns them ONCE (the secret + otpauth URI for the QR, and the\nplaintext recovery codes for the user to save). Does NOT enable MFA: the user must\nprove possession via /auth/mfa/confirm. Re-calling regenerates the pending secret.\n\nRound 16 (B17): needs a fresh sign-in, and answers 409 for an account that is\nalready enrolled, so a stolen session cannot replace the authenticator.",
         "operationId": "mfa_setup_api_auth_mfa_setup_post",
         "responses": {
           "200": {
@@ -20135,7 +20135,8 @@
     },
     "/api/auth/refresh": {
       "post": {
-        "description": "Rotate a refresh token → mint a fresh ACCESS token + a NEW refresh token.\n\nReuse detection (theft): if the presented token matches an ALREADY-ROTATED\nprevious hash, the session is treated as compromised → revoke + bump the user's\ntoken_version (global sign-out) + audit + best-effort notify, and 401.",
+        "deprecated": true,
+        "description": "Rotate a refresh token → mint a fresh ACCESS token + a NEW refresh token.\n\nRound 16 (B24): deprecated. No sign-in issues a refresh token, so every call\nanswers 401 with code ``session_invalid`` and reason ``unknown_refresh``. A\nsession lasts until its access token expires, within the idle and absolute\nlimits. The route stays so an older client gets that answer, not a 404.\n\nReuse detection (theft): if the presented token matches an ALREADY-ROTATED\nprevious hash, the session is treated as compromised → revoke + bump the user's\ntoken_version (global sign-out) + audit + best-effort notify, and 401.",
         "operationId": "auth_refresh_api_auth_refresh_post",
         "requestBody": {
           "content": {
@@ -20295,7 +20296,7 @@
     },
     "/api/auth/sso/providers/{provider_id}/secret": {
       "post": {
-        "description": "Set/clear one OIDC provider's client secret (super_admin only). The value goes\nto the SECRET tier (in memory), NEVER to Preferences/the config doc; only a\nconfigured-boolean is returned.",
+        "description": "Set/clear one OIDC provider's client secret (super_admin only). The value goes\nto the SECRET tier (in memory), NEVER to Preferences/the config doc; only a\nconfigured-boolean is returned.\n\nRound 16 (B15): a stored Super admin with a strict fresh sign-in only, otherwise\n``403 super_admin_only`` and nothing changes.",
         "operationId": "set_sso_provider_secret_api_auth_sso_providers__provider_id__secret_post",
         "parameters": [
           {
@@ -32767,7 +32768,7 @@
     },
     "/api/standup/acknowledgements": {
       "get": {
-        "description": "The acknowledgement log (newest first), optionally filtered by ``window`` /\n``user``. Read inherits the router auth mount. Never 500s.",
+        "description": "The acknowledgement log (newest first), optionally filtered by ``window`` /\n``user``. Read needs metrics:view. Never 500s.",
         "operationId": "list_acknowledgements_api_standup_acknowledgements_get",
         "parameters": [
           {
@@ -32831,7 +32832,7 @@
     },
     "/api/standup/action-items": {
       "get": {
-        "description": "List shift action items (newest-tracked first by creation order). Read inherits\nthe router auth mount. Never 500s — a degraded store yields an empty list.",
+        "description": "List shift action items (newest-tracked first by creation order). Read needs\nmetrics:view. Never 500s: a degraded store yields an empty list.",
         "operationId": "list_action_items_api_standup_action_items_get",
         "parameters": [
           {

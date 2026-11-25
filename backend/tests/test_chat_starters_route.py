@@ -44,6 +44,7 @@ from app.models import Case, Entity, Proposal
 from app.state import AppState
 from app.stores.chat_conversations import partition_key_for_user
 from app.stores.chat_starters import CHAT_STARTERS_NS, STARTERS_FIELD
+from tests._auth_helpers import ready_user
 
 UTC = timezone.utc
 FINAL = (
@@ -196,6 +197,7 @@ def test_cards_follow_the_callers_grants(resource: str, action: str, role: str) 
         _check_cards(client, admin)
         assert client.post("/api/users", json={"username": "riley", "password": "riley-pass-12345",
                                                "role": role}).status_code == 200
+        ready_user(client, "riley", "riley-pass-12345")
         _login(client, "riley", "riley-pass-12345")
         info = _starters(client)
         _check_cards(client, info)
@@ -218,6 +220,7 @@ def test_built_in_roles_see_only_cards_they_can_run(role: str) -> None:
         _login(client, "Admin", "Admin@123")
         assert client.post("/api/users", json={"username": "uma", "password": "uma-pass-123456",
                                                "role": role}).status_code == 200
+        ready_user(client, "uma", "uma-pass-123456")
         _login(client, "uma", "uma-pass-123456")
         info = _starters(client)
         _check_cards(client, info)
@@ -239,6 +242,7 @@ def test_thread_surface_is_owner_only_and_case_surface_needs_a_case() -> None:
         _login(client, "Admin", "Admin@123")
         assert client.post("/api/users", json={"username": "olive", "password": "olive-pass-12345",
                                                "role": "analyst_tier1"}).status_code == 200
+        ready_user(client, "olive", "olive-pass-12345")
         answer = client.post("/api/chat", json={"message": "hello there", "persist_conversation": True,
                                                 "idempotency_key": "r13-starter-thread-1"})
         assert answer.status_code == 200, answer.text
@@ -656,6 +660,7 @@ def test_deleting_a_user_purges_their_starter_state() -> None:
         _login(client, "Admin", "Admin@123")
         assert client.post("/api/users", json={"username": "carol", "password": "carol-pass-12345",
                                                "role": "analyst_tier1"}).status_code == 200
+        ready_user(client, "carol", "carol-pass-12345")
         _login(client, "carol", "carol-pass-12345")
         info = _starters(client)
         assert _event(client, "viewed", [s["key"] for s in info["starters"][:3]]).status_code == 204
@@ -669,6 +674,7 @@ def test_deleting_a_user_purges_their_starter_state() -> None:
         assert not (after or {}).get(STARTERS_FIELD)
         assert client.post("/api/users", json={"username": "carol", "password": "carol-new-pass-999",
                                                "role": "analyst_tier1"}).status_code == 200
+        ready_user(client, "carol", "carol-new-pass-999")
         _login(client, "carol", "carol-new-pass-999")
         fresh = _starters(client)
         assert info["starters"][0]["id"] in _families(fresh) or len(fresh["starters"]) == 6

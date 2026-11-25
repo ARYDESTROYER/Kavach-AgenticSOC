@@ -56,6 +56,7 @@ from app.stores.base import AuditRepository
 from app.stores.sql.engine import build_async_engine, create_all
 from app.stores.sql.repositories import SqlAuditRepository
 from tests.conftest import mount_moved_routers
+from tests._auth_helpers import ready_user
 
 BACKEND = Path(__file__).resolve().parents[1]
 APP = BACKEND / "app"
@@ -1158,6 +1159,7 @@ def _user(client: TestClient, admin: dict[str, str], username: str, role: str) -
     created = client.post("/api/users", json={"username": username, "password": "team-activity-pass-1",
                                               "role": role}, headers=admin)
     assert created.status_code == 200, created.text
+    ready_user(client, username, "team-activity-pass-1")
     client.cookies.clear()
     return _login(client, username, "team-activity-pass-1")
 

@@ -9,7 +9,9 @@ import * as React from 'react';
 
 import { api } from '@/lib/api';
 import { fmtNumber } from '@/lib/format';
+import { Field } from '@/soc/components/Field';
 import { TagInput } from '@/soc/components/TagInput';
+import { Input } from '@/ui/input';
 
 import {
   NumPref,
@@ -20,6 +22,21 @@ import {
   type NavigateFn,
   type SecProps,
 } from './primitives';
+
+/**
+ * The inline check of the investigate lookback, the grammar the server accepts on save:
+ * `now-` and a number of seconds, minutes, hours, days or weeks (`now-24h`), or a date
+ * and time before now.
+ */
+export function lookbackError(value: string | undefined, now: number = Date.now()): string | undefined {
+  if (value === undefined) return undefined; // not loaded yet
+  const v = value.trim();
+  const relative = /^now-(\d+)[smhdw]/i.exec(v);
+  if (relative) return Number(relative[1]) > 0 ? undefined : 'Use a time before now, for example now-24h.';
+  const at = /^\d{4}-\d{2}-\d{2}/.test(v) ? Date.parse(v) : Number.NaN;
+  if (!Number.isNaN(at) && at < now) return undefined;
+  return 'Use a time before now, for example now-24h or now-7d.';
+}
 
 /** The 16rem column a field path takes; numbers use the 8rem NumberField width. */
 const PATH_WIDTH = '16rem';
@@ -101,12 +118,17 @@ export function GeneralSection({
           />
         </SettingRow>
         <SettingRow variant="field" controlWidth={PATH_WIDTH}>
-          <TextPref
+          <Field
             label="Investigate lookback"
-            help="Starting window for a manual entity investigation, for example now-24h."
-            value={prefs.investigate_lookback}
-            onChange={(v) => update({ investigate_lookback: v })}
-          />
+            description="Starting window for a manual entity investigation, for example now-24h."
+            error={lookbackError(prefs.investigate_lookback)}
+            className="min-w-0"
+          >
+            <Input
+              value={prefs.investigate_lookback ?? ''}
+              onChange={(e) => update({ investigate_lookback: e.target.value })}
+            />
+          </Field>
         </SettingRow>
       </SettingsGroup>
 

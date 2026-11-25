@@ -704,6 +704,11 @@ class User(BaseModel):
     # mints or implies a TOTP secret. Additive + defaulted so old stored KV docs
     # load unchanged (no migration).
     mfa_required: bool = False
+    # Round 16 (B19): the consecutive failed second-factor checks and, once they reach
+    # the bound, the ISO instant until which checks are refused ("" when not locked).
+    # Additive and defaulted, so an older stored document loads unchanged.
+    mfa_failed_count: int = 0
+    mfa_locked_until: str = ""
 
     # --- SSO (Wave 2 / F4; additive). When a user is provisioned via OIDC these
     # record the originating provider id + the IdP's stable subject so a returning

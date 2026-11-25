@@ -32,9 +32,11 @@ import hashlib
 import hmac
 import logging
 import secrets
+import time
+from collections import OrderedDict
 from dataclasses import dataclass, field
 
-from app.auth.passwords import hash_password, verify_password
+from app.auth.passwords import averify_password, hash_password, verify_password
 from app.auth.session_limits import bounded_token_seconds
 from app.auth.tokens import TokenError, decode, encode
 from app.constants import UserRole
@@ -52,6 +54,11 @@ _DEFAULT_ROLE = UserRole.ANALYST_TIER1.value
 # pending token is short-lived and carries ``mfa: "pending"``.
 _MFA_PENDING_SECONDS = 5 * 60  # ~5 minutes to enter the second factor.
 _MFA_PENDING_CLAIM = "pending"
+# Round 16 (B19): each pending token carries a random ``jti``. A bounded process-local
+# map counts its failed second-factor attempts; after this many, or once it has been
+# used to mint a session, the token is refused.
+MFA_PENDING_MAX_FAILURES = 5
+_MFA_PENDING_TRACKED_MAX = 10_000
 
 # Round 12 (Remember me): a remembered session token carries ``rm: true`` and an
 # ``exp`` equal to the policy duration (never more than 24 h — the NIST AAL2 overall
@@ -193,6 +200,10 @@ class AuthService:
             hmac.new(secret.encode("utf-8"), _SESSION_REF_LABEL, hashlib.sha256).digest()
             if secret else None
         )
+        # Round 16 (B19): pending-token jti -> [expires_epoch, failures, used].
+        # Process local and bounded (oldest evicted first); the per-account counter on
+        # the stored user record is the durable bound.
+        self._pending_attempts: OrderedDict[str, list] = OrderedDict()
 
     @property
     def is_enabled(self) -> bool:
@@ -434,6 +445,16 @@ class AuthService:
             return False
         return verify_password(password or "", rec.password_hash)
 
+    async def acheck_password(self, username: str, password: str) -> bool:
+        """:meth:`check_password` with the PBKDF2 work off the event loop (Round 16,
+        B18). The same lookup and the same dummy-hash equaliser for an unknown or
+        disabled account, so the timing still says nothing about the name."""
+        rec = self._lookup(username)
+        if rec is None or not rec.active or not rec.password_hash:
+            await averify_password(password or "", _DUMMY_HASH)
+            return False
+        return await averify_password(password or "", rec.password_hash)
+
     def claims_of(self, token: str) -> dict | None:
         """Decode a token and return its raw claims (incl. ``sid``/``tv``), or None on
         any error. Used by the route layer to register the freshly-minted sid + by
@@ -533,10 +554,76 @@ class AuthService:
         ``rm`` claim, so it survives the MFA hop without the client re-sending it
         and cannot be added or stripped (the signature covers it). Eligibility is
         re-decided against the live policy when the session is finally minted."""
-        claims: dict = {"sub": username, "mfa": _MFA_PENDING_CLAIM}
+        claims: dict = {
+            "sub": username, "mfa": _MFA_PENDING_CLAIM, "jti": secrets.token_urlsafe(16),
+        }
         if remember:
             claims[_REMEMBER_CLAIM] = True
         return encode(claims, self._jwt_secret, expires_in_s=_MFA_PENDING_SECONDS)
+
+    def _pending_claims(self, pending_token: str) -> dict | None:
+        if not pending_token:
+            return None
+        try:
+            claims = decode(pending_token, self._jwt_secret)
+        except TokenError:
+            return None
+        if claims.get("mfa") != _MFA_PENDING_CLAIM:
+            return None
+        return claims
+
+    def _pending_entry(self, claims: dict) -> list | None:
+        jti = claims.get("jti")
+        if not isinstance(jti, str) or not jti:
+            return None
+        now = time.time()
+        # Drop expired entries from the oldest end, then bound the size.
+        while self._pending_attempts:
+            first_key = next(iter(self._pending_attempts))
+            if self._pending_attempts[first_key][0] >= now:
+                break
+            self._pending_attempts.popitem(last=False)
+        entry = self._pending_attempts.get(jti)
+        if entry is None:
+            try:
+                exp = float(claims.get("exp", now + _MFA_PENDING_SECONDS))
+            except (TypeError, ValueError):
+                exp = now + _MFA_PENDING_SECONDS
+            entry = [exp, 0, False]
+            self._pending_attempts[jti] = entry
+            while len(self._pending_attempts) > _MFA_PENDING_TRACKED_MAX:
+                self._pending_attempts.popitem(last=False)
+        return entry
+
+    def pending_usable(self, pending_token: str) -> bool:
+        """Whether a pending token may still be tried: it carries a ``jti``, has not
+        been used to mint a session and has fewer than
+        :data:`MFA_PENDING_MAX_FAILURES` failed attempts (Round 16, B19)."""
+        claims = self._pending_claims(pending_token)
+        if claims is None:
+            return False
+        entry = self._pending_entry(claims)
+        if entry is None:
+            return False
+        return not entry[2] and entry[1] < MFA_PENDING_MAX_FAILURES
+
+    def note_pending_failure(self, pending_token: str) -> None:
+        """Count one failed second-factor attempt against a pending token."""
+        claims = self._pending_claims(pending_token)
+        entry = self._pending_entry(claims) if claims is not None else None
+        if entry is not None:
+            entry[1] += 1
+
+    def mark_pending_used(self, pending_token: str) -> bool:
+        """Spend a pending token: it is never accepted again. Returns False when it
+        was already spent (a concurrent request won) or cannot be tracked, so only one
+        request can mint a session from one pending token."""
+        claims = self._pending_claims(pending_token)
+        entry = self._pending_entry(claims) if claims is not None else None
+        if entry is None or entry[2]:
+            return False
+        entry[2] = True
+        return True
 
     def pending_remember(self, pending_token: str) -> bool:
         """Whether a VALID pending token carries the signed ``rm`` request. False

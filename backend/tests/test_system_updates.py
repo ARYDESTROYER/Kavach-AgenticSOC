@@ -54,6 +54,7 @@ from app.stores.update_operations import (
     UpdateOperationConflict,
     UpdateOperationStore,
 )
+from tests._auth_helpers import ready_user
 
 _SHA = "a" * 40
 _IDEMPOTENCY = "request-key-0000000000000001"
@@ -341,6 +342,7 @@ def test_non_owner_is_denied_even_when_rbac_is_disabled(
             },
         )
         assert created.status_code == 200, created.text
+        ready_user(client, "analyst", "Analyst-pass-123!")
         client.cookies.clear()
         _login(client, "analyst", "Analyst-pass-123!")
         response = client.post(

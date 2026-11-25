@@ -27,6 +27,7 @@ from app.stores import chat_conversations as cc
 from tests.test_chat_round12_api import _auth_client, _login, _open_client
 from tests.test_chat_round12_storage import BACKENDS, kv_backend, long_answer, turn
 from tests.test_chat_round12_fixes import routes_chat_mock
+from tests._auth_helpers import ready_user
 
 LONG_EVERY = 9  # every ninth answer is far over the inline limit
 
@@ -178,6 +179,7 @@ def test_the_route_is_owner_scoped_with_auth_on() -> None:
         assert client.get(f"/api/chat/conversations/{cid}/messages", params={"limit": 2}).json()["earlier_message_count"] == 6
         assert client.post("/api/users", json={"username": "other", "password": "other-pass-12345",
                                                "role": "analyst_tier1"}).status_code == 200
+        ready_user(client, "other", "other-pass-12345")
         _login(client, "other", "other-pass-12345")
         assert client.get(f"/api/chat/conversations/{cid}/messages").status_code == 404
         assert client.get(f"/api/chat/conversations/{cid}").status_code == 404

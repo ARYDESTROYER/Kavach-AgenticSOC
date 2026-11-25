@@ -193,4 +193,16 @@ describe('Sessions activity rows', () => {
     expect(await screen.findByText('Signed in with a password')).toBeInTheDocument();
     expect(screen.queryByText('No recent activity.')).not.toBeInTheDocument();
   });
+
+  it('names each event the way the Audit log does, never the raw event id', async () => {
+    activity.mockResolvedValue({ activity: [{ ...record, event_label: 'Signed in' }] });
+    sessionsList.mockResolvedValue({ sessions: [] });
+    renderSessions();
+    fireEvent.mouseDown(await screen.findByRole('tab', { name: 'Activity' }));
+    expect(await screen.findByText('Signed in')).toBeInTheDocument();
+    expect(screen.queryByText('Auth.login')).not.toBeInTheDocument();
+    expect(activityRows({ activity: [{ ...record, event_label: 'Signed in' }] })[0].event_label).toBe(
+      'Signed in',
+    );
+  });
 });

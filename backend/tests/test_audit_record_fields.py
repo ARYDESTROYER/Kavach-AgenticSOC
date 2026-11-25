@@ -69,6 +69,7 @@ from app.middleware.request_id import RequestIdMiddleware
 from app.models import AuditChange
 from app.state import AppState
 from tests.conftest import make_raw_event, mount_moved_routers
+from tests._auth_helpers import ready_user
 
 _JWT_SECRET = "a4b1-record-fields-secret"
 _PEER_HEADER = "x-test-peer"
@@ -787,6 +788,8 @@ def test_a_password_change_is_audited_first_and_never_records_the_password() -> 
         created = client.post("/api/users", json={"username": "pat", "password": "pat-pass-123"},
                               headers=auth)
         assert created.status_code == 200, created.text
+        # No ready_user here: this change IS pat's forced change of the temporary
+        # password, which the server allows while the flag is set (Round 16, B20).
         token = _login(client, "pat", "pat-pass-123").json()["token"]
         bad = client.post("/api/auth/change-password", headers={"Authorization": f"Bearer {token}"},
                           json={"current_password": "wrong", "new_password": "pat-new-pass-1"})
@@ -815,6 +818,7 @@ def test_user_create_update_role_change_and_delete_rows() -> None:
             "display_name": "V Patel", "email": "vp@example.com",
         })
         assert created.status_code == 200, created.text
+        ready_user(client, "vpatel", "vp-pass-1234")
         assert client.put("/api/users/vpatel", headers=auth, json={"phone": "+1 555"}).status_code == 200
         role = client.put("/api/users/vpatel", headers=auth, json={"role": "analyst_tier2"})
         assert role.status_code == 200, role.text
@@ -854,6 +858,7 @@ def test_custom_role_writes_and_role_assignment_record_grant_by_grant() -> None:
         })
         assert changed.status_code == 200, changed.text
         client.post("/api/users", headers=auth, json={"username": "kim", "password": "kim-pass-123"})
+        ready_user(client, "kim", "kim-pass-123")
         assigned = client.put("/api/users/kim/roles", headers=auth, json={"custom_roles": ["hunter"]})
         assert assigned.status_code == 200, assigned.text
         assert client.delete("/api/roles/hunter", headers=auth).status_code == 200
@@ -1005,6 +1010,7 @@ def test_identity_and_settings_rows_go_to_the_real_log_with_demo_mode_on() -> No
             made = client.post("/api/users", headers=auth,
                                json={"username": "demo-era", "password": "demo-era-pass"})
             assert made.status_code == 200, made.text
+            ready_user(client, "demo-era", "demo-era-pass")
             _login(client, "nobody", "wrong-pass")
             demo_rows = _rows(client, api, repo=state.demo_audit)
             real_rows = _rows(client, api)
@@ -1136,6 +1142,7 @@ def test_auth_me_reports_whether_row_level_scope_applies() -> None:
         assert client.get("/api/auth/me", headers=auth).json()["object_scoped"] is False
         client.post("/api/users", headers=auth,
                     json={"username": "tier1", "password": "tier1-pass", "role": "analyst_tier1"})
+        ready_user(client, "tier1", "tier1-pass")
         token = _login(client, "tier1", "tier1-pass").json()["token"]
         me = client.get("/api/auth/me", headers={"Authorization": f"Bearer {token}"}).json()
     assert me["object_scoped"] is True
@@ -1668,6 +1675,7 @@ def test_a_failing_refresh_after_a_saved_update_writes_no_failure_row(monkeypatc
         made = client.post("/api/users", headers=auth,
                            json={"username": "rhea", "password": "rhea-pass-123"})
         assert made.status_code == 200, made.text
+        ready_user(client, "rhea", "rhea-pass-123")
         state = _state(api)
 
         async def _boom() -> None:
@@ -2199,7 +2207,7 @@ def test_a_failed_source_secrets_save_leaves_the_credentials_as_they_were(monkey
 _A4B1_ACTIONS: dict[str, str] = {
     "auth.login": "access", "auth.login_failed": "access", "auth.logout": "access",
     "auth.mfa_challenged": "access", "auth.mfa_setup_started": "access",
-    "auth.mfa_enrolled": "access", "auth.mfa_failed": "access",
+    "auth.mfa_enrolled": "access", "auth.mfa_failed": "access", "auth.mfa_locked": "access",
     "auth.mfa_disabled": "access", "auth.password_changed": "access",
     "auth.password_change_failed": "access", "auth.reauthenticated": "access",
     "auth.reauth_failed": "access",
@@ -2284,10 +2292,14 @@ def test_the_writers_record_no_action_the_list_does_not_name() -> None:
 # was appended, and never reports success for an account that is gone
 # --------------------------------------------------------------------------- #
 def _new_account(client: TestClient, auth: dict[str, str], username: str = "bob",
-                 password: str = "Bob-pass-123") -> dict[str, str]:
+                 password: str = "Bob-pass-123", *, ready: bool = True) -> dict[str, str]:
     made = client.post("/api/users", headers=auth, json={
         "username": username, "password": password, "role": "analyst_tier1"})
     assert made.status_code == 200, made.text
+    if ready:
+        # Clear the forced password change (Round 16, B20) unless the test's own
+        # password change is the one under test.
+        ready_user(client, username, password)
     signed_in = _login(client, username, password)
     assert signed_in.status_code == 200, signed_in.text
     return {"Authorization": f"Bearer {signed_in.json()['token']}"}
@@ -2568,7 +2580,7 @@ def test_a_password_change_of_an_account_deleted_meanwhile_answers_404(monkeypat
     client, api = _client()
     with client:
         auth = _admin(client)
-        bob = _new_account(client, auth)
+        bob = _new_account(client, auth, ready=False)
         state = _state(api)
 
         async def _delete() -> None:

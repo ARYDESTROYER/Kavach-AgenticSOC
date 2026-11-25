@@ -380,7 +380,7 @@ export function SessionsTable({
 /**
  * The activity rows of a `GET /api/account/activity` answer. The server sends audit
  * records under `activity`, so each row's event name, summary and client address are
- * mapped onto the fields the list shows (`action`, `detail`, `ip`).
+ * mapped onto the fields the list shows (`action`, `event_label`, `detail`, `ip`).
  */
 export function activityRows(res: ActivityResponse | null | undefined): ActivityEvent[] {
   const rows = Array.isArray(res?.activity) ? res.activity : Array.isArray(res?.events) ? res.events : [];
@@ -391,6 +391,7 @@ export function activityRows(res: ActivityResponse | null | undefined): Activity
     return {
       ...row,
       action: text(row.action) ?? text(row.action_type),
+      event_label: text(row.event_label),
       detail: text(row.detail) ?? text(row.result_summary),
       ip: text(row.ip) ?? text(client.ip) ?? null,
     };
@@ -405,7 +406,7 @@ function ActivityList({ events, loading }: { events: ActivityEvent[]; loading: b
       cell: (e) => (
         <div className="min-w-0">
           <span className="block truncate text-sm font-medium text-foreground">
-            {e.action ? humanizeToken(String(e.action)) : 'Event'}
+            {e.event_label || (e.action ? humanizeToken(String(e.action)) : 'Event')}
           </span>
           {e.detail ? (
             <span className="block truncate text-xs text-muted-foreground">{e.detail}</span>

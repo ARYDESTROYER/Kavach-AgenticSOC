@@ -32,9 +32,22 @@ supply controlled bootstrap credentials, then rotate them immediately.
 ## Sessions
 
 Access tokens carry a session identifier and token version. The session store applies
-idle, absolute, revocation, and refresh-rotation checks. Users can inspect and revoke
-their sessions; administrators can inspect the organization session registry and
-revoke sessions for another user.
+idle, absolute and revocation checks. No sign-in issues a refresh token: a session
+lasts until its access token expires, within the idle and absolute limits, and then
+the person signs in again. Users can inspect and revoke their sessions;
+administrators can inspect the organization session registry and revoke sessions for
+another user.
+
+Changing your own password signs out your other sessions (the current one stays). An
+administrator's password reset signs the account out everywhere. An account an
+administrator creates or resets must change its temporary password before anything
+else; until then every other request answers `403` with code
+`password_change_required`. The seeded demonstration administrator is not flagged.
+
+Ten wrong second-factor codes in a row lock second-factor checks for the account for
+5 minutes, doubling for each further run up to an hour. Turning MFA off and enrolling
+a new authenticator both need a recent sign-in, and an enrolled account turns MFA off
+with a current code before it enrols a new one.
 
 Use short access lifetimes appropriate to the environment. Session continuity also
 depends on the selected state store and a stable JWT secret.

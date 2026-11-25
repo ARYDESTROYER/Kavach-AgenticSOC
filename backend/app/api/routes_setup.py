@@ -50,7 +50,7 @@ from pydantic import BaseModel, Field
 from ..audit.changes import diff_changes
 from ..audit.context import audit_context
 from ..audit.write import audited_write
-from ..auth.passwords import hash_password
+from ..auth.passwords import ahash_password
 from ..constants import ActionType, UserRole
 from ..models import AuditChange, AuditTarget
 from ..stored_text import username_problem
@@ -185,11 +185,13 @@ async def setup_account(
     #    because the operator is choosing this credential right now. The caller has not
     #    signed in, so the row's context never reads a credential the request carries.
     display = (body.display_name or "").strip()
+    # Round 16 (B18): the PBKDF2 work runs off the event loop, under a semaphore.
+    password_hash = await ahash_password(body.password)
 
     async def _create():
         created = await state.users.create_if_absent(
             username=uname,
-            password_hash=hash_password(body.password),
+            password_hash=password_hash,
             role=UserRole.SUPER_ADMIN.value,
             active=True,
             must_change_password=False,

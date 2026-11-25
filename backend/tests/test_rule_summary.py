@@ -64,6 +64,7 @@ from app.llm.providers import MockProvider
 from app.models import Case, Entity, FeedbackEntry, RuleSummary
 from app.state import AppState
 from app.stores.tuning import TuningRecord
+from tests._auth_helpers import ready_user
 
 UTC = timezone.utc
 INDEX_WZ = "wazuh-alerts-2026.10.26"
@@ -1115,6 +1116,7 @@ def _login_tier1(client: TestClient) -> None:
     assert client.post("/api/auth/login", json={"username": "Admin", "password": "Admin@123"}).status_code == 200
     assert client.post("/api/users", json={"username": "tier1", "password": "tier1-pass-1234",
                                            "role": "analyst_tier1"}).status_code == 200
+    ready_user(client, "tier1", "tier1-pass-1234")
     client.post("/api/auth/logout")
     assert client.post("/api/auth/login", json={"username": "tier1", "password": "tier1-pass-1234"}).status_code == 200
 

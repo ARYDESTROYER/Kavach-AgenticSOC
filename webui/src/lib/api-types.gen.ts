@@ -378,6 +378,10 @@ export interface paths {
          * @description Self-service password change (requires a valid session). Verifies the current
          *     password, sets the new one and clears ``must_change_password``. Works only for
          *     multi-user accounts; the env single-admin has no persisted record to update.
+         *
+         *     Round 16 (B21): a successful change signs out the caller's other sessions (this
+         *     one stays) and stops their chat answers, writes a ``session.revoked`` row and
+         *     returns ``sessions_revoked``.
          */
         post: operations["auth_change_password_api_auth_change_password_post"];
         delete?: never;
@@ -471,6 +475,9 @@ export interface paths {
          * @description Confirm MFA enrollment (self): verify a TOTP code against the PENDING secret,
          *     then persist the obfuscated secret + hashed recovery codes and set
          *     ``mfa_enabled=True``. Idempotent only in that a wrong code 400s and leaves MFA off.
+         *
+         *     Round 16: needs a fresh sign-in and answers 409 for an enrolled account (B17); a
+         *     wrong code counts toward the account's second-factor bound (B19).
          */
         post: operations["mfa_confirm_api_auth_mfa_confirm_post"];
         delete?: never;
@@ -494,6 +501,9 @@ export interface paths {
          *     single-use recovery code (so a hijacked session alone cannot turn MFA off).
          *     Clears the secret + recovery hashes. (A super_admin can force-disable another
          *     user via PUT /api/users/{username} {mfa_enabled:false}.)
+         *
+         *     Round 16 (B19): needs a fresh sign-in, and a wrong code counts toward the
+         *     account's second-factor bound, so a session cannot guess codes without limit.
          */
         post: operations["mfa_disable_api_auth_mfa_disable_post"];
         delete?: never;
@@ -561,8 +571,11 @@ export interface paths {
          * Mfa Setup
          * @description Begin MFA enrollment (self, authenticated). Generates a PENDING TOTP secret +
          *     recovery codes and returns them ONCE (the secret + otpauth URI for the QR, and the
-         *     plaintext recovery codes for the user to save). Does NOT enable MFA — the user must
+         *     plaintext recovery codes for the user to save). Does NOT enable MFA: the user must
          *     prove possession via /auth/mfa/confirm. Re-calling regenerates the pending secret.
+         *
+         *     Round 16 (B17): needs a fresh sign-in, and answers 409 for an account that is
+         *     already enrolled, so a stolen session cannot replace the authenticator.
          */
         post: operations["mfa_setup_api_auth_mfa_setup_post"];
         delete?: never;
@@ -626,7 +639,13 @@ export interface paths {
         put?: never;
         /**
          * Auth Refresh
+         * @deprecated
          * @description Rotate a refresh token → mint a fresh ACCESS token + a NEW refresh token.
+         *
+         *     Round 16 (B24): deprecated. No sign-in issues a refresh token, so every call
+         *     answers 401 with code ``session_invalid`` and reason ``unknown_refresh``. A
+         *     session lasts until its access token expires, within the idle and absolute
+         *     limits. The route stays so an older client gets that answer, not a 404.
          *
          *     Reuse detection (theft): if the presented token matches an ALREADY-ROTATED
          *     previous hash, the session is treated as compromised → revoke + bump the user's
@@ -723,6 +742,9 @@ export interface paths {
          * @description Set/clear one OIDC provider's client secret (super_admin only). The value goes
          *     to the SECRET tier (in memory), NEVER to Preferences/the config doc; only a
          *     configured-boolean is returned.
+         *
+         *     Round 16 (B15): a stored Super admin with a strict fresh sign-in only, otherwise
+         *     ``403 super_admin_only`` and nothing changes.
          */
         post: operations["set_sso_provider_secret_api_auth_sso_providers__provider_id__secret_post"];
         delete?: never;
@@ -6781,7 +6803,7 @@ export interface paths {
         /**
          * List Acknowledgements
          * @description The acknowledgement log (newest first), optionally filtered by ``window`` /
-         *     ``user``. Read inherits the router auth mount. Never 500s.
+         *     ``user``. Read needs metrics:view. Never 500s.
          */
         get: operations["list_acknowledgements_api_standup_acknowledgements_get"];
         put?: never;
@@ -6801,8 +6823,8 @@ export interface paths {
         };
         /**
          * List Action Items
-         * @description List shift action items (newest-tracked first by creation order). Read inherits
-         *     the router auth mount. Never 500s — a degraded store yields an empty list.
+         * @description List shift action items (newest-tracked first by creation order). Read needs
+         *     metrics:view. Never 500s: a degraded store yields an empty list.
          */
         get: operations["list_action_items_api_standup_action_items_get"];
         put?: never;

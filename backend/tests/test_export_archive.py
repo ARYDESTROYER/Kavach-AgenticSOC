@@ -29,6 +29,7 @@ from app.llm.providers import MockProvider
 from app.middleware.request_id import RequestIdMiddleware
 from app.models import AuditDoc
 from app.state import AppState
+from tests._auth_helpers import ready_user
 
 
 def _export_app(
@@ -941,6 +942,7 @@ def test_archive_real_router_denies_role_without_export_permission(role: str) ->
             },
         )
         assert created.status_code == 200, created.text
+        ready_user(client, username, "archive-role-test-pass")
         client.cookies.clear()
         login = client.post(
             "/api/auth/login",
@@ -1014,6 +1016,7 @@ def test_archive_rechecks_permission_after_assembly_before_audit_or_delivery(
             },
         )
         assert created.status_code == 200, created.text
+        ready_user(client, "archive-manager", "archive-manager-pass")
         client.cookies.clear()
         manager = client.post(
             "/api/auth/login",

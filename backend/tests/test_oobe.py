@@ -30,6 +30,7 @@ from app.config import Secrets
 from app.es.fake import InMemoryESClient
 from app.llm.providers import MockProvider
 from app.state import AppState
+from tests._auth_helpers import ready_user
 
 
 def _build_client(**secret_overrides):
@@ -194,12 +195,20 @@ def test_rbac_on_enforces_user_management_and_close() -> None:
                                        "role": "analyst_tier1"})
         assert r.status_code == 200
         # The tier1 analyst logs in (must change password on creation, but can still
-        # authenticate; we only assert the RBAC gate here).
+        # authenticate).
         c.post("/api/auth/logout")
         login = _login(c, "tier1", "tier1password")
         assert login.status_code == 200
         assert login.json()["user"]["role"] == "analyst_tier1"
         assert login.json()["user"]["must_change_password"] is True
+        # Round 16 (B20): the server holds every other route until the temporary
+        # password is changed; then the RBAC gate is what answers.
+        held = c.get("/api/cases")
+        assert held.status_code == 403
+        assert held.json()["detail"]["code"] == "password_change_required"
+        changed = c.post("/api/auth/change-password", json={
+            "current_password": "tier1password", "new_password": "tier1password"})
+        assert changed.status_code == 200, changed.text
         # tier1 is DENIED users:manage (403).
         assert c.get("/api/users").status_code == 403
         # tier1 may LIST cases (cases:read) ...
@@ -239,4 +248,5 @@ def test_cannot_delete_or_demote_last_super_admin() -> None:
         # Add a second super_admin, then the first can be demoted.
         assert c.post("/api/users", json={"username": "root2", "password": "root2password",
                                           "role": "super_admin"}).status_code == 200
+        ready_user(c, "root2", "root2password")
         assert c.put("/api/users/root", json={"role": "soc_manager"}).status_code == 200

@@ -125,8 +125,10 @@ Things to point out on the **redesigned login** before you sign in:
   the **MFA** step (a 6-cell segmented OTP input), and any configured **SSO**
   buttons (per-provider Google / Microsoft / generic brand icons).
 
-Sign in. (For a real deployment, change this immediately — see `docs/USAGE.md`
-§24 for the forced-change-password OOBE flow.)
+Sign in. The seeded demo `Admin` is deliberately not asked to change its password.
+For a real deployment, change it immediately, or set `AUTH_SEED_ADMIN=false` on the backend
+and create the first administrator in the setup flow (`docs/USAGE.md` §24). The forced
+password change applies to accounts an administrator creates or resets.
 
 > If you ran `run-demo.sh`, these creds are also echoed in the startup banner.
 

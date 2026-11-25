@@ -277,7 +277,8 @@ export const FEATURES: FeatureNode[] = [
         icon: LayoutGrid,
         perm: METRICS_VIEW,
       },
-      { id: 'standup', label: 'Standup', icon: CalendarDays },
+      // GET /api/standup and the standup reads need `metrics:view` (Round 16 D11).
+      { id: 'standup', label: 'Standup', icon: CalendarDays, perm: METRICS_VIEW },
     ],
   },
 
@@ -391,8 +392,8 @@ export const FEATURES: FeatureNode[] = [
       // offers a page that would answer 403: Metrics and Agent effectiveness read
       // `metrics:view` endpoints (GET /api/metrics, /api/metrics/agent-improvement),
       // and Cost reads GET /api/usage/summary, which needs `cost:view` (Round 14
-      // roles-11). `models` stays ungated: GET /api/llm/models is auth-only, so gating
-      // it would hide a page the principal can actually read.
+      // roles-11). Models reads GET /api/llm/models, which needs `models:read`
+      // (Round 16, B01).
       { id: 'metrics', label: 'Metrics', icon: BarChart3, perm: METRICS_VIEW },
       // Round 15 (SPEC D3.1, D3.2): per-person work counts from the audit log, for a
       // SOC manager (and, read only, an auditor). GET /api/team/* needs `team:view`.
@@ -404,7 +405,7 @@ export const FEATURES: FeatureNode[] = [
         perm: METRICS_VIEW,
       },
       { id: 'cost', label: 'Cost', icon: DollarSign, perm: COST_VIEW },
-      { id: 'models', label: 'Models', icon: Cpu },
+      { id: 'models', label: 'Models', icon: Cpu, perm: { resource: 'models', action: 'read' } },
       {
         id: 'baseline',
         label: 'Baseline',

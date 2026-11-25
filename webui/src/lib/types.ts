@@ -277,6 +277,8 @@ export interface ActivityEvent {
   ts?: string;
   /** The action type (e.g. "AUTH_EVENT" / "USER_MGMT" / "SESSION") — plain text. */
   action?: string;
+  /** The friendly event name the Audit log shows (e.g. "Signed in"), when the server sends it. */
+  event_label?: string;
   /** A short human-readable summary of the event (UNTRUSTED — plain text). */
   detail?: string;
   /** The actor (usually the user themselves) — plain text. */
@@ -303,9 +305,8 @@ export interface ActivityResponse {
 }
 
 /**
- * POST /api/auth/refresh / POST /api/auth/reauth — the step-up / rotation result.
- * The new session cookie is set HttpOnly server-side; the body carries only
- * non-secret confirmation (no token is returned to JS).
+ * POST /api/auth/reauth: the step-up result. The body carries only non-secret
+ * confirmation (no token is returned to JS).
  */
 export interface ReauthResult {
   ok: boolean;

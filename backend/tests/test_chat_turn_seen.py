@@ -23,6 +23,7 @@ from app.realtime import (
 )
 from tests.test_chat_round12_api import _auth_client, _login
 from tests.test_chat_routes_stream import FINAL
+from tests._auth_helpers import ready_user
 
 TOPICS = frozenset({"chat", "jobs"})
 
@@ -111,6 +112,7 @@ def test_an_unknown_turn_or_another_user_s_names_nothing_but_the_id_to_the_calle
             "username": "analyst", "password": "analyst-pass-12345", "role": "analyst_tier1",
         })
         assert created.status_code == 200, created.text
+        ready_user(client, "analyst", "analyst-pass-12345")
         _login(client, "analyst", "analyst-pass-12345")
         owner._queue.clear()  # noqa: SLF001
         assert client.post(f"/api/chat/turns/{turn_id}/seen").status_code == 204
@@ -151,6 +153,7 @@ def test_seen_needs_cases_read() -> None:
         assert client.post("/api/users", json={
             "username": "viewer", "password": "viewer-pass-12345", "role": "auditor",
         }).status_code == 200
+        ready_user(client, "viewer", "viewer-pass-12345")
         _login(client, "viewer", "viewer-pass-12345")
         assert client.post("/api/chat/turns/turn-x/seen").status_code == 403
 

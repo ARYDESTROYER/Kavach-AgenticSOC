@@ -1726,6 +1726,7 @@ async def sources_coverage(
 async def source_feeds(
     source_id: str,
     state: AppState = Depends(get_state),
+    _=Depends(require_permission("sources", "read")),
 ) -> dict[str, Any]:
     """The resolved EFFECTIVE feeds for a source (Wave 6) — for the per-source Feeds
     editor.
@@ -1767,7 +1768,10 @@ async def source_feeds(
 # Settings (Surface 5)
 # --------------------------------------------------------------------------- #
 @router.get("/settings")
-async def get_settings(state: AppState = Depends(get_state)) -> dict[str, Any]:
+async def get_settings(
+    state: AppState = Depends(get_state),
+    _=Depends(require_permission("settings", "read")),
+) -> dict[str, Any]:
     return {
         "prefs": state.prefs.model_dump(mode="json"),
         "configured": state.secrets.configured_status(),
@@ -2075,6 +2079,143 @@ def _guard_rbac_settings_change(current: Preferences, validated: Preferences, *,
         raise _RbacEditAuthorityNeeded()
 
 
+class _SsoEditAuthorityNeeded(Exception):
+    """Raised by the settings transform when the body changes the single sign-on block
+    and the caller's Super admin authority has not been checked yet (Round 16, B15)."""
+
+
+def _guard_sso_settings_change(current: Preferences, validated: Preferences, *,
+                               authority: dict[str, Any]) -> None:
+    """Compare the validated merged ``sso`` block with the stored one (Round 16, B15).
+
+    Any change (a provider added, removed or edited in any field, or ``sso.enabled``
+    changed) needs a stored Super admin with a strict fresh sign-in: a capability test
+    on the role values is not enough, because repointing the issuer of a provider a
+    Super admin is linked to would sign the editor in as that Super admin. Once the
+    authority is held, every role value of a changed or added provider must be a
+    built-in role or a known custom role, otherwise 422."""
+    before = current.sso.model_dump(mode="json")
+    after = validated.sso.model_dump(mode="json")
+    if before == after:
+        return
+    if not authority.get("checked"):
+        raise _SsoEditAuthorityNeeded()
+    known: frozenset[str] = authority.get("roles") or frozenset()
+    stored = {p.get("id"): p for p in before.get("providers") or []}
+    for prov in after.get("providers") or []:
+        if stored.get(prov.get("id")) == prov:
+            continue  # unchanged: a stored value never blocks another edit
+        pid = str(prov.get("id") or "")
+        values = [("default_role", prov.get("default_role"))]
+        values += [
+            (f"group_role_map.{group}", role)
+            for group, role in (prov.get("group_role_map") or {}).items()
+        ]
+        for field, value in values:
+            if str(value or "") not in known:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        f"Invalid settings: sso provider {pid!r} {field} must be a built-in "
+                        f"role or a custom role (received {value!r})"
+                    ),
+                )
+
+
+async def _known_role_ids(state: AppState) -> frozenset[str]:
+    """The built-in role values and every custom role name the matrix resolves."""
+    from ..rbac.policy import resolve_matrix
+
+    from .deps import _rbac_config_with_custom_roles
+
+    names = {r.value for r in UserRole}
+    try:
+        names |= {str(k) for k in resolve_matrix(await _rbac_config_with_custom_roles(state))}
+    except Exception as exc:  # noqa: BLE001 (built-in roles still validate)
+        logger.warning("Resolving custom roles for an SSO save failed: %s", exc)
+    return frozenset(names)
+
+
+def _sla_timezone_ok(name: str) -> bool:
+    """``UTC``, ``Z``, a ``+HH:MM`` offset (hours below 24) or a zone name ``zoneinfo``
+    accepts: the grammar ``engine.time_windows.zone_for`` reads (Round 16, B51)."""
+    import re
+    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+    if name.upper() in ("UTC", "Z"):
+        return True
+    match = re.fullmatch(r"([+-])(\d{2}):?(\d{2})", name)
+    if match:
+        return int(match.group(2)) <= 23 and int(match.group(3)) <= 59
+    try:
+        ZoneInfo(name)
+    except (ZoneInfoNotFoundError, ValueError, OSError, TypeError):
+        return False
+    return True
+
+
+def _reject_incoherent_settings(body: Any, current: Preferences) -> None:
+    """422 with a field message for a settings value that would be saved but cannot
+    work (Round 16, B51). Like :func:`_reject_out_of_range_caps` it reads only the keys
+    the request BODY sets, so a stored bad value still loads:
+
+    * ``sla.timezone`` must be ``UTC``, ``Z``, a ``+HH:MM`` offset or a zone name;
+    * a ``sla.targets`` tier, merged with its stored value, must not respond later
+      than it resolves (``response_minutes > resolve_minutes``);
+    * ``investigate_lookback`` must parse to an instant earlier than now."""
+    if not isinstance(body, dict):
+        return
+    sla = body.get("sla")
+    if isinstance(sla, dict):
+        tz = sla.get("timezone")
+        if isinstance(tz, str) and tz.strip() and not _sla_timezone_ok(tz.strip()):
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"Invalid settings: sla.timezone {tz!r} is not UTC, a +HH:MM offset "
+                    "or a time zone name such as Europe/London"
+                ),
+            )
+        targets = sla.get("targets")
+        if isinstance(targets, dict):
+            from ..config import SlaTarget
+
+            for tier, raw in targets.items():
+                if not isinstance(raw, dict):
+                    continue
+                stored = current.sla.targets.get(str(tier)) or SlaTarget()
+                respond = raw.get("response_minutes", stored.response_minutes)
+                resolve = raw.get("resolve_minutes", stored.resolve_minutes)
+                numbers = all(
+                    isinstance(v, (int, float)) and not isinstance(v, bool)
+                    for v in (respond, resolve)
+                )
+                if numbers and respond > resolve:
+                    raise HTTPException(
+                        status_code=422,
+                        detail=(
+                            f"Invalid settings: sla.targets.{tier}.response_minutes "
+                            f"({respond}) must not be more than resolve_minutes ({resolve})"
+                        ),
+                    )
+    if "investigate_lookback" in body:
+        from ..utils import relative_to_millis_strict
+
+        raw = body.get("investigate_lookback")
+        try:
+            start = relative_to_millis_strict(raw) if isinstance(raw, str) else None
+        except (ValueError, OverflowError, TypeError):
+            start = None
+        if start is None or start >= to_millis(now_utc()):
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "Invalid settings: investigate_lookback must be a time before now, "
+                    "such as now-24h or now-7d"
+                ),
+            )
+
+
 async def _require_rbac_edit_authority(request: Request, state: AppState) -> None:
     """``roles:manage`` (the route gate's core, which writes the Access denied row on a
     refusal) and a fresh sign-in. Both are no-ops with sign-in off."""
@@ -2134,6 +2275,8 @@ async def put_settings(
         _reject_out_of_range_caps(body)
         _reject_out_of_range_remember_me(body)
         _reject_out_of_range_auto_close_review(body)
+        # Round 16 (B51): values that would save but cannot work answer 422.
+        _reject_incoherent_settings(body, current)
         # Round 14 (SPEC §4.10.19): a retired runbook key the body CHANGES
         # (``rag.use_runbooks``, ``playbooks.enabled``) is carried onto its successor
         # under ``runbooks`` before the merge; validation rewrites the retired key as a
@@ -2149,6 +2292,8 @@ async def put_settings(
         # Round 15 (SPEC D1.3): the role-based access switch moved to PUT /api/rbac, and
         # the role matrix needs the role-management grant and a fresh sign-in.
         _guard_rbac_settings_change(current, validated, authorized=rbac_authority["checked"])
+        # Round 16 (B15): every single sign-on change needs a stored Super admin.
+        _guard_sso_settings_change(current, validated, authority=sso_authority)
         return validated
 
     # The legacy one-line summary keeps naming the top-level keys the body sent (never
@@ -2156,6 +2301,7 @@ async def put_settings(
     changed = sorted(str(k) for k in body.keys()) if isinstance(body, dict) else []
     body_sources = body.get("sources") if isinstance(body, dict) else None
     rbac_authority = {"checked": False}
+    sso_authority: dict[str, Any] = {"checked": False, "roles": None}
     while True:
         try:
             old_prefs, prefs = await audited_prefs_write(
@@ -2178,6 +2324,14 @@ async def put_settings(
                 raise
             await _require_rbac_edit_authority(request, state)
             rbac_authority["checked"] = True
+        except _SsoEditAuthorityNeeded:
+            # The same pattern for the single sign-on block (Round 16, B15): a stored
+            # Super admin with a strict fresh sign-in, asked once before the row.
+            if sso_authority["checked"]:  # pragma: no cover - the guard never asks twice
+                raise
+            await _require_super_admin_for(request, state)
+            sso_authority["roles"] = await _known_role_ids(state)
+            sso_authority["checked"] = True
     # #10 / G6 R5: record an immutable version snapshot for every rule this save CHANGED
     # (detection / correlation / case-automation) so DetectionRulesHome edits populate the
     # ledger + rollback UI. Best-effort; a versioning glitch never fails the save.
@@ -2477,7 +2631,10 @@ async def overview(
 # Model catalog (Feature 4) — for the settings per-role model pickers
 # --------------------------------------------------------------------------- #
 @router.get("/models")
-async def models(state: AppState = Depends(get_state)) -> dict[str, Any]:
+async def models(
+    state: AppState = Depends(get_state),
+    _=Depends(require_permission("models", "read")),
+) -> dict[str, Any]:
     grouped = models_by_provider()
     # Merge the operator's runtime-registered self-hosted / LiteLLM (OpenAI-compatible)
     # models so a locally-added model is selectable in the per-role picker, and expose a
@@ -4030,7 +4187,8 @@ async def auth_login(
     refused = username_char_problem(body.username)
     # Constant-cost credential check (no token yet: the lifetime depends on the
     # Remember-me decision below, which needs the verified principal's role).
-    checked = auth.check_password("" if refused else body.username, body.password)
+    # Round 16 (B18): the PBKDF2 work runs off the event loop, under a semaphore.
+    checked = await auth.acheck_password("" if refused else body.username, body.password)
     user = auth.principal(body.username) if checked and refused is None else None
     if user is None:
         await _record_identity_event(
@@ -4281,7 +4439,11 @@ async def auth_change_password(
 ) -> dict[str, Any]:
     """Self-service password change (requires a valid session). Verifies the current
     password, sets the new one and clears ``must_change_password``. Works only for
-    multi-user accounts; the env single-admin has no persisted record to update."""
+    multi-user accounts; the env single-admin has no persisted record to update.
+
+    Round 16 (B21): a successful change signs out the caller's other sessions (this
+    one stays) and stops their chat answers, writes a ``session.revoked`` row and
+    returns ``sessions_revoked``."""
     auth = state.auth
     if not auth.is_enabled:
         raise HTTPException(status_code=400, detail="authentication is disabled")
@@ -4292,8 +4454,9 @@ async def auth_change_password(
     new_pw = (body.new_password or "").strip()
     if len(new_pw) < 8:
         raise HTTPException(status_code=400, detail="new password must be at least 8 characters")
-    # Re-authenticate with the current password (constant-time, no oracle).
-    if auth.authenticate(principal.username, body.current_password) is None:
+    # Re-authenticate with the current password (constant-time, no oracle), off the
+    # event loop (Round 16, B18).
+    if not await auth.acheck_password(principal.username, body.current_password):
         await _record_identity_event(
             state, request, action="auth.password_change_failed", outcome="failure",
             actor=principal.username, summary="password change refused: current password incorrect",
@@ -4306,7 +4469,9 @@ async def auth_change_password(
             status_code=400,
             detail="this account is managed via environment configuration and cannot self-change",
         )
-    from ..auth.passwords import hash_password
+    from ..auth.passwords import ahash_password
+
+    new_hash = await ahash_password(new_pw)
 
     async def _write() -> None:
         # An account deleted while the row was appended answers 404, so its failure
@@ -4314,7 +4479,7 @@ async def auth_change_password(
         await _patch_user_or_404(
             state,
             principal.username,
-            password_hash=hash_password(new_pw),
+            password_hash=new_hash,
             must_change_password=False,
         )
 
@@ -4329,7 +4494,34 @@ async def auth_change_password(
         surface="auth", context=audit_context(request), result_summary="password changed",
     )
     await state.refresh_users()
-    return {"ok": True}
+    # Round 16 (B21): the caller's OTHER sessions end now; this one stays. Without a
+    # registered session id there is nothing to keep, so every session ends.
+    keep = str(getattr(principal, "sid", "") or "")
+    if keep:
+        revoked = await state.sessions.revoke_others(
+            principal.username, keep, by=principal.username, reason="password_changed",
+        )
+        await _stop_chat_turns(state, principal.username, except_sid=keep)
+    else:
+        revoked = await state.sessions.revoke_all(
+            principal.username, by=principal.username, reason="password_changed",
+        )
+        await state.refresh_sessions()
+        await _stop_chat_turns(state, principal.username)
+    if revoked or not keep:
+        # One row when a session ended (or every token was invalidated); a change
+        # with no other session to end writes none.
+        await _record_identity_event(
+            state, request, action="session.revoked", actor=principal.username,
+            surface="session", target=_user_target(principal.username),
+            summary=_session_summary(
+                "session_revoke_others", keep,
+                f"password changed: revoked {int(revoked or 0)} other session(s)",
+            ),
+            tool_input={"scope": "others" if keep else "all", "count": int(revoked or 0),
+                        "reason": "password_changed"},
+        )
+    return {"ok": True, "sessions_revoked": int(revoked or 0)}
 
 
 # --------------------------------------------------------------------------- #
@@ -4432,12 +4624,17 @@ async def revoke_other_sessions(
     return {"ok": True, "revoked": count}
 
 
-@router.post("/auth/refresh")
+@router.post("/auth/refresh", deprecated=True)
 async def auth_refresh(
     body: RefreshBody, request: Request, response: Response,
     state: AppState = Depends(get_state),
 ) -> dict[str, Any]:
     """Rotate a refresh token → mint a fresh ACCESS token + a NEW refresh token.
+
+    Round 16 (B24): deprecated. No sign-in issues a refresh token, so every call
+    answers 401 with code ``session_invalid`` and reason ``unknown_refresh``. A
+    session lasts until its access token expires, within the idle and absolute
+    limits. The route stays so an older client gets that answer, not a 404.
 
     Reuse detection (theft): if the presented token matches an ALREADY-ROTATED
     previous hash, the session is treated as compromised → revoke + bump the user's
@@ -4536,7 +4733,7 @@ async def auth_reauth(
     ``last_authn_at`` on the session so a ``require_fresh_auth``-gated action is
     unlocked for the policy window. Audited (#2)."""
     principal = _require_session(state, request)
-    if state.auth.authenticate(principal.username, body.password or "") is None:
+    if not await state.auth.acheck_password(principal.username, body.password or ""):
         await _record_identity_event(
             state, request, action="auth.reauth_failed", outcome="failure",
             actor=principal.username, surface="session", summary="reauth failed",
@@ -4565,7 +4762,17 @@ async def account_activity(
     principal = _require_session(state, request)
     rows = await _records_for_actor(state, principal.username, limit)
     # A lone surrogate an older build stored cannot be carried by a UTF-8 response.
-    return {"activity": shown(rows)}
+    # Round 16 (B55): each row carries the friendly event name the Audit log shows.
+    from ..audit import events as audit_events
+
+    labelled = []
+    for row in shown(rows):
+        try:
+            label = audit_events.classify(row).label
+        except Exception:  # noqa: BLE001 (a row that cannot be named keeps no label)
+            label = ""
+        labelled.append({**row, "event_label": label} if label else row)
+    return {"activity": labelled}
 
 
 # --------------------------------------------------------------------------- #
@@ -4994,6 +5201,96 @@ def _require_session(state: AppState, request: Request):
 # lowercased username — never persisted until the user proves possession via confirm.
 _MFA_PENDING_ENROLL: dict[str, dict[str, Any]] = {}
 
+# Round 16 (B19): every second-factor check (the sign-in verify, both enrolment
+# confirms and turning MFA off) shares one per-account bound. After this many
+# consecutive failures, checks are refused for 5 minutes, doubling for each further
+# run of failures up to an hour. A success resets the counter.
+MFA_LOCK_THRESHOLD = 10
+MFA_LOCK_BASE_MINUTES = 5
+MFA_LOCK_MAX_MINUTES = 60
+MFA_LOCKED_MESSAGE = "Too many wrong codes. Wait a few minutes, then try again."
+# Round 16 (B17): a new authenticator replaces an enrolled one only through
+# /auth/mfa/disable, which needs a current code.
+MFA_ALREADY_ENABLED_MESSAGE = (
+    "MFA is already enabled; turn it off with a current code before enrolling a new "
+    "authenticator."
+)
+
+
+def _mfa_lock_minutes(nth_lock: int) -> int:
+    """The length of the n-th lock in a row: 5, 10, 20, 40, then 60 minutes."""
+    return min(MFA_LOCK_MAX_MINUTES, MFA_LOCK_BASE_MINUTES * (2 ** max(0, int(nth_lock) - 1)))
+
+
+def _mfa_lock_seconds_left(user: Any) -> int:
+    """Seconds until the account's second-factor checks unlock (0 when not locked)."""
+    from ..utils import parse_es_timestamp
+
+    raw = str(getattr(user, "mfa_locked_until", "") or "")
+    until = parse_es_timestamp(raw) if raw else None
+    if until is None:
+        return 0
+    return max(0, int(until.timestamp() - now_utc().timestamp()))
+
+
+def _mfa_already_enabled() -> HTTPException:
+    return HTTPException(
+        status_code=409,
+        detail={"code": "mfa_already_enabled", "message": MFA_ALREADY_ENABLED_MESSAGE},
+    )
+
+
+async def _refuse_locked_mfa(state: AppState, request: Request, user: Any, *,
+                             pending: bool) -> None:
+    """429 without checking any code while the account's checks are locked (B19).
+    ``pending`` marks a sign-in step (the row never reads the request's credential)."""
+    left = _mfa_lock_seconds_left(user)
+    if left <= 0:
+        return
+    username = str(user.username)
+    await _record_identity_event(
+        state, request, action="auth.mfa_failed", outcome="denied", actor=username,
+        user=state.auth.principal(username) if pending else None,
+        summary="mfa check refused: too many failed codes",
+        target=_user_target(username), tool_input={"locked": True},
+        from_request=not pending,
+    )
+    raise HTTPException(
+        status_code=429,
+        detail={"code": "mfa_locked", "message": MFA_LOCKED_MESSAGE, "retry_after_seconds": left},
+        headers={"Retry-After": str(left)},
+    )
+
+
+async def _count_mfa_failure(state: AppState, request: Request, username: str, *,
+                             pending: bool) -> None:
+    """Count one failed second-factor check; the check that starts a lock writes one
+    ``auth.mfa_locked`` row (B19). Never raises into the caller."""
+    from datetime import timedelta
+
+    def _until(minutes: int) -> str:
+        return (now_utc() + timedelta(minutes=int(minutes))).isoformat()
+
+    try:
+        count, until, newly = await state.users.record_mfa_failure(
+            username, threshold=MFA_LOCK_THRESHOLD, lock_minutes=_mfa_lock_minutes,
+            now_iso=iso_now(), until_iso=_until,
+        )
+    except Exception as exc:  # noqa: BLE001 (the refusal itself still stands)
+        logger.warning("Counting a failed second-factor check failed: %s", exc)
+        return
+    if not newly:
+        return
+    minutes = _mfa_lock_minutes(count // MFA_LOCK_THRESHOLD)
+    await _record_identity_event(
+        state, request, action="auth.mfa_locked", outcome="denied", actor=username,
+        user=state.auth.principal(username) if pending else None,
+        summary=f"two-factor checks locked for {minutes} minutes after {count} failed codes",
+        target=_user_target(username),
+        tool_input={"failed_count": count, "locked_minutes": minutes, "locked_until": until},
+        from_request=not pending,
+    )
+
 
 def _mfa_changes(*, enabled: bool) -> list[dict[str, Any]]:
     """The audit ``changes`` of turning a second factor on or off: the flag, and the
@@ -5007,14 +5304,24 @@ def _mfa_changes(*, enabled: bool) -> list[dict[str, Any]]:
 
 
 @router.post("/auth/mfa/setup")
-async def mfa_setup(request: Request, state: AppState = Depends(get_state)) -> dict[str, Any]:
+async def mfa_setup(
+    request: Request, state: AppState = Depends(get_state),
+    _fresh=Depends(require_fresh_auth()),
+) -> dict[str, Any]:
     """Begin MFA enrollment (self, authenticated). Generates a PENDING TOTP secret +
     recovery codes and returns them ONCE (the secret + otpauth URI for the QR, and the
-    plaintext recovery codes for the user to save). Does NOT enable MFA — the user must
-    prove possession via /auth/mfa/confirm. Re-calling regenerates the pending secret."""
+    plaintext recovery codes for the user to save). Does NOT enable MFA: the user must
+    prove possession via /auth/mfa/confirm. Re-calling regenerates the pending secret.
+
+    Round 16 (B17): needs a fresh sign-in, and answers 409 for an account that is
+    already enrolled, so a stolen session cannot replace the authenticator."""
     from ..auth import mfa as mfa_mod
 
     principal = _require_session(state, request)
+    existing = await state.users.get(principal.username)
+    if existing is not None and existing.mfa_enabled:
+        _MFA_PENDING_ENROLL.pop(principal.username.strip().lower(), None)
+        raise _mfa_already_enabled()
     digits, period = _mfa_params(state)
     secret = mfa_mod.generate_secret()
     recovery = mfa_mod.generate_recovery_codes(10)
@@ -5023,7 +5330,7 @@ async def mfa_setup(request: Request, state: AppState = Depends(get_state)) -> d
     )
     _MFA_PENDING_ENROLL[principal.username.strip().lower()] = {
         "secret": secret,
-        "recovery_hashes": [mfa_mod.hash_recovery_code(c) for c in recovery],
+        "recovery_hashes": await mfa_mod.ahash_recovery_codes(recovery),
     }
     await _record_identity_event(
         state, request, action="auth.mfa_setup_started", actor=principal.username,
@@ -5038,24 +5345,41 @@ class MfaCodeBody(BaseModel):
 
 @router.post("/auth/mfa/confirm")
 async def mfa_confirm(
-    body: MfaCodeBody, request: Request, state: AppState = Depends(get_state)
+    body: MfaCodeBody, request: Request, state: AppState = Depends(get_state),
+    _fresh=Depends(require_fresh_auth()),
 ) -> dict[str, Any]:
     """Confirm MFA enrollment (self): verify a TOTP code against the PENDING secret,
     then persist the obfuscated secret + hashed recovery codes and set
-    ``mfa_enabled=True``. Idempotent only in that a wrong code 400s and leaves MFA off."""
+    ``mfa_enabled=True``. Idempotent only in that a wrong code 400s and leaves MFA off.
+
+    Round 16: needs a fresh sign-in and answers 409 for an enrolled account (B17); a
+    wrong code counts toward the account's second-factor bound (B19)."""
     from ..auth import mfa as mfa_mod
 
     principal = _require_session(state, request)
-    pending = _MFA_PENDING_ENROLL.get(principal.username.strip().lower())
+    key = principal.username.strip().lower()
+    user = await state.users.get(principal.username)
+    if user is not None and user.mfa_enabled:
+        _MFA_PENDING_ENROLL.pop(key, None)
+        raise _mfa_already_enabled()
+    pending = _MFA_PENDING_ENROLL.get(key)
     if not pending:
         raise HTTPException(status_code=400, detail="no pending MFA enrollment; call setup first")
+    if user is not None:
+        await _refuse_locked_mfa(state, request, user, pending=False)
     digits, period = _mfa_params(state)
     ok, step = mfa_mod.verify_totp(
         pending["secret"], body.code, window=1, period=period, digits=digits
     )
     if not ok:
+        if user is not None:
+            await _record_identity_event(
+                state, request, action="auth.mfa_failed", outcome="failure",
+                actor=principal.username, summary="mfa enrollment confirm failed",
+                target=_user_target(principal.username),
+            )
+            await _count_mfa_failure(state, request, principal.username, pending=False)
         raise HTTPException(status_code=400, detail="invalid code")
-    user = await state.users.get(principal.username)
     if user is None:
         raise HTTPException(
             status_code=400,
@@ -5069,6 +5393,7 @@ async def mfa_confirm(
         await _patch_user_or_404(
             state, principal.username, mfa_enabled=True, mfa_secret=obf,
             mfa_recovery_hashes=list(pending["recovery_hashes"]), mfa_last_step=int(step),
+            mfa_failed_count=0, mfa_locked_until="",
         )
 
     # Round 14 (SPEC §3.6): turning a second factor on is never done without its row.
@@ -5103,42 +5428,45 @@ async def mfa_verify(
     if not auth.is_enabled:
         raise HTTPException(status_code=400, detail="authentication is disabled")
     username = auth.pending_subject(body.pending_token)
-    if username is None:
+    # Round 16 (B19): a pending token is refused after 5 failures or once used.
+    if username is None or not auth.pending_usable(body.pending_token):
         raise HTTPException(status_code=401, detail="invalid or expired pending session")
     user = await state.users.get(username)
     if user is None or not user.mfa_enabled:
         raise HTTPException(status_code=400, detail="MFA is not enabled for this account")
+    await _refuse_locked_mfa(state, request, user, pending=True)
     digits, period = _mfa_params(state)
     server_key = state.secrets.mfa_server_key()
     secret = mfa_mod.deobfuscate_secret(user.mfa_secret, server_key)
     method = ""
-    # 1) TOTP (with replay rejection against the stored last step).
+    # 1) TOTP (with replay rejection against the stored last step). Round 16 (B23):
+    #    the step is consumed inside the user store's compare-and-swap, so a code
+    #    replayed by a concurrent request fails there.
     if secret:
         ok, step = mfa_mod.verify_totp(
             secret, body.code, window=1, period=period, digits=digits,
             last_step=user.mfa_last_step,
         )
-        if ok:
+        if ok and await state.users.consume_mfa(username, step=int(step)):
             method = "totp"
-            await state.users.update(username, mfa_last_step=int(step))
-    # 2) Recovery code (single-use): consume the matching hash on success.
+    # 2) Recovery code (single-use). The matching stored hash is found off the event
+    #    loop (only for a code with the recovery-code shape, B18), then that exact
+    #    string is removed inside the compare-and-swap (B23).
     if not method:
-        remaining = list(user.mfa_recovery_hashes)
-        match_idx = next(
-            (i for i, h in enumerate(remaining) if mfa_mod.verify_recovery_code(body.code, h)),
-            -1,
-        )
-        if match_idx >= 0:
+        matched = await mfa_mod.amatch_recovery_hash(body.code, list(user.mfa_recovery_hashes))
+        if matched is not None and await state.users.consume_mfa(username, recovery_hash=matched):
             method = "recovery"
-            del remaining[match_idx]
-            await state.users.update(username, mfa_recovery_hashes=remaining)
     if not method:
+        auth.note_pending_failure(body.pending_token)
         await _record_identity_event(
             state, request, action="auth.mfa_failed", outcome="failure", actor=username,
             user=auth.principal(username), summary="mfa verify failed",
             target=_user_target(username), from_request=False,
         )
+        await _count_mfa_failure(state, request, username, pending=True)
         raise HTTPException(status_code=401, detail="invalid code")
+    if not auth.mark_pending_used(body.pending_token):
+        raise HTTPException(status_code=401, detail="invalid or expired pending session")
     await state.refresh_users()
     # Round 12: the Remember-me REQUEST comes only from the SIGNED pending token
     # (never a body field), and eligibility is decided against the live policy now.
@@ -5212,7 +5540,8 @@ async def _enroll_pending_user(state: AppState, pending_token: str):
     if not auth.is_enabled:
         raise HTTPException(status_code=400, detail="authentication is disabled")
     username = auth.pending_subject(pending_token)
-    if username is None:
+    # Round 16 (B19): the same single-use, bounded pending token as /auth/mfa/verify.
+    if username is None or not auth.pending_usable(pending_token):
         raise HTTPException(status_code=401, detail="invalid or expired pending session")
     user = await state.users.get(username)
     if user is None:
@@ -5251,7 +5580,7 @@ async def mfa_enroll_setup(
     )
     _MFA_PENDING_ENROLL[username.strip().lower()] = {
         "secret": secret,
-        "recovery_hashes": [mfa_mod.hash_recovery_code(c) for c in recovery],
+        "recovery_hashes": await mfa_mod.ahash_recovery_codes(recovery),
     }
     await _record_identity_event(
         state, request, action="auth.mfa_setup_started", actor=username,
@@ -5279,17 +5608,23 @@ async def mfa_enroll_confirm(
         raise HTTPException(
             status_code=400, detail="no pending MFA enrollment; call enroll-setup first"
         )
+    await _refuse_locked_mfa(state, request, user, pending=True)
     digits, period = _mfa_params(state)
     ok, step = mfa_mod.verify_totp(
         pending["secret"], body.code, window=1, period=period, digits=digits
     )
     if not ok:
+        auth.note_pending_failure(body.pending_token)
         await _record_identity_event(
             state, request, action="auth.mfa_failed", outcome="failure", actor=username,
             user=auth.principal(username), summary="mfa enrollment confirm failed",
             target=_user_target(username), from_request=False,
         )
+        await _count_mfa_failure(state, request, username, pending=True)
         raise HTTPException(status_code=401, detail="invalid code")
+    # The pending token is spent before anything is saved (Round 16, B19).
+    if not auth.mark_pending_used(body.pending_token):
+        raise HTTPException(status_code=401, detail="invalid or expired pending session")
     # Persist the enrollment (the same block as /auth/mfa/confirm), audit-first.
     obf = mfa_mod.obfuscate_secret(pending["secret"], state.secrets.mfa_server_key())
 
@@ -5297,6 +5632,7 @@ async def mfa_enroll_confirm(
         await _patch_user_or_404(
             state, username, mfa_enabled=True, mfa_secret=obf,
             mfa_recovery_hashes=list(pending["recovery_hashes"]), mfa_last_step=int(step),
+            mfa_failed_count=0, mfa_locked_until="",
         )
 
     await audited_write(
@@ -5353,18 +5689,23 @@ async def mfa_enroll_confirm(
 
 @router.post("/auth/mfa/disable")
 async def mfa_disable(
-    body: MfaCodeBody, request: Request, state: AppState = Depends(get_state)
+    body: MfaCodeBody, request: Request, state: AppState = Depends(get_state),
+    _fresh=Depends(require_fresh_auth()),
 ) -> dict[str, Any]:
     """Disable MFA for the calling user (self). Requires a valid CURRENT TOTP or a
     single-use recovery code (so a hijacked session alone cannot turn MFA off).
     Clears the secret + recovery hashes. (A super_admin can force-disable another
-    user via PUT /api/users/{username} {mfa_enabled:false}.)"""
+    user via PUT /api/users/{username} {mfa_enabled:false}.)
+
+    Round 16 (B19): needs a fresh sign-in, and a wrong code counts toward the
+    account's second-factor bound, so a session cannot guess codes without limit."""
     from ..auth import mfa as mfa_mod
 
     principal = _require_session(state, request)
     user = await state.users.get(principal.username)
     if user is None or not user.mfa_enabled:
         raise HTTPException(status_code=400, detail="MFA is not enabled for this account")
+    await _refuse_locked_mfa(state, request, user, pending=False)
     digits, period = _mfa_params(state)
     secret = mfa_mod.deobfuscate_secret(user.mfa_secret, state.secrets.mfa_server_key())
     ok = False
@@ -5374,13 +5715,15 @@ async def mfa_disable(
             last_step=user.mfa_last_step,
         )
     if not ok:
-        ok = any(mfa_mod.verify_recovery_code(body.code, h) for h in user.mfa_recovery_hashes)
+        matched = await mfa_mod.amatch_recovery_hash(body.code, list(user.mfa_recovery_hashes))
+        ok = matched is not None
     if not ok:
         await _record_identity_event(
             state, request, action="auth.mfa_failed", outcome="failure",
             actor=principal.username, summary="mfa disable refused: invalid code",
             target=_user_target(principal.username),
         )
+        await _count_mfa_failure(state, request, principal.username, pending=False)
         raise HTTPException(status_code=400, detail="invalid code")
 
     async def _write() -> None:
@@ -5388,6 +5731,7 @@ async def mfa_disable(
         await _patch_user_or_404(
             state, principal.username,
             mfa_enabled=False, mfa_secret="", mfa_recovery_hashes=[], mfa_last_step=0,
+            mfa_failed_count=0, mfa_locked_until="",
         )
 
     # Round 14 (SPEC §3.6): turning a second factor off is never done without its row.
@@ -5628,8 +5972,14 @@ async def _provision_sso_user(
     SECURITY (#3, SSO account takeover): we NEVER link an SSO login to a pre-existing
     LOCAL-credential account by email, and we NEVER trust an UNVERIFIED email as an
     account key. Either would let an attacker whose IdP account carries a victim's
-    address log in AS the victim."""
-    from ..auth.passwords import hash_password
+    address log in AS the victim.
+
+    Round 16 (B16): a verified email links only to an account of THIS provider that
+    has no subject yet. An account of another provider, or one that already holds a
+    different subject for this provider, is refused: the stable identity is the issuer
+    plus the subject, so an existing subject is never re-bound by email. Round 16
+    (B15): a group map never changes the role of a stored Super admin."""
+    from ..auth.passwords import ahash_password
 
     sso = getattr(state.prefs, "sso", None)
     cfg = sso.get(provider_id) if sso else None
@@ -5653,16 +6003,25 @@ async def _provision_sso_user(
             existing = u
             break
 
-    # 2) Otherwise match by the VERIFIED email — but refuse to auto-link onto a
-    #    pre-existing LOCAL-credential account (real password, not already linked to
-    #    THIS provider). That refusal is the account-takeover guard.
+    # 2) Otherwise match by the VERIFIED email, but only onto an account of THIS
+    #    provider that has no subject yet (Round 16, B16). A local account, an account
+    #    of another provider, or one bound to a different subject is refused. That
+    #    refusal is the account-takeover guard.
     if existing is None and trusted_email:
         candidate = await state.users.get(trusted_email)
         if candidate is not None:
-            already_linked_here = candidate.oauth_provider == provider_id
-            is_local_account = bool(candidate.password_hash) and not candidate.oauth_provider
-            if is_local_account and not already_linked_here:
+            if not candidate.oauth_provider:
                 return None, f"sso link refused: {provider_id} email matches a local account"
+            if candidate.oauth_provider != provider_id:
+                return None, (
+                    f"sso link refused: {provider_id} email matches an account linked to "
+                    "another provider"
+                )
+            if candidate.oauth_sub:
+                return None, (
+                    f"sso link refused: {provider_id} email matches an account linked to "
+                    "a different subject"
+                )
             existing = candidate
 
     if existing is not None:
@@ -5671,6 +6030,9 @@ async def _provision_sso_user(
             return None, None
         old_role = str(getattr(existing.role, "value", existing.role) or "")
         new_role = role if (cfg and cfg.group_role_map) else old_role
+        if old_role == UserRole.SUPER_ADMIN.value:
+            # Round 16 (B15): a Super admin's role changes only through a Super admin.
+            new_role = old_role
         update = {
             "role": new_role,
             "oauth_provider": provider_id,
@@ -5717,6 +6079,7 @@ async def _provision_sso_user(
 
     if not auto_create:
         return None, None
+    unusable_hash = await ahash_password(secrets_token())
 
     async def _create() -> str:
         # Atomic create-if-absent at our single-process scale: create() raises on a
@@ -5725,7 +6088,7 @@ async def _provision_sso_user(
         try:
             created = await state.users.create(
                 username=username,
-                password_hash=hash_password(secrets_token()),
+                password_hash=unusable_hash,
                 role=role,
                 active=True,
                 must_change_password=False,
@@ -5790,7 +6153,12 @@ async def set_sso_provider_secret(
 ) -> dict[str, Any]:
     """Set/clear one OIDC provider's client secret (super_admin only). The value goes
     to the SECRET tier (in memory), NEVER to Preferences/the config doc; only a
-    configured-boolean is returned."""
+    configured-boolean is returned.
+
+    Round 16 (B15): a stored Super admin with a strict fresh sign-in only, otherwise
+    ``403 super_admin_only`` and nothing changes."""
+    await _require_super_admin_for(request, state)
+
     async def _write() -> None:
         state.secrets.set_sso_client_secret(provider_id, body.client_secret)
 
@@ -5814,7 +6182,10 @@ async def set_sso_provider_secret(
 # RBAC: roles matrix (for the UI) + multi-user administration
 # --------------------------------------------------------------------------- #
 @router.get("/roles")
-async def list_roles(state: AppState = Depends(get_state)) -> dict[str, Any]:
+async def list_roles(
+    state: AppState = Depends(get_state),
+    _=Depends(require_permission("roles", "read")),
+) -> dict[str, Any]:
     """The role -> resource -> [actions] matrix (default merged with any operator
     override + the admin-managed custom roles) for the webui's permission checks + the
     RBAC settings view. Folds the out-of-band :class:`CustomRoleStore` roles into the
@@ -6024,7 +6395,7 @@ async def create_user(
     custom_roles: list[str] = []
     if body.custom_roles is not None:
         custom_roles = await _validate_custom_role_names(state, body.custom_roles)
-    from ..auth.passwords import hash_password
+    from ..auth.passwords import ahash_password
 
     # Pre-checks (no row): a missing or taken name is refused before anything is
     # attempted, with the answers the store gave before Round 14.
@@ -6046,11 +6417,13 @@ async def create_user(
         }.items() if value not in ("", [], None)
     }
 
+    password_hash = await ahash_password(pw)
+
     async def _write() -> Any:
         try:
             created = await state.users.create(
                 username=body.username,
-                password_hash=hash_password(pw),
+                password_hash=password_hash,
                 role=body.role,
                 active=True,
                 must_change_password=True,
@@ -6115,9 +6488,9 @@ async def update_user(
         pw = body.password.strip()
         if len(pw) < 8:
             raise HTTPException(status_code=400, detail="password must be at least 8 characters")
-        from ..auth.passwords import hash_password
+        from ..auth.passwords import ahash_password
 
-        patch["password_hash"] = hash_password(pw)
+        patch["password_hash"] = await ahash_password(pw)
         patch["must_change_password"] = True
     if body.mfa_enabled is False:
         # Force-disable: clear the secret material too (the user re-enrolls later).
@@ -6173,11 +6546,35 @@ async def update_user(
         ),
     )
     await state.refresh_users()
+    sessions_revoked: int | None = None
+    if "password_hash" in patch:
+        # Round 16 (B21): an administrator reset signs the account out everywhere
+        # (every session revoked and its token version bumped, so even a token the
+        # registry never saw is refused) and stops its chat answers.
+        by = current_username(request)
+        sessions_revoked = int(await state.sessions.revoke_all(
+            username, by=by, reason="admin_password_reset",
+        ) or 0)
+        await state.refresh_sessions()
+        await _stop_chat_turns(state, username)
+        await _record_identity_event(
+            state, request, action="session.revoked", actor=by, surface="session",
+            target=_user_target(username),
+            summary=_session_summary(
+                "session_admin_revoke_all", "",
+                f"password reset: revoked {sessions_revoked} session(s) for {username}",
+            ),
+            tool_input={"scope": "all", "count": sessions_revoked,
+                        "reason": "admin_password_reset"},
+        )
     if "role" in patch or "active" in patch:
         # A disabled account's running chat answers stop now; a role change stops
         # only those that relied on a grant the account no longer holds.
         await _recheck_chat_turns(state, username)
-    return {"ok": True, "user": (updated or target).public()}
+    out: dict[str, Any] = {"ok": True, "user": (updated or target).public()}
+    if sessions_revoked is not None:
+        out["sessions_revoked"] = sessions_revoked
+    return out
 
 
 @router.delete("/users/{username}")
@@ -8192,6 +8589,7 @@ async def case_assign(
 async def case_export(
     case_id: str, format: str = "json", state: AppState = Depends(get_state),
     request: Request = None,  # type: ignore[assignment]
+    _=Depends(require_permission("cases", "read")),
 ) -> dict[str, Any]:
     """Export a case for handoff/ticketing as JSON or a Markdown report. Returns
     ``{filename, content_type, content}`` so the UI can trigger a download. The JSON
@@ -8496,7 +8894,11 @@ async def threat_context_import(
 
 
 @router.get("/cases/{case_id}/trace")
-async def case_trace(case_id: str, state: AppState = Depends(get_state)) -> dict[str, Any]:
+async def case_trace(
+    case_id: str,
+    state: AppState = Depends(get_state),
+    _=Depends(require_permission("cases", "read")),
+) -> dict[str, Any]:
     """Ordered agent-pipeline trace for a case (C3-3).
 
     Projects the already-recorded ``tlsoc-agent-audit`` rows (router → investigator
@@ -8515,7 +8917,11 @@ async def case_trace(case_id: str, state: AppState = Depends(get_state)) -> dict
 
 
 @router.get("/cases/{case_id}/rationale")
-async def case_rationale(case_id: str, state: AppState = Depends(get_state)) -> dict[str, Any]:
+async def case_rationale(
+    case_id: str,
+    state: AppState = Depends(get_state),
+    _=Depends(require_permission("cases", "read")),
+) -> dict[str, Any]:
     """Case EXPLAINABILITY: a clean, human-readable "why" object assembled from the
     case + its audit records — WITHOUT calling the LLM.
 
@@ -8580,6 +8986,7 @@ async def case_forwarding(
 async def scans(
     limit: int = 50, state: AppState = Depends(get_state),
     request: Request = None,  # type: ignore[assignment]
+    _=Depends(require_permission("cases", "read")),
 ) -> dict[str, Any]:
     cases, total = await state.cases.list_scans(limit=min(limit, 200))
     rows = [c.model_dump(mode="json") for c in cases]
@@ -8590,7 +8997,8 @@ async def scans(
 
 @router.get("/scans/notifications")
 async def scan_notifications(
-    since: str = "now-24h", state: AppState = Depends(get_state)
+    since: str = "now-24h", state: AppState = Depends(get_state),
+    _=Depends(require_permission("cases", "read")),
 ) -> dict[str, Any]:
     since_iso = _millis_to_iso(relative_to_millis(since))
     new_count = await state.cases.count_new_scans(since_iso)
@@ -8602,7 +9010,8 @@ async def scan_notifications(
 # --------------------------------------------------------------------------- #
 @router.get("/standup")
 async def standup(
-    window_hours: int | None = None, state: AppState = Depends(get_state)
+    window_hours: int | None = None, state: AppState = Depends(get_state),
+    _=Depends(require_permission("metrics", "view")),
 ) -> dict[str, Any]:
     """Daily standup summary. ALWAYS returns HTTP 200 with a renderable payload:
     a clear ``{enabled: false}`` shape when disabled, the full happy-path result

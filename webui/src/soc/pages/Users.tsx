@@ -138,13 +138,19 @@ export function UsersInner({ embedded = false }: UsersInnerProps) {
     if (!opts?.background) setLoading(true);
     setError(null);
     try {
-      const [u, r] = await Promise.all([api.users.list(), api.roles.get()]);
+      const [u, r] = await Promise.all([
+        api.users.list(),
+        // GET /api/roles needs `roles:read`. It is best effort: a role that manages
+        // accounts without that grant still lists them, offers the built-in roles and
+        // shows no role summary.
+        api.roles.get().catch(() => null),
+      ]);
       setUsers(u.users);
-      const matrixRes = r as RolesResponse;
-      setRoles(matrixRes.roles);
-      setMatrix(matrixRes.matrix ?? {});
+      const matrixRes = r as RolesResponse | null;
+      setRoles(matrixRes?.roles ?? Array.from(BUILTIN_ROLES));
+      setMatrix(matrixRes?.matrix ?? {});
       setCustomRoleNames(
-        Object.keys(matrixRes.matrix ?? {}).filter((n) => !BUILTIN_ROLES.has(n)),
+        Object.keys(matrixRes?.matrix ?? {}).filter((n) => !BUILTIN_ROLES.has(n)),
       );
     } catch (e) {
       // A failed load must read as an error, not a genuine "No users yet." table.
@@ -812,8 +818,11 @@ function AddUserDialog({
               </Select>
             </div>
             {/* Updates live as the role changes, so the admin SEES what the role
-                grants before creating the account. */}
-            <RolePermissionSummary roleName={role} matrix={effectiveMatrix} />
+                grants before creating the account. Hidden when the roles read was
+                refused (no matrix to summarise). */}
+            {effectiveMatrix[role] ? (
+              <RolePermissionSummary roleName={role} matrix={effectiveMatrix} />
+            ) : null}
             <div className="space-y-2" role="group" aria-labelledby="new-user-custom-roles-label">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <span

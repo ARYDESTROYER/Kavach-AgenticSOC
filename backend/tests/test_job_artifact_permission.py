@@ -42,6 +42,7 @@ from app.llm.providers import MockProvider
 from app.middleware.request_id import RequestIdMiddleware
 from app.models import AuditDoc, Job, JobArtifact, JobPermission
 from app.state import AppState
+from tests._auth_helpers import ready_user
 
 FROM = "2026-10-18T15:10:00Z"
 TO = "2026-10-25T15:10:00Z"
@@ -125,6 +126,7 @@ def auditor(tmp_path):
         created = client.post("/api/users", json={"username": "aud", "password": "auditor-pass-12345",
                                                   "role": "auditor"})
         assert created.status_code == 200, created.text
+        ready_user(client, "aud", "auditor-pass-12345")
         client.cookies.clear()
         _login(client, "aud", "auditor-pass-12345")
         yield client
