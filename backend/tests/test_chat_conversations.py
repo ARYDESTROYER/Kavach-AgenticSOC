@@ -36,6 +36,7 @@ from app.stores.chat_conversations import (
     with_stored_rows,
 )
 from app.stores.base import KVStore
+from tests._auth_helpers import ready_user
 
 
 async def _append(
@@ -334,6 +335,7 @@ def test_history_routes_are_isolated_by_authenticated_principal() -> None:
             "role": "analyst_tier1",
         })
         assert analyst.status_code == 200, analyst.text
+        ready_user(client, "analyst", "analyst-pass-12345")
         client.cookies.clear()
         login = client.post(
             "/api/auth/login",

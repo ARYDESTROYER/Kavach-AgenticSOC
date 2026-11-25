@@ -31,6 +31,7 @@ from app.models import Case, Entity
 from app.state import AppState
 from app.stores import case_files as cf
 from tests import case_image_fixtures as fx
+from tests._auth_helpers import ready_user
 
 CAPTION = "SENTINEL-CAPTION-7f3a"
 FILENAME = "SENTINEL-FILENAME-91c2.png"
@@ -380,6 +381,7 @@ def _make_users(c: TestClient) -> None:
                        ("tier2", "analyst_tier2"), ("audit1", "auditor")):
         r = c.post("/api/users", json={"username": name, "password": f"{name}-pass-12", "role": role})
         assert r.status_code == 200, r.text
+        ready_user(c, name, f"{name}-pass-12")
 
 
 def test_permissions_follow_the_grants(rbac_client) -> None:
@@ -489,6 +491,7 @@ def test_deleting_an_account_keeps_its_screenshots(rbac_client) -> None:
     _login(c, "Admin", "Admin@123")
     assert c.post("/api/users", json={"username": "leaver", "password": "leaver-pass-12",
                                        "role": "analyst_tier1"}).status_code == 200
+    ready_user(c, "leaver", "leaver-pass-12")
     seed_case(c)
     _login(c, "leaver", "leaver-pass-12")
     entry = c.post("/api/cases/case-files-1/files", json=upload_body(png(1))).json()["file"]

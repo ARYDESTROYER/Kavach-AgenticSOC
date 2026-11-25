@@ -28,6 +28,7 @@ from app.es.fake import InMemoryESClient
 from app.llm.providers import MockProvider
 from app.models import UsageDoc
 from app.state import AppState
+from tests._auth_helpers import ready_user
 
 T1 = UserRole.ANALYST_TIER1.value
 
@@ -72,6 +73,7 @@ def _as_tier1(client: TestClient) -> None:
     _login(client, "Admin", "Admin@123")
     created = client.post("/api/users", json={"username": "tier1", "password": "tier1-pass-1234", "role": T1})
     assert created.status_code == 200, created.text
+    ready_user(client, "tier1", "tier1-pass-1234")
     client.cookies.clear()
     _login(client, "tier1", "tier1-pass-1234")
 

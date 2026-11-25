@@ -31,6 +31,7 @@ from app.es.fake import InMemoryESClient
 from app.llm.providers import MockProvider
 from app.models import Case, ChatRequest, ChatStarter, Entity
 from app.state import AppState, ChatSourceUnavailable, chat_grant_pairs
+from tests._auth_helpers import ready_user
 
 # Round 13 SPEC D2: the evergreen families, in the default role order (§3.5).
 STARTER_IDS = ["triage", "posture", "report", "explain_metric", "learn_app"]
@@ -286,6 +287,7 @@ def test_restricted_role_context_writes_no_audit_rows() -> None:
             "username": "restricted", "password": "restricted-pass-12345", "role": "analyst_tier1",
         })
         assert created.status_code == 200, created.text
+        ready_user(client, "restricted", "restricted-pass-12345")
         client.cookies.clear()
         assert client.post("/api/auth/login", json={
             "username": "restricted", "password": "restricted-pass-12345",
@@ -339,6 +341,7 @@ def test_real_custom_role_reader_sees_no_money_and_its_turn_writes_no_denials() 
             "custom_roles": ["chat-reader"],
         })
         assert created.status_code == 200, created.text
+        ready_user(client, "reader", "reader-pass-123456")
         client.cookies.clear()
         assert client.post("/api/auth/login", json={
             "username": "reader", "password": "reader-pass-123456",

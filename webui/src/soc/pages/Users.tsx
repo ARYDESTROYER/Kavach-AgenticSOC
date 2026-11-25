@@ -119,6 +119,9 @@ export function UsersInner({ embedded = false }: UsersInnerProps) {
   // Custom (non built-in) role names from the resolved matrix, offered when
   // assigning a user a base role + custom_roles[] (Round 3 / Feature 6).
   const [customRoleNames, setCustomRoleNames] = React.useState<string[]>([]);
+  // False when the roles read was refused: the page then cannot tell a live custom role
+  // from a deleted one, so it keeps an account's custom roles as they are.
+  const [customRolesKnown, setCustomRolesKnown] = React.useState(true);
   // The FULL resolved role → resource → [actions] matrix (Round 11): threaded into
   // the create dialog so an admin SEES what each role grants before choosing it.
   const [matrix, setMatrix] = React.useState<Record<string, GrantMap>>({});
@@ -138,13 +141,20 @@ export function UsersInner({ embedded = false }: UsersInnerProps) {
     if (!opts?.background) setLoading(true);
     setError(null);
     try {
-      const [u, r] = await Promise.all([api.users.list(), api.roles.get()]);
+      const [u, r] = await Promise.all([
+        api.users.list(),
+        // GET /api/roles needs `roles:read`. It is best effort: a role that manages
+        // accounts without that grant still lists them, offers the built-in roles and
+        // shows no role summary.
+        api.roles.get().catch(() => null),
+      ]);
       setUsers(u.users);
-      const matrixRes = r as RolesResponse;
-      setRoles(matrixRes.roles);
-      setMatrix(matrixRes.matrix ?? {});
+      const matrixRes = r as RolesResponse | null;
+      setRoles(matrixRes?.roles ?? Array.from(BUILTIN_ROLES));
+      setMatrix(matrixRes?.matrix ?? {});
+      setCustomRolesKnown(matrixRes !== null);
       setCustomRoleNames(
-        Object.keys(matrixRes.matrix ?? {}).filter((n) => !BUILTIN_ROLES.has(n)),
+        Object.keys(matrixRes?.matrix ?? {}).filter((n) => !BUILTIN_ROLES.has(n)),
       );
     } catch (e) {
       // A failed load must read as an error, not a genuine "No users yet." table.
@@ -244,9 +254,12 @@ export function UsersInner({ embedded = false }: UsersInnerProps) {
       id: 'role',
       header: 'Role',
       // The role reads as text; it changes in the "Change roles" dialog (row menu). Only
-      // custom roles that still exist count: a deleted role grants nothing.
+      // custom roles that still exist count: a deleted role grants nothing. When the
+      // roles read was refused, every assigned custom role counts (none can be ruled out).
       cell: (u) => {
-        const extra = liveCustomRoles(u, customRoleNames).length;
+        const extra = customRolesKnown
+          ? liveCustomRoles(u, customRoleNames).length
+          : userCustomRoles(u).length;
         return (
           <span className="text-sm text-foreground">
             {roleLabel(u.role)}
@@ -367,6 +380,7 @@ export function UsersInner({ embedded = false }: UsersInnerProps) {
         roles={roles}
         matrix={matrix}
         customRoleNames={customRoleNames}
+        customRolesKnown={customRolesKnown}
         defaultRole={roles.includes('analyst_tier1') ? 'analyst_tier1' : roles[0] ?? 'analyst_tier1'}
         onOpenChange={setAddOpen}
         onCreated={() => {
@@ -402,6 +416,7 @@ export function UsersInner({ embedded = false }: UsersInnerProps) {
         user={rolesFor}
         roles={roles}
         customRoleNames={customRoleNames}
+        customRolesKnown={customRolesKnown}
         onOpenChange={(open) => {
           if (!open) setRolesFor(null);
         }}
@@ -460,12 +475,15 @@ function AssignRolesDialog({
   user,
   roles,
   customRoleNames,
+  customRolesKnown = true,
   onOpenChange,
   onDone,
 }: {
   user: User | null;
   roles: string[];
   customRoleNames: string[];
+  /** False when the roles read was refused: custom roles are then left as they are. */
+  customRolesKnown?: boolean;
   onOpenChange: (v: boolean) => void;
   onDone: () => void;
 }) {
@@ -475,8 +493,12 @@ function AssignRolesDialog({
 
   // Only roles that still exist start selected; a deleted one is listed below the chips
   // and dropped on save (the server refuses an unknown name, which would otherwise block
-  // every role change for this account).
-  const stale = React.useMemo(() => staleCustomRoles(user, customRoleNames), [user, customRoleNames]);
+  // every role change for this account). Without the roles read nothing is known to be
+  // deleted, so nothing is listed as deleted.
+  const stale = React.useMemo(
+    () => (customRolesKnown ? staleCustomRoles(user, customRoleNames) : []),
+    [user, customRoleNames, customRolesKnown],
+  );
   React.useEffect(() => {
     if (user) {
       setBaseRole(typeof user.role === 'string' ? user.role : String(user.role));
@@ -498,10 +520,14 @@ function AssignRolesDialog({
     setBusy(true);
     try {
       const live = new Set(customRoleNames);
-      await rolesApi.assignUserRoles(user.username, {
-        role: baseRole,
-        custom_roles: Array.from(assigned).filter((name) => live.has(name)),
-      });
+      // Without the roles read, only the base role is sent: an omitted `custom_roles`
+      // leaves the account's custom roles unchanged on the server.
+      await rolesApi.assignUserRoles(
+        user.username,
+        customRolesKnown
+          ? { role: baseRole, custom_roles: Array.from(assigned).filter((name) => live.has(name)) }
+          : { role: baseRole },
+      );
       toast.success(`Roles updated for ${user.username}.`);
       onDone();
     } catch (e) {
@@ -547,7 +573,12 @@ function AssignRolesDialog({
             >
               Custom roles
             </span>
-            {customRoleNames.length === 0 ? (
+            {!customRolesKnown ? (
+              <p className="text-sm text-muted-foreground" data-testid="assign-roles-unknown">
+                Your role cannot view roles, so custom roles are not listed. Saving keeps the
+                custom roles this account has.
+              </p>
+            ) : customRoleNames.length === 0 ? (
               <p className="text-sm text-muted-foreground">No custom roles defined yet.</p>
             ) : (
               <div className="flex flex-wrap gap-2">
@@ -611,6 +642,7 @@ function AddUserDialog({
   roles,
   matrix,
   customRoleNames,
+  customRolesKnown = true,
   defaultRole,
   onOpenChange,
   onCreated,
@@ -621,6 +653,8 @@ function AddUserDialog({
   /** The FULL resolved matrix (role → resource → [actions]) from GET /api/roles. */
   matrix: Record<string, GrantMap>;
   customRoleNames: string[];
+  /** False when the roles read was refused, so "none exist yet" cannot be said. */
+  customRolesKnown?: boolean;
   defaultRole: string;
   onOpenChange: (v: boolean) => void;
   onCreated: () => void;
@@ -812,8 +846,11 @@ function AddUserDialog({
               </Select>
             </div>
             {/* Updates live as the role changes, so the admin SEES what the role
-                grants before creating the account. */}
-            <RolePermissionSummary roleName={role} matrix={effectiveMatrix} />
+                grants before creating the account. Hidden when the roles read was
+                refused (no matrix to summarise). */}
+            {effectiveMatrix[role] ? (
+              <RolePermissionSummary roleName={role} matrix={effectiveMatrix} />
+            ) : null}
             <div className="space-y-2" role="group" aria-labelledby="new-user-custom-roles-label">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <span
@@ -838,7 +875,11 @@ function AddUserDialog({
                   Adjust permissions…
                 </Button>
               </div>
-              {availableCustomRoles.length === 0 ? (
+              {availableCustomRoles.length === 0 && !customRolesKnown ? (
+                <p className="text-xs text-muted-foreground" data-testid="new-user-roles-unknown">
+                  Your role cannot view roles, so custom roles are not listed.
+                </p>
+              ) : availableCustomRoles.length === 0 ? (
                 <p className="text-xs text-muted-foreground">
                   Attach custom roles to add or deny specific permissions on top of the
                   base role. None exist yet. &ldquo;Adjust permissions…&rdquo; creates one.

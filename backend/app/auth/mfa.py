@@ -213,6 +213,48 @@ def verify_recovery_code(code: str, stored_hash: str) -> bool:
     return verify_password(_norm_recovery(code), stored_hash)
 
 
+_RECOVERY_SHAPE = frozenset("0123456789ABCDEF")
+
+
+def looks_like_recovery_code(code: str) -> bool:
+    """Whether ``code`` has the shape of a recovery code: 8 hex characters once case,
+    dashes and spaces are normalised. A six-digit authenticator code never does, so
+    it never runs the recovery-code PBKDF2 loop (Round 16, B18)."""
+    norm = _norm_recovery(code)
+    return len(norm) == 8 and all(ch in _RECOVERY_SHAPE for ch in norm)
+
+
+async def averify_recovery_code(code: str, stored_hash: str) -> bool:
+    """:func:`verify_recovery_code` off the event loop, under the hashing semaphore."""
+    from .passwords import run_hashing
+
+    return await run_hashing(verify_recovery_code, code, stored_hash)
+
+
+async def ahash_recovery_codes(codes: list[str]) -> list[str]:
+    """Hash every recovery code in one worker-thread call under the semaphore."""
+    from .passwords import run_hashing
+
+    def _all() -> list[str]:
+        return [hash_recovery_code(c) for c in codes]
+
+    return await run_hashing(_all)
+
+
+async def amatch_recovery_hash(code: str, stored_hashes: list[str]) -> str | None:
+    """The stored hash ``code`` matches, found off the event loop, or ``None``.
+
+    Only a code with the recovery-code shape is checked; anything else answers
+    ``None`` without hashing. The caller consumes the exact returned string inside
+    its own compare-and-swap (Round 16, B23), so no PBKDF2 runs inside a mutator."""
+    if not looks_like_recovery_code(code):
+        return None
+    for stored in list(stored_hashes or []):
+        if await averify_recovery_code(code, stored):
+            return stored
+    return None
+
+
 # --------------------------------------------------------------------------- #
 # At-rest secret obfuscation (stdlib HMAC keystream XOR — NOT a KMS)
 # --------------------------------------------------------------------------- #

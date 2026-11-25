@@ -108,7 +108,7 @@
       ],
       "page": "standup",
       "opts": {},
-      "requires": null,
+      "requires": "metrics:view",
       "blurb": "",
       "keywords": [
         "shift",
@@ -486,7 +486,7 @@
       ],
       "page": "models",
       "opts": {},
-      "requires": null,
+      "requires": "models:read",
       "blurb": "",
       "keywords": [
         "llm",

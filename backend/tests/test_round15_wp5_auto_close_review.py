@@ -60,6 +60,7 @@ from app.stores.auto_close_review import (
     ReviewLedgerUnavailable,
 )
 from tests.conftest import mount_moved_routers
+from tests._auth_helpers import ready_user
 
 APP = Path(__file__).resolve().parents[1] / "app"
 NOW = datetime(2026, 11, 23, 12, 0, tzinfo=timezone.utc)
@@ -576,6 +577,7 @@ def env():
             r = c.post("/api/users", json={"username": name, "password": f"{name}-password-1", "role": role},
                        headers=admin)
             assert r.status_code in (200, 201), r.text
+            ready_user(c, name, f"{name}-password-1")
         heads = {"admin": admin}
         for name in ("t1", "t2", "boss", "aud"):
             heads[name] = _login(c, name, f"{name}-password-1")
@@ -925,6 +927,7 @@ def test_a_repeated_disagreement_on_an_unsampled_case_notifies_once(env) -> None
     made = c.post("/api/users", headers=h["admin"],
                   json={"username": "t1b", "password": "t1b-password-1", "role": "analyst_tier1"})
     assert made.status_code in (200, 201), made.text
+    ready_user(c, "t1b", "t1b-password-1")
     t1b = _login(c, "t1b", "t1b-password-1")
     assert c.post("/api/cases/case-rv-flood/review", headers=t1b,
                   json={"classification": "false_positive"}).json()["agrees"] is True

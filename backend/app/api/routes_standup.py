@@ -15,8 +15,9 @@ monolith router):
   filtered by window / user).
 
 Every non-GET route declares ``require_permission`` (``cases:write`` — analysts /
-responders manage their shift queue; auditors stay read-only). The GET routes inherit
-the router-level ``require_auth`` mount. NOTHING here feeds ``case_manager.decide()``
+responders manage their shift queue; auditors stay read-only). Every GET route
+requires ``metrics:view``, which every built-in role holds, so a custom role that
+denies it reads no shift data. NOTHING here feeds ``case_manager.decide()``
 (#3) and every operator-supplied ``title``/``note`` is plain data persisted via the
 store (the webui renders it escaped — #9). The router NEVER lets a store glitch 500 a
 read; it degrades to an empty, well-shaped payload.
@@ -42,6 +43,9 @@ router = APIRouter(prefix="/api")
 # gate on the case write grant (tier1/tier2/responder/manager hold it; auditor is
 # read-only, so they can VIEW the report but not mutate the queue).
 _WRITE = ("cases", "write")
+# Reading the shift report, its queue or its acknowledgements needs metrics:view,
+# the grant behind the legacy GET /api/standup as well.
+_READ = ("metrics", "view")
 
 
 # --------------------------------------------------------------------------- #
@@ -105,6 +109,7 @@ def _handoff(state: AppState):
 async def standup_report(
     window_hours: int | None = None,
     state: AppState = Depends(get_state),
+    _=Depends(require_permission(*_READ)),
 ) -> dict[str, Any]:
     """The forward-looking shift handoff: attention queue + SLA aging + per-analyst
     workload + period-over-period deltas + open action items + ack state.
@@ -169,9 +174,10 @@ async def standup_report(
 async def list_action_items(
     open_only: bool = False,
     state: AppState = Depends(get_state),
+    _=Depends(require_permission(*_READ)),
 ) -> dict[str, Any]:
-    """List shift action items (newest-tracked first by creation order). Read inherits
-    the router auth mount. Never 500s — a degraded store yields an empty list."""
+    """List shift action items (newest-tracked first by creation order). Read needs
+    metrics:view. Never 500s: a degraded store yields an empty list."""
     store = getattr(state, "shift_handoff", None)
     if store is None:
         return {"items": []}
@@ -253,9 +259,10 @@ async def list_acknowledgements(
     window: str | None = None,
     user: str | None = None,
     state: AppState = Depends(get_state),
+    _=Depends(require_permission(*_READ)),
 ) -> dict[str, Any]:
     """The acknowledgement log (newest first), optionally filtered by ``window`` /
-    ``user``. Read inherits the router auth mount. Never 500s."""
+    ``user``. Read needs metrics:view. Never 500s."""
     store = getattr(state, "shift_handoff", None)
     if store is None:
         return {"acknowledgements": [], "window": window or ""}

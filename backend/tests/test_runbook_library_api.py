@@ -45,6 +45,7 @@ from app.llm.providers import MockProvider
 from app.models import Case, Entity, RunbookDefinition, RunbookDetail, RunbookLibrary, RunbookVersionDoc
 from app.state import AppState
 from app.stores.runbook_library import RunbookStoreUnavailable
+from tests._auth_helpers import ready_user
 
 BASE_BUILTIN = "brute-force-password-spray"
 ADMIN = ("Admin", "Admin@123")
@@ -104,6 +105,7 @@ def add_user(client: TestClient, username: str, role: str, password: str = "user
     login(client, *ADMIN)
     response = client.post("/api/users", json={"username": username, "password": password, "role": role})
     assert response.status_code == 200, response.text
+    ready_user(client, username, password)
     client.post("/api/auth/logout")
 
 

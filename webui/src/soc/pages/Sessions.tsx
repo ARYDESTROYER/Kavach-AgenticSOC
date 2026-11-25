@@ -380,7 +380,7 @@ export function SessionsTable({
 /**
  * The activity rows of a `GET /api/account/activity` answer. The server sends audit
  * records under `activity`, so each row's event name, summary and client address are
- * mapped onto the fields the list shows (`action`, `detail`, `ip`).
+ * mapped onto the fields the list shows (`action`, `event_label`, `detail`, `ip`).
  */
 export function activityRows(res: ActivityResponse | null | undefined): ActivityEvent[] {
   const rows = Array.isArray(res?.activity) ? res.activity : Array.isArray(res?.events) ? res.events : [];
@@ -391,13 +391,23 @@ export function activityRows(res: ActivityResponse | null | undefined): Activity
     return {
       ...row,
       action: text(row.action) ?? text(row.action_type),
+      event_label: text(row.event_label),
       detail: text(row.detail) ?? text(row.result_summary),
       ip: text(row.ip) ?? text(client.ip) ?? null,
     };
   });
 }
 
-function ActivityList({ events, loading }: { events: ActivityEvent[]; loading: boolean }) {
+function ActivityList({
+  events,
+  loading,
+  failed = false,
+}: {
+  events: ActivityEvent[];
+  loading: boolean;
+  /** The last read failed: the empty slot says so instead of "No recent activity." */
+  failed?: boolean;
+}) {
   const columns: DataTableColumn<ActivityEvent>[] = [
     {
       id: 'action',
@@ -405,7 +415,7 @@ function ActivityList({ events, loading }: { events: ActivityEvent[]; loading: b
       cell: (e) => (
         <div className="min-w-0">
           <span className="block truncate text-sm font-medium text-foreground">
-            {e.action ? humanizeToken(String(e.action)) : 'Event'}
+            {e.event_label || (e.action ? humanizeToken(String(e.action)) : 'Event')}
           </span>
           {e.detail ? (
             <span className="block truncate text-xs text-muted-foreground">{e.detail}</span>
@@ -448,7 +458,7 @@ function ActivityList({ events, loading }: { events: ActivityEvent[]; loading: b
       loading={loading}
       surface="panel"
       ariaLabel="Recent account activity"
-      empty="No recent activity."
+      empty={failed ? 'Activity could not be loaded. Use Refresh to try again.' : 'No recent activity.'}
     />
   );
 }
@@ -481,6 +491,8 @@ export function SessionsInner({ embedded = false }: SessionsInnerProps) {
   const [activity, setActivity] = React.useState<ActivityEvent[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [activityLoading, setActivityLoading] = React.useState(true);
+  // A failed activity read is said as such, never shown as "No recent activity."
+  const [activityFailed, setActivityFailed] = React.useState(false);
   const [busySid, setBusySid] = React.useState<string | null>(null);
   const [revokeTarget, setRevokeTarget] = React.useState<Session | null>(null);
   const [revokeOthersOpen, setRevokeOthersOpen] = React.useState(false);
@@ -507,10 +519,12 @@ export function SessionsInner({ embedded = false }: SessionsInnerProps) {
     try {
       const res = await api.account_activity();
       setActivity(activityRows(res));
+      setActivityFailed(false);
     } catch (e) {
       // Activity is best-effort; a failure shouldn't break the page.
       toast.error(errMsg(e, 'Could not load activity.'));
       setActivity([]);
+      setActivityFailed(true);
     } finally {
       setActivityLoading(false);
     }
@@ -635,7 +649,7 @@ export function SessionsInner({ embedded = false }: SessionsInnerProps) {
 
           <TabsContent value="activity">
             <Panel as="div" padding="none" data-sessions-panel="activity">
-              <ActivityList events={activity} loading={activityLoading} />
+              <ActivityList events={activity} loading={activityLoading} failed={activityFailed} />
             </Panel>
           </TabsContent>
         </Tabs>

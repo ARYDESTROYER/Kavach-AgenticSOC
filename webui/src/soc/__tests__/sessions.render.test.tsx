@@ -193,4 +193,27 @@ describe('Sessions activity rows', () => {
     expect(await screen.findByText('Signed in with a password')).toBeInTheDocument();
     expect(screen.queryByText('No recent activity.')).not.toBeInTheDocument();
   });
+
+  it('names each event the way the Audit log does, never the raw event id', async () => {
+    activity.mockResolvedValue({ activity: [{ ...record, event_label: 'Signed in' }] });
+    sessionsList.mockResolvedValue({ sessions: [] });
+    renderSessions();
+    fireEvent.mouseDown(await screen.findByRole('tab', { name: 'Activity' }));
+    expect(await screen.findByText('Signed in')).toBeInTheDocument();
+    expect(screen.queryByText('Auth.login')).not.toBeInTheDocument();
+    expect(activityRows({ activity: [{ ...record, event_label: 'Signed in' }] })[0].event_label).toBe(
+      'Signed in',
+    );
+  });
+
+  it('says the activity could not be loaded when the read fails, never "No recent activity."', async () => {
+    // The server answers 503 audit_unavailable instead of an empty list, so an empty
+    // table here would claim something the server never said.
+    activity.mockRejectedValue(new Error('The audit log cannot be read right now.'));
+    sessionsList.mockResolvedValue({ sessions: [] });
+    renderSessions();
+    fireEvent.mouseDown(await screen.findByRole('tab', { name: 'Activity' }));
+    expect(await screen.findByText('Activity could not be loaded. Use Refresh to try again.')).toBeInTheDocument();
+    expect(screen.queryByText('No recent activity.')).not.toBeInTheDocument();
+  });
 });

@@ -284,6 +284,8 @@ class UserStore:
             "role", "active", "password_hash", "must_change_password", "last_login_at",
             # Wave 2 (MFA / SSO) — additive, set via the auth routes (never the UI).
             "mfa_enabled", "mfa_secret", "mfa_recovery_hashes", "mfa_last_step",
+            # Round 16 (B19): the second-factor failure counter and lock.
+            "mfa_failed_count", "mfa_locked_until",
             "oauth_provider", "oauth_sub",
             # Wave 2 (W2) self-service profile — patched via /api/account/me.
             "display_name", "alias", "avatar", "alt_email", "timezone", "locale", "prefs",
@@ -304,6 +306,90 @@ class UserStore:
             return None
 
         return await self._mutate(apply)
+
+    async def consume_mfa(
+        self,
+        username: str,
+        *,
+        step: int | None = None,
+        recovery_hash: str | None = None,
+    ) -> bool:
+        """Consume one second-factor code inside the store's compare-and-swap
+        (Round 16, B23). Exactly one of ``step`` (a matched TOTP time step) or
+        ``recovery_hash`` (the exact stored hash string the route matched off the
+        event loop) is given.
+
+        The mutator re-reads the user on every CAS attempt: a TOTP step is accepted
+        only when it is greater than the stored ``mfa_last_step``, and a recovery hash
+        only while that exact string is still stored, so two concurrent requests with
+        one code yield one success. No PBKDF2 runs here (a string comparison only).
+        A success also resets the failure counter and lock (B19). A lost race, an
+        unknown user or an account without MFA answers False and changes nothing."""
+        if (step is None) == (recovery_hash is None):
+            raise ValueError("give exactly one of step or recovery_hash")
+        needle = _norm(username)
+
+        def apply(entries: list[User]) -> bool:
+            for idx, u in enumerate(entries):
+                if _norm(u.username) != needle:
+                    continue
+                if not u.mfa_enabled:
+                    return False
+                patch: dict[str, Any] = {
+                    "mfa_failed_count": 0, "mfa_locked_until": "", "updated_at": iso_now(),
+                }
+                if step is not None:
+                    if int(step) <= int(u.mfa_last_step or 0):
+                        return False
+                    patch["mfa_last_step"] = int(step)
+                else:
+                    hashes = list(u.mfa_recovery_hashes or [])
+                    if recovery_hash not in hashes:
+                        return False
+                    hashes.remove(recovery_hash)
+                    patch["mfa_recovery_hashes"] = hashes
+                entries[idx] = u.model_copy(update=patch)
+                return True
+            return False
+
+        return bool(await self._mutate(apply))
+
+    async def record_mfa_failure(
+        self,
+        username: str,
+        *,
+        threshold: int,
+        lock_minutes: Callable[[int], int],
+        now_iso: str,
+        until_iso: Callable[[int], str],
+    ) -> tuple[int, str, bool]:
+        """Count one failed second-factor check (Round 16, B19), atomically.
+
+        Returns ``(failed_count, locked_until, newly_locked)``. Every ``threshold``
+        consecutive failures set ``mfa_locked_until`` to ``until_iso(minutes)``, where
+        ``minutes = lock_minutes(n)`` for the n-th lock in a row. An unknown user
+        answers ``(0, "", False)``."""
+        needle = _norm(username)
+
+        def apply(entries: list[User]) -> tuple[int, str, bool]:
+            for idx, u in enumerate(entries):
+                if _norm(u.username) != needle:
+                    continue
+                count = int(u.mfa_failed_count or 0) + 1
+                locked_until = str(u.mfa_locked_until or "")
+                newly = False
+                if threshold > 0 and count % threshold == 0:
+                    locked_until = until_iso(lock_minutes(count // threshold))
+                    newly = True
+                entries[idx] = u.model_copy(update={
+                    "mfa_failed_count": count, "mfa_locked_until": locked_until,
+                    "updated_at": now_iso,
+                })
+                return count, locked_until, newly
+            return 0, "", False
+
+        result = await self._mutate(apply)
+        return result if isinstance(result, tuple) else (0, "", False)
 
     async def delete(self, username: str) -> bool:
         needle = _norm(username)

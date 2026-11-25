@@ -1117,10 +1117,10 @@ generous** so an existing auth-on deployment never expires mid-session:
 
 | Knob (Preferences `session_policy.*`) | Default | Meaning |
 |---|---|---|
-| `access_ttl` | `3600` (1h) | Access-token lifetime; a refresh rotates within this window. |
+| `access_ttl` | `3600` (1h) | Reserved access-token policy value (the token lifetime is `TLSOC_AUTH_TOKEN_HOURS`, or the Remember me duration). |
 | `idle_timeout` | `43200` (12h) | Reject a session idle longer than this (`now > last_active + idle_timeout`). |
 | `absolute_lifetime` | `2592000` (30d) | Reject a session older than this regardless of activity. |
-| `refresh_ttl` | `2592000` (30d) | Refresh-token lifetime. |
+| `refresh_ttl` | `2592000` (30d) | Reserved. No sign-in issues a refresh token, so this has no effect. |
 | `sudo_reauth_window` | `600` (10m) | How recently the user must have re-authenticated for a step-up-gated action (`require_fresh_auth`). |
 | `notify_on_new_device` / `notify_on_terminate` | `false` | Best-effort operator notification on a first-seen device / a termination. |
 | `remember_me.enabled` | `true` | Offer **Remember me** on the sign-in page. Turning it off ends existing remembered sessions where an ordinary sign-in would (at `TLSOC_AUTH_TOKEN_HOURS` from sign-in). |
@@ -1155,8 +1155,9 @@ next sign-in page as "ended from another device". See `docs/operations/security.
 and the documented NIST SP 800-63B-4 deviations.
 
 These are tuned in the UI, not `.env` (they carry no secret). Endpoints:
-`POST /api/auth/refresh` (rotate + **reuse detection** — see `SECURITY.md`),
-`POST /api/auth/reauth` (step-up), `GET /api/sessions` + `POST
+`POST /api/auth/reauth` (step-up; `POST /api/auth/refresh` is deprecated and always
+answers `401 unknown_refresh`, because no sign-in issues a refresh token, see
+`SECURITY.md`), `GET /api/sessions` + `POST
 /api/sessions/{sid}/revoke` + `POST /api/sessions/revoke-others` (own devices), and
 the admin console `GET /api/admin/sessions` + `POST /api/admin/sessions/{sid}/revoke`
 + `POST /api/admin/users/{username}/revoke-all`. Users manage their own signed-in

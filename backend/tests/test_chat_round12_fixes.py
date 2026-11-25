@@ -51,6 +51,7 @@ from tests.test_chat_routes_stream import (
     _start,
     gated_state,  # noqa: F401 -- pytest fixture
 )
+from tests._auth_helpers import ready_user
 
 
 class CountingKV(MemoryKV):
@@ -1030,6 +1031,7 @@ def test_feedback_summary_and_message_routes_are_owner_scoped() -> None:
                           params={"before": "chatmsg-nope"}).status_code == 404
         assert client.post("/api/users", json={"username": "other", "password": "other-pass-12345",
                                                "role": "analyst_tier1"}).status_code == 200
+        ready_user(client, "other", "other-pass-12345")
         _login(client, "other", "other-pass-12345")
         assert client.get("/api/chat/feedback/summary").json()["total"] == 0
         assert client.get(f"/api/chat/conversations/{cid}/messages/{mid}").status_code == 404

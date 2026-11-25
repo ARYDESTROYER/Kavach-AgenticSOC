@@ -38,6 +38,7 @@ from app.state import AppState
 from app.stores import reports as reports_mod
 from app.stores.chat_conversations import ChatHistoryUnavailable
 from app.stores.reports import ReportStoreUnavailable, new_item_id
+from tests._auth_helpers import aready_user
 
 T1 = UserRole.ANALYST_TIER1.value
 
@@ -844,6 +845,7 @@ async def test_owner_scoping_with_auth_on():
         assert (await h.client.post("/api/users", json={
             "username": "bob", "password": "bob-pass-12", "role": T1,
         })).status_code == 200
+        await aready_user(h.client, "bob", "bob-pass-12")
         cid, mid = await seed_answer(h.state, "Admin")
         admin_report = (await add(h.client, cid, mid, block_id="b1")).json()["report"]
         assert admin_report["owner"] == "admin"
@@ -872,6 +874,7 @@ async def test_every_route_requires_cases_read():
         assert (await h.client.post("/api/users", json={
             "username": "carol", "password": "carol-pass-12", "role": T1,
         })).status_code == 200
+        await aready_user(h.client, "carol", "carol-pass-12")
         report = (await h.client.post("/api/reports", json={"title": "Admin"})).json()
         rid = report["id"]
 
@@ -902,6 +905,7 @@ async def test_estimate_hides_money_without_models_read():
         assert (await h.client.post("/api/users", json={
             "username": "dave", "password": "dave-pass-12", "role": T1,
         })).status_code == 200
+        await aready_user(h.client, "dave", "dave-pass-12")
         await _login(h.client, "dave", "dave-pass-12")
         cid, mid = await seed_answer(h.state, "dave")
         report = (await add(h.client, cid, mid, block_id="b1")).json()["report"]

@@ -20,6 +20,7 @@ from app.llm.providers import MockProvider
 from app.models import ChatReportSaveError
 from tests.test_chat_round12_api import REPORT_FINAL, _auth_client, _login, _open_client
 from tests.test_chat_routes_stream import TOOL_STEP
+from tests._auth_helpers import ready_user
 
 
 def _report_turn(client, key: str) -> dict[str, Any]:  # noqa: ANN001
@@ -158,6 +159,7 @@ def test_save_as_report_is_owner_scoped(monkeypatch) -> None:  # noqa: ANN001
             "username": "other-analyst", "password": "Other-Analyst-1!", "role": "analyst_tier1",
         })
         assert created.status_code in (200, 201), created.text
+        ready_user(client, "other-analyst", "Other-Analyst-1!")
         _login(client, "other-analyst", "Other-Analyst-1!")
         refused = client.post("/api/reports/from-answer", json={"conversation_id": cid, "message_id": mid})
         assert refused.status_code == 404

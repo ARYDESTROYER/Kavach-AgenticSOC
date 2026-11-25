@@ -92,6 +92,7 @@
     {"action": "auth.logout", "category": "access", "label": "Signed out"},
     {"action": "auth.mfa_enrolled", "category": "access", "label": "Two-factor authentication set up"},
     {"action": "auth.mfa_failed", "category": "access", "label": "Two-factor check failed"},
+    {"action": "auth.mfa_locked", "category": "access", "label": "Two-factor checks locked"},
     {"action": "auth.password_changed", "category": "access", "label": "Password changed"},
     {"action": "auth.password_change_failed", "category": "access", "label": "Password change failed"},
     {"action": "auth.mfa_setup_started", "category": "access", "label": "Two-factor setup started"},

@@ -857,10 +857,7 @@ export const api = {
         ),
     },
 
-    // ---- Sessions: refresh + step-up re-auth (Round-2 Wave 3) ------------- //
-    // Rotate the access/refresh tokens (new HttpOnly cookie set server-side; no
-    // token is returned to JS). Used to recover from an idle/expired session.
-    refresh: () => request<ReauthResult>('POST', 'auth/refresh'),
+    // ---- Sessions: step-up re-auth (Round-2 Wave 3) ------------------------ //
     // Step-up ("sudo") re-auth — re-prove the password (and/or an MFA code) to
     // stamp `last_authn`, satisfying a `reauth_required` gate before a sensitive
     // action. The current session is NOT replaced; only freshness is bumped.

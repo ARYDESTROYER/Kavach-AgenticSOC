@@ -1998,11 +1998,18 @@ When auth is enabled, the relevant `Secrets` are `auth_enabled`,
 ### First login + OOBE
 
 On first boot with an **empty** user store, the suite seeds a single
-**`super_admin`** — `Admin` / `Admin@123` — with `must_change_password=true`. At
-the login screen sign in as `Admin` / `Admin@123`; the login flow detects the flag
-and forces a **change-password** step (`POST /api/auth/change-password`) before it
-issues a real session. **Change this password immediately** — the seed is a known
-default. You can disable the seed with `TLSOC_AUTH_SEED_ADMIN=false`; the platform
+**`super_admin`** (`Admin` / `Admin@123`) for demonstrations. The seeded `Admin`
+is deliberately **not** flagged to change its password, so the sign-in goes straight
+to the Console. **Change this password immediately**: the seed is a known default.
+Call `POST /api/auth/change-password`, or reset it in Settings, Users (Reset
+password), which then asks for a new password at the next sign-in. The forced change
+applies to accounts an administrator creates or resets: such an account signs in,
+and until it changes its temporary password (`POST /api/auth/change-password`)
+every other `/api` route answers `403` with code `password_change_required`. Only signing out, the change itself and the
+reads the sign-in screen needs (`/api/auth/me`, `/api/account/me`,
+`/api/account/permissions`, `/api/prefs/effective`, `/api/prefs/user`) answer.
+Changing a password signs out your other sessions; an administrator's reset signs the
+account out everywhere. You can disable the seed with `TLSOC_AUTH_SEED_ADMIN=false`; the platform
 then self-bootstraps via the public **`POST /api/setup/account`** endpoint — a
 strong-password-enforced (min length, must differ from the username, rejects
 common passwords), one-shot OOBE that is only callable while auth is on, setup is
@@ -2370,9 +2377,10 @@ A JSON map of **rule value → `{ mode, n, window_seconds, group_by }`**:
 The login screen is a two-column split (a left brand hero consuming your
 branding — org name / logo / accent colours from `GET /api/branding` — and a
 right form card, `hidden lg:block` on the hero so a phone just sees the clean
-form). It drives four modes from one screen: normal sign-in, the forced OOBE
-change-password step on the seeded admin's first login (with a live,
-dependency-free password-strength meter), the **MFA** code step (a 6-cell
+form). It drives four modes from one screen: normal sign-in, the forced
+change-password step for an account an administrator created or reset (with a live,
+dependency-free password-strength meter; the seeded demo `Admin` is not forced to
+change its password, so rotate it yourself), the **MFA** code step (a 6-cell
 segmented OTP entry, §24), and any configured **SSO** buttons.
 
 ### Edit your profile + avatar
@@ -2473,21 +2481,18 @@ toggles. Idle + absolute expiry and revocation are enforced in `require_auth`
 (the async gate), not in the hot-path sync `verify()`. A session whose
 idle/absolute window has lapsed gets `401 {code:"session_expired"}`.
 
-**Refresh rotation + theft detection.** `POST /api/auth/refresh` rotates the
-refresh token (old hash slides to a previous-hash slot) and mints a fresh access
-token. If a caller replays an **already-rotated** refresh token, that is treated
-as theft: the session is revoked, the user's `token_version` is bumped (global
-sign-out), the event is audited + best-effort notified, and a `401
-{code:"session_invalid"}` is returned. `POST /api/auth/logout` revokes the
-current `sid`.
+**No refresh tokens.** No sign-in issues a refresh token, so `refresh_ttl` has
+no effect today. A session lasts until its access token expires (`AUTH_TOKEN_HOURS`,
+or the Remember me duration), within the idle and absolute limits; then the person
+signs in again. `POST /api/auth/refresh` is kept for older clients, is marked
+deprecated, and always answers `401 {code:"session_invalid",
+reason:"unknown_refresh"}`. `POST /api/auth/logout` revokes the current `sid`.
 
 ```bash
 curl -s -b cookies.txt localhost:8088/api/sessions
 curl -s -b cookies.txt -X POST localhost:8088/api/sessions/revoke-others -d '{}'
 curl -s -b cookies.txt -X POST localhost:8088/api/auth/reauth \
   -H 'content-type: application/json' -d '{"password":"<my-password>"}'
-curl -s -b cookies.txt -X POST localhost:8088/api/auth/refresh \
-  -H 'content-type: application/json' -d '{"refresh_token":"<token>"}'
 ```
 
 ---
