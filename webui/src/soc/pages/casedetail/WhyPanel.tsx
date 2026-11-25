@@ -66,6 +66,31 @@ function decisionByLabel(decisionBy?: string): { text: string; isHuman: boolean 
   return { text: decisionBy ? humanizeToken(decisionBy) : 'Automated pipeline', isHuman };
 }
 
+/**
+ * The case's lifetime retrieval markers in words (Round 16 SPEC §4.5 WP14, research
+ * data-visibility R15), so "unavailable" above is explained: whether the case's whole
+ * retrieval history is recorded, and whether any retrieval has completed on it. Null when
+ * the case carries neither marker.
+ */
+export function lifetimeRetrievalLine(c: Pick<Case, 'retrieval_history_status' | 'retrieval_observation_status'>): string | null {
+  const history =
+    c.retrieval_history_status === 'available'
+      ? 'its full retrieval history is recorded'
+      : c.retrieval_history_status === 'unavailable'
+        ? 'its earlier retrieval history was not recorded'
+        : '';
+  const observed =
+    c.retrieval_observation_status === 'measured'
+      ? 'at least one retrieval completed'
+      : c.retrieval_observation_status === 'not_measured'
+        ? 'no retrieval has completed yet'
+        : c.retrieval_observation_status === 'unavailable'
+          ? 'whether a retrieval completed was not recorded'
+          : '';
+  const parts = [history, observed].filter(Boolean);
+  return parts.length ? `Across this case: ${parts.join(', and ')}.` : null;
+}
+
 export const WhyPanel: React.FC<{
   c: Case;
   rationale: CaseRationale | null;
@@ -358,6 +383,11 @@ export const WhyPanel: React.FC<{
           Reference excerpts retrieved through RAG. Runbook passages are identified
           separately; the runbook whose guidance the run received is shown above.
         </p>
+        {lifetimeRetrievalLine(c) ? (
+          <p className="text-xs text-muted-foreground" data-testid="why-lifetime-retrieval">
+            {lifetimeRetrievalLine(c)}
+          </p>
+        ) : null}
         {knowledge.length === 0 ? (
           <EmptyState
             icon={BookOpen}

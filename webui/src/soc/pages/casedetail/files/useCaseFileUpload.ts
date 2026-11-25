@@ -70,6 +70,11 @@ export interface CaseFileUploader {
   busy: boolean;
   /** Prepare and upload `files` in order; resolves with the entries that were added. */
   uploadFiles: (files: readonly File[], caption?: string) => Promise<CaseFileEntry[]>;
+  /**
+   * Report `files` as not added, each with `message` (plain Console copy), without
+   * preparing or posting them: the files a case has no room for (Round 16 B31).
+   */
+  skip: (files: readonly File[], message: string) => void;
   /** Forget finished items (done and failed). */
   clearFinished: () => void;
 }
@@ -147,9 +152,22 @@ export function useCaseFileUpload(options: UseCaseFileUploadOptions): CaseFileUp
     [runBatch],
   );
 
+  const skip = React.useCallback((files: readonly File[], message: string) => {
+    if (!files.length) return;
+    setItems((current) => [
+      ...current,
+      ...files.map((file) => ({
+        key: nextKey(),
+        name: file.name || 'Pasted image',
+        status: 'error' as const,
+        message,
+      })),
+    ]);
+  }, []);
+
   const clearFinished = React.useCallback(() => {
     setItems((current) => current.filter((item) => item.status !== 'done' && item.status !== 'error'));
   }, []);
 
-  return { items, busy: running > 0, uploadFiles, clearFinished };
+  return { items, busy: running > 0, uploadFiles, skip, clearFinished };
 }

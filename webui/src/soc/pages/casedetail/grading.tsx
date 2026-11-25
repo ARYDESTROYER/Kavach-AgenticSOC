@@ -429,6 +429,58 @@ export interface GradingHistoryProps {
   className?: string;
 }
 
+/** A stored 0..1 quality score as a percentage; 0 is the unset default ("Not rated"). */
+export function qualityWords(score: unknown): string {
+  if (typeof score !== 'number' || !Number.isFinite(score) || score <= 0) return 'Not rated';
+  return `${Math.round(Math.min(1, score) * 100)}%`;
+}
+
+/** "False positive at 92%": the AI verdict the grade was given against, when recorded. */
+export function gradedVerdictWords(entry: CaseFeedback): string | null {
+  const verdict = (entry.ai_verdict ?? '').trim();
+  if (!verdict) return null;
+  const confidence = typeof entry.ai_confidence === 'number' && entry.ai_confidence > 0 ? entry.ai_confidence : null;
+  const pct = confidence === null ? null : Math.round(confidence <= 1 ? confidence * 100 : confidence);
+  return `${humanizeToken(verdict)}${pct === null ? '' : ` at ${pct}%`}`;
+}
+
+/**
+ * The full grading record behind one entry (Round 16 SPEC §4.5 WP14, research
+ * data-visibility R8): the three quality scores, the AI verdict that was graded, and
+ * whether it came from the auto-close review. Folded by default.
+ */
+const GradingRecord: React.FC<{ entry: CaseFeedback }> = ({ entry }) => {
+  const [open, setOpen] = React.useState(false);
+  const graded = gradedVerdictWords(entry);
+  const review = (entry.origin ?? '').trim() === 'auto_close_review';
+  return (
+    <Collapsible open={open} onOpenChange={setOpen} className="mt-1.5">
+      <CollapsibleTrigger className="inline-flex items-center gap-1 rounded-sm text-xs font-medium text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+        <ChevronDown className={cn('h-3.5 w-3.5 transition-transform', open && 'rotate-180')} aria-hidden />
+        Full record
+      </CollapsibleTrigger>
+      <CollapsibleContent className="mt-1.5" data-testid="grading-record">
+        <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-0.5 text-xs">
+          <dt className="text-muted-foreground">Accuracy</dt>
+          <dd className="tabular-nums text-foreground">{qualityWords(entry.accuracy)}</dd>
+          <dt className="text-muted-foreground">Reasoning quality</dt>
+          <dd className="tabular-nums text-foreground">{qualityWords(entry.reasoning_quality)}</dd>
+          <dt className="text-muted-foreground">Action appropriateness</dt>
+          <dd className="tabular-nums text-foreground">{qualityWords(entry.action_appropriateness)}</dd>
+          <dt className="text-muted-foreground">Graded the AI verdict</dt>
+          <dd className="text-foreground">{graded ?? 'Not recorded'}</dd>
+          {review ? (
+            <>
+              <dt className="text-muted-foreground">Origin</dt>
+              <dd className="text-foreground">From the auto-close review</dd>
+            </>
+          ) : null}
+        </dl>
+      </CollapsibleContent>
+    </Collapsible>
+  );
+};
+
 /**
  * Read-only list of prior gradings (most recent first), divided by hairlines. Analyst
  * comments render as PLAIN TEXT (#9). Renders nothing when there is no prior feedback.
@@ -468,6 +520,7 @@ export const GradingHistory: React.FC<GradingHistoryProps> = ({ feedback, classN
             /* UNTRUSTED: plain text (#9). */
             <p className="mt-1.5 whitespace-pre-wrap text-xs leading-relaxed text-foreground/90">{f.comment}</p>
           ) : null}
+          <GradingRecord entry={f} />
         </li>
       ))}
     </ol>

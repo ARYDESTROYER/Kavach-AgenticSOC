@@ -25,6 +25,9 @@ const { getMock, listCasesMock } = vi.hoisted(() => ({
 vi.mock('@/lib/api', () => ({
   api: { get: getMock, listCases: listCasesMock },
 }));
+// The events table (WP14) reads its own route under the caller's grants; this spec is
+// about the baseline card only.
+vi.mock('../records/CaseEvents', () => ({ CaseEvents: () => null }));
 
 import { EvidencePanel } from '../EvidencePanel';
 import type { Case } from '@/lib/types';

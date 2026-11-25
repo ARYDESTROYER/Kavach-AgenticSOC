@@ -105,17 +105,25 @@ describe('the explain stubs', () => {
 });
 
 describe('the records stubs', () => {
-  it('render nothing where nothing is shown today', () => {
+  it('render nothing where there is nothing to show (WP14 filled them; records.wp14.test.tsx covers the rest)', async () => {
     const { container } = render(
       <>
-        <CaseEvents caseId="case-1" filterEventIds={['e1']} onClearFilter={() => undefined} />
-        <AllFieldsSheet caseId="case-1" open onOpenChange={() => undefined} />
+        <AllFieldsSheet caseId="case-1" open={false} onOpenChange={() => undefined} />
         <AwaitingReason caseRecord={CASE} />
         <CaseUsageButton caseId="case-1" totalCost={null} />
         <FindingsList findings={[]} />
       </>,
     );
     expect(container).toBeEmptyDOMElement();
+    // The events table asks its injected reader, never the stubbed module.
+    const load = vi.fn(async () => ({
+      case_id: 'case-1', available: true, reason: null, returned: 0, expected: 0,
+      truncated: false, limit: 50, next_cursor: null, rows: [],
+    }));
+    render(<CaseEvents caseId="case-1" filterEventIds={['e1']} onClearFilter={() => undefined} load={load} />);
+    expect(load).toHaveBeenCalledWith('case-1', expect.objectContaining({ limit: 50 }));
+    // Let the read settle inside act, so the strict run sees no act warning.
+    expect(await screen.findByText('This case lists no events.')).toBeInTheDocument();
   });
 
   it('show the cost as text, as the facts rail does today', () => {

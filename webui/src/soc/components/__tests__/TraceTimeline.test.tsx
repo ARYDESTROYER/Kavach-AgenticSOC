@@ -90,7 +90,8 @@ describe('TraceTimeline: AI spend withheld without cost:view (Round 14 second ac
 
   it('shows no cost badge and no dash when the server withholds the totals', () => {
     render(<TraceTimeline data={withheld} />);
-    expect(screen.getByText('1 step')).toBeInTheDocument();
+    // Round 16 (WP14): the counter counts AI steps only.
+    expect(screen.getByText('1 AI step')).toBeInTheDocument();
     expect(screen.queryByText(DASH)).toBeNull();
     expect(screen.queryByText(/tokens$/)).toBeNull();
   });
