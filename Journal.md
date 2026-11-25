@@ -12344,3 +12344,73 @@
 - Tests: on the merged tree, the WP07 and related backend tests (with knowledge, route coverage, release guards and records) 299 passed; the changed Console test files with the first-paint bundle check 347 passed, 1 skipped; build_release_notes --check current; check:types no drift; typecheck clean; build:app entry 324,931 B.
 - Status: done.
 - Next: WP05 part 2 (the notes guard, the mkdocs exclusion of docs/releases/notes/ and the Docs Release notes link); Wave 1 continues.
+
+### 2026-11-25 10:45Z - WP02 agent - Case Manager queue and frame
+- Context: Round 16 SPEC 4.4 WP02: reclaim the route's top band and calm the queue ([cmux] R1 frame part, R7, 5.2 focus mode, 5.9 empty pane).
+- Did:
+  - Frame (webui/src/soc/pages/CaseManager.tsx): no routed PageHeader; an sr-only h1; board `-my-2 h-[calc(100dvh-5.5rem)]` on a 16px inset on every side.
+  - Band row 1: scope, Live, Refresh, view menu and the About tip. Below a 400px queue, Refresh and About move into the view menu. AiQueueNotice is mounted as a third line that takes no space while empty.
+  - Rows: a 40px leading slot that shows the severity glyph and becomes the checkbox on hover, on focus, with any selection, during a bulk job, and on touch screens. Neutral "Risk N" wrapped in RiskExplain row. AiRunMark in the status node; aiRunAccessibleText in the row's accessible name.
+  - `[` focus mode with a 44px strip; J and K work while the queue is folded; the choice is saved in soc.caseManager.queueCollapsed.
+  - Default queue width clamped to 340 to 520px.
+  - "No case open" pane with up to three counted shortcuts.
+  - The shortcuts sheet lists only usable keys, and its tab keys follow CASE_TABS.
+  - The below-xl back bar hides when the case header marks its own Back with data-case-header-back.
+  - Also: route-visual-standard matched pair; the ui-standard Queue and detail workspaces section; docs/research/2026-11-round16/acceptance/measure-case-manager.mjs.
+- Tests:
+  - CaseManager.test.tsx: 102 (17 new).
+  - test:strict: 681 files, 8,915 passed, 1 skipped.
+  - typecheck, lint, gates, check:types and build are clean; entry 329,101 B (delta 0).
+  - pytest: 13,195 passed, 24 skipped, 5 sandbox-only env failures.
+  - Measured on the seeded demo: frame top 72 and band 92 at 1440x900 and 390x844.
+- Status: done; commit 1abda6a on r16-wp02, worktree detached.
+- Next:
+  - WP03: mark the header Back with data-case-header-back.
+  - WP16: add the `]` row to caseManagerShortcuts.
+  - WP09: keep AiQueueNotice to one 16px line; no trailing separator in AiRunMark.
+  - WP18: Help Center text from the report.
+
+### 2026-11-25 12:55Z - WP03 sub-agent - Case detail structure: compact header, lanes, inspector
+- Context: Round 16 WP03 (SPEC D8, section 4.4, B27, B28, C60), on branch r16-wp03 from the WP01 commit a4414807b0.
+- Did: Six case tabs (Brief, Evidence, AI investigation, Response, Activity, Chat) on Alt+1 to Alt+6. Old tab and section links now open their new tab (router hunk). A 118px header: 44px title row, a 24px meta strip that never wraps, 36px compact tabs (new `density` prop on ui/tabs). ReviewBand moved out of the header. The inspector is a column beside the tabs from a 52rem pane, toggled with `]`, with six sections kept per viewer. The Brief has a next step row, four lanes and the new DecisionLane. New EvidencePanel. The AI investigation tab is a lane with an advisory line, the findings-to-events filter and the trace opening during a run. Response shows tasks for everyone. Mounted the WP01 stubs: ReinvestigateDialog, AiRunChip, the explainers, AwaitingReason, AllFieldsSheet, CaseUsageButton, CaseEvents and FindingsList; the close dialog gets caseIds. B27 is fixed: the page reads prefs.auto_close through policyForVerdict. B28 is fixed: the editor opens after the menu closes. C60 is fixed: Case detail and Investigate read settings only with settings:read. Updated the ui-standard Case header and Case tab bodies paragraphs and G17.
+- Tests: typecheck, lint, gates, check:types and the build are clean (entry 329,306 B, inside 330,104). The strict Vitest run covered all 686 files across two runs; load timeouts passed on rerun with zero stderr. Backend: 13,188 passed, 24 skipped, 12 failed (5 round15 docs pins expected red, 5 sandbox env, 2 load timing that pass alone). Each fix was proved by reverting it.
+- Status: done. Commit 454bea1ec16f4c3377a6d260bd767e96f74fc342; worktree detached.
+- Next: WP18 rewrites the docs pinned by test_docs_round15_records.py and docs/analyst/case-manager.md (Alt+1 to Alt+6). WP02 or WP16 removes the CaseManager phone back bar so the phone first block reaches 210px. WP14 fills the records stubs. WP11 adds the I key. The runbooks owner deletes the now unmounted RunbookRail and OverviewNextStep.
+
+### 2026-11-25 13:40Z - WP02 reviewer - Case Manager queue and frame review
+- Context: Independent review of Round 16 WP02 (SPEC 4.4) on r16-wp02 (base a4414807b0, builder commit 1abda6a).
+- Did:
+  - Checked the diff against SPEC 4.4, 3, 4.1, 4.10, 5.1 and C31, C32, C37, C40.
+  - The contract is met: no PageHeader, an sr-only h1, frame top 72 and band 92 at both sizes, the 40px glyph and checkbox slot, neutral Risk with RiskExplain row, AiRunMark in the status node, AiQueueNotice mounted, `[` focus mode, the 340 to 520 clamp, "No case open" shortcuts, a truthful shortcuts sheet.
+  - Ownership respected; decide() and risk.py untouched.
+  - Fixed four defects in commit f65c615 (webui/src/soc/pages/CaseManager.tsx and its test):
+    - strip Previous and Next use aria-disabled, so focus is not dropped at an end;
+    - closing the case while the queue is folded lands focus on Show queue;
+    - the empty pane offers no shortcut during the first load or a queue error, and counts are re-read each time it shows;
+    - the AI notice wrapper's 4px gap moved to a child with content, so an empty live region keeps the band at 92px.
+  - Each fix has a test; the three behaviour tests were proven failing with their fix reverted.
+- Tests:
+  - CaseManager.test.tsx: 105 passed.
+  - The CaseManager-importing files: 240 passed.
+  - typecheck, lint, gates, check:types and build are clean; entry 329,101 B (delta 0).
+  - pytest: 13,195 passed, 24 skipped, 5 sandbox-only env failures.
+  - test:strict was killed by my 40-minute timeout under shared-machine load (unrelated 5,000 ms timeouts). The CaseManager files pass. The three unrelated files re-run serially with a longer timeout pass (144). Four other timed-out files were not re-run, so a clean full test:strict is still owed.
+- Status: done; r16-wp02 at f65c615; worktree detached.
+- Next:
+  - WP09: AiQueueNotice content is at most one 16px line. aiRunAccessibleText returns a bare phrase, and AiRunMark adds no separator.
+  - WP03: mark the header Back with data-case-header-back.
+  - WP16: add the `]` row to caseManagerShortcuts; run a clean test:strict on the integrated tree.
+
+### 2026-11-25 14:20Z - WP03 reviewer - Case detail structure review and fixes
+- Context: Independent adversarial review of Round 16 WP03 (branch r16-wp03, builder commit 454bea1 on a4414807b0) against SPEC D8, section 4.4, B27, B28 and C60.
+- Did: Read the diff against the SPEC. Re-proved the B27, B28 and C60 regression tests by reverting each fix. Checked the seeded demo in both themes at 1440x900 and 390x844: axe, loading, error, keyboard and focus, a review sample, and geometry with WP02's frame applied locally. Fixed four confirmed defects on r16-wp03 (aec5a60), each with a test that fails without the fix: (1) T and "Edit tags" did nothing while the Tags and campaign section was folded; (2) the tag editor opened off screen below the inspector column's fold; (3) Back carried no `data-case-header-back` marker, so WP02's phone back bar stayed and first content sat at 247px; with the marker it is at 207px with one Back; (4) the related-cases link in the inspector sheet lost focus to the toggle on close. Added policyForVerdict and confidenceCalibration unit tests and one ui-standard sentence.
+- Tests: typecheck, lint, gates, check:types and the build are clean (entry 329,306 B, unchanged). test:strict: 686 files, 8,960 passed, 1 skipped, zero stderr. Backend: 13,190 passed, 24 skipped, 10 failed (5 Round 15 docs pins expected red for WP18, 5 sandbox environment). Spine guards pass. check_version, check_ci_contract, check_docs and build_app_knowledge --check pass.
+- Status: done. r16-wp03 is at aec5a60; the worktree is detached.
+- Next: WP02 or WP16 should list `]` (inspector) and W (watch the AI run) in caseManagerShortcuts so `?` stays true. WP18 rewrites the five docs pinned by test_docs_round15_records.py. The "(before Round 14)" labels live in caseActivityText.ts and audit/events.ts and need their owner's copy pass.
+
+### 2026-11-25 14:13Z - orchestrator - WP02 and WP03 merged (Case Manager queue, frame and case detail)
+- Context: SPEC §4.8 step 10. Taken before WP10 rather than after it: WP03 reads the triage fields through WP01's types and degrades when they are absent, and WP09, WP14, WP15E part 2 and WP15F all need WP02 and WP03 in their base. SPEC §8.1 records the reorder.
+- Did: merged WP02 (review f65c615) and WP03 (review aec5a60) into claude/round16 with no conflicts; generated files unchanged. Carried to WP16: add the ] and W rows to caseManagerShortcuts, re-measure the integrated geometry with measure-case-manager.mjs (207 px first content with one Back on a phone), remove the now unmounted RunbookRail and OverviewNextStep, and the "before Round 14" runbook labels in caseActivityText.ts and audit/events.ts that still say Round in Console copy. The five Round 15 records tests in test_docs_round15_records.py that pin the five-tab layout are expected red under D8 until the case tab docs are rewritten (a small docs package follows now, ahead of WP18).
+- Tests: on the merged tree, the 30 changed Console test files with the first-paint, route registry, navigation and console map contracts: 700 passed, 1 skipped; typecheck clean; lint clean; design gates pass; check:types no drift; route coverage, knowledge, records and spine guard backend tests 259 passed; build:app entry 325,135 B.
+- Status: done.
+- Next: the case tab docs package, WP05 part 2, then Wave 1 merges as reviews finish.
