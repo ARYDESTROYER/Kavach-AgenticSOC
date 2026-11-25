@@ -31,6 +31,7 @@ import {
   X,
   type LucideIcon,
 } from 'lucide-react';
+import { toast } from 'sonner';
 
 import type {
   ConfiguredStatus,
@@ -60,6 +61,7 @@ import { isDemoActive, useDemo } from '@/soc/demo';
 import { headingOf, useReturnFocus } from '@/soc/hooks/useReturnFocus';
 import { prefetchChunks, retryingLoader } from '@/soc/lazy-retry';
 
+import { canBePrimary, DEMO_MANAGED_REASON, PRIMARY_PULL_ONLY, primaryConfirmed } from './sources-primary';
 import type { RuntimeReviewStageProps } from './wizard/RuntimeReviewSteps';
 import { StepHeading } from './wizard/StepHeading';
 
@@ -1050,10 +1052,12 @@ function SourcesStep({
   };
 
   const setPrimary = async (source: SourceInstance) => {
+    // A Demo overlay row is read-only (B43); its row offers no Make primary.
+    if (source.demo) return;
     setBusyId(source.id);
     setError(null);
     try {
-      await api.upsertSource({
+      const saved = await api.upsertSource({
         id: source.id,
         source_type: source.source_type,
         display_name: source.display_name,
@@ -1062,6 +1066,15 @@ function SourcesStep({
         ingest_mode: source.ingest_mode ?? null,
         config: (source.config as Record<string, unknown>) || {},
       });
+      // The server answers 200 even when it keeps the source non-primary (B46), so the
+      // returned list decides what the toast says.
+      if (primaryConfirmed(saved, source.id)) {
+        toast.success(
+          `${source.display_name || properName(source.source_type)} is now the primary source`,
+        );
+      } else {
+        toast.warning(PRIMARY_PULL_ONLY);
+      }
       await refreshList();
     } catch (nextError) {
       setError(nextError);
@@ -1071,6 +1084,7 @@ function SourcesStep({
   };
 
   const remove = async (source: SourceInstance) => {
+    if (source.demo) return;
     setRemoving(true);
     setRemoveError(null);
     setError(null);
@@ -1189,10 +1203,9 @@ function SourcesStep({
                   (connector) => connector.source_type === source.source_type,
                 );
                 const secretCount = source.configured_secrets?.length || 0;
-                const canBePrimary =
-                  source.ingest_mode === 'pull' ||
-                  source.ingest_mode?.startsWith('pull_') ||
-                  manifest?.ingest_modes?.includes('pull');
+                // Only a pull source can be primary, read from the source's own mode, not
+                // from what its connector could do (B46).
+                const offerPrimary = !source.is_primary && canBePrimary(source, manifest);
                 return (
                   <div
                     key={source.id}
@@ -1215,50 +1228,58 @@ function SourcesStep({
                         {secretCount ? ` · ${secretCount} secret${secretCount === 1 ? '' : 's'} configured` : ''}
                       </p>
                     </div>
-                    <div className="flex shrink-0 flex-wrap items-center gap-1">
-                      {!source.is_primary && canBePrimary ? (
+                    {source.demo ? (
+                      // A Demo overlay row is read-only (B43): Demo Mode owns it, and a
+                      // write to it would land in the live configuration.
+                      <p className="inline-flex shrink-0 items-center gap-2 text-xs text-muted-foreground">
+                        <ShieldCheck className="h-4 w-4" aria-hidden /> {DEMO_MANAGED_REASON}
+                      </p>
+                    ) : (
+                      <div className="flex shrink-0 flex-wrap items-center gap-1">
+                        {offerPrimary ? (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => void setPrimary(source)}
+                            disabled={busyId === source.id}
+                          >
+                            {busyId === source.id ? (
+                              <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+                            ) : (
+                              <Star className="h-4 w-4" aria-hidden />
+                            )}
+                            Make primary
+                          </Button>
+                        ) : null}
+                        <Button variant="ghost" size="sm" onClick={() => setEditing(source)}>
+                          <Pencil className="h-4 w-4" aria-hidden /> Edit
+                        </Button>
                         <Button
                           variant="ghost"
                           size="sm"
-                          onClick={() => void setPrimary(source)}
-                          disabled={busyId === source.id}
+                          // Neutral at rest; red only on hover, focus and in the confirm dialog.
+                          className="hover:text-critical-text focus-visible:text-critical-text aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
+                          onClick={(event) => {
+                            // Make primary on this row writes the whole source, and that write
+                            // creates a source that is missing: a removal racing it could be
+                            // undone. Remove waits for it; the open dialog covers the removal.
+                            if (busyId === source.id) return;
+                            removeOpener.remember(event.currentTarget, {
+                              peers: () => listRef.current?.querySelectorAll('[data-wizard-source-remove]') ?? [],
+                              empty: () => headingOf(listRef.current),
+                            });
+                            setRemoveError(null);
+                            setPendingDelete(source);
+                          }}
+                          // Busy, not disabled, like the confirm's buttons: it stays in the tab
+                          // order while Make primary runs.
+                          aria-disabled={busyId === source.id || undefined}
+                          data-wizard-source-remove=""
                         >
-                          {busyId === source.id ? (
-                            <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
-                          ) : (
-                            <Star className="h-4 w-4" aria-hidden />
-                          )}
-                          Make primary
+                          <Trash2 className="h-4 w-4" aria-hidden /> Remove
                         </Button>
-                      ) : null}
-                      <Button variant="ghost" size="sm" onClick={() => setEditing(source)}>
-                        <Pencil className="h-4 w-4" aria-hidden /> Edit
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        // Neutral at rest; red only on hover, focus and in the confirm dialog.
-                        className="hover:text-critical-text focus-visible:text-critical-text aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
-                        onClick={(event) => {
-                          // Make primary on this row writes the whole source, and that write
-                          // creates a source that is missing: a removal racing it could be
-                          // undone. Remove waits for it; the open dialog covers the removal.
-                          if (busyId === source.id) return;
-                          removeOpener.remember(event.currentTarget, {
-                            peers: () => listRef.current?.querySelectorAll('[data-wizard-source-remove]') ?? [],
-                            empty: () => headingOf(listRef.current),
-                          });
-                          setRemoveError(null);
-                          setPendingDelete(source);
-                        }}
-                        // Busy, not disabled, like the confirm's buttons: it stays in the tab
-                        // order while Make primary runs.
-                        aria-disabled={busyId === source.id || undefined}
-                        data-wizard-source-remove=""
-                      >
-                        <Trash2 className="h-4 w-4" aria-hidden /> Remove
-                      </Button>
-                    </div>
+                      </div>
+                    )}
                   </div>
                 );
               })}

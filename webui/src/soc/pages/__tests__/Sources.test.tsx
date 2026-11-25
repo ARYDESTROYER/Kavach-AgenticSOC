@@ -15,6 +15,7 @@ import * as React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { act, render, screen, waitFor, fireEvent, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { toast } from 'sonner';
 
 const {
   listConnectorsMock,
@@ -819,5 +820,63 @@ describe('Sources on the Round 14 console grammar (SPEC §4.9.4, C7 and C8)', ()
     expect(within(bar).getByRole('button', { name: /^Filters/ })).toBeInTheDocument();
     expect(within(bar).queryByRole('combobox', { name: 'Kind' })).toBeNull();
     vi.unstubAllGlobals();
+  });
+});
+
+describe('Make primary only for a pull source, with a truthful toast (Round 16 B46)', () => {
+  beforeEach(() => {
+    listConnectorsMock.mockReset().mockResolvedValue({ connectors: CONNECTORS });
+    listSourcesMock.mockReset().mockResolvedValue({ sources: SOURCES_STATUS });
+    sourcesHealthMock.mockReset().mockResolvedValue({ sources: HEALTH_STATUS });
+    sourcesCoverageMock.mockReset().mockResolvedValue(COVERAGE_STATUS);
+    upsertSourceMock.mockReset();
+    demoStatusMock.mockReset().mockResolvedValue({ mode: 'off', active: false, run_id: null });
+    deleteSourceMock.mockReset().mockResolvedValue({ ok: true, sources: [] });
+    vi.mocked(toast.success).mockReset();
+    vi.mocked(toast.warning).mockReset();
+    vi.mocked(toast.error).mockReset();
+    window.localStorage.clear();
+  });
+
+  it('offers no Make primary on a push source', async () => {
+    listSourcesMock.mockResolvedValue({ sources: SOURCES });
+    sourcesHealthMock.mockResolvedValue({ sources: HEALTH });
+    sourcesCoverageMock.mockResolvedValue(COVERAGE);
+    const user = userEvent.setup();
+    renderSources();
+    await screen.findByText('Webhook Ingest');
+    await user.click(screen.getByRole('button', { name: 'Actions for Webhook Ingest' }));
+    expect(await screen.findByRole('menuitem', { name: 'Edit' })).toBeInTheDocument();
+    expect(screen.queryByRole('menuitem', { name: 'Make primary' })).toBeNull();
+  });
+
+  async function makePrimary(name: string) {
+    const user = userEvent.setup();
+    renderSources();
+    await screen.findByText(name);
+    await user.click(screen.getByRole('button', { name: `Actions for ${name}` }));
+    await user.click(await screen.findByRole('menuitem', { name: 'Make primary' }));
+    const confirm = await screen.findByRole('alertdialog', { name: 'Make this the primary source?' });
+    await user.click(within(confirm).getByRole('button', { name: 'Make primary' }));
+  }
+
+  it('toasts success when the returned list holds the source as primary', async () => {
+    upsertSourceMock.mockResolvedValue({
+      ok: true,
+      sources: SOURCES_STATUS.map((s) => ({ ...s, is_primary: s.id === 'silent-1' })),
+    });
+    await makePrimary('Quiet ES');
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith('Quiet ES is now the primary source'));
+    expect(toast.warning).not.toHaveBeenCalled();
+  });
+
+  it('warns instead of claiming success when the server kept the source non-primary', async () => {
+    // What the server answers for a source it will not make primary: 200, flag unset.
+    upsertSourceMock.mockResolvedValue({ ok: true, sources: SOURCES_STATUS });
+    await makePrimary('Quiet ES');
+    await waitFor(() =>
+      expect(toast.warning).toHaveBeenCalledWith('Only a pull source can be the primary source.'),
+    );
+    expect(toast.success).not.toHaveBeenCalled();
   });
 });
