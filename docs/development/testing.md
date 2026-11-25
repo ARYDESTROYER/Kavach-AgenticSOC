@@ -303,8 +303,8 @@ all three shipping Dockerfiles and the curated What's new notes
 `docs/releases/notes/<VERSION>.json` (schema 1, naming `VERSION`). On `main`, on a `v*`
 tag, and on a pull request into `main` (`GITHUB_BASE_REF=main`), it further requires
 the `[Unreleased]` body to read exactly `No changes yet.`, the GitHub Release body to
-stay at most 100,000 characters, and the notes to read `"status": "released"` with the
-date of the dated CHANGELOG heading on the release and on every update. To rehearse
+stay at most 100,000 characters, and the notes to read `"status": "released"`, to carry
+the date of the dated CHANGELOG heading, and to give every update a date. To rehearse
 those release checks locally:
 
 ```bash

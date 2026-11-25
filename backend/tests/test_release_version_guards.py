@@ -5,8 +5,8 @@ The gate runs on every ref. On ``main``, on a ``v*`` tag and on a pull request i
 it also requires the records a release carries: an ``[Unreleased]`` section that reads
 exactly ``No changes yet.``, a GitHub Release body (the release-commit marker plus
 ``docs/releases/<VERSION>.md``) of at most 100,000 characters, and curated What's new
-notes that read ``released`` with the date of the dated CHANGELOG heading on the
-release and on every update. Every shipping Dockerfile must declare the Apache-2.0
+notes that read ``released``, carry the date of the dated CHANGELOG heading, and give
+every update a date. Every shipping Dockerfile must declare the Apache-2.0
 license label, and ``docs/releases/notes/<VERSION>.json`` (schema 1, naming
 ``VERSION``) must exist, on every ref.
 
@@ -362,6 +362,40 @@ def test_a_release_ref_refuses_any_undated_update(
     assert result.returncode == 1
     assert f"updates[{len(updates) - 1}] ({updates[-1]['id']!r}) is undated" in result.stderr
     assert "updates[0]" not in result.stderr
+
+
+@RELEASE_REFS
+def test_a_release_ref_keeps_the_dates_earlier_updates_already_had(
+    tmp_path: Path, context: dict[str, str]
+) -> None:
+    """Only the release date must match the heading; an earlier update keeps its own date."""
+    mirror = _mirror(tmp_path)
+    _empty_unreleased(mirror)
+
+    def earlier_last(notes: dict) -> None:
+        _released(notes)
+        notes["updates"][-1]["date"] = "2000-01-03"
+
+    _plant_notes(mirror, earlier_last)
+    updates = json.loads((mirror / NOTES).read_text(encoding="utf-8"))["updates"]
+    assert len(updates) > 1 and updates[-1]["date"] != _heading_date()
+    result = _run(mirror, **context)
+    assert result.returncode == 0, result.stderr
+
+
+def test_the_frozen_preparation_dates_only_the_undated_updates() -> None:
+    """channels.md tells the release preparation to date the undated updates, not all."""
+    channels = (ROOT / "docs" / "releases" / "channels.md").read_text(encoding="utf-8")
+    step = re.search(
+        r"^3\. set `docs/releases/notes/X\.Y\.Z\.json`.*?(?=^4\. )",
+        channels,
+        re.MULTILINE | re.DOTALL,
+    )
+    assert step is not None, "the frozen preparation lost its notes step"
+    text = " ".join(step.group(0).split())
+    assert "same date on the release and on every update" not in text
+    assert "give that date to each update that has none yet" in text
+    assert "updates that already have a date keep it" in text
 
 
 @EVERY_REF

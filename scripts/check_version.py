@@ -32,7 +32,8 @@ SHIPPING_DOCKERFILES = ("backend/Dockerfile", "webui/Dockerfile", "updater/Docke
 #: The curated What's new notes of each release, ``<VERSION>.json`` (schema 1), which
 #: ``scripts/build_release_notes.py`` validates in full and renders. This gate checks
 #: only what a release must carry: the notes exist for ``VERSION`` on every ref, and on
-#: a release ref they read ``released`` with the release date on every update.
+#: a release ref they read ``released``, carry the date of the dated CHANGELOG heading,
+#: and give every update a date (an update that already had one keeps it).
 RELEASE_NOTES_DIR = "docs/releases/notes"
 RELEASE_NOTES_SCHEMA = 1
 RELEASE_NOTES_STATUSES = ("released", "testing")

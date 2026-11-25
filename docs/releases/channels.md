@@ -211,8 +211,10 @@ As part of the final frozen release-preparation change:
 1. move the accepted entries out of `[Unreleased]` under `[X.Y.Z]` with the release
    date;
 2. open a new, empty `[Unreleased]` section above it;
-3. set `docs/releases/notes/X.Y.Z.json` to `"status": "released"` with the same date
-   on the release and on every update, then run `scripts/build_release_notes.py`;
+3. set `docs/releases/notes/X.Y.Z.json` to `"status": "released"`, give it the
+   date of the `[X.Y.Z]` heading, give that date to each update that has none yet
+   (updates that already have a date keep it), then run
+   `scripts/build_release_notes.py`;
 4. promote and verify that exact prepared tree on `main`; and
 5. tag that exact verified commit immediately.
 
