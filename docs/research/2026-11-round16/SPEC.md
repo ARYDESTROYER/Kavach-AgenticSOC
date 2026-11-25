@@ -76,7 +76,8 @@ Read as ten deliverables:
    case, the navigation and the close dialog. The run's result stays authoritative; the Console
    now says so before a person acts, and notifies after.
 2. **A2 Reclaimed space.** The Case Manager detail pane starts its content near the top: the
-   first panel heading at most 210 px from the top at 1440 by 900, down from 324 px ([cmux] §2.1).
+   first content of the active tab at most 210 px from the top of the window at 1440 by 900 and
+   at 390 by 844, down from 324 px ([cmux] §2.1; WP03 defines the measured point).
 3. **A3 A segregated Case Manager.** One question per region: tabs that each hold one lane
    (Brief, Evidence, AI investigation, Response, Activity, Chat) and an inspector column.
 4. **A4 A quiet sign-in page.** Console tokens, one short entrance, nothing moving afterwards,
@@ -136,15 +137,29 @@ default, Console links and the public docs URL ([rel] B1, Option A).
   (`ReleaseUpdateConfig.repository_url`), `backend/Dockerfile:13`, `webui/Dockerfile:48`,
   `updater/Dockerfile:9`, `.env.example:46`, `mkdocs.yml` lines 3 to 5, 80 and 91,
   `webui/src/soc/pages/Docs.tsx:44, 46, 51` and `webui/src/soc/pages/settings/release-updates.tsx:25`.
-  `INSTALL.md:266` tells operators to keep the old name. 44 files name it outside the research
-  folders. The frozen base `deploy/docker-compose.agnostic.yml` hard-codes the old default at
-  lines 200 and 209, and its SHA-256 is pinned by `deploy/update-base-v1.sha256`, so that file
-  cannot change under protocol 1. `release_discovery.py` rejects redirects by design ([rel] §2).
-- Decision: WP05 part 2 adopts the new name. The frozen Compose file keeps its old default; the
-  bootstrap script refuses an `.env` without `AGENTIC_SOC_UPDATE_REPOSITORY` or naming the old
-  repository, with remediation text, and never edits `.env`. A before-validator on
-  `ReleaseUpdateConfig` maps exactly `https://github.com/ARYDESTROYER/Agentic-Kibana` to the new
-  URL and keeps any other value.
+  `INSTALL.md:266` tells operators to keep the old name. The old name is also a live default in
+  `docs/ENVIRONMENT.md:211`, `docs/reference/configuration.md:211`, the "Observe upstream source
+  revisions" block of `docs/operations/upgrades.md` (line 869), `docs/HANDOFF.md:9` and the
+  updater smoke step of `.github/workflows/ci.yml` (line 918, `UPDATE_TRUSTED_REPOSITORY`). 44
+  files name it outside the research folders. The frozen base `deploy/docker-compose.agnostic.yml`
+  hard-codes the old default at lines 200 and 209, and its SHA-256 is pinned by
+  `deploy/update-base-v1.sha256`, so that file cannot change under protocol 1.
+  `release_discovery.py` rejects redirects by design ([rel] §2). The updater passes the trusted
+  repository verbatim to `cosign --certificate-identity`
+  (`updater/agentic_soc_updater/runtime.py:209-213`), an exact, case-sensitive match.
+  `_canonical_public_github_repository` (`config.py:2330`) strips `.git` and slashes and keeps
+  the case. The legacy ELK Compose file and its install steps use a local checkout directory
+  named `agentic-kibana` (`deploy/docker-compose.tlsoc.yml:20-23, 32`, `DEPLOY.md:865`,
+  `INSTALL.md:1105-1202`); that is a directory name, not a repository identity.
+- Decision: WP05 part 2 adopts the new name. The frozen Compose file keeps its old default. The
+  bootstrap script refuses an `.env` without `AGENTIC_SOC_UPDATE_REPOSITORY`, or whose value
+  matches `ARYDESTROYER/Agentic-Kibana` ignoring case, with remediation text; it also refuses a
+  value equal to `ARYDESTROYER/Kavach-AgenticSOC` ignoring case but not exactly, with the
+  message that the signing identity is case-sensitive. It never edits `.env`. In
+  `ReleaseUpdateConfig`, after the existing canonicalisation, a value whose owner and repository
+  equal `ARYDESTROYER/Agentic-Kibana` ignoring case becomes
+  `https://github.com/ARYDESTROYER/Kavach-AgenticSOC`; any other value is kept. The local
+  checkout directory `agentic-kibana` stays as a compatibility literal in the legacy ELK files.
 - Migration notes (written into `docs/operations/upgrades.md`, `INSTALL.md`, the 0.2.0 release
   page and What's new for administrators): set
   `AGENTIC_SOC_UPDATE_REPOSITORY=ARYDESTROYER/Kavach-AgenticSOC` in `.env` before bootstrapping;
@@ -160,16 +175,38 @@ default, Console links and the public docs URL ([rel] B1, Option A).
   `updater/Dockerfile:11-17`) but no `org.opencontainers.image.licenses`. The signed plan's label
   set is fixed by `updater/agentic_soc_updater/contract.py:196` and does not include the license
   label, so adding it changes no plan.
-- Decision: WP05 part 2 adds `LICENSE` (the verbatim Apache License 2.0 text from
-  `https://www.apache.org/licenses/LICENSE-2.0.txt`, unedited), the SPDX `license` field in
-  `backend/pyproject.toml` (in the form the configured build backend accepts, checked with a
-  build) and `"license": "Apache-2.0"` in `webui/package.json`,
-  `org.opencontainers.image.licenses="Apache-2.0"` in the three Dockerfiles, a README "License"
-  section that states it, and a resolved note in place of the known-limitations entry.
+- More code facts: `backend/pyproject.toml:2` requires `setuptools>=68`; the SPDX string form
+  `license = "Apache-2.0"` (PEP 639) needs setuptools 77 or later, and PEP 639 forbids a
+  `license-files` path that leaves the project directory. The backend and updater images build
+  from the `backend/` and `updater/` contexts (`release.yml:251, 290`), so the root `LICENSE` is
+  not in those contexts; the root `.dockerignore` (webui context) and `updater/.dockerignore`
+  allow only listed paths. `backend/tests/test_distribution_contract.py:89` asserts the license
+  label is absent. The Console bundles OFL-1.1 fonts (`@fontsource-variable/inter`,
+  `@fontsource/jetbrains-mono`); `agents/chat_role_lookalikes.py` vendors Unicode data; the
+  ATT&CK corpus ships in `threat/`.
+- Decision: WP05 part 2 adds:
+  - `LICENSE`: the verbatim Apache License 2.0 text from
+    `https://www.apache.org/licenses/LICENSE-2.0.txt` (11,358 bytes, ASCII, LF line ends,
+    SHA-256 `cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30`), checked by a
+    test; `backend/LICENSE` and `updater/LICENSE` are byte-identical copies checked by the same
+    test;
+  - `backend/pyproject.toml`: `license = "Apache-2.0"`, `[build-system].requires` raised to
+    `setuptools>=77`, no `license-files` entry outside `backend/` and no License classifier; the
+    CI wheel lane proves the build;
+  - `webui/package.json` `"license": "Apache-2.0"`, with the lockfile root regenerated so
+    `packages[""]` carries it;
+  - `org.opencontainers.image.licenses="Apache-2.0"` in the three Dockerfiles, and the license
+    text in each image at `/usr/share/doc/agentic-soc/LICENSE` (webui from the root context with
+    `!LICENSE` added to the root `.dockerignore`; backend and updater from their own copies, with
+    `!LICENSE` added to `updater/.dockerignore`);
+  - a README "License" section that states it, and a short third-party notices paragraph naming
+    the OFL fonts, the Unicode data and the MITRE ATT&CK corpus;
+  - a resolved note in place of the known-limitations entry.
 
 **D4. Default branch.** GitHub reports `Testing` as the default branch ([rel] B8); `channels.md`
 line 16 and `INSTALL.md` line 204 say `main`. This is a maintainer setting. The SPEC records it
-as maintainer action M1 (§4.11): set the default branch back to `main` before tagging. The docs
+as maintainer action M1 (§4.11): set the default branch back to `main` after the promotion merge
+to `main` (so `main` already carries D13's Dependabot configuration) and before tagging. The docs
 keep saying `main`.
 
 **D5. Communication.** The "Notifications" navigation group is renamed "Communication" and holds
@@ -231,8 +268,10 @@ Activity, Chat.
   (`webui/src/soc/case-tabs.ts:15`); legacy ids `timeline` and `threat` rewrite through
   `LEGACY_CASE_TABS` (`case-tabs.ts:25`).
 - Decision: ids `['overview', 'evidence', 'investigation', 'runbook', 'collab', 'chat']` with the
-  labels above, on Alt+1 to Alt+6. Alt+2 and Alt+4 change meaning; What's new announces it. Chat
-  moves into the inspector in a later round, which brings the tabs back to five (§7).
+  labels above, on Alt+1 to Alt+6. Alt+2 (Runbook to Evidence), Alt+4 (Collaboration to
+  Response) and Alt+5 (Chat to Activity) change meaning, and Chat moves to Alt+6; What's new
+  announces it. Chat moves into the inspector in a later round, which brings the tabs back to
+  five (§7).
 
 **D9. Sign-in identity contract.** Approved: replace the recorded "Identity surfaces" and
 "Identity accents" sections of `docs/development/ui-standard.md` (lines 1907 and 1976) and retire
@@ -297,13 +336,32 @@ Where the skeptic's minimal fix conflicts with a non-negotiable, this SPEC repla
   figure, the per-case usage view and the Cost page agree. The flat synthetic embedding rate stays
   (intended).
 
+Where the code review of this SPEC tightened a minimal fix (Appendix C), this SPEC also replaces
+that step: B11 (the drain page size), B15 (every SSO change needs a Super admin), B16 (no
+re-binding of an existing subject), B19 (the bound covers `/auth/mfa/disable`), B23 (the
+recovery hash is matched off the event loop) and B45 (the one-time theme copy is idempotent).
+
 **D13. Dependabot forward-port.** The four main-only action bumps on `origin/main` (commits
 `18eb316`, `4c1edc8`, `928949b`, `c3f1fa3`: `actions/upload-pages-artifact` 4.0.0 to 5.0.0,
 `actions/configure-pages` 5.0.0 to 6.0.0, `actions/upload-artifact` 4.6.2 to 7.0.1,
 `actions/setup-go` 6.5.0 to 7.0.0, six lines in `ci.yml` and `docs.yml`) are applied on this
 branch with the same SHA pins, and every block of `.github/dependabot.yml` (four today, none with
-a target branch) gains `target-branch: Testing`. CI on the round's pull request proves the two
-major bumps.
+a target branch) gains `target-branch: Testing`. The `/backend` and `/webui` docker blocks also
+gain `ignore: [{dependency-name: python, update-types: [version-update:semver-major,
+version-update:semver-minor]}]`, because the shipping images pin Python 3.11
+(`test_distribution_contract.py:76-79`).
+
+- Proof: CI on the round's pull request proves `upload-artifact` 7.0.1 and `setup-go` 7.0.0.
+  `configure-pages` 6.0.0 and `upload-pages-artifact` 5.0.0 (beside `deploy-pages` 4) run only in
+  the tag-gated `publish` and `deploy` jobs of `docs.yml` (lines 79 to 81 and 320 to 322), so the
+  required dress rehearsal M7 (§4.11) proves them before the real tag.
+- Dependabot reads its configuration from the default branch, so `target-branch: Testing` takes
+  effect on `main` only after the promotion merge, which is why M1 follows it. Dependabot
+  security updates ignore `target-branch` and always target the default branch; `channels.md`
+  says they are forward-ported to `Testing`.
+- The open Dependabot pull requests against `Testing` (for example #134 and #141, which move the
+  Python base image to 3.15) stay unmerged from WP19's frozen preparation until `v0.2.0` is
+  tagged, so the candidate does not move.
 
 **D14. Cut line.** Applied only if the round must shrink, in this order ([syn] §3):
 
@@ -348,8 +406,11 @@ Case Manager header and lanes; the risk explanation; Remember me; What's new.
   through `_settings_like` (`rbac/policy.py`), and gives the Models navigation child the same
   `perm`. `GET /api/personas` (`routes.py:2543`) serves a static product catalog with no case data;
   it stays auth-only and goes on the reviewed GET allowlist with that reason.
-- `risk_breakdown` is mapped as a dynamic object in Elasticsearch (`es/indices.py:81`), so
-  `RiskBreakdown.inputs` maps dynamically with a fixed key set (§3.4).
+- `risk_breakdown` is mapped as a dynamic object in Elasticsearch (`es/indices.py:81`) and the
+  cases index has date detection on (only `AUDIT_MAPPING` sets `date_detection: false`, line 101).
+  A source-controlled string inside `RiskBreakdown.inputs` (a rule value that looks like a date)
+  could map a field as `date` and fail every later case save, so `inputs` is mapped explicitly
+  as stored and never indexed (§3.4), as `trigger_reason` already is (line 89).
 - `awaiting_reason` is not in `CASES_MAPPING` (`es/indices.py:48`); it maps dynamically as text
   with a `keyword` subfield. B11's query relies on that subfield (§4.4 WP15B).
 - `check_version.py` requires a dated heading for the current version at all times, so the version
@@ -370,9 +431,17 @@ Case Manager header and lanes; the risk explanation; Remember me; What's new.
   (Round 15: 329,093 B stamped, 329,080 B with `build:app`).
 - Every Console package reports its measured entry delta with `npm run build:app`.
 - New UI lives in lazy chunks. Only these may reach the entry: the investigation store (WP09), the
-  navigation glyph and count (WP09), the What's new gate (marker compare plus one dynamic import
-  thunk, at most 450 B, WP07), the channel string (WP01), the Communication labels and the new
-  `whats_new` route thunk (WP07), and the two new `perm` fields (WP15A).
+  navigation glyph and count (WP09), the NavSidebar investigations subscription and the reconcile
+  client it calls (WP09), the `useEventStream` multiplexer (WP09; `useEventStream` is already an
+  entry module because the shell imports `NotificationBell` and `JobMonitor` statically,
+  `AppShell.tsx:110, 124`), the What's new gate (marker compare plus one dynamic import thunk, at
+  most 450 B, WP07), the channel string (WP01), the Communication labels, the new `whats_new`
+  route thunk and one lucide icon for the What's new row (WP07), and the new `perm` fields
+  (WP15A).
+- WP09 reports the multiplexer's measured delta separately from the rest of its entry growth.
+  WP07's total entry growth (the gate, the registry row, the route thunk, the labels, the prefs
+  `loaded` flag, the `localStorage` fallback, the wizard stamp and the `ReleaseBadge` link) is
+  reported and is at most 700 B.
 - WP04 frees about 7 KB (the prototype measured 329,080 B to 321,910 B, [login] §9).
 - WP16 measures the integrated entry and ratchets `PRE_REVAMP_ENTRY_BYTES` down once to the merged
   measurement, recorded in §8 and in the `test_docs_round12_records.py` pin.
@@ -406,18 +475,35 @@ No permission is added to the vocabulary. New and changed uses:
 | Grant | Who (built-in defaults) | Used by |
 |---|---|---|
 | `cases:read` | every role | `GET /api/cases/{id}/export`, `/trace`, `/rationale`, `/activity`, `/thread`, `/tasks`, `GET /api/scans`, `/api/scans/notifications` (B01); `GET /api/investigations/active` and the `investigations` SSE topic (WP08); `GET /api/cases/{id}/events` together with `sources:read` (WP13) |
-| `settings:read` | every role | `GET /api/settings` (B01); the `asset_cidr` value inside `RiskInputs` |
+| `sources:read` | every role | `GET /api/sources/{source_id}/feeds` (its sibling `GET /api/sources` already requires it, `routes.py:950-953`) |
+| `settings:read` | every role | `GET /api/settings` (B01); the read-time `asset_cidr` in `GET /api/cases/{id}/triage` (WP10) |
 | `metrics:view` | every role | the standup reads (D11); `GET /api/metrics/explain` (WP12) |
-| `models:read` | every role | `GET /api/llm/models` (§2.3) |
+| `models:read` | every role | `GET /api/llm/models` (§2.3), `GET /api/models` (it returns custom-model `base_urls`, `routes.py:2479-2486`) and `GET /api/llm/providers` (`routes_models.py:175`) |
+| `roles:read` | every role | `GET /api/roles` (its sibling `GET /api/roles/simulate` already requires it) |
 | `cost:view` | every role | `GET /api/cases/{id}/usage`; cost values in the "View all fields" sheet |
 | `users:manage` | super_admin, soc_manager | the requester's name on an AI run (D10) |
 | `cases:reinvestigate` | super_admin, soc_manager, analyst_tier2 | `POST /api/cases/{id}/reinvestigate` (unchanged) |
-| stored super_admin plus strict fresh sign-in | super admins | an SSO change that adds, removes or edits a provider able to grant super_admin, and that provider's secret (B15) |
+| stored super_admin plus strict fresh sign-in | super admins | every `PUT /api/settings` that changes the `sso` block (a provider added, removed or edited in any field, or `sso.enabled` changed) and every `POST /api/auth/sso/providers/{id}/secret` (B15) |
 
-The reviewed GET allowlist (auth only, each entry with a one-line reason in
-`test_route_auth_coverage.py`) holds the self-service and public reads: health, setup status,
-`auth/me`, `account/*`, `prefs/*`, the Inbox, branding, release discovery, the SSE endpoint
-(topics are gated separately) and `/api/personas`.
+The GET rule skips `PUBLIC_API_PATHS` and `PUBLIC_GET_PATHS` (`api/deps.py:26, 70`: health,
+`auth/me`, setup status, `auth/sso/*`, branding). The reviewed GET allowlist (auth only, each
+entry with a one-line reason in `test_route_auth_coverage.py`) holds:
+
+- self-service reads of the caller's own bucket: `/api/account/me`, `/api/account/activity`,
+  `/api/account/permissions` (the Console's permission bootstrap), `/api/prefs/effective`,
+  `/api/prefs/user`, `/api/prefs/org` (the cascade every page needs), `/api/sessions` (the
+  caller's own sessions), `/api/views`, `/api/terminology` (labels every page needs),
+  `/api/notifications/prefs`, `/api/notifications/inbox` and
+  `/api/notifications/inbox/unread-count`;
+- static catalogs with no tenant data: `/api/connectors`, `/api/connectors/{source_type}` and
+  `/api/personas`;
+- `/api/events`, the SSE endpoint, whose topics are gated separately (`_REALTIME_TOPIC_GRANTS`).
+
+Two GETs enforce their grants inside the handler and sit on a separate reviewed "gated in body"
+list: `/api/metrics/breakdown` (an in-body `require_permission(...)(request)` chosen by `kind`,
+`routes_metrics.py:1492`) and `/api/rules/summary` (per-section grants through `resolve_access`,
+`routes_rule_summary.py:1188`). The test asserts each listed endpoint's code still references
+`require_permission` or `resolve_access`, so neither can lose its gate silently.
 
 ### 3.4 Storage (#12) and the Elasticsearch mapping budget
 
@@ -425,8 +511,15 @@ KV only. No new KV namespace, index, table or SQL migration. New stored fields, 
 defaulted, each a fixed key set:
 
 - `Case.risk_breakdown.inputs` (`RiskInputs`, about 20 leaf fields; `weights` is the fixed
-  five-key object). Elasticsearch maps it dynamically under the existing dynamic `risk_breakdown`
-  object.
+  five-key object). `CASES_MAPPING.risk_breakdown` gains
+  `properties: {inputs: {type: object, enabled: false}}` (stored, never indexed, like
+  `trigger_reason`). Bootstrap adds it to the stored cases template and to each live cases index
+  that lacks it, an additive change like `extend_config_mapping` (WP15B, before WP10's first
+  write). When it cannot (the client cannot read or extend mappings, or the call fails), the
+  Elasticsearch case store leaves `inputs` out of the stored document, logged once, so a case
+  always lands and reads "not recorded". `rule_values` holds at most 50 entries;
+  `rule_type_count` is exactly `len(cluster.rule_values)`, as `compute_risk` counts it; `scored_at`
+  is the only date.
 - The DECISION audit row's `tool_input.gate` (11 keys).
 - `UsageDoc`: `input_rate_per_million`, `output_rate_per_million`, `cache_read_rate_per_million`,
   `cache_write_rate_per_million`, `cache_write_ttl`, `price_basis`.
@@ -469,8 +562,9 @@ defaulted, each a fixed key set:
   `engine/case_manager.py` and `engine/risk.py` import none of them (pattern
   `test_overhaul_b2_autopilot.py:307-316`). The registry is never imported by `agents/**` other
   than `agents/pipeline.py`, nor by `tools/**`.
-- GET route coverage (WP15A): every `/api` GET declares a permission dependency or sits on the
-  reviewed allowlist.
+- GET route coverage (WP15A): every `/api` GET that is not in `PUBLIC_API_PATHS` or
+  `PUBLIC_GET_PATHS` declares a permission dependency or an in-body `_enforce`, or sits on the
+  reviewed allowlist or the reviewed "gated in body" list of §3.3.
 - Popover names (WP15F): every `PopoverContent` in `webui/src` has `aria-label` or
   `aria-labelledby` (a source scan test).
 - What's new (WP07): the notes JSON and the dialog title are not in the entry chunk; the generator
@@ -510,9 +604,15 @@ What moves (WP05 part 1):
   (`webui/src/design-system/catalog.ts:6, 431`); every operator doc sentence that names the current
   version; tests that assert the current version or line.
 - The Help Center moves to `/docs/0.2/`. `scripts/build_docs_bundle.py` also writes a redirect stub
-  at `/docs/0.1/<page>/index.html` for every page of the 0.2 tree (the existing `_redirect_page`,
-  meta refresh plus canonical to `/docs/0.2/<page>/`), and `validate_bundle` checks them. Assets
-  are not redirected. Stored chat citations, report links and bookmarks keep working.
+  at `/docs/<old>/<page>/index.html` for every page of the current tree and every line in a
+  constant `LEGACY_DOC_LINES = ("0.1",)`, which each later minor release extends. A stub is the
+  existing `_redirect_page` (meta refresh plus canonical to `/docs/0.2/<page>/`) with, before the
+  meta refresh, `<script>location.replace(TARGET + location.hash)</script>` (the target
+  JSON-encoded), so a fragment such as `#sources` survives; the meta refresh stays the no-script
+  fallback. The installed nginx sets no Content-Security-Policy that blocks an inline script.
+  `validate_bundle` checks the stubs and one anchored stub. Assets are not redirected. Stored chat
+  citations (`/docs/0.1/analyst/chat/#sources`), report links and bookmarks keep working.
+  `scripts/test_docs_theme.py` derives the line it reads from `VERSION` instead of `"0.1"`.
 - `scripts/build_upgrade_plan.py` `--max-version-exclusive` defaults to `0.3.0`; the updater test
   asserts it. The 0.2.0 plan's `from` range `0.1.1..<0.3.0` still admits the v0.1.1 baseline.
 - `CHANGELOG.md`: `## [0.1.13] - 2026-08-05` becomes
@@ -573,6 +673,15 @@ everything on the integrated tree.
   `routes_case_events.py`, `routes_case_usage.py`), so the router count in `AGENTS.md` and
   `HANDOFF.md` moves from 43 to 46. `test_docs_round13_records.py` pins it; packages list that test
   as expected-red and WP18 updates the count at merge.
+- **The newest-round record.** `test_docs_round13_records.py::test_the_start_here_records_name_the_newest_round`
+  is red from the round's start (the `2026-11-round16` research folder exists; HANDOFF and
+  AGENTS still name Round 15 as the newest). The orchestrator's opening commit, before WP15A
+  branches, fixes it: HANDOFF's round list gains `**Round 16 (newest, in progress):**` with one
+  line pointing at this SPEC and the Round 15 line drops `newest, `; `AGENTS.md` §10 gains
+  `**Round 16 is the newest work** (in progress; see the Round 16 SPEC)` and the Round 15
+  sentence stops saying "is the newest". It then runs `backend/tests/test_docs_*.py` green.
+  WP18 later writes the full Round 16 text. The expected-red list of every package is then only
+  the two router-count tests.
 - **Gates per package before hand-off:**
   - `cd backend && python -m pytest -q` (from a worktree:
     `/home/user/Kavach-AgenticSOC/backend/.venv/bin/python -m pytest -q -p no:cacheprovider`);
@@ -628,13 +737,20 @@ Total: 75 fixes plus 6 merged duplicates, 81 bug ids (Appendix A).
   `/api/llm/models`.
 - **Owned files.**
   - `backend/app/auth/passwords.py`, `backend/app/auth/service.py` (async wrappers);
+  - `backend/app/auth/mfa.py` (async recovery helpers `averify_recovery_code` and
+    `ahash_recovery_codes`, B18 and B23);
+  - `backend/app/auth/oidc.py` (`identity_from` reads `hd` only for Google, B16);
   - `backend/app/stores/users.py` (`consume_mfa`, the failure counters);
   - `backend/app/api/deps.py` (`require_auth` forced-change gate; `session_metadata` IP);
   - `backend/app/api/routes_cases_collab.py` (the three GET dependencies at lines 412, 462, 709);
-  - `backend/app/api/routes_models.py` (`llm_models`, line 130);
+  - `backend/app/api/routes_models.py` (`llm_models`, line 130, and `llm_providers`, line 175);
   - `backend/app/api/routes_standup.py` (the GETs);
   - `backend/app/api/routes_setup.py` (async hashing at about line 192);
   - `backend/tests/test_route_auth_coverage.py` and the new `backend/tests/test_round16_security.py`;
+  - the new `backend/tests/_auth_helpers.py` (`ready_user`: signs in as an account created
+    through `POST /api/users` and changes its temporary password), and the existing tests that
+    sign in as such an account (43 files POST `/api/users` and sign in; each calls `ready_user`
+    first, no assertion is weakened and no application-side bypass is added);
   - `webui/src/soc/pages/Sessions.tsx` (B55);
   - `webui/src/soc/pages/settings/case-policy.tsx` and `settings/general.tsx` (B51 inline errors);
   - docs: `SECURITY.md` (line 20 and the "Refresh-token rotation & reuse (theft) detection"
@@ -649,38 +765,55 @@ Total: 75 fixes plus 6 merged duplicates, 81 bug ids (Appendix A).
     `_guard_rbac_settings_change` at 2048, and a new `_reject_incoherent_settings` beside
     `_reject_out_of_range_caps` at 1874); `account_activity`
     (4558); the case read GETs `case_export` (8192), `case_trace` (8499), `case_rationale`
-    (8518), `scans` (8580), `scan_notifications` (8592) and `standup` (8604).
+    (8518), `scans` (8580), `scan_notifications` (8592) and `standup` (8604); `source_feeds`
+    (1726), `models` (2480) and `list_roles` (5817), the dependency only.
   - `backend/app/models.py`: the `User` class only.
   - `backend/app/audit/event_categories.json` and `webui/src/soc/components/audit/events.ts`:
     `auth.mfa_locked`.
   - `webui/src/soc/registry.tsx`: `perm` on the `standup` and `models` children.
+  - `webui/src/soc/pages/Users.tsx`: the `GET /api/roles` read becomes best effort (the role
+    summary hides when it is refused), so a role with `users:manage` but no `roles:read` still
+    lists accounts.
   - `webui/src/lib/api.ts`: delete the dead `refresh` method of `api.auth` (about lines 860 to 863).
   - `webui/src/lib/types.ts`: `ActivityEvent.event_label`.
 - **Contracts.**
   - **Read gating (B01).** `cases:read` on the eight case reads of §3.3; `settings:read` on
     `GET /api/settings`; `metrics:view` on the standup reads (D11); `models:read` on
-    `GET /api/llm/models`. `test_route_auth_coverage.py` gains the GET rule and the reviewed
-    allowlist (§3.3). A denied read writes the existing Access denied row.
+    `GET /api/llm/models`, `GET /api/models` and `GET /api/llm/providers`; `sources:read` on
+    `GET /api/sources/{source_id}/feeds`; `roles:read` on `GET /api/roles`.
+    `test_route_auth_coverage.py` gains the GET rule, the reviewed allowlist and the "gated in
+    body" list (§3.3, §3.6). A denied read writes the existing Access denied row. Every built-in
+    role holds each of these grants, so defaults do not change.
   - **Forced password change (B20).** `require_auth` answers
     `403 {"code": "password_change_required", "message": "Change your temporary password to continue."}`
     for a flagged account on every `/api` route except `/api/auth/me`, `/api/auth/change-password`,
-    `/api/auth/logout`, `/api/auth/refresh`, `/api/account/me` and the public reads. The flag is
-    read live. The seeded Demo Admin stays unflagged; the docs say so and say the forced change
-    applies to accounts an administrator creates or resets.
+    `/api/auth/logout`, `/api/auth/refresh`, `/api/account/me`, the self-service reads
+    `GET /api/account/permissions`, `GET /api/prefs/effective` and `GET /api/prefs/user` (no case
+    data; the Console reads them once per session at sign-in, `prefs.tsx:159-186`) and the public
+    reads. The flag is read live. The seeded Demo Admin stays unflagged; the docs say so and say the
+    forced change applies to accounts an administrator creates or resets.
   - **Hashing off the event loop (B18).** `averify_password`, `ahash_password` and
     `AuthService.acheck_password` run PBKDF2 through `asyncio.to_thread` under a semaphore of
     `max(2, cpu_count // 2)`; every login, change, re-auth, MFA, user create and reset path uses
     them; a six-digit TOTP-shaped code never runs the recovery-code PBKDF2 loop.
   - **MFA attempts (B19).** 10 consecutive failures lock second-factor checks for 5 minutes,
     doubling to at most 60 minutes, answering 429 without verifying; each lock writes
-    `auth.mfa_locked`; a success resets `mfa_failed_count` and `mfa_locked_until`. The pending
-    token carries a random `jti` held in a bounded process-local map; it is rejected after 5
-    failures or once used. The mandated-enrolment confirm path uses the same counter.
+    `auth.mfa_locked`; a success resets `mfa_failed_count` and `mfa_locked_until`. The counter,
+    the lock and the row apply to every second-factor check: `/auth/mfa/verify`,
+    `/auth/mfa/enroll-confirm`, `/auth/mfa/confirm` and `/auth/mfa/disable` (today
+    `mfa_disable`, `routes.py:5354`, checks codes with no bound from a bare session).
+    `/auth/mfa/disable` also requires a fresh sign-in. The pending token carries a random `jti`
+    held in a bounded process-local map; it is rejected after 5 failures or once used.
   - **MFA enrolment (B17).** `/auth/mfa/setup` and `/auth/mfa/confirm` answer 409 ("MFA is already
     enabled; turn it off with a current code before enrolling a new authenticator.") when the
     account is enrolled, and require a fresh sign-in.
-  - **MFA single use (B23).** `UserStore.consume_mfa(username, *, step=None, recovery_code=None)`
-    consumes a TOTP step or a recovery hash inside one CAS mutation; a lost race is a failure.
+  - **MFA single use (B23).**
+    `UserStore.consume_mfa(username, *, step: int | None = None, recovery_hash: str | None = None) -> bool`.
+    The route finds the matching stored hash off the event loop (`averify_recovery_code` under
+    the B18 semaphore, only when the normalised code has the 8 hex characters of a recovery code).
+    The CAS mutator then removes that exact stored hash string if it is still present (a string
+    comparison, no PBKDF2 inside the mutator or its retries), or for TOTP requires
+    `step > mfa_last_step`. A lost race is a failure.
   - **Sessions after a password change (B21).** A self-change revokes the caller's other sessions
     (the current one stays) and stops their chat turns; an administrator reset revokes every
     session of the target; both write `session.revoked` rows and return `sessions_revoked`.
@@ -690,14 +823,25 @@ Total: 75 fixes plus 6 merged duplicates, 81 bug ids (Appendix A).
     marked `deprecated=True`, answering 401 `{"code": "session_invalid", "reason":
     "unknown_refresh"}` as it does today (line 4481). The docs say a session lasts until its
     access token expires within the idle and absolute limits.
-  - **SSO (B15, B16).** Link by verified email only to an account already linked to the same
-    provider; otherwise refuse and write the `auth.login_failed` denied row. A provider is
-    "super-admin-capable" when its `default_role` or any `group_role_map` value is `super_admin`;
-    a settings save that adds, removes or edits such a provider (before or after the save), or
-    changes `sso.enabled`, needs a stored Super admin with a strict fresh sign-in, else
-    `403 super_admin_only` with nothing saved; role values must be a `UserRole` value or a known
-    custom role id, else 422; `set_sso_provider_secret` for such a provider needs the same;
-    `_provision_sso_user` never changes the role of a stored super_admin through a group map.
+  - **SSO (B15, B16).**
+    - Linking: after step 1 (an account linked to this provider and subject) misses, link by
+      verified email only when the candidate is linked to this provider and has no `oauth_sub`.
+      Any other match, including an account that already holds a different `oauth_sub` for this
+      provider or one linked to another provider, is refused with the `auth.login_failed` denied
+      row; an existing subject is never re-bound by email (OIDC's stable identifier is issuer
+      plus subject). Microsoft accounts are already keyed on `oid`, so no re-link exception is
+      needed.
+    - `oidc.identity_from` reads `hd` only when the provider type is `google`; otherwise
+      `domain` is the verified email's domain (empty when the email is unverified), so a generic
+      IdP cannot pass `allowed_domains` by asserting `hd`.
+    - Every `PUT /api/settings` that changes the `sso` block (a provider added, removed or edited
+      in any field, or `sso.enabled` changed) and every
+      `POST /api/auth/sso/providers/{id}/secret` requires a stored Super admin with a strict fresh
+      sign-in, otherwise `403 super_admin_only` and nothing is saved. A capability test on the
+      role values is not enough: a settings editor could repoint the issuer of a provider that a
+      stored Super admin is linked to, and step 1 would sign them in as that Super admin.
+    - Role values must be a `UserRole` value or a known custom role id, otherwise 422.
+    - `_provision_sso_user` never changes the role of a stored super_admin through a group map.
   - **Settings coherence (B51).** `_reject_incoherent_settings` answers 422 with a field message
     when `sla.timezone` is not `UTC`, `Z`, a `+HH:MM` offset or a zone `zoneinfo` accepts; when a
     merged SLA target has `response_minutes > resolve_minutes`; or when `investigate_lookback` does
@@ -707,16 +851,25 @@ Total: 75 fixes plus 6 merged duplicates, 81 bug ids (Appendix A).
     `audit.events.classify`; the Console renders it.
 - **Bugs fixed.** B01 (with B70), B15, B16, B17, B18, B19, B20, B21, B22, B23, B24, B51, B55.
 - **Tests.** One regression per bug, failing before the fix, including: a custom-role deny of
-  `cases:read` gets 403 from all eight reads and the settings dump; the GET coverage rule; a forged
+  `cases:read` gets 403 from all eight reads and the settings dump; a custom-role deny of
+  `sources:read` gets 403 from the feeds read; the GET coverage rule; a forged
   `X-Forwarded-For` from an untrusted peer is not shown in `GET /api/sessions`; N wrong codes then
-  429 until the window passes; two concurrent redemptions of one recovery code, exactly one wins;
+  429 until the window passes; 10 wrong codes on `/auth/mfa/disable` from one session, then 429
+  even for a correct code, and MFA stays enabled; two concurrent redemptions of one recovery code,
+  exactly one wins, with no PBKDF2 call inside the mutator;
   a concurrent request is answered while ten logins hash; a flagged bearer token gets 403 on
-  `/api/cases` and `POST /api/users` and 200 after a change; the two-provider SSO takeover is
-  refused; the three B15 cases; the settings 422 cases and the stored-bad-config load; the
-  Sessions label render.
+  `/api/cases` and `POST /api/users` and 200 after a change, while `GET /api/prefs/effective`
+  answers 200 before the change; the two-provider SSO takeover is refused; a same-provider email
+  match onto an account holding a different subject is refused; a generic provider asserting
+  `hd: corp.test` with `email: x@evil.test` is refused by `allowed_domains: [corp.test]`; B15:
+  a soc_manager with RBAC on who changes `discovery_url` on a provider (`default_role` analyst,
+  no group map) that a stored super_admin is linked to gets 403 and `prefs.sso` is unchanged, a
+  custom role holding only `settings:manage` that sets `default_role: soc_manager` gets 403, and
+  a Super admin with a fresh sign-in gets 200; the settings 422 cases and the stored-bad-config
+  load; the Sessions label render.
 - **Acceptance.** Every probe in [bugs] for these ids flips. Defaults are unchanged for every
-  built-in role. The Console changes only the Sessions labels, two Settings inline errors and two
-  navigation `perm` fields.
+  built-in role. The Console changes only the Sessions labels, two Settings inline errors, two
+  navigation `perm` fields and the best-effort roles read on Users.
 - **Depends on.** Nothing. Merges first.
 - **Effort.** L.
 
@@ -733,7 +886,8 @@ Total: 75 fixes plus 6 merged duplicates, 81 bug ids (Appendix A).
   - Version: `VERSION`, `backend/app/__init__.py`, `backend/pyproject.toml`, `webui/package.json`,
     `webui/package-lock.json`, `updater/agentic_soc_updater/__init__.py`,
     `deploy/docker-compose.tlsoc.yml`, `scripts/build_upgrade_plan.py`,
-    `scripts/build_docs_bundle.py` and its tests, `updater/tests/test_updater.py`.
+    `scripts/build_docs_bundle.py` and its tests, `scripts/test_docs_theme.py` (the line derived
+    from `VERSION`), `updater/tests/test_updater.py`.
   - Identity: `updater/agentic_soc_updater/__main__.py`, `updater/Dockerfile`, `backend/Dockerfile`,
     `webui/Dockerfile`, `scripts/bootstrap-updater.sh`, `updater/tests/test_bootstrap_shell.py`,
     `backend/tests/test_release_discovery.py`, `backend/tests/test_system_updates.py`,
@@ -745,33 +899,46 @@ Total: 75 fixes plus 6 merged duplicates, 81 bug ids (Appendix A).
     move.
   - `backend/app/engine/update_service.py` and `webui/src/soc/components/SystemUpdateControl.tsx`
     (B52).
-  - License: `LICENSE` (new).
+  - License: `LICENSE`, `backend/LICENSE` and `updater/LICENSE` (new, byte-identical);
+    `backend/tests/test_distribution_contract.py` (the absent-label assertion at line 89 becomes
+    `'org.opencontainers.image.licenses="Apache-2.0"' in dockerfile` for all three Dockerfiles,
+    plus the LICENSE hash and copy checks); the `!LICENSE` lines in the root `.dockerignore` and
+    `updater/.dockerignore`.
   - `.github/dependabot.yml`.
   - `scripts/check_version.py` and its tests.
   - Docs: `docs/releases/0.2.md` and `0.2.0.md` (new), `0.1.13.md`, `0.1.md`, `channels.md`,
     `documentation-versions.md`, the license and identity entries of `known-limitations.md`,
     `docs/index.md` (version lines), `.env.example`, `INSTALL.md`, `DEPLOY.md`, `README.md` (license
-    section and version mentions), `docs/operations/upgrades.md` (bootstrap step 2 and the
-    identity note), `docs/development/testing.md` (line 13), `docs/reference/compatibility.md`,
-    `COMPATIBILITY.md`, every other doc sentence that names the current version.
+    section, third-party notices and version mentions), `docs/operations/upgrades.md` (bootstrap
+    step 2, the identity note and the "Observe upstream source revisions" default block at line
+    869), `docs/ENVIRONMENT.md` (the `AGENTIC_SOC_UPDATE_REPOSITORY` default, line 211),
+    `docs/reference/configuration.md` (the `repository_url` default, line 211),
+    `docs/development/testing.md` (line 13), `docs/reference/compatibility.md`,
+    `COMPATIBILITY.md`, every other doc sentence that names the current version. `docs/HANDOFF.md:9`
+    (the repository line) is a WP18 item.
 - **Allowed hunks in shared files.**
   - `mkdocs.yml`: `site_url`, `repo_url`, `repo_name`, `stable_docs_url`, `product_version`,
     `docs_version`, the footer link and the release-page nav entries.
   - `backend/app/config.py`: `ReleaseUpdateConfig` only.
-  - `.github/workflows/ci.yml` and `docs.yml`: the four action pins and the identity strings.
+  - `.github/workflows/ci.yml` and `docs.yml`: the four action pins and the identity strings,
+    including the updater smoke step's `UPDATE_TRUSTED_REPOSITORY` (`ci.yml:918`).
   - `CHANGELOG.md`: the two headings of §3.8 only.
   - `webui/src/design-system/catalog.ts`: the two version strings.
   - Generated files by regeneration only (§3.9).
 - **Contracts.**
   - §3.8 in full.
   - Identity: the new name everywhere in D2's list; the frozen Compose file byte-identical; the
-    bootstrap refusal for a missing or old `AGENTIC_SOC_UPDATE_REPOSITORY`, with remediation text
-    and no `.env` edit; the exact-URL repair in `ReleaseUpdateConfig` (any other URL is kept).
+    bootstrap refusals of D2 (missing; the old name in any case; the new name in the wrong case),
+    with remediation text and no `.env` edit; the repair in `ReleaseUpdateConfig` runs after
+    canonicalisation and compares owner and repository ignoring case (any other URL is kept); the
+    legacy ELK checkout directory `./agentic-kibana` stays.
   - License: D3.
   - Dependabot: D13.
   - Guards in `check_version.py`:
     - on every ref, `docs/releases/notes/<VERSION>.json` exists and names `VERSION`;
-    - on `refs/heads/main`, a `v*` tag or a pull request into `main`: the `[Unreleased]` body is
+    - on `refs/heads/main`, a `v*` tag or a pull request into `main` (read from
+      `GITHUB_BASE_REF == "main"`, which GitHub sets on `pull_request` events; tests set it
+      explicitly; no workflow change): the `[Unreleased]` body is
       exactly `No changes yet.`; the release-commit marker plus `docs/releases/<VERSION>.md` stay
       at most 100,000 characters; the notes file has `status: released` and a `date` equal to the
       dated CHANGELOG heading.
@@ -781,12 +948,19 @@ Total: 75 fixes plus 6 merged duplicates, 81 bug ids (Appendix A).
   - B54: `PUBLIC_STABLE_DOCS_URL` points at `https://arydestroyer.github.io/Kavach-AgenticSOC/stable/`;
     the false Testing-channel sentence "Stable site publishes with the first Stable release"
     (`Docs.tsx`, about lines 603 to 617) is removed and the Latest Stable link always renders.
-  - GHCR visibility runbook text ([rel] B2) in `channels.md` and the 0.2.0 release page.
+  - The Dockerfile marker loop of `check_version.py` (line 194) also requires
+    `org.opencontainers.image.licenses="Apache-2.0"`, so the label cannot regress.
+  - GHCR visibility runbook text ([rel] B2) in `channels.md` and the 0.2.0 release page, with the
+    recovery steps of M2 (§4.11); a `channels.md` note that Dependabot security pull requests
+    target the default branch and are forward-ported to `Testing` (D13).
 - **Bugs fixed.** B52, B54.
-- **Tests.** The [rel] B1 test list; the bootstrap shell test refuses both bad `.env` cases; the
-  preference repair is exact; `check_version` cases (missing notes, testing status on a release
-  ref, date mismatch, non-empty `[Unreleased]` on main, oversize release page); the plan builder's
-  `max_exclusive` is `0.3.0`; the docs bundle writes and validates the `/docs/0.1/` stubs; B52's
+- **Tests.** The [rel] B1 test list; the bootstrap shell test refuses the three bad `.env` cases
+  (missing, `arydestroyer/agentic-kibana`, `ARYDESTROYER/kavach-agenticsoc`); the preference repair
+  maps `https://github.com/arydestroyer/Agentic-Kibana.git/` and keeps a fork; `check_version`
+  cases (missing notes, testing status on a release ref, date mismatch, non-empty `[Unreleased]`
+  on main, the same with `GITHUB_BASE_REF=main`, oversize release page, a missing license label);
+  the plan builder's `max_exclusive` is `0.3.0`; the docs bundle writes and validates the
+  `/docs/0.1/` stubs and one stub keeps `#sources`; the LICENSE hash and its two copies; B52's
   parametrized backends; B54's Docs test.
 - **Acceptance.**
   - `sha256sum deploy/docker-compose.agnostic.yml` equals `deploy/update-base-v1.sha256`.
@@ -794,8 +968,13 @@ Total: 75 fixes plus 6 merged duplicates, 81 bug ids (Appendix A).
     records WP19 writes.
   - `/docs/0.1/analyst/case-manager/` in the built bundle redirects to
     `/docs/0.2/analyst/case-manager/`.
-  - `grep -ri agentic-kibana` finds only historical release pages, the frozen Compose file, the
-    bootstrap refusal and repair code, migration notes and tests of the old value.
+  - `grep -ri agentic-kibana` finds only the historical release pages 0.1.2 to 0.1.13, the frozen
+    Compose file, the bootstrap refusal and repair code, migration notes, tests of the old value,
+    `archive/`, `docs/research/` and the Journal, and the legacy ELK checkout directory
+    `./agentic-kibana`, kept as a local compatibility literal in `deploy/docker-compose.tlsoc.yml`,
+    `DEPLOY.md` and `INSTALL.md`.
+  - `python -m build` in `backend/` produces a wheel whose metadata carries
+    `License-Expression: Apache-2.0`.
 - **Depends on.** WP15A (part 1); WP07's notes skeleton (part 2).
 - **Effort.** L (part 1 M, part 2 M).
 
@@ -825,36 +1004,65 @@ Total: 75 fixes plus 6 merged duplicates, 81 bug ids (Appendix A).
     §4.2). Every method swallows its own errors.
   - `backend/app/realtime.py`: `CASE_INVESTIGATION_EVENT = "case.investigation"` in
     `SSE_EVENT_TYPES`; `INVESTIGATIONS_TOPIC = "investigations"`;
-    `publish_case_investigation(bus, view, *, active, new_runs)` with `retain=False` on `cases`,
-    `cases:{id}` and `investigations`.
+    `EventBus.publish_many(topics, event_type, data, *, audience=None, retain=True)`, which
+    publishes ONE event (one `seq`, one SSE id) into each topic's ring and offers it once per
+    subscriber, and dedupes by `seq` on a `Last-Event-ID` replay across a subscriber's topics;
+    `publish_case_investigation(bus, view, *, active, new_runs)`, built on `publish_many` with
+    `retain=False` on `cases`, `cases:{id}` and `investigations`.
   - `backend/app/audit/event_categories.json` and `webui/src/soc/components/audit/events.ts`:
     `case.close_replaced` ("Close replaced by an AI investigation") and `case.events_viewed`,
     both under `case_work`.
   - Store methods in `stores/base.py`, `stores/usage.py` and `stores/sql/repositories.py`:
-    `UsageRepository.records_for_case(case_id, limit=500)` and an audit
-    `count_for_case(case_id)`.
+    `UsageRepository.records_for_case(case_id, limit=500)`, and
+    `AuditRepository.count_for_case(case_id, *, cap)` as a base default built on the existing
+    `count_matching` (exact up to its cap, the relation reported), so no audit store file beyond
+    `stores/base.py` changes (the Elasticsearch audit store, `audit/audit_log.py`, inherits it).
   - `webui/src/lib/useEventStream.ts`: the `'case.investigation'` channel string only.
+  - `webui/src/soc/investigations/aiRunText.ts`:
+    `aiRunAccessibleText(view: InvestigationView | null, now: number) => string | null` (null in
+    the stub; WP02 appends it to the queue row's accessible name, WP09 fills it).
   - `webui/src/lib/explain/types.ts` (the `Explanation` interface, [expl] §5.3) and
     `webui/src/lib/explain/explain.contract.json`.
-  - Stubs with final props and no-op bodies: `soc/investigations/AiRunChip.tsx`
-    `{caseId, compact?}`, `AiRunMark.tsx` `{caseId}`, `AiQueueNotice.tsx`, `useAiRun.ts`
-    `(caseId) => InvestigationView | null`; `casedetail/explain/RiskExplain.tsx`
-    `{caseId, score, breakdown, children}`, `DecisionExplain.tsx` `{caseRecord, children}`,
-    `FactExplain.tsx` `{explanation, children}`; `casedetail/records/CaseEvents.tsx` `{caseId}`,
-    `CaseUsageButton.tsx` `{caseId, totalCost}`, `AllFieldsSheet.tsx`
-    `{caseId, open, onOpenChange}`, `FindingsList.tsx` `{findings}` (today's first-sentence form),
-    `AwaitingReason.tsx` `{caseRecord}`.
+  - Stubs with final props and no-op bodies:
+    - `soc/investigations/AiRunChip.tsx` `{caseId, compact?}`, `AiRunMark.tsx` `{caseId}`,
+      `AiQueueNotice.tsx`, `useAiRun.ts` `(caseId) => InvestigationView | null`;
+    - `soc/investigations/ReinvestigateDialog.tsx`
+      `{caseRecord, open, onOpenChange, models}`, whose stub body is today's inline Reinvestigate
+      dialog moved verbatim from `CaseDetail.tsx` (blocking, as today), so nothing breaks before
+      WP09 replaces it;
+    - `casedetail/explain/RiskExplain.tsx` `{caseId, score, breakdown, children, variant?: 'row'}`
+      (the `row` variant is the mouse-only HoverCard of S11), `DecisionExplain.tsx`
+      `{caseRecord, children}`, `FactExplain.tsx` `{explanation, children}`;
+    - `webui/src/lib/explain/builders.ts` with the final signatures `explainRisk`,
+      `explainDecision`, `explainSla`, `explainPriority`, `explainSeverity`, `explainShare`,
+      `explainPercentile`, `explainWilson` and `explainCost`, each returning `null`;
+      `webui/src/design-system/explain/index.ts` `ExplainTrigger`
+      `{explanation, children, mode?: 'interactive' | 'row-hover'}` rendering its children only;
+    - `casedetail/records/CaseEvents.tsx`
+      `{caseId, filterEventIds?: string[] | null, onClearFilter?: () => void}`,
+      `CaseUsageButton.tsx` `{caseId, totalCost}`, `AllFieldsSheet.tsx`
+      `{caseId, open, onOpenChange}`,
+      `FindingsList.tsx` `{findings, onShowEvents?: (eventIds: string[]) => void}` (today's
+      first-sentence form), `AwaitingReason.tsx` `{caseRecord}`.
+  - `casedetail/ConfirmActionDialog.tsx` and `BulkCloseDialog.tsx`: an optional `caseIds` prop
+    only (no behaviour); WP03 and WP02 pass it, and WP09 makes each dialog read the investigation
+    store for those ids itself.
   - `backend/tests/test_round16_spine_guards.py` (§3.6) and `backend/tests/test_explain_contract.py`.
   - Regenerate `api-types.gen.ts` and `openapi.json`; update `webui/src/lib/types.ts`.
 - **Allowed hunks.** `backend/app/utils.py`: `round_half_up(x) -> int` (`floor(x + 0.5)`) only.
+  `backend/app/engine/auto_close_review.py`: `publish_review_frame` (line 539) publishes its two
+  topics through `publish_many`, one line.
 - **Contracts.**
   - `RiskInputs`: `event_count`, `span_seconds`, `effective_window_seconds`,
     `rate_per_minute | null`, `velocity_rule` (`below_min_events | rate`), `rule_values` (the
-    distinct list) and `rule_type_count`; `reputation_input` and `reputation_source`
+    distinct list, at most 50 entries) and `rule_type_count` (exactly `len(cluster.rule_values)`);
+    `reputation_input` and `reputation_source`
     (`enrichment | not_ip_entity | enrichment_off | not_looked_up`); `asset_value`, `asset_match`
-    (`network | exact | none`), `asset_cidr` (served only to `settings:read`); `weights` (the five
-    keys), `total_weight`, `zero_weight_fallback`; `refs` (`volume 50`, `velocity 10.0`,
-    `diversity 5`); `scored_at`, `inputs_version: 1`.
+    (`network | exact | none`); `weights` (the five keys), `total_weight`,
+    `zero_weight_fallback`; `refs` (`volume 50`, `velocity 10.0`, `diversity 5`); `scored_at`,
+    `inputs_version: 1`. The matched CIDR is not stored: every route that returns a case document
+    would return it to any `cases:read` holder. WP10's triage route adds it at read time for
+    `settings:read` holders only (§4.5 WP10).
   - `InvestigationView` carries no person name; the route adds `requested_by_you: bool` and, for
     `users:manage` holders only, `requested_by: str | null` (D10).
   - Contract vectors: rounding at 80.5, 73.5, 73.6, 47.5 and 21.5; the [expl] §3 risk worked
@@ -863,10 +1071,14 @@ Total: 75 fixes plus 6 merged duplicates, 81 bug ids (Appendix A).
     including `low/high` = P3; SLA states.
 - **Bugs fixed.** None directly; it lands the B13 and B42 model contracts.
 - **Tests.** A property grid of `explain_risk` against `compute_risk` (count 0 to 120, span 0 to
-  3,600 s, reputation, rules 0 to 7, weights including all zero): factor equality, and the total
-  re-derives from the inputs within 0.005. Registry lifecycle, pruning of done tasks, the recent
+  3,600 s, reputation, rules 0 to 7, weights including all zero): factor equality; the total
+  re-derives from full-precision factors recomputed from the inputs within 0.005, and from the
+  stored 2-dp factors within 0.01 (each stored factor is rounded once, then the total). Registry
+  lifecycle, pruning of done tasks, the recent
   ring bound and TTL. The SSE registry parity tests on both ends (`test_sse_agent_step_channel.py`,
-  `webui/src/lib/__tests__/useEventStream.test.tsx`). The prefs normaliser. The store methods on
+  `webui/src/lib/__tests__/useEventStream.test.tsx`). `publish_many`: a subscriber on all three
+  topics receives one frame with one id, and a replay after a reconnect does not repeat it. The
+  prefs normaliser. The store methods on
   the ES fake and on SQLite. `test_explain_contract.py` for the existing functions. `check:types`
   without drift.
 - **Acceptance.** All gates green; no visible change; entry within plus or minus 50 B; the §3.6
@@ -883,14 +1095,25 @@ Total: 75 fixes plus 6 merged duplicates, 81 bug ids (Appendix A).
   empty pane.
 - **Owned files.** `webui/src/soc/pages/CaseManager.tsx` and its tests
   (`pages/__tests__/CaseManager.test.tsx`, the `route-visual-standard.test.ts` matched pair, the
-  `console-grammar.guard.test.ts` exception modelled on Chat).
-- **Allowed hunks.** `docs/development/ui-standard.md` "Queue and detail workspaces" section.
+  `console-grammar.guard.test.ts` exception modelled on Chat); the new
+  `docs/research/2026-11-round16/acceptance/measure-case-manager.mjs` (global Playwright at
+  `/opt/node22/bin/playwright`, seeded Demo, outside the build and the npm dependency graph),
+  which prints the band height, the frame top, the header height and the top of the active tab's
+  first child at 1440 by 900 and 390 by 844. WP02, WP03 and WP16 use it, and its output is
+  recorded in §8.
+- **Allowed hunks.** `docs/development/ui-standard.md` "Queue and detail workspaces", from the
+  section start to the line before `**Case header.**` (the queue paragraphs).
 - **Contracts.**
   - Frame: no routed `PageHeader`; an `sr-only` h1 "Case Manager"; Live, Refresh and "About Case
     Manager" in band row 1; `-my-2` and `h-[calc(100dvh-5.5rem)]`.
   - Queue row: a 40 px leading slot that shows the severity glyph and becomes the checkbox on
     hover, focus, any selection, a running bulk job, and always under `(pointer: coarse)`; "Risk
-    N" in neutral `text-foreground/80 tabular-nums`; the `AiRunMark` stub before the age.
+    N" in neutral `text-foreground/80 tabular-nums`, wrapped in `RiskExplain variant="row"` (S11);
+    the `AiRunMark` stub inside the status node (or the outcome node), never in the case-chat
+    glyph slot before the age, so a row can show both signals; `aiRunAccessibleText(useAiRun(id),
+    now)` appended to the row's accessible name array (the `aria-label` overrides descendant text,
+    `CaseManager.tsx:392-405, 492`).
+  - The bulk confirm passes `caseIds` to `BulkCloseDialog`.
   - `AiQueueNotice` mounted in the band.
   - `[` collapses the queue to a 44 px strip; J and K keep working;
     `soc.caseManager.queueCollapsed` stored with try/catch.
@@ -901,7 +1124,9 @@ Total: 75 fixes plus 6 merged duplicates, 81 bug ids (Appendix A).
 - **Tests.** X toggles a row whose checkbox is hidden; the checkbox shows after one selection and
   under a coarse pointer (matchMedia mock); the empty-state buttons apply the right filters; the
   shortcuts dialog is truthful.
-- **Acceptance.** At 1440 by 900 the split frame starts at y = 72 and the band is 92 px.
+- **Acceptance.** Measured by `measure-case-manager.mjs`: at 1440 by 900 the split frame starts
+  at y = 72 and the band is 92 px when no AI notice shows; the notice shares row 1 or adds at most
+  20 px.
 - **Depends on.** WP01 stubs.
 - **Effort.** M.
 
@@ -926,34 +1151,62 @@ Total: 75 fixes plus 6 merged duplicates, 81 bug ids (Appendix A).
     `InvestigationPanel`, `case-visual-dialect` and `FactsRail`.
 - **Allowed hunks.** `webui/src/soc/router.tsx`: the case-tab legacy rewrite only.
   `docs/development/ui-standard.md`: "Case header", "Case tab bodies" and the G17 rule.
+  `webui/src/soc/pages/Investigate.tsx`: the look-back seed reads `GET /api/settings` only when
+  the caller holds `settings:read` (lines 410 to 428).
 - **Contracts.**
   - **Tabs (D8).** Ids `['overview', 'evidence', 'investigation', 'runbook', 'collab', 'chat']`,
-    labels Brief, Evidence, AI investigation, Response, Activity, Chat, on Alt+1 to Alt+6.
-    Legacy rewrites: `timeline` opens `evidence` at `what-happened`; `threat` opens `evidence` at
+    labels Brief, Evidence, AI investigation, Response, Activity, Chat, on Alt+1 to Alt+6 (the
+    key handler accepts `Digit1` to `Digit6`, `CaseDetail.tsx:1727`; each trigger's
+    `aria-keyshortcuts` follows). Alt+2 (Runbook to Evidence), Alt+4 (Collaboration to Response)
+    and Alt+5 (Chat to Activity) change meaning; Chat moves to Alt+6. Legacy rewrites: `timeline` opens `evidence` at `what-happened`; `threat` opens `evidence` at
     `threat-context`; `tab=investigation&section=threat-context` opens `evidence`;
     `section=related-cases` opens `evidence`. `tab=investigation` itself is unchanged (the audit
     "Open case trace" links). Response shows to everyone: tasks always, the runbook with
     `runbooks:read`.
   - **Header.** Row 1 (44 px): title, primary action, Take action, Ask AI, More, the inspector
-    toggle (`]`), Back. Row 2: a 24 px meta strip that never wraps; its items, in priority order,
-    hide by container query: case number; severity; status or outcome; the Risk chip (wrapped in
-    `RiskExplain`); the AI verdict chip (wrapped in `DecisionExplain`) with `AiRunChip` right after
-    it; owner; SLA; the review chip. Tabs: 36 px. Total height 118 px for every case, review
-    samples included.
+    toggle (`]`), Back. Row 2: a 24 px meta strip that never wraps. Its items, in priority order:
+    case number; severity; status or outcome; the Risk chip (wrapped in `RiskExplain`); the AI
+    verdict chip (wrapped in `DecisionExplain`) with `AiRunChip` right after it; owner; SLA; the
+    review chip. Items hide by container query in reverse priority, but the owner control never
+    hides (only its name, below 44rem), because it is the owner's editable home and the anchor of
+    the M shortcut's popover. A hidden SLA or review chip stays reachable: the SLA in the
+    inspector's Signal section, the review sentence in the Brief's first block. Tabs: 36 px. Total
+    height 118 px for every case, review samples included: the `ReviewBand`
+    (`CaseDetail.tsx:2242`) leaves the header; its sentence moves to the review chip's hover and to
+    a one-line review note as the Brief's first block.
+  - **Panel padding.** `CASE_MANAGER_PANEL_PADDING` (`casedetail/shared.tsx:44`) becomes
+    `'px-4 pt-4 pb-6 @[48rem]/case:px-5 @[64rem]/case:px-6'` (top padding 16 px at every width;
+    today it is 20 px from `sm`). With the 56 px top bar, the 16 px frame inset, the 118 px
+    header and its 1 px hairline, the first content sits at 207 px.
   - **Inspector.** A column from `@[52rem]/case`, 272 px, or 304 px from `@[72rem]/case`; `]`
     toggles it, persisted in `soc.caseManager.inspector`; six collapsible sections with persisted
     open state: Outcome, Signal, Times, Source and entity, Tags and campaign, Record (collapsed).
-    Record mounts "View all fields" (`AllFieldsSheet`) and `CaseUsageButton`.
+    Record mounts "View all fields" (`AllFieldsSheet`) and `CaseUsageButton`; Outcome mounts the
+    hold-reason fact (`AwaitingReason`).
   - **Brief.** A 48 px Next step row; four lanes tagged with the existing `ProvenanceTag` kinds:
     Evidence (`source`), AI (`ai`), Decision (`code`, holding `DecisionCard` and the
     `AutomationApplied` disclosures), People (`analyst`); a folded "How this case was built"
-    (`StageTimeline`).
+    (`StageTimeline`). The lanes follow the ui-standard one-home rule: they summarise without
+    repeating the header's verdict, confidence, risk, status or owner, and each lane links to its
+    tab. The header Risk chip and the inspector's Signal meter are the sanctioned pair (the
+    inspector is the rail, not a tab).
   - **Evidence.** What happened (fenced), the `CaseEvents` stub, entities, threat context,
     related cases, baseline.
   - **AI investigation.** Assessment (`FindingsList`), inputs, the trace (expanded while
-    `useAiRun` reports a run), gradings, one muted advisory line.
+    `useAiRun` reports a run), gradings, one muted advisory line. `FindingsList`'s
+    `onShowEvents` switches to the Evidence tab with `CaseEvents` filtered to those ids
+    (`filterEventIds`, cleared by `onClearFilter`).
+  - **Reinvestigate.** The inline dialog (`CaseDetail.tsx:1579, 2556`) is replaced by the mounted
+    `ReinvestigateDialog` stub (WP01); WP09 fills its body. The close dialog receives `caseIds`.
+  - **Settings reads.** Case detail calls `GET /api/settings` only when the caller holds
+    `settings:read` (`CaseDetail.tsx:1287-1308`), so a `cases:read` holder without it neither
+    loses the case facts nor writes an Access denied row on every open. Without it, the auto-close
+    policy for the case's verdict and the SLA reading come from `GET /api/cases/{id}/triage`
+    (WP10's `auto_close_policy` and `sla`), and the runbook-preference and notification-channel
+    facts hide.
   - **Activity.** Discussion, files, history.
-  - **B27.** Case detail reads `prefs.auto_close` (the `AutoClosePolicy`), not the deprecated
+  - **B27.** Case detail reads `prefs.auto_close` (the `AutoClosePolicy`, or the triage route's
+    `auto_close_policy` without `settings:read`), not the deprecated
     `prefs.fp_auto_close` (`CaseDetail.tsx:1295`); a helper `policyForVerdict(policy, verdict)` in
     `casedetail/shared.tsx` returns the false-positive entry for false-positive or benign verdicts,
     the true-positive entry for true positives, and `{enabled: false}` for needs-human or any other
@@ -963,13 +1216,16 @@ Total: 75 fixes plus 6 merged duplicates, 81 bug ids (Appendix A).
     opens the editor.
 - **Bugs fixed.** B27, B28.
 - **Tests.** The updated suites; a segregation guard (no `ProvenanceTag kind="code"` in the AI tab,
-  no `kind="ai"` in Evidence); one deep-link test per legacy id; the meta strip is `flex-nowrap`
-  with its hide classes; `[` and `]` honour `shortcutBlocked`; jest-axe; B27 with `fp_auto_close`
-  and `auto_close` disagreeing; B28 opens each editor and keeps it open.
-- **Acceptance.** Measured by the screenshot script: at 1440 by 900 the first panel heading top is
-  at most 210 px and the header at most 120 px for a normal case and a pending review case; at 390
-  by 844 the first heading is at most 200 px; at 1440 px with the navigation collapsed the
-  inspector shows as a column.
+  no `kind="ai"` in Evidence); one deep-link test per legacy id; the key handler accepts 1 to 6
+  and Alt+5 opens Activity, Alt+6 Chat; the meta strip is `flex-nowrap` with its hide classes; M
+  opens the owner popover at a 30rem pane; `[` and `]` honour `shortcutBlocked`; jest-axe; B27 with
+  `fp_auto_close` and `auto_close` disagreeing; B28 opens each editor and keeps it open; with
+  `settings:read` denied, the case page makes no `GET /api/settings` call and shows the policy
+  line from the triage route; "Cites N events" filters the Evidence table.
+- **Acceptance.** Measured by `measure-case-manager.mjs` (WP02): the top of the active tab panel's
+  first child (`data-testid="case-tab-first"`) is at most 210 px from the top of the window at
+  1440 by 900 and at 390 by 844, for a normal case and a pending review case; the header is at
+  most 120 px; at 1440 px with the navigation collapsed the inspector shows as a column.
 - **Depends on.** WP01 stubs.
 - **Effort.** L.
 
@@ -1030,7 +1286,12 @@ Total: 75 fixes plus 6 merged duplicates, 81 bug ids (Appendix A).
   (a memo keyed by revision, plus a `case_id` to entry dict); `backend/app/api/routes_auto_close_review.py`
   (pass the loaded ledger into `_repair`); `backend/app/stores/sql/vectorstore.py` (pgvector `<=>`
   over the existing JSON column with a `dim` filter on PostgreSQL; a normalised float32 matrix
-  cache on SQLite and as the fallback, fingerprinted by `count(*)` and `max(id)`);
+  cache on SQLite and as the fallback, invalidated directly by the store's own `add`, `delete`
+  and `clear`, fingerprinted by `count(*)` and `max(id)`, and expiring after 60 s, because a
+  foreign upsert that deletes the highest row and inserts its replacement reuses the same SQLite
+  rowid (`RagChunkRow.id` has no `AUTOINCREMENT`, `stores/sql/models.py:109`) and leaves count,
+  maximum and sum unchanged; numpy is imported behind a guard that falls back to today's Python
+  path);
   `backend/app/stores/sql/engine.py` (one `pg_extension` probe at start);
   `backend/app/api/routes_diagnostics.py` (the loop-lag gauge).
 - **Allowed hunks.** `backend/app/state.py`: the loop-lag task.
@@ -1039,11 +1300,14 @@ Total: 75 fixes plus 6 merged duplicates, 81 bug ids (Appendix A).
 - **Tests.** At most one all-time read across N LIVE ticks inside the TTL, and stale-while-revalidate
   serves the previous value during a refresh; one ledger decode per revision; vector top-k parity
   across the Python, numpy and pgvector paths in the PostgreSQL lane; cache invalidation on add,
-  delete, clear and a foreign write; a dimension mismatch still raises `EmbeddingSpaceMismatch`;
+  delete and clear, a foreign insert seen through the fingerprint, and a foreign
+  same-rowid upsert seen once the 60 s expiry passes; the Python fallback when numpy is not
+  importable; a dimension mismatch still raises `EmbeddingSpaceMismatch`;
   2,000 chunks answer in under 50 ms warm on SQLite; the loop-lag gauge rises with a blocking
   coroutine.
-- **Acceptance.** Posture and metrics parity tests unchanged; no new dependency (numpy already
-  arrives through pgvector; confirm with `pip check` in the final image).
+- **Acceptance.** Posture and metrics parity tests unchanged; no new dependency (numpy arrives
+  through `pgvector==0.4.2`, which requires it and is in `requirements.txt`, so both images carry
+  it; confirm with `pip check` in the final image).
 - **Depends on.** Nothing.
 - **Effort.** M.
 
@@ -1071,8 +1335,11 @@ Total: 75 fixes plus 6 merged duplicates, 81 bug ids (Appendix A).
     `__AGENTIC_SOC_WHATS_NEW_LATEST__` define; a new name, because no new compatibility-prefixed
     identifier is minted) and `webui/src/vite-env.d.ts`.
   - `backend/app/whats_new.py` (`latest_update_id()`, fail-open to `None`).
-  - The personal Settings switch "Show What's new after updates" (the Appearance group of the
-    personal Settings section).
+  - The personal Settings switch "Show What's new after updates": one row in the Appearance
+    section (`components/CustomizationSection.tsx`, owned by WP15E; WP07 adds only this row and
+    merges first), plus the "what's new" and "release notes" search keywords of the
+    `customization` section in `pages/settings/settings-sections-meta.ts`, with the console map
+    regenerated.
   - Tests: `route-registry.test.tsx`, `nav.behaviour.test.tsx`, `nav-titles.round14.test.ts`,
     `route-visual-standard.test.ts`, `console-map.contract.test.ts`, the new What's new tests.
 - **Allowed hunks.**
@@ -1087,8 +1354,15 @@ Total: 75 fixes plus 6 merged duplicates, 81 bug ids (Appendix A).
     versions".
   - `.github/workflows/ci.yml`: the docs lane step `python scripts/build_release_notes.py --check`
     and the generator test (and `scripts/check_ci_contract.py` if it pins lane steps).
+  - `.github/workflows/ci.yml`: the wheel check adds `app/whats_new_latest.json` to its
+    `required` set (about line 120).
+  - `backend/pyproject.toml` (WP05 owns it; after WP05 part 1): `[tool.setuptools.package-data]`
+    gains `"whats_new_latest.json"`, so the wheel and the sdist carry it.
   - `scripts/build_app_knowledge.py`: `GUIDE_EXACT` gains `releases/whats-new.md`.
   - `docs/USAGE.md`: the "Notifications" group mentions (about lines 65 and 1953).
+  - `docs/development/ui-standard.md` "Navigation and information architecture": the sentences
+    that name Notifications as a single-page group (about lines 1292 and 1343 to 1345) become
+    Communication with Inbox and What's new.
   - `bundle-first-paint.test.ts`: the not-in-entry assertions.
 - **Contracts.**
   - Notes schema 1 with every [wn] §4.1 rule: plain text only; closed `kind` and `area` lists;
@@ -1103,8 +1377,8 @@ Total: 75 fixes plus 6 merged duplicates, 81 bug ids (Appendix A).
     key style such as `soc.nav.collapsed`, never a new `tlsoc_` name) is the fallback when the
     write fails.
   - The dialog ([wn] §4.3): 40rem, focus on the title, closing focus to `#socMain`, at most 5
-    highlights, a theme-matched hero figure, "See all changes" and "Got it"; announces the six tabs
-    and the Alt+2 and Alt+4 change (D8).
+    highlights, a theme-matched hero figure, "See all changes" and "Got it"; announces the six tabs,
+    the Alt+2, Alt+4 and Alt+5 changes and Chat on Alt+6 (D8).
   - The page ([wn] §4.4): `#/whats_new?v=&h=`, a version rail from 1,280 px, area and kind chips,
     Copy link, "Show the welcome screen", and an "Earlier release records" group (0.1.2 to 0.1.13
     as one line each; 0.1.13 reads "Unpublished candidate, folded into 0.2.0").
@@ -1114,9 +1388,10 @@ Total: 75 fixes plus 6 merged duplicates, 81 bug ids (Appendix A).
   the three create paths, a stamp failure never fails the create, an older marker lists the newer
   updates, a deep link defers, the generator `--check` reports drift in each of the three outputs.
 - **Acceptance.** The seeded Demo admin sees the welcome once on a landing page after sign-in; a
-  reload shows nothing; a newly created account sees nothing; entry growth at most 450 B measured;
-  the notes JSON and the dialog title are not in the entry; the generator `--check` runs in CI; the
-  WP05 notes guard passes with the skeleton.
+  reload shows nothing; a newly created account sees nothing; the gate at most 450 B and WP07's
+  total entry growth reported and at most 700 B (§3.1); the notes JSON and the dialog title are
+  not in the entry; the generator `--check` runs in CI; the wheel carries
+  `app/whats_new_latest.json`; the WP05 notes guard passes with the skeleton.
 - **Depends on.** WP01 (prefs keys), WP15A (it edits the same create paths first).
 - **Effort.** M to L.
 
@@ -1127,7 +1402,9 @@ Total: 75 fixes plus 6 merged duplicates, 81 bug ids (Appendix A).
 - **Owned files.** `backend/app/engine/ingest.py`, `engine/poller.py`,
   `engine/poller_manager.py` (the drain), `engine/jobs.py` (`_case_reinvestigate`),
   `engine/threshold_automation.py` (except B36's one line), `backend/app/ocsf/identity.py`,
-  `backend/app/es/indices.py` (`CASES_MAPPING`), tests.
+  `backend/app/es/indices.py` (`CASES_MAPPING`, the explicit `awaiting_reason` and
+  `risk_breakdown.inputs` mappings, and a new `extend_cases_mapping` called by
+  `bootstrap_indices`), tests.
 - **Allowed hunks.**
   - `backend/app/agents/pipeline.py`: `_register_candidate_locked`, `_investigate_cluster_run`
     (the lookup and the attach-only guard), the `except` path and `_fail_to_human_case`,
@@ -1136,7 +1413,11 @@ Total: 75 fixes plus 6 merged duplicates, 81 bug ids (Appendix A).
   - `backend/app/engine/demo_runtime.py`: `DemoStack.route_event_batch`.
   - `backend/app/config.py`: `Preferences.widest_correlation_window_seconds()` only.
   - `backend/app/stores/base.py`, `stores/cases.py`, `stores/sql/repositories.py`:
-    `list_deferred_candidates` only.
+    `list_deferred_candidates` only; in `stores/cases.py` also the save-path rule that leaves
+    `risk_breakdown.inputs` out of the stored document when bootstrap could not extend the cases
+    mapping (§3.4).
+  - `backend/app/engine/poller.py` and `engine/ingest.py` call sites of `link_cross_source` (both
+    owned).
 - **Contracts.**
   - **B04.** `register_candidate` on an open case that has a verdict, or that a person moved
     (`decision_by == ANALYST`), attaches the events and returns the case without a rebuild;
@@ -1151,21 +1432,32 @@ Total: 75 fixes plus 6 merged duplicates, 81 bug ids (Appendix A).
   - **B07.** `Preferences.widest_correlation_window_seconds()` returns the largest of the default
     window, every `correlation_rules[*].window_seconds` and every enabled catalog rule's effective
     window (mode `NEVER` skipped); `Poller._correlation_lookback_seconds` (`poller.py:247`) and the
-    push look-back in `IngestService` use it, keeping the formula and the cold-start clamp.
+    push look-back in `IngestService` use it, keeping the formula and the cold-start clamp. On a
+    push source the effective look-back is the lesser of the widest window and the per-source
+    in-memory ring of 500 events (`ingest.py:722-723, 833-836`; lost on restart), so on a busy
+    push source a long window still sees only the last 500 events. This is recorded in
+    `known-limitations.md`, and the push regression test uses an event rate under the ring.
   - **B08.** `ThresholdAutomation.run` takes `fetch`, re-reads the case before saving and applies
     only its own deltas (new tags within `CASE_TAG_MAX_COUNT`, new comments, new
     `automation_actions`); a failed read falls back to today's save.
   - **B09.** `_carry_case_work` also carries `automation_actions`, `related_case_ids`,
     `cross_source_cluster_id` and `source_breakdown`; the analyst-policy builder carries
-    `automation_actions`; `link_cross_source` re-reads each case under its signature lock before
-    saving the link fields. This closes the `ROADMAP.md` section I link contract.
+    `automation_actions`. `link_cross_source` (`ingest.py:518`, today
+    `(clusters, prefs, *, cases)`) gains a `pipeline` keyword, and both call sites
+    (`ingest.py:911`, `poller.py:740`) pass `pipeline=self._pipeline`. For each linked case it
+    re-reads the case by id under `pipeline.signature_lock(case.cluster_signature)` (through the
+    existing `_sig_lock` helper) and saves only the three link fields; without a pipeline it keeps
+    today's behaviour. This closes the `ROADMAP.md` section I link contract.
   - **B10.** The identity lookup in `_investigate_cluster_run` runs before the `try`, so a lookup
     failure reaches the existing retry boundaries and no case is minted.
   - **B11.** `CaseRepository.list_deferred_candidates(*, older_than, limit)`: the base default keeps
     today's paged scan; Elasticsearch runs one search (`status: open`, prefix `deferred:` on
     `awaiting_reason.keyword`, `updated_at < older_than`, no `verdict`, sorted by `created_at`); SQL
     filters the JSON document the same way; `CASES_MAPPING` gains the explicit `awaiting_reason`
-    of §3.4; `_drain_deferred` (`poller_manager.py:457`) calls it once per tick.
+    of §3.4. `_drain_deferred` (`poller_manager.py:457`) asks
+    `list_deferred_candidates(older_than=..., limit=max(50, 2 * limit))` and iterates until
+    `limit` candidates are investigated, as today's page size does; a candidate whose cluster
+    cannot be rebuilt is skipped without counting, so it never blocks the candidates behind it.
   - **B12.** `_fail_to_human_case` keeps the stored `token_cost`; the `except` path raises it to the
     ledger's `recorded_case_pipeline_cost` when that is higher (never `cost + sum(cost_accum)`).
   - **B14.** `_case_reinvestigate` fails the item with a fixed message when the returned case
@@ -1176,6 +1468,11 @@ Total: 75 fixes plus 6 merged duplicates, 81 bug ids (Appendix A).
 - **Bugs fixed.** B04, B05, B06, B07, B08, B09, B10, B11, B12, B14, B33.
 - **Tests.** One regression per bug, modelled on the [bugs] reproduction, and
   `test_round15_wp1_carry.py` extended to the new carried fields in all three builders.
+  B11: the oldest candidate cannot be rebuilt and a tick with an allowance of 1 still drains the
+  next one. The cases mapping: a fresh bootstrap maps `risk_breakdown.inputs` with
+  `enabled: false`; an upgraded index gains it; a client that cannot extend leaves `inputs` out
+  of the stored document and the save succeeds; a rule value `2026-01-01` followed by an ordinary
+  rule name saves both cases on the Elasticsearch fake with dynamic mapping simulated.
   `test_wave6_decide_guard.py` stays green.
 - **Acceptance.** Every probe flips; no model call added; the §3.6 guards pass.
 - **Depends on.** WP01 merged.
@@ -1195,14 +1492,22 @@ Total: 75 fixes plus 6 merged duplicates, 81 bug ids (Appendix A).
   - `backend/app/api/routes.py`: `_millis_to_iso` (about line 8718).
   - `backend/app/agents/chat_tools/cases.py`: the shift snapshot "Needs attention" item (about
     line 1470).
+  - `backend/app/engine/chat_starters.py`: the two `sla_aging` calls (about lines 1381 and 1496)
+    pass `prefs=b.prefs`.
 - **Contracts.**
   - **B26.** In `sla_metrics`, a terminal case with no human response stops its response clock at
     its terminal instant (`timings.terminal_any or timings.updated_iso`); a genuinely open,
-    unresponded case keeps the live clock; a close after the target still counts as late.
+    unresponded case keeps the live clock; a close after the target still counts as late. The
+    per-case rules inline in the `sla_metrics` loop (`metrics.py:897-1000`: the response anchor,
+    the terminal stop, the resolution fallback and at-risk) move into one pure
+    `metrics.sla_case_reading(case, target, timings, *, now)`, which `sla_metrics` calls and
+    WP10's `sla_reading.py` reuses.
   - **B59.** Operational MTTR uses the first terminal transition (`_resolved_dt`, line 471) over
     every terminal case; the wire shape is unchanged.
   - **B60.** `sla_aging` takes `prefs`, resolves the level with `metrics._sla_priority` (line 881)
-    and stops the response clock at the first human response (`_CaseTimings`).
+    and stops the response clock at the first human response (`_CaseTimings`). Its two callers in
+    `engine/chat_starters.py` (lines 1381 and 1496) pass `prefs=b.prefs`, so the starter cards
+    ("N past target") agree with Standup.
   - **B68.** `build_case_result` adds `groups_counted`; the breakdown's `MetricsBreakdownOther`
     counts only groups with cases in the window.
   - **B39.** The attention queue row and the shift-brief item carry `created_at`.
@@ -1212,7 +1517,9 @@ Total: 75 fixes plus 6 merged duplicates, 81 bug ids (Appendix A).
     the summary route answers 422 for an unparseable `since` or `until`.
 - **Bugs fixed.** B02, B03, B26 (with B58), B39, B59, B60, B68.
 - **Tests.** One regression per bug; the posture parity tests stay green; the SLA vectors of
-  `explain.contract.json` agree with `sla_metrics`.
+  `explain.contract.json` agree with `sla_metrics`; the chat starter "past target" count equals
+  the Standup count for the same population; `sla_metrics` output is unchanged by the
+  `sla_case_reading` extraction on the existing fixtures.
 - **Acceptance.** An agent-closed case older than its target no longer becomes a breach over time;
   one comment no longer moves MTTR.
 - **Depends on.** WP01 merged.
@@ -1242,15 +1549,25 @@ configuration. Contracts and tests are in §4.5 WP15E.
     `run_id`, all defaulted; the `_emit_step` (line 406) phase hook and outcomes at the early
     returns; close-replaced detection; the terminal `decision failed` frame in the `except` path; a
     per-case lock from the re-read to the save, taken only inside the signature lock.
-  - `backend/app/api/routes.py`: `case_reinvestigate` (8364) and the investigate handler (8313); a
-    read-time `investigation` key in `_case_view` (6390); `investigations` in `_REALTIME_TOPICS`
-    and `_REALTIME_TOPIC_GRANTS` (`cases:read`); the case lock around read and save on the case
-    action path.
+  - `backend/app/api/routes.py`: `case_reinvestigate` (8364) and the investigate handler (8313);
+    `investigations` in `_REALTIME_TOPICS` and `_REALTIME_TOPIC_GRANTS` (`cases:read`); the case
+    lock around read and save on the case action path. No key is added to `_case_view`: `GET
+    /api/cases/{id}` returns the `Case` model (`response_model=Case`, `routes.py:7150`), so a
+    non-field key would show after a mutation and vanish on the next read. The Console reads run
+    state only from `GET /api/investigations/active?case_id=` and the frames; the `wait=false`
+    202 body carries the `run_id`.
   - `backend/app/engine/jobs.py` (`_case_reinvestigate`, after WP15B) and
     `backend/app/engine/poller_manager.py` (`_drain_deferred`, after WP15B).
+  - `backend/app/engine/ingest.py` (after WP15B): `attach_cluster` (line 235) gains an optional
+    `pipeline` keyword; with a pipeline that exposes `case_lock`, it re-reads the case by id under
+    `case_lock(case_id)` (inside the signature lock its caller holds) and applies the attach to
+    the fresh copy before saving, so a person's concurrent close is not overwritten. Its three
+    call sites (`ingest.py:349, 444`, `poller.py:839`) pass the pipeline; without one it keeps
+    today's behaviour.
   - `backend/app/state.py`: the registry on `AppState` and an `investigations` property with the
     Demo split; `_investigation_finished`, started with `spawn_mutation_task`; the case-lock
-    registry, cleared on factory reset.
+    registry, cleared on factory reset; `_reenter_detections` (line 2086, after WP15B) passes
+    `trigger="detection"` only.
 - **Contracts.**
   - **The frame.** `case.investigation` carries exactly: `run_id`, `case_id|null`; `state`
     (`queued|running|finished`), `phase` (`queued|triage|specialist|evidence|verdict|decision`);
@@ -1266,19 +1583,43 @@ configuration. Contracts and tests are in §4.5 WP15E.
   - **`POST /api/cases/{id}/reinvestigate`** body `wait: bool = True`: `wait=false` answers
     `202 {run_id, case_id, state: "queued"}`; a second request answers
     `409 {"code": "investigation_running", "run": ...}`, checked before the audit row and the
-    cluster rebuild. A closed case is reinvestigated in place (no second case).
+    cluster rebuild. The check matches an active run by case id or by `cluster_signature`, so an
+    automatic run on the same signature that has not yet attached its case is found too.
+  - **A closed target (R5).** A closed case is reinvestigated in place (no second case) only when
+    no open case holds its signature. When `target_case_id` is closed and another open case holds
+    the signature (new events arrived after the close), `POST /api/cases/{id}/reinvestigate` and
+    `/investigate` answer `409 {"code": "open_case_exists", "case_id": <open id>}` before the
+    audit row and the rebuild (the route looks up `find_open_by_signature` on the stored
+    signature), and the job item fails with the same reason. If the open case appears between
+    that check and the run, the run, inside the signature lock, finds it, does not reopen the
+    target, and ends with outcome `unchanged`, returning the target as stored.
   - **Inbox notices**, built from enums only ([ai] §4.5 copy): to the requester of a manual run
     when it finishes; to a person whose close was replaced, with a `case.close_replaced` audit row.
     Job and automatic runs get no item.
-  - **D10 drain skip.** An automatic drain re-reads the candidate before the run; a person's close
-    since the listing skips it with outcome `unchanged`.
+  - **D10 drain skip.** The drain passes `trigger="drain"` and `known_case_id=case.case_id`. For a
+    non-forced run with trigger `drain`, `_investigate_cluster_run` re-reads that case inside the
+    signature lock (after the gate). If the case is no longer open, or a person moved it
+    (`decision_by == ANALYST`), the run returns it unchanged (registry outcome `unchanged`) and
+    never mints a case. This closes the window in which a close made while the run waited for the
+    lock or the gate would make `find_open_case_for_cluster` miss and mint a second case for the
+    same events. `handle_clusters` passes no `known_case_id`, so new events after a close still
+    open a new case (#4).
+  - **The case lock.** A process-local per-case `asyncio.Lock` registry in a
+    `weakref.WeakValueDictionary` (the pattern of `_sig_locks`, `pipeline.py:383-388`), shared by
+    the real and Demo pipelines, exposed as `pipeline.case_lock(case_id)`. The pipeline takes it
+    only inside the signature lock; a person's action and the collaboration writers take it alone;
+    so no path holds the case lock while waiting for a signature lock.
 - **Bugs fixed.** None (B05 and B10 land first in WP15B).
 - **Tests.** The [ai] flip probes F1 and F6; F5 close-replaced (one Inbox item, one audit row); no
   item for job or automatic runs; cancellation empties the registry; the queued state with a cap of
   1; the run id equals the audit `run_id`; factory reset cancels a spawned run; a close injected
   during the ledger read survives in `status_history`; 403 without `cases:read`; the Demo split;
-  the exact frame key set; the name only for `users:manage`. `test_round15_wp1_carry.py` stays
-  green.
+  the exact frame key set; the name only for `users:manage`; close X, new events open Y, then
+  reinvestigate X answers `409 open_case_exists` and the store still holds one open case; a person
+  closes a deferred candidate while its drain run waits on the gate and no second case is minted;
+  a second Reinvestigate while an automatic run on the same signature has not attached its case
+  answers 409; `attach_cluster` racing a person's close keeps the close; the case-lock registry
+  holds no lock after its users finish. `test_round15_wp1_carry.py` stays green.
 - **Acceptance.** All probes flipped; no persistent field and no model call; the registry never
   raises into a run.
 - **Depends on.** WP01, WP15B.
@@ -1290,21 +1631,43 @@ configuration. Contracts and tests are in §4.5 WP15E.
   the close dialog.
 - **Implements.** [ai] R3 (narration UI), R6, R7, R9 (generalised into a page multiplexer), R10,
   R12; the UI parts of [cmux] R3; the Console part of [comp] R1; D10.
-- **Owned files.** `webui/src/lib/useEventStream.ts` (the multiplexer: one EventSource per page
-  over a reference-counted topic union; on a union change it reopens with `Last-Event-ID`, fans
-  frames out by topic and dedupes by event id; the hook API is unchanged);
+- **Owned files.** `webui/src/lib/useEventStream.ts`, the multiplexer:
+  - One EventSource per page over a reference-counted topic union. An SSE frame does not say
+    which topic it came from (`realtime.py:141-154`), so the client routes each frame by its
+    channel through a static `CHANNEL_TOPICS` table in `useEventStream.ts`: `inapp` to
+    `notifications` and `inbox`; `job` to `jobs`; `chat.turn` and `chat.read` to `chat`;
+    `case.changed` to `cases`; `case.activity` and `agent.step` to `cases:{id}`; `case.review` to
+    `cases` and `cases:{id}`; `case.runbook` to `runbooks`; `case.investigation` to `cases`,
+    `cases:{id}` and `investigations`; `message` and `overflow` to every hook.
+  - A hook receives only the channels its topics can carry, and a `cases:{id}` hook only frames
+    whose `data.case_id` matches, so the bell (which refreshes on any frame,
+    `NotificationBell.tsx:123-129`) and the job monitor (`JobMonitor.tsx:257-266`) never see a
+    `case.changed` or `agent.step` frame.
+  - Frames are deduped by event id; the backend's `publish_many` (WP01) gives a frame published
+    on several topics one id.
+  - A union change is debounced (300 ms), reopens with `Last-Event-ID` and counts as a reconnect
+    for reconciliation. The last unsubscribe closes the stream. The hook API is unchanged.
   `webui/src/lib/api-investigations.ts`; `webui/src/soc/investigations/**` (`store.ts` with
   `useSyncExternalStore`, keyed by case id, plus `newRuns` and `slots`; the WP01 stub bodies;
   `AiRunPopover.tsx`; a non-blocking `ReinvestigateDialog.tsx`);
-  `webui/src/soc/pages/casedetail/ConfirmActionDialog.tsx` (an `aiRun` prop) and
-  `BulkCloseDialog.tsx`; `webui/src/soc/components/CaseActivityFeed.tsx` (the "Investigation
+  `webui/src/soc/pages/casedetail/ConfirmActionDialog.tsx` and `BulkCloseDialog.tsx` (each reads
+  the investigation store for its `caseIds` prop, which WP01 added); `webui/src/soc/components/CaseActivityFeed.tsx` (the "Investigation
   finished" heading, cleared on the next `router` frame); `webui/src/soc/components/NavSidebar.tsx`
-  (the Case Manager item shows the turning glyph and a count from the `investigations` topic,
-  subscribed only for `cases:read` holders).
+  (the Case Manager item, from the `investigations` topic, subscribed only for `cases:read`
+  holders).
+- **Two signals, two places.** The queue rows and the Case Manager navigation item already show
+  the turning `ActivityGlyph` for case chat (`CaseManager.tsx:512, 521`, `NavSidebar.tsx:142-161`).
+  `AiRunMark` replaces the status glyph inside the status node (or the outcome node) with the
+  turning ring and the words "AI working" or "AI queued"; it never sits in the case-chat glyph
+  slot before the age, so a row can show both. In the navigation, the Case Manager item keeps the
+  chat glyph's meaning; the AI count is a separate numeric badge with its own `sr-only` text ("AI
+  investigating N cases"), joined to the existing `nav-activity-case_manager` description, and
+  the ring turns if either source is running.
 - **Contracts.**
   - The [ai] §4.6 copy, with S2. Popover lines by trigger: "You started it" (the requester),
     "Started by <name>" (`users:manage` holders), "Started by a person" (others), "Started
-    automatically", "Started by a background job".
+    automatically", "Started by a background job", "Started when an investigation slot came
+    free" (`drain`) and "Started by event detection" (`detection`).
   - Close and bulk-close warning: "An AI investigation is running on this case. When it finishes,
     its result replaces a close you make now." It never blocks the submit; after the run it turns
     into a "finished" note.
@@ -1315,14 +1678,17 @@ configuration. Contracts and tests are in §4.5 WP15E.
     static ring. Every popover has an accessible name (§3.6).
 - **Bugs fixed.** None.
 - **Tests.** The store reducer (frame, finish, expiry, reconcile); the QueueRow accessible name
-  ", AI investigation running, started 40 seconds ago"; the chip timer and the popover per trigger
-  and for the queued state; the dialog alert only for status-moving actions, turning into the
-  finished note, submit enabled; the bulk count; the multiplexer (N hooks share one EventSource; a
-  union change reopens with `Last-Event-ID`; the last unsubscribe closes it); the navigation count;
-  `bundle-first-paint`.
+  ", AI investigation running, started 40 seconds ago" (from `aiRunAccessibleText`); the chip
+  timer and the popover for each of the five triggers and for the queued state; the dialog alert
+  only for status-moving actions, turning into the finished note, submit enabled; the bulk count;
+  the multiplexer (N hooks share one EventSource; a union change reopens with `Last-Event-ID`; the
+  last unsubscribe closes it; a bell hook gets no `case.changed` frame; a `cases:{id}` hook gets no
+  frame for another case; a frame on three topics reaches a union subscriber once); a row with case
+  chat running and an AI run active shows both signals, and the navigation item shows the chat
+  glyph and the AI count together; `bundle-first-paint`, with the multiplexer's delta reported.
 - **Acceptance.** In a browser, Case Manager with a case open on Activity holds one EventSource
-  per tab; the seeded Demo manual Reinvestigate flow works end to end with WP08; the entry delta is
-  reported.
+  per tab; the seeded Demo manual Reinvestigate flow works end to end with WP08, through the
+  dialog WP03 mounted; the entry delta is reported.
 - **Depends on.** WP01; live with WP08 (fakes until then).
 - **Effort.** M to L.
 
@@ -1340,24 +1706,42 @@ configuration. Contracts and tests are in §4.5 WP15E.
   exact per-call cost and latency with `cost_basis`) and R14 (`rows_total`, `truncated`, a lifetime
   usage window); the routing total in `explain_forwarding` ([comp] R3 backend); B13; B63.
 - **Owned files.** `backend/app/api/routes_triage.py`; new `backend/app/engine/sla_reading.py`
-  (imports `_CaseTimings` and `_sla_priority` read-only); `backend/app/engine/priority.py`; new
+  (calls WP15C's pure `metrics.sla_case_reading` and imports `_CaseTimings` and `_sla_priority`
+  read-only; it re-derives no clock rule); `backend/app/engine/priority.py`; new
   `backend/app/engine/stats.py` (used by `threshold_tuner.py`, `engine/auto_close_review.py` and
   `agent_improvement.py`, each a one-call hunk); `backend/app/engine/forwarding.py`; tests.
 - **Allowed hunks.** `backend/app/agents/pipeline.py`: the three `compute_risk` call sites (942,
-  1415, 1564) and the DECISION audit `tool_input` (after WP08).
+  1415, 1564), the DECISION audit `tool_input`, and one line right after `apply()` that stamps
+  `run_id` on the decision history entry (after WP08).
 - **Contracts.**
   - **B13.** At each call site `explain_risk` runs beside `compute_risk` and its `RiskInputs` is
     stored as `breakdown.inputs`. `_risk_calculation` uses the recorded weights when present,
     otherwise today's current-weights path with its mismatch note; `routes_triage.py:704` passes
     `state.execution_prefs`. A case without inputs reports `not_recorded`.
+  - **Read-time additions to `GET /api/cases/{id}/triage`** (it is `cases:read`-gated and builds
+    its own response, so these never ride the stored case):
+    - `asset_cidr`, for `settings:read` holders only: the CIDR of the current
+      `prefs.asset_networks` entry that contains the stored `asset_value`, labelled "current
+      configuration";
+    - `auto_close_policy`: the `AutoClosePolicy` entry for the case's verdict class (the
+      `policyForVerdict` rule of B27), so Case detail can state the policy without
+      `GET /api/settings` (WP03).
   - **DECISION gate.** `tool_input.gate` is `{verdict, confidence, risk_score, class_enabled,
     min_confidence, max_risk_score, objection_window_minutes, escalation_confidence,
     critical_severity, outcome, demo}`, written after `apply()`. The `result_summary` stays
     byte-identical. Legacy rows read "re-derived with today's policy".
+  - **Pairing the history entry with its gate.** One run writes several DECISION audit rows (the
+    reinvestigate request, actor `reinvestigate`; the P1 no-change row, actor `pipeline`; the B05
+    attach-only row; and the `case_manager` row, `pipeline.py:1242`), and `apply()`'s history
+    entry carries no run id (`case_manager.py:182-189`). Right after `apply()`, the pipeline sets
+    `case.history[-1]["run_id"] = current_investigation_run_id()` on the decision entry
+    `apply()` just appended; `engine/case_manager.py` is unchanged.
   - **B63.** `_decision_span` (`routes_triage.py:393`) builds the span from the last
     `history` entry with `event == "decision"` (its `ts`, `rationale`, `status`, `decision_by`,
-    `escalate`) and the stored `objection_window_expires_at`, marked `source: "recorded"`; it calls
-    `decide()` only when no such entry exists, marked "re-derived with today's policy".
+    `escalate`) and the stored `objection_window_expires_at`, marked `source: "recorded"`. It
+    reads the gate from the `actor == "case_manager"` DECISION row whose `run_id` matches the
+    entry's, and falls back to "re-derived with today's policy" when none matches. It calls
+    `decide()` only when no decision entry exists, marked "re-derived with today's policy".
   - **SLA reading.** `{clock, start_at, anchor (created|acknowledged|status_history), responded_at,
     target_minutes, due_at, elapsed_minutes, state, priority, priority_source}`, consistent with
     WP15C's `sla_metrics`.
@@ -1367,8 +1751,12 @@ configuration. Contracts and tests are in §4.5 WP15E.
 - **Bugs fixed.** B13 (the B62 Demo hunk is in WP15D), B63.
 - **Tests.** The [expl] D1 reproduction fails before and passes after; the [dv] DV-3 policy-change
   scenario; the same case through `sla_reading` and `sla_metrics` agrees on breach; escalate then
-  read shows the resolution clock; the SLA vectors; Wilson golden vectors identical at the three
-  old call sites; person and chat span kinds; a 40 KB tool input comes back truncated;
+  read shows the resolution clock; the SLA vectors; Wilson golden vectors over a grid pin each of
+  the three old call sites' outputs exactly, before and after (the tuner keeps the unrounded lower
+  bound; the review and effectiveness modules round to 4 dp at their call sites); the decision
+  span pairs the right gate when a reinvestigate request row and a P1 row precede it; `asset_cidr`
+  only for `settings:read`; `auto_close_policy` for each verdict class; person and chat span kinds;
+  a 40 KB tool input comes back truncated;
   `include_prompts=false` hides the excerpt; 501 audit rows give `truncated`; an investigator
   prompt snapshot is unchanged; B13: score a 3-event cluster, attach 47 more, the stored inputs
   still say 3; the §3.6 guards.
@@ -1394,11 +1782,16 @@ configuration. Contracts and tests are in §4.5 WP15E.
   B13 Console hunk.
 - **Owned files.** `webui/src/design-system/explain/**` (a separate entry, never the barrel);
   `webui/src/lib/explain/**` builders (`risk`, `decision`, `priority`, `severity`, `sla`, `share`,
-  `percentile`, `wilson`, `cost`) and `webui/src/lib/format.ts`; `casedetail/explain/**` (the stub
+  `percentile`, `wilson`, `cost`, replacing WP01's `builders.ts` stub bodies) and
+  `webui/src/lib/format.ts`; `casedetail/explain/**` (the stub
   bodies); `casedetail/DecisionCard.tsx`, `StageTimeline.tsx`, `SignalProfile.tsx`,
   `caseFacts.ts`; `webui/src/soc/components/badges.tsx` and `riskCopy.ts`; `pages/Tuning.tsx` and
   `pages/Cost.tsx`; `pages/effectiveness/AutoCloseReviewModule.tsx` and the Agent effectiveness
   quality popover.
+- **Allowed hunks.** `webui/src/design-system/catalog.ts`: one `components` entry
+  `feedback.explain` (module `@/design-system/explain`, the hover and click contract, the WCAG
+  1.4.13 note). `docs/development/design-system.md` and `webui/src/design-system/README.md`: the
+  subpath import paragraph, beside the `@/design-system/material` exception.
 - **Contracts.**
   - **B13 Console.** `caseRiskFactors` and `riskFactorCaseReason` (`SignalProfile.tsx`, about line
     271) read count, span, rules, reputation and asset from `risk_breakdown.inputs`; without them
@@ -1411,8 +1804,8 @@ configuration. Contracts and tests are in §4.5 WP15E.
     wraps as one unit instead of truncating (WP15F fixes `CodeBlock`).
 - **Bugs fixed.** B32 (and the Console part of B13).
 - **Tests.** Explain: hover line, click panel, Escape, touch tap, focus return, axe; the builders
-  print the `explain.contract.json` vectors exactly; risk: the recorded-weight sum equals the score,
-  a legacy mismatch note, a case with no breakdown; decision: met and not met, NEEDS_HUMAN fixed by
+  print the `explain.contract.json` vectors exactly; risk: the recorded-weight sum of the stored
+  2-dp factors equals the score within 0.01, a legacy mismatch note, a case with no breakdown; decision: met and not met, NEEDS_HUMAN fixed by
   code, an analyst close "agrees"; the SLA vectors; Tuning shows "not recorded" instead of
   fabricated counts; the cost lines; first paint has no `explain` module in the entry; hostile
   strings render literally; B32 at 94 minutes reads "1h".
@@ -1434,9 +1827,14 @@ configuration. Contracts and tests are in §4.5 WP15E.
   B64, B66, B67.
 - **Owned files.** `backend/app/api/routes_metrics.py` (except WP15C's hunk);
   `webui/src/soc/pages/Overview.tsx`, `pages/Metrics.tsx`, `components/NoiseFunnel.tsx`,
-  `components/KpiDrilldownPanel.tsx`; the KPI hover components and lifecycle widgets.
-- **Allowed hunks.** `backend/app/engine/metrics.py` (after WP15C): the explain samples,
-  `mttr_by_decider` and the agreement population.
+  `components/KpiDrilldownPanel.tsx`, `components/MetricHoverTrend.tsx`,
+  `dashboard/widgets/kpi.tsx`, `dashboard/widgets/lifecycle.tsx` and
+  `dashboard/widgets/detection.tsx` (it holds `PARTIAL_COVERAGE_NOTE`, B64).
+- **Allowed hunks.** `components/KpiTile.tsx` and `components/KpiStrip.tsx`: an optional explain
+  slot prop only (both are shared by many pages, including WP11's Cost and Tuning and WP15E's
+  Team activity).
+  `backend/app/engine/metrics.py` (after WP15C): the explain samples, `mttr_by_decider` and the
+  agreement population.
 - **Contracts.**
   - **B29.** The drill-down "Source" column, its CSV and its facet use
     `source_name || source_id`; a `source_name` CSV column is added before `detection_source`.
@@ -1473,12 +1871,22 @@ configuration. Contracts and tests are in §4.5 WP15E.
   push_source_not_retrievable | source_unavailable | null, returned, expected, truncated}`; limit
   1 to 200; one coalesced `case.events_viewed` row per viewer per case per 10 minutes. Usage stays
   exactly one UsageDoc per call (#6).
+  - **Rate fields.** `price_basis` is one of `catalog` (the bundled price table or registry),
+    `overlay` (an operator price override), `custom` (a registered self-hosted model, $0),
+    `mock` and `demo_simulated`; `pricing_source` (`exact | heuristic | zero | default`) stays as
+    it is. The four `*_rate_per_million` fields are the undiscounted per-million rates `cost_for`
+    resolved for that call (`resolve_price` and `cache_rates`), and `cache_write_ttl` the TTL it
+    used. The stored `batch` flag applies the 0.5 factor; `processing_tier` is recorded only
+    (`cost_for` applies no Flex factor today). The recompute is exactly
+    `round((prompt * in + completion * out + cache_read * read + cache_write * write) / 1e6 *
+    (0.5 if batch else 1), 8)`, the `cost_for` formula (`llm/pricing.py:384-420`).
 - **Bugs fixed.** None.
 - **Tests.** Every `GET /api/cases/{case_id}/*` has a permission dependency; the events route keeps
   only member keys, answers `push_source_not_retrievable` and `aged_out`, and leaves HTML-looking
-  values as strings; the pipeline total equals `token_cost` on a multi-run case; `cost_for`
-  recomputed from the stored rates equals the stored cost; 403 without `cost:view`; the IP and
-  domain paths both return `providers`.
+  values as strings; the pipeline total equals `token_cost` on a multi-run case; the recompute
+  formula above over the stored rates equals the stored cost for a plain, a cached, a Batch and a
+  Flex call, and each `price_basis`; 403 without `cost:view`; the IP and domain paths both return
+  `providers`.
 - **Acceptance.** No Console change needed for the backend contracts.
 - **Depends on.** WP01.
 - **Effort.** M.
@@ -1540,14 +1948,23 @@ configuration. Contracts and tests are in §4.5 WP15E.
     `explain_risk` over a synthetic cluster from the case's own entity, rules and member count, with
     a window from the case's own seeded Random (the main seed stream is unchanged), reputation only
     for IP entities and the Demo asset map, so asset criticality matches the impact chip.
+    `case.risk_score = breakdown.total` at all three seeding sites (`demo_generator.py:1074, 1281,
+    1320`). For IP entities the seeded reputation is solved (clamped to 0 to 100) toward the
+    template's risk. The seeded decision stays coherent: `seeded_decision` re-runs `decide()` over
+    `case.risk_score` (`demo_generator.py:850-860`) and writes the history decision entry from it
+    (`:879-888`), so the synthetic member count and window are chosen within the template's ranges
+    such that `seeded_decision(case).status` agrees with the templated status class (an agent
+    close only where `decide()` closes).
   - **B34.** In Demo Mode, rule Test and preview reads the Demo sources through the shared
     `GET /api/logs` reader (`engine/log_rows`).
   - **B41.** Demo chat ranks open cases by risk for "needs attention" and "first" questions, unless
     the question names a status or sort.
 - **Bugs fixed.** B34, B35 (with B47 and B65), B41, B48 (with B69), B61, and the B62 hunk.
 - **Tests.** One regression per bug; enabling seeded Demo raises no agent-health alert; the Demo
-  per-case cost equals its ledger rows; the seeded breakdown reproduces from its inputs; the Demo
-  determinism test (`test_demo_runbooks.py:124`) stays green.
+  per-case cost equals its ledger rows; for every seeded case the breakdown reproduces from its
+  inputs (volume, diversity, reputation and asset), `risk_score` equals `breakdown.total`, and
+  `seeded_decision(case).status` agrees with the templated status class; the Demo determinism test
+  (`test_demo_runbooks.py:124`) stays green.
 - **Acceptance.** A fresh seeded Demo shows no "Agent health needs attention" banner, the Executive
   "Confirmed threats" counts the analyst true-positive closes, and every seeded risk popover
   reproduces.
@@ -1567,6 +1984,9 @@ configuration. Contracts and tests are in §4.5 WP15E.
 - **Allowed hunks.** `webui/src/soc/router.tsx`: the `onHashChange` blocker (after WP03).
   `backend/app/api/routes.py`: `upsert_source`, `delete_source` and `set_source_secrets` (the Demo
   refusal). `backend/app/engine/threshold_automation.py`: line 449 only (after WP15B).
+  `backend/app/config.py`: one `Preferences` after-validator for B45 (after WP15B).
+  `components/CustomizationSection.tsx` is owned here; WP07's What's new switch row in it lands
+  first.
 - **Contracts.**
   - **B43.** Demo rows in the wizard's Data sources step show "Managed by Demo Mode" and no actions;
     the backend answers `409 source_demo_readonly` for a write to a Demo overlay id while Demo is
@@ -1577,8 +1997,12 @@ configuration. Contracts and tests are in §4.5 WP15E.
     blocker as `navigate()`, restoring the committed hash with `history.pushState` first.
   - **B45.** Branding `default_theme` is the only organization theme default; Appearance shows a
     read-only line linking to it; `resolve_effective_prefs` stops letting the legacy
-    `CustomizationConfig.default_theme` override Branding; a one-time load copy keeps an
-    administrator's earlier non-system choice when Branding is still at its factory default.
+    `CustomizationConfig.default_theme` override Branding. One `Preferences` after-validator in
+    `config.py` keeps an administrator's earlier choice: when `customization.default_theme` is not
+    `system` and `branding.default_theme` is at its factory default, it copies the value into
+    Branding and sets `customization.default_theme` to `system` in the same load, so the copy
+    happens once and an administrator who later resets Branding does not get the legacy theme
+    back.
   - **B36.** `threshold_automation.py:449` stops inventing 0.5; Approvals shows the confidence pill
     only for proposals an agent scored.
   - **B37.** A decided proposal shows a read-only footer (Approved, Acknowledged or Rejected, with
@@ -1591,7 +2015,9 @@ configuration. Contracts and tests are in §4.5 WP15E.
     (`rag` "Knowledge corpus", `inapp` "In-app notifications", `data_export` "Data export",
     `system_updates` "System updates") everywhere the Roles and Users pages list them.
 - **Bugs fixed.** B36, B37, B43, B44, B45, B46, B49, B53, B56, B57.
-- **Tests.** One regression per bug; B43's backend 409 and unchanged `prefs.sources` after Demo off.
+- **Tests.** One regression per bug; B43's backend 409 and unchanged `prefs.sources` after Demo off;
+  B45's copy is idempotent (a second load changes nothing, and a Branding reset after the copy
+  stays at the reset value).
 - **Acceptance.** Every [bugs] reproduction for these ids flips.
 - **Depends on.** WP01; part 2 also WP03 (router) and WP15B (threshold automation).
 - **Effort.** M to L.
@@ -1600,6 +2026,7 @@ configuration. Contracts and tests are in §4.5 WP15E.
 
 - **Goal.** The confirmed keyboard, focus, naming and reflow defects are fixed.
 - **Owned files.** `webui/src/soc/components/DataTable.tsx`, `components/CodeBlock.tsx`,
+  `webui/src/ui/table.tsx` (B78's `scrollLabel` prop),
   `components/CommandPalette.tsx`, `webui/src/ui/command.tsx`, `components/NotificationBell.tsx`,
   `components/audit/AuditTable.tsx`, `pages/Audit.tsx`, `pages/Runbooks.tsx`,
   `webui/src/soc/runbooks/editor/RunbookEditor.tsx`, `webui/src/ui/input.tsx` (if needed),
@@ -1609,6 +2036,9 @@ configuration. Contracts and tests are in §4.5 WP15E.
   navigation sheet (about lines 1442 and 1508). `webui/src/soc/pages/Wizard.tsx`: its skip link
   (about lines 503 to 508). `webui/src/styles/theme.css`: one coarse-pointer rule in `@layer base`.
   Any file with a `PopoverContent`: `aria-label` or `aria-labelledby` only (B75).
+  `pages/effectiveness/AutoCloseReviewModule.tsx` (WP11) and `pages/team/PersonSheet.tsx` (WP15E):
+  the `scrollLabel` prop only, and in `PersonSheet` the removal of its extra overflow wrapper so
+  one focusable scroller remains (B78).
 - **Contracts.**
   - **B71.** The skip links move focus to their target in code and never reach the hash router.
   - **B72.** The Audit table layout follows the list's measured width (phone below 816 px, medium
@@ -1622,8 +2052,9 @@ configuration. Contracts and tests are in §4.5 WP15E.
   - **B76.** The cmdk separator is `aria-hidden`.
   - **B77.** Opening a runbook or going back to the library focuses the heading once, as Dashboards
     does.
-  - **B78.** `CodeBlock` becomes a focusable named region only when it overflows; the bare table
-    wrapper gets the same treatment.
+  - **B78.** `CodeBlock` becomes a focusable named region only when it overflows; `ui/table.tsx`
+    gains an optional `scrollLabel` that makes its wrapper a focusable named region, passed at
+    `AutoCloseReviewModule.tsx:149` and `PersonSheet.tsx:288`.
   - **B79.** Phone audit times wrap at the space instead of truncating.
   - **B80.** The `CodeBlock` caption wraps (`min-w-0 break-words`); WP11 does the `StageTimeline`
     caption.
