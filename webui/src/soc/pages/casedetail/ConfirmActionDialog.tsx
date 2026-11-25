@@ -70,6 +70,7 @@ import { ActionsTakenField } from './ActionsTakenField';
 import { OpenStepsNotice } from '@/soc/runbooks/run/OpenStepsNotice';
 import type { OpenRequiredStep } from '@/soc/runbooks/run/model';
 import { AgreementLine, RateTheAi, requiresDisagreementNote, type GradingDraft } from './grading';
+import { AiRunCloseNotice } from '@/soc/investigations/AiRunCloseNotice';
 
 export interface ConfirmActionDialogProps {
   /** The pending action, or null when the dialog is closed. */
@@ -147,9 +148,10 @@ export interface ConfirmActionDialogProps {
   renderScreenshots?: (pasteScope: React.RefObject<HTMLElement | null>) => React.ReactNode;
 
   /**
-   * The cases the action covers (Round 16 mount point). The dialog will read the AI
-   * investigation store for these ids and warn when a run is in flight; until then it
-   * is accepted and unused.
+   * The cases the action covers (Round 16, D10). For an action that moves the status the
+   * dialog reads the AI investigation store for these ids: while a run is in flight it
+   * says that the run's result replaces what you do now, and once that run ends it says
+   * so. It never blocks the submit.
    */
   caseIds?: readonly string[];
 }
@@ -170,6 +172,11 @@ const NO_ACTIONS: readonly WireActionTaken[] = [];
 function isTerminalAction(pending: ActionDef): boolean {
   const verb = pending.wireAction ?? pending.key;
   return verb === 'close' || verb === 'resolve';
+}
+
+/** Every lifecycle action moves the status, except recording a disposition alone. */
+function movesStatus(pending: ActionDef): boolean {
+  return pending.key !== 'set_disposition';
 }
 
 export const ConfirmActionDialog: React.FC<ConfirmActionDialogProps> = ({
@@ -202,6 +209,7 @@ export const ConfirmActionDialog: React.FC<ConfirmActionDialogProps> = ({
   onOpenStepsReasonChange,
   openStepsError = null,
   renderScreenshots,
+  caseIds,
 }) => {
   // The element that held focus when the dialog OPENED, captured during render (the
   // same pattern as the case sheet): child effects run before ours, so by the time an
@@ -411,6 +419,13 @@ export const ConfirmActionDialog: React.FC<ConfirmActionDialogProps> = ({
               wide && '@container/confirm',
             )}
           >
+            {/* D10: an AI run in flight sets the status again when it ends; said, never blocking. */}
+            <AiRunCloseNotice
+              caseIds={caseIds}
+              open={movesStatus(pending)}
+              action={isTerminalAction(pending) ? 'close' : 'status'}
+              className="mb-4"
+            />
             {wide ? (
               <div className="grid gap-6 @[40rem]/confirm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)] @[40rem]/confirm:gap-8">
                 {/* The classification stays in view while the right column is filled in. */}
