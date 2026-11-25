@@ -1313,15 +1313,23 @@ class LLMGateway:
         which ``cost_for`` prices at ``0.0`` whatever the tuple) or ``catalog`` (no tuple:
         the bundled table, registry or heuristic). One lookup, so a call's cost and its
         recorded rates always come from the same answer. Demo Mode is the caller's
-        branch (``demo_simulated``), never resolved here."""
+        branch (``demo_simulated``), never resolved here.
+
+        Registering a self-hosted model also writes a $0 overlay row for it
+        (``routes_models.add_custom_model``), so a $0 overlay on a registered model is
+        that model's own free price and reads ``custom``. A priced overlay an operator
+        set on it stays ``overlay``. The price tuple is the same either way."""
         tup = await self._overlay_tuple(model)
         basis = "overlay" if tup is not None else "catalog"
-        if tup is None and self._custom_models is not None:
+        if self._custom_models is not None and (tup is None or tuple(tup) == (0.0, 0.0)):
             try:
-                if await self._custom_models.get_model(model):
-                    tup, basis = (0.0, 0.0), "custom"
+                registered = bool(await self._custom_models.get_model(model))
             except Exception as exc:  # noqa: BLE001 (the custom-model store is advisory to the ledger)
-                logger.warning("custom-model price lookup failed (%s); using built-in rate", exc)
+                registered = False
+                logger.warning("custom-model price lookup failed (%s); %s", exc,
+                               "using built-in rate" if tup is None else "keeping the overlay rate")
+            if registered:
+                tup, basis = (0.0, 0.0), "custom"
         if model.startswith("mock"):
             basis = "mock"
         return tup, basis

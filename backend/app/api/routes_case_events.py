@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from typing import Any, Mapping
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -70,8 +71,13 @@ DEFAULT_LIMIT = 50
 #: How long one source read may take before the page answers ``source_unavailable``
 #: (the ``GET /api/logs`` per-source default).
 READ_TIMEOUT_S = 8.0
-#: An opaque cursor is a decimal offset into the case's member list.
+#: An opaque cursor is a decimal offset into the case's member list: one to nine ASCII
+#: digits. Anything else (another script's digits, a sign, a longer value) is a cursor
+#: this route never returned and answers 400, never 422 or 500.
 _CURSOR_MAX_CHARS = 9
+_CURSOR_RE = re.compile(rf"[0-9]{{1,{_CURSOR_MAX_CHARS}}}")
+#: The longest cursor the query accepts before the route reads it (input bound only).
+_CURSOR_INPUT_MAX_CHARS = 64
 
 #: The structured action of a view row (category Case work).
 EVENTS_VIEW_ACTION = "case.events_viewed"
@@ -144,7 +150,7 @@ def _offset(cursor: str | None) -> int:
     if cursor in (None, ""):
         return 0
     text = str(cursor)
-    if len(text) > _CURSOR_MAX_CHARS or not text.isdigit():
+    if _CURSOR_RE.fullmatch(text) is None:
         raise HTTPException(status_code=400, detail={
             "code": "case_events_bad_cursor",
             "message": "The cursor is not one this route returned.",
@@ -225,7 +231,7 @@ async def case_events(
     request: Request,
     limit: int = Query(default=DEFAULT_LIMIT, ge=1, le=CASE_EVENTS_MAX_LIMIT,
                        description="Member events per page, 1 to 200."),
-    cursor: str | None = Query(default=None, max_length=_CURSOR_MAX_CHARS,
+    cursor: str | None = Query(default=None, max_length=_CURSOR_INPUT_MAX_CHARS,
                                description="The previous page's next_cursor."),
     state: AppState = Depends(get_state),
     _cases=Depends(_READ_CASES),

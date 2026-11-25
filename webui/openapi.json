@@ -22144,7 +22144,7 @@
             "schema": {
               "anyOf": [
                 {
-                  "maxLength": 9,
+                  "maxLength": 64,
                   "type": "string"
                 },
                 {

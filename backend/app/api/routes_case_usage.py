@@ -8,8 +8,10 @@ case chat's alike. Each row is the stored :class:`app.models.UsageDoc` as the ga
 wrote it, so a row from this release carries the inputs of its price (the four
 undiscounted per-million rates, ``cache_write_ttl`` and ``price_basis``) and its cost
 re-derives as ``round((prompt * input + completion * output + cache_read * cache_read
-rate + cache_write * cache_write rate) / 1e6 * (0.5 if batch else 1), 8)``. A row
-written before the rates existed omits them ("rate not recorded").
+rate + cache_write * cache_write rate) / 1e6 * (0.5 if batch else 1), 8)``. That
+equals the stored cost, or differs from it by one unit of the 8th decimal when the value
+lies on a rounding half-way point, because ``pricing.cost_for`` adds the same terms in
+another order. A row written before the rates existed omits them ("rate not recorded").
 
 Totals (:class:`app.models.CaseUsageTotals`), in USD:
 
