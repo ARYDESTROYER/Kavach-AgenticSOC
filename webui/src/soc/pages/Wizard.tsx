@@ -31,6 +31,7 @@ import {
   X,
   type LucideIcon,
 } from 'lucide-react';
+import { toast } from 'sonner';
 
 import type {
   ConfiguredStatus,
@@ -60,6 +61,7 @@ import { isDemoActive, useDemo } from '@/soc/demo';
 import { headingOf, useReturnFocus } from '@/soc/hooks/useReturnFocus';
 import { prefetchChunks, retryingLoader } from '@/soc/lazy-retry';
 
+import { canBePrimary, DEMO_MANAGED_REASON, PRIMARY_PULL_ONLY, primaryConfirmed } from './sources-primary';
 import type { RuntimeReviewStageProps } from './wizard/RuntimeReviewSteps';
 import { StepHeading } from './wizard/StepHeading';
 
@@ -987,9 +989,11 @@ function SourcesStep({
   // the source is deleted and closes once the delete is done; a failed delete stays in it.
   const [removing, setRemoving] = React.useState(false);
   const [removeError, setRemoveError] = React.useState<unknown>(null);
-  // A removal that went through while the list read after it failed: the page says the
-  // source is gone and offers to reload the list.
-  const [removedListError, setRemovedListError] = React.useState<unknown>(null);
+  // A removal or Make primary that went through while the list read after it failed: the
+  // page says what happened, never that the change was not applied, and offers to reload
+  // the list. The title names the change.
+  const [changedListError, setChangedListError] = React.useState<unknown>(null);
+  const [changedListTitle, setChangedListTitle] = React.useState('');
   // Sources the server has confirmed removed, against the list they were removed from.
   // Their rows leave with the dialog instead of when the list reloads (or never, if that
   // read fails), so the list never offers a source that is gone. The next list replaces it.
@@ -1025,7 +1029,7 @@ function SourcesStep({
   // Read the list again. A read that works answers any earlier list error.
   const refreshList = async () => {
     await onChanged();
-    setRemovedListError(null);
+    setChangedListError(null);
   };
 
   /** Retry the list read from an error panel: it clears when the list loads. */
@@ -1050,27 +1054,50 @@ function SourcesStep({
   };
 
   const setPrimary = async (source: SourceInstance) => {
+    // A Demo overlay row is read-only (B43); its row offers no Make primary.
+    if (source.demo) return;
     setBusyId(source.id);
     setError(null);
     try {
-      await api.upsertSource({
-        id: source.id,
-        source_type: source.source_type,
-        display_name: source.display_name,
-        enabled: source.enabled,
-        is_primary: true,
-        ingest_mode: source.ingest_mode ?? null,
-        config: (source.config as Record<string, unknown>) || {},
-      });
-      await refreshList();
-    } catch (nextError) {
-      setError(nextError);
+      // A failed write says the change was not applied; nothing was saved.
+      const saved = await api
+        .upsertSource({
+          id: source.id,
+          source_type: source.source_type,
+          display_name: source.display_name,
+          enabled: source.enabled,
+          is_primary: true,
+          ingest_mode: source.ingest_mode ?? null,
+          config: (source.config as Record<string, unknown>) || {},
+        })
+        .catch((nextError: unknown) => {
+          setError(nextError);
+          return null;
+        });
+      if (!saved) return;
+      // The server answers 200 even when it keeps the source non-primary (B46), so the
+      // returned list decides what the toast says.
+      if (primaryConfirmed(saved, source.id)) {
+        toast.success(
+          `${source.display_name || properName(source.source_type)} is now the primary source`,
+        );
+      } else {
+        toast.warning(PRIMARY_PULL_ONLY);
+      }
+      try {
+        await refreshList();
+      } catch (nextError) {
+        // The write went through: say only that the list did not reload.
+        setChangedListTitle('The list didn’t refresh');
+        setChangedListError(nextError);
+      }
     } finally {
       setBusyId(null);
     }
   };
 
   const remove = async (source: SourceInstance) => {
+    if (source.demo) return;
     setRemoving(true);
     setRemoveError(null);
     setError(null);
@@ -1100,7 +1127,8 @@ function SourcesStep({
     try {
       await refreshList();
     } catch (nextError) {
-      setRemovedListError(nextError);
+      setChangedListTitle('The source was removed, but the list didn’t refresh');
+      setChangedListError(nextError);
     }
   };
 
@@ -1128,14 +1156,14 @@ function SourcesStep({
         {removedNote}
       </p>
 
-      {removedListError ? (
+      {changedListError ? (
         <LoadError
-          error={removedListError}
-          title="The source was removed, but the list didn’t refresh"
+          error={changedListError}
+          title={changedListTitle}
           fallback="Reload the list to see the current sources."
           retryLabel="Reload list"
           className="mb-6"
-          onRetry={() => void retryList(setRemovedListError)}
+          onRetry={() => void retryList(setChangedListError)}
         />
       ) : null}
 
@@ -1189,10 +1217,9 @@ function SourcesStep({
                   (connector) => connector.source_type === source.source_type,
                 );
                 const secretCount = source.configured_secrets?.length || 0;
-                const canBePrimary =
-                  source.ingest_mode === 'pull' ||
-                  source.ingest_mode?.startsWith('pull_') ||
-                  manifest?.ingest_modes?.includes('pull');
+                // Only a pull source can be primary, read from the source's own mode, not
+                // from what its connector could do (B46).
+                const offerPrimary = !source.is_primary && canBePrimary(source, manifest);
                 return (
                   <div
                     key={source.id}
@@ -1215,50 +1242,58 @@ function SourcesStep({
                         {secretCount ? ` · ${secretCount} secret${secretCount === 1 ? '' : 's'} configured` : ''}
                       </p>
                     </div>
-                    <div className="flex shrink-0 flex-wrap items-center gap-1">
-                      {!source.is_primary && canBePrimary ? (
+                    {source.demo ? (
+                      // A Demo overlay row is read-only (B43): Demo Mode owns it, and a
+                      // write to it would land in the live configuration.
+                      <p className="inline-flex shrink-0 items-center gap-2 text-xs text-muted-foreground">
+                        <ShieldCheck className="h-4 w-4" aria-hidden /> {DEMO_MANAGED_REASON}
+                      </p>
+                    ) : (
+                      <div className="flex shrink-0 flex-wrap items-center gap-1">
+                        {offerPrimary ? (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => void setPrimary(source)}
+                            disabled={busyId === source.id}
+                          >
+                            {busyId === source.id ? (
+                              <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+                            ) : (
+                              <Star className="h-4 w-4" aria-hidden />
+                            )}
+                            Make primary
+                          </Button>
+                        ) : null}
+                        <Button variant="ghost" size="sm" onClick={() => setEditing(source)}>
+                          <Pencil className="h-4 w-4" aria-hidden /> Edit
+                        </Button>
                         <Button
                           variant="ghost"
                           size="sm"
-                          onClick={() => void setPrimary(source)}
-                          disabled={busyId === source.id}
+                          // Neutral at rest; red only on hover, focus and in the confirm dialog.
+                          className="hover:text-critical-text focus-visible:text-critical-text aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
+                          onClick={(event) => {
+                            // Make primary on this row writes the whole source, and that write
+                            // creates a source that is missing: a removal racing it could be
+                            // undone. Remove waits for it; the open dialog covers the removal.
+                            if (busyId === source.id) return;
+                            removeOpener.remember(event.currentTarget, {
+                              peers: () => listRef.current?.querySelectorAll('[data-wizard-source-remove]') ?? [],
+                              empty: () => headingOf(listRef.current),
+                            });
+                            setRemoveError(null);
+                            setPendingDelete(source);
+                          }}
+                          // Busy, not disabled, like the confirm's buttons: it stays in the tab
+                          // order while Make primary runs.
+                          aria-disabled={busyId === source.id || undefined}
+                          data-wizard-source-remove=""
                         >
-                          {busyId === source.id ? (
-                            <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
-                          ) : (
-                            <Star className="h-4 w-4" aria-hidden />
-                          )}
-                          Make primary
+                          <Trash2 className="h-4 w-4" aria-hidden /> Remove
                         </Button>
-                      ) : null}
-                      <Button variant="ghost" size="sm" onClick={() => setEditing(source)}>
-                        <Pencil className="h-4 w-4" aria-hidden /> Edit
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        // Neutral at rest; red only on hover, focus and in the confirm dialog.
-                        className="hover:text-critical-text focus-visible:text-critical-text aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
-                        onClick={(event) => {
-                          // Make primary on this row writes the whole source, and that write
-                          // creates a source that is missing: a removal racing it could be
-                          // undone. Remove waits for it; the open dialog covers the removal.
-                          if (busyId === source.id) return;
-                          removeOpener.remember(event.currentTarget, {
-                            peers: () => listRef.current?.querySelectorAll('[data-wizard-source-remove]') ?? [],
-                            empty: () => headingOf(listRef.current),
-                          });
-                          setRemoveError(null);
-                          setPendingDelete(source);
-                        }}
-                        // Busy, not disabled, like the confirm's buttons: it stays in the tab
-                        // order while Make primary runs.
-                        aria-disabled={busyId === source.id || undefined}
-                        data-wizard-source-remove=""
-                      >
-                        <Trash2 className="h-4 w-4" aria-hidden /> Remove
-                      </Button>
-                    </div>
+                      </div>
+                    )}
                   </div>
                 );
               })}

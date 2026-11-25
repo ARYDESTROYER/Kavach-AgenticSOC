@@ -996,6 +996,26 @@ def _source_secret_paths(sources: Any) -> list[str]:
     return paths
 
 
+def _refuse_demo_source_write(state: AppState, source_id: str) -> None:
+    """Round 16 B43: while Demo Mode is on, the Demo overlay sources are read-only.
+
+    ``GET /api/sources`` lists only the overlay then, so a write to one of its ids would
+    put a Demo-only source into the live configuration, hidden until Demo Mode is turned
+    off. The overlay is the authority for which ids those are. Real-source adds stay
+    allowed, and the refusal applies only while Demo is active. Nothing is written, so
+    nothing is audited, as with ``runbook_demo_readonly``."""
+    if not state.demo_active:
+        return
+    if source_id in {str(row.get("id")) for row in state.demo_sources_overlay()}:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "source_demo_readonly",
+                "message": "Demo Mode manages this source. Turn Demo Mode off to change it.",
+            },
+        )
+
+
 @router.post("/sources")
 async def upsert_source(
     body: SourceUpsert,
@@ -1003,6 +1023,7 @@ async def upsert_source(
     state: AppState = Depends(get_state),
     _=Depends(require_permission("sources", "manage")),
 ) -> dict[str, Any]:
+    _refuse_demo_source_write(state, body.id)
     reg = get_registry()
     try:
         st = SourceType(body.source_type)
@@ -1113,6 +1134,7 @@ async def delete_source(
     state: AppState = Depends(get_state),
     _=Depends(require_permission("sources", "manage")),
 ) -> dict[str, Any]:
+    _refuse_demo_source_write(state, source_id)
     # Atomic remove under the prefs write lock (mutate_prefs) so a concurrent full-doc
     # writer can't resurrect the deleted source by saving a stale snapshot. The 404 is
     # raised from inside the transform (before any save), so nothing is persisted when
@@ -1169,6 +1191,7 @@ async def set_source_secrets(
     Values go to the secret tier (in memory), NEVER to the persisted config; only
     the configured field NAMES are recorded on the SourceInstance (#10). Round 14
     (SPEC §3.6): audited before the credentials change, naming the fields only."""
+    _refuse_demo_source_write(state, source_id)
     src = next((s for s in state.prefs.sources if s.id == source_id), None)
     if src is None:
         raise HTTPException(status_code=404, detail="Source not found")
