@@ -24,6 +24,17 @@ case ids, rule names and dates never become Elasticsearch field names:
 
 The document is written only when a case is sampled or reviewed. ``pending`` and
 ``completed`` are stored; ``expired`` is computed on read from the configured expiry.
+
+Reads are cheap (Round 16, WP06). At its 2,000-entry bound the document is about 750 KB
+and decoding it took about 15 ms, once or more per case open. The store keeps the last
+decoded ledger with the exact revision and stored text it came from, and decodes again
+only when either differs (a write by this store, by another store instance or by
+another process moves the revision; a purge that restarts the revision changes the
+text). Every :meth:`AutoCloseReviewStore.load` still returns its own copy, so a caller
+that changes its ledger never changes the memo, and the strict compare-and-set write
+stays the only authority. A decoded ledger also indexes its entries by case id once,
+so :meth:`ReviewLedger.entry_for_case` is a dictionary lookup.
+
 The Demo stack has its own instance over the Demo KV. The cases-tier reset clears it
 (receipt ``kv:auto_close_review:<n>``), the factory reset purges the KV wholesale, and
 the data export lists its entries.
@@ -186,13 +197,45 @@ class ReviewLedger:
     days: dict[str, dict[str, Any]] = field(default_factory=dict)
     rev: int = 0
     evicted_through: str = ""
+    # The case id to newest entry index, built on first use and rebuilt whenever the
+    # entry list is no longer the one it was built from (replaced, grown, shrunk, or
+    # its first or last entry swapped). Never stored, compared or printed.
+    _case_index: dict[str, ReviewEntry] | None = field(
+        default=None, init=False, repr=False, compare=False,
+    )
+    _case_index_mark: tuple[int, int, int, int] | None = field(
+        default=None, init=False, repr=False, compare=False,
+    )
 
     # -- reads ------------------------------------------------------------------ #
+    def _entries_mark(self) -> tuple[int, int, int, int]:
+        entries = self.entries
+        if not entries:
+            return (id(entries), 0, 0, 0)
+        return (id(entries), len(entries), id(entries[0]), id(entries[-1]))
+
+    def _index(self) -> dict[str, ReviewEntry]:
+        mark = self._entries_mark()
+        if self._case_index is None or self._case_index_mark != mark:
+            index: dict[str, ReviewEntry] = {}
+            for entry in self.entries:  # oldest first, so the newest entry wins
+                index[entry.case_id] = entry
+            self._case_index = index
+            self._case_index_mark = mark
+        return self._case_index
+
     def entry_for_case(self, case_id: str) -> ReviewEntry | None:
-        """The newest entry of ``case_id``, or None."""
-        for entry in reversed(self.entries):
-            if entry.case_id == case_id:
-                return entry
+        """The newest entry of ``case_id``, or None (one dictionary lookup)."""
+        entry = self._index().get(case_id)
+        if entry is not None and entry.case_id == case_id:
+            return entry
+        if entry is None:
+            return None
+        # An entry was changed in place after the index was built: read the list.
+        self._case_index = None
+        for candidate in reversed(self.entries):
+            if candidate.case_id == case_id:
+                return candidate
         return None
 
     def entry_by_id(self, review_id: str) -> ReviewEntry | None:
@@ -351,6 +394,11 @@ class AutoCloseReviewStore:
     def __init__(self, kv: Any) -> None:
         self.kv = kv
         self.lock = asyncio.Lock()
+        # The last decoded ledger: ``(revision, stored JSON text, ledger)``. Read only
+        # through :meth:`_decode`, which hands out copies.
+        self._memo: tuple[int, Any, ReviewLedger] | None = None
+        #: How many times this store decoded the stored ledger (observability, tests).
+        self.decodes = 0
 
     async def _get(self) -> dict[str, Any] | None:
         getter = getattr(self.kv, "get_strict", None) or self.kv.get
@@ -369,9 +417,33 @@ class AutoCloseReviewStore:
         except Exception as exc:  # noqa: BLE001
             raise ReviewLedgerUnavailable("The auto-close review ledger could not be saved.") from exc
 
+    def _decode(self, doc: dict[str, Any] | None) -> ReviewLedger:
+        """``doc`` as a ledger, decoded at most once per (revision, stored text). The
+        memo is never handed out: the caller gets a copy."""
+        if not isinstance(doc, dict):
+            return ReviewLedger.from_doc(doc)
+        raw = doc.get(JSON_FIELD)
+        try:
+            rev = max(0, int(doc.get("_rev", 0) or 0))
+        except (TypeError, ValueError):
+            rev = 0
+        memo = self._memo
+        if memo is not None and memo[0] == rev and type(memo[1]) is type(raw) and memo[1] == raw:
+            return memo[2].copy()
+        ledger = ReviewLedger.from_doc(doc)
+        self.decodes += 1
+        self._memo = (rev, raw, ledger.copy())
+        return ledger
+
+    def _remember(self, ledger: ReviewLedger, raw: str) -> None:
+        """Keep the ledger this store just wrote (its revision and exact text) as the
+        memo, so the next read decodes nothing."""
+        self._memo = (int(ledger.rev), raw, ledger.copy())
+
     async def load(self) -> ReviewLedger:
-        """The ledger as stored now. Raises :class:`ReviewLedgerUnavailable`."""
-        return ReviewLedger.from_doc(await self._get())
+        """The ledger as stored now (a fresh copy the caller may change). Raises
+        :class:`ReviewLedgerUnavailable`."""
+        return self._decode(await self._get())
 
     async def update(
         self,
@@ -402,6 +474,7 @@ class AutoCloseReviewStore:
             doc["_rev"] = current.rev + 1
             if await self._put_if(doc, current.rev):
                 proposed.rev = current.rev + 1
+                self._remember(proposed, doc[JSON_FIELD])
                 return proposed
         raise ReviewLedgerUnavailable("The auto-close review ledger changed too quickly; retry.")
 

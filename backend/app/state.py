@@ -3237,6 +3237,13 @@ class AppState:
             # spawns them unless asked.
             await self._run_schedulers()
             await self._start_system_update_audit_reconciler()
+            # Round 16 (WP06): the event-loop lag gauge GET /api/diagnostics/health reads.
+            try:
+                from .api.routes_diagnostics import start_loop_lag_monitor
+
+                start_loop_lag_monitor(self)
+            except Exception as exc:  # noqa: BLE001 (a gauge never blocks startup)
+                logger.warning("Event-loop lag monitor did not start (%s); continuing", exc)
         logger.info(
             "AppState started (es=%s, setup_complete=%s, polling_enabled=%s)",
             type(self.es).__name__, self.prefs.setup_complete, self.prefs.polling_enabled,
@@ -4167,6 +4174,12 @@ class AppState:
             pass
         try:
             await self._stop_schedulers()
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            from .api.routes_diagnostics import stop_loop_lag_monitor
+
+            await stop_loop_lag_monitor(self)
         except Exception:  # noqa: BLE001
             pass
         try:
