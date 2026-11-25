@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import json
 import os
+import random
 import uuid
 
 import pytest
@@ -408,3 +409,129 @@ async def test_failed_migration_is_loud_diagnosable_and_recoverable(
         _decision_doc(event_id="proposal-decision:p-99:reject", ts="2026-08-06T02:00:00Z")
     )
     assert len(await _audit_rows(pg_engine)) == len(before) + 1
+
+
+# --------------------------------------------------------------------------- #
+# Round 16 (WP06): RAG vector search ranks with pgvector in the database.
+# --------------------------------------------------------------------------- #
+# The PostgreSQL image carries the ``vector`` extension, so ``create_all`` creates it
+# and probes ``pg_extension`` once. The SQL vector store ranks with its in-process
+# matrix, and with ``<=>`` over the existing JSON column (no schema change) for a corpus
+# too large for the matrix or a process without numpy. These tests prove the three
+# search paths (pgvector, the in-process matrix and pure Python) return the same chunks
+# with the same exact scores, and that the database path still refuses a query from
+# another embedding space.
+def _vector_chunks(seed: int, dim: int) -> tuple[list, list[float]]:
+    from app.tools.vectorstore import StoredChunk
+
+    rng = random.Random(seed)
+    base = [rng.uniform(-1.0, 1.0) for _ in range(dim)]
+
+    def chunk(text_value: str, emb: list[float]) -> StoredChunk:
+        return StoredChunk(
+            text=text_value, source="mitre", metadata={"document_id": text_value},
+            embedding=emb, embedding_model="m-test", dim=len(emb),
+        )
+
+    chunks = [chunk(f"c{i}", [rng.uniform(-1.0, 1.0) for _ in range(dim)]) for i in range(150)]
+    chunks += [chunk(f"dup{i}", list(base)) for i in range(10)]  # exact ties
+    chunks.append(chunk("zero", [0.0] * dim))  # pgvector ranks its distance as NaN
+    return chunks, base
+
+
+def _vector_shape(results: list) -> list[tuple[str, float]]:
+    return [(chunk.text, score) for chunk, score in results]
+
+
+async def test_pgvector_ranking_matches_the_matrix_and_python_paths(pg_engine, monkeypatch) -> None:
+    from app.stores.sql import SqlVectorStore
+    from app.stores.sql import vectorstore as sqlvec
+    from app.stores.sql.engine import pgvector_probed
+    from app.tools.vectorstore import _cosine
+
+    await create_all(pg_engine)
+    assert pgvector_probed(pg_engine) is True
+    dim = 48
+    chunks, base = _vector_chunks(16, dim)
+    store = SqlVectorStore(pg_engine)
+    await store.add(chunks)
+
+    native_calls = {"n": 0}
+    real_native = store._search_pgvector
+
+    async def counted(query, top_k):
+        native_calls["n"] += 1
+        return await real_native(query, top_k)
+
+    monkeypatch.setattr(store, "_search_pgvector", counted)
+    rng = random.Random(61)
+    queries = [[rng.uniform(-1.0, 1.0) for _ in range(dim)] for _ in range(4)]
+    queries += [list(base), [0.0] * dim]
+    for query in queries:
+        for top_k in (1, 5, 20, 400):
+            with monkeypatch.context() as m:
+                m.setattr(sqlvec, "MATRIX_MAX_VALUES", 0)  # too large: rank in the database
+                native = await store.search(query, top_k)
+            matrix = await store.search(query, top_k)  # a small corpus: the matrix
+            with monkeypatch.context() as m:
+                m.setattr(sqlvec, "_numpy", lambda: None)
+                m.setattr(store, "_pg_native", False)
+                python = await store.search(query, top_k)
+            assert _vector_shape(native) == _vector_shape(matrix) == _vector_shape(python)
+            expected = sorted(
+                ((c.text, _cosine(query, c.embedding)) for c in chunks),
+                key=lambda t: t[1], reverse=True,
+            )[:top_k]
+            assert _vector_shape(native) == expected
+    assert native_calls["n"] == len(queries) * 4  # only the database legs
+    assert store._matrix is not None
+    assert store._pg_failure_logged is False  # the database path never fell back
+
+
+async def test_without_numpy_postgresql_ranks_in_the_database(pg_engine, monkeypatch) -> None:
+    from app.stores.sql import SqlVectorStore
+    from app.stores.sql import vectorstore as sqlvec
+
+    await create_all(pg_engine)
+    chunks, base = _vector_chunks(19, 16)
+    store = SqlVectorStore(pg_engine)
+    await store.add(chunks)
+    monkeypatch.setattr(sqlvec, "_numpy", lambda: None)
+    results = await store.search(base, 3)
+    assert [c.text for c, _ in results] == ["dup0", "dup1", "dup2"]
+    assert store._matrix is None and store._pg_native is True
+    assert store._pg_failure_logged is False
+
+
+async def test_pgvector_ranking_still_refuses_another_embedding_space(pg_engine) -> None:
+    from app.stores.sql import SqlVectorStore
+    from app.tools.vectorstore import EmbeddingSpaceMismatch, StoredChunk
+
+    await create_all(pg_engine)
+    chunks, base = _vector_chunks(17, 12)
+    store = SqlVectorStore(pg_engine)
+    await store.add(chunks[:20])
+    with pytest.raises(EmbeddingSpaceMismatch):
+        await store._search_pgvector(base[:6], 3)
+    with pytest.raises(EmbeddingSpaceMismatch):
+        await store.search(base[:6], 3)
+    await store.add([StoredChunk(text="wide", source="mitre", embedding=[0.5] * 6,
+                                 embedding_model="m-other", dim=6)])
+    with pytest.raises(EmbeddingSpaceMismatch):
+        await store._search_pgvector(base, 3)
+    with pytest.raises(EmbeddingSpaceMismatch):
+        await store.search(base, 3)
+    assert store._pg_failure_logged is False
+
+
+async def test_a_store_without_pgvector_on_postgresql_ranks_in_process(pg_engine) -> None:
+    from app.stores.sql import SqlVectorStore
+
+    await create_all(pg_engine)
+    chunks, base = _vector_chunks(18, 16)
+    store = SqlVectorStore(pg_engine)
+    store._pg_native = False  # as when the probe found no extension
+    await store.add(chunks)
+    results = await store.search(base, 3)
+    assert [c.text for c, _ in results] == ["dup0", "dup1", "dup2"]
+    assert store._matrix is not None  # ranked by the in-process matrix

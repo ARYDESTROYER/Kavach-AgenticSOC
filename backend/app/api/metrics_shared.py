@@ -48,6 +48,14 @@ Design constraints (all load-bearing):
 * **Bounded staleness, read-only path.** The TTL (default 5s) is the explicit
   staleness bound for dashboard aggregates only; nothing on this path feeds
   ``decide()``/risk/signatures (#3) — it is read-time reporting.
+* **The all-time population lives longer (Round 16, WP06).** It is the one expensive
+  read (the whole retention ceiling), so it is kept for
+  ``ALL_TIME_POPULATION_TTL_SECONDS`` (60 s) and then served stale for at most
+  ``ALL_TIME_POPULATION_STALE_SECONDS`` while ONE background read replaces it. Every
+  population says when it was read (``read_at``, ``generated_at``, ``freshness()``) and
+  whether it was served stale, so a response never presents old figures as fresh.
+  Windowed reads keep the 5 s bound, and an all-time population older than that never
+  answers a windowed request.
 """
 
 from __future__ import annotations
@@ -210,6 +218,15 @@ async def fetch_case_page(store: Any, limit: int, *, fresh: bool = False) -> tup
 #   error named) and is never cached.
 
 POPULATION_TTL_SECONDS = CASE_PAGE_TTL_SECONDS
+# Round 16 (WP06): the ALL-TIME population is the read that costs the whole retention
+# ceiling (measured: 2.5 to 3 s and about 700 MB at 20,000 cases), and the LIVE Overview
+# used to repeat it on every 5 s tick. It is now kept for this long, then served STALE
+# (flagged, with its read time) for at most ``ALL_TIME_POPULATION_STALE_SECONDS`` after it
+# was read, while ONE background read replaces it. Past that bound it is read in the
+# foreground again, so an idle dashboard never opens on old figures. The figures that
+# need all time (average risk, MTTR, burndown, persona usage, feedback) change slowly.
+ALL_TIME_POPULATION_TTL_SECONDS = 60.0
+ALL_TIME_POPULATION_STALE_SECONDS = 120.0
 # The most Case objects the population cache retains across ALL its entries.
 POPULATION_CACHE_BUDGET = 25_000
 # A span longer than this (about a century) reaches before any case: it is all time.
@@ -240,6 +257,11 @@ class CasePopulation:
     * ``load_ok`` — the store answered at all. ``False`` means nothing was measured.
     * ``error`` — why the population is incomplete ("" when complete).
     * ``read_error`` — the store failure that stopped the read partway, if any.
+    * ``read_at``: the instant the read began (UTC), the moment these figures describe
+      (``generated_at`` is its ISO text). ``loaded_at``: when the read finished, on the
+      monotonic clock the cache ages entries by.
+    * ``stale``: this view was served from an all-time population past its 60 s
+      lifetime while one background read replaces it (Round 16, WP06).
 
     ``fetched``/``scope_total`` feed the rollups' ``truncation_marker``: equal when the
     population is complete (``truncated: false``), ``fetched < scope_total`` whenever a
@@ -248,7 +270,7 @@ class CasePopulation:
     __slots__ = ("cases", "span_hours", "since", "in_scope", "complete", "load_ok",
                  "store_total", "open_now", "consistency", "error", "store", "limit",
                  "expires_at", "newest_first", "floor", "read_error", "unreadable",
-                 "key", "read_at", "count_failed")
+                 "key", "read_at", "count_failed", "loaded_at", "stale")
 
     def __init__(
         self,
@@ -273,6 +295,8 @@ class CasePopulation:
         key: int | None = None,
         read_at: Any = None,
         count_failed: bool = False,
+        loaded_at: float = 0.0,
+        stale: bool = False,
     ) -> None:
         self.cases = cases
         self.span_hours = span_hours
@@ -294,6 +318,28 @@ class CasePopulation:
         self.key = key
         self.read_at = read_at
         self.count_failed = count_failed
+        self.loaded_at = loaded_at
+        self.stale = stale
+
+    @property
+    def generated_at(self) -> str | None:
+        """The ISO instant these figures describe (when the read began), or None when
+        nothing was read. A response built on this population stamps this, not the
+        time it answered, so a cached or stale population is never shown as fresh."""
+        read_at = self.read_at
+        return read_at.isoformat() if hasattr(read_at, "isoformat") else None
+
+    def freshness(self) -> dict[str, Any]:
+        """``{read_at, age_seconds, stale}``: when the figures were read, how old they
+        are now (whole tenths of a second) and whether they were served stale while a
+        background read replaces them."""
+        from datetime import datetime, timezone
+
+        age: float | None = None
+        read_at = self.read_at
+        if isinstance(read_at, datetime):
+            age = round(max(0.0, (datetime.now(timezone.utc) - read_at).total_seconds()), 1)
+        return {"read_at": self.generated_at, "age_seconds": age, "stale": bool(self.stale)}
 
     @property
     def fetched(self) -> int:
@@ -344,10 +390,29 @@ _population_cache: dict[tuple[int, int | None], CasePopulation] = {}
 _population_inflight: dict[tuple[int, int | None], tuple[Any, "asyncio.Future[CasePopulation]"]] = {}
 # One load lock per (event loop, all-time?) pair: see the module notes above.
 _load_locks: dict[tuple[Any, bool], asyncio.Lock] = {}
+# Round 16 (WP06): the background reads that replace a stale all-time population (held
+# here so a running read is never garbage collected), and a generation bumped by every
+# invalidation so a read that began before one never fills the emptied cache.
+_revalidations: set["asyncio.Task[None]"] = set()
+_population_generation = 0
+
+
+def _population_clock() -> float:
+    """The monotonic clock the population cache ages entries by (a seam for tests)."""
+    return time.monotonic()
 
 
 def invalidate_case_population_cache() -> None:
-    """Drop every memoized population + in-flight marker (test isolation / reset)."""
+    """Drop every memoized population + in-flight marker (test isolation / reset). A
+    background refresh still running is cancelled, and its result is discarded."""
+    global _population_generation
+    _population_generation += 1
+    for task in list(_revalidations):
+        try:
+            task.cancel()
+        except RuntimeError:  # its event loop is already closed
+            pass
+    _revalidations.clear()
     _population_cache.clear()
     _population_inflight.clear()
     _load_locks.clear()
@@ -355,8 +420,33 @@ def invalidate_case_population_cache() -> None:
     _breakdown_inflight.clear()
 
 
+def _is_all_time_entry(entry: CasePopulation) -> bool:
+    return entry.key is None and entry.since is None
+
+
+def _fresh_until(entry: CasePopulation, *, all_time_request: bool) -> float:
+    """Until when ``entry`` answers a request as fresh: 60 s for an all-time request
+    served by the all-time population, 5 s for everything else (a windowed request
+    never reads an all-time population older than the windowed bound)."""
+    ttl = POPULATION_TTL_SECONDS
+    if all_time_request and _is_all_time_entry(entry):
+        ttl = ALL_TIME_POPULATION_TTL_SECONDS
+    return float(entry.loaded_at) + float(ttl)
+
+
+def _hard_expiry(entry: CasePopulation) -> float:
+    """When ``entry`` leaves the cache: the all-time population stays while it can still
+    be served stale; a windowed one leaves when it stops being fresh."""
+    if _is_all_time_entry(entry):
+        keep = max(float(ALL_TIME_POPULATION_TTL_SECONDS),
+                   float(ALL_TIME_POPULATION_STALE_SECONDS), float(POPULATION_TTL_SECONDS))
+    else:
+        keep = float(POPULATION_TTL_SECONDS)
+    return float(entry.loaded_at) + keep
+
+
 def _prune_expired(now: float) -> None:
-    for key in [k for k, v in _population_cache.items() if v.expires_at <= now]:
+    for key in [k for k, v in _population_cache.items() if _hard_expiry(v) <= now]:
         _population_cache.pop(key, None)
 
 
@@ -415,10 +505,90 @@ def _loop_lock(all_time: bool) -> asyncio.Lock | None:
     return lock
 
 
+def _fresh_entry(
+    store: Any, limit: int, cache_key: tuple[int, int | None], since: Any, now: float,
+) -> CasePopulation | None:
+    """The cached population that answers this request as fresh: its own ladder entry,
+    else the narrowest fresh entry that covers it."""
+    entry = _population_cache.get(cache_key)
+    if (entry is not None and entry.store is store
+            and now < _fresh_until(entry, all_time_request=since is None)):
+        return entry
+    return _covering_entry(store, limit, since, now)
+
+
+def _stale_all_time(store: Any, limit: int, now: float) -> CasePopulation | None:
+    """The all-time population past its lifetime that may still be served while one
+    background read replaces it (within ``ALL_TIME_POPULATION_STALE_SECONDS`` of when it
+    was read), or None. Only a fully usable read qualifies (``covers``)."""
+    entry = _population_cache.get((limit, None))
+    if entry is None or entry.store is not store or not _is_all_time_entry(entry):
+        return None
+    if now >= float(entry.loaded_at) + float(ALL_TIME_POPULATION_STALE_SECONDS):
+        return None
+    return entry if entry.covers(None) else None
+
+
+def _start_revalidation(store: Any, limit: int) -> None:
+    """Start ONE background read of the all-time population (single flight per store,
+    limit and event loop; a foreground request that finds nothing usable joins it)."""
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:  # pragma: no cover (callers are always async routes)
+        return
+    cache_key = (limit, None)
+    pending = _population_inflight.get(cache_key)
+    if (
+        pending is not None
+        and pending[0] is store
+        and not pending[1].done()
+        and pending[1].get_loop() is loop
+    ):
+        return
+    fut: "asyncio.Future[CasePopulation]" = loop.create_future()
+    _population_inflight[cache_key] = (store, fut)
+    task = loop.create_task(
+        _revalidate(store, limit, fut), name="case-population-refresh",
+    )
+    _revalidations.add(task)
+    task.add_done_callback(_revalidations.discard)
+
+
+async def _revalidate(store: Any, limit: int, fut: "asyncio.Future[CasePopulation]") -> None:
+    """The background read behind :func:`_start_revalidation`. A failure is logged and
+    handed to any waiter; the stale population stays until its bound, never replaced
+    by a failed read."""
+    cache_key = (limit, None)
+    try:
+        lock = _loop_lock(True)
+        if lock is not None:
+            async with lock:
+                population = await _load_after_lock(store, key=None, limit=limit, since=None)
+        else:  # pragma: no cover
+            population = await _load_after_lock(store, key=None, limit=limit, since=None)
+    except BaseException as exc:
+        if not fut.done():
+            fut.set_exception(exc)
+            fut.exception()
+        if isinstance(exc, asyncio.CancelledError):
+            raise
+        logger.warning("case population refresh soft-failed: %s", exc)
+    else:
+        if not fut.done():
+            fut.set_result(population)
+    finally:
+        current = _population_inflight.get(cache_key)
+        if current is not None and current[1] is fut:
+            del _population_inflight[cache_key]
+
+
 def _covering_entry(store: Any, limit: int, since: Any, now: float) -> CasePopulation | None:
     best: CasePopulation | None = None
+    all_time_request = since is None
     for entry in _population_cache.values():
-        if entry.store is not store or entry.limit != limit or entry.expires_at <= now:
+        if entry.store is not store or entry.limit != limit:
+            continue
+        if now >= _fresh_until(entry, all_time_request=all_time_request):
             continue
         if not entry.covers(since):
             continue
@@ -433,18 +603,22 @@ async def fetch_case_population(
 ) -> CasePopulation:
     """The :class:`CasePopulation` for ``span_hours`` (``None``/``0`` = all time).
 
-    Served from the shared 5 s cache when a fresh population of the same store and
-    limit covers the span (see :meth:`CasePopulation.covers`), narrowed exactly to the
-    requested span. Otherwise ONE read (single-flight, serialised per event loop) of the
-    span's newest ``limit`` cases. Never raises for a store failure: the population then
-    reports ``load_ok=False`` (nothing measured) or ``complete=False`` with the error (a
-    partial read), and the rollups carry that into their honesty flags."""
+    Served from the shared cache when a fresh population of the same store and limit
+    covers the span (see :meth:`CasePopulation.covers`), narrowed exactly to the
+    requested span: fresh is 60 s for an all-time request answered by the all-time
+    population and 5 s otherwise. An all-time request that finds the all-time
+    population past 60 s (but read less than ``ALL_TIME_POPULATION_STALE_SECONDS`` ago)
+    gets it at once, marked ``stale``, while ONE background read replaces it. Otherwise
+    ONE read (single-flight, serialised per event loop) of the span's newest ``limit``
+    cases. Never raises for a store failure: the population then reports
+    ``load_ok=False`` (nothing measured) or ``complete=False`` with the error (a partial
+    read), and the rollups carry that into their honesty flags."""
     from datetime import datetime, timezone
 
     span = _requested_span(span_hours)
     key = _ladder_key(span)
     limit = max(1, int(limit))
-    now_mono = time.monotonic()
+    now_mono = _population_clock()
     _prune_expired(now_mono)
     now_dt = datetime.now(timezone.utc)
     since = _since_of(now_dt, span)
@@ -453,11 +627,17 @@ async def fetch_case_population(
     until = now_dt if since is not None else None
 
     cache_key = (limit, key)
-    entry = _population_cache.get(cache_key)
-    if entry is None or entry.store is not store or entry.expires_at <= now_mono:
-        entry = _covering_entry(store, limit, since, now_mono)
+    entry = _fresh_entry(store, limit, cache_key, since, now_mono)
     if entry is not None:
         return await _narrow(entry, span, since, until)
+    if since is None:
+        # Round 16 (WP06): stale-while-revalidate for the all-time population.
+        stale = _stale_all_time(store, limit, now_mono)
+        if stale is not None:
+            _start_revalidation(store, limit)
+            view = await _narrow(stale, span, since, until)
+            view.stale = True
+            return view
 
     try:
         loop = asyncio.get_running_loop()
@@ -502,16 +682,17 @@ async def fetch_case_population(
 
 async def _load_after_lock(store: Any, *, key: int | None, limit: int, since: Any) -> CasePopulation:
     """Re-check the cache once the load lock is held (a load that just finished may
-    cover this request), else read and cache. A failed or partial read is never cached."""
-    now_mono = time.monotonic()
+    cover this request), else read and cache. A failed or partial read is never cached,
+    and neither is a read that began before an invalidation."""
+    now_mono = _population_clock()
     _prune_expired(now_mono)
-    entry = _population_cache.get((limit, key))
-    if entry is None or entry.store is not store or entry.expires_at <= now_mono:
-        entry = _covering_entry(store, limit, since, now_mono)
+    entry = _fresh_entry(store, limit, (limit, key), since, now_mono)
     if entry is not None:
         return entry
+    generation = _population_generation
     population = await _load_population(store, span_hours=key, limit=limit)
-    if population.load_ok and not population.read_error:
+    if (population.load_ok and not population.read_error
+            and generation == _population_generation):
         _population_cache[(limit, key)] = population
         _enforce_budget(keep=population)
     return population
@@ -527,7 +708,7 @@ def _enforce_budget(*, keep: CasePopulation) -> None:
         victims = [k for k, v in _population_cache.items() if v is not keep]
         if not victims:
             return
-        oldest = min(victims, key=lambda k: _population_cache[k].expires_at)
+        oldest = min(victims, key=lambda k: _population_cache[k].loaded_at)
         _population_cache.pop(oldest, None)
 
 
@@ -939,7 +1120,7 @@ async def _load_population(store: Any, *, span_hours: int | None, limit: int) ->
         )
     elif not complete:
         error = _ceiling_error(in_scope, len(cases), count_failed)
-    return CasePopulation(
+    population = CasePopulation(
         cases=cases,
         span_hours=span_hours,
         since=since,
@@ -952,7 +1133,7 @@ async def _load_population(store: Any, *, span_hours: int | None, limit: int) ->
         error=error,
         store=store,
         limit=limit,
-        expires_at=time.monotonic() + float(POPULATION_TTL_SECONDS),
+        expires_at=0.0,
         newest_first=newest_first,
         floor=floor,
         read_error=read_error,
@@ -960,7 +1141,10 @@ async def _load_population(store: Any, *, span_hours: int | None, limit: int) ->
         key=span_hours,
         read_at=now_dt,
         count_failed=count_failed,
+        loaded_at=_population_clock(),
     )
+    population.expires_at = _hard_expiry(population)
+    return population
 
 
 # =========================================================================== #

@@ -2877,6 +2877,10 @@ export interface paths {
          *     configuration change. It does perform ONE bounded advisory write — the composition
          *     baseline a class-share shift is measured against, described in the module docstring.
          *     Advisory only; never read by ``decide()`` (#3).
+         *
+         *     ``case_population`` says when the case figures were read (the shared all-time
+         *     population is kept for up to a minute), and ``event_loop`` carries the event-loop
+         *     lag gauge (measured values only; it feeds neither list).
          */
         get: operations["diagnostics_health_api_diagnostics_health_get"];
         put?: never;

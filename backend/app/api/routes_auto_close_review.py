@@ -312,15 +312,19 @@ def _complete_from_history(ledger: ReviewLedger, entries: dict[str, Any]) -> Rev
 
 async def _repair(
     state: AppState, found: dict[str, Any], *, store: Any = None, locked: bool = False,
+    ledger: ReviewLedger | None = None,
 ) -> None:
     """Complete the ledger entries a case's history shows as reviewed (the ledger write
     failed after the case save). Best-effort. ``locked=True`` when the caller already
-    holds the store's lock."""
+    holds the store's lock. ``ledger`` is the ledger the caller already read (Round 16,
+    WP06: one read per request, not two); the write itself re-reads under strict
+    compare-and-set, so a ledger that moved meanwhile is still repaired correctly."""
     store = store if store is not None else _store(state)
-    try:
-        ledger = await store.load()
-    except ReviewLedgerUnavailable:
-        return
+    if ledger is None:
+        try:
+            ledger = await store.load()
+        except ReviewLedgerUnavailable:
+            return
     events: dict[str, Any] = {}
     for entry in ledger.entries:
         if entry.state == STATE_COMPLETED:
@@ -373,7 +377,7 @@ async def review_queue_cases(state: AppState, review: str) -> list[Case]:
             if e.case_id in found and history_review(found[e.case_id], e.review_id) is not None
         }
         if settled:
-            await _repair(state, found)
+            await _repair(state, found, ledger=ledger)
             ids = [cid for cid in ids if cid not in settled]
     return [found[cid] for cid in ids if cid in found]
 
@@ -546,7 +550,7 @@ async def _record_review_locked(
     if entry is not None and entry.state == STATE_COMPLETED:
         raise _error(409, "review_already_recorded", "This auto-close review is already recorded.")
     if entry is not None and history_review(case, entry.review_id) is not None:
-        await _repair(state, {case_id: case}, store=store, locked=True)
+        await _repair(state, {case_id: case}, store=store, locked=True, ledger=ledger)
         raise _error(409, "review_already_recorded", "This auto-close review is already recorded.")
     sampled = entry is not None
     review_id = entry.review_id if entry is not None else ""
@@ -697,7 +701,7 @@ async def case_review_state(
     expiry = int(getattr(_config(state), "expiry_days", 7) or 7)
     current = entry.state_at(now_utc(), expiry)
     if current != STATE_COMPLETED and history_review(case, entry.review_id) is not None:
-        await _repair(state, {case_id: case})
+        await _repair(state, {case_id: case}, ledger=ledger)
         current = STATE_COMPLETED
     sampled = entry.sampled_instant()
     expires = (
@@ -746,7 +750,7 @@ async def auto_close_review_summary(
         if e.case_id in found and history_review(found[e.case_id], e.review_id) is not None
     }
     if settled:
-        await _repair(state, found)
+        await _repair(state, found, ledger=ledger)
         ledger = await _load(state)
         # A repaired entry may be a disagreement: count it now, not on the next read
         # (its case was read above with the pending ones).
@@ -798,7 +802,7 @@ async def _repaired_for_window(
             events[entry.review_id] = event
     if not events:
         return ledger
-    await _repair(state, found)
+    await _repair(state, found, ledger=ledger)
     try:
         ledger = await _load(state)
     except HTTPException:
@@ -854,7 +858,10 @@ async def auto_close_review_metrics(
         per_rule_daily_cap=int(config.per_rule_daily_cap),
         expiry_days=int(config.expiry_days),
         statement=AGREEMENT_STATEMENT,
-        generated_at=iso_now(),
+        # The eligible counts come from the shared all-time case population, which may
+        # be up to a minute old (Round 16, WP06): the response is stamped with when that
+        # population was read, never with "now".
+        generated_at=(population.generated_at if population.load_ok else None) or iso_now(),
         **data,
     )
 

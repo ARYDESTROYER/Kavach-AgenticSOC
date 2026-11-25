@@ -16,6 +16,12 @@ into a DIAGNOSABLE STATE an operator can actually see:
   broken; that must never be invisible.
 * **Auto-close health** — the rolling rate from :func:`engine.metrics.auto_close_health`,
   which distinguishes an auto-close collapse from a quiet period.
+* **Event-loop lag** (Round 16, WP06): :class:`LoopLagMonitor`, a 100 ms ticker that
+  records how late the event loop ran it, reported as the worst and 99th-percentile
+  lateness over the last minute. Chat streams, SSE heartbeats and receivers share that
+  loop, so a stall from CPU-bound work (a large population read validating cases holds
+  the interpreter lock even in a worker thread) becomes a measured number. It is a
+  measurement, never an alert: no threshold, no status.
 
 Design notes:
 
@@ -46,15 +52,18 @@ Design notes:
   returned here as plain JSON the UI renders escaped — exactly as ``GET /api/rag/stats``
   already does. Nothing on this surface ever reaches a model prompt, and no secret,
   case id, document text, or chunk content is returned.
-* **Additive + default-safe (#10).** New endpoints only — no new configuration, no new
-  scheduled or background work; the one advisory composition write above happens inside
-  the request that reads the endpoint and nowhere else.
+* **Additive + default-safe (#10).** New endpoints only, no new configuration and no
+  scheduled work; the one advisory composition write above happens inside the request
+  that reads the endpoint and nowhere else. The only background task is the lag
+  ticker, which does no I/O and is started and stopped with the application.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import math
+from collections import deque
 from time import monotonic
 from typing import Any
 
@@ -102,27 +111,170 @@ def _precedent_source() -> str:
         return _PRECEDENT_SOURCE_FALLBACK
 
 
-async def _load_cases(state: AppState) -> tuple[list, int]:
-    """The all-time case population (newest first, at most ``_STORE_FETCH_LIMIT``) +
-    the exact number of cases it should hold. A store error degrades to an empty list
-    rather than failing the request; the caller reports the gap.
+async def _load_population(state: AppState) -> tuple[list, int, dict[str, Any]]:
+    """The all-time case population (newest first, at most ``_STORE_FETCH_LIMIT``), the
+    exact number of cases it should hold, and when it was read
+    (``CasePopulation.freshness()``: ``read_at``, ``age_seconds``, ``stale``). A store
+    error degrades to an empty list rather than failing the request; the caller reports
+    the gap.
 
-    Served through the SHARED short-TTL population cache (``api/metrics_shared``) — the
-    Overview health strip fires this endpoint alongside the posture/noise rollups
-    every refresh, and all of them share one read. The cache is keyed by store
-    identity and fetch limit, so a monkeypatched ``_STORE_FETCH_LIMIT`` or a Demo Mode
-    store swap always bypasses stale reads."""
+    Served through the SHARED population cache (``api/metrics_shared``): the Overview
+    health strip fires this endpoint alongside the posture/noise rollups every refresh,
+    and all of them share one read. Since Round 16 the all-time population lives 60 s
+    (then stale while one background read replaces it), so the response says when the
+    case figures were read. The cache is keyed by store identity and fetch limit, so a
+    monkeypatched ``_STORE_FETCH_LIMIT`` or a Demo Mode store swap always bypasses
+    stale reads."""
+    unread = {"read_at": None, "age_seconds": None, "stale": False}
     try:
         population = await fetch_case_population(
             state.cases, span_hours=None, limit=_STORE_FETCH_LIMIT
         )
     except Exception as exc:  # noqa: BLE001 — diagnostics degrade, never 500
         logger.warning("diagnostics case load soft-failed: %s", exc)
-        return [], 0
+        return [], 0, unread
     if not population.load_ok:
         logger.warning("diagnostics case load soft-failed: %s", population.error)
-        return [], 0
-    return list(population.cases), int(population.scope_total)
+        return [], 0, unread
+    return list(population.cases), int(population.scope_total), population.freshness()
+
+
+async def _load_cases(state: AppState) -> tuple[list, int]:
+    """:func:`_load_population` without the read time (compatibility helper)."""
+    cases, store_total, _freshness = await _load_population(state)
+    return cases, store_total
+
+
+# --------------------------------------------------------------------------- #
+# Event-loop lag (Round 16, WP06)
+# --------------------------------------------------------------------------- #
+#: How often the ticker wakes, and how long a window the gauge reports.
+LOOP_LAG_INTERVAL_SECONDS = 0.1
+LOOP_LAG_WINDOW_SECONDS = 60.0
+
+
+class LoopLagMonitor:
+    """Measures how late the event loop runs a short periodic sleep.
+
+    Every ``interval`` seconds the ticker sleeps, then records how much later than
+    asked it woke: time the loop spent on something else that never yielded. The
+    gauge keeps the last ``window`` seconds of samples (at most about 600, a few
+    kilobytes) and reports the worst and the 99th-percentile lateness. It does no I/O
+    and holds no lock. One monitor per application state; :func:`start_loop_lag_monitor`
+    and :func:`stop_loop_lag_monitor` bind it to the application's lifetime."""
+
+    def __init__(
+        self, *, interval: float = LOOP_LAG_INTERVAL_SECONDS,
+        window: float = LOOP_LAG_WINDOW_SECONDS,
+    ) -> None:
+        self.interval = max(0.001, float(interval))
+        self.window = max(self.interval, float(window))
+        self._samples: deque[tuple[float, float]] = deque(
+            maxlen=int(self.window / self.interval) * 2 + 16,
+        )
+        self._task: asyncio.Task[None] | None = None
+
+    @property
+    def running(self) -> bool:
+        return self._task is not None and not self._task.done()
+
+    def start(self) -> None:
+        """Start the ticker on the running loop (a no-op while it already runs)."""
+        if self.running:
+            return
+        self._task = asyncio.get_running_loop().create_task(
+            self._run(), name="event-loop-lag-monitor",
+        )
+
+    async def stop(self) -> None:
+        """Stop the ticker and wait for it to finish (idempotent)."""
+        task, self._task = self._task, None
+        if task is None or task.done():
+            return
+        task.cancel()
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):  # noqa: BLE001
+            pass
+
+    async def _run(self) -> None:
+        while True:
+            started = monotonic()
+            await asyncio.sleep(self.interval)
+            woke = monotonic()
+            self.record(max(0.0, woke - started - self.interval), at=woke)
+
+    def record(self, lag_seconds: float, *, at: float | None = None) -> None:
+        """Add one lateness sample (seconds) taken at monotonic time ``at``."""
+        now = monotonic() if at is None else float(at)
+        self._samples.append((now, max(0.0, float(lag_seconds))))
+        self._prune(now)
+
+    def _prune(self, now: float) -> None:
+        cutoff = now - self.window
+        while self._samples and self._samples[0][0] < cutoff:
+            self._samples.popleft()
+
+    def snapshot(self, *, now: float | None = None) -> dict[str, Any]:
+        """The gauge as plain numbers: ``worst_ms`` and ``p99_ms`` over the last
+        ``window_seconds`` (``None`` with no samples yet), the sample count, and
+        whether the ticker is running."""
+        self._prune(monotonic() if now is None else float(now))
+        lags = sorted(lag for _at, lag in self._samples)
+        worst = p99 = None
+        if lags:
+            worst = round(lags[-1] * 1000.0, 1)
+            p99 = round(lags[max(0, math.ceil(0.99 * len(lags)) - 1)] * 1000.0, 1)
+        running = self.running
+        reason = ""
+        if not running:
+            reason = "the event-loop lag monitor is not running in this process"
+        elif not lags:
+            reason = "no samples yet; the monitor has just started"
+        return {
+            "available": running and bool(lags),
+            "running": running,
+            "interval_ms": round(self.interval * 1000.0, 1),
+            "window_seconds": round(self.window, 1),
+            "samples": len(lags),
+            "worst_ms": worst,
+            "p99_ms": p99,
+            "reason": reason,
+        }
+
+
+def start_loop_lag_monitor(state: Any) -> LoopLagMonitor:
+    """Start (or keep running) the application's lag monitor, kept on
+    ``state.loop_lag`` where :func:`diagnostics_health` reads it."""
+    monitor = getattr(state, "loop_lag", None)
+    if not isinstance(monitor, LoopLagMonitor):
+        monitor = LoopLagMonitor()
+        state.loop_lag = monitor
+    monitor.start()
+    return monitor
+
+
+async def stop_loop_lag_monitor(state: Any) -> None:
+    """Stop the application's lag monitor, if one runs (idempotent)."""
+    monitor = getattr(state, "loop_lag", None)
+    if isinstance(monitor, LoopLagMonitor):
+        await monitor.stop()
+
+
+def _loop_lag_block(state: Any) -> dict[str, Any]:
+    monitor = getattr(state, "loop_lag", None)
+    if isinstance(monitor, LoopLagMonitor):
+        return monitor.snapshot()
+    return {
+        "available": False,
+        "running": False,
+        "interval_ms": round(LOOP_LAG_INTERVAL_SECONDS * 1000.0, 1),
+        "window_seconds": round(LOOP_LAG_WINDOW_SECONDS, 1),
+        "samples": 0,
+        "worst_ms": None,
+        "p99_ms": None,
+        "reason": "the event-loop lag monitor is not running in this process",
+    }
 
 
 def _projection_block(rag: Any) -> dict[str, Any]:
@@ -1982,8 +2134,12 @@ async def diagnostics_health(
     corpus health never triggers an embedding spend, a projection, a case write or a
     configuration change. It does perform ONE bounded advisory write — the composition
     baseline a class-share shift is measured against, described in the module docstring.
-    Advisory only; never read by ``decide()`` (#3)."""
-    cases, store_total = await _load_cases(state)
+    Advisory only; never read by ``decide()`` (#3).
+
+    ``case_population`` says when the case figures were read (the shared all-time
+    population is kept for up to a minute), and ``event_loop`` carries the event-loop
+    lag gauge (measured values only; it feeds neither list)."""
+    cases, store_total, case_population = await _load_population(state)
     precedent = await _precedent_corpus_block(state, cases, store_total)
     effectiveness = await _precedent_effectiveness_block(state, cases)
     migration = _schema_migration_block(state)
@@ -2010,6 +2166,12 @@ async def diagnostics_health(
     return {
         "generated_at": iso_now(),
         "window_hours": int(window_hours),
+        # When the case-derived blocks below were read: the shared all-time population
+        # may be up to a minute old, or served stale while it is read again.
+        "case_population": case_population,
+        # How late the event loop has been running (Round 16, WP06). Measured values
+        # only: no threshold, no status, and nothing here feeds `alerts`/`unknowns`.
+        "event_loop": _loop_lag_block(state),
         "demo_active": bool(getattr(state, "demo_active", False)),
         "state_backend": str(getattr(getattr(state, "secrets", None), "state_backend", "") or ""),
         "precedent_corpus": precedent,
