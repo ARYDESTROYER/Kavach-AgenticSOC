@@ -18,6 +18,7 @@
  * case's status/verdict/disposition (the backend enforces this).
  */
 import { api } from '@/lib/api';
+import type { TraceSpanCostBasis, TraceSpanDetail } from '@/lib/types';
 
 /* ------------------------------------------------------------- triage chips -- */
 
@@ -105,6 +106,10 @@ export interface TraceSpan {
   trusted: boolean;
   summary: string;
   payload_ref: Record<string, unknown>;
+  /** Round 16 (WP10): the bounded audit record behind the span; absent on an older server. */
+  detail?: TraceSpanDetail | null;
+  /** Round 16 (WP10): how `cost` and `latency_ms` were found; null on a span with no cost. */
+  cost_basis?: TraceSpanCostBasis | null;
 }
 
 export interface TimelineResponse {

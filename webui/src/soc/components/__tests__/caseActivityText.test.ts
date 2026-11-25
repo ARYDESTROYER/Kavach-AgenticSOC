@@ -410,6 +410,46 @@ describe('rows from before Round 14', () => {
   });
 });
 
+/**
+ * Round 16 B30: the screenshot rows `routes_case_files.py` records (`file_attached file=<id>
+ * type=<kind> bytes=<n>`, `file_deleted file=<id>`) read as a sentence; the recorded text
+ * stays under Details and the audit summary never carries a caption or a file name.
+ */
+describe('screenshot rows (B30)', () => {
+  const id = '1bd838e791c1b042dced58454e8c12e3';
+
+  it('words an added screenshot with its type and size, and keeps the record', () => {
+    const summary = `file_attached file=${id} type=png bytes=107`;
+    const out = activityText(row(summary, 'collab', 'alice'));
+    expect(out.text).toBe('Screenshot added (PNG, 107 B).');
+    expect(out.recorded).toBe(summary);
+    expect(activityText(row(`file_attached file=${id} type=jpeg bytes=831488`, 'collab', 'alice')).text).toBe(
+      'Screenshot added (JPEG, 812 KB).',
+    );
+    expect(activityText(row(`file_attached file=${id} type=webp bytes=1468006`, 'collab', 'alice')).text).toBe(
+      'Screenshot added (WEBP, 1.4 MB).',
+    );
+  });
+
+  it('words a deleted screenshot and keeps the record', () => {
+    const summary = `file_deleted file=${id}`;
+    const out = activityText(row(summary, 'collab', 'alice'));
+    expect(out.text).toBe('Screenshot deleted.');
+    expect(out.recorded).toBe(summary);
+    expect(out.text).not.toContain(id);
+  });
+
+  it('leaves a near miss unchanged', () => {
+    for (const summary of [
+      `file_attached file=${id} type=gif bytes=107`,
+      `file_attached file=${id.slice(1)} type=png bytes=107`,
+      `file_deleted file=${id} extra`,
+    ]) {
+      expect(activityText(row(summary, 'collab', 'alice'))).toEqual({ text: summary, recorded: null });
+    }
+  });
+});
+
 describe('activityKindLabel', () => {
   it('words the kind badge, with the friendly name of the legacy kind', () => {
     expect(activityKindLabel('decision')).toBe('Decision');

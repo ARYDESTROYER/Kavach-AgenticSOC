@@ -329,6 +329,18 @@ const LOOKUP_STATUS: Readonly<Record<string, string>> = {
 };
 
 /**
+ * A stored screenshot size in plain words: "107 B", "812 KB", "1.4 MB" (binary units, as
+ * the Files section counts them). The audit row carries only the byte count.
+ */
+function screenshotSize(raw: string): string {
+  const bytes = Number(raw);
+  if (!Number.isFinite(bytes) || bytes < 0) return '';
+  if (bytes < 1024) return `${bytes.toLocaleString('en-US')} B`;
+  if (bytes < 1024 * 1024) return `${Math.ceil(bytes / 1024).toLocaleString('en-US')} KB`;
+  return `${(bytes / (1024 * 1024)).toLocaleString('en-US', { maximumFractionDigits: 1 })} MB`;
+}
+
+/**
  * The display text for one activity row. A recognised `key=value` summary becomes one
  * plain sentence and `recorded` keeps the original; anything else is returned as it is.
  */
@@ -432,6 +444,18 @@ export function activityText(item: ActivityInput): ActivityText {
 
   m = /^no material change; returning existing case unchanged \(verdict=(\S+)\)$/.exec(raw);
   if (m) return plain(`No material change, so the case stays as it was (${verdictInText(m[1])}).`);
+
+  // A screenshot added to or deleted from the case (`routes_case_files.py`, Round 16
+  // B30). The audit summary names only the file id, its type and size, never the caption
+  // or the file name; the Files section lists a deleted screenshot's caption, who added
+  // it and when.
+  m = /^file_attached file=[0-9a-f]{32} type=(png|jpeg|webp) bytes=(\d+)$/.exec(raw);
+  if (m) {
+    const size = screenshotSize(m[2]);
+    return plain(`Screenshot added (${m[1].toUpperCase()}${size ? `, ${size}` : ''}).`);
+  }
+
+  if (/^file_deleted file=[0-9a-f]{32}$/.test(raw)) return plain('Screenshot deleted.');
 
   m = /^assessment=(\S+) outcome=(\S+) accuracy=(\S+)$/.exec(raw);
   if (m) {

@@ -20,19 +20,24 @@ import {
   AlertTriangle,
   Bot,
   CheckCircle2,
+  ChevronDown,
+  Cog,
   GitBranch,
   Lock,
   MessageSquare,
   ShieldCheck,
   Terminal,
+  User,
 } from 'lucide-react';
 
 import { cn } from '@/lib/cn';
 import { DASH, fmtMoney, fmtTokens, formatTimestamp, humanizeToken } from '@/lib/format';
 
 import { Badge } from '@/ui/badge';
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/ui/collapsible';
 import { Skeleton } from '@/ui/skeleton';
 import { CodeBlock } from '@/soc/components/CodeBlock';
+import { JsonTree } from '@/soc/components/JsonTree';
 import { EmptyState } from '@/soc/components/EmptyState';
 import { LoadError } from '@/soc/components/LoadError';
 
@@ -75,6 +80,204 @@ function AuditTrailLink({
   );
 }
 
+/* ----------------------------------------------------------------- actors -- */
+
+/**
+ * Who did a step (Round 16 SPEC §4.5 WP14, research data-visibility R4): the AI agent,
+ * one of its tools, our own code (the deterministic decision and other system steps), a
+ * person (Acknowledge, a tag, a comment) or case chat. Since Round 16 the server
+ * classifies a span by who acted first (`person`, `chat`, `system`), so a person's work
+ * is never counted as the AI's; an older server's kinds read the same way.
+ */
+export type TraceActor = 'agent' | 'tool' | 'code' | 'person' | 'chat';
+
+export function spanActor(span: Pick<TraceSpan, 'kind'>): TraceActor {
+  switch (span.kind) {
+    case 'execute_tool':
+      return 'tool';
+    case 'decision':
+    case 'system':
+      return 'code';
+    case 'person':
+      return 'person';
+    case 'chat':
+      return 'chat';
+    default:
+      return 'agent';
+  }
+}
+
+/** Whether a step is the AI's own work (the agent or one of its tools). */
+export function isAiStep(span: Pick<TraceSpan, 'kind'>): boolean {
+  const actor = spanActor(span);
+  return actor === 'agent' || actor === 'tool';
+}
+
+/** The trace's counts: AI steps (agent and tool), tools, people, chat and code steps. */
+export function traceStepCounts(spans: readonly Pick<TraceSpan, 'kind'>[]): Record<TraceActor | 'ai', number> {
+  const counts = { ai: 0, agent: 0, tool: 0, code: 0, person: 0, chat: 0 };
+  for (const span of spans) {
+    const actor = spanActor(span);
+    counts[actor] += 1;
+    if (actor === 'agent' || actor === 'tool') counts.ai += 1;
+  }
+  return counts;
+}
+
+/** "5 AI steps · 2 tools", plus the people's steps when there are any. */
+export function traceCountsText(spans: readonly Pick<TraceSpan, 'kind'>[]): string {
+  const c = traceStepCounts(spans);
+  const parts = [`${c.ai.toLocaleString('en-US')} AI step${c.ai === 1 ? '' : 's'}`, `${c.tool.toLocaleString('en-US')} tool${c.tool === 1 ? '' : 's'}`];
+  if (c.person) parts.push(`${c.person.toLocaleString('en-US')} by people`);
+  return parts.join(' · ');
+}
+
+/** The trace filter's choices, in order (the actor filter of the AI investigation tab). */
+export const TRACE_FILTERS: ReadonlyArray<{ value: TraceActor | 'all'; label: string }> = [
+  { value: 'all', label: 'All' },
+  { value: 'agent', label: 'Agent' },
+  { value: 'tool', label: 'Tool' },
+  { value: 'code', label: 'Code' },
+  { value: 'person', label: 'People' },
+  { value: 'chat', label: 'Chat' },
+];
+
+/** The spans one filter choice keeps. */
+export function filterSpans<T extends Pick<TraceSpan, 'kind'>>(spans: readonly T[], actor: TraceActor | 'all'): T[] {
+  return actor === 'all' ? [...spans] : spans.filter((span) => spanActor(span) === actor);
+}
+
+/** How a step's cost was found, in words. */
+export const COST_BASIS_WORDS: Record<string, string> = {
+  exact: "Cost and latency from this call's own ledger row.",
+  split: "An even share of this role's recorded cost, split across its steps. Not this call's own cost.",
+};
+
+/** Whether the trace shows only the newest records, and of how many (WP10, additive). */
+function traceCut(data: TimelineResponse): { truncated: boolean; total: number | null; atLeast: boolean } {
+  const extra = data as TimelineResponse & {
+    truncated?: unknown;
+    rows_total?: unknown;
+    rows_total_relation?: unknown;
+  };
+  const total = typeof extra.rows_total === 'number' && Number.isFinite(extra.rows_total) ? extra.rows_total : null;
+  return { truncated: extra.truncated === true, total, atLeast: extra.rows_total_relation === 'gte' };
+}
+
+/** "Showing the newest 500 of 1,240 records. The audit log has the rest." */
+export function traceCutText(data: TimelineResponse): string | null {
+  const cut = traceCut(data);
+  if (!cut.truncated) return null;
+  const shown = (data.spans?.length ?? 0).toLocaleString('en-US');
+  if (cut.total === null) return `Showing the newest ${shown} records. Older records are not shown here.`;
+  return `Showing the newest ${shown} of ${cut.atLeast ? 'at least ' : ''}${cut.total.toLocaleString('en-US')} records. The audit log has the rest.`;
+}
+
+/* ----------------------------------------------------------- span details -- */
+
+/** Whether a span carries anything for its Details disclosure. */
+function hasDetails(span: TraceSpan): boolean {
+  const d = span.detail;
+  const model = typeof span.payload_ref?.model === 'string' && span.payload_ref.model;
+  return Boolean(
+    model ||
+      (typeof span.latency_ms === 'number' && span.latency_ms > 0) ||
+      span.cost_basis ||
+      (d &&
+        (d.tool_input != null ||
+          d.query_text ||
+          d.tool_output_summary ||
+          d.prompt_excerpt ||
+          (d.result_summary && d.result_summary !== span.summary) ||
+          d.outcome ||
+          d.run_id ||
+          d.app_version ||
+          d.build_sha)),
+  );
+}
+
+const DetailFact: React.FC<{ label: string; children: React.ReactNode }> = ({ label, children }) => (
+  <>
+    <dt className="text-muted-foreground">{label}</dt>
+    <dd className="min-w-0 text-foreground [overflow-wrap:anywhere]">{children}</dd>
+  </>
+);
+
+/**
+ * The bounded record behind one span (WP10 `detail`): the model, latency, tokens and cost
+ * with how the cost was found, the tool input as a JSON tree, the query, the tool output
+ * and the prompt excerpt in fenced code blocks marked untrusted (#9), the outcome, the run
+ * and the build. The trace loads it with the span, so opening it asks nothing.
+ */
+export const SpanDetails: React.FC<{ span: TraceSpan }> = ({ span }) => {
+  const [open, setOpen] = React.useState(false);
+  if (!hasDetails(span)) return null;
+  const d = span.detail ?? null;
+  const model = typeof span.payload_ref?.model === 'string' ? (span.payload_ref.model as string) : '';
+  const build =
+    d && (d.app_version || d.build_sha)
+      ? `${d.app_version ? `v${d.app_version}` : 'version not recorded'} · ${d.build_sha ? d.build_sha.slice(0, 12) : 'SHA not recorded'}`
+      : '';
+  const toolInput = d?.tool_input;
+  const hasToolInput = toolInput !== null && toolInput !== undefined && !(typeof toolInput === 'object' && Object.keys(toolInput as object).length === 0);
+  return (
+    <Collapsible open={open} onOpenChange={setOpen} className="mt-1.5 font-sans">
+      <CollapsibleTrigger className="inline-flex items-center gap-1 rounded-sm text-xs font-medium text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+        <ChevronDown className={cn('h-3.5 w-3.5 transition-transform', open && 'rotate-180')} aria-hidden />
+        Details
+      </CollapsibleTrigger>
+      <CollapsibleContent className="mt-2 space-y-3" data-testid="trace-span-details">
+        <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 text-xs">
+          {model ? <DetailFact label="Model">{model}</DetailFact> : null}
+          {typeof span.latency_ms === 'number' && span.latency_ms > 0 ? (
+            <DetailFact label="Latency">{`${span.latency_ms.toLocaleString('en-US')} ms`}</DetailFact>
+          ) : null}
+          {typeof span.tokens === 'number' && span.tokens > 0 ? (
+            <DetailFact label="Tokens">{span.tokens.toLocaleString('en-US')}</DetailFact>
+          ) : null}
+          {typeof span.cost === 'number' ? <DetailFact label="Cost">{fmtMoney(span.cost)}</DetailFact> : null}
+          {span.cost_basis ? (
+            <DetailFact label="Cost basis">{COST_BASIS_WORDS[span.cost_basis] ?? humanizeToken(span.cost_basis)}</DetailFact>
+          ) : null}
+          {d?.outcome ? <DetailFact label="Outcome">{humanizeToken(d.outcome)}</DetailFact> : null}
+          {d?.run_id ? (
+            <DetailFact label="Run">
+              <span className="font-mono">{d.run_id}</span>
+            </DetailFact>
+          ) : null}
+          {build ? <DetailFact label="Build">{build}</DetailFact> : null}
+        </dl>
+        {hasToolInput ? (
+          <div className="space-y-1">
+            <p className="text-xs font-medium text-muted-foreground">Tool input</p>
+            {typeof toolInput === 'string' ? (
+              /* A cut input arrives as its first 16 KB of JSON text: fenced, never parsed (#9). */
+              <CodeBlock value={toolInput} caption="untrusted tool input, cut" wrap copyable maxHeightClassName="max-h-48" />
+            ) : (
+              <JsonTree value={toolInput} label="Tool input" />
+            )}
+          </div>
+        ) : null}
+        {d?.query_text ? (
+          <CodeBlock value={d.query_text} caption="untrusted query" wrap copyable maxHeightClassName="max-h-40" />
+        ) : null}
+        {d?.tool_output_summary ? (
+          <CodeBlock value={d.tool_output_summary} caption="untrusted tool output" wrap copyable maxHeightClassName="max-h-48" />
+        ) : null}
+        {d?.prompt_excerpt ? (
+          <CodeBlock value={d.prompt_excerpt} caption="untrusted prompt excerpt" wrap copyable maxHeightClassName="max-h-48" />
+        ) : null}
+        {d?.result_summary && d.result_summary !== span.summary ? (
+          <CodeBlock value={d.result_summary} caption="recorded summary" wrap copyable maxHeightClassName="max-h-40" />
+        ) : null}
+        {d?.truncated ? (
+          <p className="text-xs text-muted-foreground">Part of this record was cut to keep the trace small. The audit log has it in full.</p>
+        ) : null}
+      </CollapsibleContent>
+    </Collapsible>
+  );
+};
+
 /* ------------------------------------------------------------------ kinds -- */
 
 type SpanTone = 'info' | 'medium' | 'low' | 'high';
@@ -103,7 +306,19 @@ const KIND_META: Record<string, KindMeta> = {
   chat: { label: 'Chat', icon: MessageSquare, tone: 'info' },
   execute_tool: { label: 'Tool', icon: Terminal, tone: 'medium' },
   decision: { label: 'Decision', icon: ShieldCheck, tone: 'low' },
+  person: { label: 'Person', icon: User, tone: 'info' },
+  system: { label: 'System', icon: Cog, tone: 'low' },
 };
+
+/** A span's name as shown: a person's name exactly as recorded, a token in words. */
+function spanName(span: TraceSpan): string {
+  return span.kind === 'person' ? span.name : humanizeToken(span.name);
+}
+
+/** The span's cost, marked when it is an even share rather than the call's own. */
+function spanCost(span: TraceSpan): string {
+  return `${fmtMoney(span.cost ?? 0)}${span.cost_basis === 'split' ? ' (split)' : ''}`;
+}
 
 function kindMeta(kind: string): KindMeta {
   return KIND_META[kind] || { label: humanizeToken(kind) || 'Step', icon: GitBranch, tone: 'info' };
@@ -279,8 +494,8 @@ const ReactStep: React.FC<{ span: TraceSpan }> = ({ span }) => {
       <div className="rounded-lg border border-border bg-card p-3.5">
         <div className="flex flex-wrap items-center gap-2">
           <Badge variant={meta.tone}>{meta.label}</Badge>
-          {/* name is an actor/action token (TRUSTED) — plain text. */}
-          <span className="text-sm font-semibold text-foreground">{humanizeToken(span.name)}</span>
+          {/* An actor or action token, or a person's name: a plain text node. */}
+          <span className="text-sm font-semibold text-foreground">{spanName(span)}</span>
           {toolName ? (
             <Badge variant="outline" className="font-mono">
               {toolName}
@@ -296,7 +511,7 @@ const ReactStep: React.FC<{ span: TraceSpan }> = ({ span }) => {
             </Badge>
           ) : null}
           <span className="ml-auto flex items-center gap-2 text-xs text-muted-foreground">
-            {typeof span.cost === 'number' && span.cost > 0 ? <span>{fmtMoney(span.cost)}</span> : null}
+            {typeof span.cost === 'number' && span.cost > 0 ? <span>{spanCost(span)}</span> : null}
             {typeof span.tokens === 'number' && span.tokens > 0 ? (
               <span>{fmtTokens(span.tokens)} tok</span>
             ) : null}
@@ -321,6 +536,7 @@ const ReactStep: React.FC<{ span: TraceSpan }> = ({ span }) => {
             <p className="mt-2 whitespace-pre-wrap text-sm text-foreground/90">{span.summary}</p>
           )
         ) : null}
+        <SpanDetails span={span} />
       </div>
     </li>
   );
@@ -358,17 +574,19 @@ const TERMINAL_LABEL: Record<string, { label: string; tone: string }> = {
   chat: { label: 'CHAT', tone: 'text-info-text' },
   execute_tool: { label: 'TOOL', tone: 'text-medium-text' },
   decision: { label: 'DECISION', tone: 'text-critical-text' },
+  person: { label: 'PERSON', tone: 'text-foreground' },
+  system: { label: 'SYSTEM', tone: 'text-muted-foreground' },
 };
 
 /** Compact terminal treatment used only by the Case Manager Investigation tab. */
 const TerminalTrace: React.FC<{ data: TimelineResponse; spans: TraceSpan[] }> = ({ data, spans }) => {
-  const toolCount = spans.filter((span) => span.kind === 'execute_tool').length;
+  const cut = traceCutText(data);
   return (
     <div className="overflow-hidden rounded-[4px] border border-border bg-surface-sunken">
       <div className="flex items-center gap-2 border-b border-border px-4 py-2">
         <span className="text-xs font-medium text-muted-foreground">Agent investigation trace</span>
-        <span className="ml-auto text-xs tabular-nums text-muted-foreground">
-          {spans.length} step{spans.length === 1 ? '' : 's'} · {toolCount} tool{toolCount === 1 ? '' : 's'}
+        <span className="ml-auto text-xs tabular-nums text-muted-foreground" data-testid="trace-step-counts">
+          {traceCountsText(spans)}
         </span>
       </div>
       <ol className="space-y-3 p-4">
@@ -398,11 +616,11 @@ const TerminalTrace: React.FC<{ data: TimelineResponse; spans: TraceSpan[] }> = 
               <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
                 <time className="text-muted-foreground">{terminalTime(span.ts)}</time>
                 <span className={cn('font-semibold', meta.tone)}>[{meta.label}]</span>
-                <span className="text-foreground/80">{humanizeToken(span.name)}</span>
+                <span className="text-foreground/80">{spanName(span)}</span>
                 {toolName ? <span className="text-foreground">{toolName}</span> : null}
                 {model ? <span className="text-muted-foreground">{model}</span> : null}
                 {typeof span.cost === 'number' && span.cost > 0 ? (
-                  <span className="text-muted-foreground">{fmtMoney(span.cost)}</span>
+                  <span className="text-muted-foreground">{spanCost(span)}</span>
                 ) : null}
                 {typeof span.tokens === 'number' && span.tokens > 0 ? (
                   <span className="text-muted-foreground">{fmtTokens(span.tokens)} tok</span>
@@ -430,10 +648,18 @@ const TerminalTrace: React.FC<{ data: TimelineResponse; spans: TraceSpan[] }> = 
                   </p>
                 )
               ) : null}
+              <div className="sm:pl-[5.75rem]">
+                <SpanDetails span={span} />
+              </div>
             </li>
           );
         })}
       </ol>
+      {cut ? (
+        <p className="border-t border-border px-4 py-2 text-xs text-muted-foreground" data-testid="trace-cut">
+          {cut}
+        </p>
+      ) : null}
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-border px-4 py-2 font-mono text-2xs text-muted-foreground">
         {typeof data.totals?.cost === 'number' ? <span>cost {fmtMoney(data.totals.cost)}</span> : null}
         {typeof data.totals?.tokens === 'number' ? (
@@ -485,8 +711,9 @@ export const TraceTimeline: React.FC<TraceTimelineProps> = ({
     );
   }
 
-  const toolCount = spans.filter((s) => s.kind === 'execute_tool').length;
+  const counts = traceStepCounts(spans);
   const hasDecision = spans.some((s) => s.kind === 'decision');
+  const cut = data ? traceCutText(data) : null;
 
   if (presentation === 'case-manager') {
     return <TerminalTrace data={data as TimelineResponse} spans={spans} />;
@@ -498,12 +725,15 @@ export const TraceTimeline: React.FC<TraceTimelineProps> = ({
       <div className="rounded-lg border border-border bg-card p-4">
         <div className="flex flex-wrap items-center gap-2">
           <Badge variant="info">
-            {spans.length} step{spans.length === 1 ? '' : 's'}
+            {counts.ai.toLocaleString('en-US')} AI step{counts.ai === 1 ? '' : 's'}
           </Badge>
           <Badge variant="medium" className="gap-1">
             <Terminal className="h-3 w-3" />
-            {toolCount} tool{toolCount === 1 ? '' : 's'}
+            {counts.tool.toLocaleString('en-US')} tool{counts.tool === 1 ? '' : 's'}
           </Badge>
+          {counts.person ? (
+            <Badge variant="outline">{counts.person.toLocaleString('en-US')} by people</Badge>
+          ) : null}
           {/* No cost badge when the cost is withheld (`null` without cost:view). */}
           {typeof data?.totals?.cost === 'number' ? (
             <Badge variant="outline">{fmtMoney(data.totals.cost)}</Badge>
@@ -519,6 +749,7 @@ export const TraceTimeline: React.FC<TraceTimelineProps> = ({
           ) : null}
           <AuditTrailLink caseId={data?.case_id} spans={spans} className="ml-auto text-sm" />
         </div>
+        {cut ? <p className="mt-2 text-xs text-muted-foreground">{cut}</p> : null}
       </div>
 
       {/* ----------------------------------------------- the span timeline */}
