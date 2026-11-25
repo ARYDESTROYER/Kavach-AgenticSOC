@@ -145,6 +145,13 @@ export interface ConfirmActionDialogProps {
    * action: the close never waits for one and never rolls one back.
    */
   renderScreenshots?: (pasteScope: React.RefObject<HTMLElement | null>) => React.ReactNode;
+
+  /**
+   * The cases the action covers (Round 16 mount point). The dialog will read the AI
+   * investigation store for these ids and warn when a run is in flight; until then it
+   * is accepted and unused.
+   */
+  caseIds?: readonly string[];
 }
 
 /** The footer and field message when a reason for the open steps is missing. */

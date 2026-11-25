@@ -27,6 +27,7 @@ from app.realtime import (
     AGENT_STEP_EVENT,
     CASE_ACTIVITY_EVENT,
     CASE_CHANGED_EVENT,
+    CASE_INVESTIGATION_EVENT,
     CASE_REVIEW_EVENT,
     CASE_RUNBOOK_EVENT,
     CHAT_READ_EVENT,
@@ -44,8 +45,12 @@ from app.realtime import (
 def test_registry_lists_exactly_the_channels_the_backend_publishes() -> None:
     assert SSE_EVENT_TYPES == {
         AGENT_STEP_EVENT, CASE_ACTIVITY_EVENT, INAPP_EVENT, JOB_EVENT, CHAT_TURN_EVENT,
-        CHAT_READ_EVENT, CASE_CHANGED_EVENT, CASE_RUNBOOK_EVENT, CASE_REVIEW_EVENT, OVERFLOW_EVENT,
+        CHAT_READ_EVENT, CASE_CHANGED_EVENT, CASE_RUNBOOK_EVENT, CASE_REVIEW_EVENT,
+        CASE_INVESTIGATION_EVENT, OVERFLOW_EVENT,
     }
+    # Round 16 (SPEC §4.3 WP01): an AI investigation run was queued, started, attached
+    # its case or finished, topics ``cases``, ``cases:{id}`` and ``investigations``.
+    assert CASE_INVESTIGATION_EVENT == "case.investigation"
     # Round 15 (SPEC D6.5): an auto-close review was picked or recorded, topics
     # ``cases:{id}`` and ``cases``.
     assert CASE_REVIEW_EVENT == "case.review"

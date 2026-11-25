@@ -5761,6 +5761,18 @@
             ],
             "title": "Case Id"
           },
+          "case_number": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Case Number"
+          },
           "doc": {
             "anyOf": [
               {
@@ -11338,6 +11350,16 @@
             "title": "Diversity",
             "type": "number"
           },
+          "inputs": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RiskInputs"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "reputation": {
             "default": 0.0,
             "title": "Reputation",
@@ -11360,6 +11382,171 @@
           }
         },
         "title": "RiskBreakdown",
+        "type": "object"
+      },
+      "RiskInputs": {
+        "description": "What one risk score was computed from (Round 16 SPEC §4.3 WP01, S3, B13).\n\nWritten beside ``compute_risk`` by the pure ``engine/risk_explain.explain_risk``\n(``engine/risk.py`` stays byte-identical, #3), so a reader can re-derive every\nfactor and the total from the record alone, after the case attached more events or\nthe weights changed. Read only by explanations: nothing reads it to decide (#3).\n\n* ``event_count``, ``span_seconds``: the scoring cluster's count and first-to-last\n  span; ``effective_window_seconds`` is the span floored at 1 s;\n  ``rate_per_minute`` is ``event_count / (effective_window_seconds / 60)`` when\n  ``velocity_rule == \"rate\"`` and ``None`` below 3 events\n  (``\"below_min_events\"``, velocity 0).\n* ``rule_values``: the distinct rule values, first order, at most\n  :data:`RISK_INPUTS_MAX_RULE_VALUES`, each at most\n  :data:`RISK_INPUTS_RULE_VALUE_CHARS` characters. Source-controlled strings: a\n  reader renders them as text (#9). ``rule_type_count`` is exactly\n  ``len(cluster.rule_values)``, the count the diversity factor used.\n* ``reputation_input``: the reputation passed in, before clamping to 0..100;\n  ``reputation_source`` says where it came from.\n* ``asset_value``: the criticality the asset policy gave, before clamping;\n  ``asset_match`` says how (a network range, an exact entry, or none). The matched\n  range is never stored: every route that returns a case would return it\n  (SPEC Appendix C, C5).\n* ``weights``, ``total_weight`` (their sum) and ``zero_weight_fallback`` (the sum\n  was 0, so the score divided by 1); ``refs`` the factor reference points.\n* ``scored_at``: when the score was computed (the only date); ``inputs_version``.",
+        "properties": {
+          "asset_match": {
+            "default": "none",
+            "enum": [
+              "network",
+              "exact",
+              "none"
+            ],
+            "title": "Asset Match",
+            "type": "string"
+          },
+          "asset_value": {
+            "default": 0.0,
+            "title": "Asset Value",
+            "type": "number"
+          },
+          "effective_window_seconds": {
+            "default": 1.0,
+            "title": "Effective Window Seconds",
+            "type": "number"
+          },
+          "event_count": {
+            "default": 0,
+            "title": "Event Count",
+            "type": "integer"
+          },
+          "inputs_version": {
+            "default": 1,
+            "title": "Inputs Version",
+            "type": "integer"
+          },
+          "rate_per_minute": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rate Per Minute"
+          },
+          "refs": {
+            "$ref": "#/components/schemas/RiskReferences"
+          },
+          "reputation_input": {
+            "default": 0.0,
+            "title": "Reputation Input",
+            "type": "number"
+          },
+          "reputation_source": {
+            "default": "not_looked_up",
+            "enum": [
+              "enrichment",
+              "not_ip_entity",
+              "enrichment_off",
+              "not_looked_up"
+            ],
+            "title": "Reputation Source",
+            "type": "string"
+          },
+          "rule_type_count": {
+            "default": 0,
+            "title": "Rule Type Count",
+            "type": "integer"
+          },
+          "rule_values": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Rule Values",
+            "type": "array"
+          },
+          "scored_at": {
+            "default": "",
+            "title": "Scored At",
+            "type": "string"
+          },
+          "span_seconds": {
+            "default": 0.0,
+            "title": "Span Seconds",
+            "type": "number"
+          },
+          "total_weight": {
+            "default": 0.0,
+            "title": "Total Weight",
+            "type": "number"
+          },
+          "velocity_rule": {
+            "default": "below_min_events",
+            "enum": [
+              "below_min_events",
+              "rate"
+            ],
+            "title": "Velocity Rule",
+            "type": "string"
+          },
+          "weights": {
+            "$ref": "#/components/schemas/RiskWeightsSnapshot"
+          },
+          "zero_weight_fallback": {
+            "default": false,
+            "title": "Zero Weight Fallback",
+            "type": "boolean"
+          }
+        },
+        "title": "RiskInputs",
+        "type": "object"
+      },
+      "RiskReferences": {
+        "description": "The reference points at which a factor reaches full score (``engine/risk.py``).",
+        "properties": {
+          "diversity": {
+            "default": 5,
+            "title": "Diversity",
+            "type": "integer"
+          },
+          "velocity": {
+            "default": 10.0,
+            "title": "Velocity",
+            "type": "number"
+          },
+          "volume": {
+            "default": 50,
+            "title": "Volume",
+            "type": "integer"
+          }
+        },
+        "title": "RiskReferences",
+        "type": "object"
+      },
+      "RiskWeightsSnapshot": {
+        "description": "The five risk weights in force when a score was computed (a fixed key set).",
+        "properties": {
+          "asset_criticality": {
+            "default": 0.0,
+            "title": "Asset Criticality",
+            "type": "number"
+          },
+          "diversity": {
+            "default": 0.0,
+            "title": "Diversity",
+            "type": "number"
+          },
+          "reputation": {
+            "default": 0.0,
+            "title": "Reputation",
+            "type": "number"
+          },
+          "velocity": {
+            "default": 0.0,
+            "title": "Velocity",
+            "type": "number"
+          },
+          "volume": {
+            "default": 0.0,
+            "title": "Volume",
+            "type": "number"
+          }
+        },
+        "title": "RiskWeightsSnapshot",
         "type": "object"
       },
       "RolePreviewBody": {

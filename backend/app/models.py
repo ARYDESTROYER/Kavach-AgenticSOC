@@ -279,6 +279,102 @@ def _as_str(value: Any) -> str | None:
 # --------------------------------------------------------------------------- #
 # Correlation / risk
 # --------------------------------------------------------------------------- #
+#: Round 16 (SPEC §2.2 S3, §4.3 WP01): the recorded risk inputs. Closed vocabularies.
+RISK_VELOCITY_RULES: tuple[str, ...] = ("below_min_events", "rate")
+RISK_REPUTATION_SOURCES: tuple[str, ...] = (
+    "enrichment", "not_ip_entity", "enrichment_off", "not_looked_up",
+)
+RISK_ASSET_MATCHES: tuple[str, ...] = ("network", "exact", "none")
+#: At most this many distinct rule values are recorded with the inputs.
+RISK_INPUTS_MAX_RULE_VALUES = 50
+#: The longest recorded rule value (the same bound as a rule filter).
+RISK_INPUTS_RULE_VALUE_CHARS = 256
+RISK_INPUTS_VERSION = 1
+
+
+class RiskWeightsSnapshot(BaseModel):
+    """The five risk weights in force when a score was computed (a fixed key set)."""
+
+    volume: float = 0.0
+    velocity: float = 0.0
+    reputation: float = 0.0
+    diversity: float = 0.0
+    asset_criticality: float = 0.0
+
+
+class RiskReferences(BaseModel):
+    """The reference points at which a factor reaches full score (``engine/risk.py``)."""
+
+    volume: int = 50
+    velocity: float = 10.0
+    diversity: int = 5
+
+
+class RiskInputs(BaseModel):
+    """What one risk score was computed from (Round 16 SPEC §4.3 WP01, S3, B13).
+
+    Written beside ``compute_risk`` by the pure ``engine/risk_explain.explain_risk``
+    (``engine/risk.py`` stays byte-identical, #3), so a reader can re-derive every
+    factor and the total from the record alone, after the case attached more events or
+    the weights changed. Read only by explanations: nothing reads it to decide (#3).
+
+    * ``event_count``, ``span_seconds``: the scoring cluster's count and first-to-last
+      span; ``effective_window_seconds`` is the span floored at 1 s;
+      ``rate_per_minute`` is ``event_count / (effective_window_seconds / 60)`` when
+      ``velocity_rule == "rate"`` and ``None`` below 3 events
+      (``"below_min_events"``, velocity 0).
+    * ``rule_values``: the distinct rule values, first order, at most
+      :data:`RISK_INPUTS_MAX_RULE_VALUES`, each at most
+      :data:`RISK_INPUTS_RULE_VALUE_CHARS` characters. Source-controlled strings: a
+      reader renders them as text (#9). ``rule_type_count`` is exactly
+      ``len(cluster.rule_values)``, the count the diversity factor used.
+    * ``reputation_input``: the reputation passed in, before clamping to 0..100;
+      ``reputation_source`` says where it came from.
+    * ``asset_value``: the criticality the asset policy gave, before clamping;
+      ``asset_match`` says how (a network range, an exact entry, or none). The matched
+      range is never stored: every route that returns a case would return it
+      (SPEC Appendix C, C5).
+    * ``weights``, ``total_weight`` (their sum) and ``zero_weight_fallback`` (the sum
+      was 0, so the score divided by 1); ``refs`` the factor reference points.
+    * ``scored_at``: when the score was computed (the only date); ``inputs_version``.
+    """
+
+    event_count: int = 0
+    span_seconds: float = 0.0
+    effective_window_seconds: float = 1.0
+    rate_per_minute: float | None = None
+    velocity_rule: Literal["below_min_events", "rate"] = "below_min_events"
+    rule_values: list[str] = Field(default_factory=list)
+    rule_type_count: int = 0
+    reputation_input: float = 0.0
+    reputation_source: Literal["enrichment", "not_ip_entity", "enrichment_off", "not_looked_up"] = "not_looked_up"
+    asset_value: float = 0.0
+    asset_match: Literal["network", "exact", "none"] = "none"
+    weights: RiskWeightsSnapshot = Field(default_factory=RiskWeightsSnapshot)
+    total_weight: float = 0.0
+    zero_weight_fallback: bool = False
+    refs: RiskReferences = Field(default_factory=RiskReferences)
+    scored_at: str = ""
+    inputs_version: int = RISK_INPUTS_VERSION
+
+    @field_validator("rule_values", mode="before")
+    @classmethod
+    def _bounded_rule_values(cls, value: Any) -> list[str]:
+        if not isinstance(value, (list, tuple)):
+            return []
+        out: list[str] = []
+        for item in value:
+            if not isinstance(item, str):
+                continue
+            item = item[:RISK_INPUTS_RULE_VALUE_CHARS]
+            if item in out:
+                continue
+            out.append(item)
+            if len(out) >= RISK_INPUTS_MAX_RULE_VALUES:
+                break
+        return out
+
+
 class RiskBreakdown(BaseModel):
     volume: float = 0.0
     velocity: float = 0.0
@@ -286,6 +382,31 @@ class RiskBreakdown(BaseModel):
     diversity: float = 0.0
     asset_criticality: float = 0.0
     total: float = 0.0
+    # Round 16 (SPEC §2.2 S3): what the score was computed from, recorded beside
+    # ``compute_risk``. ``None`` on every score computed before it existed, and on a
+    # stored value this build cannot read: an unreadable record reads "not recorded"
+    # instead of failing the whole case.
+    inputs: RiskInputs | None = None
+
+    @field_validator("inputs", mode="wrap")
+    @classmethod
+    def _readable_inputs(cls, value: Any, handler: Any) -> RiskInputs | None:
+        if value is None:
+            return None
+        try:
+            return handler(value)
+        except (ValueError, TypeError):
+            return None
+
+    @model_serializer(mode="wrap")
+    def _omit_unrecorded_inputs(self, handler: Any):  # noqa: ANN202
+        # A breakdown with no recorded inputs keeps its pre-Round-16 shape on the wire
+        # and in storage (no ``"inputs": null``), so a reader that walks the factor
+        # map never meets a new key until inputs exist.
+        data = handler(self)
+        if isinstance(data, dict) and data.get("inputs") is None:
+            data.pop("inputs", None)
+        return data
 
 
 class TriggerReason(BaseModel):
@@ -992,6 +1113,33 @@ _ROUND14_LIST_PREFS: dict[str, Any] = {
     DISMISSED_INTROS_PREF_KEY: _normalise_dismissed_intros,
 }
 
+#: Round 16 (SPEC D7, §4.3 WP01): the What's new keys in ``UserPrefs.misc``.
+#: ``whats_new_seen`` is the id of the newest release-notes update this viewer has
+#: seen (the dismissed-intro id grammar); ``whats_new_auto`` is the personal switch
+#: "Show What's new after updates" (a bool, absent means on). Both are normalised on
+#: load: an invalid value is removed, never coerced.
+WHATS_NEW_SEEN_PREF_KEY = "whats_new_seen"
+WHATS_NEW_AUTO_PREF_KEY = "whats_new_auto"
+
+
+def _normalise_whats_new_seen(value: Any) -> str | None:
+    """``misc.whats_new_seen``: an update id in the dismissed-intro grammar, as
+    written; ``None`` for anything else (the key is then removed)."""
+    if isinstance(value, str) and _DISMISSED_INTRO_ID_RE.fullmatch(value):
+        return value
+    return None
+
+
+def _normalise_whats_new_auto(value: Any) -> bool | None:
+    """``misc.whats_new_auto``: a bool; ``None`` for anything else (removed)."""
+    return value if isinstance(value, bool) else None
+
+
+_ROUND16_PREFS: dict[str, Any] = {
+    WHATS_NEW_SEEN_PREF_KEY: _normalise_whats_new_seen,
+    WHATS_NEW_AUTO_PREF_KEY: _normalise_whats_new_auto,
+}
+
 
 class ChatPrompt(BaseModel):
     """One saved composer prompt (chat revamp SPEC §10.4). Plain user text: rendered
@@ -1068,7 +1216,10 @@ class UserPrefs(BaseModel):
       (SPEC §4.4.1, §4.9.2): ``misc.dashboards_hidden`` (built-in board ids hidden
       from the Dashboards library, never the landing board, at most 8) and
       ``misc.dismissed_intros`` (dismissed ``Callout intro`` ids, at most 50) are
-      lists normalised on load; a value that is not a list is removed.
+      lists normalised on load; a value that is not a list is removed. Round 16
+      (SPEC D7): ``misc.whats_new_seen`` (the newest release-notes update id seen,
+      the dismissed-intro grammar) and ``misc.whats_new_auto`` (a bool, absent means
+      on) are normalised on load; an invalid value is removed.
     * ``chat_prompts`` — the user's saved chat prompts (chat revamp SPEC §10.4).
     """
 
@@ -1096,12 +1247,14 @@ class UserPrefs(BaseModel):
             "chat_stream_mode" not in value
             and not any(k in value for k in CHAT_SUGGEST_PREF_KEYS)
             and not any(k in value for k in _ROUND14_LIST_PREFS)
+            and not any(k in value for k in _ROUND16_PREFS)
         ):
             return value
         out = dict(value)
         # Round 14 (SPEC §4.4.1, §4.9.2): the personal list keys are normalised, a
-        # non-list value is removed, never coerced.
-        for key, normalise in _ROUND14_LIST_PREFS.items():
+        # non-list value is removed, never coerced. Round 16 (SPEC D7): the What's new
+        # marker and switch the same way.
+        for key, normalise in (*_ROUND14_LIST_PREFS.items(), *_ROUND16_PREFS.items()):
             if key in out:
                 cleaned = normalise(out[key])
                 if cleaned is None:
@@ -1149,6 +1302,18 @@ class UserPrefs(BaseModel):
         """Round 14: the ``Callout intro`` notices this viewer dismissed."""
         value = self.misc.get(DISMISSED_INTROS_PREF_KEY)
         return list(value) if isinstance(value, list) else []
+
+    @property
+    def whats_new_seen(self) -> str | None:
+        """Round 16: the newest release-notes update id this viewer has seen, or
+        ``None`` (an account that predates What's new, or one that never closed it)."""
+        value = self.misc.get(WHATS_NEW_SEEN_PREF_KEY)
+        return value if isinstance(value, str) else None
+
+    @property
+    def whats_new_auto(self) -> bool:
+        """Round 16: the viewer's "Show What's new after updates" switch (default on)."""
+        return self.misc.get(WHATS_NEW_AUTO_PREF_KEY) is not False
 
 
 # --------------------------------------------------------------------------- #
@@ -1528,6 +1693,34 @@ class ShiftAck(BaseModel):
     note: str = ""
 
 
+#: Round 16: the bounds of a trace span's ``detail`` (SPEC §4.5 WP10).
+TRACE_DETAIL_TOOL_INPUT_BYTES = 16 * 1024
+TRACE_DETAIL_TEXT_CHARS = 8 * 1024
+
+
+class TraceSpanDetail(BaseModel):
+    """The bounded audit record behind one trace span (Round 16 SPEC §4.5 WP10).
+
+    ``tool_input`` is the recorded tool input, at most
+    :data:`TRACE_DETAIL_TOOL_INPUT_BYTES` of JSON; ``tool_output_summary`` and the
+    other texts at most :data:`TRACE_DETAIL_TEXT_CHARS` characters; ``truncated`` is
+    true when any of them was cut. ``query_text``, ``tool_output_summary`` and
+    ``prompt_excerpt`` can carry fenced UNTRUSTED log data: a reader renders them as
+    code or text, never as markup (#9). ``prompt_excerpt`` is present only when
+    ``prefs.trace.include_prompts`` is on. Read-time projection: never stored."""
+
+    tool_input: Any = None
+    query_text: str | None = None
+    tool_output_summary: str | None = None
+    prompt_excerpt: str | None = None
+    result_summary: str | None = None
+    outcome: str | None = None
+    run_id: str | None = None
+    app_version: str | None = None
+    build_sha: str | None = None
+    truncated: bool = False
+
+
 class TraceSpan(BaseModel):
     """One span in an agent-pipeline execution trace (Round 3 observability). A richer,
     structured sibling of :class:`TraceStep` (which projects an AuditDoc): a TraceSpan
@@ -1549,6 +1742,12 @@ class TraceSpan(BaseModel):
     trusted: bool = True
     summary: str = ""
     payload_ref: dict[str, Any] = Field(default_factory=dict)
+    # Round 16 (SPEC §4.5 WP10, [dv] R4): the bounded record behind the span, and how
+    # its ``cost`` and ``latency_ms`` were found: ``exact`` from the call's own ledger
+    # row, ``split`` evenly across the run's steps of that role. ``None`` on a span
+    # with no cost.
+    detail: TraceSpanDetail | None = None
+    cost_basis: Literal["exact", "split"] | None = None
 
 
 class StageRiskFactor(BaseModel):
@@ -2421,6 +2620,182 @@ class UsageDoc(BaseModel):
     # first delta, or a request the caller abandoned (SPEC §6.3: billed input is never
     # recorded as 0). Additive and defaulted, so every stored row loads unchanged.
     usage_estimated: bool = False
+    # --- Round 16 (SPEC §3.4, §4.5 WP13): the price inputs of ``cost``, written by
+    # the gateway beside it (still ONE row per call, #6). The four rates are the
+    # undiscounted USD per million tokens ``pricing.cost_for`` resolved for this call;
+    # ``cache_write_ttl`` is the cache-write TTL it used (``"5m"`` or ``"1h"``); the
+    # stored ``batch`` flag applies the 0.5 factor. ``price_basis`` names where the
+    # rates came from (:data:`USAGE_PRICE_BASES`). All ``None`` on a row written before
+    # the fields existed ("rate not recorded"); a value outside the vocabulary is kept
+    # as written, so a newer build's row still loads here.
+    input_rate_per_million: float | None = None
+    output_rate_per_million: float | None = None
+    cache_read_rate_per_million: float | None = None
+    cache_write_rate_per_million: float | None = None
+    cache_write_ttl: str | None = None
+    price_basis: str | None = None
+
+    @model_serializer(mode="wrap")
+    def _omit_unrecorded_rates(self, handler: Any):  # noqa: ANN202
+        # A row written without the Round 16 rate fields keeps its earlier shape (no
+        # null keys), like the Round 14 audit fields.
+        data = handler(self)
+        if isinstance(data, dict):
+            for key in USAGE_RATE_FIELDS:
+                if key in data and data[key] is None:
+                    del data[key]
+        return data
+
+
+#: Round 16: the ledger rate fields, omitted from a stored row while unset.
+USAGE_RATE_FIELDS: tuple[str, ...] = (
+    "input_rate_per_million", "output_rate_per_million", "cache_read_rate_per_million",
+    "cache_write_rate_per_million", "cache_write_ttl", "price_basis",
+)
+
+
+#: Round 16 (SPEC §4.5 WP13): where a ledger row's rates came from. ``catalog`` the
+#: bundled price table or registry; ``overlay`` an operator price override; ``custom``
+#: a registered self-hosted model ($0); ``mock`` the offline mock provider;
+#: ``demo_simulated`` a seeded Demo Mode row.
+USAGE_PRICE_BASES: tuple[str, ...] = ("catalog", "overlay", "custom", "mock", "demo_simulated")
+
+
+#: Round 16 (SPEC §4.5 WP13): the per-case ledger read is bounded to this many rows.
+CASE_USAGE_MAX_ROWS = 500
+
+
+class CaseUsageTotals(BaseModel):
+    """A case's ledger spend in USD, split as the Console shows it: ``pipeline`` (the
+    investigation roles, ``constants.CASE_PIPELINE_USAGE_ROLES``, the figure
+    ``Case.token_cost`` records) and ``chat`` (case chat on this case, never part of the
+    investigation cost); ``other`` holds anything else written with the case id."""
+
+    pipeline: float = 0.0
+    chat: float = 0.0
+    other: float = 0.0
+
+
+class CaseUsagePage(BaseModel):
+    """``GET /api/cases/{case_id}/usage`` (Round 16 SPEC §4.5 WP13, [dv] R3 and R14).
+
+    ``rows``: the case's ledger rows, newest first, at most :data:`CASE_USAGE_MAX_ROWS`.
+    ``rows_total`` is the exact count when the store could prove it (else ``None``) and
+    ``truncated`` is true when rows exist beyond ``rows``. ``totals`` are lifetime sums
+    over every row of the case, not only the returned page; ``token_cost`` is the case's
+    recorded investigation cost and ``reconciles`` says whether ``totals.pipeline``
+    equals it within the display epsilon. Served only with ``cost:view``."""
+
+    case_id: str
+    rows: list[UsageDoc] = Field(default_factory=list)
+    returned: int = 0
+    rows_total: int | None = None
+    truncated: bool = False
+    totals: CaseUsageTotals = Field(default_factory=CaseUsageTotals)
+    token_cost: float | None = None
+    reconciles: bool | None = None
+
+
+#: Round 16 (SPEC §4.5 WP13, [dv] R2): why a case's events could not be read.
+CASE_EVENTS_UNAVAILABLE_REASONS: tuple[str, ...] = (
+    "aged_out", "push_source_not_retrievable", "source_unavailable",
+)
+CASE_EVENTS_MAX_LIMIT = 200
+
+
+class CaseEventsPage(BaseModel):
+    """``GET /api/cases/{case_id}/events`` (Round 16 SPEC §4.5 WP13, [dv] R2).
+
+    The raw records behind a case, read on demand through the read-only log client (#1)
+    and kept only when their source-qualified key is one of the case's
+    ``member_event_keys``. ``available`` is false with a ``reason`` when the source could
+    not answer; ``expected`` is the case's member count, ``returned`` the rows on this
+    page and ``truncated`` true when more remain (``next_cursor``). Each row is the
+    ``/api/logs`` row contract (``engine/log_rows.log_row``: ``id``, ``ts``,
+    ``source_ip``, ``user``, ``host``, ``rule``, ``severity``, ``message``, ``_raw``)
+    plus ``index``, ``source_id`` and ``in_evidence`` (the finding indexes that cite
+    it). Every value is source-controlled UNTRUSTED data: a reader renders it as text,
+    never as markup (#9), and it is never sent to a model (#7)."""
+
+    case_id: str
+    available: bool = False
+    reason: Literal["aged_out", "push_source_not_retrievable", "source_unavailable"] | None = None
+    returned: int = 0
+    expected: int = 0
+    truncated: bool = False
+    limit: int = 50
+    next_cursor: str | None = None
+    rows: list[dict[str, Any]] = Field(default_factory=list)
+
+
+# --------------------------------------------------------------------------- #
+# Round 16: AI investigation runs (SPEC §4.3 WP01, §4.5 WP08). The registry is memory
+# only (``engine/investigation_registry.py``); these are its read contracts.
+# --------------------------------------------------------------------------- #
+INVESTIGATION_STATES: tuple[str, ...] = ("queued", "running", "finished")
+INVESTIGATION_PHASES: tuple[str, ...] = ("queued", "triage", "specialist", "evidence", "verdict", "decision")
+INVESTIGATION_TRIGGERS: tuple[str, ...] = ("automatic", "manual", "job", "drain", "detection")
+INVESTIGATION_OUTCOMES: tuple[str, ...] = (
+    "decided", "routed_to_person", "closed_by_policy", "unchanged", "cancelled", "failed",
+)
+
+
+class InvestigationView(BaseModel):
+    """One AI investigation run as the Console sees it (SPEC §4.5 WP08, D10).
+
+    Ids, enums, ISO timestamps and integers only (#7, #9): never a title, entity, rule
+    or model text, and never a person's name in a broadcast. ``case_id`` is ``None``
+    while a run on new events has not attached its case yet. ``deadline_at`` is
+    ``started_at`` plus ``time_cap_seconds`` (the run's model-call cap).
+
+    ``requested_by_you`` and ``requested_by`` are filled only by the caller-scoped
+    route: ``requested_by_you`` for everyone, ``requested_by`` (the requester's user
+    name) only for a holder of ``users:manage``. The ``case.investigation`` frame drops
+    both (``realtime.publish_case_investigation``)."""
+
+    run_id: str
+    case_id: str | None = None
+    state: Literal["queued", "running", "finished"] = "queued"
+    phase: Literal["queued", "triage", "specialist", "evidence", "verdict", "decision"] = "queued"
+    trigger: Literal["automatic", "manual", "job", "drain", "detection"] = "automatic"
+    queued_at: str = ""
+    started_at: str | None = None
+    deadline_at: str | None = None
+    time_cap_seconds: int = 0
+    finished_at: str | None = None
+    outcome: Literal[
+        "decided", "routed_to_person", "closed_by_policy", "unchanged", "cancelled", "failed",
+    ] | None = None
+    status_after: str | None = None
+    verdict_after: str | None = None
+    requested_by_you: bool = False
+    requested_by: str | None = None
+
+
+#: The fields of :class:`InvestigationView` that never ride a broadcast frame.
+INVESTIGATION_VIEWER_FIELDS: frozenset[str] = frozenset({"requested_by_you", "requested_by"})
+
+
+class InvestigationSlots(BaseModel):
+    """The investigation gate's use: ``in_use`` permits held, ``cap`` the configured
+    ``caps.max_concurrent``."""
+
+    in_use: int = 0
+    cap: int = 0
+
+
+class InvestigationsActive(BaseModel):
+    """``GET /api/investigations/active`` (SPEC §4.5 WP08). Memory only: ``items`` are
+    the queued or running runs whose case is known, ``recent`` the runs that finished in
+    the last 120 s, ``new_runs`` the count of runs whose case does not exist yet.
+    ``process_local`` is always true: another backend replica's runs are not seen."""
+
+    items: list[InvestigationView] = Field(default_factory=list)
+    recent: list[InvestigationView] = Field(default_factory=list)
+    new_runs: int = 0
+    slots: InvestigationSlots = Field(default_factory=InvestigationSlots)
+    process_local: bool = True
+    generated_at: str = Field(default_factory=iso_now)
 
 
 # --------------------------------------------------------------------------- #
@@ -2587,6 +2962,7 @@ _MAX_CONSOLE_LINKS = 12
 _NOTICE_MESSAGE_CHARS = 400
 _CITATION_TITLE_CHARS = 200
 _CITATION_SNIPPET_CHARS = 280
+_CITATION_CASE_NUMBER_CHARS = 200
 _CONSOLE_LABEL_CHARS = 80
 _MEMORY_PROPOSAL_CHARS = 500
 _MEMORY_PROPOSAL_MAX_IDS = 20
@@ -3437,6 +3813,10 @@ class Citation(BaseModel):
     untrusted: bool = False
     doc: str | None = Field(default=None, pattern=DOC_REF_PATTERN)
     case_id: str | None = Field(default=None, pattern=CASE_ID_PATTERN)
+    # Round 16 (SPEC §4.3 WP01, B42): the case's display number (``Case.case_number``,
+    # for example ``CASE-000043``) for a case citation. Display text only: navigation
+    # still uses ``case_id``. ``None`` on transcripts stored before it existed.
+    case_number: str | None = Field(default=None, max_length=_CITATION_CASE_NUMBER_CHARS)
     technique: str | None = Field(default=None, pattern=TECHNIQUE_PATTERN)
     snippet: str | None = Field(default=None, max_length=_CITATION_SNIPPET_CHARS)
 
@@ -3449,6 +3829,10 @@ class Citation(BaseModel):
         if isinstance(out.get("kind"), str):
             out["kind"] = out["kind"].strip().lower()
         out["title"] = display_text(out.get("title"), _CITATION_TITLE_CHARS)
+        number = out.get("case_number")
+        out["case_number"] = (
+            (display_text(number, _CITATION_CASE_NUMBER_CHARS) or None) if isinstance(number, str) else None
+        )
         snippet = out.get("snippet")
         out["snippet"] = (display_text(snippet, _CITATION_SNIPPET_CHARS, multiline=True) or None) if isinstance(snippet, str) else None
         if isinstance(out.get("technique"), str):

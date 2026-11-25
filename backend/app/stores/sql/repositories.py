@@ -1735,6 +1735,23 @@ class SqlUsageRepository(UsageRepository):
             rows = (await session.execute(stmt)).scalars().all()
         return [dict(row.doc or {}) for row in rows]
 
+    async def records_for_case(self, case_id: str, limit: int = 500) -> list[dict[str, Any]]:
+        """One case's ledger rows, newest first, at most ``limit`` (1 to 500), on the
+        indexed ``case_id`` column. Raises when the ledger cannot be read (Round 16
+        SPEC §4.3 WP01)."""
+        if not case_id:
+            return []
+        cap = max(1, min(int(limit or 500), 500))
+        stmt = (
+            select(UsageRow)
+            .where(UsageRow.case_id == str(case_id))
+            .order_by(UsageRow.ts.desc(), UsageRow.id.desc())
+            .limit(cap)
+        )
+        async with self._sm() as session:
+            rows = (await session.execute(stmt)).scalars().all()
+        return [dict(row.doc or {}) for row in rows]
+
     async def export_page(
         self, *, limit: int = 1000, cursor: Any = None,
     ) -> tuple[list[dict[str, Any]], Any | None, int | None, str]:

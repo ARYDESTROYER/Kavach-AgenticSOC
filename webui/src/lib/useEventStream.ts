@@ -105,6 +105,10 @@ export const STREAM_CHANNELS = [
   // Round 15 (SPEC D6.5): an auto-close review was picked or recorded, topics `cases:{id}`
   // and `cases`. Ids and the review state only; the Review scope re-reads.
   'case.review',
+  // Round 16 (SPEC §4.3 WP01): an AI investigation run was queued, started, attached its
+  // case or finished, topics `cases`, `cases:{id}` and `investigations`. Ids, enums,
+  // timestamps and counts only; the Console reconciles through the active-runs route.
+  'case.investigation',
   'overflow',
 ] as const;
 
