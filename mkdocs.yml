@@ -108,6 +108,9 @@ exclude_docs: |
   VIGIL_STUDY.md
   requirements.txt
   research/
+  # The curated What's new notes are generator input (scripts/build_release_notes.py
+  # renders releases/whats-new.md from them), not Help Center files.
+  releases/notes/
   # Screenshots used only by the repository README.md and INSTALL.md, kept out
   # of the bundled Help Center and so out of the Console image.
   assets/screenshots/audit-log.webp
