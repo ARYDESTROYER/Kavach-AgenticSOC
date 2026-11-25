@@ -39,6 +39,7 @@ from ..config import PriorityMatrix, SlaPolicy
 from ..constants import CaseStatus, Verdict
 from ..models import Case
 from ..utils import now_utc, parse_es_timestamp
+from . import metrics as _metrics
 from .priority import band_of_case, severity_band_from_events
 from .priority import derive_priority as _derive_priority_authority
 
@@ -95,9 +96,13 @@ def case_age_minutes(case: Case, *, now: Any = None) -> float:
     return delta if delta > 0 else 0.0
 
 
-def _response_target_minutes(case: Case, sla: SlaPolicy | None) -> int:
-    """The response-SLA target (minutes) for this case's priority, or the default."""
-    prio = getattr(case, "priority_level", None)
+def _response_target_minutes(case: Case, sla: SlaPolicy | None, prio: str | None = None) -> int:
+    """The response-SLA target (minutes) for this case's priority, or the default.
+
+    ``prio`` is the level already resolved by the caller (:func:`sla_aging` resolves
+    it with ``metrics._sla_priority``); without it the persisted level is read."""
+    if prio is None:
+        prio = getattr(case, "priority_level", None)
     if sla is not None and getattr(sla, "enabled", False) and prio:
         target = (getattr(sla, "targets", {}) or {}).get(prio)
         if target is not None:
@@ -190,10 +195,15 @@ def attention_queue(
     now: Any = None,
     limit: int = 25,
     prefs: Any = None,
+    with_created_at: bool = True,
 ) -> list[dict[str, Any]]:
     """Rank the open attention-worthy cases by :func:`urgency_score`, newest-pressure
     first. Returns a COMPACT row per case (ids + the ranking inputs + a deep-link
     ``case_id``) — never the full case body. Plain data (#9); the UI renders escaped.
+
+    Each row carries the case's ``created_at`` (Round 16 B39) unless
+    ``with_created_at`` is false: :func:`build_shift_report` leaves it out of the
+    standup model's aggregate, which must stay inside the fence's size bound.
 
     Every row now carries a ``severity_band``, so it must also carry the band's
     PROVENANCE (``severity_source``). ``Case.severity_band`` is never persisted by a
@@ -231,6 +241,10 @@ def attention_queue(
                 "urgency": score,
             }
         )
+        if with_created_at:
+            # The case's creation time (Round 16 B39), as every other case list
+            # carries it, so the shift brief and its exports can show an age.
+            rows[-1]["created_at"] = getattr(case, "created_at", None) or None
     rows.sort(key=lambda r: (r["urgency"], r["risk_score"], r["age_minutes"]), reverse=True)
     if limit and limit > 0:
         rows = rows[:limit]
@@ -244,20 +258,55 @@ def _entity_value(case: Case) -> str:
     return str(getattr(ent, "value", "") or "")
 
 
+def _sla_level(case: Case, prefs: Any) -> str:
+    """The P-level the SLA target is looked up by, resolved the way posture resolves
+    it (``metrics._sla_priority``); ``""`` when there is none. Never raises."""
+    try:
+        return _metrics._sla_priority(case, prefs)
+    except Exception:  # noqa: BLE001 - advisory; a malformed case is unprioritized
+        return str(getattr(case, "priority_level", None) or "")
+
+
+def _response_instants(case: Case) -> tuple[Any, Any]:
+    """``(clock start, first human response)`` from ``metrics._CaseTimings`` and
+    ``metrics.first_human_response`` (the posture rules); ``(None, None)`` when the
+    case cannot be read. Never raises."""
+    try:
+        timings = _metrics._CaseTimings(case)
+        responded, _source = _metrics.first_human_response(timings)
+        return timings.created, responded
+    except Exception:  # noqa: BLE001 - advisory; fall back to the live clock
+        return None, None
+
+
 def sla_aging(
     cases: Iterable[Case],
     sla: SlaPolicy | None,
     *,
     now: Any = None,
     warn_fraction: float = 0.75,
+    prefs: Any = None,
 ) -> dict[str, Any]:
     """Roll OPEN cases up against their per-priority RESPONSE-SLA target.
 
     Returns ``{enabled, warn_fraction, by_priority: {P1: {...}}, totals, breached[],
-    about_to_breach[]}``. A case is *breached* when its age exceeds the response
-    target, *about_to_breach* when it is within ``warn_fraction`` of it. When the SLA
-    policy is disabled (or absent) the rollup is reported with ``enabled: false`` and
-    empty breach lists (we don't invent a target). Advisory only (#3). Never raises."""
+    about_to_breach[]}``. A case nobody has responded to is *breached* when its age
+    exceeds the response target, *about_to_breach* when it is within
+    ``warn_fraction`` of it. When the SLA policy is disabled (or absent) the rollup
+    is reported with ``enabled: false`` and empty breach lists (we don't invent a
+    target). Advisory only (#3). Never raises.
+
+    Round 16 B60, so Standup agrees with posture ``metrics.sla_metrics``:
+
+    * the P-level is resolved by ``metrics._sla_priority``: the persisted
+      ``priority_level``, else, with ``prefs``, the read-time projection the case
+      list shows (no production path persists the level). Without ``prefs`` only the
+      persisted level is read, as before;
+    * the response clock stops at the first human response
+      (``metrics.first_human_response``: an acknowledgement, a first response or a
+      person's status move). A case that responded in time is not breached; one that
+      responded late is breached by a fixed amount that never grows, and is never
+      about to breach."""
     enabled = bool(sla is not None and getattr(sla, "enabled", False))
     ref = now or now_utc()
     by_priority: dict[str, dict[str, int]] = {}
@@ -269,29 +318,41 @@ def sla_aging(
         if not _is_attention(case):
             continue
         total_open += 1
-        prio = getattr(case, "priority_level", None) or "unprioritized"
+        level = _sla_level(case, prefs)
+        prio = level or "unprioritized"
         bucket = by_priority.setdefault(prio, {"open": 0, "breached": 0, "about_to_breach": 0})
         bucket["open"] += 1
         if not enabled:
             continue
-        target = _response_target_minutes(case, sla)
+        target = _response_target_minutes(case, sla, level)
         if target <= 0:
             continue
         age = case_age_minutes(case, now=ref)
+        start, responded = _response_instants(case)
+        if responded is not None and start is not None:
+            # Responded: the clock stopped then. Only a late response is a breach.
+            elapsed = max(0.0, (responded - start).total_seconds() / 60.0)
+            overdue = round(elapsed - target, 1) if elapsed > target else 0.0
+            late = elapsed > target
+            warn = False
+        else:
+            overdue = round(age - target, 1) if age > target else 0.0
+            late = age >= target
+            warn = not late and age >= target * warn_fraction
         row = {
             "case_id": getattr(case, "case_id", "") or "",
             "display_id": _display_id(case),
-            "priority_level": getattr(case, "priority_level", None) or "",
+            "priority_level": level,
             "age_minutes": round(age, 1),
             "target_minutes": target,
-            "overdue_minutes": round(age - target, 1) if age > target else 0.0,
+            "overdue_minutes": overdue,
             # Who has it (Round 13 polish): the "close to their target" question asks.
             "assignee": str(getattr(case, "assignee", "") or ""),
         }
-        if age >= target:
+        if late:
             bucket["breached"] += 1
             breached.append(row)
-        elif age >= target * warn_fraction:
+        elif warn:
             bucket["about_to_breach"] += 1
             about_to.append(row)
 
@@ -338,6 +399,7 @@ def analyst_workload(cases: Iterable[Case]) -> list[dict[str, Any]]:
 
 def headline_counts(
     cases: Iterable[Case], *, now: Any = None, sla: SlaPolicy | None = None, needs_human_verdict: bool = False,
+    prefs: Any = None,
 ) -> dict[str, int]:
     """The small set of comparable headline counts used for period-over-period deltas.
 
@@ -345,10 +407,11 @@ def headline_counts(
     breached. Computed identically for the current AND prior windows so the delta is
     apples-to-apples. ``needs_human_verdict`` adds the count of open cases whose
     VERDICT is Needs human (chat's shift headline, Round 13 close; the Standup page and
-    its model aggregate keep their keys). Never raises."""
+    its model aggregate keep their keys). ``prefs`` resolves each case's SLA level
+    (:func:`sla_aging`). Never raises."""
     ref = now or now_utc()
     snapshot = list(cases)
-    aging = sla_aging(snapshot, sla, now=ref)
+    aging = sla_aging(snapshot, sla, now=ref, prefs=prefs)
     open_n = escalated = needs_human = verdict_needs_human = unassigned = 0
     for case in snapshot:
         if not _is_attention(case):
@@ -434,20 +497,29 @@ def build_shift_report(
     ``prior_cases`` is the equal prior window's snapshot (for the deltas); when None the
     deltas compare against an empty prior window (all-current).
 
-    ``prefs`` is OPTIONAL (default ``None``, so no existing caller breaks); it is only
+    ``prefs`` is OPTIONAL (default ``None``, so no existing caller breaks); it is
     threaded to the attention queue so the severity band can be RESOLVED (the field is
-    never persisted on a real case) instead of read as an always-``None`` attribute.
-    Never raises."""
+    never persisted on a real case) instead of read as an always-``None`` attribute,
+    and to the SLA aging so each case's P-level is resolved the way posture resolves
+    it (Round 16 B60).
+
+    The attention rows carry ``created_at`` (Round 16 B39) for the callers that show
+    them to people: ``GET /api/standup/report`` and chat's shift report, the two
+    callers that ask for ``needs_human_verdict``. The standup model's aggregate
+    (``StandupService.generate``, which does not ask for it) leaves them out, so that
+    aggregate does not grow past the 16,000-character fence bound. Never raises."""
     ref = now or now_utc()
     snapshot = list(cases)
-    current_counts = headline_counts(snapshot, now=ref, sla=sla, needs_human_verdict=needs_human_verdict)
+    current_counts = headline_counts(snapshot, now=ref, sla=sla, needs_human_verdict=needs_human_verdict,
+                                     prefs=prefs)
     prior_counts = headline_counts(list(prior_cases or []), now=ref, sla=sla,
-                                   needs_human_verdict=needs_human_verdict)
+                                   needs_human_verdict=needs_human_verdict, prefs=prefs)
     return {
         "attention_queue": attention_queue(
-            snapshot, sla=sla, now=ref, limit=attention_limit, prefs=prefs
+            snapshot, sla=sla, now=ref, limit=attention_limit, prefs=prefs,
+            with_created_at=needs_human_verdict,
         ),
-        "sla_aging": sla_aging(snapshot, sla, now=ref),
+        "sla_aging": sla_aging(snapshot, sla, now=ref, prefs=prefs),
         "workload": analyst_workload(snapshot),
         "headline_counts": current_counts,
         "deltas": period_deltas(current_counts, prior_counts),

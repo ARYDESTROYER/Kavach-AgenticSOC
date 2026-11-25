@@ -587,7 +587,7 @@ async def test_top_n_keeps_an_exact_other_remainder() -> None:
     named = [(r["key"]["assignee"], r["metrics"]["count"]) for r in result.groups]
     assert named == [("a", 5), ("b", 4), (OTHER_KEY, 8)]
     assert result.groups[-1]["other"] is True
-    assert result.other == {"groups": 4, "metrics": {"count": 8, "open_now": 8}}
+    assert result.other == {"groups": 4, "groups_counted": 4, "metrics": {"count": 8, "open_now": 8}}
     assert sum(r["metrics"]["count"] for r in result.groups) == result.total == 17
 
 

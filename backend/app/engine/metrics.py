@@ -3,7 +3,7 @@
 Pure aggregation functions over a list of ``Case`` objects (plus the existing
 usage/cost ledger summary, merged by the route). No new storage, no LLM — these
 power the analytics UI: verdict mix, status breakdown, persona and runbook usage,
-average risk, a coarse MTTR, a per-day case trend, and the AI-decision feedback
+average risk, the operational MTTR, a per-day case trend, and the AI-decision feedback
 quality roll-up. Everything is defensive: malformed timestamps are skipped, never
 raised, so a dashboard query can't fail a request.
 
@@ -353,13 +353,16 @@ def compute_metrics(
     active_risk_index = round(sum(active_risks) / len(active_risks), 1) if active_risks else 0.0
     active_risk_case_count = len(active_risks)
 
-    # Coarse MTTR: resolution latency of CLOSED cases (updated_at - created_at).
+    # Operational MTTR (Round 16 B59): the mean time from creation to the FIRST
+    # terminal transition, over every terminal case (resolved and closed). It is the
+    # same per-case clock as the lifecycle MTTR (``lifecycle_intervals``), so the two
+    # agree on the same cases. A later edit (a comment, a tag, a grade) moves
+    # ``updated_at`` but never this figure, and a reopened case is not resolved.
     resolution_minutes: list[float] = []
     for c in cases:
-        if c.status == CaseStatus.CLOSED:
-            start, end = _parse_iso(c.created_at), _parse_iso(c.updated_at)
-            if start and end and end >= start:
-                resolution_minutes.append((end - start).total_seconds() / 60.0)
+        start, end = _created_dt(c), _resolved_dt(c)
+        if start and end and end >= start:
+            resolution_minutes.append((end - start).total_seconds() / 60.0)
     mttr = round(sum(resolution_minutes) / len(resolution_minutes), 1) if resolution_minutes else 0.0
 
     # Per-day created trend (UTC date buckets) for the last ``trend_days`` days.
@@ -894,6 +897,178 @@ def _sla_priority(case: Case, prefs: Any) -> str:
         return ""
 
 
+#: A clock that still runs is "at risk" once this share of its target has passed (the
+#: explain contract's ``sla.at_risk_fraction``).
+SLA_AT_RISK_FRACTION = 0.8
+
+
+@dataclass(frozen=True)
+class SlaClockReading:
+    """One SLA clock of one case at ``now`` (see :func:`sla_case_reading`).
+
+    ``stop`` is the instant the clock stopped, or ``None`` while it still runs; then
+    ``running`` is true and ``elapsed_minutes`` runs to ``now``. ``stop_source`` names
+    the record that stopped it:
+
+    * response clock: ``first_response_at``, ``acknowledged_at`` or
+      ``status_history`` (the first human status move into a response status,
+      :func:`first_human_response`), or ``terminal`` (the case was closed or
+      resolved before any human response, so the clock stops at that instant);
+    * resolution clock: ``status_history`` (the first terminal transition) or
+      ``updated_at`` (a terminal case with no recorded transition).
+
+    ``state`` is ``breached`` (over the target, running or stopped), ``at_risk``
+    (still running and at least :data:`SLA_AT_RISK_FRACTION` of the target has
+    passed) or ``ok``. ``elapsed_minutes`` is unrounded; callers round for display."""
+
+    clock: str  # "response" | "resolution"
+    target_minutes: float
+    start: datetime
+    due_at: datetime
+    stop: datetime | None
+    stop_source: str
+    elapsed_minutes: float
+    running: bool
+    state: str  # "breached" | "at_risk" | "ok"
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "clock": self.clock,
+            "target_minutes": self.target_minutes,
+            "start": self.start.isoformat(),
+            "due_at": self.due_at.isoformat(),
+            "stop": self.stop.isoformat() if self.stop is not None else None,
+            "stop_source": self.stop_source,
+            "elapsed_minutes": self.elapsed_minutes,
+            "running": self.running,
+            "state": self.state,
+        }
+
+
+@dataclass(frozen=True)
+class SlaCaseReading:
+    """Both SLA clocks of one case (see :func:`sla_case_reading`). ``start`` is
+    ``None`` when the case has no readable creation time (then both clocks are
+    ``None``: it cannot be scored). A clock is ``None`` when its target is not set,
+    or when the case is terminal but no terminal instant can be read: a closed case
+    never runs a live clock."""
+
+    start: datetime | None
+    start_source: str  # "detected_at" | "created_at" | ""
+    terminal: bool
+    response: SlaClockReading | None
+    resolution: SlaClockReading | None
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "start": self.start.isoformat() if self.start is not None else None,
+            "start_source": self.start_source,
+            "terminal": self.terminal,
+            "response": self.response.as_dict() if self.response is not None else None,
+            "resolution": self.resolution.as_dict() if self.resolution is not None else None,
+        }
+
+
+def first_human_response(timings: _CaseTimings) -> tuple[datetime | None, str]:
+    """The first human response to a case and the record that holds it: the earliest
+    of ``first_response_at``, ``acknowledged_at`` (an acknowledgement stops the clock
+    even when the case was already investigating, so no status move was recorded)
+    and the first status move a person made into a response status. A system or
+    agent move never counts (audit #9): an auto-escalation at creation is not a
+    response. ``(None, "")`` when no person has responded. Shared by
+    :func:`sla_case_reading` and the Standup SLA aging, so the two cannot drift."""
+    best: datetime | None = None
+    source = ""
+    for value, name in (
+        (timings.resp_anchor, "first_response_at"),
+        (timings.ack_anchor, "acknowledged_at"),
+        (timings.resp_human, "status_history"),
+    ):
+        if value is not None and (best is None or value < best):
+            best, source = value, name
+    return best, source
+
+
+def _sla_clock(
+    clock: str, target_minutes: float, start: datetime, stop: datetime | None,
+    stop_source: str, now: datetime,
+) -> SlaClockReading:
+    running = stop is None
+    elapsed = ((stop or now) - start).total_seconds() / 60.0
+    if elapsed > target_minutes:
+        state = "breached"
+    elif running and elapsed >= target_minutes * SLA_AT_RISK_FRACTION:
+        state = "at_risk"
+    else:
+        state = "ok"
+    return SlaClockReading(
+        clock=clock, target_minutes=target_minutes, start=start,
+        due_at=start + timedelta(minutes=target_minutes), stop=stop,
+        stop_source=stop_source if stop is not None else "", elapsed_minutes=elapsed,
+        running=running, state=state,
+    )
+
+
+def sla_case_reading(
+    case: Case,
+    target: Any,
+    timings: _CaseTimings | None,
+    *,
+    now: datetime,
+) -> SlaCaseReading:
+    """The per-case SLA clock rules, in one pure function (Round 16 B26, with B58).
+    :func:`sla_metrics` counts its readings; the case-level SLA reading
+    (``engine/sla_reading.py``) reuses it, so the two can never disagree.
+
+    ``target`` is the case's ``SlaTarget`` (``response_minutes``, ``resolve_minutes``;
+    a value of 0 or less means no target for that clock). ``timings`` is the case's
+    :class:`_CaseTimings` (``None`` builds it). Both clocks start at the detection
+    instant when recorded, else at creation.
+
+    * **Response.** Stops at the first human response (:func:`first_human_response`).
+      A terminal case stops it at its terminal instant at the latest: a case the
+      agent closed before anyone responded is no longer awaiting a response, so the
+      clock stops at the close. An auto-close inside the target is met; one after
+      the target is a late response of fixed size that never grows. A genuinely
+      open, unresponded case keeps the live clock.
+    * **Resolution.** Stops at the first terminal transition (``updated_at`` for a
+      terminal case with no recorded transition), only while the case is terminal
+      now: a reopened case runs its clock again (the :func:`_resolved_dt` rule).
+    * **State.** Breached when the elapsed time is over the target; at risk when the
+      clock still runs and at least :data:`SLA_AT_RISK_FRACTION` of the target has
+      passed; otherwise ok.
+
+    Pure and advisory (#3): it reads the case, never changes it, and never feeds
+    ``decide()``. Never raises on a malformed case."""
+    timings = timings if timings is not None else _CaseTimings(case)
+    terminal = (case.status.value if case.status else "") in _TERMINAL
+    start = timings.created
+    if start is None:
+        return SlaCaseReading(start=None, start_source="", terminal=terminal, response=None, resolution=None)
+    start_source = "detected_at" if _as_dt(case.detected_at) is not None else "created_at"
+    end = _resolved_dt(case, timings)  # None unless the case is terminal now
+    end_source = "status_history" if timings.terminal_any is not None else "updated_at"
+
+    response: SlaClockReading | None = None
+    response_minutes = float(getattr(target, "response_minutes", 0) or 0)
+    if response_minutes > 0:
+        stop, source = first_human_response(timings)
+        if terminal and end is not None and (stop is None or end < stop):
+            stop, source = end, "terminal"
+        if stop is not None or not terminal:
+            response = _sla_clock("response", response_minutes, start, stop, source, now)
+
+    resolution: SlaClockReading | None = None
+    resolve_minutes = float(getattr(target, "resolve_minutes", 0) or 0)
+    if resolve_minutes > 0 and (end is not None or not terminal):
+        resolution = _sla_clock("resolution", resolve_minutes, start, end, end_source, now)
+
+    return SlaCaseReading(
+        start=start, start_source=start_source, terminal=terminal,
+        response=response, resolution=resolution,
+    )
+
+
 def sla_metrics(
     cases: list[Case],
     sla_policy: Any,
@@ -908,7 +1083,9 @@ def sla_metrics(
     time against the target for its P-level and classify it breached / at-risk (>=80%
     of target, not yet met) / ok. SLA classification NEVER feeds ``decide()``. Returns
     ``enabled:false`` (untouched today) when the policy is off so the existing
-    behaviour is byte-identical.
+    behaviour is byte-identical. Each case is read by :func:`sla_case_reading` (the
+    one home of the clock rules), so a case the agent closed stops its response clock
+    at the close and never turns into a breach as time passes.
 
     The P-level is the persisted ``priority_level`` or, with ``prefs`` (the posture
     route passes them), the read-time ITIL projection an analyst sees on the case (see
@@ -919,9 +1096,10 @@ def sla_metrics(
     if not enabled or not targets:
         return {"enabled": False, "evaluated": 0, "reason": "SLA policy disabled or no targets"}
 
-    AT_RISK_FRACTION = 0.8
-    response_breached = response_at_risk = 0
-    resolve_breached = resolve_at_risk = 0
+    tally = {
+        ("response", "breached"): 0, ("response", "at_risk"): 0,
+        ("resolution", "breached"): 0, ("resolution", "at_risk"): 0,
+    }
     evaluated = 0
     no_target = no_clock = 0
     breaching: list[dict[str, Any]] = []
@@ -932,9 +1110,10 @@ def sla_metrics(
         if target is None:
             no_target += 1
             continue  # no target for this (or no) priority → not SLA-scored
-        timings = _timings_for(c, _timings)
-        start = timings.created
-        if start is None:
+        # The per-case clock rules (response anchor, terminal stop, resolution
+        # fallback, at-risk) live in ``sla_case_reading`` (Round 16 B26).
+        reading = sla_case_reading(c, target, _timings_for(c, _timings), now=now)
+        if reading.start is None:
             # Unparseable created_at → no clock to measure. Exclude from the
             # attainment denominator (matching the guard-before-count idiom used
             # everywhere else in this file) so a corrupted doc can neither inflate
@@ -942,40 +1121,17 @@ def sla_metrics(
             no_clock += 1
             continue
         evaluated += 1
-
-        # Response clock: created → first response (status_history / anchor), else now.
-        resp_at = timings.resp_anchor or timings.resp_human
-        resp_target = float(getattr(target, "response_minutes", 0) or 0)
-        if resp_target > 0:
-            elapsed = ((resp_at or now) - start).total_seconds() / 60.0
-            if resp_at is None:  # still unresponded → live clock
-                if elapsed > resp_target:
-                    response_breached += 1
-                    breaching.append(_breach_row(c, "response", elapsed, resp_target, "breached", prio))
-                elif elapsed >= resp_target * AT_RISK_FRACTION:
-                    response_at_risk += 1
-                    breaching.append(_breach_row(c, "response", elapsed, resp_target, "at_risk", prio))
-            elif elapsed > resp_target:  # responded, but late
-                response_breached += 1
-                breaching.append(_breach_row(c, "response", elapsed, resp_target, "breached", prio))
-
-        # Resolution clock: created → terminal transition, else live to now.
-        end = timings.terminal_any
-        if end is None and (c.status.value if c.status else "") in _TERMINAL:
-            end = timings.updated_iso
-        resolve_target = float(getattr(target, "resolve_minutes", 0) or 0)
-        if resolve_target > 0:
-            elapsed = ((end or now) - start).total_seconds() / 60.0
-            if end is None:  # still open → live clock
-                if elapsed > resolve_target:
-                    resolve_breached += 1
-                    breaching.append(_breach_row(c, "resolution", elapsed, resolve_target, "breached", prio))
-                elif elapsed >= resolve_target * AT_RISK_FRACTION:
-                    resolve_at_risk += 1
-                    breaching.append(_breach_row(c, "resolution", elapsed, resolve_target, "at_risk", prio))
-            elif elapsed > resolve_target:  # resolved, but late
-                resolve_breached += 1
-                breaching.append(_breach_row(c, "resolution", elapsed, resolve_target, "breached", prio))
+        for clock in (reading.response, reading.resolution):
+            if clock is None or clock.state == "ok":
+                continue
+            tally[(clock.clock, clock.state)] += 1
+            breaching.append(
+                _breach_row(c, clock.clock, clock.elapsed_minutes, clock.target_minutes, clock.state, prio)
+            )
+    response_breached = tally[("response", "breached")]
+    response_at_risk = tally[("response", "at_risk")]
+    resolve_breached = tally[("resolution", "breached")]
+    resolve_at_risk = tally[("resolution", "at_risk")]
 
     met = evaluated - len({b["case_id"] for b in breaching if b["state"] == "breached"})
     return {

@@ -1473,7 +1473,9 @@ class ShiftReportTool(ChatTool):
                  "title": display(q.get("title") or q.get("case_id")),
                  "severity": q.get("severity_band") if q.get("severity_band") in ("critical", "high", "medium", "low", "info") else None,
                  "verdict": verdict_semantic(q.get("verdict")), "status": q.get("status"),
-                 "risk": finite(q.get("risk_score"))}
+                 "risk": finite(q.get("risk_score")),
+                 # The creation time every case list carries (Round 16 B39).
+                 "created_at": iso_or_none(q.get("created_at"))}
                 for q in queue[:min(limit, _CASE_LIST_MAX)] if q.get("case_id")
             ]},
             provenance="code", untrusted_labels=True, total=len(queue), truncated=len(queue) > limit,
