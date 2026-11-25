@@ -1959,7 +1959,10 @@ its two gradient controls; nothing on this page has a palette of its own.
   second line may count attempts. Page errors that belong to no field (a single sign-on
   callback failure, an expired enrollment) keep the top alert. A single sign-on error is a
   backend code mapped to a fixed sentence; the page never renders a query-string value
-  (B25). The session-ended notice keeps its calm info style.
+  (B25). The session-ended notice keeps its calm info style. Fields are disabled while a
+  request runs, which takes the focus away, so a refused request puts focus back in the
+  field to fix: the password, the first code cell, the recovery code, the new password or
+  the setup password.
 - **Appearance.** One `role="group"` named "Appearance" in the top-right corner: three
   round icon buttons, "Use system theme", "Light theme" and "Dark theme", each with
   `aria-pressed`. The pressed one is an inverted fill (`bg-foreground text-background`),

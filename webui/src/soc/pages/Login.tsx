@@ -285,6 +285,10 @@ export default function Login({ onAuthenticated }: LoginProps) {
   const [password, setPassword] = React.useState('');
   const signinIdentityRef = React.useRef<HTMLInputElement>(null);
   const signinPasswordRef = React.useRef<HTMLInputElement>(null);
+  // The setup and forced-change password fields: a refused request returns focus to
+  // them, because the fields were disabled while it ran and the page took the focus.
+  const setupPasswordRef = React.useRef<HTMLInputElement>(null);
+  const changePasswordRef = React.useRef<HTMLInputElement>(null);
   // Mandated-MFA enrollment focus target: entering 'mfa-enroll-required' unmounts
   // the sign-in form (focus would drop to <body> and the requirement would go
   // unannounced), so the mode HEADING takes programmatic focus instead: SR +
@@ -334,6 +338,9 @@ export default function Login({ onAuthenticated }: LoginProps) {
   const [otpAttempt, setOtpAttempt] = React.useState(0);
   // The six cells submit on their own; this keeps it to one request per code.
   const mfaInFlightRef = React.useRef(false);
+  // The recovery-code field: a wrong code returns focus to it (it was disabled while
+  // the check ran, which drops focus to the page).
+  const mfaRecoveryRef = React.useRef<HTMLInputElement>(null);
   // Disclosure toggle for "Forgot password?" on the password step.
   const [showForgotHelp, setShowForgotHelp] = React.useState(false);
 
@@ -595,6 +602,7 @@ export default function Login({ onAuthenticated }: LoginProps) {
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Could not create the admin account.');
       setBusy(false);
+      window.setTimeout(() => setupPasswordRef.current?.focus(), 0);
     }
   };
 
@@ -707,6 +715,8 @@ export default function Login({ onAuthenticated }: LoginProps) {
       // A fresh, empty set of cells with the first one focused.
       setOtpAttempt((n) => n + 1);
       setBusy(false);
+      // A recovery code is typed into one field, so focus goes back to that field.
+      if (useRecovery) window.setTimeout(() => mfaRecoveryRef.current?.focus(), 0);
     } finally {
       mfaInFlightRef.current = false;
     }
@@ -769,6 +779,7 @@ export default function Login({ onAuthenticated }: LoginProps) {
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Could not change the password.');
       setBusy(false);
+      window.setTimeout(() => changePasswordRef.current?.focus(), 0);
     }
   };
 
@@ -967,6 +978,7 @@ export default function Login({ onAuthenticated }: LoginProps) {
                 <div className="space-y-2">
                   <Label htmlFor="setup-password">Password</Label>
                   <PasswordInput
+                    ref={setupPasswordRef}
                     id="setup-password"
                     value={password}
                     onChange={setPassword}
@@ -1269,6 +1281,7 @@ export default function Login({ onAuthenticated }: LoginProps) {
                   {useRecovery ? (
                     <>
                       <LoginTextInput
+                        ref={mfaRecoveryRef}
                         id="mfa-code"
                         icon={ShieldCheck}
                         className="font-mono tracking-wider"
@@ -1364,6 +1377,7 @@ export default function Login({ onAuthenticated }: LoginProps) {
                 <div className="space-y-2">
                   <Label htmlFor="change-new">New password</Label>
                   <PasswordInput
+                    ref={changePasswordRef}
                     id="change-new"
                     value={newPassword}
                     onChange={setNewPassword}

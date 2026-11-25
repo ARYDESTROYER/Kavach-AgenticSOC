@@ -7,6 +7,8 @@
  *  - A field error renders inline, under its field, announced and linked to it.
  *  - "Welcome back" greets only an account this device remembers.
  *  - The six code cells submit on their own, once.
+ *  - A refused recovery code, forced change or setup returns focus to its field (the
+ *    field was disabled while the request ran, so the page had taken the focus).
  *  - GET /api/branding is sent once on a cold load, and again after a sign-out or
  *    when the branding is older than 30 s.
  *  - "Forgot password?" says what to do; axe finds nothing on the page.
@@ -18,13 +20,16 @@ import { axe, toHaveNoViolations } from 'jest-axe';
 
 expect.extend(toHaveNoViolations);
 
-const { brandingMock, setupStatusMock, ssoMock, loginMock, verifyMock } = vi.hoisted(() => ({
-  brandingMock: vi.fn(),
-  setupStatusMock: vi.fn(),
-  ssoMock: vi.fn(),
-  loginMock: vi.fn(),
-  verifyMock: vi.fn(),
-}));
+const { brandingMock, setupStatusMock, ssoMock, loginMock, verifyMock, postMock, changeMock } =
+  vi.hoisted(() => ({
+    brandingMock: vi.fn(),
+    setupStatusMock: vi.fn(),
+    ssoMock: vi.fn(),
+    loginMock: vi.fn(),
+    verifyMock: vi.fn(),
+    postMock: vi.fn(),
+    changeMock: vi.fn(),
+  }));
 
 vi.mock('@/lib/api', () => {
   const ok = (value: unknown) => vi.fn().mockResolvedValue(value);
@@ -42,13 +47,13 @@ vi.mock('@/lib/api', () => {
     api: {
       getBranding: () => brandingMock(),
       get: ok({}),
-      post: ok({}),
+      post: (path: string, body: unknown) => postMock(path, body),
       put: ok({}),
       del: ok({}),
       setup: { status: () => setupStatusMock() },
       auth: {
         login: (u: string, p: string) => loginMock(u, p),
-        changePassword: ok({ ok: true }),
+        changePassword: (current: string, next: string) => changeMock(current, next),
         mfa: {
           setup: ok({}),
           confirm: ok({}),
@@ -109,6 +114,8 @@ beforeEach(() => {
   ssoMock.mockReset().mockResolvedValue({ providers: [] });
   loginMock.mockReset();
   verifyMock.mockReset();
+  postMock.mockReset().mockResolvedValue({});
+  changeMock.mockReset().mockResolvedValue({ ok: true });
 });
 
 afterEach(() => {
@@ -263,6 +270,69 @@ describe('Login: the code cells submit on their own, once (R10)', () => {
     expect(fresh.map((c) => c.value).join('')).toBe('');
     await waitFor(() => expect(fresh[0]).toHaveFocus());
     expect(verifyMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('Login: a refused code or password keeps the keyboard in place', () => {
+  it('returns focus to the recovery field, marked invalid and described by the error', async () => {
+    let reject: (reason: unknown) => void = () => {};
+    verifyMock.mockReturnValue(new Promise((_resolve, fail) => (reject = fail)));
+    renderLogin();
+    await toMfaStep();
+    fireEvent.click(screen.getByRole('button', { name: 'Use a recovery code' }));
+    const field = (await screen.findByLabelText('Recovery code')) as HTMLInputElement;
+    fireEvent.change(field, { target: { value: 'AAAA-BBBB' } });
+    field.focus();
+    fireEvent.submit(field.closest('form')!);
+    // The field is disabled while the code is checked, and a browser then moves focus
+    // off it. jsdom keeps it there, so move it away as a browser would.
+    await waitFor(() => expect(field).toBeDisabled());
+    screen.getByRole('button', { name: 'Use system theme' }).focus();
+    expect(field).not.toHaveFocus();
+    await act(async () => reject(new MockApiError(401, 'Invalid code.')));
+    expect(await screen.findByText('Invalid code.')).toBeInTheDocument();
+    await waitFor(() => expect(field).toHaveFocus());
+    expect(field).toHaveValue('');
+    expect(field).toHaveAttribute('aria-invalid', 'true');
+    expect(field).toHaveAttribute('aria-describedby', 'login-error');
+    expect(verifyMock).toHaveBeenCalledWith('pend-1', 'AAAA-BBBB');
+  });
+
+  it('returns focus to the new password after a refused forced change', async () => {
+    loginMock.mockResolvedValue({ user: { username: 'alice', must_change_password: true } });
+    let reject: (reason: unknown) => void = () => {};
+    changeMock.mockReturnValue(new Promise((_resolve, fail) => (reject = fail)));
+    renderLogin();
+    const pw = await toPasswordStep();
+    fireEvent.change(pw, { target: { value: 'old-password' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in' }));
+    const next = (await screen.findByLabelText('New password')) as HTMLInputElement;
+    fireEvent.change(next, { target: { value: 'abcdefgh1' } });
+    fireEvent.change(screen.getByLabelText('Confirm new password'), { target: { value: 'abcdefgh1' } });
+    fireEvent.submit(next.closest('form')!);
+    await waitFor(() => expect(next).toBeDisabled());
+    screen.getByRole('button', { name: 'Use system theme' }).focus();
+    await act(async () => reject(new MockApiError(400, 'The new password is too weak.')));
+    expect(await screen.findByText('The new password is too weak.')).toBeInTheDocument();
+    await waitFor(() => expect(next).toHaveFocus());
+  });
+
+  it('returns focus to the password after a refused first-admin setup', async () => {
+    setupStatusMock.mockResolvedValue({ setup_complete: false, needs_user: true, seeded_default: false });
+    let reject: (reason: unknown) => void = () => {};
+    postMock.mockReturnValue(new Promise((_resolve, fail) => (reject = fail)));
+    renderLogin();
+    fireEvent.change(await screen.findByLabelText('Admin username'), { target: { value: 'chief' } });
+    const pw = screen.getByLabelText('Password') as HTMLInputElement;
+    fireEvent.change(pw, { target: { value: 'Long-and-unusual-42' } });
+    fireEvent.change(screen.getByLabelText('Confirm password'), { target: { value: 'Long-and-unusual-42' } });
+    fireEvent.click(screen.getByRole('button', { name: /Create admin/ }));
+    await waitFor(() => expect(pw).toBeDisabled());
+    screen.getByRole('button', { name: 'Use system theme' }).focus();
+    await act(async () => reject(new MockApiError(400, 'That password is not allowed.')));
+    expect(await screen.findByText('That password is not allowed.')).toBeInTheDocument();
+    await waitFor(() => expect(pw).toHaveFocus());
+    expect(postMock).toHaveBeenCalledWith('setup/account', expect.objectContaining({ username: 'chief' }));
   });
 });
 
