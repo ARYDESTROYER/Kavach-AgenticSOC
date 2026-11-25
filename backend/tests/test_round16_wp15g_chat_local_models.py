@@ -119,6 +119,27 @@ async def test_embed_posts_one_v1_whatever_the_typed_form(recorded: list[str], f
     assert result.vectors == [[0.1, 0.2, 0.3]]
 
 
+@pytest.mark.parametrize(("base_url", "prefix"), _CASES)
+async def test_streamed_chat_posts_one_v1_whatever_the_typed_form(recorded: list[str], base_url: str,
+                                                                  prefix: str) -> None:
+    """Workspace chat streams from an ``openai_compatible`` model, so the streaming
+    call must reach the same single ``/v1`` path as ``complete``."""
+    provider = PROVIDER_REGISTRY["openai_compatible"](api_key="sk-local", base_url=base_url)
+    shown: list[str] = []
+
+    async def on_text(text: str) -> None:
+        shown.append(text)
+
+    try:
+        result = await provider.complete_stream(
+            "chat", [{"role": "user", "content": "hi"}], "local-x", 0.1, 50, on_text,
+        )
+    finally:
+        await provider.aclose()
+    assert recorded == [f"{prefix}/chat/completions"]
+    assert result.text == "ok" and shown == ["ok"]
+
+
 async def test_default_openai_endpoint_is_unchanged(recorded: list[str]) -> None:
     provider = PROVIDER_REGISTRY["openai"](api_key="sk-test")
     try:
