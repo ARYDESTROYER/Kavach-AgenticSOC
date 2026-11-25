@@ -12569,3 +12569,29 @@
 - Tests: on the merged tree, 43 changed Console test files with the first-paint check: 754 passed, 1 skipped; typecheck and lint clean; build:app entry 325,263 B.
 - Status: done.
 - Next: WP12 (metrics explained) from this base; the WP11 and WP10 Console integration after WP10 merges.
+
+### 2026-11-25 17:20Z - WP10 builder - Case numbers explained (backend)
+- Context: Round 16 WP10 (SPEC 4.5). B13 and B63, the recorded decision gate, the per-case SLA reading and triage additions, trace detail, one Wilson interval and the forwarding routing total. Orchestrator decisions: RealESClient.get_index_template, sla_reading on metrics.sla_case_reading, inputs at the three compute_risk sites, and events-viewed rows shown as person spans.
+- Did:
+  - pipeline.py hunks: explain_risk at the three compute_risk sites; run_id stamped on apply()'s decision history entry; tool_input.gate on the case_manager DECISION row.
+  - routes_triage.py: B63 decision span with recorded decision, gate pairing by run id, current_policy, policy_changed and failed-run routing; recorded-weight risk calculation; round_half_up; triage auto_close_policy, sla and asset_cidr (settings:read only) on execution prefs; trace span kinds, bounded detail, exact cost basis, rows_total, truncated and lifetime usage window.
+  - New engine/sla_reading.py and engine/stats.py; one-call Wilson hunks in threshold_tuner, auto_close_review and agent_improvement.
+  - priority.py: four-band risk chip and weights in force. forwarding.py: routing total.
+  - es/client.py get_index_template (403/404 fail open). Updated three older tests; regenerated openapi.json and api-types.gen.ts.
+- Tests: new WP10 file 38 passed. Regressions proven by reverting pipeline.py (3 fail) and routes_triage.py (5 fail). Full suite 13,495 passed, 29 skipped, 12 failed: 2 router counts (expected red), 5 Round 15 docs tab text tests (docs not in this package), 5 sandbox-only env tests (pass with proxy and AWS variables unset). check:types no drift; typecheck clean; check_version, check_ci_contract, check_docs and build_app_knowledge --check pass.
+- Status: done (branch r16-wp10, commit 7881dc7, worktree detached).
+- Next: WP11 and WP14 read the new fields. indices.py could make the cases-mapping 403/404 warning name the template. models.py TraceSpan.kind comment should list person and system. The /rationale route (routes.py) still lacks rows_total and truncated.
+
+### 2026-11-25 20:10Z - WP10 reviewer (resumed) - Case numbers explained: review finished
+- Context: Independent review of Round 16 WP10 on r16-wp10, resumed after a container restart. This covers the builder commit 7881dc7 and the interrupted review commit 2d50b31.
+- Did: Read the diff against SPEC section 4.5 WP10, sections 3.4 to 3.6 and Appendix C (C5, C17, C18, C20). Confirmed decide() and engine/risk.py are unchanged and edits stay in owned files and allowed hunks. Revert-checked B13 (pipeline hunks), B63 and C18 (routes_triage) and both 2d50b31 fixes; each test fails without its fix. Checked Wilson against the old functions up to n=2000. Probed a seeded Demo backend on port 8937: the gate is recorded with demo true and paired by run id, and the recorded weights are read. Fixed one defect in routes_triage._calls_pair_with_their_rows: exact per-call cost now needs one direction per role, so a failed two-call run followed by a one-call run no longer gives the later prompt the earlier run's call; a regression test fails before the fix. Added coverage for the analyst-policy compute_risk site and served the contract rounding vectors through the triage risk chip. Commit 3d4daf4; worktree detached.
+- Tests: backend 13,509 passed, 29 skipped, 12 failed (2 expected router-count, 5 sandbox env, 5 base docs six-tab tests waiting on WP18A); ruff fatal clean. Webui typecheck, lint, gates and check:types pass. test:strict ran once: 9,057 passed, 17 skipped, 10 failed on load timeouts; the 7 files re-run with 2 workers pass 147 of 147. Build clean with entry 325,135 B. check_version, check_ci_contract, check_docs and build_app_knowledge --check pass; no banned characters.
+- Status: done.
+- Next: WP11, WP03 and WP14 read the new triage and trace fields. slaFromServer should read breached and running. WP18A's docs fix the round15 records tests. The routes.py rationale and forwarding fallback gaps go to their owners.
+
+### 2026-11-25 20:01Z - orchestrator - WP10 merged (case numbers explained, backend)
+- Context: SPEC §4.8 step 8: recorded risk inputs at the three compute_risk sites (B13), the recorded decision and its gate on the decision span (B63), the triage read's auto_close_policy, sla and asset_cidr, the trace span kinds and detail, the one Wilson interval in engine/stats.py, the forwarding totals and RealESClient.get_index_template. A first reviewer's fixes were saved as 2d50b31 at the container restart; the resumed reviewer confirmed them and fixed one more (3d4daf4).
+- Did: merged review 3d4daf4 into claude/round16 with no conflicts; generated files unchanged. Next: one small integration package (WP11I) applies the WP10 shapes and the WP11 leftovers on the WP03 case page (the SLA reading of a closed case, B32, D8, D9, the meta strip and inspector explain triggers).
+- Tests: on the merged tree, the WP10 tests with the triage, stages, spine and decide guards, investigation registry, WP15B spine, Elasticsearch mapping, route coverage and records tests: 309 passed; typecheck clean. decide() and engine/risk.py unchanged.
+- Status: done.
+- Next: WP11I; then WP15E part 2, WP14, WP09, WP15D and WP12 as their reviews finish.
