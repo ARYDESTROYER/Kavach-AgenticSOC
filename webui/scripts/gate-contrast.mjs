@@ -44,6 +44,11 @@
  *        hover inside a panel is never weaker than it was on the canvas.
  *      A separation is not a WCAG text or UI-component bar: the panel is identified by its
  *      grouping, never by its edge, and increased contrast adds a ≥ 3:1 edge (theme.css).
+ *   5. THE SIGN-IN PAGE (Round 16 SPEC D9). It paints Console tokens straight on `--canvas`
+ *      (no card), so its pairs are measured there: body, secondary and field-error text
+ *      ≥ 4.5:1 on the canvas; the field edge `--input` ≥ 3:1 on the canvas and on the
+ *      field fill `--background`; the focus ring ≥ 3:1 on the canvas. These replace the
+ *      retired login-accents gate, whose subject (the gradient controls) was deleted.
  *
  * Usage:  node scripts/gate-contrast.mjs   (exit 0 = pass, 1 = fail)
  * Library: `checkContrast()` returns { ok, results[] } for the Vitest wiring.
@@ -131,6 +136,15 @@ export const PANEL_HOVER_SEPARATION = 1.1;
 export const PANEL_STEP_SEPARATION = 1.03;
 /** The KPI tiles' hover wash: `hover:bg-accent/30` (KpiTile). */
 export const KPI_HOVER_WASH_ALPHA = 0.3;
+
+/** The sign-in page's text on the canvas it sits on (bar 5: AA normal text). */
+export const SIGN_IN_TEXT_AXES = ['--foreground', '--muted-foreground', '--critical-text'];
+/** The sign-in page's control edges and ring (bar 5: WCAG 1.4.11). */
+export const SIGN_IN_NON_TEXT_AXES = [
+  { name: 'input on canvas (sign-in)', fg: '--input', bg: '--canvas' },
+  { name: 'input on background (sign-in field fill)', fg: '--input', bg: '--background' },
+  { name: 'ring on canvas (sign-in)', fg: '--ring', bg: '--canvas' },
+];
 
 /** Alpha-composite a foreground wash over an opaque card (sRGB CSS compositing). */
 function composite(fg, bg, alpha) {
@@ -266,6 +280,13 @@ export function checkContrast() {
       panelAccent && panel ? composite(panelAccent, panel, KPI_HOVER_WASH_ALPHA) : null,
       panel,
     );
+    // Bar 5: the sign-in page, drawn on the canvas.
+    for (const t of SIGN_IN_TEXT_AXES) {
+      push(results, theme, `${t.slice(2)} on canvas (sign-in)`, 'sign-in-text', AA_TEXT, resolveTokenRgb(t, map), canvas);
+    }
+    for (const { name, fg, bg } of SIGN_IN_NON_TEXT_AXES) {
+      push(results, theme, name, 'sign-in-nontext', AA_NONTEXT, resolveTokenRgb(fg, map), resolveTokenRgb(bg, map));
+    }
   }
   return { ok: results.every((r) => r.pass), results };
 }

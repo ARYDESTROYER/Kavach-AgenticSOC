@@ -146,10 +146,11 @@ describe('Login — SSO probe folded into the first-paint gate (finding 2)', () 
     const username = await screen.findByLabelText('Username');
     expect(screen.getByText('Sign in with Google')).toBeInTheDocument();
 
-    // The staged action is still conditional on a non-empty identity, and appears
-    // without disturbing the already-painted SSO row.
+    // Continue is painted with the form (Round 16 WP04), so the first keystroke adds
+    // nothing and the already-painted SSO row never moves.
+    const continueButton = screen.getByRole('button', { name: 'Continue' });
     fireEvent.change(username, { target: { value: 'analyst' } });
-    expect(await screen.findByRole('button', { name: 'Continue' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Continue' })).toBe(continueButton);
     expect(screen.getByText('Sign in with Google')).toBeInTheDocument();
   });
 });

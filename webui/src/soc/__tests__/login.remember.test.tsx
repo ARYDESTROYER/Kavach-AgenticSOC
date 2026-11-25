@@ -2,9 +2,10 @@
  * Round 12 — "Remember me" on the sign-in page (SPEC D14, research/remember-me.md §6
  * web tests 1–9 and 12, SYNTHESIS-ux §4 adjustments).
  *
- *  1. The row is shown (24 h / 6 h copy), shown DISABLED with a reason when the
- *     administrator turned it off or the console is on plain HTTP, and hidden only
- *     when the backend does not advertise it.
+ *  1. The row is shown as the label alone (Round 16 D6: no duration, no accessible
+ *     description; the warning dialog states the limits), shown DISABLED with a reason
+ *     when the administrator turned it off or the console is on plain HTTP, and hidden
+ *     only when the backend does not advertise it.
  *  2. Checking opens the warning dialog (warning tone, Cancel focused, the whole
  *     warning — paragraph AND list — is its accessible description, focus returns
  *     to the box when it closes). Cancel keeps it unchecked; "Keep me signed in"
@@ -195,23 +196,30 @@ describe('Login — Remember me', () => {
   });
 
   // ---- 1 ------------------------------------------------------------------ //
-  it('offers the box with the policy duration and a 44px row', async () => {
+  it('offers the box as the label alone, with no duration, in a 44px row (D6)', async () => {
     renderLogin();
     await toPasswordStep();
     const box = rememberBox();
     expect(box).toBeEnabled();
     expect(box).toHaveAttribute('aria-checked', 'false');
-    expect(screen.getByText('Stay signed in on this device for up to 24 hours')).toBeInTheDocument();
-    expect(box).toHaveAccessibleDescription('Stay signed in on this device for up to 24 hours');
+    expect(box).toHaveAccessibleName('Remember me');
+    expect(box).not.toHaveAttribute('aria-describedby');
+    expect(box).toHaveAccessibleDescription('');
     const row = document.querySelector('[data-login-remember]');
+    expect(row).toHaveTextContent(/^Remember me$/);
+    expect(row?.textContent ?? '').not.toMatch(/hour|minute|day|stay signed in/i);
+    expect(document.getElementById('login-remember-hint')).toBeNull();
     expect(row).toHaveClass('min-h-11', 'press-scale');
   });
 
-  it('formats a 6 hour preset', async () => {
+  it('states no duration on the row for any preset; the dialog states it', async () => {
     setupStatusMock.mockResolvedValue(status({ duration_seconds: 6 * 3600 }));
     renderLogin();
-    await toPasswordStep();
-    expect(screen.getByText('Stay signed in on this device for up to 6 hours')).toBeInTheDocument();
+    await toPasswordStep('alice');
+    expect(document.querySelector('[data-login-remember]')?.textContent ?? '').not.toMatch(/6 hours/);
+    fireEvent.click(rememberBox());
+    const dialog = await screen.findByRole('alertdialog');
+    expect(dialog.querySelector('[data-remember-warning-limits]')).toHaveTextContent(/after 6 hours/);
   });
 
   it('states no inactivity limit when none is shorter than the remembered time', async () => {

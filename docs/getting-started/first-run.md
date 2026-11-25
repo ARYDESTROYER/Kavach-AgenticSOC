@@ -14,7 +14,7 @@ badges mark the controls each step uses; select a screenshot to open it full siz
 screenshots use the light theme; a fresh install opens in the dark theme, the
 organization default, and each user can change it under
 **Settings → Account → Appearance**. The sign-in screens follow the browser's own
-choice, with a light and dark switch in the top right corner.
+choice, with three appearance buttons in the top right corner: system, light and dark.
 
 ## Before you begin
 
@@ -98,7 +98,9 @@ account. Select **Turn on two-factor** to enroll an authenticator app now, or
 ### Sign in later
 
 The sign-in form has two steps. First enter the **Username** (badge 1) and select
-**Continue** (badge 2); the button appears once you type a username.
+**Continue** (badge 2). The heading names your organization; on a device that remembers
+you it says "Welcome back". When single sign-on is set up, a **Sign in with** button for
+each provider follows Continue.
 
 <figure markdown="span">
 [![Sign-in screen titled Welcome back with the username soc-admin entered and a Continue button.](../assets/screenshots/install-02a-sign-in-username.webp) ](../assets/screenshots/install-02a-sign-in-username.webp)
@@ -108,7 +110,8 @@ The sign-in form has two steps. First enter the **Username** (badge 1) and selec
 Then enter the **Password** (badge 1). **Remember me** (badge 2) keeps this browser
 signed in for a server-bounded time, up to 24 hours, and asks you to confirm first;
 leave it clear on a shared computer. Select **Sign in** (badge 3). **Back** returns to
-the username step.
+the username step. **Forgot password?** explains that an administrator resets passwords;
+there is no self-service reset. A wrong password shows its message under the field.
 
 <figure markdown="span">
 [![Sign-in password step for soc-admin with a masked password field, a Remember me checkbox and the Sign in button.](../assets/screenshots/install-02-sign-in.webp) ](../assets/screenshots/install-02-sign-in.webp)

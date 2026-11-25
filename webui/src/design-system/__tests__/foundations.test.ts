@@ -12,8 +12,8 @@
  *   5. MEASURED: under `prefers-contrast: more` borders — INCLUDING the alpha hairline
  *      variants (`border-border/60`, `/70`, `/80`) — clear 3:1 on the card and the page
  *      background, secondary text clears 7:1 and is never weaker than muted text, in
- *      both themes; and the login identity canvas, which re-declares its own neutrals,
- *      gets the same treatment.
+ *      both themes. (The sign-in page uses the Console tokens since Round 16, so the
+ *      `:root` and `.dark` values above cover it.)
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -23,8 +23,6 @@ import {
   THEME_CSS_PATH,
   WEBUI_ROOT,
   contrastRatio,
-  hexToRgb,
-  hslTripleToRgb,
   parseThemeCss,
   resolveToken,
   resolveTokenRgb,
@@ -412,76 +410,6 @@ describe('prefers-contrast: more — measured', () => {
     const muted = contrastRatio(resolveTokenRgb('--muted-foreground', map)!, card);
     expect(secondary).toBeGreaterThanOrEqual(7);
     expect(secondary).toBeGreaterThanOrEqual(muted);
-  });
-
-  describe('the login identity canvas (it re-declares its own neutrals)', () => {
-    /** Every declaration of a top-level rule body (custom properties only). */
-    const props = (source: string, selector: string): Map<string, string> => {
-      const re = new RegExp(`(^|[};])\\s*${selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\{`, 'm');
-      const m = re.exec(source);
-      expect(m, `missing rule ${selector}`).not.toBeNull();
-      return declsOf(source.slice(m!.index), selector);
-    };
-    /** An opaque colour token: an `H S% L%` triple or a `#rrggbb` hex. */
-    const opaque = (value: string): Rgb => {
-      const rgb = value.startsWith('#') ? hexToRgb(value) : hslTripleToRgb(value);
-      expect(rgb, value).not.toBeNull();
-      return rgb!;
-    };
-    /** `rgb(R G B / A%)` → its colour and alpha. */
-    const translucent = (value: string): { rgb: Rgb; alpha: number } => {
-      const m = /^rgb\((\d+)\s+(\d+)\s+(\d+)\s*\/\s*([\d.]+)%\)$/.exec(value);
-      expect(m, value).not.toBeNull();
-      return { rgb: [Number(m![1]) / 255, Number(m![2]) / 255, Number(m![3]) / 255], alpha: Number(m![4]) / 100 };
-    };
-
-    const base = {
-      light: props(css, '.login-auth-canvas'),
-      dark: props(css, '.dark .login-auth-canvas'),
-    };
-    const boosted = {
-      light: new Map([...base.light, ...declsOf(body, '.login-auth-canvas')]),
-      dark: new Map([...base.dark, ...declsOf(body, '.dark .login-auth-canvas')]),
-    };
-
-    it.each(['light', 'dark'] as const)('%s: borders and the input edge clear 3:1, text clears 7:1', (theme) => {
-      const map = boosted[theme];
-      const slab = opaque(map.get('--login-slab')!);
-      const canvas = opaque(map.get('--login-canvas')!);
-      for (const bg of [slab, canvas]) {
-        for (const token of ['--border', '--border-strong', '--input']) {
-          expect(contrastRatio(opaque(map.get(token)!), bg), token).toBeGreaterThanOrEqual(3);
-        }
-        for (const token of ['--muted-foreground', '--login-text-subtle']) {
-          expect(contrastRatio(opaque(map.get(token)!), bg), token).toBeGreaterThanOrEqual(7);
-        }
-        expect(contrastRatio(opaque(map.get('--login-text-muted')!), bg)).toBeGreaterThanOrEqual(4.5);
-      }
-      // The field's unfocused edge, painted over the field's own fill on the slab.
-      const fill = map.get('--login-input')!;
-      const fillRgb = fill.startsWith('rgb(')
-        ? over(translucent(fill).rgb, translucent(fill).alpha, slab)
-        : opaque(fill);
-      const edge = translucent(map.get('--login-input-border')!);
-      expect(contrastRatio(over(edge.rgb, edge.alpha, fillRgb), fillRgb)).toBeGreaterThanOrEqual(3);
-    });
-
-    it.each(['light', 'dark'] as const)('%s: every boosted value is stronger than the default', (theme) => {
-      const before = base[theme];
-      const after = boosted[theme];
-      const slab = opaque(before.get('--login-slab')!);
-      for (const token of ['--border', '--input', '--muted-foreground', '--login-text-subtle', '--login-text-muted']) {
-        expect(
-          contrastRatio(opaque(after.get(token)!), slab),
-          token,
-        ).toBeGreaterThan(contrastRatio(opaque(before.get(token)!), slab));
-      }
-      for (const token of ['--login-input-border', '--login-guide']) {
-        expect(translucent(after.get(token)!).alpha, token).toBeGreaterThan(
-          translucent(before.get(token)!).alpha,
-        );
-      }
-    });
   });
 
   it('turns the materials solid with a defined bottom rule and no scroll-edge fade', () => {

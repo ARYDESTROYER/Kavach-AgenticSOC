@@ -10,14 +10,15 @@
  * We mount <Login/> inside the Theme + Tooltip providers, mock branding, the setup
  * status, and the SSO providers, and assert each mode renders WITHOUT crashing:
  *   1. signin: identity-first Username → Continue → Password / Back / Sign in,
- *      plus the SSO buttons (google/microsoft icons).
+ *      plus the labelled SSO buttons (Round 16 WP04: one quiet column on Console
+ *      tokens, Continue always shown, a three-button appearance group).
  *   2. setup:  the create-admin title + a password-strength meter once typing.
  *   3. mfa:    driving the password form (requires_mfa) reveals the 6-cell OTP.
  *   4. change: driving the password form (must_change_password) reveals the form.
  */
 import * as React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent, within } from '@testing-library/react';
 
 // ---- Mock the typed api client BEFORE importing the component ------------- //
 const loginMock = vi.fn();
@@ -96,11 +97,7 @@ import Login from '../pages/Login';
 // The MOCKED ApiError (status, message) — for driving 401 expired-pending paths.
 import { ApiError as ApiErrorFromMock } from '@/lib/api';
 
-/**
- * Every accessible name on the sign-in screen, the shared theme pill
- * (`components/auth/ThemeModePill.tsx`) included: it names its state and action with a
- * colon, never an em dash (Round 14).
- */
+/** Every accessible name on the sign-in screen, the appearance buttons included. */
 function loginAriaLabels(): string[] {
   return Array.from(document.body.querySelectorAll('[aria-label]')).map(
     (el) => el.getAttribute('aria-label') ?? '',
@@ -121,10 +118,11 @@ async function advanceSigninToPassword(username = 'alice') {
   const usernameInput = await screen.findByLabelText('Username');
   expect(screen.queryByLabelText('Password')).not.toBeInTheDocument();
   expect(screen.queryByRole('button', { name: 'Sign in' })).not.toBeInTheDocument();
+  // Continue is there from the first paint (no pop-in on the first keystroke).
+  expect(screen.getByRole('button', { name: 'Continue' })).toBeEnabled();
 
   fireEvent.change(usernameInput, { target: { value: username } });
-  const continueButton = await screen.findByRole('button', { name: 'Continue' });
-  expect(continueButton).toBeEnabled();
+  const continueButton = screen.getByRole('button', { name: 'Continue' });
   fireEvent.click(continueButton);
 
   const passwordInput = await screen.findByLabelText('Password');
@@ -165,125 +163,76 @@ describe('Login — four-mode render', () => {
     const username = await screen.findByLabelText('Username');
     expect(username).toHaveAttribute('placeholder', 'Enter your username');
     expect(screen.queryByLabelText('Password')).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Continue' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Sign in' })).not.toBeInTheDocument();
-    // The identity surface is one quiet, centred slab with no hero, border,
-    // elevation, or workspace chrome around the credential controls.
-    const panel = container.querySelector('[data-login-panel]');
-    const slab = container.querySelector('[data-login-slab]');
-    const slabFrame = slab?.parentElement;
-    const content = slab?.firstElementChild;
+    // One quiet column on the Console's own canvas: no slab, card, hero, ambient
+    // tiles or gradient controls (Round 16 WP04).
     const canvas = container.querySelector('[data-login-shell="minimal"]');
-    const ambient = container.querySelector('[data-login-ambient-grid]');
-    expect(canvas).toHaveClass('login-auth-canvas', 'overflow-x-hidden');
-    // Live Mistral geometry: the normal identity state resolves to 480 × 492,
-    // with 48 px top/side padding, 96 px bottom padding, and a 384 px control
-    // measure. It remains a minimum—not a fixed height—so MFA/setup can grow;
-    // narrow screens retain the full-viewport sheet.
-    expect(slabFrame).toHaveClass('sm:w-[30rem]', 'sm:max-w-[30rem]');
-    expect(slab).toHaveClass(
-      'min-h-[100dvh]',
-      'max-h-[100dvh]',
-      'flex-col',
-      'overflow-y-auto',
-      'sm:min-h-[30.75rem]',
-      'sm:w-[30rem]',
-      'sm:px-12',
-      'sm:pb-24',
-      'sm:pt-12',
-    );
-    expect(slab).not.toHaveClass('sm:h-[30.75rem]');
-    expect(content).toHaveClass('w-full', 'max-w-sm', 'my-auto', 'sm:my-0');
-    expect(slab).toHaveClass('login-auth-slab');
-    expect(slab).not.toHaveClass('sm:border-x', 'rounded', 'shadow-elev2');
-    expect(ambient).toHaveAttribute('aria-hidden', 'true');
-    expect(ambient).toHaveAttribute('data-login-ambient-cadence', 'mistral');
-    expect(ambient).toHaveClass('pointer-events-none', 'hidden', 'sm:block');
-    expect(
-      Array.from(ambient?.querySelectorAll<HTMLElement>('[data-login-guide]') ?? []).map(
-        (guide) => guide.dataset.loginGuide,
-      ).sort(),
-    ).toEqual(['bottom', 'left', 'right', 'top']);
-    const ambientTiles = Array.from(
-      ambient?.querySelectorAll<HTMLElement>('[data-login-ambient-tile]') ?? [],
-    );
-    expect(ambientTiles).toHaveLength(4);
-    expect(ambientTiles.map((tile) => tile.dataset.loginAmbientTile).sort()).toEqual([
-      '0',
-      '1',
-      '2',
-      '3',
-    ]);
-    expect(panel).toHaveAttribute('data-login-surface', 'minimal');
-    expect(panel).toHaveClass('rounded-none', 'border-0', 'shadow-none');
-    expect(panel).not.toHaveClass('shadow-elev2');
-    expect(screen.queryByText('Protected operator access')).not.toBeInTheDocument();
-    expect(screen.queryByText('Identity & access')).not.toBeInTheDocument();
+    expect(canvas).toHaveClass('login-canvas', 'bg-canvas', 'min-h-dvh', 'overflow-x-hidden');
+    expect(canvas).not.toHaveClass('login-auth-canvas');
+    const column = container.querySelector('[data-login-identity-pane]');
+    expect(column).toHaveClass('login-enter', 'w-full', 'sm:w-[25rem]');
+    expect(container.querySelector('[data-login-ambient-grid]')).toBeNull();
+    expect(container.querySelector('[data-login-slab]')).toBeNull();
+    expect(container.querySelector('.login-shine-button, .login-theme-pill')).toBeNull();
     expect(screen.queryByText('Trust path')).not.toBeInTheDocument();
-    expect(screen.getByRole('heading', { level: 1, name: 'Welcome back' })).toBeInTheDocument();
+    // The heading names the organization; there is one h1.
+    expect(screen.getByRole('heading', { level: 1, name: 'Sign in to Acme SOC' })).toBeInTheDocument();
     expect(screen.getAllByRole('heading', { level: 1 })).toHaveLength(1);
-    expect(username).toHaveClass('h-12', 'px-3.5');
+    expect(username).toHaveClass('h-11', 'px-3.5', 'border-input');
     expect(username).toHaveClass('text-lg', 'sm:text-base');
     expect(username).toBeRequired();
-    expect(screen.getByRole('group', { name: 'Appearance' })).toBeInTheDocument();
-    expect(screen.getByRole('group', { name: 'Appearance' })).not.toHaveClass('border');
-    expect(screen.getByRole('button', { name: 'Use system theme' })).toHaveAttribute(
-      'aria-pressed',
-      'true',
-    );
-    // The appearance pill names the mode you are IN and switches to the other one.
-    // jsdom's matchMedia reports no dark preference, so `system` resolves to light.
-    const pill = screen.getByRole('button', { name: 'Light mode: switch to dark mode' });
-    expect(pill).toHaveAttribute('data-appearance', 'light');
-    fireEvent.click(pill);
+    // Continue is always rendered, on the ordinary primary Button.
+    const continueButton = screen.getByRole('button', { name: 'Continue' });
+    expect(continueButton).toHaveClass('h-11', 'w-full', 'bg-primary', 'text-primary-foreground');
+
+    // The appearance group: three named buttons, the stored mode pressed.
+    const group = screen.getByRole('group', { name: 'Appearance' });
+    const buttons = within(group).getAllByRole('button');
+    expect(buttons.map((b) => b.getAttribute('aria-label'))).toEqual([
+      'Use system theme',
+      'Light theme',
+      'Dark theme',
+    ]);
+    expect(screen.getByRole('button', { name: 'Use system theme' })).toHaveAttribute('aria-pressed', 'true');
+    fireEvent.click(screen.getByRole('button', { name: 'Dark theme' }));
     expect(window.localStorage.getItem('soc.theme')).toBe('dark');
-    expect(
-      screen.getByRole('button', { name: 'Dark mode: switch to light mode' }),
-    ).toHaveAttribute('data-appearance', 'dark');
-    // Choosing an explicit appearance releases `system`.
-    expect(screen.getByRole('button', { name: 'Use system theme' })).toHaveAttribute(
-      'aria-pressed',
-      'false',
-    );
-    // ...and the reset is the ONLY route back to following the OS from this screen,
-    // so exercise it rather than only asserting its pressed state.
+    expect(screen.getByRole('button', { name: 'Dark theme' })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByRole('button', { name: 'Use system theme' })).toHaveAttribute('aria-pressed', 'false');
+    fireEvent.click(screen.getByRole('button', { name: 'Light theme' }));
+    expect(window.localStorage.getItem('soc.theme')).toBe('light');
+    await waitFor(() => expect(document.documentElement).not.toHaveClass('dark'));
     fireEvent.click(screen.getByRole('button', { name: 'Use system theme' }));
     expect(window.localStorage.getItem('soc.theme')).toBe('system');
-    expect(screen.getByRole('button', { name: 'Use system theme' })).toHaveAttribute(
-      'aria-pressed',
-      'true',
-    );
-    // `system` resolves back to light under jsdom's matchMedia, so the pill follows.
-    expect(
-      screen.getByRole('button', { name: 'Light mode: switch to dark mode' }),
-    ).toHaveAttribute('data-appearance', 'light');
-    expect(document.querySelector('[data-login-shell]')).toHaveAttribute(
-      'data-login-theme-palette-settling',
-      'true',
-    );
-    // SSO buttons appear once the providers resolve.
+    expect(screen.getByRole('button', { name: 'Use system theme' })).toHaveAttribute('aria-pressed', 'true');
+
+    // Labelled, full-width SSO buttons under an "or" divider; the visible text is the name.
     const googleSso = await screen.findByRole('button', { name: 'Sign in with Google' });
     const microsoftSso = screen.getByRole('button', { name: 'Sign in with Microsoft' });
-    expect(googleSso).toHaveClass('h-10');
-    expect(microsoftSso).toHaveClass('h-10');
+    for (const sso of [googleSso, microsoftSso]) {
+      expect(sso).toHaveClass('h-11', 'w-full');
+      expect(sso).not.toHaveAttribute('aria-label');
+    }
+    expect(googleSso).toHaveTextContent('Sign in with Google');
+    expect(screen.getByRole('group', { name: 'Single sign-on' })).toContainElement(googleSso);
     expect(screen.queryByText('Session activity is audited')).not.toBeInTheDocument();
     expect(screen.getByRole('link', { name: /Help & support/ })).toHaveAttribute(
       'href',
       'https://example.com/help',
     );
 
-    // Mistral-style staged disclosure: Continue appears only after identity input.
     fireEvent.change(username, { target: { value: 'alice' } });
-    const continueButton = await screen.findByRole('button', { name: 'Continue' });
-    // The identity CTA carries the shine treatment and matches the credential
-    // fields' full-width h-12 geometry, like every other auth-mode primary here.
-    expect(continueButton).toHaveClass('login-shine-button', 'h-12', 'w-full');
     fireEvent.click(continueButton);
 
     const password = await screen.findByLabelText('Password');
-    expect(password).toHaveClass('h-12', 'pl-3.5', 'pr-11');
+    expect(password).toHaveClass('h-11', 'pl-3.5', 'pr-11');
     expect(password).toHaveClass('text-lg', 'sm:text-base');
     expect(password).toBeRequired();
+    // The incoming step plays the forward transition; the heading keeps its place.
+    expect(container.querySelector('[data-login-step="signin:password"]')).toHaveClass('login-step-forward');
+    expect(screen.getByRole('heading', { level: 1, name: 'Sign in to Acme SOC' })).toBeInTheDocument();
+    // The identity row already names the account, so no description repeats it.
+    expect(screen.queryByText('Enter the password for alice.')).not.toBeInTheDocument();
+    expect(document.getElementById('login-mode-description')).toBeNull();
     expect(screen.getByRole('button', { name: 'Back' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Sign in' })).toBeEnabled();
     expect(screen.queryByRole('button', { name: 'Continue' })).not.toBeInTheDocument();
@@ -396,9 +345,11 @@ describe('Login — four-mode render', () => {
   it('shows no em dash in the sign-in copy or any accessible name', async () => {
     renderLogin();
     await screen.findByLabelText('Username');
-    expect(document.body.textContent ?? '').not.toContain('\u2014');
-    // The theme pill is checked like every other name on the screen.
-    expect(loginAriaLabels()).toContain('Light mode: switch to dark mode');
+    expect(document.body.textContent ?? '').not.toMatch(/[\u2013\u2014\u00a0]/);
+    // The appearance buttons are checked like every other name on the screen.
+    expect(loginAriaLabels()).toEqual(
+      expect.arrayContaining(['Use system theme', 'Light theme', 'Dark theme']),
+    );
     loginAriaLabels().forEach((label) => expect(label).not.toMatch(/[\u2013\u2014]/));
   });
 
@@ -557,7 +508,7 @@ describe('Login — white-label copy + layouts', () => {
     await screen.findByLabelText('Username');
     expect(await screen.findByRole('heading', { level: 1, name: 'Welcome to Contoso SOC' })).toBeInTheDocument();
     expect(screen.getAllByRole('heading', { level: 1 })).toHaveLength(1);
-    expect(screen.queryByRole('heading', { level: 1, name: 'Welcome back' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { level: 1, name: 'Sign in to Acme SOC' })).not.toBeInTheDocument();
     expect(screen.getByText('Investigate faster.')).toBeInTheDocument();
     expect(screen.getByText('Fast')).toBeInTheDocument();
     expect(screen.getByText('Audited')).toBeInTheDocument();
@@ -589,7 +540,7 @@ describe('Login — white-label copy + layouts', () => {
       expect(container.querySelector('#login-password')).toBeNull();
 
       fireEvent.change(username, { target: { value: 'analyst' } });
-      fireEvent.click(await screen.findByRole('button', { name: 'Continue' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
       expect(await screen.findByLabelText('Password')).toBeInTheDocument();
     },
   );
