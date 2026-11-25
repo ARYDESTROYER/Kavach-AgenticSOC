@@ -98,8 +98,11 @@ function costLine(
     inputs,
     steps: [{ label: title, expression, result: display }],
     rounding: 'Amounts under 1 are shown to 4 decimals, larger ones to 2.',
+    // The tile divides the server's usage summary here, so the note says where it ran
+    // (the generic words would claim the server computed it).
     provenance: 'server_computed',
-    caveats: ['Computed in the Console from the usage summary for the selected range.'],
+    provenanceNote: 'Computed in the Console from the usage summary for the selected range.',
+    caveats: [],
   };
 }
 
