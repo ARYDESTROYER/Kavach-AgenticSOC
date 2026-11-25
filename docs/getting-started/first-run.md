@@ -5,7 +5,7 @@ description: Choose a workspace, connect data sources and an AI runtime, and lau
 
 # First-run setup
 
-This guide applies to **Agentic SOC 0.1** and is for administrators opening a new Agentic SOC
+This guide applies to **Agentic SOC 0.2** and is for administrators opening a new Agentic SOC
 Console for the first time. The console shows setup instead of the operational
 workspace until the deployment is marked complete.
 

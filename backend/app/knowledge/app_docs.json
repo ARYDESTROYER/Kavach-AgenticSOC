@@ -26,7 +26,7 @@
   },
   "getting-started/quickstart.md": {
    "title": "Quickstart",
-   "description": "Choose an Agentic SOC 0.1 checkout, run the deterministic demo, or bring up the standalone evaluation stack.",
+   "description": "Choose an Agentic SOC 0.2 checkout, run the deterministic demo, or bring up the standalone evaluation stack.",
    "nav": [
     "Use the product",
     "Get started",
@@ -48,7 +48,7 @@
   },
   "getting-started/demo.md": {
    "title": "Run the demo",
-   "description": "Explore Agentic SOC 0.1 with isolated synthetic data and a deterministic zero-cost model.",
+   "description": "Explore Agentic SOC 0.2 with isolated synthetic data and a deterministic zero-cost model.",
    "nav": [
     "Use the product",
     "Get started",
@@ -103,7 +103,7 @@
   },
   "analyst/case-manager.md": {
    "title": "Case Manager",
-   "description": "Work the case queue, read a case's outcome and facts at a glance, work its runbook, close with a disposition, and run permission-gated bulk actions in Agentic SOC 0.1.",
+   "description": "Work the case queue, read a case's outcome and facts at a glance, work its runbook, close with a disposition, and run permission-gated bulk actions in Agentic SOC 0.2.",
    "nav": [
     "Use the product",
     "User and analyst guide",
@@ -312,7 +312,7 @@
   },
   "administration/settings.md": {
    "title": "Settings administration",
-   "description": "Configure Agentic SOC 0.1 safely, understand preference scope, and keep secrets out of persisted settings.",
+   "description": "Configure Agentic SOC 0.2 safely, understand preference scope, and keep secrets out of persisted settings.",
    "nav": [
     "Administer",
     "Console administration",
@@ -334,7 +334,7 @@
   },
   "administration/audit-log.md": {
    "title": "Audit log",
-   "description": "Open, filter and export the append-only record of every action by people, the AI agent and the system in Agentic SOC 0.1.",
+   "description": "Open, filter and export the append-only record of every action by people, the AI agent and the system in Agentic SOC 0.2.",
    "nav": [
     "Administer",
     "Console administration",
@@ -345,7 +345,7 @@
   },
   "administration/authentication.md": {
    "title": "Authentication",
-   "description": "Configure local authentication, sessions, MFA, and OIDC SSO in Agentic SOC 0.1.",
+   "description": "Configure local authentication, sessions, MFA, and OIDC SSO in Agentic SOC 0.2.",
    "nav": [
     "Administer",
     "Console administration",
@@ -356,7 +356,7 @@
   },
   "administration/models-spend.md": {
    "title": "Models and spend controls",
-   "description": "Configure model routing, provider connectivity, pricing, and cost limits in Agentic SOC 0.1.",
+   "description": "Configure model routing, provider connectivity, pricing, and cost limits in Agentic SOC 0.2.",
    "nav": [
     "Administer",
     "Console administration",
@@ -367,7 +367,7 @@
   },
   "administration/notifications.md": {
    "title": "Notifications",
-   "description": "Configure channels, triggers, templates, digests, and delivery tests in Agentic SOC 0.1.",
+   "description": "Configure channels, triggers, templates, digests, and delivery tests in Agentic SOC 0.2.",
    "nav": [
     "Administer",
     "Console administration",
@@ -400,7 +400,7 @@
   },
   "sources/index.md": {
    "title": "Connect sources",
-   "description": "Add, validate, monitor, and safely expand an Agentic SOC 0.1 source.",
+   "description": "Add, validate, monitor, and safely expand an Agentic SOC 0.2 source.",
    "nav": [
     "Administer",
     "Connect data sources",
@@ -411,7 +411,7 @@
   },
   "sources/support-matrix.md": {
    "title": "Source support matrix",
-   "description": "Connector availability, dependencies, acknowledgement boundaries, and validation status for Agentic SOC 0.1.",
+   "description": "Connector availability, dependencies, acknowledgement boundaries, and validation status for Agentic SOC 0.2.",
    "nav": [
     "Administer",
     "Connect data sources",
@@ -422,7 +422,7 @@
   },
   "sources/pull.md": {
    "title": "Pull sources",
-   "description": "Configure read-only Elasticsearch, OpenSearch, and Wazuh sources in Agentic SOC 0.1.",
+   "description": "Configure read-only Elasticsearch, OpenSearch, and Wazuh sources in Agentic SOC 0.2.",
    "nav": [
     "Administer",
     "Connect data sources",
@@ -433,7 +433,7 @@
   },
   "sources/http-syslog.md": {
    "title": "HTTP and syslog sources",
-   "description": "Configure authenticated webhook, HEC-compatible, and network-restricted syslog ingestion in Agentic SOC 0.1.",
+   "description": "Configure authenticated webhook, HEC-compatible, and network-restricted syslog ingestion in Agentic SOC 0.2.",
    "nav": [
     "Administer",
     "Connect data sources",
@@ -455,7 +455,7 @@
   },
   "sources/feeds-mapping.md": {
    "title": "Feeds and field mapping",
-   "description": "Scope Agentic SOC 0.1 collection with feed roles and validate source-to-OCSF field mappings.",
+   "description": "Scope Agentic SOC 0.2 collection with feed roles and validate source-to-OCSF field mappings.",
    "nav": [
     "Administer",
     "Connect data sources",
@@ -466,7 +466,7 @@
   },
   "sources/custom-connectors.md": {
    "title": "Custom connectors",
-   "description": "Extend Agentic SOC 0.1 with an out-of-tree connector that preserves manifests, OCSF, provenance, secrets, and retry behavior.",
+   "description": "Extend Agentic SOC 0.2 with an out-of-tree connector that preserves manifests, OCSF, provenance, secrets, and retry behavior.",
    "nav": [
     "Administer",
     "Connect data sources",
@@ -477,7 +477,7 @@
   },
   "getting-started/install.md": {
    "title": "Install Agentic SOC",
-   "description": "Start the recommended Agentic SOC 0.1 evaluation stack and verify its public health checks.",
+   "description": "Start the recommended Agentic SOC 0.2 evaluation stack and verify its public health checks.",
    "nav": [
     "Deploy and operate",
     "Install"
@@ -487,7 +487,7 @@
   },
   "operations/deployment.md": {
    "title": "Deployment",
-   "description": "Deploy Agentic SOC 0.1 with the standalone stack or attach it safely to an existing log platform.",
+   "description": "Deploy Agentic SOC 0.2 with the standalone stack or attach it safely to an existing log platform.",
    "nav": [
     "Deploy and operate",
     "Deployment"
@@ -497,7 +497,7 @@
   },
   "operations/configuration.md": {
    "title": "Configuration reference",
-   "description": "Understand environment variables, durable preferences, state backends, and secret handling in Agentic SOC 0.1.",
+   "description": "Understand environment variables, durable preferences, state backends, and secret handling in Agentic SOC 0.2.",
    "nav": [
     "Deploy and operate",
     "Configuration"
@@ -507,7 +507,7 @@
   },
   "operations/background-jobs.md": {
    "title": "Background jobs",
-   "description": "Operate durable long-running work, progress, cancellation, result links, and verified artifacts in Agentic SOC 0.1.",
+   "description": "Operate durable long-running work, progress, cancellation, result links, and verified artifacts in Agentic SOC 0.2.",
    "nav": [
     "Deploy and operate",
     "Background jobs"
@@ -517,7 +517,7 @@
   },
   "operations/security.md": {
    "title": "Security hardening",
-   "description": "Apply least privilege, authentication, transport, prompt-safety, and operational controls to Agentic SOC 0.1.",
+   "description": "Apply least privilege, authentication, transport, prompt-safety, and operational controls to Agentic SOC 0.2.",
    "nav": [
     "Deploy and operate",
     "Security hardening"
@@ -547,7 +547,7 @@
   },
   "operations/troubleshooting.md": {
    "title": "Troubleshooting",
-   "description": "Diagnose Agentic SOC 0.1 startup, readiness, authentication, source, model, notification, and UI failures.",
+   "description": "Diagnose Agentic SOC 0.2 startup, readiness, authentication, source, model, notification, and UI failures.",
    "nav": [
     "Deploy and operate",
     "Troubleshooting"
@@ -557,7 +557,7 @@
   },
   "concepts/architecture.md": {
    "title": "Architecture",
-   "description": "Follow an Agentic SOC 0.1 signal from an external source to a human-reviewable case.",
+   "description": "Follow an Agentic SOC 0.2 signal from an external source to a human-reviewable case.",
    "nav": [
     "Reference",
     "Product concepts",
@@ -568,7 +568,7 @@
   },
   "concepts/terminology.md": {
    "title": "Terminology",
-   "description": "Use the stable Agentic SOC 0.1 names for the product, technical compatibility namespace, telemetry, cases, and releases.",
+   "description": "Use the stable Agentic SOC 0.2 names for the product, technical compatibility namespace, telemetry, cases, and releases.",
    "nav": [
     "Reference",
     "Product concepts",
@@ -579,7 +579,7 @@
   },
   "concepts/ocsf.md": {
    "title": "OCSF normalization",
-   "description": "Understand the canonical Agentic SOC 0.1 event shape, field mapping, severity, provenance, and lossless source data.",
+   "description": "Understand the canonical Agentic SOC 0.2 event shape, field mapping, severity, provenance, and lossless source data.",
    "nav": [
     "Reference",
     "Product concepts",
@@ -590,7 +590,7 @@
   },
   "concepts/deterministic-decisions.md": {
    "title": "Deterministic decisions",
-   "description": "Learn why model verdicts are advisory and how Agentic SOC 0.1 code owns close, escalation, and human review.",
+   "description": "Learn why model verdicts are advisory and how Agentic SOC 0.2 code owns close, escalation, and human review.",
    "nav": [
     "Reference",
     "Product concepts",
@@ -601,7 +601,7 @@
   },
   "concepts/state-audit-cost.md": {
    "title": "State, audit, and cost",
-   "description": "Understand where Agentic SOC 0.1 stores its own data and how actions and model spend remain reviewable.",
+   "description": "Understand where Agentic SOC 0.2 stores its own data and how actions and model spend remain reviewable.",
    "nav": [
     "Reference",
     "Product concepts",
@@ -612,7 +612,7 @@
   },
   "architecture/ingestion.md": {
    "title": "Ingestion and investigation",
-   "description": "The Agentic SOC 0.1 ingestion and investigation flow, its explicit operating boundaries, and the durability and scale roadmap.",
+   "description": "The Agentic SOC 0.2 ingestion and investigation flow, its explicit operating boundaries, and the durability and scale roadmap.",
    "nav": [
     "Reference",
     "Product concepts",
@@ -623,7 +623,7 @@
   },
   "reference/configuration.md": {
    "title": "Configuration reference",
-   "description": "Configuration authorities, environment wiring, durable preferences, runtime-only secrets, and state backends in Agentic SOC 0.1.",
+   "description": "Configuration authorities, environment wiring, durable preferences, runtime-only secrets, and state backends in Agentic SOC 0.2.",
    "nav": [
     "Reference",
     "Contracts",
@@ -634,7 +634,7 @@
   },
   "reference/permissions.md": {
    "title": "Permissions",
-   "description": "Built-in Agentic SOC roles, resource-action grants, authorization modes, and custom-role behavior in version 0.1.",
+   "description": "Built-in Agentic SOC roles, resource-action grants, authorization modes, and custom-role behavior in version 0.2.",
    "nav": [
     "Reference",
     "Contracts",
@@ -645,7 +645,7 @@
   },
   "reference/security.md": {
    "title": "Security model",
-   "description": "Trust boundaries, enforced safety properties, deployment responsibilities, and known security limits in Agentic SOC 0.1.",
+   "description": "Trust boundaries, enforced safety properties, deployment responsibilities, and known security limits in Agentic SOC 0.2.",
    "nav": [
     "Reference",
     "Contracts",
@@ -787,7 +787,7 @@
    "page": "getting-started/index.md",
    "anchor": "",
    "heading": "",
-   "text": "These guides apply to **Agentic SOC 0.1**. They take you from an empty checkout to a\nworking console, a configured source, and a case whose provenance you can verify.",
+   "text": "These guides apply to **Agentic SOC 0.2**. They take you from an empty checkout to a\nworking console, a configured source, and a case whose provenance you can verify.",
    "console": []
   },
   {
@@ -803,7 +803,7 @@
    "page": "getting-started/index.md",
    "anchor": "what-success-looks-like",
    "heading": "What success looks like",
-   "text": "At the end of the onboarding path:\n\n- the liveness and readiness checks pass;\n- the Agentic SOC Console loads and setup is complete;\n- at least one enabled source reports recent activity;\n- a synthetic signal appears with the expected source, timestamp, rule, severity,\n  and entity mapping;\n- any model call appears in the cost ledger; and\n- case actions appear in the audit trail.\n\nNote: Evaluation boundary\n\nAgentic SOC 0.1 is designed for a single backend replica. Some runtime-entered\nsecrets and push-source evidence are memory-only. Keep the authoritative event\nin its source and read the known limitations\nbefore connecting sensitive or production data.",
+   "text": "At the end of the onboarding path:\n\n- the liveness and readiness checks pass;\n- the Agentic SOC Console loads and setup is complete;\n- at least one enabled source reports recent activity;\n- a synthetic signal appears with the expected source, timestamp, rule, severity,\n  and entity mapping;\n- any model call appears in the cost ledger; and\n- case actions appear in the audit trail.\n\nNote: Evaluation boundary\n\nAgentic SOC 0.2 is designed for a single backend replica. Some runtime-entered\nsecrets and push-source evidence are memory-only. Keep the authoritative event\nin its source and read the known limitations\nbefore connecting sensitive or production data.",
    "console": []
   },
   {
@@ -923,7 +923,7 @@
    "page": "getting-started/first-run.md",
    "anchor": "",
    "heading": "",
-   "text": "This guide applies to **Agentic SOC 0.1** and is for administrators opening a new Agentic SOC\nConsole for the first time. The console shows setup instead of the operational\nworkspace until the deployment is marked complete.\n\nThe screenshots on this page come from a real fresh install of 0.1.13. Numbered amber\nbadges mark the controls each step uses; select a screenshot to open it full size. The\nscreenshots use the light theme; a fresh install opens in the dark theme, the\norganization default, and each user can change it under\n**Settings → Account → Appearance**. The sign-in screens follow the browser's own\nchoice, with a light and dark switch in the top right corner.",
+   "text": "This guide applies to **Agentic SOC 0.2** and is for administrators opening a new Agentic SOC\nConsole for the first time. The console shows setup instead of the operational\nworkspace until the deployment is marked complete.\n\nThe screenshots on this page come from a real fresh install of 0.1.13. Numbered amber\nbadges mark the controls each step uses; select a screenshot to open it full size. The\nscreenshots use the light theme; a fresh install opens in the dark theme, the\norganization default, and each user can change it under\n**Settings → Account → Appearance**. The sign-in screens follow the browser's own\nchoice, with a light and dark switch in the top right corner.",
    "console": [
     "settings:customization"
    ]
@@ -1084,7 +1084,7 @@
    "page": "getting-started/demo.md",
    "anchor": "",
    "heading": "",
-   "text": "This guide applies to **Agentic SOC 0.1** and is for evaluators who want to explore the\ncomplete analyst workflow without external sources or model spend.",
+   "text": "This guide applies to **Agentic SOC 0.2** and is for evaluators who want to explore the\ncomplete analyst workflow without external sources or model spend.",
    "console": []
   },
   {
@@ -1142,7 +1142,7 @@
    "page": "getting-started/first-case.md",
    "anchor": "",
    "heading": "",
-   "text": "This guide applies to **Agentic SOC 0.1**. It is for operators and analysts validating one\nsource end to end before broadening collection.",
+   "text": "This guide applies to **Agentic SOC 0.2**. It is for operators and analysts validating one\nsource end to end before broadening collection.",
    "console": []
   },
   {
@@ -1190,7 +1190,7 @@
    "page": "getting-started/first-case.md",
    "anchor": "expected-result",
    "heading": "Expected result",
-   "text": "You can trace one synthetic source record through normalization, correlation, risk,\noptional investigation, deterministic decision, case history, cost, and audit. Only\nafter this trace is correct should you widen the source pattern or event rate.\n\nNote: Push evidence in 0.1\n\nThe push-source live-tail buffer is process-local and clears on restart. A case\nretains selected evidence references, but the original source or broker remains\nthe authoritative event store.",
+   "text": "You can trace one synthetic source record through normalization, correlation, risk,\noptional investigation, deterministic decision, case history, cost, and audit. Only\nafter this trace is correct should you widen the source pattern or event rate.\n\nNote: Push evidence in 0.2\n\nThe push-source live-tail buffer is process-local and clears on restart. A case\nretains selected evidence references, but the original source or broker remains\nthe authoritative event store.",
    "console": []
   },
   {
@@ -4433,7 +4433,7 @@
    "page": "administration/settings.md",
    "anchor": "safe-administration-sequence",
    "heading": "Safe administration sequence",
-   "text": "1. Back up the application state before a broad policy change.\n2. Change one section at a time.\n3. Use built-in preview or test actions where available.\n4. Confirm the effective value after saving.\n5. Inspect the audit trail and relevant health page.\n6. Keep a rollback value for detection, automation, and model-routing changes.\n\nRules have their own version ledger and rollback controls. Threshold tuning also\nkeeps an application ledger. General preference documents do not provide universal\npoint-in-time rollback in version 0.1.",
+   "text": "1. Back up the application state before a broad policy change.\n2. Change one section at a time.\n3. Use built-in preview or test actions where available.\n4. Confirm the effective value after saving.\n5. Inspect the audit trail and relevant health page.\n6. Keep a rollback value for detection, automation, and model-routing changes.\n\nRules have their own version ledger and rollback controls. Threshold tuning also\nkeeps an application ledger. General preference documents do not provide universal\npoint-in-time rollback in version 0.2.",
    "console": []
   },
   {
@@ -4627,7 +4627,7 @@
    "page": "administration/users-rbac.md",
    "anchor": "",
    "heading": "",
-   "text": "Agentic SOC 0.1 provides local users, six built-in roles, custom roles, and deny-wins\npermission overrides. RBAC is enforced only when authentication and RBAC are enabled.",
+   "text": "Agentic SOC 0.2 provides local users, six built-in roles, custom roles, and deny-wins\npermission overrides. RBAC is enforced only when authentication and RBAC are enabled.",
    "console": []
   },
   {
@@ -4707,7 +4707,7 @@
    "page": "administration/users-rbac.md",
    "anchor": "custom-roles",
    "heading": "Custom roles",
-   "text": "Custom roles can inherit from existing roles, add grants, and declare explicit\ndenies. Denies win after inherited and direct grants are combined. The server guards\ninheritance cycles and ignores unknown permission vocabulary.\n\nBefore assigning a custom role:\n\n1. Build it from the least-privileged parent.\n2. Add only the required resource actions.\n3. Preview the effective matrix.\n4. Simulate a representative action.\n5. Test with a non-administrator account.\n\nAvoid broad `*` grants. Object/row-level scope is an opt-in capability and is not a\ndefault tenant-isolation boundary in version 0.1.\n\nTreat `data_export:export` as a privileged data-access grant. It permits a bounded\nportable snapshot across selected cases, audit, usage, configuration, automation,\nand knowledge metadata. The built-in grant is limited to `super_admin` and\n`soc_manager`; add it to a custom role only when that operator is authorized to read\nall records in the selected scopes. Export remains audited and secret-free, but it is\nnot row-scoped to the requesting analyst.\n\nTreat `audit:export` the same way: it writes a file of every audit row its holder can\nread, including client addresses and user agents (personal data). The built-in grant\nis limited to `super_admin`, `soc_manager` and `auditor`, and each export also asks for\na fresh sign-in. See Audit log.",
+   "text": "Custom roles can inherit from existing roles, add grants, and declare explicit\ndenies. Denies win after inherited and direct grants are combined. The server guards\ninheritance cycles and ignores unknown permission vocabulary.\n\nBefore assigning a custom role:\n\n1. Build it from the least-privileged parent.\n2. Add only the required resource actions.\n3. Preview the effective matrix.\n4. Simulate a representative action.\n5. Test with a non-administrator account.\n\nAvoid broad `*` grants. Object/row-level scope is an opt-in capability and is not a\ndefault tenant-isolation boundary in version 0.2.\n\nTreat `data_export:export` as a privileged data-access grant. It permits a bounded\nportable snapshot across selected cases, audit, usage, configuration, automation,\nand knowledge metadata. The built-in grant is limited to `super_admin` and\n`soc_manager`; add it to a custom role only when that operator is authorized to read\nall records in the selected scopes. Export remains audited and secret-free, but it is\nnot row-scoped to the requesting analyst.\n\nTreat `audit:export` the same way: it writes a file of every audit row its holder can\nread, including client addresses and user agents (personal data). The built-in grant\nis limited to `super_admin`, `soc_manager` and `auditor`, and each export also asks for\na fresh sign-in. See Audit log.",
    "console": []
   },
   {
@@ -4731,7 +4731,7 @@
    "page": "administration/users-rbac.md",
    "anchor": "limitations",
    "heading": "Limitations",
-   "text": "- Agentic SOC does not yet expose a complete API-key lifecycle for automation clients.\n- Custom role quality depends on operator testing; there is no policy-as-code release\n  pipeline in 0.1.\n- Authentication is off by default in the base configuration. RBAC alone cannot\n  protect a deployment until authentication is enabled.\n\nSee Authentication for login, MFA, SSO, and session policy, and\nSecurity hardening for production boundaries.",
+   "text": "- Agentic SOC does not yet expose a complete API-key lifecycle for automation clients.\n- Custom role quality depends on operator testing; there is no policy-as-code release\n  pipeline in 0.2.\n- Authentication is off by default in the base configuration. RBAC alone cannot\n  protect a deployment until authentication is enabled.\n\nSee Authentication for login, MFA, SSO, and session policy, and\nSecurity hardening for production boundaries.",
    "console": []
   },
   {
@@ -5075,7 +5075,7 @@
    "page": "administration/authentication.md",
    "anchor": "public-routes-and-middleware",
    "heading": "Public routes and middleware",
-   "text": "The setup status, login, refresh, SSO initiation/callback, liveness, readiness, and\nbranding bootstrap surfaces have narrowly scoped public behavior. The `/api` router\notherwise applies authentication centrally, and state-changing routes add permission\nchecks.\n\nSecurity headers are enabled by default. Rate limiting is optional. The current CSRF\nmiddleware requires clients to echo the expected token; the web UI does not complete\nthat exchange automatically in version 0.1, so do not enable CSRF without validating\nthe client flow.\n\nSee Users and RBAC and Security hardening.",
+   "text": "The setup status, login, refresh, SSO initiation/callback, liveness, readiness, and\nbranding bootstrap surfaces have narrowly scoped public behavior. The `/api` router\notherwise applies authentication centrally, and state-changing routes add permission\nchecks.\n\nSecurity headers are enabled by default. Rate limiting is optional. The current CSRF\nmiddleware requires clients to echo the expected token; the web UI does not complete\nthat exchange automatically in version 0.2, so do not enable CSRF without validating\nthe client flow.\n\nSee Users and RBAC and Security hardening.",
    "console": []
   },
   {
@@ -5304,7 +5304,7 @@
    "page": "administration/customization.md",
    "anchor": "recovery",
    "heading": "Recovery",
-   "text": "Keep a record of the prior organization values before a broad visual or terminology\nchange. Version 0.1 does not provide universal branding-history rollback. If a theme\nbecomes unusable, an administrator can restore conservative values through the API or\nstate backup; a factory reset is unnecessary.\n\nSee Users and RBAC, Settings administration, and\nHealth, backup, and restore.",
+   "text": "Keep a record of the prior organization values before a broad visual or terminology\nchange. Version 0.2 does not provide universal branding-history rollback. If a theme\nbecomes unusable, an administrator can restore conservative values through the API or\nstate backup; a factory reset is unnecessary.\n\nSee Users and RBAC, Settings administration, and\nHealth, backup, and restore.",
    "console": []
   },
   {
@@ -5386,7 +5386,7 @@
    "page": "sources/index.md",
    "anchor": "",
    "heading": "",
-   "text": "This guide applies to **Agentic SOC 0.1** and is for operators and integrators. A source is\none configured connector instance: a particular cluster, sender, broker, bucket, or\nfile input with its own identity, transport, feeds, mappings, and secret presence.",
+   "text": "This guide applies to **Agentic SOC 0.2** and is for operators and integrators. A source is\none configured connector instance: a particular cluster, sender, broker, bucket, or\nfile input with its own identity, transport, feeds, mappings, and secret presence.",
    "console": []
   },
   {
@@ -5422,10 +5422,10 @@
    "console": []
   },
   {
-   "id": "sources/index#agentic-soc-01-boundaries:0",
+   "id": "sources/index#agentic-soc-02-boundaries:0",
    "page": "sources/index.md",
-   "anchor": "agentic-soc-01-boundaries",
-   "heading": "Agentic SOC 0.1 boundaries",
+   "anchor": "agentic-soc-02-boundaries",
+   "heading": "Agentic SOC 0.2 boundaries",
    "text": "Operate one backend replica. Runtime-entered source secrets are memory-only. HTTP\npush has no durable receipt inbox before processing, and several receivers have\ntransport-specific checkpoint or acknowledgment limits. Read the connector's\nboundary in the support matrix.",
    "console": []
   },
@@ -5458,7 +5458,7 @@
    "page": "sources/support-matrix.md",
    "anchor": "receivers-available-in-core-and-full-images",
    "heading": "Receivers available in core and full images",
-   "text": "| Receiver | Mode | Formats/protocol | Important boundary |\n|---|---|---|---|\n| Generic webhook | HTTP push | JSON, NDJSON, CEF, LEEF, GELF, key/value | Use bearer or HMAC authentication; `none` is only for a trusted reverse proxy/network |\n| Splunk HEC-compatible | HTTP push | HEC event envelope and token authentication | This is an inbound HEC receiver, not a native Splunk search connector |\n| Syslog | UDP/TCP/TLS listener | RFC 3164, RFC 5424, RFC 6587 TCP framing | UDP is lossy. TLS requires mounted certificate/private-key paths; optional client-CA verification enables mTLS. Selecting TLS fails closed when its material is missing. |\n| Local file/directory | File tail | Auto-detected text formats | Container path must be mounted; byte offsets are process-local in version 0.1 |\n| Redis Streams | Queue | Consumer group via the bundled Redis client | Production replay/claim behaviour and multi-replica ownership are not yet certified |\n\nThe push path normalises and processes inline. HTTP ingestion returns a retryable\nerror, Kafka withholds its offset commit, and S3 notification mode retains the queue\nmessage when processing fails. There is not yet a durable receipt/inbox between the\ntransport and correlation, and not every adapter has equivalent acknowledgement\nsemantics. The sender or broker must retain and retry until that layer ships.",
+   "text": "| Receiver | Mode | Formats/protocol | Important boundary |\n|---|---|---|---|\n| Generic webhook | HTTP push | JSON, NDJSON, CEF, LEEF, GELF, key/value | Use bearer or HMAC authentication; `none` is only for a trusted reverse proxy/network |\n| Splunk HEC-compatible | HTTP push | HEC event envelope and token authentication | This is an inbound HEC receiver, not a native Splunk search connector |\n| Syslog | UDP/TCP/TLS listener | RFC 3164, RFC 5424, RFC 6587 TCP framing | UDP is lossy. TLS requires mounted certificate/private-key paths; optional client-CA verification enables mTLS. Selecting TLS fails closed when its material is missing. |\n| Local file/directory | File tail | Auto-detected text formats | Container path must be mounted; byte offsets are process-local in version 0.2 |\n| Redis Streams | Queue | Consumer group via the bundled Redis client | Production replay/claim behaviour and multi-replica ownership are not yet certified |\n\nThe push path normalises and processes inline. HTTP ingestion returns a retryable\nerror, Kafka withholds its offset commit, and S3 notification mode retains the queue\nmessage when processing fails. There is not yet a durable receipt/inbox between the\ntransport and correlation, and not every adapter has equivalent acknowledgement\nsemantics. The sender or broker must retain and retry until that layer ships.",
    "console": []
   },
   {
@@ -5474,7 +5474,7 @@
    "page": "sources/support-matrix.md",
    "anchor": "additional-adapters-in-the-default-full-image",
    "heading": "Additional adapters in the default full image",
-   "text": "| Source | Mode | Client package in `full` | Current boundary |\n|---|---|---|---|\n| Apache Kafka / Redpanda | Queue | `confluent-kafka` | Validate offset commit, rebalance, TLS/SASL, and poison-message behaviour in an integration environment |\n| AWS SQS | Queue | `boto3` | Validate visibility timeout and redelivery under slow investigations |\n| AWS Kinesis | Queue/stream | `boto3` | Per-shard sequence is persisted after successful emit; validate recovery, expired iterators, and resharding |\n| AWS S3 | Object store | `boto3` | List mode persists the last object key; SQS-notification mode retains failed work; JSON/text+gzip work; Parquet does not |\n| Azure Event Hubs | Queue | `azure-eventhub` | Default checkpoint path is not durable; add/validate a checkpoint store |\n| Azure Blob Storage | Object store | `azure-storage-blob` | Last blob name is persisted; validate overwrite, lexicographic ordering, and late-object behaviour |\n| Google Cloud Pub/Sub | Queue | `google-cloud-pubsub` | Validate ack deadline extension and redelivery |\n| Google Cloud Storage | Object store | `google-cloud-storage` | Last object name is persisted; validate overwrite, lexicographic ordering, and late-object behaviour |\n| RabbitMQ | Queue | `aio-pika` | Validate publisher confirms/dead lettering on the source side and consumer recovery |\n| NATS / JetStream | Queue | `nats-py` | Use JetStream for durable consumption; core NATS alone is not replayable |\n| MQTT | Queue | `paho-mqtt` | Current callback schedules processing asynchronously, so protocol acknowledgement can precede successful processing; do not use as a loss-intolerant path in version 0.1 |",
+   "text": "| Source | Mode | Client package in `full` | Current boundary |\n|---|---|---|---|\n| Apache Kafka / Redpanda | Queue | `confluent-kafka` | Validate offset commit, rebalance, TLS/SASL, and poison-message behaviour in an integration environment |\n| AWS SQS | Queue | `boto3` | Validate visibility timeout and redelivery under slow investigations |\n| AWS Kinesis | Queue/stream | `boto3` | Per-shard sequence is persisted after successful emit; validate recovery, expired iterators, and resharding |\n| AWS S3 | Object store | `boto3` | List mode persists the last object key; SQS-notification mode retains failed work; JSON/text+gzip work; Parquet does not |\n| Azure Event Hubs | Queue | `azure-eventhub` | Default checkpoint path is not durable; add/validate a checkpoint store |\n| Azure Blob Storage | Object store | `azure-storage-blob` | Last blob name is persisted; validate overwrite, lexicographic ordering, and late-object behaviour |\n| Google Cloud Pub/Sub | Queue | `google-cloud-pubsub` | Validate ack deadline extension and redelivery |\n| Google Cloud Storage | Object store | `google-cloud-storage` | Last object name is persisted; validate overwrite, lexicographic ordering, and late-object behaviour |\n| RabbitMQ | Queue | `aio-pika` | Validate publisher confirms/dead lettering on the source side and consumer recovery |\n| NATS / JetStream | Queue | `nats-py` | Use JetStream for durable consumption; core NATS alone is not replayable |\n| MQTT | Queue | `paho-mqtt` | Current callback schedules processing asynchronously, so protocol acknowledgement can precede successful processing; do not use as a loss-intolerant path in version 0.2 |",
    "console": []
   },
   {
@@ -5506,7 +5506,7 @@
    "page": "sources/pull.md",
    "anchor": "",
    "heading": "",
-   "text": "This guide applies to **Agentic SOC 0.1** and is for operators connecting Elasticsearch,\nOpenSearch, or a Wazuh indexer. Agentic SOC polls each enabled source and feed on its own\ncursor and also uses a primary pull source for ad-hoc read-only investigation queries.",
+   "text": "This guide applies to **Agentic SOC 0.2** and is for operators connecting Elasticsearch,\nOpenSearch, or a Wazuh indexer. Agentic SOC polls each enabled source and feed on its own\ncursor and also uses a primary pull source for ad-hoc read-only investigation queries.",
    "console": []
   },
   {
@@ -5550,10 +5550,10 @@
    "console": []
   },
   {
-   "id": "sources/pull#agentic-soc-01-boundaries:0",
+   "id": "sources/pull#agentic-soc-02-boundaries:0",
    "page": "sources/pull.md",
-   "anchor": "agentic-soc-01-boundaries",
-   "heading": "Agentic SOC 0.1 boundaries",
+   "anchor": "agentic-soc-02-boundaries",
+   "heading": "Agentic SOC 0.2 boundaries",
    "text": "The OpenSearch-compatible offset fallback is not claimed exactly-once while a live\nindex refreshes. Late-arrival acceptance is bounded by time, page count, and recent-ID\nmemory. Monitor catch-up lag and keep the source's retention long enough to replay\noutside that overlap.",
    "console": []
   },
@@ -5562,7 +5562,7 @@
    "page": "sources/http-syslog.md",
    "anchor": "",
    "heading": "",
-   "text": "This guide applies to **Agentic SOC 0.1** and is for integrators forwarding events directly\nto Agentic SOC. HTTP uses the Agentic SOC API listener; syslog binds a separate UDP or TCP port.",
+   "text": "This guide applies to **Agentic SOC 0.2** and is for integrators forwarding events directly\nto Agentic SOC. HTTP uses the Agentic SOC API listener; syslog binds a separate UDP or TCP port.",
    "console": []
   },
   {
@@ -5586,7 +5586,7 @@
    "page": "sources/http-syslog.md",
    "anchor": "delivery-contract",
    "heading": "Delivery contract",
-   "text": "Authentication happens before payload parsing. If the batch cannot be persisted,\nAgentic SOC returns `503` with a retry hint rather than claiming success. The sender must\nretain and retry the complete request with stable native event IDs.\n\nAgentic SOC 0.1 does not yet commit an independent durable receipt before correlation. A\nprocess or host failure in that window can lose a pushed record, so keep the sender's\nretry/retention path authoritative.",
+   "text": "Authentication happens before payload parsing. If the batch cannot be persisted,\nAgentic SOC returns `503` with a retry hint rather than claiming success. The sender must\nretain and retry the complete request with stable native event IDs.\n\nAgentic SOC 0.2 does not yet commit an independent durable receipt before correlation. A\nprocess or host failure in that window can lose a pushed record, so keep the sender's\nretry/retention path authoritative.",
    "console": []
   },
   {
@@ -5594,7 +5594,7 @@
    "page": "sources/http-syslog.md",
    "anchor": "syslog",
    "heading": "Syslog",
-   "text": "The syslog receiver parses RFC 3164 and RFC 5424 messages. TCP supports newline and\nRFC 6587 octet-counting framing. Configure:\n\n- bind address;\n- listener port;\n- `udp` or `tcp` protocol;\n- TCP framing; and\n- optional format hint.\n\nUse a high port such as `5514` when the container or process does not have permission\nto bind below 1024. Publish or route that port explicitly; the shared HTTP API port\ndoes not receive syslog datagrams.\n\nDanger: The `tls` selection is not encrypted in 0.1\n\nThe current syslog TLS option does not build a certificate-backed TLS context.\nTreat it as plain TCP. Terminate TLS in a trusted forwarder or proxy, or use an\nauthenticated queue/HTTPS path. Syslog itself has no application authentication,\nso restrict network reachability.\n\nUDP can lose or reorder messages and cannot report a persistence failure to the\nsender. Prefer TCP or a durable queue for loss-sensitive telemetry.",
+   "text": "The syslog receiver parses RFC 3164 and RFC 5424 messages. TCP supports newline and\nRFC 6587 octet-counting framing. Configure:\n\n- bind address;\n- listener port;\n- `udp` or `tcp` protocol;\n- TCP framing; and\n- optional format hint.\n\nUse a high port such as `5514` when the container or process does not have permission\nto bind below 1024. Publish or route that port explicitly; the shared HTTP API port\ndoes not receive syslog datagrams.\n\nDanger: The `tls` selection is not encrypted in 0.2\n\nThe current syslog TLS option does not build a certificate-backed TLS context.\nTreat it as plain TCP. Terminate TLS in a trusted forwarder or proxy, or use an\nauthenticated queue/HTTPS path. Syslog itself has no application authentication,\nso restrict network reachability.\n\nUDP can lose or reorder messages and cannot report a persistence failure to the\nsender. Prefer TCP or a durable queue for loss-sensitive telemetry.",
    "console": []
   },
   {
@@ -5610,7 +5610,7 @@
    "page": "sources/queues-object-stores.md",
    "anchor": "",
    "heading": "",
-   "text": "This guide applies to **Agentic SOC 0.1** and is for operators integrating retained\ntransports. The default full backend image includes the client libraries named by\nthe built-in connector manifests; an intentionally lean core build may omit them.",
+   "text": "This guide applies to **Agentic SOC 0.2** and is for operators integrating retained\ntransports. The default full backend image includes the client libraries named by\nthe built-in connector manifests; an intentionally lean core build may omit them.",
    "console": []
   },
   {
@@ -5646,10 +5646,10 @@
    "console": []
   },
   {
-   "id": "sources/queues-object-stores#important-01-limits:0",
+   "id": "sources/queues-object-stores#important-02-limits:0",
    "page": "sources/queues-object-stores.md",
-   "anchor": "important-01-limits",
-   "heading": "Important 0.1 limits",
+   "anchor": "important-02-limits",
+   "heading": "Important 0.2 limits",
    "text": "- There is no common durable receipt/dead-letter ledger before correlation.\n- Event Hubs' default checkpoint path and some object/file progress paths require\n  environment-specific validation.\n- MQTT acknowledgment behavior is not suitable for a loss-intolerant path without\n  explicit integration testing.\n- S3 supports text formats and gzip, not Security Lake OCSF Parquet.\n- A local file path must be mounted into the backend container.\n- NATS core messaging is not replayable; use JetStream when retention matters.\n\nRun one backend replica so receiver ownership and in-process supervision are not\nduplicated.",
    "console": []
   },
@@ -5658,7 +5658,7 @@
    "page": "sources/feeds-mapping.md",
    "anchor": "",
    "heading": "",
-   "text": "This guide applies to **Agentic SOC 0.1** and is for operators tuning what a source reads\nand how its records become canonical events.",
+   "text": "This guide applies to **Agentic SOC 0.2** and is for operators tuning what a source reads\nand how its records become canonical events.",
    "console": []
   },
   {
@@ -5702,10 +5702,10 @@
    "console": []
   },
   {
-   "id": "sources/feeds-mapping#agentic-soc-01-boundaries:0",
+   "id": "sources/feeds-mapping#agentic-soc-02-boundaries:0",
    "page": "sources/feeds-mapping.md",
-   "anchor": "agentic-soc-01-boundaries",
-   "heading": "Agentic SOC 0.1 boundaries",
+   "anchor": "agentic-soc-02-boundaries",
+   "heading": "Agentic SOC 0.2 boundaries",
    "text": "The analyzer does not profile a representative sample set, persist immutable mapping\nversions, shadow old and new mappings, detect drift, or roll back automatically.\nOperators own mapping approval and should retain reproducible test records.",
    "console": []
   },
@@ -5714,7 +5714,7 @@
    "page": "sources/custom-connectors.md",
    "anchor": "",
    "heading": "",
-   "text": "This guide applies to **Agentic SOC 0.1** and is for Python integrators building a source\nadapter outside the core repository. Installed connector packages are discovered\nthrough the `tlsoc.connectors` entry-point group.",
+   "text": "This guide applies to **Agentic SOC 0.2** and is for Python integrators building a source\nadapter outside the core repository. Installed connector packages are discovered\nthrough the `tlsoc.connectors` entry-point group.",
    "console": []
   },
   {
@@ -5730,7 +5730,7 @@
    "page": "sources/custom-connectors.md",
    "anchor": "manifest",
    "heading": "Manifest",
-   "text": "Return a `ConnectorManifest` containing:\n\n- an existing stable `SourceType` value and a display name;\n- category and ingest modes;\n- capabilities such as poll, search, fetch, subscribe, browse, or test;\n- non-secret configuration fields;\n- secret authentication fields marked `secret=True`;\n- optional package dependencies; and\n- concise setup guidance and connector boundaries.\n\nThe wizard and API render this metadata. Do not create a second connector-specific\nconfiguration UI. In 0.1 the registry is keyed by the built-in `SourceType` enum, so\nan out-of-tree vendor connector normally implements one of the reserved vendor types.",
+   "text": "Return a `ConnectorManifest` containing:\n\n- an existing stable `SourceType` value and a display name;\n- category and ingest modes;\n- capabilities such as poll, search, fetch, subscribe, browse, or test;\n- non-secret configuration fields;\n- secret authentication fields marked `secret=True`;\n- optional package dependencies; and\n- concise setup guidance and connector boundaries.\n\nThe wizard and API render this metadata. Do not create a second connector-specific\nconfiguration UI. In 0.2 the registry is keyed by the built-in `SourceType` enum, so\nan out-of-tree vendor connector normally implements one of the reserved vendor types.",
    "console": []
   },
   {
@@ -5778,7 +5778,7 @@
    "page": "getting-started/install.md",
    "anchor": "",
    "heading": "",
-   "text": "This guide applies to **Agentic SOC 0.1** and is for operators installing the recommended\nself-contained evaluation stack. It runs PostgreSQL with pgvector, Redis, the Agentic SOC\nAPI, and the nginx-served Agentic SOC Console. Your SIEM or event source remains separate\nand read-only.\n\nThe install takes six steps: check out the source, prepare `.env`, start the stack, verify\nthe health checks, open the Console, and (when you are done) stop the stack. First-run\nsetup in the Console follows in First-run setup.",
+   "text": "This guide applies to **Agentic SOC 0.2** and is for operators installing the recommended\nself-contained evaluation stack. It runs PostgreSQL with pgvector, Redis, the Agentic SOC\nAPI, and the nginx-served Agentic SOC Console. Your SIEM or event source remains separate\nand read-only.\n\nThe install takes six steps: check out the source, prepare `.env`, start the stack, verify\nthe health checks, open the Console, and (when you are done) stop the stack. First-run\nsetup in the Console follows in First-run setup.",
    "console": []
   },
   {
@@ -5867,7 +5867,7 @@
    "page": "getting-started/install.md",
    "anchor": "choose-how-the-first-administrator-is-created",
    "heading": "Choose how the first administrator is created",
-   "text": "Role-based access is off by default. With authentication on and role-based access off,\nevery signed-in account is treated as Super admin, whatever role it was given; the\nConsole shows \"Off: everyone is Super admin\" under\n**Settings → Security & access → Single sign-on & policy**. A Super admin turns it on\nin **Settings → Security & access → Roles & permissions** with **Turn on role-based\naccess** (the Posture row's **Manage** opens it), or with `PUT /api/rbac`. See\nTurn on role-based access.\n\nIf you put a TLS proxy in front of the Console, let it accept request bodies of at least\n3 MiB (in nginx, `client_max_body_size 3m;`): a case screenshot is uploaded as one\nrequest of up to 3 MiB, and the default nginx limit of 1 MiB refuses it with HTTP 413.\nThe bundled Console proxy already allows it on that path.\n\nWarning: Secrets entered later in the UI\n\nIn Agentic SOC 0.1, runtime-entered source, notification, SSO, and local-model secret\nvalues live in process memory. They must be re-entered after a backend restart.\nEnvironment or an external deployment secret mechanism is the durable boot-time\npath.",
+   "text": "Role-based access is off by default. With authentication on and role-based access off,\nevery signed-in account is treated as Super admin, whatever role it was given; the\nConsole shows \"Off: everyone is Super admin\" under\n**Settings → Security & access → Single sign-on & policy**. A Super admin turns it on\nin **Settings → Security & access → Roles & permissions** with **Turn on role-based\naccess** (the Posture row's **Manage** opens it), or with `PUT /api/rbac`. See\nTurn on role-based access.\n\nIf you put a TLS proxy in front of the Console, let it accept request bodies of at least\n3 MiB (in nginx, `client_max_body_size 3m;`): a case screenshot is uploaded as one\nrequest of up to 3 MiB, and the default nginx limit of 1 MiB refuses it with HTTP 413.\nThe bundled Console proxy already allows it on that path.\n\nWarning: Secrets entered later in the UI\n\nIn Agentic SOC 0.2, runtime-entered source, notification, SSO, and local-model secret\nvalues live in process memory. They must be re-entered after a backend restart.\nEnvironment or an external deployment secret mechanism is the durable boot-time\npath.",
    "console": [
     "settings:security",
     "settings:roles"
@@ -5936,7 +5936,7 @@
    "page": "operations/deployment.md",
    "anchor": "",
    "heading": "",
-   "text": "Agentic SOC 0.1 ships a FastAPI backend and a standalone web console. The recommended\ndeployment is the self-contained Compose stack with PostgreSQL and Redis. Existing\nElastic/OpenSearch/Wazuh systems remain external data sources; Agentic SOC consumes them\nwith least-privilege credentials.",
+   "text": "Agentic SOC 0.2 ships a FastAPI backend and a standalone web console. The recommended\ndeployment is the self-contained Compose stack with PostgreSQL and Redis. Existing\nElastic/OpenSearch/Wazuh systems remain external data sources; Agentic SOC consumes them\nwith least-privilege credentials.",
    "console": []
   },
   {
@@ -5944,7 +5944,7 @@
    "page": "operations/deployment.md",
    "anchor": "choose-a-deployment-shape",
    "heading": "Choose a deployment shape",
-   "text": "| Shape | Application state | Log sources | Use when |\n|---|---|---|---|\n| Standalone/agnostic | PostgreSQL + pgvector | Pull or push connectors | New deployment or no desired dependency on an existing Elasticsearch cluster |\n| Existing ELK attachment | Agentic SOC-owned Elasticsearch indices | Read-only existing log indices | A compatible Elasticsearch stack is already operated and separate application-state privileges are acceptable |\n| SQLite | Local database file | Pull or push connectors | Single-node evaluation and development only |\n\nThe standalone web UI is the supported interface. The archived Kibana plugin is not\nbuilt, tested, or shipped as part of 0.1.",
+   "text": "| Shape | Application state | Log sources | Use when |\n|---|---|---|---|\n| Standalone/agnostic | PostgreSQL + pgvector | Pull or push connectors | New deployment or no desired dependency on an existing Elasticsearch cluster |\n| Existing ELK attachment | Agentic SOC-owned Elasticsearch indices | Read-only existing log indices | A compatible Elasticsearch stack is already operated and separate application-state privileges are acceptable |\n| SQLite | Local database file | Pull or push connectors | Single-node evaluation and development only |\n\nThe standalone web UI is the supported interface. The archived Kibana plugin is not\nbuilt, tested, or shipped as part of 0.2.",
    "console": []
   },
   {
@@ -6050,7 +6050,7 @@
    "page": "operations/deployment.md",
    "anchor": "image-identity",
    "heading": "Image identity",
-   "text": "This support is deliberately narrow in 0.2.0: the reference single-replica standalone\nDocker Compose deployment whose mounted base file matches the signed canonical\nSHA-256, canonical project/network/service identities and PostgreSQL volume,\nPostgreSQL-owned state, coherent schema labels, authentication enabled with durable\nsecrets, no database migration, and the separately bootstrapped supervisor. PostgreSQL\nand Redis infrastructure images are unchanged. SQLite, Elasticsearch-owned state,\nexternal PostgreSQL, legacy ELK, custom Compose/Kubernetes layouts, horizontal\nreplicas, runtime-only secrets, unknown build identity, incompatible plans, or any\nrelease requiring a migration are blocked with a manual remediation. A pre-supervisor\ninstallation needs the documented one-time\n`scripts/bootstrap-updater.sh` host step; software cannot retroactively install its own\nprivileged supervisor.\n\nThe updater never transports or replaces `deploy/docker-compose.agnostic.yml`. The\n0.1.x protocol pins its version-invariant bytes in\n`deploy/update-base-v1.sha256`; the signed generated override carries versioned image\ndigests. Changing that base requires a new updater protocol and manual bootstrap.",
+   "text": "This support is deliberately narrow in 0.2.0: the reference single-replica standalone\nDocker Compose deployment whose mounted base file matches the signed canonical\nSHA-256, canonical project/network/service identities and PostgreSQL volume,\nPostgreSQL-owned state, coherent schema labels, authentication enabled with durable\nsecrets, no database migration, and the separately bootstrapped supervisor. PostgreSQL\nand Redis infrastructure images are unchanged. SQLite, Elasticsearch-owned state,\nexternal PostgreSQL, legacy ELK, custom Compose/Kubernetes layouts, horizontal\nreplicas, runtime-only secrets, unknown build identity, incompatible plans, or any\nrelease requiring a migration are blocked with a manual remediation. A pre-supervisor\ninstallation needs the documented one-time\n`scripts/bootstrap-updater.sh` host step; software cannot retroactively install its own\nprivileged supervisor.\n\nThe updater never transports or replaces `deploy/docker-compose.agnostic.yml`.\nUpdater protocol 1 pins its version-invariant bytes in\n`deploy/update-base-v1.sha256`; the signed generated override carries versioned image\ndigests. Changing that base requires a new updater protocol and manual bootstrap.",
    "console": []
   },
   {
@@ -6098,7 +6098,7 @@
    "page": "operations/deployment.md",
    "anchor": "production-boundaries",
    "heading": "Production boundaries",
-   "text": "Version 0.1 is a single-replica reference deployment, not a high-availability claim.\nThere is no complete schema-migration framework, durable receipt ledger for every push\ntransport, or built-in secret manager. Read Known limitations\nbefore admitting sensitive or loss-intolerant data.\n\nApplication jobs use strict-CAS claims and renewable leases, but their runner,\ninvestigation priority gate, export assembly slot, Inbox/SSE publication, receivers,\nand schedulers remain process-local. Those narrow claims do not authorize multiple\nbackend replicas. See Background jobs.\n\nNext: Configuration reference, Background jobs,\nSecurity hardening, and Health, backup, and restore.",
+   "text": "Version 0.2 is a single-replica reference deployment, not a high-availability claim.\nThere is no complete schema-migration framework, durable receipt ledger for every push\ntransport, or built-in secret manager. Read Known limitations\nbefore admitting sensitive or loss-intolerant data.\n\nApplication jobs use strict-CAS claims and renewable leases, but their runner,\ninvestigation priority gate, export assembly slot, Inbox/SSE publication, receivers,\nand schedulers remain process-local. Those narrow claims do not authorize multiple\nbackend replicas. See Background jobs.\n\nNext: Configuration reference, Background jobs,\nSecurity hardening, and Health, backup, and restore.",
    "console": []
   },
   {
@@ -6138,7 +6138,7 @@
    "page": "operations/configuration.md",
    "anchor": "durable-preferences",
    "heading": "Durable preferences",
-   "text": "`GET /api/settings` returns validated preferences, and `PUT /api/settings` updates\nthem. Important groups include sources/feeds, model routing, budget, auto-close policy,\nautopilot, threshold tuning, campaigns, baselines, rules, notifications, branding,\nRBAC, and realtime events.\n\nPrefer the UI and change one section at a time. An external full-document update can\noverwrite a concurrent administrator's change. General preferences do not have a\nuniversal revision/rollback interface in 0.1.",
+   "text": "`GET /api/settings` returns validated preferences, and `PUT /api/settings` updates\nthem. Important groups include sources/feeds, model routing, budget, auto-close policy,\nautopilot, threshold tuning, campaigns, baselines, rules, notifications, branding,\nRBAC, and realtime events.\n\nPrefer the UI and change one section at a time. An external full-document update can\noverwrite a concurrent administrator's change. General preferences do not have a\nuniversal revision/rollback interface in 0.2.",
    "console": []
   },
   {
@@ -6366,7 +6366,7 @@
    "page": "operations/security.md",
    "anchor": "authentication-and-sessions",
    "heading": "Authentication and sessions",
-   "text": "Authentication is off by default, so network isolation alone is not a safe shared\ndeployment posture. After enabling it, use the smallest built-in/custom roles, MFA for\nprivileged accounts, short session policy, and session revocation during response.\nValidate OIDC issuer, redirect URI, verified-email behavior, and client-secret storage.\n\nRate limiting is optional and process-local. It is not a replacement for an ingress\ngateway or provider quota. CSRF support requires a client token exchange that the 0.1\nweb UI does not automatically complete; test it before enabling.",
+   "text": "Authentication is off by default, so network isolation alone is not a safe shared\ndeployment posture. After enabling it, use the smallest built-in/custom roles, MFA for\nprivileged accounts, short session policy, and session revocation during response.\nValidate OIDC issuer, redirect URI, verified-email behavior, and client-secret storage.\n\nRate limiting is optional and process-local. It is not a replacement for an ingress\ngateway or provider quota. CSRF support requires a client token exchange that the 0.2\nweb UI does not automatically complete; test it before enabling.",
    "console": []
   },
   {
@@ -6467,7 +6467,7 @@
    "page": "operations/security.md",
    "anchor": "current-limitations",
    "heading": "Current limitations",
-   "text": "Version 0.1 does not claim multi-tenant isolation, complete high availability, a\ndatabase migration framework, an integrated secret manager, or certification for every\nadvertised source protocol. Review Known limitations\nand perform an environment-specific security assessment.\n\nSee Authentication,\nUsers and RBAC, and\nHealth, backup, and restore.",
+   "text": "Version 0.2 does not claim multi-tenant isolation, complete high availability, a\ndatabase migration framework, an integrated secret manager, or certification for every\nadvertised source protocol. Review Known limitations\nand perform an environment-specific security assessment.\n\nSee Authentication,\nUsers and RBAC, and\nHealth, backup, and restore.",
    "console": []
   },
   {
@@ -6563,7 +6563,7 @@
    "page": "operations/health-backup.md",
    "anchor": "limitations",
    "heading": "Limitations",
-   "text": "Agentic SOC 0.1 has no built-in backup scheduler or complete versioned database migration\nframework. A successful dump is not sufficient evidence; test a full restore and retain\nupstream data long enough to replay after failure.\n\nSee Background jobs, Upgrades,\nReset and recovery, and Troubleshooting.",
+   "text": "Agentic SOC 0.2 has no built-in backup scheduler or complete versioned database migration\nframework. A successful dump is not sufficient evidence; test a full restore and retain\nupstream data long enough to replay after failure.\n\nSee Background jobs, Upgrades,\nReset and recovery, and Troubleshooting.",
    "console": []
   },
   {
@@ -7067,7 +7067,7 @@
    "page": "operations/upgrades.md",
    "anchor": "rollback",
    "heading": "Rollback",
-   "text": "Rollback is not merely starting an older image. A newer version may have written state\nthat older code does not understand. Version 0.1 does not provide a general schema\nmigration framework. The v1 supervisor therefore accepts only signed plans whose\nmigration strategy is `none`, verifies a PostgreSQL custom-format backup before\nswitching, and retains it only for explicit break-glass recovery. Automatic in-flight,\ncancellation, and deliberate post-success rollback restore the prior application\nimages without rewriting PostgreSQL or discarding post-snapshot writes. Any release\nthat needs a schema migration is blocked from one-click installation and must follow\na release-specific manual procedure.",
+   "text": "Rollback is not merely starting an older image. A newer version may have written state\nthat older code does not understand. Version 0.2 does not provide a general schema\nmigration framework. The v1 supervisor therefore accepts only signed plans whose\nmigration strategy is `none`, verifies a PostgreSQL custom-format backup before\nswitching, and retains it only for explicit break-glass recovery. Automatic in-flight,\ncancellation, and deliberate post-success rollback restore the prior application\nimages without rewriting PostgreSQL or discarding post-snapshot writes. Any release\nthat needs a schema migration is blocked from one-click installation and must follow\na release-specific manual procedure.",
    "console": []
   },
   {
@@ -7091,7 +7091,7 @@
    "page": "operations/upgrades.md",
    "anchor": "rollback-forward-compatibility",
    "heading": "Rollback forward compatibility",
-   "text": "The CI rollback lane (`scripts/rollback_lane.py`) boots this release on PostgreSQL,\nwrites the data it introduces (an audit export job, the migrated runbook corpus, changed\n`runbooks.*` settings), then boots the previous release pinned in\n`scripts/rollback_previous_release.json` on that data and checks health, the corpus and\nthe settings, and finally boots this release again. A second scenario repeats the steps\nwith this release as the previous one and plants synthetic future data (an unknown job\nkind, unknown preference keys, a marker-identified corpus) that it must keep, so the lane\ngates this release's own forward contract whatever the pin is. When a release is cut, pin\nit as the previous release for the next one, and set `forward_contract` to `true` once\nthe pinned release carries this contract, so the pinned scenario plants that data too.\n\nStable fixes start on a focused branch from the affected source, merge into\n`Testing`, pass the same acceptance gate, and promote forward to `main` as a patch\nrelease. Emergency timing may shorten review, but it must not reverse the permanent\nTesting-to-Stable direction or patch only `main`.\n\nSee Version 0.1,\nDocumentation versions, and\nHealth, backup, and restore.",
+   "text": "The CI rollback lane (`scripts/rollback_lane.py`) boots this release on PostgreSQL,\nwrites the data it introduces (an audit export job, the migrated runbook corpus, changed\n`runbooks.*` settings), then boots the previous release pinned in\n`scripts/rollback_previous_release.json` on that data and checks health, the corpus and\nthe settings, and finally boots this release again. A second scenario repeats the steps\nwith this release as the previous one and plants synthetic future data (an unknown job\nkind, unknown preference keys, a marker-identified corpus) that it must keep, so the lane\ngates this release's own forward contract whatever the pin is. When a release is cut, pin\nit as the previous release for the next one, and set `forward_contract` to `true` once\nthe pinned release carries this contract, so the pinned scenario plants that data too.\n\nStable fixes start on a focused branch from the affected source, merge into\n`Testing`, pass the same acceptance gate, and promote forward to `main` as a patch\nrelease. Emergency timing may shorten review, but it must not reverse the permanent\nTesting-to-Stable direction or patch only `main`.\n\nSee Version 0.2,\nDocumentation versions, and\nHealth, backup, and restore.",
    "console": []
   },
   {
@@ -7283,7 +7283,7 @@
    "page": "concepts/architecture.md",
    "anchor": "",
    "heading": "",
-   "text": "This page applies to **Agentic SOC 0.1**. It is for evaluators, operators, and integrators\nwho need the shipped system boundary before configuring data or automation.\n\nAgentic SOC is a read-only security-triage layer. It receives or reads security events,\nnormalizes them to OCSF, performs deterministic reduction and risk work, admits a\nbounded subset to model-backed investigation, and stores an auditable case. It does\nnot replace or modify the upstream SIEM, EDR, queue, or event pipeline.",
+   "text": "This page applies to **Agentic SOC 0.2**. It is for evaluators, operators, and integrators\nwho need the shipped system boundary before configuring data or automation.\n\nAgentic SOC is a read-only security-triage layer. It receives or reads security events,\nnormalizes them to OCSF, performs deterministic reduction and risk work, admits a\nbounded subset to model-backed investigation, and stores an auditable case. It does\nnot replace or modify the upstream SIEM, EDR, queue, or event pipeline.",
    "console": []
   },
   {
@@ -7351,10 +7351,10 @@
    "console": []
   },
   {
-   "id": "concepts/architecture#agentic-soc-01-boundaries:0",
+   "id": "concepts/architecture#agentic-soc-02-boundaries:0",
    "page": "concepts/architecture.md",
-   "anchor": "agentic-soc-01-boundaries",
-   "heading": "Agentic SOC 0.1 boundaries",
+   "anchor": "agentic-soc-02-boundaries",
+   "heading": "Agentic SOC 0.2 boundaries",
    "text": "The API, receivers, polling, schedules, correlation, and investigation run in one\nbackend process. Operate one backend replica. HTTP push processing has no durable\nreceipt inbox before correlation, and the push live-tail and realtime replay buffers\nare process-local. Several connectors require transport-specific durability testing.\n\nThese are explicit evaluation constraints, not properties of the target scale-out\ndesign. See Known limitations.\n\nApplication background jobs make accepted long work durable across Console navigation,\nreload, and ordinary backend restart recovery. They do not create a distributed worker\nplane: job execution, investigation priority, export assembly, and realtime publication\nare process-local, and the wider application still has single-replica authorities. The\nseparate supervised-updater job protocol is unchanged. See\nBackground jobs.",
    "console": []
   },
@@ -7363,7 +7363,7 @@
    "page": "concepts/terminology.md",
    "anchor": "",
    "heading": "",
-   "text": "This glossary applies to **Agentic SOC 0.1**. Use these names in source configuration,\noperator procedures, API integrations, and support requests.",
+   "text": "This glossary applies to **Agentic SOC 0.2**. Use these names in source configuration,\noperator procedures, API integrations, and support requests.",
    "console": []
   },
   {
@@ -7379,7 +7379,7 @@
    "page": "concepts/terminology.md",
    "anchor": "product-and-release-names",
    "heading": "Product and release names",
-   "text": "Do not use “Bleeding Edge,” `next`, or “alpha” for the active 0.1 release model.",
+   "text": "Do not use “Bleeding Edge,” `next`, or “alpha” for the active 0.2 release model.",
    "console": []
   },
   {
@@ -7443,7 +7443,7 @@
    "page": "concepts/ocsf.md",
    "anchor": "",
    "heading": "",
-   "text": "This page applies to **Agentic SOC 0.1** and is for source integrators and operators\nvalidating field mapping. Agentic SOC pins its canonical event subset to **OCSF 1.4.0**.\n\nEvery connector converts its native record into the same event model before\ncorrelation, risk, investigation, or case management sees it. This keeps the engine\nsource-neutral while preserving the original record for review.",
+   "text": "This page applies to **Agentic SOC 0.2** and is for source integrators and operators\nvalidating field mapping. Agentic SOC pins its canonical event subset to **OCSF 1.4.0**.\n\nEvery connector converts its native record into the same event model before\ncorrelation, risk, investigation, or case management sees it. This keeps the engine\nsource-neutral while preserving the original record for review.",
    "console": []
   },
   {
@@ -7487,10 +7487,10 @@
    "console": []
   },
   {
-   "id": "concepts/ocsf#agentic-soc-01-boundaries:0",
+   "id": "concepts/ocsf#agentic-soc-02-boundaries:0",
    "page": "concepts/ocsf.md",
-   "anchor": "agentic-soc-01-boundaries",
-   "heading": "Agentic SOC 0.1 boundaries",
+   "anchor": "agentic-soc-02-boundaries",
+   "heading": "Agentic SOC 0.2 boundaries",
    "text": "The model is a pragmatic OCSF subset, not the full taxonomy or a published OCSF\nconformance profile. Mapping coverage varies by source, and immutable mapping\nversions, shadow comparison, drift monitoring, and one-click rollback are not yet a\ncomplete shipped lifecycle.",
    "console": []
   },
@@ -7499,7 +7499,7 @@
    "page": "concepts/deterministic-decisions.md",
    "anchor": "",
    "heading": "",
-   "text": "This page applies to **Agentic SOC 0.1**. It explains the central safety contract for\nanalysts, administrators, and integrators: **the model supplies a verdict; code owns\nthe consequential case decision**.",
+   "text": "This page applies to **Agentic SOC 0.2**. It explains the central safety contract for\nanalysts, administrators, and integrators: **the model supplies a verdict; code owns\nthe consequential case decision**.",
    "console": []
   },
   {
@@ -7587,7 +7587,7 @@
    "page": "concepts/state-audit-cost.md",
    "anchor": "",
    "heading": "",
-   "text": "This page applies to **Agentic SOC 0.1** and is for operators and administrators planning\nstorage, retention, accountability, and spend controls.",
+   "text": "This page applies to **Agentic SOC 0.2** and is for operators and administrators planning\nstorage, retention, accountability, and spend controls.",
    "console": []
   },
   {
@@ -7667,7 +7667,7 @@
    "page": "concepts/state-audit-cost.md",
    "anchor": "secrets-are-not-state",
    "heading": "Secrets are not state",
-   "text": "Persisted configuration stores secret presence, not secret values. Environment\nvariables provide the durable boot-time secret path. Values entered through the UI\nor runtime secret endpoints are memory-only in Agentic SOC 0.1 and disappear on restart.\n\nDo not include `.env`, access tokens, API keys, or raw notification credentials in\nbackups, support bundles, screenshots, or audit annotations.",
+   "text": "Persisted configuration stores secret presence, not secret values. Environment\nvariables provide the durable boot-time secret path. Values entered through the UI\nor runtime secret endpoints are memory-only in Agentic SOC 0.2 and disappear on restart.\n\nDo not include `.env`, access tokens, API keys, or raw notification credentials in\nbackups, support bundles, screenshots, or audit annotations.",
    "console": []
   },
   {
@@ -7679,10 +7679,10 @@
    "console": []
   },
   {
-   "id": "concepts/state-audit-cost#agentic-soc-01-boundaries:0",
+   "id": "concepts/state-audit-cost#agentic-soc-02-boundaries:0",
    "page": "concepts/state-audit-cost.md",
-   "anchor": "agentic-soc-01-boundaries",
-   "heading": "Agentic SOC 0.1 boundaries",
+   "anchor": "agentic-soc-02-boundaries",
+   "heading": "Agentic SOC 0.2 boundaries",
    "text": "SQL setup uses idempotent schema creation rather than an ordered migration ledger.\nBackup, restore, forward-upgrade, interrupted-migration, and downgrade guarantees\nmust be established for your environment before relying on persistent production\nstate.\n\nThe job registry's leases and the process-local investigation/export gates do not\nremove the supported single-backend-replica constraint. Related LLM Batch records are\na separate provider-job projection, and the updater retains its separate supervisor\nstate. See Background jobs for those boundaries.",
    "console": []
   },
@@ -7691,22 +7691,22 @@
    "page": "architecture/ingestion.md",
    "anchor": "",
    "heading": "",
-   "text": "Agentic SOC treats **events**, **detections**, **alerts**, **cases**, and **campaigns** as\ndifferent records. Keeping those boundaries explicit prevents alert duplication,\nkeeps source provenance intact, and lets every raw event receive cheap deterministic\nprocessing without sending every event to a model.\n\nThis page deliberately separates the **version 0.1 implementation** from later\ndurability and horizontal-scale work. Future-state diagrams are design direction,\nnot claims about the current release.",
+   "text": "Agentic SOC treats **events**, **detections**, **alerts**, **cases**, and **campaigns** as\ndifferent records. Keeping those boundaries explicit prevents alert duplication,\nkeeps source provenance intact, and lets every raw event receive cheap deterministic\nprocessing without sending every event to a model.\n\nThis page deliberately separates the **version 0.2 implementation** from later\ndurability and horizontal-scale work. Future-state diagrams are design direction,\nnot claims about the current release.",
    "console": []
   },
   {
-   "id": "architecture/ingestion#version-01-implementation:0",
+   "id": "architecture/ingestion#version-02-implementation:0",
    "page": "architecture/ingestion.md",
-   "anchor": "version-01-implementation",
-   "heading": "Version 0.1 implementation",
-   "text": "| Layer | What is implemented | Version 0.1 boundary |\n|---|---|---|\n| Connect | 3 pull connectors and 16 push/queue/object-store receiver adapters; all clients in the default `full` image | Live protocol/vendor certification is not yet published; the opt-in `core` image omits cloud/queue clients |\n| Normalise | ECS and generic mappings into the OCSF 1.4 event model, with unmapped/raw catch-alls | Mapping coverage varies by source; OCSF conformance profiles are not yet published |\n| Ingest | Per-source/feed pull cursors with PIT/`search_after`, bounded late overlap; synchronous push processing with retryable failures | No durable receipt/inbox exists before push processing; several receiver checkpoints are process-local |\n| Detect | Source alerts, deterministic routing/risk, rules, persisted aggregate source/cluster baselines, and an event-detection funnel | Realtime baseline signals are advisory; automatic anomaly promotion uses the separately gated event funnel |\n| Correlate | Entity strategies, source-scoped case signatures, cross-source related-case links, and campaigns | An open case can still over-merge distant/rule-distinct episodes within one source |\n| Investigate | Cheap routing, cached enrichment, compact evidence, two-tier model path, one cost ledger, and a hard daily preflight budget | Investigation is inline rather than a durable priority queue |\n| Decide | Pure policy over verdict, confidence, risk, and operator settings | This is the release invariant: models do not close cases directly |\n| Present | Cases, investigation trace, memory/RAG, audit, coverage, metrics, and collaboration | Push live-tail evidence is a volatile per-process ring |",
+   "anchor": "version-02-implementation",
+   "heading": "Version 0.2 implementation",
+   "text": "| Layer | What is implemented | Version 0.2 boundary |\n|---|---|---|\n| Connect | 3 pull connectors and 16 push/queue/object-store receiver adapters; all clients in the default `full` image | Live protocol/vendor certification is not yet published; the opt-in `core` image omits cloud/queue clients |\n| Normalise | ECS and generic mappings into the OCSF 1.4 event model, with unmapped/raw catch-alls | Mapping coverage varies by source; OCSF conformance profiles are not yet published |\n| Ingest | Per-source/feed pull cursors with PIT/`search_after`, bounded late overlap; synchronous push processing with retryable failures | No durable receipt/inbox exists before push processing; several receiver checkpoints are process-local |\n| Detect | Source alerts, deterministic routing/risk, rules, persisted aggregate source/cluster baselines, and an event-detection funnel | Realtime baseline signals are advisory; automatic anomaly promotion uses the separately gated event funnel |\n| Correlate | Entity strategies, source-scoped case signatures, cross-source related-case links, and campaigns | An open case can still over-merge distant/rule-distinct episodes within one source |\n| Investigate | Cheap routing, cached enrichment, compact evidence, two-tier model path, one cost ledger, and a hard daily preflight budget | Investigation is inline rather than a durable priority queue |\n| Decide | Pure policy over verdict, confidence, risk, and operator settings | This is the release invariant: models do not close cases directly |\n| Present | Cases, investigation trace, memory/RAG, audit, coverage, metrics, and collaboration | Push live-tail evidence is a volatile per-process ring |",
    "console": []
   },
   {
-   "id": "architecture/ingestion#version-01-implementation:1",
+   "id": "architecture/ingestion#version-02-implementation:1",
    "page": "architecture/ingestion.md",
-   "anchor": "version-01-implementation",
-   "heading": "Version 0.1 implementation",
+   "anchor": "version-02-implementation",
+   "heading": "Version 0.2 implementation",
    "text": "See Known limitations for the release blockers\nbehind these boundaries.",
    "console": []
   },
@@ -7771,7 +7771,7 @@
    "page": "architecture/ingestion.md",
    "anchor": "investigation-admission-and-cost",
    "heading": "Investigation admission and cost",
-   "text": "The investigation queue, not the transport callback, is the spend boundary. A\npriority score can combine source severity, deterministic risk, asset criticality,\nidentity privilege, detector confidence, source reliability, campaign membership,\nage, and analyst/SLA urgency.\n\nCost controls, in order:\n\n1. parse, validate, deduplicate, and suppress deterministically;\n2. run rules, baselines, entity correlation, and risk scoring without a model;\n3. cache enrichment by indicator and provider TTL;\n4. assemble a bounded evidence packet with counts, top entities, timeline, and\n   representative references—not a raw-log dump;\n5. use the cheap router only when deterministic routing is insufficient;\n6. reserve the strong model for admitted candidates;\n7. batch non-urgent work, enforce provider concurrency, and meter every call;\n8. route budget exhaustion to human review instead of dropping or auto-closing.\n\nVersion 0.1 defaults to a hard `$10/day` preflight ceiling with an 80% warning. New\nprovider calls stop at the ceiling and the case fails safe to `NEEDS_HUMAN`. Because\nthe check is not an atomic spend reservation, already in-flight calls can complete\nslightly beyond it; provider-side budgets remain the final billing backstop.",
+   "text": "The investigation queue, not the transport callback, is the spend boundary. A\npriority score can combine source severity, deterministic risk, asset criticality,\nidentity privilege, detector confidence, source reliability, campaign membership,\nage, and analyst/SLA urgency.\n\nCost controls, in order:\n\n1. parse, validate, deduplicate, and suppress deterministically;\n2. run rules, baselines, entity correlation, and risk scoring without a model;\n3. cache enrichment by indicator and provider TTL;\n4. assemble a bounded evidence packet with counts, top entities, timeline, and\n   representative references—not a raw-log dump;\n5. use the cheap router only when deterministic routing is insufficient;\n6. reserve the strong model for admitted candidates;\n7. batch non-urgent work, enforce provider concurrency, and meter every call;\n8. route budget exhaustion to human review instead of dropping or auto-closing.\n\nVersion 0.2 defaults to a hard `$10/day` preflight ceiling with an 80% warning. New\nprovider calls stop at the ceiling and the case fails safe to `NEEDS_HUMAN`. Because\nthe check is not an atomic spend reservation, already in-flight calls can complete\nslightly beyond it; provider-side budgets remain the final billing backstop.",
    "console": []
   },
   {
@@ -7795,7 +7795,7 @@
    "page": "architecture/ingestion.md",
    "anchor": "scale-out-roadmap",
    "heading": "Scale-out roadmap",
-   "text": "Version 0.1 runs API, receivers, polling, scheduling, correlation, and investigation\ninside one backend process. Do not add replicas until the process-local coordination\nis replaced.\n\n| Role | Partition/lease | Scale signal | Scale-down floor |\n|---|---|---|---|\n| API | stateless behind ingress | request concurrency and latency | 1 |\n| Source controller | lease per source/feed or broker partition | poll lag, broker partitions | 1 owner per active pull source |\n| Normaliser | receipt partition | queue depth and oldest age | 0 when receipts are empty |\n| Detector/correlator | tenant + stable entity hash | events/sec, partition lag, state-store latency | 1 per active partition set |\n| Investigator | priority queue with provider-aware lease | oldest high-priority age, queue depth, provider limits | warm 1 for critical SLO; low-priority pool may reach 0 |\n| Scheduler | leader lease + idempotent job key | scheduled-job lag | 1 elected owner |\n| Realtime gateway | shared event stream, not process memory | subscriber connections | 1 |",
+   "text": "Version 0.2 runs API, receivers, polling, scheduling, correlation, and investigation\ninside one backend process. Do not add replicas until the process-local coordination\nis replaced.\n\n| Role | Partition/lease | Scale signal | Scale-down floor |\n|---|---|---|---|\n| API | stateless behind ingress | request concurrency and latency | 1 |\n| Source controller | lease per source/feed or broker partition | poll lag, broker partitions | 1 owner per active pull source |\n| Normaliser | receipt partition | queue depth and oldest age | 0 when receipts are empty |\n| Detector/correlator | tenant + stable entity hash | events/sec, partition lag, state-store latency | 1 per active partition set |\n| Investigator | priority queue with provider-aware lease | oldest high-priority age, queue depth, provider limits | warm 1 for critical SLO; low-priority pool may reach 0 |\n| Scheduler | leader lease + idempotent job key | scheduled-job lag | 1 elected owner |\n| Realtime gateway | shared event stream, not process memory | subscriber connections | 1 |",
    "console": []
   },
   {
@@ -7819,7 +7819,7 @@
    "page": "reference/configuration.md",
    "anchor": "",
    "heading": "",
-   "text": "Agentic SOC 0.1 separates credentials and process wiring from validated application\npreferences. Keep that boundary intact: a secret is never an ordinary setting.",
+   "text": "Agentic SOC 0.2 separates credentials and process wiring from validated application\npreferences. Keep that boundary intact: a secret is never an ordinary setting.",
    "console": []
   },
   {
@@ -7883,7 +7883,7 @@
    "page": "reference/configuration.md",
    "anchor": "common-backend-environment-variables",
    "heading": "Common backend environment variables",
-   "text": "The reference standalone Compose file maps the SSO and notification JSON maps. It\ndoes **not** map a `TLSOC_CONNECTOR_SECRETS` variable in 0.1. To boot per-source\nconnector secrets from the environment, pass the backend's unprefixed\n`CONNECTOR_SECRETS` explicitly or add a deliberate Compose mapping.\n\n`JOBS_ARTIFACT_DIR` is not a StateStore selector. Job metadata and CAS leases remain in\nthe selected state backend; only downloadable ZIP bytes live in this directory. The\nserver creates private modes, verifies size/SHA-256 at download, and retains at most 50\nattached artifacts. Changing the path does not migrate old files. See\nBackground jobs.\n\nThe updater-managed standalone Compose file is intentionally byte-pinned by its v1\nupgrade protocol and does not gain a new volume in this release. Its files survive a\nbackend process or ordinary container restart, but not a container replacement. Use a\nreviewed Compose override/bind mount when that installation needs longer retention;\ndo not repurpose the updater control/state volumes.",
+   "text": "The reference standalone Compose file maps the SSO and notification JSON maps. It\ndoes **not** map a `TLSOC_CONNECTOR_SECRETS` variable in 0.2. To boot per-source\nconnector secrets from the environment, pass the backend's unprefixed\n`CONNECTOR_SECRETS` explicitly or add a deliberate Compose mapping.\n\n`JOBS_ARTIFACT_DIR` is not a StateStore selector. Job metadata and CAS leases remain in\nthe selected state backend; only downloadable ZIP bytes live in this directory. The\nserver creates private modes, verifies size/SHA-256 at download, and retains at most 50\nattached artifacts. Changing the path does not migrate old files. See\nBackground jobs.\n\nThe updater-managed standalone Compose file is intentionally byte-pinned by its v1\nupgrade protocol and does not gain a new volume in this release. Its files survive a\nbackend process or ordinary container restart, but not a container replacement. Use a\nreviewed Compose override/bind mount when that installation needs longer retention;\ndo not repurpose the updater control/state volumes.",
    "console": []
   },
   {
@@ -7907,7 +7907,7 @@
    "page": "reference/configuration.md",
    "anchor": "state-backends",
    "heading": "State backends",
-   "text": "`STATE_BACKEND` controls only Agentic SOC-owned state: cases, audit, usage, preferences,\ncursors, users/sessions, collaboration, baselines, campaigns, rule versions, and\nknowledge/vector records. Connector credentials and external telemetry remain outside\nthat store.\n\n| Value | Connection | 0.1 behavior |\n|---|---|---|\n| `postgres` | `postgresql+asyncpg://...` | Recommended standalone persistent profile; pgvector backs vector retrieval |\n| `elasticsearch` | `ES_URL` plus `ES_MGMT_API_KEY` | Stores state in dedicated `tlsoc-agent-*` indices; the default when running the backend directly |\n| `sqlite` | `sqlite+aiosqlite:///path/to/tlsoc.db` | Single-node file-backed profile; defaults to `./tlsoc.db` if the URL is omitted |\n\nThe standalone Compose stack fixes the backend to PostgreSQL and derives\n`STATE_DB_URL` from `TLSOC_PG_*`. The legacy ELK merge uses Elasticsearch state.\nWhen the Elasticsearch state path cannot initialize, the current implementation can\ndegrade to in-memory state; monitor readiness and do not mistake that fallback for\ndurable operation.",
+   "text": "`STATE_BACKEND` controls only Agentic SOC-owned state: cases, audit, usage, preferences,\ncursors, users/sessions, collaboration, baselines, campaigns, rule versions, and\nknowledge/vector records. Connector credentials and external telemetry remain outside\nthat store.\n\n| Value | Connection | 0.2 behavior |\n|---|---|---|\n| `postgres` | `postgresql+asyncpg://...` | Recommended standalone persistent profile; pgvector backs vector retrieval |\n| `elasticsearch` | `ES_URL` plus `ES_MGMT_API_KEY` | Stores state in dedicated `tlsoc-agent-*` indices; the default when running the backend directly |\n| `sqlite` | `sqlite+aiosqlite:///path/to/tlsoc.db` | Single-node file-backed profile; defaults to `./tlsoc.db` if the URL is omitted |\n\nThe standalone Compose stack fixes the backend to PostgreSQL and derives\n`STATE_DB_URL` from `TLSOC_PG_*`. The legacy ELK merge uses Elasticsearch state.\nWhen the Elasticsearch state path cannot initialize, the current implementation can\ndegrade to in-memory state; monitor readiness and do not mistake that fallback for\ndurable operation.",
    "console": []
   },
   {
@@ -7947,7 +7947,7 @@
    "page": "reference/configuration.md",
    "anchor": "durable-preferences",
    "heading": "Durable preferences",
-   "text": "Every `Preferences` field has a default. Major blocks include:\n\n- sources, feeds, OCSF field mappings, polling, and data scope;\n- correlation, risk, rules, baselines, campaigns, threshold tuning, and autopilot;\n- model routing, concurrency caps, batch processing, budgets, pricing overlays, and the\n  chat assistant's bounds;\n- deterministic auto-close policy, the auto-close review sample, analyst rule policies,\n  case ID format, priority, and SLA targets;\n- runbooks, RAG, memory, enrichment, threat context, personas, and analyst-precedent\n  promotion, window fairness, and futility reporting;\n- auth policy, MFA/SSO metadata, RBAC, sessions, the Team activity page, notifications,\n  and realtime events;\n- branding, terminology, themes, saved views, dashboard defaults, and the desired\n  own-state storage lifecycle;\n- public release-source discovery repository, Stable/Testing refs, and cache interval.\n\n`PUT /api/settings` deep-merges a JSON object and validates the resulting complete\npreferences model. Prefer small section-specific changes and re-read after updating.\nA malformed value is rejected rather than persisted. General preference updates do\nnot provide a universal revision history in 0.1; detection rules have their own\nversion ledger and rollback endpoints.",
+   "text": "Every `Preferences` field has a default. Major blocks include:\n\n- sources, feeds, OCSF field mappings, polling, and data scope;\n- correlation, risk, rules, baselines, campaigns, threshold tuning, and autopilot;\n- model routing, concurrency caps, batch processing, budgets, pricing overlays, and the\n  chat assistant's bounds;\n- deterministic auto-close policy, the auto-close review sample, analyst rule policies,\n  case ID format, priority, and SLA targets;\n- runbooks, RAG, memory, enrichment, threat context, personas, and analyst-precedent\n  promotion, window fairness, and futility reporting;\n- auth policy, MFA/SSO metadata, RBAC, sessions, the Team activity page, notifications,\n  and realtime events;\n- branding, terminology, themes, saved views, dashboard defaults, and the desired\n  own-state storage lifecycle;\n- public release-source discovery repository, Stable/Testing refs, and cache interval.\n\n`PUT /api/settings` deep-merges a JSON object and validates the resulting complete\npreferences model. Prefer small section-specific changes and re-read after updating.\nA malformed value is rejected rather than persisted. General preference updates do\nnot provide a universal revision history in 0.2; detection rules have their own\nversion ledger and rollback endpoints.",
    "console": []
   },
   {
@@ -8127,7 +8127,7 @@
    "page": "reference/permissions.md",
    "anchor": "",
    "heading": "",
-   "text": "Agentic SOC 0.1 authorizes actions with a `resource:action` vocabulary. Six built-in roles\nship with the Agentic SOC API. Organization administrators can add custom roles, inherit\nfrom an existing role, grant narrow actions, and apply explicit denies.",
+   "text": "Agentic SOC 0.2 authorizes actions with a `resource:action` vocabulary. Six built-in roles\nship with the Agentic SOC API. Organization administrators can add custom roles, inherit\nfrom an existing role, grant narrow actions, and apply explicit denies.",
    "console": []
   },
   {
@@ -8283,7 +8283,7 @@
    "page": "reference/security.md",
    "anchor": "",
    "heading": "",
-   "text": "Agentic SOC processes attacker-influenced telemetry and sends bounded summaries to language\nmodels. Version 0.1 therefore treats input data, model output, and operational actions\nas separate trust domains. The product's consequential safety rules are enforced in\ncode rather than delegated to a prompt.",
+   "text": "Agentic SOC processes attacker-influenced telemetry and sends bounded summaries to language\nmodels. Version 0.2 therefore treats input data, model output, and operational actions\nas separate trust domains. The product's consequential safety rules are enforced in\ncode rather than delegated to a prompt.",
    "console": []
   },
   {
@@ -8355,7 +8355,7 @@
    "page": "reference/security.md",
    "anchor": "http-hardening",
    "heading": "HTTP hardening",
-   "text": "Security headers are enabled by default and include CSP, frame denial, no-sniff, and a\nno-referrer policy; HSTS is emitted for HTTPS requests. The built-in rate limiter is\noptional, in-process, and per client IP. It is a coarse single-process guard, not a\ndistributed rate-control system.\n\nCSRF middleware is optional and off by default. In 0.1 it expects matching\n`tlsoc_csrf` cookie and `X-CSRF-Token` header values on unsafe requests, but the Agentic SOC\nConsole does not mint/echo that token end to end. Do not enable it without validating\nthe client flow or providing the exchange at the trusted proxy/application layer.",
+   "text": "Security headers are enabled by default and include CSP, frame denial, no-sniff, and a\nno-referrer policy; HSTS is emitted for HTTPS requests. The built-in rate limiter is\noptional, in-process, and per client IP. It is a coarse single-process guard, not a\ndistributed rate-control system.\n\nCSRF middleware is optional and off by default. In 0.2 it expects matching\n`tlsoc_csrf` cookie and `X-CSRF-Token` header values on unsafe requests, but the Agentic SOC\nConsole does not mint/echo that token end to end. Do not enable it without validating\nthe client flow or providing the exchange at the trusted proxy/application layer.",
    "console": []
   },
   {
@@ -8375,11 +8375,11 @@
    "console": []
   },
   {
-   "id": "reference/security#security-limits-in-01:0",
+   "id": "reference/security#security-limits-in-02:0",
    "page": "reference/security.md",
-   "anchor": "security-limits-in-01",
-   "heading": "Security limits in 0.1",
-   "text": "Agentic SOC 0.1 does not provide a built-in durable secret manager, default multi-tenant\nrow isolation, distributed rate limiting, or autonomous response containment. The\nreference service shape is single-backend oriented; multi-replica coordination and\nhigh availability require deployment-specific validation. Some transport receivers\ncannot acknowledge durably before process memory/state handling completes. Provider\nusage estimates are not a billing authority.\n\nRead the complete Known limitations and the\ndeployment-focused Security hardening guide.",
+   "anchor": "security-limits-in-02",
+   "heading": "Security limits in 0.2",
+   "text": "Agentic SOC 0.2 does not provide a built-in durable secret manager, default multi-tenant\nrow isolation, distributed rate limiting, or autonomous response containment. The\nreference service shape is single-backend oriented; multi-replica coordination and\nhigh availability require deployment-specific validation. Some transport receivers\ncannot acknowledge durably before process memory/state handling completes. Provider\nusage estimates are not a billing authority.\n\nRead the complete Known limitations and the\ndeployment-focused Security hardening guide.",
    "console": []
   },
   {

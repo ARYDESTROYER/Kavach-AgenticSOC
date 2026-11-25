@@ -140,7 +140,7 @@ destinations from the restore environment.
 
 ## Limitations
 
-Agentic SOC 0.1 has no built-in backup scheduler or complete versioned database migration
+Agentic SOC 0.2 has no built-in backup scheduler or complete versioned database migration
 framework. A successful dump is not sufficient evidence; test a full restore and retain
 upstream data long enough to replay after failure.
 

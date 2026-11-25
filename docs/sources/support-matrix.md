@@ -1,6 +1,6 @@
 ---
 title: Source support matrix
-description: Connector availability, dependencies, acknowledgement boundaries, and validation status for Agentic SOC 0.1.
+description: Connector availability, dependencies, acknowledgement boundaries, and validation status for Agentic SOC 0.2.
 ---
 
 # Source support matrix
@@ -41,7 +41,7 @@ metadata on the exact log patterns; never use an Elastic superuser,
 | Generic webhook | HTTP push | JSON, NDJSON, CEF, LEEF, GELF, key/value | Use bearer or HMAC authentication; `none` is only for a trusted reverse proxy/network |
 | Splunk HEC-compatible | HTTP push | HEC event envelope and token authentication | This is an inbound HEC receiver, not a native Splunk search connector |
 | Syslog | UDP/TCP/TLS listener | RFC 3164, RFC 5424, RFC 6587 TCP framing | UDP is lossy. TLS requires mounted certificate/private-key paths; optional client-CA verification enables mTLS. Selecting TLS fails closed when its material is missing. |
-| Local file/directory | File tail | Auto-detected text formats | Container path must be mounted; byte offsets are process-local in version 0.1 |
+| Local file/directory | File tail | Auto-detected text formats | Container path must be mounted; byte offsets are process-local in version 0.2 |
 | Redis Streams | Queue | Consumer group via the bundled Redis client | Production replay/claim behaviour and multi-replica ownership are not yet certified |
 
 The push path normalises and processes inline. HTTP ingestion returns a retryable
@@ -69,7 +69,7 @@ omit these clients and should not configure their adapters.
 | Google Cloud Storage | Object store | `google-cloud-storage` | Last object name is persisted; validate overwrite, lexicographic ordering, and late-object behaviour |
 | RabbitMQ | Queue | `aio-pika` | Validate publisher confirms/dead lettering on the source side and consumer recovery |
 | NATS / JetStream | Queue | `nats-py` | Use JetStream for durable consumption; core NATS alone is not replayable |
-| MQTT | Queue | `paho-mqtt` | Current callback schedules processing asynchronously, so protocol acknowledgement can precede successful processing; do not use as a loss-intolerant path in version 0.1 |
+| MQTT | Queue | `paho-mqtt` | Current callback schedules processing asynchronously, so protocol acknowledgement can precede successful processing; do not use as a loss-intolerant path in version 0.2 |
 
 The distribution contract verifies that every manifest dependency is present in the
 full requirement set and that the built wheel contains all modules, the 12 built-in

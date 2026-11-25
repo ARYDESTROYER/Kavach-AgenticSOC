@@ -1,6 +1,6 @@
 ---
 title: Quickstart
-description: Choose an Agentic SOC 0.1 checkout, run the deterministic demo, or bring up the standalone evaluation stack.
+description: Choose an Agentic SOC 0.2 checkout, run the deterministic demo, or bring up the standalone evaluation stack.
 ---
 
 # Quickstart

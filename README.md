@@ -77,7 +77,7 @@ What it is not:
   provenance. Per-source field mapping, with a mapping suggestion from a pasted sample.
 - **No skips, no duplicates on pull sources:** a durable cursor per pull source and feed,
   and cases that are idempotent by cluster signature. Receivers have no durable receipt
-  inbox in 0.1, so senders and brokers must retain and retry, and how durable each
+  inbox in 0.2, so senders and brokers must retain and retry, and how durable each
   receiver's checkpoint is depends on the receiver. The
   [source support matrix](docs/sources/support-matrix.md) lists each boundary.
 - **Comprehensive by default:** every enabled event is correlated and risk-scored. Only
@@ -274,7 +274,7 @@ source-derived data.
 | Service | Role |
 | --- | --- |
 | `tlsoc-webui` | nginx on host port 8080. Serves the Console and the `/docs` Help Center and proxies `/api/` to the backend. |
-| `tlsoc-backend` | FastAPI on port 8088 (also published for API clients and HTTP push senders). Runs connectors, receivers, engines and agents. One replica in 0.1. |
+| `tlsoc-backend` | FastAPI on port 8088 (also published for API clients and HTTP push senders). Runs connectors, receivers, engines and agents. One replica in 0.2. |
 | `tlsoc-postgres` | `pgvector/pgvector:pg16`, not published. All application state, on the `tlsoc-pgdata` volume. |
 | `tlsoc-redis` | `redis:7-alpine`, not published. Cache only, no persistence. |
 | `agentic-soc-updater` | Private update supervisor: read-only filesystem, all capabilities dropped. The only service that mounts the Docker socket; it applies signed releases that an administrator approves. |
@@ -503,7 +503,7 @@ else has a working default.
 | Operator settings | The state store | Yes | Sources and feeds, field mapping, models per role, `AutoClosePolicy`, budgets, automation, enrichment, notifications, users and roles, branding, retention |
 
 > [!WARNING]
-> **In version 0.1, secrets you type in the Console are kept in backend memory only.** A
+> **In version 0.2, secrets you type in the Console are kept in backend memory only.** A
 > provider key entered in the setup wizard or a source credential saved in a source editor
 > is lost when the backend restarts and must be entered again. Put every secret you need to
 > keep in `.env`.
@@ -626,7 +626,7 @@ check and how to run it locally.
 - The tags `v0.1.4` to `v0.1.12` are immutable historical records and are not installation
   sources. The [release pages](docs/releases/) explain each one.
 
-Known limits of 0.1: one backend replica; HTTP push has no durable receipt inbox, so senders
+Known limits of 0.2: one backend replica; HTTP push has no durable receipt inbox, so senders
 must retry; secrets entered in the Console are held in memory; several queue connectors
 still need transport-level validation. See [Release channels](docs/releases/channels.md),
 the [0.2.0 release notes](docs/releases/0.2.0.md), [Known limitations](docs/releases/known-limitations.md)

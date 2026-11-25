@@ -1,6 +1,6 @@
 ---
 title: Testing
-description: Backend, Console, API-contract, version, documentation, and release validation gates for Agentic SOC 0.1.
+description: Backend, Console, API-contract, version, documentation, and release validation gates for Agentic SOC 0.2.
 ---
 
 # Testing
@@ -445,7 +445,7 @@ Before promoting `Testing` to Stable:
    unexpected published asset inventory and prove the retry fails closed without
    upload, overwrite, or publication.
 9. Verify `/api/health/build-info`, image metadata, the native Pages deployment, and
-   the 0.1 Stable docs selector and aliases.
+   the 0.2 Stable docs selector and aliases.
 
 See [Development](index.md), [Compatibility](../reference/compatibility.md), and
 [Release channels](../releases/channels.md).

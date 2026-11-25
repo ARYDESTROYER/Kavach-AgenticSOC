@@ -1,6 +1,6 @@
 ---
 title: Troubleshooting
-description: Diagnose Agentic SOC 0.1 startup, readiness, authentication, source, model, notification, and UI failures.
+description: Diagnose Agentic SOC 0.2 startup, readiness, authentication, source, model, notification, and UI failures.
 ---
 
 # Troubleshooting

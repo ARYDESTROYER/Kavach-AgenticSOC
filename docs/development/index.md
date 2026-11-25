@@ -1,11 +1,11 @@
 ---
 title: Development
-description: Repository orientation, contribution flow, invariants, and development entry points for Agentic SOC 0.1.
+description: Repository orientation, contribution flow, invariants, and development entry points for Agentic SOC 0.2.
 ---
 
 # Development
 
-Agentic SOC 0.1 is developed as one repository containing the
+Agentic SOC 0.2 is developed as one repository containing the
 Agentic SOC API, Agentic SOC Console, deployment assets, and versioned documentation.
 
 ## Contribution flow
@@ -92,7 +92,7 @@ down whenever a change touches the relevant boundary.
 5. Update the hand-maintained domain types and Console client if the response shape changed.
 6. Add backend and frontend regression tests.
 7. Run the relevant test, lint, type, design, build, version, and docs gates.
-8. Update public documentation for behavior visible in version 0.1.
+8. Update public documentation for behavior visible in version 0.2.
 
 Read [Extensions](extensions.md) before adding a connector, provider, channel, tool,
 route family, or persistence implementation. Use [Testing](testing.md) for the

@@ -1,11 +1,11 @@
 ---
 title: State, audit, and cost
-description: Understand where Agentic SOC 0.1 stores its own data and how actions and model spend remain reviewable.
+description: Understand where Agentic SOC 0.2 stores its own data and how actions and model spend remain reviewable.
 ---
 
 # State, audit, and cost
 
-This page applies to **Agentic SOC 0.1** and is for operators and administrators planning
+This page applies to **Agentic SOC 0.2** and is for operators and administrators planning
 storage, retention, accountability, and spend controls.
 
 ## Source data and Agentic SOC state are different
@@ -161,7 +161,7 @@ recorded in the usage ledger. See
 
 Persisted configuration stores secret presence, not secret values. Environment
 variables provide the durable boot-time secret path. Values entered through the UI
-or runtime secret endpoints are memory-only in Agentic SOC 0.1 and disappear on restart.
+or runtime secret endpoints are memory-only in Agentic SOC 0.2 and disappear on restart.
 
 Do not include `.env`, access tokens, API keys, or raw notification credentials in
 backups, support bundles, screenshots, or audit annotations.
@@ -176,7 +176,7 @@ After onboarding or an incident exercise:
 4. verify a model call appears once in Cost; and
 5. compare the provider invoice with the Agentic SOC ledger.
 
-## Agentic SOC 0.1 boundaries
+## Agentic SOC 0.2 boundaries
 
 SQL setup uses idempotent schema creation rather than an ordered migration ledger.
 Backup, restore, forward-upgrade, interrupted-migration, and downgrade guarantees

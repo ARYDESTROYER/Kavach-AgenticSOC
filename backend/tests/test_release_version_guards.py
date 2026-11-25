@@ -15,6 +15,7 @@ never write through a link into the checkout.
 
 from __future__ import annotations
 
+import importlib.util
 import os
 import re
 import shutil
@@ -78,18 +79,32 @@ def _run(mirror: Path, **context: str) -> subprocess.CompletedProcess[str]:
     )
 
 
-def _empty_unreleased(mirror: Path) -> None:
+def _set_unreleased(mirror: Path, body: str) -> None:
+    """Replace the ``[Unreleased]`` body in the mirror, whatever the live one holds.
+
+    The live CHANGELOG changes state during a release: it carries notes on
+    ``Testing`` and reads ``No changes yet.`` after the frozen preparation. A case
+    that needs one state plants it, so it means the same thing on every branch.
+    """
     changelog = _materialize(mirror, "CHANGELOG.md")
     source = changelog.read_text(encoding="utf-8")
-    emptied, count = re.subn(
+    replaced, count = re.subn(
         r"^## \[Unreleased\]\s*$\n.*?(?=^## )",
-        "## [Unreleased]\n\nNo changes yet.\n\n",
+        lambda _match: f"## [Unreleased]\n\n{body}\n\n",
         source,
         count=1,
         flags=re.MULTILINE | re.DOTALL,
     )
     assert count == 1
-    changelog.write_text(emptied, encoding="utf-8")
+    changelog.write_text(replaced, encoding="utf-8")
+
+
+def _empty_unreleased(mirror: Path) -> None:
+    _set_unreleased(mirror, "No changes yet.")
+
+
+def _notes_under_unreleased(mirror: Path) -> None:
+    _set_unreleased(mirror, "### Added\n\n- A note the frozen preparation has not moved yet.")
 
 
 MAIN = {"TLSOC_SOURCE_REF": "refs/heads/main", "TLSOC_RELEASE_CHANNEL": "stable"}
@@ -125,7 +140,9 @@ def test_the_branch_passes(tmp_path: Path) -> None:
 def test_a_release_ref_refuses_notes_left_under_unreleased(
     tmp_path: Path, context: dict[str, str]
 ) -> None:
-    result = _run(_mirror(tmp_path), **context)
+    mirror = _mirror(tmp_path)
+    _notes_under_unreleased(mirror)
+    result = _run(mirror, **context)
     assert result.returncode == 1
     assert UNRELEASED_FAILURE in result.stderr
 
@@ -143,7 +160,9 @@ def test_a_release_ref_passes_with_an_empty_unreleased_section(
 
 
 def test_a_pull_request_into_testing_is_not_a_release_ref(tmp_path: Path) -> None:
-    result = _run(_mirror(tmp_path), **PR_INTO_TESTING)
+    mirror = _mirror(tmp_path)
+    _notes_under_unreleased(mirror)
+    result = _run(mirror, **PR_INTO_TESTING)
     assert result.returncode == 0, result.stderr
 
 
@@ -263,3 +282,58 @@ def test_the_backend_package_declares_apache_2() -> None:
     data = tomllib.loads((ROOT / "backend" / "pyproject.toml").read_text(encoding="utf-8"))
     assert data["project"]["license"] == "Apache-2.0"
     assert data["project"]["version"] == VERSION
+
+
+def _legacy_doc_lines() -> tuple[str, ...]:
+    spec = importlib.util.spec_from_file_location(
+        "build_docs_bundle_for_guards", ROOT / "scripts" / "build_docs_bundle.py"
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return tuple(module.legacy_lines(".".join(VERSION.split(".")[:2])))
+
+
+def _operator_docs() -> list[Path]:
+    """Operator documents that describe the running release in the present tense.
+
+    Release records (``docs/releases/``) name each line on purpose, and the research
+    folders are history, so neither is scanned.
+    """
+    pages = [ROOT / name for name in ("README.md", "INSTALL.md", "DEPLOY.md", "COMPATIBILITY.md")]
+    for page in sorted((ROOT / "docs").rglob("*.md")):
+        relative = page.relative_to(ROOT / "docs").parts
+        if relative[0] in {"releases", "research"}:
+            continue
+        pages.append(page)
+    return pages
+
+
+#: The Help Center screenshot's alt text describes the image as captured; it changes
+#: with the image (the screenshot refresh), not with the version move.
+_SCREENSHOT_MARKER = "help-center.webp"
+
+
+def test_no_operator_doc_calls_an_earlier_line_the_current_one() -> None:
+    """A version move updates the sentences that name the running line.
+
+    After 0.2.0, "This guide applies to Agentic SOC 0.1" or "Version 0.1 runs one
+    backend replica" in the installed Help Center reads as though the guide described
+    an older release. An earlier line may still be named as history: "the 0.1 line",
+    a version such as "0.1.12" or "0.1.x", an address such as "/docs/0.1/", and the
+    glossary row "**0.1**".
+    """
+    legacy = _legacy_doc_lines()
+    assert legacy, "a 0.2 or later tree has an earlier documentation line"
+    offenders: list[str] = []
+    for line in legacy:
+        pattern = re.compile(
+            rf"(?<![\w./*-]){re.escape(line)}(?!\.?\d|\.x)(?![/%\w×])(?! line)"
+        )
+        for page in _operator_docs():
+            for number, text in enumerate(page.read_text(encoding="utf-8").splitlines(), 1):
+                if _SCREENSHOT_MARKER in text:
+                    continue
+                if pattern.search(text):
+                    offenders.append(f"{page.relative_to(ROOT)}:{number}: {text.strip()[:120]}")
+    assert not offenders, "\n".join(offenders)

@@ -105,7 +105,7 @@ running cost is model API usage, which the Console meters in its cost ledger.
 | A model provider | Live investigations | An OpenAI key for the default GPT-5.6 Luna roles, another supported provider, or an OpenAI-compatible endpoint. Without a key the Console still runs, but no investigation can call a model: each cluster sent to investigation becomes a **Needs human** case whose recommended action names the missing key, and nothing is closed automatically. Only retrieval embeddings fall back to local ones. The `$0` mock model is used only by Demo Mode |
 | A read-only source credential | Pull sources | Scoped to the log indices Agentic SOC should read. Push sources need no source credential |
 
-Version 0.1 runs **one backend replica**. It is a single-host reference deployment, not a
+Version 0.2 runs **one backend replica**. It is a single-host reference deployment, not a
 high-availability design. Read [Known limitations](docs/releases/known-limitations.md) before
 admitting sensitive or loss-intolerant data.
 
@@ -919,7 +919,7 @@ Pass the file with `-f` on every command that creates or recreates containers, i
 Start narrow, prove the mapping with synthetic data, then widen.
 
 1. **Pick an implemented connector** from the [source support matrix](docs/sources/support-matrix.md).
-   Pull connectors in 0.1 are Elasticsearch, OpenSearch and Wazuh (through its indexer). Other
+   Pull connectors in 0.2 are Elasticsearch, OpenSearch and Wazuh (through its indexer). Other
    SIEM and EDR vendors can push to the webhook, HEC, syslog, queue or object-store receivers.
 2. **Use a least-privilege credential.** A pull key needs only `read` and `view_index_metadata` on
    the exact patterns. A queue or object-store credential should reach only its subscription,

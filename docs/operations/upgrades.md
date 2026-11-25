@@ -945,7 +945,7 @@ see [Runbooks](../intelligence/runbooks.md).
 ## Rollback
 
 Rollback is not merely starting an older image. A newer version may have written state
-that older code does not understand. Version 0.1 does not provide a general schema
+that older code does not understand. Version 0.2 does not provide a general schema
 migration framework. The v1 supervisor therefore accepts only signed plans whose
 migration strategy is `none`, verifies a PostgreSQL custom-format backup before
 switching, and retains it only for explicit break-glass recovery. Automatic in-flight,
@@ -997,6 +997,6 @@ Stable fixes start on a focused branch from the affected source, merge into
 release. Emergency timing may shorten review, but it must not reverse the permanent
 Testing-to-Stable direction or patch only `main`.
 
-See [Version 0.1](../releases/0.1.md),
+See [Version 0.2](../releases/0.2.md),
 [Documentation versions](../releases/documentation-versions.md), and
 [Health, backup, and restore](health-backup.md).

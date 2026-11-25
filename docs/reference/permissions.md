@@ -1,11 +1,11 @@
 ---
 title: Permissions
-description: Built-in Agentic SOC roles, resource-action grants, authorization modes, and custom-role behavior in version 0.1.
+description: Built-in Agentic SOC roles, resource-action grants, authorization modes, and custom-role behavior in version 0.2.
 ---
 
 # Permissions
 
-Agentic SOC 0.1 authorizes actions with a `resource:action` vocabulary. Six built-in roles
+Agentic SOC 0.2 authorizes actions with a `resource:action` vocabulary. Six built-in roles
 ship with the Agentic SOC API. Organization administrators can add custom roles, inherit
 from an existing role, grant narrow actions, and apply explicit denies.
 

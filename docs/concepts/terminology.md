@@ -1,11 +1,11 @@
 ---
 title: Terminology
-description: Use the stable Agentic SOC 0.1 names for the product, technical compatibility namespace, telemetry, cases, and releases.
+description: Use the stable Agentic SOC 0.2 names for the product, technical compatibility namespace, telemetry, cases, and releases.
 ---
 
 # Terminology
 
-This glossary applies to **Agentic SOC 0.1**. Use these names in source configuration,
+This glossary applies to **Agentic SOC 0.2**. Use these names in source configuration,
 operator procedures, API integrations, and support requests.
 
 ## Product and release names
@@ -26,7 +26,7 @@ operator procedures, API integrations, and support requests.
 | **0.1.11** | Immutable failed-publication record; images and plan verified, including inside the constrained updater, but post-verification cleanup failed before the canonical Release and assets existed |
 | **0.1.10** | Immutable failed-publication record; superseded and non-installable because its signed-release job stopped before a complete public release existed |
 
-Do not use “Bleeding Edge,” `next`, or “alpha” for the active 0.1 release model.
+Do not use “Bleeding Edge,” `next`, or “alpha” for the active 0.2 release model.
 
 ### Technical namespace compatibility
 

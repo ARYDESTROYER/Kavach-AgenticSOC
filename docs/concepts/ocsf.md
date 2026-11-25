@@ -1,11 +1,11 @@
 ---
 title: OCSF normalization
-description: Understand the canonical Agentic SOC 0.1 event shape, field mapping, severity, provenance, and lossless source data.
+description: Understand the canonical Agentic SOC 0.2 event shape, field mapping, severity, provenance, and lossless source data.
 ---
 
 # OCSF normalization
 
-This page applies to **Agentic SOC 0.1** and is for source integrators and operators
+This page applies to **Agentic SOC 0.2** and is for source integrators and operators
 validating field mapping. Agentic SOC pins its canonical event subset to **OCSF 1.4.0**.
 
 Every connector converts its native record into the same event model before
@@ -73,7 +73,7 @@ The source editor's sample analyzer is deterministic. It flattens a pasted sampl
 suggests field names, and does not persist the sample. An operator must review and
 save the mapping.
 
-## Agentic SOC 0.1 boundaries
+## Agentic SOC 0.2 boundaries
 
 The model is a pragmatic OCSF subset, not the full taxonomy or a published OCSF
 conformance profile. Mapping coverage varies by source, and immutable mapping

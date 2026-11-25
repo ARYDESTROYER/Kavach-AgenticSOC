@@ -1,11 +1,11 @@
 ---
 title: Configuration reference
-description: Configuration authorities, environment wiring, durable preferences, runtime-only secrets, and state backends in Agentic SOC 0.1.
+description: Configuration authorities, environment wiring, durable preferences, runtime-only secrets, and state backends in Agentic SOC 0.2.
 ---
 
 # Configuration reference
 
-Agentic SOC 0.1 separates credentials and process wiring from validated application
+Agentic SOC 0.2 separates credentials and process wiring from validated application
 preferences. Keep that boundary intact: a secret is never an ordinary setting.
 
 ## Configuration authorities
@@ -108,7 +108,7 @@ touches them. These additive fields do not require a version bump or SQL migrati
 | Audit client address | `TRUSTED_PROXIES` | Proxies whose forwarded address the audit log believes; default `tlsoc-webui`, the bundled Web UI service |
 
 The reference standalone Compose file maps the SSO and notification JSON maps. It
-does **not** map a `TLSOC_CONNECTOR_SECRETS` variable in 0.1. To boot per-source
+does **not** map a `TLSOC_CONNECTOR_SECRETS` variable in 0.2. To boot per-source
 connector secrets from the environment, pass the backend's unprefixed
 `CONNECTOR_SECRETS` explicitly or add a deliberate Compose mapping.
 
@@ -152,7 +152,7 @@ cursors, users/sessions, collaboration, baselines, campaigns, rule versions, and
 knowledge/vector records. Connector credentials and external telemetry remain outside
 that store.
 
-| Value | Connection | 0.1 behavior |
+| Value | Connection | 0.2 behavior |
 |---|---|---|
 | `postgres` | `postgresql+asyncpg://...` | Recommended standalone persistent profile; pgvector backs vector retrieval |
 | `elasticsearch` | `ES_URL` plus `ES_MGMT_API_KEY` | Stores state in dedicated `tlsoc-agent-*` indices; the default when running the backend directly |
@@ -258,7 +258,7 @@ Every `Preferences` field has a default. Major blocks include:
 `PUT /api/settings` deep-merges a JSON object and validates the resulting complete
 preferences model. Prefer small section-specific changes and re-read after updating.
 A malformed value is rejected rather than persisted. General preference updates do
-not provide a universal revision history in 0.1; detection rules have their own
+not provide a universal revision history in 0.2; detection rules have their own
 version ledger and rollback endpoints.
 
 ### Chat assistant bounds

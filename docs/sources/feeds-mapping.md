@@ -1,11 +1,11 @@
 ---
 title: Feeds and field mapping
-description: Scope Agentic SOC 0.1 collection with feed roles and validate source-to-OCSF field mappings.
+description: Scope Agentic SOC 0.2 collection with feed roles and validate source-to-OCSF field mappings.
 ---
 
 # Feeds and field mapping
 
-This guide applies to **Agentic SOC 0.1** and is for operators tuning what a source reads
+This guide applies to **Agentic SOC 0.2** and is for operators tuning what a source reads
 and how its records become canonical events.
 
 ## Feed roles
@@ -78,7 +78,7 @@ Do not paste credentials, tokens, or unnecessary sensitive values.
 7. Confirm below-floor event records remain visible without an unwanted model call.
 8. Confirm the same native record on retry is not duplicated.
 
-## Agentic SOC 0.1 boundaries
+## Agentic SOC 0.2 boundaries
 
 The analyzer does not profile a representative sample set, persist immutable mapping
 versions, shadow old and new mappings, detect drift, or roll back automatically.

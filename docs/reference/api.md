@@ -1,6 +1,6 @@
 ---
 title: API reference
-description: Curated Agentic SOC API endpoint groups, authentication, pagination, realtime events, and OpenAPI discovery for version 0.1.
+description: Curated Agentic SOC API endpoint groups, authentication, pagination, realtime events, and OpenAPI discovery for version 0.2.
 ---
 
 # API reference
@@ -30,11 +30,11 @@ that first-writer stamp. Legacy records are not backfilled and therefore return 
 an unset current build SHA is the explicit string `unknown`, not `null`. This is additive:
 it arrived with the 0.1.13 candidate, ships in `0.2.0` and requires no SQL migration.
 
-The committed 0.1 OpenAPI snapshot contains 221 paths. It is the
+The committed 0.2 OpenAPI snapshot contains 221 paths. It is the
 best source for current request-body models, enums, parameters, and operation IDs.
 Some handlers return plain dictionaries without a FastAPI `response_model`, so their
 generated response schema is intentionally less specific than the runtime payload.
-The specification also does not declare tags or an OpenAPI security scheme in 0.1.
+The specification also does not declare tags or an OpenAPI security scheme in 0.2.
 Runtime authentication and authorization still apply as described below.
 
 Because `/docs` and `/openapi.json` sit outside the protected `/api` router, restrict
@@ -1606,7 +1606,7 @@ chunks, credentials, or upstream logs; they are not a whole-application backup.
 
 ## Compatibility expectations
 
-The 0.1 API favors additive fields and stable existing paths, but it is still a
+The 0.2 API favors additive fields and stable existing paths, but it is still a
 pre-1.0 contract. Pin clients to an application patch version, tolerate unknown
 response fields, regenerate typed clients when the OpenAPI snapshot changes, and
 test against the `Testing` branch before promoting the accepted source tree to

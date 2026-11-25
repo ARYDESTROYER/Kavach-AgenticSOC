@@ -1,11 +1,11 @@
 ---
 title: Pull sources
-description: Configure read-only Elasticsearch, OpenSearch, and Wazuh sources in Agentic SOC 0.1.
+description: Configure read-only Elasticsearch, OpenSearch, and Wazuh sources in Agentic SOC 0.2.
 ---
 
 # Pull sources
 
-This guide applies to **Agentic SOC 0.1** and is for operators connecting Elasticsearch,
+This guide applies to **Agentic SOC 0.2** and is for operators connecting Elasticsearch,
 OpenSearch, or a Wazuh indexer. Agentic SOC polls each enabled source and feed on its own
 cursor and also uses a primary pull source for ad-hoc read-only investigation queries.
 
@@ -64,7 +64,7 @@ After saving:
 - confirm repeated polling attaches new evidence rather than creating a duplicate
   open case for the same active signature.
 
-## Agentic SOC 0.1 boundaries
+## Agentic SOC 0.2 boundaries
 
 The OpenSearch-compatible offset fallback is not claimed exactly-once while a live
 index refreshes. Late-arrival acceptance is bounded by time, page count, and recent-ID

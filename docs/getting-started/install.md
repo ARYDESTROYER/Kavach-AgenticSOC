@@ -1,11 +1,11 @@
 ---
 title: Install Agentic SOC
-description: Start the recommended Agentic SOC 0.1 evaluation stack and verify its public health checks.
+description: Start the recommended Agentic SOC 0.2 evaluation stack and verify its public health checks.
 ---
 
 # Install Agentic SOC
 
-This guide applies to **Agentic SOC 0.1** and is for operators installing the recommended
+This guide applies to **Agentic SOC 0.2** and is for operators installing the recommended
 self-contained evaluation stack. It runs PostgreSQL with pgvector, Redis, the Agentic SOC
 API, and the nginx-served Agentic SOC Console. Your SIEM or event source remains separate
 and read-only.
@@ -218,7 +218,7 @@ The bundled Console proxy already allows it on that path.
 
 !!! warning "Secrets entered later in the UI"
 
-    In Agentic SOC 0.1, runtime-entered source, notification, SSO, and local-model secret
+    In Agentic SOC 0.2, runtime-entered source, notification, SSO, and local-model secret
     values live in process memory. They must be re-entered after a backend restart.
     Environment or an external deployment secret mechanism is the durable boot-time
     path.

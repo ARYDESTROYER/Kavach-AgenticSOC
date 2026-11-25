@@ -5,7 +5,7 @@ description: Choose the shortest supported path from a first look at Agentic SOC
 
 # Getting started
 
-These guides apply to **Agentic SOC 0.1**. They take you from an empty checkout to a
+These guides apply to **Agentic SOC 0.2**. They take you from an empty checkout to a
 working console, a configured source, and a case whose provenance you can verify.
 
 ## Choose a path
@@ -35,7 +35,7 @@ At the end of the onboarding path:
 
 !!! note "Evaluation boundary"
 
-    Agentic SOC 0.1 is designed for a single backend replica. Some runtime-entered
+    Agentic SOC 0.2 is designed for a single backend replica. Some runtime-entered
     secrets and push-source evidence are memory-only. Keep the authoritative event
     in its source and read the [known limitations](../releases/known-limitations.md)
     before connecting sensitive or production data.

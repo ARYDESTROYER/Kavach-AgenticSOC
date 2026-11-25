@@ -309,7 +309,7 @@ You can also pre-seed one pull source at boot via `TLSOC_ES_URL` +
 > every enabled pull-source/feed pair with an independent durable cursor and
 > in-flight signature lock, so one deployment can poll multiple configured pull
 > clusters. Native PULL for Splunk / Microsoft Sentinel / QRadar / Chronicle /
-> EDR-XDR vendors remains outside 0.1; those vendors can push to the suite today
+> EDR-XDR vendors remains outside 0.2; those vendors can push to the suite today
 > through the generic receivers below.
 
 ### 3.6 Connecting a PUSH source (webhook / HEC / syslog / queues / object stores)
@@ -642,8 +642,8 @@ host-visible active override is published only at the deployment switch boundary
 After a restart, only a marker naming an exact durable terminal job is reconciled
 automatically. Unknown or malformed lifecycle state remains fail-closed.
 
-The updater never transports or replaces the base Compose file. The 0.1.x update
-protocol pins its version-invariant bytes in `deploy/update-base-v1.sha256`; release
+The updater never transports or replaces the base Compose file. Updater protocol 1
+pins its version-invariant bytes in `deploy/update-base-v1.sha256`; release
 images and versions live only in the signed generated override. Compatible patch
 releases must preserve that exact base, which permits sequential N→N+1→N+2 updates.
 Any topology/base edit requires an explicitly versioned updater protocol and manual
@@ -963,7 +963,7 @@ transition the Elasticsearch snapshot-repository prefix itself.
 ### 7.4 Unsupported archived-plugin revival
 
 The plugin is **archived** (`archive/kibana-plugin/`) and is no longer built,
-tested, version-stamped, or shipped as a supported 0.1 surface. Existing committed
+tested, version-stamped, or shipped as a supported 0.2 surface. Existing committed
 zips are historical artifacts, not release deliverables. A site that elects to
 revive one owns compatibility and verification; never compile on a production
 server. The old matching artifacts were:

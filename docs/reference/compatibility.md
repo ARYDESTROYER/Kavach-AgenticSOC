@@ -1,6 +1,6 @@
 ---
 title: Compatibility
-description: Supported runtimes, state backends, telemetry sources, providers, deployment shapes, and contract expectations for Agentic SOC 0.1.
+description: Supported runtimes, state backends, telemetry sources, providers, deployment shapes, and contract expectations for Agentic SOC 0.2.
 ---
 
 # Compatibility
@@ -41,7 +41,7 @@ state deployment can also connect to a different source cluster.
 
 ## Telemetry sources
 
-Version 0.1 implements three pull connectors:
+Version 0.2 implements three pull connectors:
 
 - Elasticsearch;
 - OpenSearch;
@@ -106,12 +106,12 @@ For integrations:
 - do not assume that starting an older image is a safe database rollback.
 
 Persisted Pydantic models generally use defaults/migrations for additive fields, and
-shared KV stores avoid a new table for many features. Version 0.1 does not yet provide
+shared KV stores avoid a new table for many features. Version 0.2 does not yet provide
 a complete database migration/rollback framework. See [Upgrades](../operations/upgrades.md).
 
 ## Browser, proxy, and network expectations
 
-No formal per-browser certification matrix is published for 0.1. Use a maintained
+No formal per-browser certification matrix is published for 0.2. Use a maintained
 browser capable of modern ES modules, CSS variables, and server-sent events. The
 Console expects same-origin relative `/api` access; the reference nginx configuration
 provides that proxy. If a custom proxy changes origins, cookies, buffering, or SSE
@@ -123,7 +123,7 @@ egress, but source and enrichment network paths still depend on configuration.
 
 ## Explicitly unsupported or unverified claims
 
-Agentic SOC 0.1 does not claim high availability, coordinated horizontal workers,
+Agentic SOC 0.2 does not claim high availability, coordinated horizontal workers,
 multi-tenant row isolation, universal push-transport durability, autonomous write-side
 response, or production certification for every source/provider combination. Review
 [Known limitations](../releases/known-limitations.md) and [Security](security.md)

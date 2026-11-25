@@ -66,10 +66,10 @@ newer Stable or Development material.
 | 0.1 public Stable guide | 0.1.x | last immutable release tag of the 0.1 line | Stable, superseded by 0.2 |
 
 The shorter documentation label keeps patch-compatible guidance together. When a
-patch changes behavior or an operational procedure, the 0.1 Help Center is rebuilt
+patch changes behavior or an operational procedure, the 0.2 Help Center is rebuilt
 from that accepted patch and its release notes describe the change. A future
 incompatible or feature release receives a new documentation line rather than
-rewriting 0.1 silently.
+rewriting 0.2 silently, as 0.2.0 did for the 0.1 line.
 
 The channel is independent of SemVer. A Testing candidate and a Stable artifact may
 both report application version `0.2.0`; only accepted `main`/tag provenance may

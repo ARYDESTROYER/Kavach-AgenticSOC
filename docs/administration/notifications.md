@@ -1,6 +1,6 @@
 ---
 title: Notifications
-description: Configure channels, triggers, templates, digests, and delivery tests in Agentic SOC 0.1.
+description: Configure channels, triggers, templates, digests, and delivery tests in Agentic SOC 0.2.
 ---
 
 # Notifications

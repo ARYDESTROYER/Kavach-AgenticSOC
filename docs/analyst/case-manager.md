@@ -1,6 +1,6 @@
 ---
 title: Case Manager
-description: Work the case queue, read a case's outcome and facts at a glance, work its runbook, close with a disposition, and run permission-gated bulk actions in Agentic SOC 0.1.
+description: Work the case queue, read a case's outcome and facts at a glance, work its runbook, close with a disposition, and run permission-gated bulk actions in Agentic SOC 0.2.
 ---
 
 # Case Manager

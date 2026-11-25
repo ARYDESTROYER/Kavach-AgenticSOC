@@ -1,6 +1,6 @@
 ---
 title: Settings administration
-description: Configure Agentic SOC 0.1 safely, understand preference scope, and keep secrets out of persisted settings.
+description: Configure Agentic SOC 0.2 safely, understand preference scope, and keep secrets out of persisted settings.
 ---
 
 # Settings administration
@@ -195,7 +195,7 @@ values stay write-only appears only under sections that hold preferences or secr
 
 Rules have their own version ledger and rollback controls. Threshold tuning also
 keeps an application ledger. General preference documents do not provide universal
-point-in-time rollback in version 0.1.
+point-in-time rollback in version 0.2.
 
 ## High-impact areas
 

@@ -1,11 +1,11 @@
 ---
 title: Deployment
-description: Deploy Agentic SOC 0.1 with the standalone stack or attach it safely to an existing log platform.
+description: Deploy Agentic SOC 0.2 with the standalone stack or attach it safely to an existing log platform.
 ---
 
 # Deployment
 
-Agentic SOC 0.1 ships a FastAPI backend and a standalone web console. The recommended
+Agentic SOC 0.2 ships a FastAPI backend and a standalone web console. The recommended
 deployment is the self-contained Compose stack with PostgreSQL and Redis. Existing
 Elastic/OpenSearch/Wazuh systems remain external data sources; Agentic SOC consumes them
 with least-privilege credentials.
@@ -19,7 +19,7 @@ with least-privilege credentials.
 | SQLite | Local database file | Pull or push connectors | Single-node evaluation and development only |
 
 The standalone web UI is the supported interface. The archived Kibana plugin is not
-built, tested, or shipped as part of 0.1.
+built, tested, or shipped as part of 0.2.
 
 ## Prerequisites
 
@@ -242,8 +242,8 @@ installation needs the documented one-time
 `scripts/bootstrap-updater.sh` host step; software cannot retroactively install its own
 privileged supervisor.
 
-The updater never transports or replaces `deploy/docker-compose.agnostic.yml`. The
-0.1.x protocol pins its version-invariant bytes in
+The updater never transports or replaces `deploy/docker-compose.agnostic.yml`.
+Updater protocol 1 pins its version-invariant bytes in
 `deploy/update-base-v1.sha256`; the signed generated override carries versioned image
 digests. Changing that base requires a new updater protocol and manual bootstrap.
 
@@ -315,7 +315,7 @@ Development documentation are secondary references.
 
 ## Production boundaries
 
-Version 0.1 is a single-replica reference deployment, not a high-availability claim.
+Version 0.2 is a single-replica reference deployment, not a high-availability claim.
 There is no complete schema-migration framework, durable receipt ledger for every push
 transport, or built-in secret manager. Read [Known limitations](../releases/known-limitations.md)
 before admitting sensitive or loss-intolerant data.
