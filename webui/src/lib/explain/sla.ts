@@ -76,10 +76,11 @@ export function explainSla(reading: SlaReadingWire | null | undefined): Explanat
   const kind = String(reading.clock).toLowerCase() === 'resolution' ? 'Resolution' : 'Response';
   const priority = (reading.priority || '').trim().toUpperCase() || 'No priority';
   const state = String(reading.state).toLowerCase();
-  const stopped = Boolean(reading.responded_at) && kind === 'Response';
-  // A response clock a person stopped inside its target is met, not "on track": it no
-  // longer runs, so it can no longer be at risk.
-  const words = stopped && state === 'ok' ? 'met' : STATE_WORDS[state] ?? state;
+  // A clock that stopped (a person answered, or the case closed; the server reads it
+  // "met") is met, not "on track": it no longer runs, so it can no longer be at risk.
+  const stopped = state === 'met' || (Boolean(reading.responded_at) && kind === 'Response');
+  const words = stopped && (state === 'ok' || state === 'met') ? 'met' : STATE_WORDS[state] ?? state;
+  const stoppedBy = kind === 'Response' ? 'answered' : 'resolved';
   const atRiskFrom = target * SLA_AT_RISK_FRACTION;
   const left = target - elapsed;
 
@@ -109,7 +110,7 @@ export function explainSla(reading: SlaReadingWire | null | undefined): Explanat
     state === 'breached'
       ? `${kind} SLA ${priority}: ${minutesWords(elapsed)} elapsed against a ${minutesWords(target)} target, so it is breached by ${minutesWords(-left)}.`
       : stopped
-        ? `${kind} SLA ${priority}: answered after ${minutesWords(elapsed)} against a ${minutesWords(target)} target, ${words}.`
+        ? `${kind} SLA ${priority}: ${stoppedBy} after ${minutesWords(elapsed)} against a ${minutesWords(target)} target, ${words}.`
         : `${kind} SLA ${priority}: ${minutesWords(elapsed)} of ${minutesWords(target)} elapsed, ${words}. At risk from ${minutesWords(atRiskFrom)}.`;
 
   return {
@@ -121,7 +122,7 @@ export function explainSla(reading: SlaReadingWire | null | undefined): Explanat
     formula: 'breached when elapsed > target; at risk when the clock runs and elapsed >= 0.8 x target; otherwise on track',
     inputs,
     steps: [
-      { label: 'Elapsed', expression: stopped ? 'Start to the first human response' : 'Start to now', result: `${trimmed(elapsed)} minutes` },
+      { label: 'Elapsed', expression: stopped ? (kind === 'Response' ? 'Start to the first human response' : 'Start to the close') : 'Start to now', result: `${trimmed(elapsed)} minutes` },
       { label: 'At risk from', expression: `0.8 x ${trimmed(target)}`, result: `${trimmed(atRiskFrom)} minutes` },
       { label: 'State', expression: `${trimmed(elapsed)} against ${trimmed(target)}`, result: words },
     ],

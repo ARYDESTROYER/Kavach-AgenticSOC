@@ -204,8 +204,16 @@ export function conservativeEstimateExplanation(rule: RuleNoise, z: number): Exp
   if (interval && Math.abs(interval.low - rule.fp_rate) > 0.001) {
     caveats.push(`The tuner stored ${display}; it may come from an earlier evaluation than these counts.`);
   }
+  // The generic Wilson inputs in this page's words: what was counted, out of what.
+  const inputLabels: Record<string, string> = {
+    successes: 'Confirmed false positives',
+    n: 'Analyst-confirmed cases',
+  };
   return {
     ...(base as Explanation),
+    inputs: (base?.inputs ?? []).map((input) =>
+      inputLabels[input.key] ? { ...input, label: inputLabels[input.key], source: 'This rule' } : input,
+    ),
     metric: 'tuning_conservative_fp_rate',
     title: 'Conservative estimate',
     value: rule.fp_rate,

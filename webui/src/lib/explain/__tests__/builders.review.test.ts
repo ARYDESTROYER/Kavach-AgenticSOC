@@ -94,6 +94,23 @@ describe('a stopped response clock', () => {
     expect(exp?.display).toBe('P1 response met');
     expect(exp?.summary).toBe('Response SLA P1: answered after 14m against a 15m target, met.');
   });
+
+  it('a resolution clock the server reads "met" has no at-risk line either', () => {
+    const exp = explainSla({
+      clock: 'resolution',
+      start_at: '2026-11-24T10:00:00Z',
+      anchor: 'acknowledged',
+      responded_at: '2026-11-24T10:05:00Z',
+      target_minutes: 240,
+      due_at: '2026-11-24T14:00:00Z',
+      elapsed_minutes: 90,
+      state: 'met',
+      priority: 'P2',
+      priority_source: 'case_record',
+    });
+    expect(exp?.summary).toBe('Resolution SLA P2: resolved after 1h 30m against a 4h target, met.');
+    expect(exp?.steps[0].expression).toBe('Start to the close');
+  });
 });
 
 describe('the pointer to the full calculation', () => {

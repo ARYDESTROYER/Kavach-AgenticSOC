@@ -374,7 +374,7 @@ export function explainDecision(caseRecord: Case, decision?: DecisionPayload | n
     caveats.push(
       today && today.policyOutcome !== 'unknown'
         ? `The auto-close policy changed after this decision. ${comparisonSentence(today, 'current')}`
-        : 'The auto-close policy changed after this decision.',
+        : 'The auto-close policy changed after this decision; today it would decide differently.',
     );
   }
   if (reading && !recordedSpan && !gate) {

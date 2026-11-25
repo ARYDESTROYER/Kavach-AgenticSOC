@@ -186,6 +186,15 @@ describe('the conservative estimate explanation', () => {
     expect(exp.caveats.join(' ')).not.toContain('earlier evaluation');
   });
 
+  it('names its inputs in the page\'s words, not "Successes" and "Total" (WP11 review)', () => {
+    const exp = conservativeEstimateExplanation(RULE, 1.96);
+    expect(exp.inputs.map((i) => `${i.label}: ${i.value}`)).toEqual([
+      'Confirmed false positives: 14',
+      'Analyst-confirmed cases: 20',
+      'z: 1.96',
+    ]);
+  });
+
   it('says not recorded for a row without counts', () => {
     const row = { ...RULE, counts_recorded: false } as RuleNoise;
     expect(countsRecorded(row)).toBe(false);

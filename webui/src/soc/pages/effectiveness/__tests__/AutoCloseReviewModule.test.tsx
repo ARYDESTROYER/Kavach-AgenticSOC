@@ -92,6 +92,12 @@ describe('AutoCloseReviewBody', () => {
     expect(await screen.findByTestId('explain-hover')).toHaveTextContent(
       'Wilson 95% interval for 27 of 30: 74.4% to 96.5%.',
     );
+    // WP11 review: the inputs say what was counted, not "Successes" and "Total".
+    await user.click(screen.getByRole('button', { name: /74\.4% to 96\.5%/ }));
+    const inputs = await screen.findByTestId('explain-inputs');
+    expect(inputs).toHaveTextContent('Reviews that agreed27');
+    expect(inputs).toHaveTextContent('Reviews with a verdict30');
+    expect(inputs).not.toHaveTextContent('Successes');
   });
 
   it('says when the review is off and when counts are lower bounds', () => {
