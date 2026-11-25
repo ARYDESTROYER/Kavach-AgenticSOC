@@ -249,7 +249,7 @@ class OidcProvider:
 
         ``sub`` prefers the IdP's stable subject; for Microsoft the immutable ``oid``
         is preferred. ``domain`` is the ``hd`` claim for a Google provider, else the
-        domain of the verified email.
+        domain of the verified email (empty for an unverified one).
         ``groups`` is read from the configured ``group_claim`` (list or scalar).
 
         SECURITY (#3): ``email`` is read ONLY from the ``email`` claim — never from the
@@ -262,11 +262,12 @@ class OidcProvider:
             claims.get("xms_edov")  # Microsoft "email domain owner verified"
         )
         # Round 16 (B16 hardening): ``hd`` is Google's hosted-domain claim and is read
-        # only for a Google provider. Any other IdP could assert ``hd`` freely, so its
-        # domain is the VERIFIED email's domain (empty when the email is unverified)
-        # and ``allowed_domains`` cannot be passed by asserting a claim.
+        # only for a Google provider. Any other IdP could assert ``hd`` freely. Without
+        # ``hd`` (every provider but a Google Workspace account) the domain is the
+        # VERIFIED email's domain, empty when the email is unverified, so
+        # ``allowed_domains`` cannot be passed by asserting a claim or an address.
         domain = str(claims.get("hd") or "").strip().lower() if self.type == "google" else ""
-        if not domain and "@" in email and (email_verified or self.type == "google"):
+        if not domain and "@" in email and email_verified:
             domain = email.rsplit("@", 1)[-1].strip().lower()
         if self.type == "microsoft":
             sub = str(claims.get("oid") or claims.get("sub") or "").strip()

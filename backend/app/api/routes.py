@@ -2084,6 +2084,11 @@ class _SsoEditAuthorityNeeded(Exception):
     and the caller's Super admin authority has not been checked yet (Round 16, B15)."""
 
 
+# The refusal a single sign-on change or provider secret gets from anyone who is not a
+# stored Super admin (Round 16, B15). The Console shows it as it is.
+SSO_SUPER_ADMIN_MESSAGE = "Only a Super admin can change single sign-on."
+
+
 def _guard_sso_settings_change(current: Preferences, validated: Preferences, *,
                                authority: dict[str, Any]) -> None:
     """Compare the validated merged ``sso`` block with the stored one (Round 16, B15).
@@ -2329,7 +2334,7 @@ async def put_settings(
             # Super admin with a strict fresh sign-in, asked once before the row.
             if sso_authority["checked"]:  # pragma: no cover - the guard never asks twice
                 raise
-            await _require_super_admin_for(request, state)
+            await _require_super_admin_for(request, state, message=SSO_SUPER_ADMIN_MESSAGE)
             sso_authority["roles"] = await _known_role_ids(state)
             sso_authority["checked"] = True
     # #10 / G6 R5: record an immutable version snapshot for every rule this save CHANGED
@@ -6157,7 +6162,7 @@ async def set_sso_provider_secret(
 
     Round 16 (B15): a stored Super admin with a strict fresh sign-in only, otherwise
     ``403 super_admin_only`` and nothing changes."""
-    await _require_super_admin_for(request, state)
+    await _require_super_admin_for(request, state, message=SSO_SUPER_ADMIN_MESSAGE)
 
     async def _write() -> None:
         state.secrets.set_sso_client_secret(provider_id, body.client_secret)
@@ -6269,7 +6274,9 @@ def _role_text(role: Any) -> str:
     return str(getattr(role, "value", role) or "")
 
 
-async def _require_super_admin_for(request: Request, state: AppState) -> None:
+async def _require_super_admin_for(
+    request: Request, state: AppState, *, message: str = SUPER_ADMIN_ACCOUNT_MESSAGE,
+) -> None:
     """Granting the Super admin role, or changing, disabling or deleting a Super admin
     account, is for a Super admin only (Round 15 review, security). ``users:manage``
     alone is not enough: a SOC manager holds it by default, and a Super admin account
@@ -6278,7 +6285,8 @@ async def _require_super_admin_for(request: Request, state: AppState) -> None:
     principal's stored role, never the RBAC-off "everyone is Super admin" view, writes
     an Access denied row and answers ``403 super_admin_only`` otherwise, then asks the
     strict fresh sign-in the switch asks (``401 reauth_required``). Called before the
-    audited write, so a refusal changes nothing. A no-op with sign-in off."""
+    audited write, so a refusal changes nothing. A no-op with sign-in off. ``message``
+    names what was refused (the single sign-on settings pass their own, Round 16 B15)."""
     auth = getattr(state, "auth", None)
     if auth is None or not auth.is_enabled:
         return
@@ -6291,7 +6299,7 @@ async def _require_super_admin_for(request: Request, state: AppState) -> None:
         await record_access_denied(request, "role:super_admin")
         raise HTTPException(
             status_code=403,
-            detail={"code": "super_admin_only", "message": SUPER_ADMIN_ACCOUNT_MESSAGE},
+            detail={"code": "super_admin_only", "message": message},
         )
     from .routes_rbac import require_strict_fresh_sign_in
 
@@ -6493,9 +6501,12 @@ async def update_user(
         patch["password_hash"] = await ahash_password(pw)
         patch["must_change_password"] = True
     if body.mfa_enabled is False:
-        # Force-disable: clear the secret material too (the user re-enrolls later).
+        # Force-disable: clear the secret material too (the user re-enrolls later), and
+        # the second-factor failure count and lock (Round 16, B19), so the person can
+        # enrol again at once.
         patch.update({
             "mfa_enabled": False, "mfa_secret": "", "mfa_recovery_hashes": [], "mfa_last_step": 0,
+            "mfa_failed_count": 0, "mfa_locked_until": "",
         })
     elif body.mfa_enabled is True:
         raise HTTPException(

@@ -533,8 +533,9 @@ issues a token.
   hour, with a `429` answer and an `auth.mfa_locked` audit row. This covers the
   sign-in check, both enrolment confirms and turning MFA off. A pending sign-in token
   is refused after 5 wrong codes or once it has signed in. A correct code resets the
-  count. Each code is consumed inside the user store's compare-and-swap, so a code
-  sent twice at once signs in once.
+  count, and so does an administrator turning MFA off for the account. Each code is
+  consumed inside the user store's compare-and-swap, so a code sent twice at once
+  signs in once.
 - **Replacing an authenticator.** An enrolled account cannot start a new enrolment
   from a session; it turns MFA off with a current code first. Enrolling and turning
   MFA off both ask for a recent sign-in.
@@ -546,10 +547,11 @@ issues a token.
 - **Single sign-on.** A verified email links only to an account of the same provider
   that has no subject yet; an account of another provider, or one already bound to a
   different subject, is refused. Only a Google provider's `hd` claim names a domain;
-  any other provider's domain is the verified email's. Every change to the single
-  sign-on settings, and every provider client secret, needs a stored Super admin with
-  a fresh sign-in, and role values must name a built-in or custom role. A group map
-  never changes a Super admin's role.
+  otherwise the domain is the verified email's, and an unverified email has none.
+  Every change to the single sign-on settings, and every provider client secret, needs
+  a stored Super admin with a fresh sign-in (anyone else gets `403 super_admin_only`,
+  "Only a Super admin can change single sign-on."), and role values must name a
+  built-in or custom role. A group map never changes a Super admin's role.
 
 ### Demo Mode isolation guarantees
 

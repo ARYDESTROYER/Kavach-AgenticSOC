@@ -45,9 +45,10 @@ else; until then every other request answers `403` with code
 `password_change_required`. The seeded demonstration administrator is not flagged.
 
 Ten wrong second-factor codes in a row lock second-factor checks for the account for
-5 minutes, doubling for each further run up to an hour. Turning MFA off and enrolling
-a new authenticator both need a recent sign-in, and an enrolled account turns MFA off
-with a current code before it enrols a new one.
+5 minutes, doubling for each further run up to an hour. An administrator who turns MFA
+off for the account also clears the lock, so the person can enrol again. Turning MFA
+off and enrolling a new authenticator both need a recent sign-in, and an enrolled
+account turns MFA off with a current code before it enrols a new one.
 
 Use short access lifetimes appropriate to the environment. Session continuity also
 depends on the selected state store and a stable JWT secret.

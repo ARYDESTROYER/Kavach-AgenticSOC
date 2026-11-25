@@ -205,4 +205,15 @@ describe('Sessions activity rows', () => {
       'Signed in',
     );
   });
+
+  it('says the activity could not be loaded when the read fails, never "No recent activity."', async () => {
+    // The server answers 503 audit_unavailable instead of an empty list, so an empty
+    // table here would claim something the server never said.
+    activity.mockRejectedValue(new Error('The audit log cannot be read right now.'));
+    sessionsList.mockResolvedValue({ sessions: [] });
+    renderSessions();
+    fireEvent.mouseDown(await screen.findByRole('tab', { name: 'Activity' }));
+    expect(await screen.findByText('Activity could not be loaded. Use Refresh to try again.')).toBeInTheDocument();
+    expect(screen.queryByText('No recent activity.')).not.toBeInTheDocument();
+  });
 });

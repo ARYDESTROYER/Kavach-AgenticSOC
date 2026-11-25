@@ -398,7 +398,16 @@ export function activityRows(res: ActivityResponse | null | undefined): Activity
   });
 }
 
-function ActivityList({ events, loading }: { events: ActivityEvent[]; loading: boolean }) {
+function ActivityList({
+  events,
+  loading,
+  failed = false,
+}: {
+  events: ActivityEvent[];
+  loading: boolean;
+  /** The last read failed: the empty slot says so instead of "No recent activity." */
+  failed?: boolean;
+}) {
   const columns: DataTableColumn<ActivityEvent>[] = [
     {
       id: 'action',
@@ -449,7 +458,7 @@ function ActivityList({ events, loading }: { events: ActivityEvent[]; loading: b
       loading={loading}
       surface="panel"
       ariaLabel="Recent account activity"
-      empty="No recent activity."
+      empty={failed ? 'Activity could not be loaded. Use Refresh to try again.' : 'No recent activity.'}
     />
   );
 }
@@ -482,6 +491,8 @@ export function SessionsInner({ embedded = false }: SessionsInnerProps) {
   const [activity, setActivity] = React.useState<ActivityEvent[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [activityLoading, setActivityLoading] = React.useState(true);
+  // A failed activity read is said as such, never shown as "No recent activity."
+  const [activityFailed, setActivityFailed] = React.useState(false);
   const [busySid, setBusySid] = React.useState<string | null>(null);
   const [revokeTarget, setRevokeTarget] = React.useState<Session | null>(null);
   const [revokeOthersOpen, setRevokeOthersOpen] = React.useState(false);
@@ -508,10 +519,12 @@ export function SessionsInner({ embedded = false }: SessionsInnerProps) {
     try {
       const res = await api.account_activity();
       setActivity(activityRows(res));
+      setActivityFailed(false);
     } catch (e) {
       // Activity is best-effort; a failure shouldn't break the page.
       toast.error(errMsg(e, 'Could not load activity.'));
       setActivity([]);
+      setActivityFailed(true);
     } finally {
       setActivityLoading(false);
     }
@@ -636,7 +649,7 @@ export function SessionsInner({ embedded = false }: SessionsInnerProps) {
 
           <TabsContent value="activity">
             <Panel as="div" padding="none" data-sessions-panel="activity">
-              <ActivityList events={activity} loading={activityLoading} />
+              <ActivityList events={activity} loading={activityLoading} failed={activityFailed} />
             </Panel>
           </TabsContent>
         </Tabs>

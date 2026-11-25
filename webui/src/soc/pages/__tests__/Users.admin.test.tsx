@@ -258,5 +258,37 @@ describe('Users admin page', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Add user' }));
     const dialog = await screen.findByRole('dialog');
     expect(within(dialog).queryByTestId('role-permission-summary')).not.toBeInTheDocument();
+    // It does not claim that no custom role exists: it cannot know.
+    expect(within(dialog).getByTestId('new-user-roles-unknown')).toHaveTextContent(
+      'Your role cannot view roles, so custom roles are not listed.',
+    );
+    expect(within(dialog).queryByText(/None exist yet/)).toBeNull();
+  });
+
+  it('keeps an account\'s custom roles when the roles read is refused and only the base role changes', async () => {
+    // Without `roles:read` the page cannot tell a live custom role from a deleted one, so
+    // it must neither call them deleted nor send an empty list that removes them.
+    rolesGetMock.mockRejectedValue(Object.assign(new Error('permission denied: roles:read'), { status: 403 }));
+    usersListMock.mockResolvedValue({
+      users: [{ ...USERS[0], prefs: { custom_roles: ['tier1_plus'] } }, USERS[1]],
+    });
+    assignRolesMock.mockResolvedValue({ ok: true });
+    renderUsers();
+    await screen.findByText('alice');
+    const row = screen.getByText('alice').closest('tr') as HTMLElement;
+    expect(within(row).getByText('+ 1 custom')).toBeInTheDocument();
+
+    fireEvent.click(rowMenuItem('alice', 'Change roles'));
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).queryByTestId('assign-roles-stale')).toBeNull();
+    expect(within(dialog).getByTestId('assign-roles-unknown')).toHaveTextContent(
+      'Your role cannot view roles, so custom roles are not listed. Saving keeps the custom roles this account has.',
+    );
+    const baseRole = within(dialog).getByRole('combobox', { name: /base role/i });
+    await waitFor(() => expect(baseRole).toHaveTextContent('Analyst Tier 1'));
+    fireEvent.keyDown(baseRole, { key: 'Enter' });
+    fireEvent.click(within(await screen.findByRole('listbox')).getByRole('option', { name: 'Responder' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save roles' }));
+    await waitFor(() => expect(assignRolesMock).toHaveBeenCalledWith('alice', { role: 'responder' }));
   });
 });

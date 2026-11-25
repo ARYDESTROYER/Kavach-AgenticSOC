@@ -390,6 +390,35 @@ def test_b19_wrong_codes_on_disable_lock_and_mfa_stays_on(frozen_clock) -> None:
         assert c.portal.call(_state(c).users.get, "mona").mfa_enabled is True
 
 
+def test_b19_an_administrators_mfa_reset_clears_the_lock(frozen_clock) -> None:
+    """An administrator turning a locked account's MFA off is the recovery path for a
+    lost authenticator, so it clears the failure count and the lock too: the person
+    can enrol again at once instead of waiting out the lock."""
+    with TestClient(_app(rbac=False)) as c:
+        secret, _codes, _h = _enrolled(c, "mona")
+        wrong = _code(secret, 10)
+        for _ in range(2):
+            pending = _pending(c, "mona")
+            for _ in range(5):
+                assert _verify(c, pending, wrong).status_code == 401
+        state = _state(c)
+        assert c.portal.call(state.users.get, "mona").mfa_locked_until
+        _login(c, *ADMIN)
+        reset = c.put("/api/users/mona", json={"mfa_enabled": False})
+        assert reset.status_code == 200, reset.text
+        stored = c.portal.call(state.users.get, "mona")
+        assert stored.mfa_enabled is False
+        assert (stored.mfa_failed_count, stored.mfa_locked_until) == (0, "")
+        # Enrolling again from a fresh session is not refused by the old lock.
+        token = _login(c, "mona", PW).json()["token"]
+        c.cookies.clear()
+        setup = c.post("/api/auth/mfa/setup", headers=_bearer(token))
+        assert setup.status_code == 200, setup.text
+        confirm = c.post("/api/auth/mfa/confirm", headers=_bearer(token),
+                         json={"code": _code(setup.json()["secret"])})
+        assert confirm.status_code == 200, confirm.text
+
+
 def test_b18_a_totp_shaped_code_never_runs_the_recovery_hash_loop(frozen_clock, monkeypatch) -> None:
     with TestClient(_app(rbac=False)) as c:
         secret, _codes, _h = _enrolled(c, "mona")
@@ -625,6 +654,28 @@ def test_b15_a_soc_manager_cannot_repoint_a_provider_a_super_admin_uses() -> Non
         assert not _state(c).secrets.sso_client_secret("corp")
 
 
+def test_b15_the_refusal_says_single_sign_on_is_for_a_super_admin() -> None:
+    """The Console shows the refusal's message as it is, so it names what was refused
+    (single sign-on), not the account rule a role change gets."""
+    with TestClient(_app(rbac=True)) as c:
+        _sso_with_a_linked_super_admin(c)
+        _new_user(c, "max", MGR)
+        _login(c, "max", PW)
+        r = c.put("/api/settings", json={"sso": {"enabled": False}})
+        assert r.status_code == 403, r.text
+        assert r.json()["detail"] == {
+            "code": "super_admin_only",
+            "message": "Only a Super admin can change single sign-on.",
+        }
+        secret = c.post("/api/auth/sso/providers/corp/secret", json={"client_secret": "x"})
+        assert secret.json()["detail"]["message"] == "Only a Super admin can change single sign-on."
+        # A Super admin account change keeps its own message.
+        made = c.post("/api/users", json={"username": "boss", "password": PW,
+                                          "role": UserRole.SUPER_ADMIN.value})
+        assert made.status_code == 403
+        assert made.json()["detail"]["message"] == routes_mod.SUPER_ADMIN_ACCOUNT_MESSAGE
+
+
 def test_b15_a_settings_manage_custom_role_cannot_set_a_default_role() -> None:
     with TestClient(_app(rbac=True)) as c:
         _sso_with_a_linked_super_admin(c)
@@ -753,6 +804,20 @@ def test_b16_a_generic_idp_cannot_pass_allowed_domains_with_hd() -> None:
     google = OidcProvider({**cfg, "type": "google"})
     hosted = google.identity_from({"sub": "s", "email": "x@gmail.com", "hd": "corp.test"})
     assert google.check_allowed(hosted) is None
+
+
+def test_b16_a_google_account_with_an_unverified_email_has_no_domain() -> None:
+    """Without ``hd``, a Google account's domain comes only from a VERIFIED email, as for
+    every other provider: a Google account can carry an address it has not proved, and
+    that must not pass ``allowed_domains``."""
+    google = OidcProvider({
+        "id": "g", "type": "google", "client_id": "c", "allowed_domains": ["corp.test"]})
+    unverified = google.identity_from({"sub": "s", "email": "x@corp.test"})
+    assert unverified["domain"] == ""
+    assert google.check_allowed(unverified) is not None
+    verified = google.identity_from({"sub": "s", "email": "x@corp.test", "email_verified": True})
+    assert verified["domain"] == "corp.test"
+    assert google.check_allowed(verified) is None
 
 
 # --------------------------------------------------------------------------- #
