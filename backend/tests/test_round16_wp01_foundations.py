@@ -282,6 +282,13 @@ async def test_publish_case_investigation_sends_exactly_the_frame_keys_on_three_
     assert event_type == CASE_INVESTIGATION_EVENT == "case.investigation"
     assert retain is False
     assert tuple(payload) == CASE_INVESTIGATION_FRAME_KEYS
+    # The SPEC's literal list (§4.5 WP08 "The frame"), so the constant and the model
+    # cannot drift together away from the contract.
+    assert set(payload) == {
+        "run_id", "case_id", "state", "phase", "trigger", "queued_at", "started_at",
+        "deadline_at", "time_cap_seconds", "finished_at", "outcome", "status_after",
+        "verdict_after", "active", "new_runs",
+    }
     assert not INVESTIGATION_VIEWER_FIELDS & set(payload)
     assert "alice" not in str(payload)
     assert (payload["active"], payload["new_runs"]) == (2, 1)
