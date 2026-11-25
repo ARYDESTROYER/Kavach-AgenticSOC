@@ -115,10 +115,10 @@ What it is not:
 
 ### Work as a team
 
-- **Case Manager:** an Active, Mine, Review and All queue beside the full case, with
-  Overview, Runbook, Investigation, Collaboration and Chat tabs, a close dialog that records
-  the disposition and the actions taken, screenshots on the case, and bulk actions that run
-  as background jobs.
+- **Case Manager:** an Active, Mine, Review and All queue beside the full case, with a
+  compact header, Brief, Evidence, AI investigation, Response, Activity and Chat tabs, the
+  case facts beside every tab, a close dialog that records the disposition and the actions
+  taken, screenshots on the case, and bulk actions that run as background jobs.
 - **Auto-close review:** a small random sample of the cases the AI agent closed goes to a
   person to classify (on by default, about 5% and at most 10 a day); the answer is kept as
   independent ground truth and never changes the case unless the reviewer reopens it.
@@ -376,7 +376,7 @@ internet access and takes a few minutes.
 
 4. Explore. You land on the **Cyber Defence Center** with synthetic cases and a
    **Demo mode** badge in the header. Open **Case Manager**, ask a suggested question in
-   **Workspace → Chat**, or open a case's **Runbook** tab.
+   **Workspace → Chat**, or open a case's **Response** tab.
 
 5. Stop both services with <kbd>Ctrl</kbd>+<kbd>C</kbd>. Demo state is held in memory and
    is discarded.

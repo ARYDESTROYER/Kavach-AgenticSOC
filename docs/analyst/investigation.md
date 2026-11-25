@@ -48,35 +48,38 @@ model and scope before applying it to many cases.
 
 In a case:
 
-1. **Overview** is the case's brief: the AI's **Summary** in two or three sentences
-   with its recommended action, then **What happened**, the primary entity under **Key
-   entities**, **Related cases**, and the signature's anomaly baseline when it has one.
-   The summary is the model's own reasoning, tagged as AI, never the deterministic
-   decision's text; a case the AI did not assess shows its system summary, untagged.
-   When a runbook is attached to an open case, its **Next step** card sits at the top
-   of the Overview. Recorded risk factors are in the facts rail's **Signal** section,
-   visualized without inventing factors that are not stored.
-2. **What happened**, a section of the Overview (the former Timeline tab), says why the
-   detection fired and shows when the six pipeline stages occurred. The visible labels are
-   Input, Correlate, Risk Assigned, Triage, Investigate, and Decision. Expanding
-   **Risk Assigned** reconstructs the arithmetic from persisted factor values and
-   current configured weights. When historical weights differ, it preserves the
-   recorded score and explicitly says exact historical attribution is unavailable.
-   The terminal marker alone pulses to identify the current end of the story.
-3. **Investigation** shows the **AI assessment** (the model's reasoning, what it found
-   and ruled out, the reproduction query, and the full assessment evidence one click
-   away), then the **Decision** (what decided the case, the authority sentence, the
+1. **Brief** is the case at a glance, in four lanes tagged with where each comes from.
+   **Evidence** says why the detection fired. **AI** gives the AI's summary in two or
+   three sentences with its recommended action; it is the model's own reasoning, tagged
+   as AI, never the deterministic decision's text, and a case the AI did not assess
+   says so. **Decision** gives what decided the case, the authority sentence, the
    auto-close reading and any automation applied, with the policy inputs one click
+   away. **People** gives the runbook progress, the discussion and files, and the last
+   human action. When a runbook is attached to an open case, its **Next step** row sits
+   at the top of the Brief. Recorded risk factors are in the case facts' **Signal**
+   section, visualized without inventing factors that are not stored.
+2. **How this case was built**, folded at the foot of the Brief (the former Timeline
+   tab), shows when the six pipeline stages occurred. The visible labels are Input,
+   Correlate, Risk Assigned, Triage, Investigate, and Decision. Expanding **Risk
+   Assigned** reconstructs the arithmetic from persisted factor values and current
+   configured weights. When historical weights differ, it preserves the recorded score
+   and explicitly says exact historical attribution is unavailable. The terminal marker
+   alone pulses to identify the current end of the story.
+3. **Evidence** holds what the sources said: **What happened** (why the detection fired
+   and the source evidence), the primary entity under **Entities**, **Threat context**
+   (below), **Related cases**, and the signature's anomaly baseline when it has one.
+4. **AI investigation** shows the **AI assessment** (the model's reasoning, what it found
+   and ruled out, the reproduction query, and the full assessment evidence one click
    away), the detailed **Investigation inputs** (the memory consulted, RAG knowledge
    retrieved, runbook references retrieved, the Published runbook whose guidance the
    investigator received with its version, and the platform threshold-tuning snapshot
    for the latest run), the optional full trace, and earlier gradings of the AI. The
    assessment never falls back to the decision's text: when no assessment text was
-   recorded, it says so. The verdict and confidence are in the case header and the facts
-   rail, so they are not repeated here. Runbook passages retrieved through RAG remain
+   recorded, it says so. The verdict and confidence are in the case header and the case
+   facts, so they are not repeated here. Runbook passages retrieved through RAG remain
    distinct from the runbook whose guidance the investigator received. Platform tuning
    records correlation or severity-threshold changes, not model fine-tuning.
-4. **Threat context**, a section of the Investigation tab (formerly its own tab), adds
+5. **Threat context**, a section of the Evidence tab (formerly its own tab), adds
    enrichment, ATT&CK, related-case context, and **How this case was clustered**. That read-only diagram uses persisted facts to show Input alerts →
    Correlation cluster → Opened case. Focus or hover a node to inspect contributing
    source counts, grouping, threshold/window, status, verdict, and related links.
@@ -88,7 +91,7 @@ Investigation inputs are projected from the **latest investigation run** only. T
 runbook appears as an input only when the investigator actually received its guidance;
 a runbook that was matched but never reached the investigator (the Generic incident
 fallback, which is never given to it as guidance, the cheap router path, the kill switch,
-a guidance budget) shows as **Selected only** in the Investigation view and never counts
+a guidance budget) shows as **Selected only** on the AI investigation tab and never counts
 as an input. A case investigated before Round 14 keeps its stored procedure id under
 **Runbook (before Round 14)**. If no applicable input was recorded,
 the summary stays absent. If
@@ -130,7 +133,7 @@ route authority.
 
 ## Work the runbook
 
-The **Runbook** tab is the procedure the people on the case follow; the investigator
+The runbook on the **Response** tab is the procedure the people on the case follow; the investigator
 reads the same Published runbook as guidance. It never closes a case and never changes
 the verdict. The Next step card shows the first required step not yet done: confirm an
 AI draft note, run a read-only lookup, record a decision or an action, or mark the step
