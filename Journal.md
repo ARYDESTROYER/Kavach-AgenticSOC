@@ -12458,3 +12458,30 @@
 - Tests: on the merged tree, the WP13 tests with route coverage, security, spine and decide guards: 169 passed. decide() and engine/risk.py unchanged.
 - Status: done.
 - Next: WP14 (case records Console) starts from this base.
+
+### 2026-11-25 15:10Z - WP15G agent - Chat and local-model fixes
+- Context: Round 16 WP15G (SPEC section 4.5). Fix bugs B38, B40 and B42 and [oss] B1 and B3, and take the WP01 carry-forwards (ChatCitation.case_number, the get_case producer, the Sources label).
+- Did: The conversation export names a log source by the server's _scope_for rule: recorded step sources, else the turn source when search_logs or log_stats ran, else none (model.ts answerSources). The Delete conversation dialog mentions the report only when report_id is set (Chat.tsx). get_case passes case_number; ChatCitation and normaliseCitation carry it; SourcesDisclosure shows the number and keeps case_id as the target and hover text. providers.py adds openai_api_root() and _openai_base(), so the openai and openai_compatible clients strip one trailing /v1 and slash; the stored URL stays as typed. The Models dialog now gives host.docker.internal examples and the Linux host-gateway note. New tests: backend/tests/test_round16_wp15g_chat_local_models.py and webui/src/soc/chat/__tests__/round16-wp15g.test.tsx, plus cases added in Chat.test.tsx and Models.custom.test.tsx.
+- Tests: Each fix's test fails when the fix is reverted. Backend full suite: 13,434 passed, 29 skipped, 6 failed (the 5 sandbox-only tests, which pass 55 of 55 with the proxy and AWS variables unset, and the load-sensitive chat starter timing test, which passes alone). test:strict: 8,921 passed, 1 skipped, 1 load-timeout failure in Runbooks.management, which passes 24 of 24 alone; no stderr. typecheck, lint, gates, check:types, build, docs:check, check_version, check_ci_contract, check_docs, build_app_knowledge --check and ruff fatal pass. Entry 323,479 B (no change). Seeded demo at 1440x900 and 390x844 in both themes: 12 screenshots, 0 console errors.
+- Status: done on r16-wp15g at 20e911b, HEAD detached.
+- Next: Owners outside WP15G: the noise funnel generated_at in agents/chat_tools/metrics.py (should be population.generated_at); case-snapshot.ts sourceLine for case numbers; the ui-standard.md:971 and useChatConversations.ts:336 wording for B40; the Help Center local model text.
+
+### 2026-11-25 17:20Z - WP15G reviewer - Chat and local-model fixes reviewed
+- Context: Independent adversarial review of Round 16 WP15G (SPEC section 4.5) on r16-wp15g, built from 5a4ec90. Covers B38, B40 and B42, [oss] B1 and B3, and the WP01 carry-forwards.
+- Did: Checked the diff against the SPEC, the bug hunt and the oss research. The five contracts are met, the edits stay in owned files and the two allowed hunks, and decide() and engine/risk.py are unchanged. Proved each regression by reverting its fix. On the seeded demo, in both themes at both sizes: the CASE-000048 chip opens the case by its internal id; the delete dialog names a report only when one exists; exports of case-store answers carry no "Sources queried" line. Fixed four defects on r16-wp15g. c9f846f: the Models hint says "on the Docker host" instead of "this computer", says to put the Linux host-gateway step in a Compose override file because the base file is pinned, and is now the Base URL field's accessible description. 7ed7aba: a complete_stream test covers the streamed chat call for B1.
+- Tests: WP15G backend file 26 passed. Full backend run: 13,438 passed, 29 skipped, 6 failed: the 5 sandbox-only tests (55 of 55 with proxy and AWS unset) and one timing bound that passes alone. test:strict at load average 20: 8,884 passed, 1 skipped, 39 load timeouts in 21 untouched files, and every one of those files passes on rerun. typecheck, lint, gates, check:types, build:app, build, docs:check, check_version, check_ci_contract, check_docs, build_app_knowledge --check and ruff fatal pass. Entry 323,479 B, no change.
+- Status: done on r16-wp15g at 7ed7aba, HEAD detached.
+- Next: Owners outside WP15G:
+  - noise funnel generated_at in agents/chat_tools/metrics.py;
+  - case_id in case-snapshot.ts sourceLine;
+  - B40 wording at ui-standard.md:971 and useChatConversations.ts:336;
+  - localhost example in the routes_models.py base_url 400 detail;
+  - focus that falls to the page body after Cancel in any useConfirm dialog (WP15F);
+  - Help Center local-model text (WP18).
+
+### 2026-11-25 17:11Z - orchestrator - WP15G merged (chat and local-model fixes)
+- Context: SPEC §4.8 step 11: B38 (chat exports name only the sources a tool read), B40 (the delete dialog mentions a report only when there is one), B42 (case citations show the case number) and the [oss] B1 and B3 local-model URL fixes.
+- Did: merged review 7ed7aba into claude/round16 with no conflicts; generated files unchanged. Carried: the ConfirmProvider focus return after Cancel (WP15F) and the routes_models example base URL (WP16).
+- Tests: on the merged tree, the WP15G backend tests 26 passed and its Console test files 49 passed; typecheck clean.
+- Status: done.
+- Next: WP08, WP11 and WP05 part 2 as their reviews finish; WP10 and WP14 are building.
