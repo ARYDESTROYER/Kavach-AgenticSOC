@@ -137,6 +137,35 @@ describe('Models — Add local model', () => {
     );
   });
 
+  it('gives example URLs the backend container can reach ([oss] B3)', async () => {
+    renderPage();
+    fireEvent.click(await screen.findByRole('button', { name: /add local model/i }));
+    const field = await screen.findByLabelText(/base url/i);
+    // Inside the Compose stack, localhost is the backend container itself.
+    expect(field).toHaveAttribute('placeholder', 'http://host.docker.internal:4000/v1');
+    const help = screen.getByTestId('local-base-url-help');
+    expect(help).toHaveTextContent('http://host.docker.internal:4000/v1 (LiteLLM)');
+    expect(help).toHaveTextContent('http://host.docker.internal:11434/v1 (Ollama)');
+    expect(help).toHaveTextContent('host-gateway');
+    expect(help.textContent).not.toMatch(/localhost:(4000|11434)/);
+  });
+
+  it('names the Docker host and a Compose override, and reads the hint with the field ([oss] B3)', async () => {
+    renderPage();
+    fireEvent.click(await screen.findByRole('button', { name: /add local model/i }));
+    const field = await screen.findByLabelText(/base url/i);
+    const help = screen.getByTestId('local-base-url-help');
+    // The browser may run on another machine than the Docker host, so the hint names
+    // the host, never "this computer".
+    expect(help).toHaveTextContent('For a server on the Docker host');
+    expect(help.textContent).not.toMatch(/this computer/);
+    // The base Compose file is pinned by the updater, so the Linux step goes in an
+    // override file, never in the base file.
+    expect(help).toHaveTextContent('in a Compose override file');
+    // A screen reader hears the hint when it reaches the field.
+    expect(field).toHaveAccessibleDescription(expect.stringContaining('localhost is the backend container itself'));
+  });
+
   it('fetches models from the endpoint via the reachability probe', async () => {
     renderPage();
     fireEvent.click(await screen.findByRole('button', { name: /add local model/i }));

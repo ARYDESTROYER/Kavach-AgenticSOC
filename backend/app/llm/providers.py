@@ -1744,10 +1744,33 @@ def _make_anthropic(*, api_key: str = "", base_url: str | None = None, **_: Any)
     return AnthropicProvider(api_key, base_url=base_url or "https://api.anthropic.com")
 
 
+def openai_api_root(base_url: str) -> str:
+    """The root an OpenAI-shaped client joins its ``/v1/...`` paths onto.
+
+    Round 16 ([oss] B1): operators type a local endpoint the way LiteLLM, vLLM and
+    Ollama document it, ending in ``/v1`` (``http://localhost:4000/v1``). The client
+    posts to ``/v1/chat/completions`` and ``/v1/embeddings``, and httpx joins the two
+    paths, so a typed ``/v1`` doubled to ``/v1/v1/...`` and every call answered 404.
+    One trailing ``/v1`` segment and any trailing slash are removed here; a prefix in
+    front of it (``http://h/openai/v1``) is kept. Only the client's root changes: the
+    stored URL stays as the operator typed it."""
+    url = str(base_url or "").strip().rstrip("/")
+    if url.lower().endswith("/v1"):
+        url = url[: -len("/v1")].rstrip("/")
+    return url
+
+
+def _openai_base(base_url: str | None) -> str:
+    """The client root for a factory: the official host by default, else the custom
+    endpoint normalised by :func:`openai_api_root`."""
+    root = openai_api_root(base_url) if base_url else ""
+    return root or "https://api.openai.com"
+
+
 def _make_openai(*, api_key: str = "", base_url: str | None = None,
                  service_tier: str | None = None,
                  fallback_to_standard: bool = True, **_: Any) -> BaseProvider:
-    return OpenAIProvider(api_key, base_url=base_url or "https://api.openai.com",
+    return OpenAIProvider(api_key, base_url=_openai_base(base_url),
                           service_tier=service_tier,
                           fallback_to_standard=fallback_to_standard)
 
@@ -1758,7 +1781,7 @@ def _make_openai_compatible(*, api_key: str = "", base_url: str | None = None,
     # Same client as ``openai`` (the gateway passes identical kwargs), explicitly
     # marked compatible so streaming tolerates a server without ``stream_options``
     # even when its base_url happens to proxy the official host.
-    return OpenAIProvider(api_key, base_url=base_url or "https://api.openai.com",
+    return OpenAIProvider(api_key, base_url=_openai_base(base_url),
                           service_tier=service_tier,
                           fallback_to_standard=fallback_to_standard,
                           compatible=True)

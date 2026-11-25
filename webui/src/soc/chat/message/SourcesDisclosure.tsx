@@ -3,8 +3,9 @@
  * (chat revamp SPEC §3.5, §10.3).
  *
  * Citations: a Help Center section opens the validated same-origin `/docs/…` link in a
- * new tab; a case opens Case Manager by its validated id; an ATT&CK technique and a
- * knowledge or query source are text. Untrusted titles are mono text and never links
+ * new tab; a case, labelled with its case number when the citation carries one, opens
+ * Case Manager by its validated id; an ATT&CK technique and a knowledge or query source
+ * are text. Untrusted titles are mono text and never links
  * (G7). Console links come from `console_map` (never model text): an allowed one
  * navigates, a disallowed one is plain text naming the grant it needs.
  *
@@ -49,14 +50,18 @@ function CitationTitle({ citation, onOpenCase }: { citation: ChatCitation; onOpe
   }
   if (citation.kind === 'case' && citation.case_id) {
     const caseId = citation.case_id;
+    // The case number the rest of the Console shows (B42); the internal id stays the
+    // navigation target and the hover text. Older transcripts carry no number.
+    const number = citation.case_number?.trim() || null;
     return (
       <>
         <button
           type="button"
           onClick={() => onOpenCase(caseId)}
+          title={number ? caseId : undefined}
           className="rounded-sm font-mono font-medium text-primary underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
-          {caseId}
+          {number ?? caseId}
         </button>{' '}
         <span className={cn('text-foreground', citation.untrusted && 'font-mono')}>{citation.title}</span>
       </>

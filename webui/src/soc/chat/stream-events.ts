@@ -584,6 +584,8 @@ export function normaliseCitation(raw: unknown): ChatCitation | null {
     untrusted: raw.untrusted !== false,
     doc,
     case_id: caseId,
+    // Round 16 (B42): display text only, never a navigation target.
+    case_number: kind === 'case' ? optText(raw.case_number, 200) : null,
     technique,
     snippet: optText(raw.snippet, 280, true),
   };
