@@ -12302,3 +12302,24 @@
 - Tests: on the merged tree, the WP15B and WP15C test files plus the route coverage, security, decide guard, spine guard and record provenance tests: 933 passed. build_app_knowledge --check current, generated API types unchanged, fatal ruff clean. decide(), engine/risk.py and engine/signatures.py unchanged since cd9ed95.
 - Status: done.
 - Next: start Wave 1 (WP08, WP13, WP15G, WP11) from this base; merge WP07, WP05 part 2 and WP15E part 1 after their reviews; WP02 then WP03 merge after WP10 per §4.8.
+
+### 2026-11-25 12:20Z - WP15E part 1 builder - Demo sources read-only in the wizard, truthful Make primary (B43, B46)
+- Context: Round 16 SPEC 4.4 "WP15E, part 1" with the B43 and B46 contracts in 4.5 WP15E and 3.2 (Demo Mode). Base df0c61b, branch r16-wp15e1.
+- Did: added `_refuse_demo_source_write` to backend/app/api/routes.py and called it from `upsert_source`, `delete_source` and `set_source_secrets`. While Demo is active, a write to a Demo overlay id gets `409 source_demo_readonly`; real-source adds stay allowed. The wizard Data sources step shows Demo rows as "Managed by Demo Mode" with no actions. Make primary shows only for a pull source on Sources and in the wizard, and both toast success only when the returned list confirms it; otherwise they say "Only a pull source can be the primary source." The shared rules are in the new webui/src/soc/pages/sources-primary.ts. Entry grew 512 B (329,271 B to 329,783 B), inside the budget.
+- Tests: new test_round16_source_demo_readonly.py (3), Wizard.sources.round16.test.tsx (4) and a B46 block in Sources.test.tsx (3); each regression failed before its fix. Backend combined 13,275 passed, 24 skipped, 5 sandbox-only failures. Strict Vitest timed out under machine load; the cut-off files were rerun, and the remaining failures were load timeouts that pass with a longer test timeout, zero stderr. Lint, gates, check:types, the full build, check_version, check_ci_contract, check_docs and build_app_knowledge --check all pass.
+- Status: done; commit fa852d0 on r16-wp15e1, worktree detached.
+- Next: WP15E part 2 (B36, B37, B44, B45, B49, B53, B56, B57). WP18 adds the Help Center sentences below. Whoever takes SourceEditor.tsx should note its own manifest-based primary switch.
+
+### 2026-11-25 13:45Z - WP15E part 1 reviewer - Demo sources read-only and truthful Make primary reviewed (B43, B46)
+- Context: Independent adversarial review of r16-wp15e1 (builder commit fa852d0 on df0c61b) against Round 16 SPEC 4.4 "WP15E, part 1", the B43 and B46 contracts in 4.5 WP15E, and 3.2.
+- Did: Confirmed both contracts, the ownership rules, and that decide() and risk.py are unchanged. Proved each regression test fails without its fix. Checked the live demo in both themes at 1440 and 390, with Demo on and off. Fixed one defect in 3d8eb5e: after Make primary worked, a failed list reload in the wizard showed "The source change was not applied" next to the success toast. It now says "The list didn't refresh" with Reload list, as a removal does. Added a backend test that sends the exact B43 Make primary body for the Demo Wazuh source. Before the fix it got 200 and was saved live; now it gets 409 and prefs.sources is unchanged.
+- Tests: Backend 13,305 collected: 13,276 passed, 24 skipped, 5 sandbox-only failures, which pass 55 of 55 with the proxy and AWS variables unset. Strict Vitest: 677 of 683 files passed; the 6 load-timeout files pass with one worker and a 30 s timeout, with no stderr. Typecheck, lint, gates, check:types, build (entry 329,919 B, 839 B over the baseline, inside the 1,024 B budget), check_version, check_ci_contract, check_docs, build_app_knowledge --check and the fatal ruff check all pass.
+- Status: done; r16-wp15e1 at 3d8eb5e, worktree detached.
+- Next: WP15E part 2. Two open items: SourceEditor.tsx's manifest-based Primary switch has no owner. A real source added from the wizard while Demo is on is saved but never appears in the list.
+
+### 2026-11-25 13:22Z - orchestrator - WP15E part 1 merged
+- Context: SPEC §4.8 merge step 7, taken before WP07 (still in review) because the two touch different files: B43 (Demo sources read-only in the wizard and the backend 409 source_demo_readonly) and B46 (Make primary only for pull sources, toasted only when the response confirms it).
+- Did: merged review 3d8eb5e into claude/round16; the knowledge manifest was regenerated. Carried to WP15E part 2: the SourceEditor Primary switch reuses canBePrimary, and a real source added while Demo is on gets a note that it appears after Demo Mode is turned off.
+- Tests: on the merged tree, the new Demo read-only backend test with the route coverage and knowledge tests 239 passed; the Sources and wizard Vitest files 40 passed; build_app_knowledge --check current.
+- Status: done.
+- Next: WP07 and WP05 part 2 after the WP07 review; Wave 1 (WP08, WP13, WP11, WP15G) is building from 5a4ec90.
