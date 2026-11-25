@@ -16,7 +16,7 @@ import type { Case, RiskInputs } from '@/lib/types';
 import { humanizeToken } from '@/lib/format';
 import { cn } from '@/lib/cn';
 import { displayBand, displayScore, trimmed } from '@/lib/explain/rounding';
-import { memberCountNote } from '@/lib/explain/risk';
+import { memberCountNote, recordedRiskInputs, type AssetRangeReading } from '@/lib/explain/risk';
 
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/ui/tooltip';
 import { scoreBand, type ScoreBand } from '@/soc/components/palette';
@@ -322,10 +322,10 @@ export function caseRiskFactors(c: Case, triage: TriageChips | null): RiskFactor
   const recorded = triage?.risk?.breakdown ?? caseRiskBreakdown;
   if (!recorded) return [];
   // B13: the inputs recorded at scoring are the only source of the counts; the case's
-  // member count is shown only as its own fact.
-  const scored = (c.risk_breakdown?.inputs ?? (recorded as { inputs?: RiskInputs | null }).inputs ?? null) as
-    | RiskInputs
-    | null;
+  // member count is shown only as its own fact. They count only in the recorded shape:
+  // a partial object reads "not recorded", never "undefined events" (or a crash).
+  const scored: RiskInputs | null =
+    recordedRiskInputs(c.risk_breakdown) ?? recordedRiskInputs(recorded as { inputs?: RiskInputs | null });
   const memberEventCount = c.member_event_keys?.length || c.member_event_ids?.length || 0;
   const reputationInput =
     typeof caseEnrichment?.reputation_score === 'number' &&
@@ -352,6 +352,8 @@ export function caseRiskFactors(c: Case, triage: TriageChips | null): RiskFactor
 export interface SignalProfileProps {
   c: Case;
   triage: TriageChips | null;
+  /** Today's internal network range that holds the entity (`settings:read` only). */
+  assetRange?: AssetRangeReading | null;
   className?: string;
 }
 
@@ -361,7 +363,7 @@ export interface SignalProfileProps {
  * column of facts and the factor bars are one click away. The AI confidence is part of
  * the Outcome section's AI line, its one home.
  */
-export const SignalProfile: React.FC<SignalProfileProps> = ({ c, triage, className }) => {
+export const SignalProfile: React.FC<SignalProfileProps> = ({ c, triage, assetRange = null, className }) => {
   const riskVal = typeof triage?.risk?.value === 'number' ? triage.risk.value : c.risk_score;
   // The shown integer (rounded half up) and ITS band: the one rule for every score (D4).
   const shown = displayScore(riskVal);
@@ -379,7 +381,7 @@ export const SignalProfile: React.FC<SignalProfileProps> = ({ c, triage, classNa
           tone={ourRiskBand}
           description="Deterministic case input"
           renderValue={(node) => (
-            <RiskExplain caseId={c.case_id} score={riskVal} breakdown={c.risk_breakdown}>
+            <RiskExplain caseId={c.case_id} score={riskVal} breakdown={c.risk_breakdown} assetRange={assetRange}>
               {node}
             </RiskExplain>
           )}

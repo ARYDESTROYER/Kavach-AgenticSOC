@@ -26,7 +26,13 @@ import { Check, ClipboardCheck, Copy, UserRound } from 'lucide-react';
 import { toast } from 'sonner';
 
 import { api } from '@/lib/api';
-import { explainSeverity, explainSla, type SlaReadingWire } from '@/lib/explain/builders';
+import {
+  explainPriority,
+  explainSeverity,
+  explainSla,
+  type AssetRangeReading,
+  type SlaReadingWire,
+} from '@/lib/explain/builders';
 import { copyText } from '@/lib/clipboard';
 import { cn } from '@/lib/cn';
 import type { Case, SlaPolicy } from '@/lib/types';
@@ -130,8 +136,10 @@ export interface CaseHeaderMetaProps {
   slaPolicy?: SlaPolicy | null;
   /** The server's SLA reading (the triage read), used when the settings cannot be read. */
   serverSla?: SlaReadingWire | null;
-  /** The triage chips, for the severity explanation. */
+  /** The triage chips, for the severity and priority explanations. */
   triage?: TriageChips | null;
+  /** Today's internal network range that holds the entity (`settings:read` only). */
+  assetRange?: AssetRangeReading | null;
   /** The authoritative case after an owner edit (queue + detail sync). */
   onCaseChange: (next: Case) => void;
   /** Controlled owner popover (the M shortcut opens it). */
@@ -153,6 +161,7 @@ export const CaseHeaderMeta: React.FC<CaseHeaderMetaProps> = ({
   slaPolicy,
   serverSla = null,
   triage = null,
+  assetRange = null,
   onCaseChange,
   ownerOpen,
   onOwnerOpenChange,
@@ -167,6 +176,13 @@ export const CaseHeaderMeta: React.FC<CaseHeaderMetaProps> = ({
   // Once the case ended, its outcome of record replaces the status (never both).
   const showOutcome = outcome.terminal && outcome.source !== 'pending';
   const sla = outcome.terminal ? null : caseSlaReading(c, slaPolicy, serverSla);
+  // The SLA's priority is the matrix lookup the triage read explains only when the two
+  // name the same level (a case can carry a stored level of its own).
+  const priorityExplanation = explainPriority(triage);
+  const priorityMatches =
+    sla !== null &&
+    priorityExplanation !== null &&
+    String(priorityExplanation.value ?? '').trim().toUpperCase() === sla.priority;
   const [assigningSelf, setAssigningSelf] = React.useState(false);
   const ownerTitleId = React.useId();
 
@@ -236,7 +252,7 @@ export const CaseHeaderMeta: React.FC<CaseHeaderMetaProps> = ({
 
       {risk !== null ? (
         <span className={cn('shrink-0 items-center', META_HIDE.risk)} data-meta-item="risk">
-          <RiskExplain caseId={c.case_id} score={c.risk_score} breakdown={c.risk_breakdown}>
+          <RiskExplain caseId={c.case_id} score={c.risk_score} breakdown={c.risk_breakdown} assetRange={assetRange}>
             <span
               data-testid="case-detail-risk"
               className={cn(
@@ -321,15 +337,24 @@ export const CaseHeaderMeta: React.FC<CaseHeaderMetaProps> = ({
       </Popover>
 
       {sla ? (
-        <span className={cn('shrink-0 items-center', META_HIDE.sla)} data-meta-item="sla">
-          <FactExplain explanation={explainSla(serverSla)}>
-            <span
-              data-testid="case-detail-sla"
-              data-sla-state={sla.state}
-              className={cn('inline-flex shrink-0 items-center gap-1 font-medium', SLA_TONE[sla.state])}
-            >
-              {sla.priority} · {sla.text}
-            </span>
+        <span
+          className={cn('shrink-0 items-center gap-1 font-medium', META_HIDE.sla, SLA_TONE[sla.state])}
+          data-meta-item="sla"
+          data-testid="case-detail-sla"
+          data-sla-state={sla.state}
+        >
+          {/* The priority opens the matrix lookup when it is the matrix's level; one the
+              case carries itself is explained by the SLA reading (its source line). */}
+          {priorityMatches ? (
+            <FactExplain explanation={priorityExplanation}>
+              <span data-testid="case-detail-sla-priority">{sla.priority}</span>
+            </FactExplain>
+          ) : (
+            <span data-testid="case-detail-sla-priority">{sla.priority}</span>
+          )}
+          <span aria-hidden>·</span>
+          <FactExplain explanation={explainSla(sla.wire)}>
+            <span data-testid="case-detail-sla-text">{sla.text}</span>
           </FactExplain>
         </span>
       ) : null}

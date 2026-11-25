@@ -57,7 +57,18 @@ export interface DecisionReading {
   decisionBy: string | null;
   objectionWindowExpiresAt: string | null;
   ts: string | null;
+  /**
+   * Where the thresholds come from (`gate_source`): `recorded` for the gate written at
+   * decision time, `rederived_current_policy` for a decision made before it was recorded,
+   * null when the span says nothing (an older build) or no policy was evaluated.
+   */
+  gateSource: 'recorded' | 'rederived_current_policy' | null;
+  /** True when the newest run failed, so code routed the case without any policy check. */
+  runFailed: boolean;
 }
+
+/** The sentence for a run that failed after, or before, the last recorded decision. */
+export const FAILED_RUN_SENTENCE = 'The investigation failed, so code routed the case to a person.';
 
 function record(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
@@ -82,7 +93,13 @@ function thresholds(value: unknown): DecisionThresholds | null {
 export function readDecision(payload: DecisionPayload | Record<string, unknown> | null | undefined): DecisionReading | null {
   const p = record(payload);
   if (!p) return null;
-  const g = record(p.gate);
+  const runFailed = p.run_failed === true;
+  const rawGateSource = str(p.gate_source);
+  const gateSource =
+    rawGateSource === 'recorded' || rawGateSource === 'rederived_current_policy' ? rawGateSource : null;
+  // A gate counts only when the span does not say it was re-derived and no run failed:
+  // a failed run evaluated no policy at all.
+  const g = runFailed || gateSource === 'rederived_current_policy' ? null : record(p.gate);
   const gate: DecisionGate | null = g
     ? {
         verdict: str(g.verdict),
@@ -102,11 +119,13 @@ export function readDecision(payload: DecisionPayload | Record<string, unknown> 
     source: source === 'recorded' ? 'recorded' : source ? 'read_time' : null,
     gate,
     current: thresholds(p.current_policy) ?? thresholds(p.policy_clause),
-    policyChanged: bool(p.policy_changed),
+    policyChanged: runFailed ? null : bool(p.policy_changed),
     status: str(p.decision_status) ?? str(p.status),
     decisionBy: str(p.decision_by),
     objectionWindowExpiresAt: str(p.objection_window_expires_at),
     ts: str(p.ts),
+    gateSource: runFailed ? null : gateSource,
+    runFailed,
   };
 }
 
@@ -258,6 +277,26 @@ function outcomeWords(status: string | null, decisionBy: string | null): string 
 export function explainDecision(caseRecord: Case, decision?: DecisionPayload | null): Explanation | null {
   if (!caseRecord) return null;
   const reading = readDecision(decision ?? null);
+  if (reading?.runFailed) {
+    // The newest run failed: code routed the case without comparing anything with the
+    // auto-close policy, so no threshold is shown as if it decided.
+    return {
+      metric: 'decision',
+      title: 'Deterministic decision',
+      value: 'Routed to a person',
+      display: 'Routed to a person',
+      summary: FAILED_RUN_SENTENCE,
+      formula: 'A failed investigation routes the case to a person; no auto-close policy is evaluated',
+      inputs: [{ key: 'run', label: 'Newest investigation', value: 'Failed', source: 'Recorded when the run failed' }],
+      steps: [
+        { label: 'Investigation', expression: 'The run failed before a verdict', result: 'Failed' },
+        { label: 'Recorded decision', expression: 'Decided by code', result: 'Routed to a person' },
+      ],
+      provenance: 'recorded',
+      provenanceNote: reading.ts ? `Recorded when the run failed, ${reading.ts}.` : 'Recorded when the run failed.',
+      caveats: ['A failed run never closes a case automatically.'],
+    };
+  }
   const gate = reading?.gate ?? null;
   const verdict = gate?.verdict ?? (typeof caseRecord.verdict === 'string' ? caseRecord.verdict : null);
   if (!verdict) return null;
@@ -403,5 +442,90 @@ export function explainDecision(caseRecord: Case, decision?: DecisionPayload | n
     provenance,
     provenanceNote,
     caveats,
+  };
+}
+
+/**
+ * Today's auto-close policy read against a case's verdict, confidence and risk (D8): the
+ * inspector's policy line, both conditions with their numbers. It is TODAY's policy, not
+ * the decision record (the AI verdict chip and the Brief's decision hold that), and it
+ * says so. Null for a needs-human verdict (code fixes it, there is no bar) and when the
+ * policy entry does not name both bars.
+ */
+export function explainPolicyToday(
+  verdict: string | null,
+  confidence: number | null,
+  risk: number | null,
+  policy: Pick<DecisionThresholds, 'enabled' | 'min_confidence' | 'max_risk_score'> | null,
+): Explanation | null {
+  const comparison = compareWithPolicy(verdict, confidence, risk, policy);
+  if (comparison.klass === 'needs_human' || comparison.policyOutcome === 'unknown') return null;
+  const sentence = comparisonSentence(comparison, 'current');
+  const where = "Today's policy";
+  // The confidence and its bar share their decimals, so they never read equal when the
+  // comparison says they differ.
+  const [confidenceText, barText] =
+    confidence !== null && comparison.minConfidence !== null
+      ? comparisonPair(confidence, comparison.minConfidence, Boolean(comparison.confidenceMet), 0, percentDigits)
+      : [confidence !== null ? pct(confidence) : '', comparison.minConfidence !== null ? pct(comparison.minConfidence) : ''];
+  const inputs: ExplanationInput[] = [
+    { key: 'verdict', label: 'AI verdict', value: verdictLabel(verdict), source: 'The case' },
+  ];
+  if (confidence !== null) inputs.push({ key: 'confidence', label: 'AI confidence', value: confidenceText, source: 'The case' });
+  if (risk !== null) inputs.push({ key: 'risk_score', label: 'Risk score', value: trimmed(risk), source: 'The case' });
+  inputs.push({
+    key: 'class_enabled',
+    label: `Auto-close for ${CLASS_WORDS[comparison.klass]}`,
+    value: comparison.enabled === null ? 'Not known' : comparison.enabled ? 'On' : 'Off',
+    source: where,
+  });
+  if (comparison.minConfidence !== null) {
+    inputs.push({ key: 'min_confidence', label: 'Minimum confidence', value: barText, source: where });
+  }
+  if (comparison.maxRisk !== null) {
+    inputs.push({ key: 'max_risk_score', label: 'Maximum risk', value: trimmed(comparison.maxRisk), source: where });
+  }
+  const steps: ExplanationStep[] = [
+    {
+      label: 'Auto-close on',
+      expression: `Auto-close for ${CLASS_WORDS[comparison.klass]}`,
+      result: comparison.enabled ? 'On' : 'Off',
+    },
+  ];
+  const conf = conditionText('confidence', comparison);
+  if (conf) {
+    steps.push({
+      label: 'Confidence',
+      expression: conf.replace(/ \((?:met|not met)\)$/, ''),
+      result: comparison.confidenceMet ? 'Met' : 'Not met',
+    });
+  }
+  const riskLine = conditionText('risk', comparison);
+  if (riskLine) {
+    steps.push({
+      label: 'Risk',
+      expression: riskLine.replace(/ \((?:met|not met)\)$/, ''),
+      result: comparison.riskMet ? 'Met' : 'Not met',
+    });
+  }
+  const result = comparison.policyOutcome === 'closes' ? 'Closes automatically' : 'Routed to a person';
+  steps.push({
+    label: 'Policy result',
+    expression: 'Both conditions met closes; otherwise a person decides',
+    result,
+  });
+  return {
+    metric: 'auto_close_policy',
+    title: "Today's auto-close policy",
+    value: comparison.policyOutcome,
+    display: result,
+    summary: sentence,
+    formula: 'Closes when auto-close is on for the verdict class, confidence >= minimum and risk <= maximum',
+    inputs,
+    steps,
+    provenance: 'reconstructed_current',
+    provenanceNote:
+      "Today's policy, read now against the case's confidence and risk. The decision on this case is in its decision record.",
+    caveats: ['This line never closes or routes the case: code decided when the case was investigated.'],
   };
 }

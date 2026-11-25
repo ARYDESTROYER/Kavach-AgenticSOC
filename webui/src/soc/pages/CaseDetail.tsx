@@ -94,7 +94,7 @@ import type {
   SlaPolicy,
   ThreatContextPanel as ThreatContextPanelData,
 } from '@/lib/types';
-import type { SlaReadingWire } from '@/lib/explain/builders';
+import type { AssetRangeReading, SlaReadingWire } from '@/lib/explain/builders';
 import { downloadText } from '@/lib/download';
 import { errorMessage } from '@/lib/errorMessage';
 import { humanizeToken } from '@/lib/format';
@@ -193,7 +193,7 @@ import { EvidencePanel } from './casedetail/EvidencePanel';
 import { TimelinePanel } from './casedetail/TimelinePanel';
 import { InvestigationPanel } from './casedetail/InvestigationPanel';
 import { ThreatContextPanel } from './casedetail/ThreatContextPanel';
-import { triageAutoClosePolicy, triageSla } from './casedetail/triageReads';
+import { triageAssetCidr, triageAutoClosePolicy, triageSla } from './casedetail/triageReads';
 import { CollaborationThreadTab } from './casedetail/CollaborationPanel';
 import { ChatTab } from './casedetail/CaseChatPanel';
 import { ConfirmActionDialog } from './casedetail/ConfirmActionDialog';
@@ -867,6 +867,9 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
   // reading, for a viewer who may not read the settings (and as the SLA's first source).
   const [triagePolicy, setTriagePolicy] = React.useState<FpPolicy>(null);
   const [serverSla, setServerSla] = React.useState<SlaReadingWire | null>(null);
+  // Today's internal network range that holds the entity, sent only to a person who may
+  // read the settings (WP10), for the risk explanation.
+  const [assetRange, setAssetRange] = React.useState<AssetRangeReading | null>(null);
   // SLA policy for the header's advisory SLA reading (best-effort, #3-safe).
   const [slaPolicy, setSlaPolicy] = React.useState<SlaPolicy | null>(null);
   // Header popovers + the narrow-pane inspector sheet (keyboard shortcuts open them).
@@ -995,6 +998,7 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
     setThreatLoading(false);
     setTriagePolicy(null);
     setServerSla(null);
+    setAssetRange(null);
     setEventFilter(null);
     setTimelineWanted(false);
     // A review belongs to the case it was opened on; the Files count is read again.
@@ -1017,6 +1021,7 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
       setTriage(res?.chips || null);
       setTriagePolicy(triageAutoClosePolicy(res));
       setServerSla(triageSla(res));
+      setAssetRange(triageAssetCidr(res));
     } catch {
       if (activeIdRef.current === id) setTriage(null);
     }
@@ -1947,6 +1952,7 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
         triage={triage}
         slaPolicy={slaPolicy}
         serverSla={serverSla}
+        assetRange={assetRange}
         policy={verdictPolicy}
         canViewCost={canViewCost}
         onCaseChange={commitCase}
@@ -2411,6 +2417,7 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
                   slaPolicy={slaPolicy}
                   serverSla={serverSla}
                   triage={triage}
+                  assetRange={assetRange}
                   onCaseChange={commitCase}
                   ownerOpen={ownerOpen}
                   onOwnerOpenChange={setOwnerOpen}

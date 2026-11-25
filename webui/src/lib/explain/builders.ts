@@ -10,17 +10,35 @@
  * This module only re-exports: each builder lives in its own small file, and none of
  * them reaches the entry chunk (they are imported from lazy route chunks only).
  */
-export { explainRisk, explainRiskScore, riskHoverLine, memberCountNote, type RiskExplainSource } from './risk';
+export {
+  explainRisk,
+  explainRiskScore,
+  recordedRiskInputs,
+  riskHoverLine,
+  memberCountNote,
+  type AssetRangeReading,
+  type RiskExplainSource,
+} from './risk';
 export {
   explainDecision,
+  explainPolicyToday,
   readDecision,
   compareWithPolicy,
   comparisonSentence,
   type DecisionReading,
   type DecisionGate,
 } from './decision';
-export { explainSla, slaClockState, SLA_AT_RISK_FRACTION, type SlaReadingWire, type SlaClockState } from './sla';
+export {
+  explainSla,
+  shownSlaClock,
+  slaClockState,
+  SLA_AT_RISK_FRACTION,
+  type SlaReadingWire,
+  type SlaClockWire,
+  type SlaClockState,
+} from './sla';
 export { explainPriority, explainSeverity, triageBand } from './triage';
+export { explainTimeToDetect } from './times';
 export { explainShare, explainPercentile, explainWilson, percentile, wilsonInterval } from './stats';
 export { explainCost, recomputeCost } from './cost';
 export { explanationText, PROVENANCE_WORDS } from './text';

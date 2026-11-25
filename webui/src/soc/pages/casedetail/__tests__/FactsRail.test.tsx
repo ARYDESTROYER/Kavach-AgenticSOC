@@ -107,7 +107,7 @@ function renderRail(c: Case = FULL, extra: Partial<React.ComponentProps<typeof F
         outcome={caseOutcome(c)}
         triage={null}
         slaPolicy={null}
-        policy={{ enabled: true, min_confidence: 0.9 }}
+        policy={{ enabled: true, min_confidence: 0.9, max_risk_score: 30 }}
         canViewCost
         onCaseChange={vi.fn()}
         onShowRelated={vi.fn()}
@@ -126,7 +126,9 @@ describe('FactsRail', () => {
     const outcome = within(rail).getByTestId('facts-outcome');
     expect(within(outcome).getByTestId('facts-outcome-headline')).toHaveTextContent('Closed as false positive');
     expect(outcome).toHaveTextContent(/classified by aryan/i);
-    expect(outcome).toHaveTextContent('AI verdict: Needs human review (75%) · Resolves the AI hand-off');
+    // The AI line opens the decision's explanation (WP11I), so its text is the trigger's.
+    expect(within(outcome).getByTestId('facts-ai-line')).toHaveTextContent('AI verdict: Needs human review (75%)');
+    expect(outcome).toHaveTextContent('· Resolves the AI hand-off');
 
     // Who decided, in the Outcome section (D8.4).
     expect(outcome).toHaveTextContent('Decided byAnalyst');
@@ -322,7 +324,10 @@ describe('FactsRail', () => {
     renderRail(open);
     const outcome = screen.getByTestId('facts-outcome');
     expect(outcome).toHaveTextContent('AI verdict: False positive (82%)');
-    expect(screen.getByTestId('facts-auto-close-bar')).toHaveTextContent('Auto-close bar 90%');
+    // Both auto-close conditions with the case's numbers (D8), never half of the predicate.
+    expect(screen.getByTestId('facts-auto-close-bar')).toHaveTextContent(
+      "Today's policy routes it to a person: confidence 82% >= 90% (not met); risk 7 <= 30 (met).",
+    );
     cleanup();
 
     // Once an analyst classified the case, the bar no longer reads against it.

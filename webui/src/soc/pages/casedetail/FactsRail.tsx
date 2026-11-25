@@ -35,7 +35,17 @@ import { Bot, ChevronDown, Braces } from 'lucide-react';
 
 import type { Case, SlaPolicy } from '@/lib/types';
 import type { CaseReviewState } from '@/lib/types-reviews';
-import { explainPriority, explainSeverity, explainSla, type SlaReadingWire } from '@/lib/explain/builders';
+import {
+  compareWithPolicy,
+  comparisonSentence,
+  explainPolicyToday,
+  explainPriority,
+  explainSeverity,
+  explainSla,
+  explainTimeToDetect,
+  type AssetRangeReading,
+  type SlaReadingWire,
+} from '@/lib/explain/builders';
 import { cn } from '@/lib/cn';
 import { DASH, formatTimestamp, humanizeAge, humanizeToken } from '@/lib/format';
 import { caseLabel } from '@/lib/format-values';
@@ -66,12 +76,13 @@ import type { Campaign } from '@/soc/pages/Campaigns.api';
 import { AskAi } from './AskAi';
 import { CaseTagsEditor } from './CaseTagsEditor';
 import { SignalProfile } from './SignalProfile';
+import { DecisionExplain } from './explain/DecisionExplain';
 import { FactExplain } from './explain/FactExplain';
 import { AllFieldsSheet } from './records/AllFieldsSheet';
 import { AwaitingReason } from './records/AwaitingReason';
 import { CaseUsageButton } from './records/CaseUsageButton';
-import { confidenceCalibration, type FpPolicy } from './shared';
-import { caseClocks, caseDisplayId, entityTypeLabel, severityVersusRiskNote } from './caseFacts';
+import type { FpPolicy } from './shared';
+import { caseClocks, caseDisplayId, entityTypeLabel, firstEventAt, severityVersusRiskNote } from './caseFacts';
 import { caseSlaReading } from './triageReads';
 
 const FIELD_LABEL = 'text-xs font-medium text-muted-foreground';
@@ -206,16 +217,35 @@ function classificationHistory(c: Case): Array<{ disposition: string; by?: strin
   return out;
 }
 
+const finite = (value: unknown): number | null =>
+  typeof value === 'number' && Number.isFinite(value) ? value : null;
+
+/** The auto-close entry for the case's verdict as the decision builders read it. */
+function policyThresholds(policy: FpPolicy | undefined) {
+  if (!policy) return null;
+  return {
+    enabled: typeof policy.enabled === 'boolean' ? policy.enabled : null,
+    min_confidence: finite(policy.min_confidence),
+    max_risk_score: finite(policy.max_risk_score),
+  };
+}
+
 /**
- * "Auto-close bar 85% · false-positive auto-close on at this bar", from the auto-close
- * entry for the case's verdict (B27), when it is known. Needs human has no bar.
+ * Both auto-close conditions of today's entry for the case's verdict (B27), with the
+ * case's own numbers (D8): "Today's policy routes it to a person: confidence 97% >= 85%
+ * (met); risk 45 <= 30 (not met)." `decide()` closes only when BOTH hold, so the line
+ * never states half of the predicate. Null for a needs-human verdict (code fixes it, so
+ * there is no bar) and when the entry does not name both bars.
  */
-export function autoCloseBarLine(policy: FpPolicy | undefined, verdict?: string | null): string | null {
-  const calibration = confidenceCalibration(policy ?? null, verdict ?? undefined);
-  if (typeof calibration.threshold !== 'number') return null;
-  const bar = confidencePercent(calibration.threshold);
-  if (bar === null) return null;
-  return `Auto-close bar ${bar}%${calibration.note ? ` · ${calibration.note}` : ''}`;
+export function autoCloseBarLine(
+  policy: FpPolicy | undefined,
+  verdict?: string | null,
+  confidence?: number | null,
+  risk?: number | null,
+): string | null {
+  const comparison = compareWithPolicy(verdict ?? null, finite(confidence), finite(risk), policyThresholds(policy));
+  if (comparison.klass === 'needs_human' || comparison.policyOutcome === 'unknown') return null;
+  return comparisonSentence(comparison, 'current');
 }
 
 export interface FactsRailProps {
@@ -228,6 +258,11 @@ export interface FactsRailProps {
    * read (no `settings:read`).
    */
   serverSla?: SlaReadingWire | null;
+  /**
+   * Today's internal network range that holds the entity (the triage read's `asset_cidr`,
+   * sent only to a person who may read the settings), for the risk explanation.
+   */
+  assetRange?: AssetRangeReading | null;
   /** The auto-close entry for the case's verdict (`policyForVerdict`, B27). */
   policy?: FpPolicy;
   /**
@@ -278,6 +313,7 @@ export const FactsRail: React.FC<FactsRailProps> = ({
   triage,
   slaPolicy,
   serverSla = null,
+  assetRange = null,
   policy,
   canViewCost,
   onCaseChange,
@@ -313,9 +349,20 @@ export const FactsRail: React.FC<FactsRailProps> = ({
     riskBand !== null &&
     severity !== riskBand;
   const impact = triage?.impact?.band ?? c.impact_band;
-  const priority = triage?.priority?.level ?? triage?.priority?.default ?? c.priority_level;
+  // D9: the triage read's priority is the matrix lookup; with the matrix off it carries no
+  // level on purpose, and the case has no priority (never the matrix's default level).
+  const triagePriority = triage?.priority ?? null;
+  const priority = triagePriority ? triagePriority.level : c.priority_level;
+  const noPriority =
+    triagePriority !== null &&
+    (triagePriority.level === null ||
+      triagePriority.level === undefined ||
+      triagePriority.inputs?.matrix_enabled === false ||
+      (triagePriority as { enabled?: unknown }).enabled === false);
   const clocks = caseClocks(c);
-  const sla = outcome.terminal ? null : caseSlaReading(c, slaPolicy, serverSla);
+  // Once the case ended, only the server's reading speaks for its SLA: it knows whether a
+  // stopped clock was late (the SLA metrics count that case as a breach).
+  const sla = caseSlaReading(c, slaPolicy, serverSla, Date.now(), outcome.terminal);
   const ruleIds = (c.rule_ids || []).filter((r): r is string => typeof r === 'string' && !!r.trim());
   const entityValue = c.entity?.value || '';
   const entityType = c.entity?.type || c.entity_type || '';
@@ -333,7 +380,13 @@ export const FactsRail: React.FC<FactsRailProps> = ({
   // The bar is TODAY's policy, so it reads only against an open case: once the case ended,
   // the decision record (the Brief) names the bar it was decided against, and today's
   // ("auto-close off") beside "Auto-closed as false positive" would contradict it.
-  const barLine = c.verdict && !humanSettled && !outcome.terminal ? autoCloseBarLine(policy, c.verdict) : null;
+  const barConfidence = finite(c.confidence);
+  const barRisk = finite(c.risk_score);
+  const barLine =
+    c.verdict && !humanSettled && !outcome.terminal ? autoCloseBarLine(policy, c.verdict, barConfidence, barRisk) : null;
+  const barExplanation = barLine
+    ? explainPolicyToday(String(c.verdict), barConfidence, barRisk, policyThresholds(policy))
+    : null;
   const displayId = caseDisplayId(c);
   // T and "Edit tags" open the tag editor, which lives inside "Tags and campaign": a
   // folded section renders none of its content, so the editor opens the section with it,
@@ -397,13 +450,25 @@ export const FactsRail: React.FC<FactsRailProps> = ({
             <Bot className="mt-0.5 size-3.5 shrink-0 text-primary" aria-hidden />
             <div className="min-w-0 space-y-0.5">
               <p>
-                {outcome.aiLine}
+                {/* The verdict and its confidence open the decision's explanation (the
+                    recorded gate, both conditions), as the header's verdict chip does. */}
+                {c.verdict ? (
+                  <DecisionExplain caseRecord={c}>
+                    <span data-testid="facts-ai-line">{outcome.aiLine}</span>
+                  </DecisionExplain>
+                ) : (
+                  outcome.aiLine
+                )}
                 {/* A review's agreement is its headline ("Review disagreed: ..."). */}
                 {outcome.source !== 'review' && agreementWords(outcome.agreement)
                   ? ` · ${agreementWords(outcome.agreement)}`
                   : ''}
               </p>
-              {barLine ? <p data-testid="facts-auto-close-bar">{barLine}</p> : null}
+              {barLine ? (
+                <p data-testid="facts-auto-close-bar">
+                  <FactExplain explanation={barExplanation}>{barLine}</FactExplain>
+                </p>
+              ) : null}
             </div>
           </div>
         ) : null}
@@ -434,7 +499,7 @@ export const FactsRail: React.FC<FactsRailProps> = ({
       </RailSection>
 
       <RailSection {...section('signal')} testId="facts-signal">
-        <SignalProfile c={c} triage={triage} />
+        <SignalProfile c={c} triage={triage} assetRange={assetRange} />
         <dl className="space-y-1.5" data-testid="facts-triage">
           <Fact label="Severity">
             {severity ? (
@@ -451,15 +516,21 @@ export const FactsRail: React.FC<FactsRailProps> = ({
         </dl>
         <FactExplain explanation={explainPriority(triage)}>
           <p className="text-xs text-muted-foreground" data-testid="facts-priority-line">
-            Priority <span className="text-foreground">{chipLabel(priority)}</span> · Impact{' '}
-            <span className="text-foreground">{chipLabel(impact)}</span> · Urgency{' '}
+            {noPriority ? (
+              <span className="text-foreground">No priority</span>
+            ) : (
+              <>
+                Priority <span className="text-foreground">{chipLabel(priority)}</span>
+              </>
+            )}{' '}
+            · Impact <span className="text-foreground">{chipLabel(impact)}</span> · Urgency{' '}
             <span className="text-foreground">{chipLabel(c.urgency_band)}</span>
           </p>
         </FactExplain>
         {sla ? (
           <dl className="space-y-1.5">
             <Fact label={`SLA (${sla.priority})`}>
-              <FactExplain explanation={explainSla(serverSla)}>
+              <FactExplain explanation={explainSla(sla.wire)}>
                 <span data-testid="facts-sla" data-sla-state={sla.state}>
                   {sla.text}
                 </span>
@@ -476,7 +547,14 @@ export const FactsRail: React.FC<FactsRailProps> = ({
         <dl className="space-y-1.5">
           {clocks.map((clock) => (
             <Fact key={clock.label} label={clock.label}>
-              <span title={formatTimestamp(clock.at)}>{clock.relative}</span>
+              {clock.label === 'Time to detect' ? (
+                /* The one computed clock: its subtraction one hover or click away. */
+                <FactExplain explanation={explainTimeToDetect(firstEventAt(c), c.created_at, clock.relative)}>
+                  <span data-testid="facts-time-to-detect">{clock.relative}</span>
+                </FactExplain>
+              ) : (
+                <span title={formatTimestamp(clock.at)}>{clock.relative}</span>
+              )}
             </Fact>
           ))}
         </dl>

@@ -8,7 +8,7 @@
 import type { Case, CaseRationale, SlaPolicy } from '@/lib/types';
 import { fmtDuration, humanizeAge, humanizeToken } from '@/lib/format';
 import { displayScore } from '@/lib/explain/rounding';
-import type { SlaReadingWire } from '@/lib/explain/sla';
+import { shownSlaClock, type SlaReadingWire } from '@/lib/explain/sla';
 
 /** The AI ran on this case: it carries a verdict (a candidate or a policy close does not). */
 export function aiAssessed(c: Pick<Case, 'verdict'>): boolean {
@@ -183,6 +183,8 @@ export interface SlaReading {
   state: SlaState;
   /** The priority level whose target applied ("P2"). */
   priority: string;
+  /** The clock the phrase states, for its explanation (`explainSla`). */
+  wire?: SlaReadingWire;
 }
 
 /** Statuses a person moves a case into that stop the response clock (the metrics' rule). */
@@ -247,14 +249,36 @@ export function slaReading(
     if (typeof minutes !== 'number' || minutes <= 0) return null;
     const due = start + minutes * 60_000;
     const left = due - now;
-    if (left < 0) {
-      return { text: `${kind} overdue by ${shortDuration(-left)}`, state: 'breached', priority };
-    }
     const soon = now - start >= minutes * 60_000 * AT_RISK_FRACTION;
+    const dueDate = new Date(due);
+    // The same reading in the server's shape, so the SLA explanation states this clock.
+    const wire: SlaReadingWire = {
+      clock: kind.toLowerCase(),
+      start_at: new Date(start).toISOString(),
+      anchor:
+        responded === null
+          ? 'created'
+          : responded === millis(c.acknowledged_at) || responded === millis(c.first_response_at)
+            ? 'acknowledged'
+            : 'status_history',
+      responded_at: responded === null ? null : new Date(responded).toISOString(),
+      target_minutes: minutes,
+      due_at: Number.isNaN(dueDate.getTime()) ? null : dueDate.toISOString(),
+      elapsed_minutes: Math.max(0, (now - start) / 60_000),
+      state: left < 0 ? 'breached' : soon ? 'at_risk' : 'ok',
+      priority,
+      priority_source: 'case_record',
+      running: true,
+      computed_by: 'console',
+    };
+    if (left < 0) {
+      return { text: `${kind} overdue by ${shortDuration(-left)}`, state: 'breached', priority, wire };
+    }
     return {
       text: `${kind} due in ${timeLeft(left)}`,
       state: soon ? 'due_soon' : 'running',
       priority,
+      wire,
     };
   };
 
@@ -274,25 +298,58 @@ const SERVER_SLA_STATE: Record<string, SlaState> = {
   met: 'met',
 };
 
+const finiteNumber = (value: unknown): number | null =>
+  typeof value === 'number' && Number.isFinite(value) ? value : null;
+
 /**
  * The SLA phrase from the server's reading (`GET /api/cases/{id}/triage`, field `sla`):
  * "Response due in 1h", "Resolution overdue by 2h", in the same shape as `slaReading`.
- * The time left is rounded down (B32). Null when the reading names no due time or
- * priority, so nothing is claimed that was not read.
+ *
+ * * It states the clock `shownSlaClock` picks: a breached clock wins over a stopped
+ *   current one that is not (`breached`), so a closed case with a late response reads the
+ *   late response, as the SLA metrics count it, never "SLA met". A current clock that
+ *   still runs stays the line (the time left to act on); its explanation names the
+ *   earlier breach.
+ * * A stopped clock (`running: false`) that was breached is late by a fixed amount, its
+ *   elapsed time over the target; it is never measured to now.
+ * * The time left on a "due in" line is rounded down (B32), and a clock the server marks
+ *   as never due (`due_at: null`) reads "not due".
+ *
+ * Null when the reading names no state or priority, so nothing is claimed that was not
+ * read.
  */
 export function serverSlaReading(reading: SlaReadingWire | null | undefined, now: number = Date.now()): SlaReading | null {
-  if (!reading) return null;
-  const state = SERVER_SLA_STATE[String(reading.state).toLowerCase()];
-  const priority = (reading.priority || '').trim().toUpperCase();
-  const due = millis(reading.due_at);
-  if (!state || !priority || due === null) return null;
-  const kind = String(reading.clock).toLowerCase() === 'resolution' ? 'Resolution' : 'Response';
-  if (state === 'met') return { text: 'SLA met', state, priority };
-  const left = due - now;
-  if (state === 'breached' || left < 0) {
-    return { text: `${kind} overdue by ${shortDuration(Math.abs(left))}`, state: 'breached', priority };
+  const shown = shownSlaClock(reading);
+  if (!shown) return null;
+  const state = SERVER_SLA_STATE[String(shown.state).toLowerCase()];
+  const priority = (shown.priority || '').trim().toUpperCase();
+  if (!state || !priority) return null;
+  const kind = String(shown.clock).toLowerCase() === 'resolution' ? 'Resolution' : 'Response';
+  const target = finiteNumber(shown.target_minutes);
+  const elapsed = finiteNumber(shown.elapsed_minutes);
+  const due = millis(shown.due_at);
+  const stopped = shown.running === false || (shown.running == null && state === 'met');
+  const read = { priority, wire: shown };
+  const late = (ms: number): SlaReading => ({
+    ...read,
+    text: `${kind} overdue by ${shortDuration(Math.max(0, ms))}`,
+    state: 'breached',
+  });
+
+  if (state === 'breached') {
+    if (stopped && target !== null && elapsed !== null) return late((elapsed - target) * 60_000);
+    if (due !== null) return late(now - due);
+    if (target !== null && elapsed !== null) return late((elapsed - target) * 60_000);
+    return { ...read, text: `${kind} overdue`, state: 'breached' };
   }
-  return { text: `${kind} due in ${timeLeft(left)}`, state, priority };
+  if (state === 'met' || stopped) return { ...read, text: 'SLA met', state: 'met' };
+  if (due === null) return { ...read, text: `${kind} not due`, state: 'running' };
+  const left = due - now;
+  if (left < 0) return late(-left);
+  // The reading was taken a little while ago: the clock may have reached 80% since.
+  const soon =
+    state === 'due_soon' || (target !== null && target * 60_000 - left >= target * 60_000 * AT_RISK_FRACTION);
+  return { ...read, text: `${kind} due in ${timeLeft(left)}`, state: soon ? 'due_soon' : 'running' };
 }
 
 /** The analyst-facing word for a status, keeping the legacy alias readable. */
