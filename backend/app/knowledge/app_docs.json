@@ -1741,7 +1741,7 @@
    "page": "analyst/case-manager.md",
    "anchor": "case-facts",
    "heading": "Case facts",
-   "text": "The **case facts** list what is known about the case in one place, beside every tab.\nWhen the case pane is about 52rem (832 px) wide or wider, they are a column on the\nright; press **]** or select **Case facts** in the header to show or hide the column,\nand the choice is stored in this browser. In a narrower pane, **Case facts** opens the\nsame facts in a side sheet that leaves the case usable. They come in six sections, each\nfolding open or closed and remembered in this browser:",
+   "text": "The **case facts** list what is known about the case in one place, beside every tab.\nWhen the case pane is about 52rem (832 px) wide or wider, they are a column on the\nright; press **]** or select **Case facts** in the header to show or hide the column,\nand the choice is stored in this browser. In a narrower pane, **Case facts** (or **]**)\nopens the same facts in a side sheet that leaves the case usable. They come in six sections, each\nfolding open or closed and remembered in this browser:",
    "console": []
   },
   {
@@ -1757,7 +1757,7 @@
    "page": "analyst/case-manager.md",
    "anchor": "the-six-tabs",
    "heading": "The six tabs",
-   "text": "| Tab | Key | Purpose |\n| --- | --- | --- |\n| Brief | Alt+1 | The case at a glance, top to bottom: the review note on a case waiting for its auto-close review; the runbook's **Next step** row on an open case with a runbook; then four lanes, each tagged with where it comes from and linking to its tab. **Evidence** (SIEM) says why the detection fired, with one line of counts and times. **AI** gives the model's summary and its recommended action (on a case that ended, the recommendation it made at triage, folded). **Decision** (Code; named **Analyst resolved** and tagged Analyst when a person settled the case, or **Analyst policy** when an operator's declared-benign policy closed it) gives the decision line, the auto-close reading, the authority sentence, **Policy inputs** and **Automation applied**. **People** (Analyst) gives the runbook progress, the discussion and files, and the last human action. Last, **How this case was built** folds the six-stage input-to-decision story (Risk Assigned reconstructs the arithmetic from persisted factor values and current weights, flags a historical-weight mismatch honestly, and pulses only the final marker) |",
+   "text": "| Tab | Key | Purpose |\n| --- | --- | --- |\n| Brief | Alt+1 | The case at a glance, top to bottom: the review note on a case waiting for its auto-close review; the runbook's **Next step** row on an open case with a runbook; then four lanes, each tagged with where it comes from; Evidence, AI and People link to the tabs that hold their detail. **Evidence** (SIEM) says why the detection fired, with one line of counts and times. **AI** gives the model's summary and its recommended action (on a case that ended, the recommendation it made at triage, folded). **Decision** (Code; named **Analyst resolved** and tagged Analyst when a person settled the case, or **Analyst policy** when an operator's declared-benign policy closed it) gives the decision line, the auto-close reading, the authority sentence, **Policy inputs** and **Automation applied**. **People** (Analyst) gives the runbook progress, the discussion and files, and the last human action. Last, **How this case was built** folds the six-stage input-to-decision story (Risk Assigned reconstructs the arithmetic from persisted factor values and current weights, flags a historical-weight mismatch honestly, and pulses only the final marker) |",
    "console": []
   },
   {
@@ -7639,7 +7639,7 @@
    "page": "concepts/deterministic-decisions.md",
    "anchor": "verify-the-contract",
    "heading": "Verify the contract",
-   "text": "On a case, compare:\n\n1. the model verdict and confidence (in the case header and the case facts' Outcome);\n2. the deterministic risk score (in the header and the case facts' Signal);\n3. the Brief's **Decision** lane, with the pinned decision card and its policy\n   rationale under **Policy inputs**; and\n4. the History on the **Activity** tab and the audit entries.\n\nThe four should tell one traceable story without implying that model prose executed\nthe action.",
+   "text": "On a case, compare:\n\n1. the model verdict and confidence (in the case header and the case facts' Outcome);\n2. the deterministic risk score (in the header and the case facts' Signal);\n3. the Brief's **Decision** lane: its decision line, and the decision card with its\n   policy rationale, folded under **Policy inputs**; and\n4. the History on the **Activity** tab and the audit entries.\n\nThe four should tell one traceable story without implying that model prose executed\nthe action.",
    "console": []
   },
   {

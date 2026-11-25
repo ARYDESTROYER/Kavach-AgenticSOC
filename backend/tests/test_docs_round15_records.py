@@ -110,9 +110,12 @@ def _in_order(text: str, needles: list[str]) -> bool:
 
 
 def _prose(path: Path) -> str:
-    """The flattened page without image alt text (it describes the captured image)."""
+    """The flattened page as a reader sees it: without image alt text (it describes the
+    captured image) and without Markdown emphasis or code marks, so a retired name written
+    as ``**Runbook** tab`` reads as the "Runbook tab" it shows."""
     text = re.sub(r"!\[[^\]]*\]", "", _text(path))
-    return " ".join(re.sub(r'alt="[^"]*"', "", text).split())
+    text = re.sub(r'alt="[^"]*"', "", text).replace("**", "").replace("`", "")
+    return " ".join(text.split())
 
 
 def test_the_quickstart_and_readme_give_the_ai_and_decision_order():
@@ -418,6 +421,53 @@ def test_the_docs_name_the_six_case_tabs_in_the_code_order():
         prose = _prose(page)
         for stale in retired:
             assert stale not in prose, (page.name, stale)
+
+
+def _brief_lanes() -> dict[str, bool]:
+    """The Brief's lanes as OverviewPanel renders them: lane name to whether it links to
+    a tab (a ``links=`` prop). The Decision lane's name is computed (``decisionTitle``)."""
+    brief = _text(CASEDETAIL / "OverviewPanel.tsx")
+    body = brief[brief.index('<dl aria-label="Case brief"'):brief.index("</dl>")]
+    lanes: dict[str, bool] = {}
+    for chunk in re.split(r"<Lane\b(?!Link)", body)[1:]:
+        named = re.search(r'name="([A-Za-z ]+)"|name=\{(decisionTitle)\(c\)\}', chunk)
+        assert named is not None, chunk[:80]
+        lanes["Decision" if named.group(2) else named.group(1)] = "links=" in chunk
+    return lanes
+
+
+def test_the_case_docs_match_the_brief_and_the_case_facts_code():
+    """WP18A review: the docs describe what the Brief and the case facts do now.
+
+    The decision card is folded under "Policy inputs" in the Decision lane (no longer
+    pinned to a tab); the Decision lane has no tab link, unlike the other three; ``]``
+    opens the case facts' side sheet in a narrow pane, as the header toggle does; and the
+    investigation inputs live on the AI investigation tab, not on a case Overview."""
+    lane = _text(CASEDETAIL / "DecisionLane.tsx")
+    folded = lane.index("<LaneDisclosure open={inputsOpen}>Policy inputs</LaneDisclosure>")
+    assert lane.index("<CollapsibleContent", folded) < lane.index("<DecisionCard", folded)
+    for page in (USAGE, CASE_MANAGER_MD, CASES_MD, INVESTIGATION_MD, FIRST_CASE,
+                 DOCS / "concepts" / "deterministic-decisions.md"):
+        assert not re.search(r"pinned[^.]{0,40}decision ?card", _prose(page), re.IGNORECASE), page.name
+    assert "the deterministic DecisionCard folded under Policy inputs" in _prose(USAGE)
+
+    lanes = _brief_lanes()
+    assert lanes == {"Evidence": True, "AI": True, "Decision": False, "People": True}
+    linked = [name for name, links in lanes.items() if links]
+    manager = _prose(CASE_MANAGER_MD)
+    assert "linking to its tab" not in manager
+    assert f"{', '.join(linked[:-1])} and {linked[-1]} link to the tabs that hold their detail" in manager
+
+    case_detail = _text(PAGES / "CaseDetail.tsx")
+    toggle = case_detail[case_detail.index("const toggleInspector = React.useCallback"):]
+    toggle = toggle[:toggle.index("}, [setInspectorOpen]);")]
+    assert "setDetailsOpen(true)" in toggle
+    assert "toggleInspectorRef.current();" in case_detail[case_detail.index("if (event.key === ']')"):][:200]
+    assert "In a narrower pane, Case facts (or ]) opens the same facts in a side sheet" in manager
+
+    api = _prose(API)
+    assert "Case Manager Overview project" not in api
+    assert "the case's Investigation inputs (on its AI investigation tab) project the latest run" in api
 
 
 def test_the_api_reference_states_the_agent_improvement_review_exclusions():

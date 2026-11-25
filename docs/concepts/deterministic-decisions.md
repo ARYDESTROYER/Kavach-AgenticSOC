@@ -139,8 +139,8 @@ On a case, compare:
 
 1. the model verdict and confidence (in the case header and the case facts' Outcome);
 2. the deterministic risk score (in the header and the case facts' Signal);
-3. the Brief's **Decision** lane, with the pinned decision card and its policy
-   rationale under **Policy inputs**; and
+3. the Brief's **Decision** lane: its decision line, and the decision card with its
+   policy rationale, folded under **Policy inputs**; and
 4. the History on the **Activity** tab and the audit entries.
 
 The four should tell one traceable story without implying that model prose executed

@@ -26,8 +26,8 @@ came from.
 of built-in and personal boards, and the app still lands on the Cyber Defence Center
 (§0, §21). The Audit log is server-paged with three scopes, search, a record inspector and
 CSV or JSON Lines export (§31). Runbooks are one feature: write, review and publish them
-under **Intelligence → Runbooks**, and work through the matching one on a case's
-**Runbook** tab; a runbook never closes a case (§12). A detection rule opens a rule sheet
+under **Intelligence → Runbooks**, and work through the matching one on the case (on its
+**Response** tab since version 0.2); a runbook never closes a case (§12). A detection rule opens a rule sheet
 with exact counts (§2a). Every page uses one panel grammar, the Automated scans page is
 gone (§6), and chat runs three times as many questions at once (§5). Upgrade notes are in
 the Help Center's Upgrades page.
@@ -555,7 +555,7 @@ Opening a case loads the **stored** case by id (`GET /api/cases/{id}`) — it do
 **not** re-investigate. `CaseDetail` renders **six tabs** (version 0.2), one lane each:
 **Brief** (id `overview`: the review note on a pending auto-close review sample, the
 runbook's **Next step** row, then four lanes tagged with their provenance, Evidence
-(SIEM), AI, Decision (Code, holding the pinned deterministic `DecisionCard` under
+(SIEM), AI, Decision (Code, with the deterministic `DecisionCard` folded under
 **Policy inputs** and the automation applied) and People (Analyst), and the folded **How
 this case was built**, the six-stage story with Risk Assigned and Decision, see §11; the
 lanes never repeat the header's verdict, confidence, risk, status or owner), **Evidence**
@@ -1111,8 +1111,8 @@ and the model's reasoning have separate homes among the six tabs (§3): the Brie
 model's work. There is **no** separate "Why" or "Agent trace" tab. Together they show
 three things:
 
-- **A pinned `DecisionCard`.** The **code-made** close/escalate rationale from the
-  Case Manager, under **Policy inputs** in the Brief's Decision lane, shown separately
+- **A `DecisionCard`.** The **code-made** close/escalate rationale from the Case
+  Manager, folded under **Policy inputs** in the Brief's Decision lane, shown separately
   from the model's opinion. The verdict and confidence are the LLM's recommendation; the
   *decision* is deterministic (non-negotiable #3).
 - **A "why" / rationale panel**, backed by `GET /api/cases/{id}/rationale`. The
