@@ -516,6 +516,7 @@ function AddLocalModelDialog({
                 id="local-base-url"
                 value={baseUrl}
                 placeholder="http://host.docker.internal:4000/v1"
+                aria-describedby="local-base-url-help"
                 onChange={(e) => setBaseUrl(e.target.value)}
                 disabled={busy}
               />
@@ -535,15 +536,17 @@ function AddLocalModelDialog({
               </Button>
             </div>
             {/* Round 16 ([oss] B3): in the Compose stack, localhost is the backend
-                container itself, so the examples name the host the container sees. */}
-            <p className="text-xs text-muted-foreground" data-testid="local-base-url-help">
+                container itself, so the examples name the host the container sees. The
+                browser may run elsewhere, so the hint says the Docker host, and the
+                Linux step goes in an override because the base Compose file is pinned. */}
+            <p id="local-base-url-help" className="text-xs text-muted-foreground" data-testid="local-base-url-help">
               Usually ends in <span className="font-mono">/v1</span>. In the Compose stack, localhost is the
-              backend container itself. For a server on this computer, use{' '}
+              backend container itself. For a server on the Docker host, use{' '}
               <span className="font-mono">http://host.docker.internal:4000/v1</span> (LiteLLM) or{' '}
-              <span className="font-mono">http://host.docker.internal:11434/v1</span> (Ollama). On Linux, map{' '}
+              <span className="font-mono">http://host.docker.internal:11434/v1</span> (Ollama). On Linux, first map{' '}
               <span className="font-mono">host.docker.internal</span> to{' '}
-              <span className="font-mono">host-gateway</span> in the backend&apos;s{' '}
-              <span className="font-mono">extra_hosts</span> first.
+              <span className="font-mono">host-gateway</span> under the backend&apos;s{' '}
+              <span className="font-mono">extra_hosts</span>, in a Compose override file.
             </p>
           </div>
 
