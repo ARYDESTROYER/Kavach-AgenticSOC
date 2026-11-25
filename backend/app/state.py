@@ -1602,77 +1602,32 @@ class AppState:
         return attach
 
     async def _automation_cluster_for_case(self, case):
-        """Rebuild a cluster for a case from its stored member events (read-only).
+        """Rebuild a cluster for a stored case (read-only): the shared
+        :func:`app.engine.case_cluster.cluster_for_case`, with the real stack's
+        dependencies and stored reconstruction on (Round 16 B06).
 
-        Mirrors the routes' ``_cluster_for_case`` but kept dependency-light here to
-        avoid a routes import cycle. Returns None when no events remain."""
-        from .engine.correlation import cluster_from_events
-        from .models import RawEvent
+        The deferred-candidate drain and the bulk reinvestigate job used to rebuild a
+        push or deleted source's events with one timestamp and one rule, which
+        saturated velocity, dropped diversity and changed the deterministic risk the
+        decision reads; an aged-out pull case failed in the job while the route
+        rebuilt it. Delegating gives the drain, the job and ``POST
+        /api/cases/{id}/reinvestigate`` the same cluster, so the same stored case scores
+        the same. ``self.prefs`` and ``self.poller.source_for_id`` (never the Demo
+        switching accessors): both callers work on the real stack. Returns ``None``
+        only when nothing can be rebuilt."""
+        from .engine.case_cluster import cluster_for_case as engine_cluster_for_case
 
-        prefs = self.prefs
-        if not case.member_event_ids:
-            return None
-        query_source = self.poller.source_for_id(case.source_id)
-        events = []
-        fetch_size = max(len(case.member_event_ids), len(case.member_event_keys or []))
-        if query_source is not None:
-            try:
-                result = await query_source.fetch_by_ids(
-                    prefs, case.member_event_ids, size=fetch_size
-                )
-                events = result.events
-            except Exception:  # noqa: BLE001
-                return None
-        elif (
-            case.source_id
-            and not prefs.sources
-            and case.source_id == getattr(self.log_source, "connector_id", None)
-        ):
-            try:
-                result = await self.log_source.fetch_by_ids(
-                    prefs, case.member_event_ids, size=fetch_size
-                )
-                events = result.events
-            except Exception:  # noqa: BLE001
-                return None
-        elif case.source_id:
-            # Push/deleted sources must never fall back to the primary/global log
-            # surface. Rebuild a minimal source-local cluster from stored identity.
-            for event_id in case.member_event_ids[:200]:
-                event = RawEvent(
-                    id=event_id,
-                    timestamp_millis=case.first_seen_millis,
-                    rule=(case.rule_ids[0] if case.rule_ids else None),
-                    source={"reconstructed": True},
-                    source_id=case.source_id,
-                    source_name=case.source_name,
-                )
-                if case.entity.type.value == "ip":
-                    event.ip = case.entity.value
-                elif case.entity.type.value == "user":
-                    event.user = case.entity.value
-                elif case.entity.type.value == "host":
-                    event.host = case.entity.value
-                events.append(event)
-        else:
-            # Legacy no-source case: preserve the implicit connector behavior.
-            try:
-                result = await self.log_source.fetch_by_ids(
-                    prefs, case.member_event_ids, size=fetch_size
-                )
-                events = result.events
-            except Exception:  # noqa: BLE001
-                return None
-        members = [e for e in events if e.entity_value(case.entity.type) == case.entity.value] or events
-        if not members:
-            return None
-        cluster = cluster_from_events(case.entity.type, case.entity.value, members)
-        cluster.signature = case.cluster_signature
-        cluster.source_id = case.source_id
-        cluster.source_name = case.source_name
-        cluster.member_event_keys = list(case.member_event_keys or cluster.member_event_keys)
-        cluster.trigger_reason = None  # preserve the existing case's trigger reason
-        return cluster
+        query_source = (
+            self.poller.source_for_id(case.source_id) if case.source_id else self.log_source
+        )
+        return await engine_cluster_for_case(
+            case,
+            es=self.es,
+            log_source=self.log_source,
+            prefs=self.prefs,
+            query_source=query_source,
+            allow_stored_reconstruction=True,
+        )
 
     async def cluster_for_case(self, case):
         """Public PollerHost seam for durable deferred-candidate reconstruction."""
@@ -2102,9 +2057,10 @@ class AppState:
 
         Gated by the same default-OFF batch/detection toggle as the funnel; a job with no
         persisted candidates (a plain investigation batch) re-enters nothing."""
-        from .constants import SourceSurface
+        from .constants import OPEN_CASE_STATUSES, SourceSurface
         from .engine import event_detection as evdet
         from .engine.cost_gate import passes_suppression
+        from .engine.ingest import is_attach_only
 
         prefs = self.prefs
         if not (getattr(getattr(prefs, "batch", None), "enabled", False)
@@ -2140,8 +2096,15 @@ class AppState:
                 # register_candidate makes the case idempotent + visible ($0);
                 # investigate_cluster runs the ReAct investigation + the UNCHANGED decide()
                 # and dedups on the same signature (one open case per signature, #4).
-                await self._real_pipeline.register_candidate(
+                case = await self._real_pipeline.register_candidate(
                     cluster, SourceSurface.AUTOMATED_SCAN, prefs)
+                # Attach-only, as the realtime path (Round 16 B04): an open case that
+                # already has a verdict, or that a person moved, keeps its decision; a
+                # case the candidate path closed by a declaration needs no run (a run
+                # would find no open case and mint a second one, #4).
+                status = getattr(case.status, "value", case.status)
+                if is_attach_only(case) or str(status) not in OPEN_CASE_STATUSES:
+                    continue
                 await self._real_pipeline.investigate_cluster(
                     cluster, SourceSurface.AUTOMATED_SCAN, prefs,
                     query_source=self.poller.source_for_id(getattr(_src, "id", None)),

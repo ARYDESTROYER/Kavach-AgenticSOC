@@ -4771,6 +4771,25 @@ class Preferences(BaseModel):
             return self.correlation_rules.get(rd.name, self.default_correlation)
         return self.default_correlation
 
+    def widest_correlation_window_seconds(self) -> int:
+        """The widest correlation window any configured rule can ask for (Round 16 B07):
+        the default window, every ``correlation_rules`` entry, and every ENABLED
+        rule-catalog definition's effective window (:meth:`correlation_for_def`, which
+        prefers the inline correlation the Detection and Rules editor saves); a
+        definition whose mode is ``never`` is skipped, it never correlates. The poller
+        and the push look-back both read it, so a catalog rule's 1-hour threshold sees
+        an hour of events, not the default window."""
+        windows = [self.default_correlation.window_seconds]
+        windows.extend(rule.window_seconds for rule in self.correlation_rules.values())
+        for rd in self.rule_catalog:
+            if not rd.enabled:
+                continue
+            resolved = self.correlation_for_def(rd)
+            if resolved.mode == CorrelationMode.NEVER:
+                continue
+            windows.append(resolved.window_seconds)
+        return max(int(w) for w in windows)
+
     def model_for(self, role: str) -> ModelConfig:
         mapping = {
             "router": self.router_model,

@@ -161,18 +161,42 @@ def test_a_failed_run_of_a_new_case_is_unchanged() -> None:
     assert case.disposition is None
 
 
+def _candidate_with_work() -> Case:
+    """An un-investigated candidate the system registered (no verdict, never moved by a
+    person) that people have still worked on: owned, commented and graded. Round 16
+    B04: only such a case is rebuilt as a candidate; a decided case, or one a person
+    moved, attaches its events and is returned as it is."""
+    return _worked_case(status=CaseStatus.OPEN).model_copy(update={
+        "verdict": None, "confidence": 0.0, "decision_by": None, "escalation_level": 0,
+    })
+
+
 async def test_a_re_registered_candidate_carries_the_work(app_state) -> None:
-    existing = _worked_case(status=CaseStatus.INVESTIGATING)
+    existing = _candidate_with_work()
     await app_state.cases.save(existing)
     case = await app_state.pipeline.register_candidate(_cluster(), SourceSurface.AUTOMATED_SCAN, app_state.prefs,
                                                        awaiting_reason="risk 10 is below the floor 70")
     assert case.case_id == existing.case_id and case.status == CaseStatus.OPEN
+    assert case.awaiting_reason == "risk 10 is below the floor 70"  # rebuilt
     _assert_work_carried(existing, case)
-    appended = case.status_history[-1]
-    assert (appended.from_status, appended.to_status, appended.by) == ("investigating", "open", "system")
+    assert case.status_history == existing.status_history  # open to open: no move
     assert case.escalation_level == 0
     stored = await app_state.cases.get(existing.case_id)
     assert stored.assignee == "ann" and len(stored.feedback) == 1
+
+
+async def test_a_decided_or_person_moved_case_is_never_rebuilt_as_a_candidate(app_state) -> None:
+    """Round 16 B04: registering a candidate on an open case that has a verdict, or
+    that a person moved, attaches the events and keeps the case as it is."""
+    existing = _worked_case(status=CaseStatus.INVESTIGATING)  # verdict, decision_by ANALYST
+    await app_state.cases.save(existing)
+    case = await app_state.pipeline.register_candidate(_cluster(), SourceSurface.AUTOMATED_SCAN, app_state.prefs,
+                                                       awaiting_reason="risk 10 is below the floor 70")
+    stored = await app_state.cases.get(existing.case_id)
+    for c in (case, stored):
+        assert c.status == CaseStatus.INVESTIGATING and c.verdict == Verdict.NEEDS_HUMAN
+        assert c.decision_by == DecisionBy.ANALYST and c.escalation_level == 1
+        assert c.status_history == existing.status_history and c.awaiting_reason == ""
 
 
 def test_a_reinvestigation_keeps_the_analysts_work_end_to_end(client, mock_provider) -> None:
@@ -296,3 +320,85 @@ async def test_a_failed_re_read_keeps_the_copy_read_when_the_run_began(app_state
     monkeypatch.setattr(pipeline._cases, "get", _boom)  # noqa: SLF001
     assert await pipeline._latest_stored_case(existing.case_id, existing) is existing  # noqa: SLF001
     assert await pipeline._latest_stored_case("case-new", None) is None  # noqa: SLF001
+
+
+# --------------------------------------------------------------------------- #
+# Round 16 B09: the automation record and the cross-source links survive too
+# --------------------------------------------------------------------------- #
+_AUTOMATION_RECORD = {"ts": "2026-11-20T09:52:00+00:00", "rule_id": "tag-high", "action": "tag",
+                      "detail": "tag=high"}
+
+
+def _linked(case: Case) -> Case:
+    return case.model_copy(update={
+        "automation_actions": [dict(_AUTOMATION_RECORD)],
+        "related_case_ids": ["case-other"],
+        "cross_source_cluster_id": "0123456789abcdef",
+        "source_breakdown": {"src-1": 1, "src-2": 1},
+    })
+
+
+def _assert_links_carried(rebuilt: Case) -> None:
+    assert rebuilt.automation_actions == [_AUTOMATION_RECORD]
+    assert rebuilt.related_case_ids == ["case-other"]
+    assert rebuilt.cross_source_cluster_id == "0123456789abcdef"
+    assert rebuilt.source_breakdown == {"src-1": 1, "src-2": 1}
+
+
+async def test_an_investigation_carries_the_automation_record_and_links(app_state) -> None:
+    existing = _linked(_worked_case())
+    verdict = VerdictResult(verdict=Verdict.NEEDS_HUMAN, confidence=0.3, recommended_action="look")
+    case = app_state.pipeline._assemble_case(  # noqa: SLF001
+        existing.case_id, _cluster(), verdict, SourceSurface.AUTOMATED_SCAN, existing, 0.0, Preferences(),
+    )
+    _assert_links_carried(case)
+
+
+def test_a_failed_run_carries_the_automation_record_and_links() -> None:
+    existing = _linked(_worked_case())
+    case = _fail_to_human_case("case-carry", _cluster(), SourceSurface.AUTOMATED_SCAN, "x", existing,
+                               Preferences())
+    _assert_links_carried(case)
+
+
+async def test_a_re_registered_candidate_carries_the_automation_record_and_links(app_state) -> None:
+    existing = _linked(_candidate_with_work())
+    await app_state.cases.save(existing)
+    case = await app_state.pipeline.register_candidate(_cluster(), SourceSurface.AUTOMATED_SCAN, app_state.prefs,
+                                                       awaiting_reason="risk 10 is below the floor 70")
+    _assert_links_carried(case)
+    _assert_links_carried(await app_state.cases.get(existing.case_id))
+
+
+async def test_a_policy_close_keeps_the_automation_record(app_state) -> None:
+    from app.config import AnalystRulePolicy
+
+    existing = _linked(_candidate_with_work())
+    await app_state.cases.save(existing)
+    prefs = app_state.prefs.model_copy(deep=True)
+    prefs.analyst_rule_policies = [AnalystRulePolicy(rule_id="linux_auth", reason="lab", created_by="ann")]
+    case = await app_state.pipeline.register_candidate(_cluster(), SourceSurface.AUTOMATED_SCAN, prefs)
+    assert case.status == CaseStatus.CLOSED and case.decision_by == DecisionBy.ANALYST_POLICY
+    assert case.automation_actions == [_AUTOMATION_RECORD]
+
+
+async def test_a_later_automation_run_appends_after_the_carried_record(app_state) -> None:
+    from app.config import AutomationRule, ThresholdAutomationConfig
+    from app.engine.threshold_automation import ThresholdAutomation
+
+    existing = _linked(_worked_case())
+    verdict = VerdictResult(verdict=Verdict.NEEDS_HUMAN, confidence=0.3, recommended_action="look")
+    prefs = Preferences()
+    case = app_state.pipeline._assemble_case(  # noqa: SLF001
+        existing.case_id, _cluster(), verdict, SourceSurface.AUTOMATED_SCAN, existing, 0.0, prefs,
+    )
+    CaseManager(prefs).apply(case)
+    await app_state.cases.save(case)
+    prefs.threshold_automation = ThresholdAutomationConfig(enabled=True, rules=[
+        AutomationRule(id="tag-again", action="tag", payload={"tag": "again"}),
+    ])
+    await ThresholdAutomation(app_state.proposals, app_state.audit).run(
+        case, prefs, save=app_state.cases.save, fetch=app_state.cases.get,
+    )
+    stored = await app_state.cases.get(existing.case_id)
+    assert [a["rule_id"] for a in stored.automation_actions] == ["tag-high", "tag-again"]

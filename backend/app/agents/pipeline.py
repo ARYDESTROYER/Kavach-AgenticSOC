@@ -39,6 +39,7 @@ from ..constants import (
 from ..engine.analyst_outcomes import standing_analyst_disposition
 from ..engine.case_manager import CaseManager
 from ..engine.cost_gate import CaseBudget
+from ..engine.ingest import attach_cluster, is_attach_only
 # Read-time classification of an ALREADY-persisted decision, shared with the metrics
 # reader so the audit trail and the analysis cannot use two different vocabularies.
 # It never decides anything and is never an input to decide() (#3).
@@ -545,7 +546,9 @@ class InvestigationPipeline:
         if automation is None:
             return
         try:
-            await automation.run(case, prefs, save=self._cases.save)
+            # fetch=get: automation merges its own changes onto the case as stored
+            # when it saves, never a copy read before a notify send (Round 16 B08).
+            await automation.run(case, prefs, save=self._cases.save, fetch=self._cases.get)
         except Exception as exc:  # noqa: BLE001 — automation must never affect the case flow
             logger.warning("threshold automation skipped for %s: %s", case.case_id, exc)
 
@@ -873,16 +876,40 @@ class InvestigationPipeline:
         force: bool = False,
         query_source: PullConnector | None | object = _DEFAULT_QUERY_SOURCE,
     ) -> Case:
-        case_id = new_id("case-")
-        existing: Case | None = None
+        # The case identity is known BEFORE the run's failure boundary (Round 16 B10):
+        # a lookup that fails (a store timeout) propagates to the caller's retry
+        # boundary (the poll tick is not committed, a pushed batch is retried, a person
+        # sees an error) instead of minting a second open case for this signature (#4).
+        existing: Case | None = await find_open_case_for_cluster(self._cases, cluster)
+        case_id = existing.case_id if existing else new_id("case-")
+        # A candidate a person acted on (escalated, acknowledged, put on hold,
+        # reopened) is theirs (Round 16 B05): a run nobody asked for attaches the
+        # events and leaves the case as the person left it. Only an automated run is
+        # such a run (the deferred drain, event detection, a poll or a pushed batch,
+        # all on the automated-scan surface). A person's own request still runs:
+        # Investigate on the case, Reinvestigate and the bulk reinvestigate job are
+        # forced, and the Investigate page asks on its own surface without force.
+        # ``decide()`` and ``apply()`` are untouched (#3).
+        if (
+            existing is not None
+            and not force
+            and source_surface == SourceSurface.AUTOMATED_SCAN
+            and existing.verdict is None
+            and existing.decision_by == DecisionBy.ANALYST
+        ):
+            await attach_cluster(self._cases, existing, cluster)
+            await self._audit.record(
+                action_type=ActionType.DECISION, surface=source_surface.value,
+                actor="pipeline", case_id=case_id,
+                result_summary=(
+                    "a person owns this candidate; events attached, not investigated"
+                ),
+            )
+            return existing
         # Kept outside the investigation try block so a later failure can preserve a
         # successfully completed retrieval observation instead of erasing it.
         procedure_provenance: dict[str, Any] = {}
         try:
-            existing = await find_open_case_for_cluster(self._cases, cluster)
-            if existing:
-                case_id = existing.case_id
-
             # --- Operator analyst rule policy (deterministic, $0, no LLM) ----------
             # An explicit, audited, revocable operator declaration that this detection
             # is benign in THEIR estate. Checked BEFORE any model call precisely
@@ -1302,6 +1329,16 @@ class InvestigationPipeline:
                 ),
                 retrieval_measured=retrieval_measured,
             )
+            # The failed run's spend (Round 16 B12): the case keeps its stored total
+            # (``_fail_to_human_case``) and rises to the ledger's total when the ledger
+            # already holds this run's rows. Read from the ledger, never summed here, so
+            # a cost added before the failure is not counted twice (#6).
+            try:
+                recorded_cost = await self._gateway.recorded_case_pipeline_cost(case_id)
+            except Exception:  # noqa: BLE001 - accounting is fail-soft
+                recorded_cost = None
+            if recorded_cost is not None and recorded_cost > case.token_cost:
+                case.token_cost = recorded_cost
             persist_error: Exception | None = None
             try:
                 await self._cases.save(case)
@@ -1498,6 +1535,8 @@ class InvestigationPipeline:
             tags=(list(existing.tags) if existing else []),
             comments=(list(existing.comments) if existing else []),
             assignee=(existing.assignee if existing else ""),
+            # Append-only record of automation rules on this case (Round 16 B09).
+            automation_actions=(list(existing.automation_actions) if existing else []),
             history=history,
             status_history=status_history,
             verdict_history=(list(existing.verdict_history) if existing else []),
@@ -1561,6 +1600,13 @@ class InvestigationPipeline:
         )
         if policy_case is not None:
             return policy_case
+        # A decided case, or one a person moved, is never rebuilt as a candidate
+        # (Round 16 B04): the events attach and the case is returned as it is, the
+        # same rule the realtime path applies. Rebuilding it would wipe its verdict,
+        # decision and escalation and hand it back to a run that could re-decide it.
+        if existing is not None and is_attach_only(existing):
+            await attach_cluster(self._cases, existing, cluster)
+            return existing
         breakdown = compute_risk(cluster, prefs, 0.0)
         cluster.risk_score = breakdown.total
         cluster.risk_breakdown = breakdown
@@ -1765,7 +1811,9 @@ def _carry_case_work(existing: Case | None, case: Case) -> Case:
 
     Carried: ``assignee``, ``comments``, ``feedback`` (a grade is independent ground
     truth, a review grade included), ``status_history`` (appended to by ``apply()`` or
-    the builder), ``acknowledged_at``, ``status_reason``, ``notifications_sent``, and the
+    the builder), ``acknowledged_at``, ``status_reason``, ``notifications_sent``,
+    ``automation_actions`` (append-only), the cross-source links ``related_case_ids``,
+    ``cross_source_cluster_id`` and ``source_breakdown`` (Round 16 B09), and the
     disposition ONLY when an analyst explicitly classified it and the case still carries
     it (:func:`~app.engine.analyst_outcomes.standing_analyst_disposition`); otherwise the
     disposition stays ``None`` and ``apply()`` fills it from the verdict. ``apply()``
@@ -1785,6 +1833,13 @@ def _carry_case_work(existing: Case | None, case: Case) -> Case:
     case.acknowledged_at = existing.acknowledged_at
     case.status_reason = existing.status_reason or ""
     case.notifications_sent = list(existing.notifications_sent or [])
+    # Round 16 B09: the append-only automation record (a later run's automation
+    # appends after it) and the cross-source links (``engine.ingest.link_cross_source``
+    # writes them; a rebuild must not leave the link one-sided).
+    case.automation_actions = list(existing.automation_actions or [])
+    case.related_case_ids = list(existing.related_case_ids or [])
+    case.cross_source_cluster_id = existing.cross_source_cluster_id or ""
+    case.source_breakdown = dict(existing.source_breakdown or {})
     if standing_analyst_disposition(existing) is not None:
         case.disposition = existing.disposition
     return case
@@ -1920,6 +1975,9 @@ def _fail_to_human_case(
         decision_by=DecisionBy.SYSTEM,
         title=f"[FAILED] {cluster.entity.type.value}:{cluster.entity.value}",
         error=truncate(error, 500),
+        # A failed run never erases what the case already cost (Round 16 B12); the
+        # caller raises it to the ledger total when the ledger holds this run's rows.
+        token_cost=(existing.token_cost if existing else 0.0),
         history=(existing.history if existing else []),
         verdict_history=(existing.verdict_history if existing else []),
         trigger_reason=_trigger(existing, cluster),

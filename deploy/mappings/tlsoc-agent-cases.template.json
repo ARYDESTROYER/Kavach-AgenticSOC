@@ -101,7 +101,13 @@
         },
         "risk_breakdown": {
           "type": "object",
-          "enabled": true
+          "enabled": true,
+          "properties": {
+            "inputs": {
+              "type": "object",
+              "enabled": false
+            }
+          }
         },
         "token_cost": {
           "type": "float"
@@ -129,6 +135,15 @@
         "trigger_reason": {
           "type": "object",
           "enabled": false
+        },
+        "awaiting_reason": {
+          "type": "text",
+          "fields": {
+            "keyword": {
+              "type": "keyword",
+              "ignore_above": 256
+            }
+          }
         }
       }
     }

@@ -19,10 +19,18 @@ from ..constants import (
     SourceSurface,
 )
 from ..es.base import BaseESClient
+from ..es.indices import cases_risk_inputs_storable
 from ..models import Case
 from ..realtime import publish_case_changed
 from ..utils import relative_to_iso_utc_strict
-from .base import CaseRepository, status_group_statuses, window_bounds_proven
+from .base import (
+    DEFERRED_REASON_PREFIX,
+    PERSON_DECIDER,
+    CaseRepository,
+    is_deferred_candidate,
+    status_group_statuses,
+    window_bounds_proven,
+)
 
 logger = logging.getLogger("tlsoc.cases")
 
@@ -101,6 +109,29 @@ class CaseStore(CaseRepository):
 
     def __init__(self, es: BaseESClient) -> None:
         self._es = es
+        self._inputs_omission_logged = False
+
+    def _storable_document(self, persisted: Case) -> dict[str, Any]:
+        """The document written for ``persisted``. ``risk_breakdown.inputs`` holds
+        source-controlled strings (rule values) and is safe on a cases index only where
+        it is mapped stored and never indexed (Round 16 SPEC §3.4). When bootstrap
+        could not give the cases mapping that field, it is left out of the stored
+        document, so the case always lands and reads "not recorded"; logged once."""
+        doc = persisted.model_dump(mode="json")
+        breakdown = doc.get("risk_breakdown")
+        if (
+            isinstance(breakdown, dict)
+            and "inputs" in breakdown
+            and not cases_risk_inputs_storable(self._es)
+        ):
+            breakdown.pop("inputs", None)
+            if not self._inputs_omission_logged:
+                self._inputs_omission_logged = True
+                logger.warning(
+                    "Recorded risk inputs are left out of stored cases: the cases index "
+                    "mapping could not be extended to hold them safely"
+                )
+        return doc
 
     async def save(self, case: Case) -> None:
         # The repository is the final immutability boundary, including for internal
@@ -119,7 +150,7 @@ class CaseStore(CaseRepository):
             )
         await self._es.index_doc(
             CASES_WRITE_ALIAS,
-            persisted.model_dump(mode="json"),
+            self._storable_document(persisted),
             doc_id=persisted.case_id,
             refresh=True,
         )
@@ -197,6 +228,46 @@ class CaseStore(CaseRepository):
         cases = [Case.model_validate(h["_source"]) for h in resp.get("hits", {}).get("hits", [])]
         total = int(resp.get("hits", {}).get("total", {}).get("value", len(cases)))
         return cases, total
+
+    async def list_deferred_candidates(self, *, older_than: str, limit: int) -> list[Case]:
+        """The cap-deferred candidates, oldest created first, in ONE search (Round 16
+        B11) instead of paging every OPEN case each tick, which also stopped at the
+        first 10,000 on a real cluster. ``awaiting_reason`` is mapped text with a
+        ``keyword`` sub-field (``es/indices.CASES_MAPPING``); the prefix is asked of
+        both, as the audit read does for a field either mapping may hold, and a prefix
+        with a colon matches no analysed token."""
+        if limit <= 0:
+            return []
+        body = {
+            "size": int(limit),
+            "query": {
+                "bool": {
+                    "filter": [
+                        {"term": {"status": "open"}},
+                        {"range": {"updated_at": {"lt": older_than}}},
+                        {
+                            "bool": {
+                                "should": [
+                                    {"prefix": {"awaiting_reason.keyword": DEFERRED_REASON_PREFIX}},
+                                    {"prefix": {"awaiting_reason": DEFERRED_REASON_PREFIX}},
+                                ],
+                                "minimum_should_match": 1,
+                            }
+                        },
+                    ],
+                    # No verdict, and not a candidate a person acted on (never
+                    # drained, so it must not take a place on the page).
+                    "must_not": [
+                        {"exists": {"field": "verdict"}},
+                        {"term": {"decision_by": PERSON_DECIDER}},
+                    ],
+                }
+            },
+            "sort": case_sort_clause("created_at", "asc"),
+        }
+        resp = await self._es.search(CASES_READ_PATTERN, body)
+        cases = [Case.model_validate(h["_source"]) for h in resp.get("hits", {}).get("hits", [])]
+        return [case for case in cases if is_deferred_candidate(case, older_than=older_than)]
 
     async def list_window(
         self,

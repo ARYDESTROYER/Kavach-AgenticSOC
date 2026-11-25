@@ -49,6 +49,11 @@ _ARTIFACT_ID = re.compile(r"^[0-9a-f]{32}$")
 #: a grant removed, the fresh sign-in expired) still closes its request with an
 #: outcome row (Round 14 SPEC §4.5.6).
 _HANDLER_FIRST_CHECKPOINT_KINDS = frozenset({JobKind.AUDIT_EXPORT})
+#: The item failure of a reinvestigation whose run failed (Round 16 B14): fixed text,
+#: so the job detail never repeats an exception's text.
+_REINVESTIGATE_FAILED = (
+    "The automated investigation failed; the case was routed to a person for review."
+)
 
 
 class JobCancelled(RuntimeError):
@@ -703,6 +708,9 @@ class JobRunner:
         )
 
     async def _case_reinvestigate(self, job: Job, token: str) -> None:
+        """Reinvestigate each case (forced). An item fails when the case cannot be
+        rebuilt, or when its investigation failed and the case was routed to a
+        person (:data:`_REINVESTIGATE_FAILED`)."""
         from ..api.routes import _override_models
 
         async def run(case_id: str) -> None:
@@ -734,7 +742,7 @@ class JobRunner:
             )
             # The canonical pipeline retains the single gateway, budget gate, usage
             # ledger, provider retry, cost cap, and deterministic decision path.
-            await self.state.real_pipeline.investigate_cluster(
+            updated = await self.state.real_pipeline.investigate_cluster(
                 cluster,
                 case.source_surface,
                 prefs,
@@ -742,6 +750,15 @@ class JobRunner:
                 query_source=query_source,
                 investigation_priority="background",
             )
+            # A failed investigation does not raise: the pipeline routes the case to a
+            # person and records why on the case (``error``, written only by this run,
+            # and the ``[FAILED]`` title). The item is failed so the job's counts say
+            # so (Round 16 B14); a fixed message, never the exception text.
+            if updated is not None and (
+                getattr(updated, "error", None)
+                or str(getattr(updated, "title", "") or "").startswith("[FAILED]")
+            ):
+                raise RuntimeError(_REINVESTIGATE_FAILED)
 
         await self._item_loop(job, token, run, result_kind="case_reinvestigation")
 

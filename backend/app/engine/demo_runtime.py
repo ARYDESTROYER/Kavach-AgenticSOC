@@ -737,8 +737,10 @@ class DemoStack:
         clusters investigated (for logs/tests)."""
         if not events:
             return 0
+        from ..constants import OPEN_CASE_STATUSES
         from ..engine import event_detection as evdet
         from ..engine.cost_gate import passes_suppression
+        from ..engine.ingest import is_attach_only
 
         prefs = self._demo_event_prefs()
         try:
@@ -757,7 +759,16 @@ class DemoStack:
                 if not passes_suppression(cluster, prefs):
                     continue
                 source = self.sources.get(segment)
-                await self.pipeline.register_candidate(cluster, SourceSurface.AUTOMATED_SCAN, prefs)
+                case = await self.pipeline.register_candidate(
+                    cluster, SourceSurface.AUTOMATED_SCAN, prefs
+                )
+                # Attach-only, as the realtime path (Round 16 B04): a funnel survivor
+                # for an entity whose open case already has a verdict, or that a person
+                # moved, never re-runs and re-decides it; a declared-benign close needs
+                # no run either.
+                status = getattr(case.status, "value", case.status)
+                if is_attach_only(case) or str(status) not in OPEN_CASE_STATUSES:
+                    continue
                 await self.pipeline.investigate_cluster(
                     cluster,
                     SourceSurface.AUTOMATED_SCAN,
