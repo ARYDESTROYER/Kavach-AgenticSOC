@@ -25,6 +25,7 @@ from ..realtime import publish_case_changed
 from ..utils import relative_to_iso_utc_strict
 from .base import (
     DEFERRED_REASON_PREFIX,
+    PERSON_DECIDER,
     CaseRepository,
     is_deferred_candidate,
     status_group_statuses,
@@ -254,7 +255,12 @@ class CaseStore(CaseRepository):
                             }
                         },
                     ],
-                    "must_not": [{"exists": {"field": "verdict"}}],
+                    # No verdict, and not a candidate a person acted on (never
+                    # drained, so it must not take a place on the page).
+                    "must_not": [
+                        {"exists": {"field": "verdict"}},
+                        {"term": {"decision_by": PERSON_DECIDER}},
+                    ],
                 }
             },
             "sort": case_sort_clause("created_at", "asc"),

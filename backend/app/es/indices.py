@@ -526,7 +526,8 @@ async def extend_cases_mapping(es: Any, base: str = CASES_INDEX,
     Returns ``added`` (something was added and every template and index now holds
     ``inputs`` safely), ``present`` (nothing was missing), ``kept`` (a template or
     index already maps ``risk_breakdown.inputs`` another way), ``unsupported`` (the
-    client cannot read or extend mappings) or ``failed``. Records whether the case
+    client cannot read or extend mappings, or cannot read the cases template, as the
+    shipped client cannot) or ``failed``. Records whether the case
     store may write ``inputs`` (:func:`cases_risk_inputs_storable`): only ``added`` and
     ``present`` allow it."""
     outcome = await _extend_cases_mapping(es, base, mapping)
@@ -535,8 +536,18 @@ async def extend_cases_mapping(es: Any, base: str = CASES_INDEX,
 
 
 async def _extend_cases_mapping(es: Any, base: str, mapping: dict[str, Any]) -> str:
-    if any(getattr(es, name, None) is None for name in _MAPPING_METHODS):
+    if getattr(es, "get_index_mapping", None) is None or getattr(es, "put_index_mapping", None) is None:
         logger.warning("Cases mapping not checked: this client cannot read or extend index mappings")
+        return "unsupported"
+    if getattr(es, "get_index_template", None) is None:
+        # The shipped client reads and extends index mappings, but cannot read a
+        # template, so the next cases index cannot be proven safe either.
+        logger.warning(
+            "Cases mapping not extended: this Elasticsearch client cannot read the cases "
+            "index template, so recorded risk inputs are left out of stored cases. A "
+            "deployment whose cases template and first index were created by this build "
+            "stores them."
+        )
         return "unsupported"
     try:
         template_ok, template_kept = await _refresh_cases_template(es, f"{base}-template", mapping)
@@ -584,9 +595,10 @@ async def bootstrap_indices(es: BaseESClient | None) -> None:
     """Idempotently create templates, write indices+aliases, and the single-doc
     bookkeeping indices. Safe to call on every start.
 
-    An existing template or index is never replaced, remapped or reindexed; the audit
-    contract alone is extended additively (:func:`extend_audit_mapping`) when its
-    template or write index existed before this start.
+    An existing template or index is never replaced, remapped or reindexed. Three
+    contracts are extended additively when their template or index existed before
+    this start: audit (:func:`extend_audit_mapping`), config
+    (:func:`extend_config_mapping`) and cases (:func:`extend_cases_mapping`).
 
     Guard (Epoch A): this only makes sense for the Elasticsearch OWN-state
     backend. When the suite's state lives in SQL (sqlite/postgres) the caller

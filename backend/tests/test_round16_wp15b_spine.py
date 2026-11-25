@@ -263,6 +263,57 @@ async def test_b05_an_unforced_run_attaches_and_a_forced_run_still_runs(app_stat
     assert mock_provider.calls  # a person can always ask for the AI
 
 
+async def test_b05_a_persons_own_investigate_request_still_runs(app_state, mock_provider) -> None:
+    """Review fix: the Investigate page (``POST /api/investigate``) is a person asking
+    for the AI. It runs without ``force``, so the attach-only rule must hold for an
+    automated run only, never for that request."""
+    prefs = _quiet(app_state.prefs)
+    (cluster,) = correlate(_events("192.0.2.52", 3), prefs)
+    candidate = await app_state.pipeline.register_candidate(cluster, SourceSurface.AUTOMATED_SCAN, prefs)
+    await _person_escalates(app_state, candidate.case_id)
+    _route_to_investigator(mock_provider)
+    mock_provider.push("investigator", _final_verdict("NEEDS_HUMAN", 0.4))
+    (more,) = correlate(_events("192.0.2.52", 4), prefs)
+
+    case = await app_state.pipeline.investigate_cluster(more, SourceSurface.INVESTIGATE, prefs)
+
+    assert case.case_id == candidate.case_id and case.verdict == Verdict.NEEDS_HUMAN
+    assert mock_provider.calls
+    rows = await app_state.audit.records_for_case(candidate.case_id)
+    assert not any("a person owns this candidate" in str(r.get("result_summary")) for r in rows)
+
+
+def test_b05_the_investigate_page_runs_over_the_route(client, mock_provider) -> None:
+    """End to end: a person escalates a candidate, then asks the Investigate page about
+    the same address. The run happens on the same case."""
+    from functools import partial
+
+    from app.api import routes
+    from app.models import InvestigateRequest
+    from tests.conftest import make_log_event
+
+    state = client.app.state.tlsoc
+    ip = "192.0.2.53"
+    for n in range(3):
+        state.es.add_log("all-logs-2026.06.16", make_log_event(ip=ip, ts_millis=to_millis(now_utc()) - n * 1000))
+    request = InvestigateRequest(entity=Entity(type=EntityType.IP, value=ip))
+    cluster, _widest = client.portal.call(partial(routes._cluster_for_request, state, request))  # noqa: SLF001
+    candidate = client.portal.call(partial(
+        state.pipeline.register_candidate, cluster, SourceSurface.AUTOMATED_SCAN, state.execution_prefs,
+    ))
+    escalated = client.post(f"/api/cases/{candidate.case_id}/action", json={"action": "escalate"})
+    assert escalated.status_code == 200, escalated.text
+    _route_to_investigator(mock_provider)
+    mock_provider.push("investigator", _final_verdict("NEEDS_HUMAN", 0.4))
+
+    response = client.post("/api/investigate", json={"entity": {"type": "ip", "value": ip}})
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["case_id"] == candidate.case_id and body["verdict"] == "NEEDS_HUMAN"
+    assert mock_provider.calls
+
+
 # --------------------------------------------------------------------------- #
 # B06: the drain and the job rebuild the same cluster as the route
 # --------------------------------------------------------------------------- #
@@ -602,6 +653,34 @@ async def test_b11_an_unrebuildable_oldest_candidate_never_blocks_the_next(drain
     assert n == 1 and drain_state.drained == ["sig-2", "sig-2"]
 
 
+async def test_b11_candidates_people_own_never_fill_the_drains_page(drain_state) -> None:
+    """Review fix: the store leaves out a candidate a person acted on. A person can
+    leave a deferred candidate OPEN (classify it, de-escalate it, resume it, reopen
+    it); when more of those than one page sat at the front of the queue, the drain
+    read only them each tick and never reached a candidate behind them."""
+    from app.stores.base import CaseRepository
+
+    reason = "deferred: per-tick auto-investigation cap reached"
+    for i in range(60):
+        await drain_state.store.save(_open_candidate(
+            i, reason=reason, created=f"2026-11-01T00:00:{i:02d}+00:00",
+            updated="2026-11-01T01:00:00+00:00", decision_by=DecisionBy.ANALYST,
+        ))
+    await drain_state.store.save(_open_candidate(
+        500, reason=reason, created="2026-11-01T02:00:00+00:00", updated="2026-11-01T02:00:00+00:00",
+    ))
+    prefs = drain_state.state.prefs
+    n = await drain_state.state.poller._drain_deferred(  # noqa: SLF001
+        prefs, older_than="2026-11-03T00:00:00+00:00", limit=1,
+    )
+    assert n == 1 and drain_state.drained == ["sig-500"]
+    # The paged scan a third-party store inherits applies the same rule.
+    scanned = await CaseRepository.list_deferred_candidates(
+        drain_state.store, older_than="2026-11-03T00:00:00+00:00", limit=5,
+    )
+    assert [c.case_id for c in scanned] == ["case-00500"]
+
+
 async def test_b11_the_sql_store_answers_the_deferred_queue_in_one_query() -> None:
     from app.stores.sql import SqlCaseRepository, build_async_engine, create_all
 
@@ -620,6 +699,9 @@ async def test_b11_the_sql_store_answers_the_deferred_queue_in_one_query() -> No
                                         updated="2026-11-01T00:00:00+00:00", verdict=Verdict.NEEDS_HUMAN))
         await repo.save(_open_candidate(5, reason=reason, created="2026-11-01T00:00:00+00:00",
                                         updated="2026-11-05T00:00:00+00:00"))
+        # A candidate a person acted on is never drained, so the query leaves it out.
+        await repo.save(_open_candidate(6, reason=reason, created="2026-11-01T00:00:00+00:00",
+                                        updated="2026-11-01T00:00:00+00:00", decision_by=DecisionBy.ANALYST))
         found = await repo.list_deferred_candidates(older_than="2026-11-03T00:00:00+00:00", limit=10)
         assert [c.case_id for c in found] == ["case-00003", "case-00002"]
         one = await repo.list_deferred_candidates(older_than="2026-11-03T00:00:00+00:00", limit=1)
@@ -854,6 +936,49 @@ async def test_the_dynamic_mapping_stand_in_fails_without_the_explicit_mapping()
     await store.save(_inputs_case("case-date", "2026-01-01"))
     with pytest.raises(RuntimeError, match="mapper_parsing_exception"):
         await store.save(_inputs_case("case-text", "linux_auth"))
+
+
+def _shipped_client(*, template_exists: bool, index_exists: bool, live: dict | None = None):
+    """The shipped Elasticsearch client over a stand-in management connection. It can
+    read and extend index mappings but has no ``get_index_template``."""
+    from unittest.mock import AsyncMock
+
+    from tests.test_factory_storage_primitives import _real_client
+
+    mgmt = SimpleNamespace(indices=SimpleNamespace(
+        exists_index_template=AsyncMock(return_value=template_exists),
+        put_index_template=AsyncMock(return_value={"acknowledged": True}),
+        exists=AsyncMock(return_value=index_exists),
+        create=AsyncMock(return_value={"acknowledged": True}),
+        get_mapping=AsyncMock(return_value=live or {}),
+        put_mapping=AsyncMock(return_value={"acknowledged": True}),
+    ))
+    return _real_client(mgmt), mgmt
+
+
+async def test_the_shipped_client_stores_inputs_on_a_fresh_install() -> None:
+    client, _mgmt = _shipped_client(template_exists=False, index_exists=False)
+    assert getattr(client, "get_index_template", None) is None
+    await bootstrap_indices(client)
+    assert indices_mod.cases_risk_inputs_storable(client) is True
+
+
+async def test_the_shipped_client_on_an_upgrade_says_what_it_cannot_read(caplog) -> None:
+    """Review fix: the shipped client reads and extends index mappings; what it cannot
+    read is the cases template. The warning says so, and the case store leaves the
+    recorded inputs out (SPEC §3.4)."""
+    import logging
+
+    live = {f"{CASES_INDEX}-000001": {"mappings": {"properties": {
+        "risk_breakdown": {"properties": {"total": {"type": "float"}}},
+    }}}}
+    client, _mgmt = _shipped_client(template_exists=True, index_exists=True, live=live)
+    with caplog.at_level(logging.WARNING, logger="tlsoc.es.indices"):
+        assert await indices_mod.extend_cases_mapping(client) == "unsupported"
+    assert indices_mod.cases_risk_inputs_storable(client) is False
+    text = " ".join(r.getMessage() for r in caplog.records)
+    assert "cannot read the cases index template" in text
+    assert "cannot read or extend index mappings" not in text
 
 
 def test_cluster_helpers_are_shared() -> None:

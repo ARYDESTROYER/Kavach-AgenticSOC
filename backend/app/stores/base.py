@@ -333,14 +333,24 @@ def window_bounds_proven(
 DEFERRED_REASON_PREFIX = "deferred:"
 
 
+#: ``decision_by`` of a case a person acted on; such a candidate is theirs and never
+#: drained (Round 16 B05).
+PERSON_DECIDER = "analyst"
+
+
 def is_deferred_candidate(case: Case, *, older_than: str) -> bool:
     """Whether ``case`` is a cap-deferred candidate the drain may take now: OPEN, no
-    verdict, ``awaiting_reason`` starting with :data:`DEFERRED_REASON_PREFIX`, and last
-    updated before ``older_than`` (ISO strings compared as the stores store them)."""
+    verdict, ``awaiting_reason`` starting with :data:`DEFERRED_REASON_PREFIX`, last
+    updated before ``older_than`` (ISO strings compared as the stores store them), and
+    not acted on by a person (``decision_by`` is not :data:`PERSON_DECIDER`). The
+    stores leave a person's candidates out of the query itself, so any number of them
+    can never fill the drain's page and hide the candidates behind them."""
     status = getattr(case.status, "value", case.status)
+    decider = getattr(case.decision_by, "value", case.decision_by)
     return (
         str(status) == "open"
         and case.verdict is None
+        and str(decider or "") != PERSON_DECIDER
         and str(case.awaiting_reason or "").startswith(DEFERRED_REASON_PREFIX)
         and str(case.updated_at or "") < str(older_than or "")
     )
@@ -596,8 +606,9 @@ class CaseRepository(ABC):
         created first, at most ``limit`` (Round 16 SPEC WP15B, B11).
 
         A deferred candidate is an OPEN case with no verdict whose ``awaiting_reason``
-        starts with :data:`DEFERRED_REASON_PREFIX` and whose ``updated_at`` is before
-        ``older_than`` (a candidate deferred in this tick keeps the cap). The bundled
+        starts with :data:`DEFERRED_REASON_PREFIX`, whose ``updated_at`` is before
+        ``older_than`` (a candidate deferred in this tick keeps the cap) and that no
+        person acted on (:func:`is_deferred_candidate`). The bundled
         Elasticsearch and SQL repositories answer it with one query. This default
         keeps the paged scan over OPEN cases for third-party repositories: correct,
         but it reads every OPEN case before the first deferred one."""

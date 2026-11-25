@@ -403,8 +403,8 @@ async def test_drain_scan_filters_to_open_cases(app_state: AppState, monkeypatch
 
 
 async def test_the_deferred_query_filters_open_undecided_deferred_cases(app_state: AppState):
-    """The Elasticsearch deferred query itself: OPEN, no verdict, the ``deferred:``
-    prefix, updated before the tick, oldest created first."""
+    """The Elasticsearch deferred query itself: OPEN, no verdict, not acted on by a
+    person, the ``deferred:`` prefix, updated before the tick, oldest created first."""
     from app.stores.cases import CaseStore
 
     seen: list = []
@@ -419,6 +419,9 @@ async def test_the_deferred_query_filters_open_undecided_deferred_cases(app_stat
     filters = body["query"]["bool"]["filter"]
     assert {"term": {"status": "open"}} in filters
     assert {"range": {"updated_at": {"lt": "2026-11-01T00:00:00Z"}}} in filters
-    assert body["query"]["bool"]["must_not"] == [{"exists": {"field": "verdict"}}]
+    assert body["query"]["bool"]["must_not"] == [
+        {"exists": {"field": "verdict"}},
+        {"term": {"decision_by": "analyst"}},
+    ]
     assert body["size"] == 7 and body["sort"][0] == {"created_at": {"order": "asc"}}
     assert "from" not in body

@@ -73,6 +73,7 @@ from ..base import (
     AuditRepository,
     AuditSearchPage,
     DEFERRED_REASON_PREFIX,
+    PERSON_DECIDER,
     CaseRepository,
     ConfigRepository,
     CursorRepository,
@@ -341,10 +342,14 @@ class SqlCaseRepository(CaseRepository):
         if limit <= 0:
             return []
         awaiting = _sql_json_text("awaiting_reason")
+        decider = _sql_json_text("decision_by")
         stmt = (
             select(CaseRow)
             .where(CaseRow.status == CaseStatus.OPEN.value)
             .where(_sql_json_text("verdict").is_(None))
+            # Not a candidate a person acted on: it is never drained, so it must not
+            # take a place on the page (``is_deferred_candidate``).
+            .where(or_(decider.is_(None), decider != PERSON_DECIDER))
             .where(awaiting.like(f"{DEFERRED_REASON_PREFIX}%"))
             .where(CaseRow.updated_at < str(older_than or ""))
             .order_by(*_case_order_by("created_at", "asc"))

@@ -884,12 +884,16 @@ class InvestigationPipeline:
         case_id = existing.case_id if existing else new_id("case-")
         # A candidate a person acted on (escalated, acknowledged, put on hold,
         # reopened) is theirs (Round 16 B05): a run nobody asked for attaches the
-        # events and leaves the case as the person left it. A forced run (Investigate
-        # on the case, Reinvestigate, the bulk reinvestigate job) still runs.
+        # events and leaves the case as the person left it. Only an automated run is
+        # such a run (the deferred drain, event detection, a poll or a pushed batch,
+        # all on the automated-scan surface). A person's own request still runs:
+        # Investigate on the case, Reinvestigate and the bulk reinvestigate job are
+        # forced, and the Investigate page asks on its own surface without force.
         # ``decide()`` and ``apply()`` are untouched (#3).
         if (
             existing is not None
             and not force
+            and source_surface == SourceSurface.AUTOMATED_SCAN
             and existing.verdict is None
             and existing.decision_by == DecisionBy.ANALYST
         ):
