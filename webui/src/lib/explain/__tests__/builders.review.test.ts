@@ -75,6 +75,35 @@ describe('a changed policy states today\'s reading', () => {
     );
     expect(exp?.caveats.join(' ')).not.toContain('would decide differently');
   });
+
+  it('with no recorded gate, the server\'s policy_changed reads as a different decision today', () => {
+    // A decision recorded before the gate was (WP10: source recorded, gate null): the
+    // server compared today's decide() with the recorded status and found them different.
+    const exp = explainDecision(fp(0.97, 20), {
+      source: 'recorded',
+      gate: null,
+      gate_source: 'rederived_current_policy',
+      decision_status: 'closed',
+      decision_by: 'system',
+      current_policy: {
+        verdict_class: 'FALSE_POSITIVE',
+        enabled: true,
+        min_confidence: 0.99,
+        max_risk_score: 30,
+        auto_closable: true,
+        decision_status: 'needs_human',
+        decision_by: 'system',
+      },
+      policy_changed: true,
+    } as never);
+    expect(exp?.caveats).toContain(
+      'The auto-close policy changed after this decision; today it would decide differently.',
+    );
+    expect(exp?.summary).toBe(
+      "Today's policy routes it to a person: confidence 97% >= 99% (not met); risk 20 <= 30 (met).",
+    );
+    expect(exp?.provenance).toBe('reconstructed_current');
+  });
 });
 
 describe('a stopped response clock', () => {
