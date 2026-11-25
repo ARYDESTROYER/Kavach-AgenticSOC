@@ -17,7 +17,7 @@ const release = {
   tag: 'v0.1.3',
   commit_sha: 'd'.repeat(40),
   channel: 'stable' as const,
-  repository_url: 'https://github.com/ARYDESTROYER/Agentic-Kibana',
+  repository_url: 'https://github.com/ARYDESTROYER/Kavach-AgenticSOC',
 };
 
 const observedRelease = {

@@ -211,7 +211,7 @@ Round 14 added the entries for the page grammar: `surface.panel`,
 and the pre-Round-14 `SettingsCard` has its own `settings.card` entry. Every other
 existing id keeps its meaning.
 
-Version **0.1.13 does not ship a design-system MCP server, endpoint, registry
+Version **0.2.0 does not ship a design-system MCP server, endpoint, registry
 service, or remote package**. The serializable catalog is the deliberately small
 input contract for that future work. A future transport must version its schema
 independently and preserve existing token, component, accessibility, and asset ids.

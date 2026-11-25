@@ -18,7 +18,7 @@ def required(name: str, default: str | None = None) -> str:
 
 
 def main() -> None:
-    repository = required("UPDATE_TRUSTED_REPOSITORY", "ARYDESTROYER/Agentic-Kibana")
+    repository = required("UPDATE_TRUSTED_REPOSITORY", "ARYDESTROYER/Kavach-AgenticSOC")
     if not REPOSITORY_RE.fullmatch(repository):
         raise SystemExit("UPDATE_TRUSTED_REPOSITORY must be owner/name")
     state_dir = Path(required("UPDATE_STATE_DIR", "/var/lib/agentic-soc-updater"))

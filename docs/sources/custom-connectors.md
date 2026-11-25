@@ -1,11 +1,11 @@
 ---
 title: Custom connectors
-description: Extend Agentic SOC 0.1 with an out-of-tree connector that preserves manifests, OCSF, provenance, secrets, and retry behavior.
+description: Extend Agentic SOC 0.2 with an out-of-tree connector that preserves manifests, OCSF, provenance, secrets, and retry behavior.
 ---
 
 # Custom connectors
 
-This guide applies to **Agentic SOC 0.1** and is for Python integrators building a source
+This guide applies to **Agentic SOC 0.2** and is for Python integrators building a source
 adapter outside the core repository. Installed connector packages are discovered
 through the `tlsoc.connectors` entry-point group.
 
@@ -34,7 +34,7 @@ Return a `ConnectorManifest` containing:
 - concise setup guidance and connector boundaries.
 
 The wizard and API render this metadata. Do not create a second connector-specific
-configuration UI. In 0.1 the registry is keyed by the built-in `SourceType` enum, so
+configuration UI. In 0.2 the registry is keyed by the built-in `SourceType` enum, so
 an out-of-tree vendor connector normally implements one of the reserved vendor types.
 
 ### Pull connector

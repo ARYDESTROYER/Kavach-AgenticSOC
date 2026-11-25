@@ -1,6 +1,6 @@
 ---
 title: Ingestion and investigation
-description: The Agentic SOC 0.1 ingestion and investigation flow, its explicit operating boundaries, and the durability and scale roadmap.
+description: The Agentic SOC 0.2 ingestion and investigation flow, its explicit operating boundaries, and the durability and scale roadmap.
 ---
 
 # Ingestion and investigation
@@ -10,13 +10,13 @@ different records. Keeping those boundaries explicit prevents alert duplication,
 keeps source provenance intact, and lets every raw event receive cheap deterministic
 processing without sending every event to a model.
 
-This page deliberately separates the **version 0.1 implementation** from later
+This page deliberately separates the **version 0.2 implementation** from later
 durability and horizontal-scale work. Future-state diagrams are design direction,
 not claims about the current release.
 
-## Version 0.1 implementation
+## Version 0.2 implementation
 
-| Layer | What is implemented | Version 0.1 boundary |
+| Layer | What is implemented | Version 0.2 boundary |
 |---|---|---|
 | Connect | 3 pull connectors and 16 push/queue/object-store receiver adapters; all clients in the default `full` image | Live protocol/vendor certification is not yet published; the opt-in `core` image omits cloud/queue clients |
 | Normalise | ECS and generic mappings into the OCSF 1.4 event model, with unmapped/raw catch-alls | Mapping coverage varies by source; OCSF conformance profiles are not yet published |
@@ -181,7 +181,7 @@ Cost controls, in order:
 7. batch non-urgent work, enforce provider concurrency, and meter every call;
 8. route budget exhaustion to human review instead of dropping or auto-closing.
 
-Version 0.1 defaults to a hard `$10/day` preflight ceiling with an 80% warning. New
+Version 0.2 defaults to a hard `$10/day` preflight ceiling with an 80% warning. New
 provider calls stop at the ceiling and the case fails safe to `NEEDS_HUMAN`. Because
 the check is not an atomic spend reservation, already in-flight calls can complete
 slightly beyond it; provider-side budgets remain the final billing backstop.
@@ -208,7 +208,7 @@ logs or a single mistaken verdict.
 
 ## Scale-out roadmap
 
-Version 0.1 runs API, receivers, polling, scheduling, correlation, and investigation
+Version 0.2 runs API, receivers, polling, scheduling, correlation, and investigation
 inside one backend process. Do not add replicas until the process-local coordination
 is replaced.
 

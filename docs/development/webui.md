@@ -1,6 +1,6 @@
 ---
 title: Console development
-description: Agentic SOC Console architecture, design system, API contracts, accessibility, and development workflow for version 0.1.
+description: Agentic SOC Console architecture, design system, API contracts, accessibility, and development workflow for version 0.2.
 ---
 
 # Console development

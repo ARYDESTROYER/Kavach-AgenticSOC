@@ -1,6 +1,6 @@
 ---
 title: Quickstart
-description: Choose an Agentic SOC 0.1 checkout, run the deterministic demo, or bring up the standalone evaluation stack.
+description: Choose an Agentic SOC 0.2 checkout, run the deterministic demo, or bring up the standalone evaluation stack.
 ---
 
 # Quickstart
@@ -12,8 +12,8 @@ real source with persistent application state.
 !!! info "Choose the matching channel"
 
     `Testing` contains integrated candidates. Under the release contract, `main`
-    holds only accepted Stable source and immutable `v0.1.13` identifies this candidate.
-    The remote has both canonical branches. Use `v0.1.13` only when its signed GitHub
+    holds only accepted Stable source and immutable `v0.2.0` identifies this candidate.
+    The remote has both canonical branches. Use `v0.2.0` only when its signed GitHub
     Release and public digest-pinned images verify and canonical PostgreSQL Compose
     runtime acceptance completes, and use `Testing` only for an unreleased preview.
     Repository administrators must verify branch protections and required checks
@@ -52,15 +52,15 @@ real source with persistent application state.
     cd Kavach-AgenticSOC
     ```
 
-=== "Stable 0.1.13 (after acceptance)"
+=== "Stable 0.2.0 (after acceptance)"
 
     ```bash
     git clone https://github.com/ARYDESTROYER/Kavach-AgenticSOC.git
     cd Kavach-AgenticSOC
-    git checkout v0.1.13
+    git checkout v0.2.0
     ```
 
-    The `v0.1.13` tag is absent before publication and immutable afterward; do not
+    The `v0.2.0` tag is absent before publication and immutable afterward; do not
     create, move, or replace it locally. Users pulling `main` receive the current
     accepted Stable source, while candidate work remains isolated on `Testing`. A branch
     name alone is not acceptance evidence, so repository administrators must verify
@@ -192,7 +192,7 @@ curl --fail http://localhost:8080/api/health/build-info
 - **Build info** reports version and build identity without exposing secrets.
 
 Open **Help Center** from the bottom of the Console rail, select **Browse all guides**,
-and verify it opens the same-origin `/docs/0.1/` Help Center. This installed guide is
+and verify it opens the same-origin `/docs/0.2/` Help Center. This installed guide is
 the operator authority for the running build; public Stable/Development material is
 secondary.
 

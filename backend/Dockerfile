@@ -10,7 +10,7 @@ ARG TLSOC_VERSION=unknown
 ARG TLSOC_RELEASE_CHANNEL=testing
 ARG TLSOC_BUILD_SHA=unknown
 ARG TLSOC_BUILD_DATE=unknown
-ARG TLSOC_SOURCE_URL=https://github.com/ARYDESTROYER/Agentic-Kibana
+ARG TLSOC_SOURCE_URL=https://github.com/ARYDESTROYER/Kavach-AgenticSOC
 
 LABEL org.opencontainers.image.title="Agentic SOC API" \
       org.opencontainers.image.description="Backend API for Agentic SOC" \
@@ -19,6 +19,7 @@ LABEL org.opencontainers.image.title="Agentic SOC API" \
       org.opencontainers.image.revision="${TLSOC_BUILD_SHA}" \
       org.opencontainers.image.created="${TLSOC_BUILD_DATE}" \
       org.opencontainers.image.source="${TLSOC_SOURCE_URL}" \
+      org.opencontainers.image.licenses="Apache-2.0" \
       io.agentic-soc.state.schema="1"
 
 ENV PYTHONUNBUFFERED=1 \
@@ -44,6 +45,9 @@ RUN python -m pip install --no-cache-dir wheel==0.45.1 -r requirements.txt \
 # The built-in runbook library ships inside the package
 # (``app/runbooks/library/*.md``), so copying ``app/`` carries it.
 COPY --chown=tlsoc:tlsoc app ./app
+
+# The Apache-2.0 license text ships in the image beside the code it covers.
+COPY LICENSE /usr/share/doc/agentic-soc/LICENSE
 
 EXPOSE 8088
 

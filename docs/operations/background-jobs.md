@@ -1,6 +1,6 @@
 ---
 title: Background jobs
-description: Operate durable long-running work, progress, cancellation, result links, and verified artifacts in Agentic SOC 0.1.
+description: Operate durable long-running work, progress, cancellation, result links, and verified artifacts in Agentic SOC 0.2.
 ---
 
 # Background jobs

@@ -23,13 +23,13 @@ services:
       context: ./agentic-kibana/backend
       dockerfile: Dockerfile
       args:
-        TLSOC_VERSION: ${TLSOC_VERSION:-0.1.13}
+        TLSOC_VERSION: ${TLSOC_VERSION:-0.2.0}
         TLSOC_RELEASE_CHANNEL: ${TLSOC_RELEASE_CHANNEL:-testing}
         TLSOC_BUILD_SHA: ${TLSOC_BUILD_SHA:-unknown}
         TLSOC_BUILD_DATE: ${TLSOC_BUILD_DATE:-unknown}
-    image: tlsoc-agentic-triage-backend:${TLSOC_VERSION:-0.1.13}
+    image: tlsoc-agentic-triage-backend:${TLSOC_VERSION:-0.2.0}
     # Option B: pre-build once, injecting truthful OCI metadata:
-    # `docker build --build-arg TLSOC_VERSION=0.1.13 --build-arg TLSOC_RELEASE_CHANNEL=stable --build-arg TLSOC_BUILD_SHA=<git-sha> --build-arg TLSOC_BUILD_DATE=<rfc3339> -t tlsoc-agentic-triage-backend:0.1.13 ./agentic-kibana/backend`
+    # `docker build --build-arg TLSOC_VERSION=0.2.0 --build-arg TLSOC_RELEASE_CHANNEL=stable --build-arg TLSOC_BUILD_SHA=<git-sha> --build-arg TLSOC_BUILD_DATE=<rfc3339> -t tlsoc-agentic-triage-backend:0.2.0 ./agentic-kibana/backend`
     # then delete the `build:` block above and keep only the `image:` line.
     container_name: tlsoc-backend
     restart: unless-stopped

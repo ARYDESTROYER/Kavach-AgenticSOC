@@ -1,11 +1,11 @@
 ---
 title: Architecture
-description: Follow an Agentic SOC 0.1 signal from an external source to a human-reviewable case.
+description: Follow an Agentic SOC 0.2 signal from an external source to a human-reviewable case.
 ---
 
 # Architecture
 
-This page applies to **Agentic SOC 0.1**. It is for evaluators, operators, and integrators
+This page applies to **Agentic SOC 0.2**. It is for evaluators, operators, and integrators
 who need the shipped system boundary before configuring data or automation.
 
 Agentic SOC is a read-only security-triage layer. It receives or reads security events,
@@ -157,7 +157,7 @@ model.” Below-threshold event candidates remain visible and cost nothing.
 - Agentic SOC application state is separate from the source log store.
 - Every model call and state-changing action has a ledger or audit record.
 
-## Agentic SOC 0.1 boundaries
+## Agentic SOC 0.2 boundaries
 
 The API, receivers, polling, schedules, correlation, and investigation run in one
 backend process. Operate one backend replica. HTTP push processing has no durable

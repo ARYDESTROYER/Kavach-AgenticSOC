@@ -218,6 +218,9 @@ export function SystemUpdateControl({
 }: SystemUpdateControlProps) {
   const reducedMotion = usePrefersReducedMotion();
   const [confirmOpen, setConfirmOpen] = React.useState(false);
+  // The sheet opens from state, not a SheetTrigger, so Radix has no trigger to restore
+  // focus to and would drop it on the page body when the sheet closes.
+  const triggerRef = React.useRef<HTMLButtonElement>(null);
   const trigger = systemUpdateTriggerPresentation(upgrade);
   const observedRelease = upgrade.status?.release_discovery.observed_release ?? null;
   const verifiedRelease = upgrade.preflight?.release ?? null;
@@ -259,6 +262,7 @@ export function SystemUpdateControl({
       <Tooltip>
         <TooltipTrigger asChild>
           <Button
+            ref={triggerRef}
             type="button"
             size="sm"
             variant={trigger.tone}
@@ -369,7 +373,17 @@ export function SystemUpdateControl({
       />
 
       <Sheet open={upgrade.progressOpen} onOpenChange={upgrade.setProgressOpen}>
-        <SheetContent side="right" size="lg" className="gap-0 p-0">
+        <SheetContent
+          side="right"
+          size="lg"
+          className="gap-0 p-0"
+          onCloseAutoFocus={(event) => {
+            if (triggerRef.current?.isConnected) {
+              event.preventDefault();
+              triggerRef.current.focus();
+            }
+          }}
+        >
           <SheetHeader>
             <SheetTitle>System update</SheetTitle>
             <SheetDescription>
@@ -595,9 +609,13 @@ export function SystemUpdateControl({
           </ScrollArea>
 
           <SheetFooter className="items-center justify-between sm:justify-between">
-            <p className="text-xs text-muted-foreground">
-              Closing this panel does not stop the durable update job.
-            </p>
+            {job ? (
+              <p className="text-xs text-muted-foreground">
+                Closing this panel does not stop the durable update job.
+              </p>
+            ) : (
+              <span aria-hidden />
+            )}
             <div className="flex flex-wrap justify-end gap-2">
               {canCancel ? (
                 <Button type="button" variant="outline" size="sm" onClick={() => void upgrade.cancel()}>

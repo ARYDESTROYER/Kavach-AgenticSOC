@@ -1,11 +1,11 @@
 ---
 title: Deterministic decisions
-description: Learn why model verdicts are advisory and how Agentic SOC 0.1 code owns close, escalation, and human review.
+description: Learn why model verdicts are advisory and how Agentic SOC 0.2 code owns close, escalation, and human review.
 ---
 
 # Deterministic decisions
 
-This page applies to **Agentic SOC 0.1**. It explains the central safety contract for
+This page applies to **Agentic SOC 0.2**. It explains the central safety contract for
 analysts, administrators, and integrators: **the model supplies a verdict; code owns
 the consequential case decision**.
 

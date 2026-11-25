@@ -22,7 +22,7 @@ import { NumPref, SettingRow, SettingsGroup, SettingsSection, TextPref, errMsg }
 
 const DEFAULT_RELEASE_UPDATES: ReleaseUpdateConfig = {
   enabled: true,
-  repository_url: 'https://github.com/ARYDESTROYER/Agentic-Kibana',
+  repository_url: 'https://github.com/ARYDESTROYER/Kavach-AgenticSOC',
   stable_branch: 'main',
   testing_branch: 'Testing',
   check_interval_minutes: 360,

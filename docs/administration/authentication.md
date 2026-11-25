@@ -1,6 +1,6 @@
 ---
 title: Authentication
-description: Configure local authentication, sessions, MFA, and OIDC SSO in Agentic SOC 0.1.
+description: Configure local authentication, sessions, MFA, and OIDC SSO in Agentic SOC 0.2.
 ---
 
 # Authentication
@@ -144,7 +144,7 @@ checks.
 
 Security headers are enabled by default. Rate limiting is optional. The current CSRF
 middleware requires clients to echo the expected token; the web UI does not complete
-that exchange automatically in version 0.1, so do not enable CSRF without validating
+that exchange automatically in version 0.2, so do not enable CSRF without validating
 the client flow.
 
 See [Users and RBAC](users-rbac.md) and [Security hardening](../operations/security.md).

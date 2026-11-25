@@ -1,15 +1,15 @@
 {
  "schema": 1,
  "generator": "scripts/build_app_knowledge.py",
- "product_version": "0.1.13",
- "docs_version": "0.1",
+ "product_version": "0.2.0",
+ "docs_version": "0.2",
  "counts": {
   "pages": 63,
-  "chunks": 971
+  "chunks": 980
  },
  "sha256": {
   "aliases.json": "39ed30ad48d64589c51a5342d536e602ea24480417579db25b1f95109f8bbe16",
-  "app_docs.json": "5e042cb0ff4f1e3cb379b135fbb789edb448d42f697471602f88bf49ec0a243f",
-  "console_map.json": "a76e336df14f23173fed3e60c87d385c5822b6830a97c429811d2b86d29538f3"
+  "app_docs.json": "3174ffcf2330981ff4030080d0c83b49f08ab67f70e863e72174337710d91aa4",
+  "console_map.json": "3ae061b0ecccc3f406c2ecde49f2432e3c351f84cd77d0738f988e81a1d644c7"
  }
 }

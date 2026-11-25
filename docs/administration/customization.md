@@ -71,7 +71,7 @@ does not create a new detector or change case policy.
 ## Recovery
 
 Keep a record of the prior organization values before a broad visual or terminology
-change. Version 0.1 does not provide universal branding-history rollback. If a theme
+change. Version 0.2 does not provide universal branding-history rollback. If a theme
 becomes unusable, an administrator can restore conservative values through the API or
 state backup; a factory reset is unnecessary.
 

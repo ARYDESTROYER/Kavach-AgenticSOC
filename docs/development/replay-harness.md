@@ -156,7 +156,7 @@ about model behaviour. Consequences, stated plainly:
   keeps only the ten most expensive surfaces, so a per-run key would occupy a slot per
   run and silently evict real production surfaces from the operator's cost view, which
   no consumer-side filter can repair. That tag makes replay spend **identifiable**;
-  version 0.1.13 ships **no** automatic exclusion, so a replay's spend does appear in
+  version 0.2.0 ships **no** automatic exclusion, so a replay's spend does appear in
   the Cost page's headline total and in `by_surface` alongside production spend. Size
   `spend_bound_usd` accordingly, and filter on the `replay` surface if you export the
   ledger for reporting. PER-RUN spend is reported by the job record's own `spend` block

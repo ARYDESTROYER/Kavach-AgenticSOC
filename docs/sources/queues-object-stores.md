@@ -5,7 +5,7 @@ description: Connect broker, stream, object-store, and file receivers while pres
 
 # Queues and object stores
 
-This guide applies to **Agentic SOC 0.1** and is for operators integrating retained
+This guide applies to **Agentic SOC 0.2** and is for operators integrating retained
 transports. The default full backend image includes the client libraries named by
 the built-in connector manifests; an intentionally lean core build may omit them.
 
@@ -60,7 +60,7 @@ Validate all of these before widening scope:
 - object overwrite and late arrival; and
 - credential rotation.
 
-## Important 0.1 limits
+## Important 0.2 limits
 
 - There is no common durable receipt/dead-letter ledger before correlation.
 - Event Hubs' default checkpoint path and some object/file progress paths require

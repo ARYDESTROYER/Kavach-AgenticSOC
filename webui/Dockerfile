@@ -45,7 +45,7 @@ ARG TLSOC_VERSION=unknown
 ARG TLSOC_RELEASE_CHANNEL=testing
 ARG TLSOC_BUILD_SHA=unknown
 ARG TLSOC_BUILD_DATE=unknown
-ARG TLSOC_SOURCE_URL=https://github.com/ARYDESTROYER/Agentic-Kibana
+ARG TLSOC_SOURCE_URL=https://github.com/ARYDESTROYER/Kavach-AgenticSOC
 
 LABEL org.opencontainers.image.title="Agentic SOC" \
       org.opencontainers.image.description="Operator console for Agentic SOC" \
@@ -54,10 +54,12 @@ LABEL org.opencontainers.image.title="Agentic SOC" \
       org.opencontainers.image.revision="${TLSOC_BUILD_SHA}" \
       org.opencontainers.image.created="${TLSOC_BUILD_DATE}" \
       org.opencontainers.image.source="${TLSOC_SOURCE_URL}" \
+      org.opencontainers.image.licenses="Apache-2.0" \
       io.agentic-soc.state.schema="1"
 
 COPY webui/nginx.conf /etc/nginx/conf.d/default.conf
 COPY webui/nginx-security-headers.conf /etc/nginx/agentic-soc-security-headers.conf
+COPY LICENSE /usr/share/doc/agentic-soc/LICENSE
 COPY --from=build /repo/webui/dist /usr/share/nginx/html
 EXPOSE 80
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \

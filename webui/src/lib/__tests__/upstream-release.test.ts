@@ -5,7 +5,7 @@ import type { UpstreamReleasesResponse } from '@/lib/types';
 
 const response: UpstreamReleasesResponse = {
   enabled: true,
-  repository_url: 'https://github.com/ARYDESTROYER/Agentic-Kibana',
+  repository_url: 'https://github.com/ARYDESTROYER/Kavach-AgenticSOC',
   checked_at: '2026-07-31T10:00:00Z',
   cache: { hit: false, stale: false, max_age_seconds: 21_600 },
   channels: {

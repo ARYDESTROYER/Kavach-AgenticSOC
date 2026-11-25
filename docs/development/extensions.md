@@ -1,6 +1,6 @@
 ---
 title: Extension points
-description: Add connectors, enrichment providers, notification channels, LLM providers, tools, routes, runbooks, and stores to Agentic SOC 0.1.
+description: Add connectors, enrichment providers, notification channels, LLM providers, tools, routes, runbooks, and stores to Agentic SOC 0.2.
 ---
 
 # Extension points

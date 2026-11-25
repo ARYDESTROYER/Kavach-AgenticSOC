@@ -165,7 +165,7 @@ jobs:
           print(f"installed wheel verified with {len(names)} feature routers")
           PY
       - name: Upload backend distributions
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: backend-distributions-${{ github.sha }}
           path: backend/dist/*
@@ -645,7 +645,7 @@ jobs:
           REQUIRE_DIST_BUILD: "1"
         run: npx vitest run src/soc/__tests__/bundle-first-paint.test.ts
       - name: Upload Web UI production bundle
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: webui-production-${{ github.sha }}
           path: webui/dist/
@@ -663,7 +663,7 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
           cache-dependency-path: .ci/requirements.txt
-      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: "1.23.6"
           cache: false
@@ -915,7 +915,7 @@ jobs:
             --mount "type=volume,source=${state_volume},target=/var/lib/agentic-soc-updater" \
             --mount "type=volume,source=${backup_volume},target=/var/backups/agentic-soc" \
             --mount "type=volume,source=${runtime_volume},target=/deployment/host-runtime" \
-            --env UPDATE_TRUSTED_REPOSITORY=ARYDESTROYER/Agentic-Kibana \
+            --env UPDATE_TRUSTED_REPOSITORY=ARYDESTROYER/Kavach-AgenticSOC \
             --env UPDATE_COMPOSE_FILE=/deployment/docker-compose.yml \
             --env UPDATE_ENV_FILE=/deployment/.env \
             --env UPDATE_STATE_DIR=/var/lib/agentic-soc-updater \

@@ -2394,6 +2394,14 @@ def _validated_github_branch(value: str) -> str:
     return branch
 
 
+#: The canonical public repository. It is also the update trust root.
+CANONICAL_RELEASE_REPOSITORY_URL = "https://github.com/ARYDESTROYER/Kavach-AgenticSOC"
+#: The former name of the same repository, compared ignoring case. GitHub answers the
+#: former API path with a redirect, which discovery refuses by design, so a stored
+#: preference that still names it would never see a release.
+_FORMER_RELEASE_REPOSITORY = ("arydestroyer", "agentic-kibana")
+
+
 class ReleaseUpdateConfig(BaseModel):
     """Read-only public upstream metadata discovery.
 
@@ -2405,7 +2413,7 @@ class ReleaseUpdateConfig(BaseModel):
 
     enabled: bool = True
     repository_url: str = Field(
-        default="https://github.com/ARYDESTROYER/Agentic-Kibana",
+        default=CANONICAL_RELEASE_REPOSITORY_URL,
         description="Public GitHub upstream used only for release metadata discovery.",
     )
     stable_branch: str = Field(
@@ -2426,7 +2434,13 @@ class ReleaseUpdateConfig(BaseModel):
     @field_validator("repository_url")
     @classmethod
     def _repository_is_public_github(cls, value: str) -> str:
-        return _canonical_public_github_repository(value)
+        canonical = _canonical_public_github_repository(value)
+        # After canonicalisation, the former name of this repository (in any case)
+        # moves to the current one. Any other repository, a fork included, is kept.
+        owner, repository = canonical.rsplit("/", 2)[-2:]
+        if (owner.lower(), repository.lower()) == _FORMER_RELEASE_REPOSITORY:
+            return CANONICAL_RELEASE_REPOSITORY_URL
+        return canonical
 
     @field_validator("stable_branch", "testing_branch")
     @classmethod

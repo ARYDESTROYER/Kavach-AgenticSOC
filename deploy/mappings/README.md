@@ -51,5 +51,5 @@ There is intentionally no historical backfill. Legacy provenance stays `null`, l
 `unavailable` rather than being inferred from `knowledge_used`. A later fully measured
 run may advance `retrieval_observation_status`, but cannot repair lifetime completeness.
 PostgreSQL and SQLite store these additive fields inside existing JSON documents and
-require no SQL migration. The change also does not bump the application version beyond
-`0.1.13`.
+require no SQL migration. The change arrived with the 0.1.13 candidate and ships in
+`0.2.0` with no version change of its own.

@@ -55,6 +55,9 @@ from app.tools import rag
 KNOWLEDGE_DIR = Path(app.__file__).resolve().parent / "knowledge"
 REPO_ROOT = Path(app.__file__).resolve().parents[2]
 DOC_REF_RE = re.compile(DOC_REF_PATTERN)
+#: The current documentation line ("0.2" for 0.2.0), as every answer names it.
+DOCS_LINE = ".".join(app.__version__.split(".")[:2])
+HELP_CENTER = f"From the Help Center ({DOCS_LINE})"
 MARKER_RE = re.compile(r"<<<|>>>")
 
 
@@ -450,9 +453,9 @@ def test_rag_import_cannot_mint_the_app_docs_label():
 def test_no_key_install_answers_how_to_add_a_model_at_zero_cost():
     answer = answer_app_question("How do I add a model?", grants=frozenset(), reason="not_configured")
     assert answer is not None
-    assert answer.answer.startswith("From the Help Center (0.1), Models and spend controls")
+    assert answer.answer.startswith(f"{HELP_CENTER}, Models and spend controls")
     assert "[D1]" in answer.answer and "Add local model" in answer.answer
-    assert answer.citations[0].doc == "/docs/0.1/administration/models-spend/#add-or-change-a-model"
+    assert answer.citations[0].doc == f"/docs/{DOCS_LINE}/administration/models-spend/#add-or-change-a-model"
     ids = [l.id for l in answer.console_links]
     assert "settings:models" in ids
     keys = next(l for l in answer.console_links if l.id == "settings:keys")
@@ -589,7 +592,7 @@ async def test_app_help_returns_cited_sections_console_links_and_a_guide():
     assert all(DOC_REF_RE.match(c.doc or "") for c in outcome.citations)
     assert "settings:models" in outcome.console_links
     assert outcome.untrusted_params == {"query": "How do I add a model?"}
-    assert outcome.summary.startswith(tuple("123")) and "Help Center 0.1" in outcome.summary
+    assert outcome.summary.startswith(tuple("123")) and f"Help Center {DOCS_LINE}" in outcome.summary
     observation = outcome.observation
     assert observation["kind"] == "app_help" and observation["results"][0]["ref"] == "D1"
     allowed = {t["id"]: t["allowed"] for t in observation["console_targets"]}
@@ -794,7 +797,7 @@ async def test_release_pages_are_cited_with_d_ids():
     link, so it is cited with a ``D*`` id instead of shown as reference only."""
     # The query names the release itself: "release notes … known limitations" now also
     # matches the known-limitations page's "context note" section, which can outrank it.
-    outcome = await AppHelpTool().run(_ctx(), query="what is new in release 0.1.13", top_k=4)
+    outcome = await AppHelpTool().run(_ctx(), query=f"what is new in release {app.__version__}", top_k=4)
     results = outcome.observation["results"]
     release = [r for r in results if "/releases/" in (r["href"] or "")]
     assert release, results
@@ -810,12 +813,12 @@ async def test_uncitable_sections_get_no_citable_id_and_rebase_stays_unique(monk
     monkeypatch.setattr(
         render_module, "_DOC_REF_RE", re.compile(r"^/docs/\d+\.\d+/[a-z0-9/_-]+/?(#[a-z0-9_-]+)?$"),
     )
-    first = await AppHelpTool().run(_ctx(), query="release 0.1.13 known limitations", top_k=4)
-    second = await AppHelpTool().run(_ctx(), query="what changed in version 0.1.13", top_k=4)
+    first = await AppHelpTool().run(_ctx(), query=f"what is new in release {app.__version__}", top_k=4)
+    second = await AppHelpTool().run(_ctx(), query=f"Agentic SOC {app.__version__} release notes", top_k=4)
     for outcome in (first, second):
         results = outcome.observation["results"]
         uncitable = [r for r in results if r["ref"] is None]
-        assert uncitable, "the 0.1.13 release page has no expressible link under the strict grammar"
+        assert uncitable, f"the {app.__version__} release page has no expressible link under the strict grammar"
         assert all(r["href"] is None for r in uncitable)
         # Every offered id is backed by a Citation, numbered without gaps.
         refs = observation_refs(outcome.observation)
@@ -1193,12 +1196,12 @@ def test_audit_export_answer_names_the_audit_log_export_menu():
     answer = answer_app_question("How do I export audit events to CSV?", grants=_role_grants("auditor"))
     assert answer is not None
     lead = answer.answer.split("\n\n", 1)[0]
-    assert lead.startswith("From the Help Center (0.1), Audit log › Exporting: **Export** in the header of "
+    assert lead.startswith(f"{HELP_CENTER}, Audit log › Exporting: **Export** in the header of "
                            "**Platform → Audit log**"), lead
     # The export job needs both grants: a person exports only what they may read.
     assert "It needs `audit:view` and `audit:export`, not the data export permission." in lead
     assert lead.endswith("[D1]")
-    assert answer.citations[0].doc == "/docs/0.1/administration/audit-log/#exporting"
+    assert answer.citations[0].doc == f"/docs/{DOCS_LINE}/administration/audit-log/#exporting"
     assert [link.id for link in answer.console_links] == ["page:audit"]
     assert "Open: Platform › Audit log." in answer.answer
     # The section describes Data export as it is: the secret-free bundle of the state the
@@ -1226,12 +1229,12 @@ def test_a_format_question_leads_with_the_exporting_section(question: str):
     answer = answer_app_question(question, grants=_role_grants("auditor"))
     assert answer is not None
     lead = answer.answer.split("\n\n", 1)[0]
-    assert lead.startswith("From the Help Center (0.1), Audit log › Exporting: **Export** in the header of "
+    assert lead.startswith(f"{HELP_CENTER}, Audit log › Exporting: **Export** in the header of "
                            "**Platform → Audit log**"), lead
     assert lead.endswith("[D1]"), lead
     docs = [c.doc for c in answer.citations]
-    assert docs[:2] == ["/docs/0.1/administration/audit-log/#exporting",
-                        "/docs/0.1/administration/audit-log/#files-and-delivery"], docs
+    assert docs[:2] == [f"/docs/{DOCS_LINE}/administration/audit-log/#exporting",
+                        f"/docs/{DOCS_LINE}/administration/audit-log/#files-and-delivery"], docs
     assert [link.id for link in answer.console_links] == ["page:audit"]
 
 
@@ -1242,12 +1245,12 @@ def test_export_the_audit_log_leads_with_the_exporting_section():
     answer = answer_app_question(question, grants=_role_grants("auditor"))
     assert answer is not None
     lead = answer.answer.split("\n\n", 1)[0]
-    assert lead.startswith("From the Help Center (0.1), Audit log › Exporting: **Export** in the header of "
+    assert lead.startswith(f"{HELP_CENTER}, Audit log › Exporting: **Export** in the header of "
                            "**Platform → Audit log**"), lead
     assert lead.endswith("[D1]"), lead
     docs = [c.doc for c in answer.citations]
-    assert docs[0] == "/docs/0.1/administration/audit-log/#exporting", docs
-    assert "/docs/0.1/administration/audit-log/#personal-data" in docs, docs
+    assert docs[0] == f"/docs/{DOCS_LINE}/administration/audit-log/#exporting", docs
+    assert f"/docs/{DOCS_LINE}/administration/audit-log/#personal-data" in docs, docs
     assert [link.id for link in answer.console_links] == ["page:audit"]
 
 
@@ -1271,7 +1274,7 @@ def test_search_answer_leads_with_a_sentence_that_names_the_audit_log():
     answer = answer_app_question("How do I search the audit log?", grants=_role_grants("auditor"))
     assert answer is not None
     lead = answer.answer.split("\n\n", 1)[0]
-    assert lead.startswith("From the Help Center (0.1), Audit log › Finding events: In **Platform → Audit log**, "
+    assert lead.startswith(f"{HELP_CENTER}, Audit log › Finding events: In **Platform → Audit log**, "
                            "type in the search box"), lead
     assert lead.endswith(". [D1]"), lead
 
@@ -1279,7 +1282,7 @@ def test_search_answer_leads_with_a_sentence_that_names_the_audit_log():
 def test_start_runbook_answer_names_case_manager_take_action():
     answer = answer_app_question("How do I start a runbook on a case?", grants=_role_grants("analyst_tier1"))
     assert answer is not None
-    assert answer.answer.startswith("From the Help Center (0.1), Case Manager › Work the runbook: To start a runbook")
+    assert answer.answer.startswith(f"{HELP_CENTER}, Case Manager › Work the runbook: To start a runbook")
     assert "**Start runbook** in **Take action**" in answer.answer
     assert [link.id for link in answer.console_links] == ["page:case_manager"]
     assert answer.console_links[0].label == "Triage › Case Manager"

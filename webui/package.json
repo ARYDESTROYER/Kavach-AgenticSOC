@@ -1,9 +1,10 @@
 {
   "name": "tlsoc-console",
   "private": true,
-  "version": "0.1.13",
+  "version": "0.2.0",
   "type": "module",
   "description": "Agentic SOC, the standalone operator interface for agentic security operations.",
+  "license": "Apache-2.0",
   "scripts": {
     "predev": "npm run docs:bundle",
     "dev": "vite",
