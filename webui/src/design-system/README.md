@@ -35,6 +35,15 @@ it does **not** replace the established implementation layers:
 | `applyTransparencyPreference`, `TRANSPARENCY_PREF_KEY`, `TRANSPARENCY_STORAGE_KEY` | The per-user Reduce transparency override behind the material. |
 | `DESIGN_SYSTEM_CATALOG` | JSON-safe inventory of tokens, components, source assets, and accessibility contracts. |
 
+Two parts are separate entries and never in the barrel, so they stay out of the entry
+chunk: the material, imported from `@/design-system/material` by shared primitives, and
+the Explain kit (`feedback.explain` / `ExplainTrigger`, `ExplainPanel`), imported from
+`@/design-system/explain` and only from lazy route chunks. The Explain kit makes a number
+explainable: hover or focus for a one-line formula with the real numbers (a hover card
+that meets WCAG 2.2 SC 1.4.13, Escape dismisses it), click, Enter, Space or tap for the
+full arithmetic with "Copy calculation", and a mouse-only `row-hover` mode inside queue
+rows. Its numbers come from the pure builders in `src/lib/explain/`.
+
 Source geometry lives under `assets/` as plain data. The marks are original Console
 artwork, not downloaded vendor logos, and inherit `currentColor` so the caller controls
 contrast with existing tokens.

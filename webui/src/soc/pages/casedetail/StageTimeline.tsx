@@ -11,7 +11,7 @@
  * its body ONLY inside an escaped <CodeBlock>; trusted prose renders as plain text.
  */
 import * as React from 'react';
-import { ArrowRight, Calculator, ChevronDown, GitBranch, Lock } from 'lucide-react';
+import { ArrowRight, ChevronDown, GitBranch, Lock } from 'lucide-react';
 
 import { cn } from '@/lib/cn';
 import { DASH, formatTimestamp, humanizeToken } from '@/lib/format';
@@ -23,15 +23,17 @@ import { LoadingState } from '@/design-system';
 import { CodeBlock } from '@/soc/components/CodeBlock';
 import { EmptyState } from '@/soc/components/EmptyState';
 import { LoadError } from '@/soc/components/LoadError';
-import { scoreBand, type ScoreBand } from '@/soc/components/palette';
+import type { ScoreBand } from '@/soc/components/palette';
+import { displayBand, displayScore } from '@/lib/explain/rounding';
 
 import type {
-  StageRiskFactor,
   StageState,
   StageStep,
   TimelineStage,
   TimelineStagesResponse,
 } from '@/soc/pages/CaseDetail.api';
+
+import { RiskDerivation } from './explain/RiskDerivation';
 
 /* --------------------------------------------------------------- state chips -- */
 
@@ -48,7 +50,7 @@ const StateChips: React.FC<{ state: StageState; omitRisk?: boolean }> = ({ state
   }
   // Neutral chip: a fixed amber here read as "medium" for every score (CM-6).
   if (typeof state.risk_score === 'number' && !omitRisk) {
-    chips.push(<Badge key="risk" variant="outline">risk {Math.round(state.risk_score)}/100</Badge>);
+    chips.push(<Badge key="risk" variant="outline">risk {displayScore(state.risk_score)}/100</Badge>);
   }
   if (state.verdict) {
     chips.push(<Badge key="verdict" variant="info">{humanizeToken(state.verdict)}</Badge>);
@@ -101,27 +103,28 @@ function storyTone(stage: TimelineStage): { dot: string; title: string } {
     return { dot: 'bg-muted-foreground/60', title: 'text-muted-foreground' };
   }
   if (stage.kind === 'risk' && typeof stage.state.risk_score === 'number') {
-    return { dot: BAND_DOT[scoreBand(stage.state.risk_score)], title: 'text-foreground' };
+    return { dot: BAND_DOT[displayBand(stage.state.risk_score)], title: 'text-foreground' };
   }
   if (stage.kind === 'decide') return { dot: 'bg-primary', title: 'text-foreground' };
   return { dot: 'bg-muted-foreground', title: 'text-foreground' };
 }
 
 const RiskMicrochart: React.FC<{ score: number }> = ({ score }) => {
-  const bounded = Math.max(0, Math.min(100, score));
+  // The shown integer (rounded half up) and ITS band, the one rule for every score (D4).
+  const bounded = displayScore(score) ?? 0;
   const segments = 7;
   const active = Math.round((bounded / 100) * segments);
-  const band = scoreBand(bounded);
+  const band = displayBand(score);
   return (
     <figure className="mt-3 w-48" data-risk-band={band}>
       <figcaption className="mb-1 flex items-center justify-between text-xs font-medium text-muted-foreground">
         <span>Risk score</span>
-        <span className="tabular-nums">{Math.round(bounded)}/100</span>
+        <span className="tabular-nums">{bounded}/100</span>
       </figcaption>
       <div
         className="flex h-12 items-stretch gap-1 border border-border bg-surface-sunken p-1"
         role="img"
-        aria-label={`Risk score ${Math.round(bounded)} out of 100`}
+        aria-label={`Risk score ${bounded} out of 100`}
       >
         {Array.from({ length: segments }).map((_, index) => (
           <span
@@ -136,154 +139,6 @@ const RiskMicrochart: React.FC<{ score: number }> = ({ score }) => {
         ))}
       </div>
     </figure>
-  );
-};
-
-const RISK_FACTOR_LABELS: Record<string, string> = {
-  volume: 'Volume',
-  velocity: 'Velocity',
-  reputation: 'Reputation',
-  diversity: 'Diversity',
-  asset_criticality: 'Asset criticality',
-};
-
-function preciseNumber(value: number, digits = 4): string {
-  if (!Number.isFinite(value)) return DASH;
-  return String(Number(value.toFixed(digits)));
-}
-
-/** Backward-compatible extraction for stage payloads created before risk_calculation. */
-function legacyRiskFactors(steps: StageStep[]): StageRiskFactor[] {
-  const found = new Map<string, StageRiskFactor>();
-  const pattern = /(asset[_ ]criticality|volume|velocity|reputation|diversity)\s*[:=]?\s*(-?\d+(?:\.\d+)?)/gi;
-  for (const step of steps) {
-    if (!step.trusted || !/risk\s+factors?/i.test(step.label)) continue;
-    for (const match of step.body.matchAll(pattern)) {
-      const factor = match[1].toLowerCase().replace(' ', '_');
-      const value = Number(match[2]);
-      if (!Number.isFinite(value) || found.has(factor)) continue;
-      found.set(factor, {
-        factor,
-        label: RISK_FACTOR_LABELS[factor] || humanizeToken(factor),
-        value,
-        weight: Number.NaN,
-        weighted_value: Number.NaN,
-        contribution: Number.NaN,
-      });
-    }
-  }
-  return [...found.values()];
-}
-
-const RiskDerivation: React.FC<{ stage: TimelineStage }> = ({ stage }) => {
-  const calculation = stage.state.risk_calculation;
-  const factors = calculation?.factors?.length
-    ? calculation.factors
-    : legacyRiskFactors(stage.steps);
-  const displayed = Math.round(
-    calculation?.displayed_score
-      ?? calculation?.recorded_score
-      ?? stage.state.risk_score
-      ?? 0,
-  );
-  const derivationTitle = calculation?.matches_displayed_score
-    ? `How ${displayed}/100 was derived`
-    : `Risk score details · ${displayed}/100`;
-
-  return (
-    <section
-      className="mt-3 max-w-4xl border border-border bg-surface-sunken p-4"
-      aria-labelledby={`risk-derivation-${stage.id || 'stage'}`}
-      data-testid="risk-derivation"
-    >
-      <div className="flex items-center gap-2">
-        <Calculator className="h-4 w-4 text-medium-text" aria-hidden />
-        <h4
-          id={`risk-derivation-${stage.id || 'stage'}`}
-          className="text-sm font-semibold text-foreground"
-        >
-          {derivationTitle}
-        </h4>
-      </div>
-      <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-        Each factor is a persisted 0–100 input. Contribution = value × configured
-        weight ÷ the total configured weight.
-      </p>
-
-      {factors.length ? (
-        <div className="mt-3 overflow-x-auto">
-          <table className="w-full border-collapse text-left text-xs">
-            <caption className="sr-only">Risk score factor calculation</caption>
-            <thead>
-              <tr className="border-b border-border text-xs font-medium text-muted-foreground">
-                <th scope="col" className="px-2 py-2 font-medium">Factor</th>
-                <th scope="col" className="px-2 py-2 font-medium">Value</th>
-                <th scope="col" className="px-2 py-2 font-medium">Weight</th>
-                <th scope="col" className="px-2 py-2 font-medium">Contribution</th>
-              </tr>
-            </thead>
-            <tbody>
-              {factors.map((factor) => {
-                const share = calculation && calculation.denominator
-                  ? (factor.weight / calculation.denominator) * 100
-                  : Number.NaN;
-                return (
-                  <tr key={factor.factor} className="border-b border-border/70 last:border-0">
-                    <th scope="row" className="px-2 py-2 font-medium text-foreground">
-                      {factor.label || RISK_FACTOR_LABELS[factor.factor] || humanizeToken(factor.factor)}
-                    </th>
-                    <td className="px-2 py-2 font-mono tabular-nums text-foreground/90">
-                      {preciseNumber(factor.value, 2)}/100
-                    </td>
-                    <td className="px-2 py-2 font-mono tabular-nums text-foreground/90">
-                      {Number.isFinite(factor.weight)
-                        ? `${preciseNumber(factor.weight)} (${preciseNumber(share, 2)}%)`
-                        : DASH}
-                    </td>
-                    <td className="px-2 py-2 font-mono tabular-nums text-foreground/90">
-                      {Number.isFinite(factor.contribution)
-                        ? `${preciseNumber(factor.contribution)} pts`
-                        : DASH}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      ) : null}
-
-      {calculation ? (
-        <div className="mt-3 space-y-1.5 border-t border-border pt-3 text-xs leading-relaxed">
-          <p className="font-mono text-foreground/90" data-testid="risk-formula">
-            Σ(value × weight) = {preciseNumber(calculation.numerator)};{' '}
-            {preciseNumber(calculation.numerator)} ÷ {preciseNumber(calculation.denominator)} ={' '}
-            {preciseNumber(calculation.calculated_score)}/100 → displayed as{' '}
-            {calculation.displayed_score}/100.
-          </p>
-          <p className="text-muted-foreground">
-            Weights shown are the current configured weights used by this read-time
-            reconstruction.
-          </p>
-          {!calculation.matches_displayed_score ? (
-            <p className="text-warning-text" role="note">
-              The current weights calculate {preciseNumber(calculation.calculated_score)}/100,
-              while this case records {preciseNumber(calculation.recorded_score)}/100. This
-              timeline does not contain a historical weight snapshot, so the difference cannot
-              be attributed exactly; the configuration or legacy factor representation may
-              differ from the one used when the case was scored. The recorded score has not
-              been rewritten.
-            </p>
-          ) : null}
-        </div>
-      ) : (
-        <p className="mt-3 border-t border-border pt-3 text-xs leading-relaxed text-muted-foreground" role="note">
-          {factors.length
-            ? 'This older timeline payload supplies factor values and the final score, but not the configured weights or weighted contributions. Exact arithmetic cannot be reconstructed from the available data.'
-            : 'This older timeline payload supplies the final score, but no factor values, configured weights, or weighted contributions. Exact arithmetic cannot be reconstructed from the available data.'}
-        </p>
-      )}
-    </section>
   );
 };
 
@@ -303,11 +158,18 @@ const StoryStep: React.FC<{ step: StageStep }> = ({ step }) => {
           copyable
           maxHeightClassName="max-h-36"
           caption={
-            <span className="inline-flex items-center gap-1.5 font-sans">
-              {label}
+            // B80: the trust marker wraps to a second line as one unit at a narrow width
+            // instead of being cut mid-word.
+            <span
+              className="inline-flex min-w-0 flex-wrap items-center gap-x-1.5 whitespace-normal font-sans"
+              data-untrusted-caption=""
+            >
+              <span>{label}</span>
               <span aria-hidden>·</span>
-              <Lock className="h-3 w-3" aria-hidden />
-              Untrusted source data
+              <span className="inline-flex items-center gap-1 whitespace-nowrap" data-untrusted-marker="">
+                <Lock className="h-3 w-3" aria-hidden />
+                Untrusted source data
+              </span>
             </span>
           }
         />

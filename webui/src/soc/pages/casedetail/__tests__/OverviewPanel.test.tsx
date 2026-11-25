@@ -380,15 +380,22 @@ describe('the inspector Signal profile (pinned with the Brief)', () => {
       member_event_ids: ['event-1', 'event-2'],
     } as unknown as Case);
 
-    // The disclosure toggle comes first, then the factors it shows.
+    // The score's explainer comes first (Round 16 WP11), then the disclosure toggle, then
+    // the factors it shows.
+    await user.tab();
+    expect(screen.getByRole('button', { name: /^40\/100\s?, explain$/ })).toHaveFocus();
     await user.tab();
     expect(screen.getByRole('button', { name: 'Hide risk factors' })).toHaveFocus();
     await user.tab();
     expect(screen.getByRole('button', { name: /Explain Volume risk factor/i })).toHaveFocus();
     const tooltip = await screen.findByRole('tooltip');
     expect(tooltip).toHaveTextContent('log-normalized against a 50-event reference');
-    expect(tooltip).toHaveTextContent('case records 2 correlated events');
-    expect(tooltip).toHaveTextContent('stored Volume factor is 40/100');
+    // B13: the case's member count is never paired with the Volume factor; it is its own fact.
+    expect(tooltip).toHaveTextContent('stores Volume at 40/100');
+    expect(tooltip).toHaveTextContent(
+      'The case now holds 2 events; the score was computed from the events in its scoring run.',
+    );
+    expect(tooltip).not.toHaveTextContent('case records 2 correlated events');
   });
 });
 

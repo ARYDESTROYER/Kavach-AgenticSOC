@@ -63,10 +63,98 @@ import {
   windowCaption,
 } from './analytics-shared';
 import { PageAccess } from './PageAccess';
+import { ExplainTrigger } from '@/design-system/explain';
+import type { Explanation } from '@/lib/explain/types';
 
 // --------------------------------------------------------------------------- //
 // Local types + constants
 // --------------------------------------------------------------------------- //
+
+/** The inputs of the Cost KPI arithmetic (the usage summary for the range). */
+export interface CostKpiInputs {
+  totalCost: number;
+  totalTokens: number;
+  callCount: number;
+  currency?: string;
+  caption: string;
+}
+
+function costLine(
+  metric: string,
+  title: string,
+  display: string,
+  expression: string,
+  formula: string,
+  inputs: Explanation['inputs'],
+  caption: string,
+): Explanation {
+  return {
+    metric,
+    title,
+    value: display,
+    display,
+    summary: `${title} = ${expression} = ${display}, ${caption}.`,
+    formula,
+    inputs,
+    steps: [{ label: title, expression, result: display }],
+    rounding: 'Amounts under 1 are shown to 4 decimals, larger ones to 2.',
+    // The tile divides the server's usage summary here, so the note says where it ran
+    // (the generic words would claim the server computed it).
+    provenance: 'server_computed',
+    provenanceNote: 'Computed in the Console from the usage summary for the selected range.',
+    caveats: [],
+  };
+}
+
+/**
+ * The Cost KPI arithmetic with the real numbers (research explainability R13): per call,
+ * per 1K tokens and tokens per call, each the division the tile shows. Null for a tile
+ * whose denominator is 0 (the tile then shows a dash).
+ */
+export function costKpiExplanations({ totalCost, totalTokens, callCount, currency, caption }: CostKpiInputs): {
+  perCall: Explanation | null;
+  perThousand: Explanation | null;
+  tokensPerCall: Explanation | null;
+} {
+  const cost = fmtMoney(totalCost, currency);
+  const calls = `${fmtNumber(callCount)} ${callCount === 1 ? 'call' : 'calls'}`;
+  const tokens = fmtNumber(totalTokens);
+  const inputs: Explanation['inputs'] = [
+    { key: 'total_cost', label: 'Total cost', value: cost, source: 'Usage ledger' },
+    { key: 'calls', label: 'LLM calls', value: fmtNumber(callCount), source: 'Usage ledger' },
+    { key: 'tokens', label: 'Tokens', value: tokens, source: 'Usage ledger' },
+  ];
+  return {
+    perCall:
+      callCount > 0
+        ? costLine('cost_per_call', 'Per call', fmtMoney(totalCost / callCount, currency), `${cost} / ${calls}`, 'total cost / calls', inputs, caption)
+        : null,
+    perThousand:
+      totalTokens > 0
+        ? costLine(
+            'cost_per_1k_tokens',
+            'Per 1K tokens',
+            fmtMoney((totalCost / totalTokens) * 1000, currency),
+            `${cost} / ${tokens} tokens x 1,000`,
+            'total cost / tokens x 1,000',
+            inputs,
+            caption,
+          )
+        : null,
+    tokensPerCall:
+      callCount > 0
+        ? costLine(
+            'tokens_per_call',
+            'Tokens per call',
+            fmtTokens(totalTokens / callCount),
+            `${tokens} tokens / ${calls}`,
+            'tokens / calls',
+            inputs,
+            caption,
+          )
+        : null,
+  };
+}
 
 /** The page title: the navigation label of `#/cost` (one name per page, D25). */
 const PAGE_TITLE = 'Cost';
@@ -596,6 +684,7 @@ function CostPage(_props: CostProps = {}) {
   const overallAvgCost = callCount > 0 ? totalCost / callCount : NaN;
   const overallCostPerKTok = totalTokens > 0 ? (totalCost / totalTokens) * 1000 : NaN;
   const overallTokensPerCall = callCount > 0 ? totalTokens / callCount : NaN;
+  const kpiExplain = costKpiExplanations({ totalCost, totalTokens, callCount, currency, caption });
 
   // ----- Ledger columns -------------------------------------------------- //
   const columns = React.useMemo<DataTableColumn<LedgerRow>[]>(
@@ -732,20 +821,38 @@ function CostPage(_props: CostProps = {}) {
       />
       <KpiTile
         label="Per call"
-        value={Number.isFinite(overallAvgCost) ? fmtMoney(overallAvgCost, currency) : DASH}
+        value={
+          Number.isFinite(overallAvgCost) ? (
+            <ExplainTrigger explanation={kpiExplain.perCall}>{fmtMoney(overallAvgCost, currency)}</ExplainTrigger>
+          ) : (
+            DASH
+          )
+        }
         context={`average, ${caption}`}
         breakBefore
         testId="cost-per-call"
       />
       <KpiTile
         label="Per 1K tokens"
-        value={Number.isFinite(overallCostPerKTok) ? fmtMoney(overallCostPerKTok, currency) : DASH}
+        value={
+          Number.isFinite(overallCostPerKTok) ? (
+            <ExplainTrigger explanation={kpiExplain.perThousand}>{fmtMoney(overallCostPerKTok, currency)}</ExplainTrigger>
+          ) : (
+            DASH
+          )
+        }
         context={`average, ${caption}`}
         testId="cost-per-1k"
       />
       <KpiTile
         label="Tokens per call"
-        value={Number.isFinite(overallTokensPerCall) ? fmtTokens(overallTokensPerCall) : DASH}
+        value={
+          Number.isFinite(overallTokensPerCall) ? (
+            <ExplainTrigger explanation={kpiExplain.tokensPerCall}>{fmtTokens(overallTokensPerCall)}</ExplainTrigger>
+          ) : (
+            DASH
+          )
+        }
         context={`prompt and completion, ${caption}`}
         testId="cost-tokens-per-call"
       />

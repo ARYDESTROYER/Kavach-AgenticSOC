@@ -10,10 +10,14 @@
  * matched policy clause (thresholds `decide()` compared against), the deterministic
  * rationale string, and the FP objection window when one is pending.
  *
- * The exact `policy_clause` is read off the terminal `decision` TraceSpan in the
- * `timeline` prop (its payload_ref) via the shared `decisionPayload()` helper: the
- * clause does not live on the `Case` or the rationale. When the timeline is absent
- * the card degrades to the case / rationale fields and hides the clause block.
+ * Round 16 (research explainability D1, D8): the card shows the RECORDED decision: the
+ * case's own status, decider and objection window, or the decision span's when it says
+ * it reports the recorded decision (`source: "recorded"`). A span of an older build is a
+ * read-time re-run of `decide()` with today's policy, so it never supplies the outcome,
+ * the decider or a fresh objection window here. The thresholds come from the gate
+ * recorded at decision time when the span carries one, otherwise from today's policy
+ * clause, labelled "thresholds not recorded". Both auto-close conditions are stated with
+ * their numbers, and a "policy changed since" note appears when today's policy differs.
  *
  * SECURITY (#9): the deterministic rationale + any status/verdict tokens are our own
  * or backend-derived controlled strings, rendered as PLAIN text nodes only, never
@@ -26,6 +30,15 @@ import type { Case, CaseRationale } from '@/lib/types';
 import type { DecisionPayload, TimelineResponse, TraceSpan } from '@/soc/pages/CaseDetail.api';
 import { DASH, formatTimestamp, humanizeToken } from '@/lib/format';
 import { cn } from '@/lib/cn';
+import { ExplainTrigger } from '@/design-system/explain';
+import { displayScore, trimmed } from '@/lib/explain/rounding';
+import type { Explanation } from '@/lib/explain/types';
+import {
+  compareWithPolicy,
+  comparisonSentence,
+  readDecision,
+  type DecisionThresholds,
+} from '@/lib/explain/decision';
 
 import { Badge } from '@/ui/badge';
 import {
@@ -77,9 +90,112 @@ function analystPolicyRules(c: Case): string[] {
 /** The qualifying analyst-precedent fact this investigation was given, if any. */
 interface PrecedentSignalView {
   status?: string;
+  reason?: string;
   qualifies?: boolean;
   confirmed_false_positive?: number;
+  confirmed_true_positive?: number;
+  min_confirmed?: number;
+  top_score?: number | null;
+  min_similarity?: number;
+  truncated?: boolean;
   rule_ids?: unknown;
+}
+
+const count = (value: unknown): number => (typeof value === 'number' && Number.isFinite(value) ? value : 0);
+
+/**
+ * Why a precedent signal did not qualify, in words, by its status. A status the server
+ * reads no counts for (`disabled`, `not_applicable`, an unreadable history) never shows
+ * counts: its zeros were not read, so stating them would invent a history.
+ */
+const PRECEDENT_NOT_USED: Record<string, string> = {
+  disabled: 'not used, because precedent promotion is off',
+  not_applicable: 'not used, because this case has no detection rule to match',
+  unavailable: 'not used, because the confirmed history could not be read',
+};
+const PRECEDENT_WHY: Record<string, string> = {
+  conflicting: 'this rule has confirmed malicious outcomes',
+  insufficient: 'fewer confirmed benign outcomes than needed',
+  not_retrieved: 'no matching precedent was retrieved for this case',
+  unavailable: 'the read was cut short, so the counts are lower bounds',
+};
+
+/** True when the server read this rule's confirmed counts for the signal. */
+function precedentCounted(signal: PrecedentSignalView): boolean {
+  const status = String(signal.status || '');
+  if (signal.qualifies || ['qualified', 'conflicting', 'insufficient', 'not_retrieved'].includes(status)) return true;
+  // An unavailable read carries counts only when it was cut short (lower bounds).
+  return status === 'unavailable' && signal.truncated === true;
+}
+
+function outcomes(n: number, kind: string, atLeast: boolean): string {
+  return `${atLeast ? 'at least ' : ''}${n.toLocaleString('en-US')} confirmed ${kind}`;
+}
+
+/**
+ * The precedent line (research data-visibility R9): always shown, so a decision that did
+ * not lean on precedent says why. Counts, the minimum and the reason are our own data,
+ * stated only when the server read them; the reason is shown in words.
+ */
+export function precedentLine(signal: PrecedentSignalView | null): string {
+  if (!signal) return 'Precedent: not recorded for this investigation.';
+  const status = String(signal.status || '');
+  if (!precedentCounted(signal)) {
+    return `Precedent: ${PRECEDENT_NOT_USED[status] ?? 'not used for this investigation'}.`;
+  }
+  const atLeast = signal.truncated === true;
+  const benign = count(signal.confirmed_false_positive);
+  const malicious = count(signal.confirmed_true_positive);
+  const counts = `${outcomes(benign, 'benign', atLeast)} and ${outcomes(malicious, 'malicious', atLeast)} outcome${
+    malicious === 1 ? '' : 's'
+  } for this rule`;
+  const needed = count(signal.min_confirmed);
+  const neededText = needed ? `; ${needed.toLocaleString('en-US')} needed` : '';
+  if (signal.qualifies) return `Precedent: ${counts}${neededText}; it qualified as evidence.`;
+  const why = PRECEDENT_WHY[status];
+  return `Precedent: ${counts}${neededText}; it did not qualify${why ? ` (${why})` : ''}.`;
+}
+
+/** The precedent facts in full (research data-visibility R9): the click panel of the line. */
+export function precedentExplanation(signal: PrecedentSignalView | null): Explanation | null {
+  if (!signal) return null;
+  const counted = precedentCounted(signal);
+  const source = 'Recorded with the investigation';
+  const inputs: Explanation['inputs'] = [
+    { key: 'status', label: 'Status', value: humanizeToken(signal.status || 'unknown'), source },
+  ];
+  if (counted) {
+    const atLeast = signal.truncated === true ? 'at least ' : '';
+    inputs.push(
+      { key: 'benign', label: 'Confirmed benign', value: `${atLeast}${count(signal.confirmed_false_positive).toLocaleString('en-US')}`, source },
+      { key: 'malicious', label: 'Confirmed malicious', value: `${atLeast}${count(signal.confirmed_true_positive).toLocaleString('en-US')}`, source },
+    );
+  }
+  if (count(signal.min_confirmed)) {
+    inputs.push({ key: 'min_confirmed', label: 'Benign outcomes needed', value: count(signal.min_confirmed).toLocaleString('en-US'), source: 'Precedent settings' });
+  }
+  if (typeof signal.top_score === 'number' && Number.isFinite(signal.top_score)) {
+    inputs.push({
+      key: 'top_score',
+      label: 'Best match',
+      value: `${trimmed(signal.top_score, 4)} against a floor of ${trimmed(count(signal.min_similarity), 4)}`,
+      source,
+    });
+  }
+  if (signal.truncated) inputs.push({ key: 'truncated', label: 'History read', value: 'Cut short', source });
+  return {
+    metric: 'precedent',
+    title: 'Precedent',
+    value: signal.status ?? null,
+    display: precedentLine(signal),
+    summary: precedentLine(signal),
+    formula: 'qualifies when no confirmed malicious outcome, at least the needed confirmed benign outcomes, and a match above the floor',
+    inputs,
+    steps: [],
+    provenance: 'recorded',
+    provenanceNote: 'Recorded when the investigation ran.',
+    caveats: ['Precedent can add evidence for the AI. It never closes a case on its own.'],
+  };
 }
 function precedentSignal(c: Case): PrecedentSignalView | null {
   const raw = (c as { precedent_signal?: PrecedentSignalView | null }).precedent_signal;
@@ -110,33 +226,87 @@ export interface DecisionCardProps {
  * The pinned deterministic-decision authority card. Prefers the exact values recorded
  * on the terminal decision span, falling back to the rationale, then the case.
  */
+/** True when two policy entries name different bars (the "policy changed since" test). */
+function thresholdsDiffer(a: DecisionThresholds | null, b: DecisionThresholds | null): boolean {
+  if (!a || !b) return false;
+  return (
+    (a.enabled !== null && b.enabled !== null && a.enabled !== b.enabled) ||
+    (a.min_confidence !== null && b.min_confidence !== null && a.min_confidence !== b.min_confidence) ||
+    (a.max_risk_score !== null && b.max_risk_score !== null && a.max_risk_score !== b.max_risk_score)
+  );
+}
+
 export const DecisionCard: React.FC<DecisionCardProps> = ({ c, rationale, timeline }) => {
   const span = terminalDecisionSpan(timeline);
   const d: DecisionPayload = span ? decisionPayload(span) : {};
-  const clause = d.policy_clause;
+  const reading = readDecision(d);
+  // A span that reports the recorded decision may supply the outcome; an older span is a
+  // read-time re-run with today's policy and never does (D1).
+  const recordedSpan = reading?.source === 'recorded';
+  const gate = reading?.gate ?? null;
 
-  const verdict = d.verdict ?? rationale?.verdict ?? c.verdict;
+  const verdict = gate?.verdict ?? c.verdict ?? rationale?.verdict ?? d.verdict;
   const confidence =
-    typeof d.confidence === 'number'
-      ? d.confidence
-      : typeof rationale?.confidence === 'number'
-        ? rationale.confidence
-        : c.confidence;
-  const riskScore = typeof d.risk_score === 'number' ? d.risk_score : c.risk_score;
-  const status = d.decision_status ?? rationale?.status ?? c.status;
-  const decisionByRaw = d.decision_by ?? rationale?.decision_by ?? c.decision_by;
+    typeof gate?.confidence === 'number'
+      ? gate.confidence
+      : typeof c.confidence === 'number'
+        ? c.confidence
+        : typeof rationale?.confidence === 'number'
+          ? rationale.confidence
+          : d.confidence;
+  const riskScore = typeof gate?.risk_score === 'number' ? gate.risk_score : c.risk_score;
+  const status = (recordedSpan ? reading?.status : null) ?? c.status ?? rationale?.status;
+  const decisionByRaw = (recordedSpan ? reading?.decisionBy : null) ?? c.decision_by ?? rationale?.decision_by;
   const decider = decidedBy(decisionByRaw);
-  const escalate = d.escalate === true;
+  const escalate = recordedSpan ? d.escalate === true : String(status || '').toLowerCase() === 'escalated';
 
-  // The DETERMINISTIC rationale string (our own / backend copy): plain text (#9).
-  const rationaleText = rationale?.decision_rationale || span?.summary || '';
+  // The DETERMINISTIC rationale string (our own / backend copy): plain text (#9). The
+  // recorded rationale first; a read-time re-run's summary never stands in for it.
+  const rationaleText = rationale?.decision_rationale || (recordedSpan ? span?.summary : '') || '';
 
-  // The FP objection deadline: prefer the span payload, else the flat case field.
-  const objectionWindow = d.objection_window_expires_at ?? c.objection_window_expires_at ?? null;
+  // The FP objection deadline: the recorded one only (a re-run computes "now + window").
+  const objectionWindow =
+    (recordedSpan ? reading?.objectionWindowExpiresAt : null) ?? c.objection_window_expires_at ?? null;
   const autoClosed = isAutoClosedByAI(status, decisionByRaw);
   const policyRules = analystPolicyRules(c);
   const precedent = precedentSignal(c);
-  const autoClosable = clause?.auto_closable;
+
+  // The thresholds: recorded at decision time when the span carries the gate, else
+  // today's policy clause, labelled so.
+  const recordedThresholds: DecisionThresholds | null = gate
+    ? {
+        enabled: gate.class_enabled,
+        min_confidence: gate.min_confidence,
+        max_risk_score: gate.max_risk_score,
+        objection_window_minutes: gate.objection_window_minutes,
+        note: null,
+      }
+    : null;
+  const currentThresholds = reading?.current ?? null;
+  const thresholds = recordedThresholds ?? currentThresholds;
+  const clause = d.policy_clause;
+  const verdictText = typeof verdict === 'string' ? verdict : null;
+  const comparison = thresholds
+    ? compareWithPolicy(
+        verdictText,
+        typeof confidence === 'number' ? confidence : null,
+        typeof riskScore === 'number' ? riskScore : null,
+        thresholds,
+      )
+    : null;
+  const policyChanged =
+    reading?.policyChanged === true || (recordedThresholds !== null && thresholdsDiffer(recordedThresholds, currentThresholds));
+  const todayComparison =
+    policyChanged && currentThresholds
+      ? compareWithPolicy(
+          verdictText,
+          typeof confidence === 'number' ? confidence : null,
+          typeof riskScore === 'number' ? riskScore : null,
+          currentThresholds,
+        )
+      : null;
+  const autoClosable = thresholds?.enabled ?? clause?.auto_closable;
+  const codeNote = thresholds?.note ?? clause?.note ?? null;
 
   return (
     <section
@@ -208,6 +378,11 @@ export const DecisionCard: React.FC<DecisionCardProps> = ({ c, rationale, timeli
         </p>
       ) : null}
 
+      {/* The precedent facts behind the decision, always (data-visibility R9). */}
+      <p className="mt-3 text-xs text-muted-foreground" data-testid="decision-precedent">
+        <ExplainTrigger explanation={precedentExplanation(precedent)}>{precedentLine(precedent)}</ExplainTrigger>
+      </p>
+
       {/* ------------------------------------------------ outcome badge row */}
       {/* "Verdict lands": a one-shot scale-settle on mount (never a loop). */}
       <motion.div
@@ -239,27 +414,32 @@ export const DecisionCard: React.FC<DecisionCardProps> = ({ c, rationale, timeli
         />
         <Fact
           label="Risk score"
-          value={typeof riskScore === 'number' ? `${Math.round(riskScore)}/100` : DASH}
+          value={typeof riskScore === 'number' ? `${displayScore(riskScore)}/100` : DASH}
         />
         <Fact label="Result" value={status ? humanizeToken(status) : DASH} />
       </div>
 
       {/* ---------------------------------- the matched AutoClosePolicy clause */}
-      {clause ? (
-        <div className="mt-3 rounded-lg border border-border bg-card p-3">
-          <div className="mb-1.5 flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+      {thresholds || clause ? (
+        <div className="mt-3 rounded-lg border border-border bg-card p-3" data-testid="decision-clause">
+          <div className="mb-1.5 flex flex-wrap items-center gap-1.5 text-xs font-medium text-muted-foreground">
             <GitBranch className="h-3 w-3" />
             Policy clause evaluated
+            <span className="font-normal" data-testid="decision-clause-basis">
+              {recordedThresholds
+                ? '· as recorded at decision time'
+                : "· today's policy: the thresholds were not recorded for this decision"}
+            </span>
           </div>
-          {clause.note ? (
+          {codeNote ? (
             /* TRUSTED policy note (our own copy): plain text node. */
-            <p className="text-xs text-foreground/90">{clause.note}</p>
+            <p className="text-xs text-foreground/90">{codeNote}</p>
           ) : (
             <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">
               <span className="text-muted-foreground">
                 class{' '}
                 <span className="font-mono text-foreground">
-                  {clause.verdict_class ? humanizeToken(clause.verdict_class) : DASH}
+                  {verdictText ? humanizeToken(verdictText) : clause?.verdict_class ? humanizeToken(clause.verdict_class) : DASH}
                 </span>
               </span>
               <span className="text-muted-foreground">
@@ -268,18 +448,31 @@ export const DecisionCard: React.FC<DecisionCardProps> = ({ c, rationale, timeli
                   {autoClosable ? 'eligible' : 'off'}
                 </span>
               </span>
-              {typeof clause.min_confidence === 'number' ? (
+              {typeof thresholds?.min_confidence === 'number' ? (
                 <span className="text-muted-foreground">
-                  min-conf <span className="font-mono text-foreground">{clause.min_confidence}</span>
+                  min-conf <span className="font-mono text-foreground">{thresholds.min_confidence}</span>
                 </span>
               ) : null}
-              {typeof clause.max_risk_score === 'number' ? (
+              {typeof thresholds?.max_risk_score === 'number' ? (
                 <span className="text-muted-foreground">
-                  max-risk <span className="font-mono text-foreground">{clause.max_risk_score}</span>
+                  max-risk <span className="font-mono text-foreground">{thresholds.max_risk_score}</span>
                 </span>
               ) : null}
             </div>
           )}
+          {/* Both auto-close conditions with their numbers (D8), never half of the predicate. */}
+          {comparison ? (
+            <p className="mt-2 text-xs text-foreground/90" data-testid="decision-conditions">
+              {comparisonSentence(comparison)}
+            </p>
+          ) : null}
+          {policyChanged ? (
+            <p className="mt-2 text-xs text-warning-text" role="note" data-testid="decision-policy-changed">
+              {todayComparison
+                ? `The auto-close policy changed since this decision. ${comparisonSentence(todayComparison, 'current')}`
+                : 'The auto-close policy changed since this decision. The values above are the ones in force at the time.'}
+            </p>
+          ) : null}
         </div>
       ) : null}
 

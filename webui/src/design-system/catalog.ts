@@ -288,6 +288,26 @@ export const DESIGN_SYSTEM_CATALOG = {
       ],
     },
     {
+      id: 'feedback.explain',
+      module: '@/design-system/explain',
+      exportName: 'ExplainTrigger',
+      purpose:
+        'Every number explainable: hover or focus shows the one-line formula with the real numbers; click, Enter, Space or a tap opens the full arithmetic with Copy calculation',
+      variants: [
+        'mode=interactive (hover card, then a popover with inputs, steps, rounding, provenance and caveats)',
+        'mode=row-hover (a mouse-only hover card inside a queue row; no focusable content)',
+        'explanation=null renders the children unchanged',
+        'a separate entry: imported from @/design-system/explain, never the barrel, and only from lazy chunks',
+      ],
+      accessibility: [
+        'WCAG 2.2 SC 1.4.13: the hover card is dismissible with Escape, hoverable and persistent',
+        'the trigger is a button named by the value it shows plus "explain"',
+        'the panel is a dialog named by its title; closing it returns focus to the trigger',
+        'a touch never opens the hover card; a tap opens the panel',
+        'every value renders as a text node',
+      ],
+    },
+    {
       id: 'control.number-field',
       module: '@/soc/components/NumberField',
       exportName: 'NumberField',

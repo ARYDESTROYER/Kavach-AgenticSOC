@@ -22,6 +22,26 @@ import { LoadingState, Panel } from '@/design-system';
 import { LoadError } from '@/soc/components/LoadError';
 import { pageHash } from '@/soc/router';
 import { useRouteLinkClick } from '@/soc/route-link';
+import { ExplainTrigger } from '@/design-system/explain';
+import { explainWilson } from '@/lib/explain/stats';
+import type { Explanation } from '@/lib/explain/types';
+
+/**
+ * The Wilson interval of the agreement, its inputs named in this module's words: the
+ * reviews that agreed, of the reviews that gave a verdict (unsure ones excluded).
+ */
+export function agreementExplanation(agreed: number, reviews: number): Explanation | null {
+  const base = explainWilson(agreed, reviews);
+  if (!base) return null;
+  const labels: Record<string, string> = { successes: 'Reviews that agreed', n: 'Reviews with a verdict' };
+  return {
+    ...base,
+    title: 'Agreement interval',
+    inputs: base.inputs.map((input) =>
+      labels[input.key] ? { ...input, label: labels[input.key], source: 'Auto-close review' } : input,
+    ),
+  };
+}
 
 /** The module's window token for the page's range in hours (`now-30d`, `now-24h`). */
 export function reviewWindowToken(hours: number): string {
@@ -98,8 +118,12 @@ export function AutoCloseReviewBody({ data }: { data: AutoCloseReviewMetrics }) 
         <p className="text-sm font-medium text-foreground">
           {enough ? (
             <>
-              Agreement {percent(agreement.rate)}, 95% interval {percent(agreement.interval?.low)} to{' '}
-              {percent(agreement.interval?.high)}
+              Agreement {percent(agreement.rate)}, 95% interval{' '}
+              {/* The Wilson arithmetic with the real counts (research explainability R10):
+                  the reviews that agreed of the reviews that rated, unsure ones excluded. */}
+              <ExplainTrigger explanation={agreementExplanation(agreement.agreed, agreement.reviews)}>
+                {percent(agreement.interval?.low)} to {percent(agreement.interval?.high)}
+              </ExplainTrigger>
             </>
           ) : (
             'Not enough reviews yet'

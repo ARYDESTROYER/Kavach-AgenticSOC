@@ -249,6 +249,22 @@ describe.skipIf(!HAS_DIST && !REQUIRE_DIST)('first-paint bundle graph', () => {
    * future eager import of a page / settings section can't silently re-bloat it.
    * -------------------------------------------------------------------------- */
 
+  it('the Explain kit and its builders stay off first paint (Round 16 SPEC §3.1, WP11)', () => {
+    // The kit's hover hint and panel action, and a builder's hover line, are string
+    // literals: their absence proves none of the kit is in the entry chunk.
+    const entry = readEntry();
+    for (const marker of ['Select it for the full calculation.', 'Copy calculation', 'Click for inputs.']) {
+      expect(entry, `entry contains ${marker}`).not.toContain(marker);
+    }
+    const assets = fs.readdirSync(path.join(DIST, 'assets')).filter((f) => f.endsWith('.js'));
+    const kit = assets.find((f) =>
+      fs.readFileSync(path.join(DIST, 'assets', f), 'utf8').includes('Select it for the full calculation.'),
+    );
+    expect(kit, 'the Explain kit must be emitted in some lazy chunk').toBeDefined();
+    expect(entryStaticImports()).not.toContain(kit);
+    expect(readHtml()).not.toMatch(new RegExp(`modulepreload[^>]*${kit}`));
+  });
+
   it('entry chunk is well under the pre-Coupling-A 537 kB (page bodies are lazy)', () => {
     const html = readHtml();
     const m = html.match(/src="\/assets\/(index-[^"]+\.js)"/);

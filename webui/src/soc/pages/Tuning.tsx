@@ -85,6 +85,9 @@ import { EffectiveConfigPreview } from '@/soc/components/rules/EffectiveConfigPr
 import { StickySaveBar } from '@/soc/components/SettingsGrid';
 import { useMediaQuery } from '@/soc/hooks/useMediaQuery';
 import { useUnsavedChanges } from '@/soc/hooks/useDirtyDraft';
+import { ExplainTrigger } from '@/design-system/explain';
+import { explainWilson, wilsonInterval } from '@/lib/explain/stats';
+import type { Explanation } from '@/lib/explain/types';
 
 import {
   DEFAULT_TUNING_CONFIG,
@@ -155,6 +158,70 @@ const PAGE_HELP =
 
 /** A tab body: the modules stacked one panel gutter apart (the page rhythm). */
 const TAB_BODY = 'mt-6 flex flex-col gap-4 xl:gap-5 3xl:gap-6';
+
+/**
+ * A review row built from a recommendation that outlived its feedback row. When the
+ * recommendation did not record its confirmed counts, `counts_recorded` is false and the
+ * page says "not recorded" instead of deriving counts from the Wilson lower bound
+ * (research explainability D6): `fp_rate` is that bound, never the observed ratio.
+ */
+type ReviewRule = RuleNoise & { counts_recorded?: boolean };
+
+/** False only for a synthetic row whose confirmed counts were not recorded (D6). */
+export function countsRecorded(rule: RuleNoise): boolean {
+  return (rule as ReviewRule).counts_recorded !== false;
+}
+
+/** The observed false-positive ratio as shown, or "not recorded" (D6). */
+export function observedRatioText(rule: RuleNoise): string {
+  return countsRecorded(rule) ? fmtPercent(observedFpRate(rule.total, rule.fp)) : 'not recorded';
+}
+
+/**
+ * The conservative estimate explained: the Wilson lower bound of the confirmed false
+ * positives among the analyst-confirmed cases, at the configured z. Never derived from a
+ * row whose counts were not recorded.
+ */
+export function conservativeEstimateExplanation(rule: RuleNoise, z: number): Explanation {
+  const display = fmtPercent(rule.fp_rate);
+  if (!countsRecorded(rule) || !(rule.total > 0)) {
+    return {
+      metric: 'tuning_conservative_fp_rate',
+      title: 'Conservative estimate',
+      value: rule.fp_rate,
+      display,
+      summary: `Conservative false-positive estimate ${display}. The confirmed counts behind it were not recorded for this recommendation.`,
+      formula: 'Wilson lower bound of confirmed false positives / analyst-confirmed cases',
+      inputs: [{ key: 'fp_rate', label: 'Stored estimate', value: display, source: 'The tuner' }],
+      steps: [],
+      provenance: 'not_recorded',
+      caveats: ['The counts are not derived from the estimate, because the estimate is a lower bound, not the observed ratio.'],
+    };
+  }
+  const base = explainWilson(rule.fp, rule.total, z);
+  const interval = wilsonInterval(rule.fp, rule.total, z);
+  const caveats = [...(base?.caveats ?? [])];
+  if (interval && Math.abs(interval.low - rule.fp_rate) > 0.001) {
+    caveats.push(`The tuner stored ${display}; it may come from an earlier evaluation than these counts.`);
+  }
+  // The generic Wilson inputs in this page's words: what was counted, out of what.
+  const inputLabels: Record<string, string> = {
+    successes: 'Confirmed false positives',
+    n: 'Analyst-confirmed cases',
+  };
+  return {
+    ...(base as Explanation),
+    inputs: (base?.inputs ?? []).map((input) =>
+      inputLabels[input.key] ? { ...input, label: inputLabels[input.key], source: 'This rule' } : input,
+    ),
+    metric: 'tuning_conservative_fp_rate',
+    title: 'Conservative estimate',
+    value: rule.fp_rate,
+    display,
+    summary: `${display} is the Wilson lower bound of ${fmtNumber(rule.fp)} false positives in ${fmtNumber(rule.total)} analyst-confirmed cases at z = ${z}.`,
+    caveats,
+  };
+}
 
 function ruleState(rule: RuleNoise, minSamples: number): RuleState {
   if (rule.total < minSamples) return 'collecting';
@@ -266,7 +333,7 @@ function explainRuleState(
   target: number,
 ): RuleExplanation {
   const state = ruleState(rule, minSamples);
-  const observed = observedFpRate(rule.total, rule.fp);
+  const observed = observedRatioText(rule);
 
   if (state === 'attention') {
     const gap = Math.max(0, rule.fp_rate - target);
@@ -276,9 +343,10 @@ function explainRuleState(
         `${analystCaseLabel(rule.total)} meet the ${fmtNumber(minSamples)}-case evidence minimum. ` +
         `The conservative false-positive estimate is ${fmtPercent(rule.fp_rate)}, ` +
         `${percentagePointLabel(gap)} above the ${fmtPercent(target)} policy target.`,
-      support:
-        `Observed false-positive ratio: ${fmtPercent(observed)} ` +
-        `(${fmtNumber(rule.fp)} marked false positive or benign).`,
+      support: countsRecorded(rule)
+        ? `Observed false-positive ratio: ${observed} ` +
+          `(${fmtNumber(rule.fp)} marked false positive or benign).`
+        : 'Observed false-positive ratio: not recorded. This recommendation did not record its confirmed counts.',
     };
   }
 
@@ -291,7 +359,7 @@ function explainRuleState(
         `have been collected. ${fmtNumber(remaining)} more ${remaining === 1 ? 'is' : 'are'} ` +
         'required before tuning can recommend a change.',
       support:
-        `Current observed ratio ${fmtPercent(observed)} and conservative estimate ` +
+        `Current observed ratio ${observed} and conservative estimate ` +
         `${fmtPercent(rule.fp_rate)} are context only until the evidence minimum is met.`,
     };
   }
@@ -614,19 +682,22 @@ function TuningBody({ onNavigate }: TuningProps) {
   // resurrecting a second recommendations queue. The recommendation carries the same
   // independently-confirmed counters needed for an honest, synthetic evidence row.
   const reviewRules = React.useMemo(() => {
-    const rows = new Map(ruleNoise.map((rule) => [rule.rule_id, rule]));
+    const rows = new Map<string, ReviewRule>(ruleNoise.map((rule) => [rule.rule_id, rule]));
     for (const [ruleId, ruleRecommendations] of recommendationsByRule) {
       if (rows.has(ruleId) || !ruleRecommendations.length) continue;
       const recommendation = ruleRecommendations[0];
       const analystSamples =
         recommendation.analyst_samples ?? recommendation.samples ?? 0;
-      const falsePositives =
-        recommendation.confirmed_false_positives ??
-        Math.max(0, Math.round(recommendation.fp_rate * analystSamples));
-      const truePositives =
-        recommendation.confirmed_true_positives ??
-        Math.max(0, analystSamples - falsePositives);
+      // D6: never derive counts from `fp_rate`, the Wilson LOWER BOUND. Without the
+      // recorded confirmed counts the row says "not recorded".
+      const recordedFp = recommendation.confirmed_false_positives;
+      const counted = typeof recordedFp === 'number' && Number.isFinite(recordedFp);
+      const falsePositives = counted ? recordedFp : 0;
+      const truePositives = counted
+        ? recommendation.confirmed_true_positives ?? Math.max(0, analystSamples - falsePositives)
+        : 0;
       rows.set(ruleId, {
+        counts_recorded: counted,
         rule_id: ruleId,
         observed: recommendation.observed_cases ?? analystSamples,
         total: analystSamples,
@@ -1018,6 +1089,7 @@ function TuningBody({ onNavigate }: TuningProps) {
                       target={data.fp_rate_target}
                       shadowEvalEnabled={saved.shadow_eval}
                       autoApplyConfirmed={saved.auto_apply_confirmed}
+                      wilsonZ={saved.wilson_z}
                       processing={busyKeys.has(`rule:${selectedRule.rule_id}`)}
                       onApplyRule={(ruleId) => void applyRule(ruleId)}
                       onOpenApprovals={() => navigate('approvals')}
@@ -1066,6 +1138,7 @@ function TuningBody({ onNavigate }: TuningProps) {
                           target={data.fp_rate_target}
                           shadowEvalEnabled={saved.shadow_eval}
                           autoApplyConfirmed={saved.auto_apply_confirmed}
+                          wilsonZ={saved.wilson_z}
                           processing={busyKeys.has(`rule:${selectedRule.rule_id}`)}
                           onApplyRule={(ruleId) => void applyRule(ruleId)}
                           onOpenApprovals={() => navigate('approvals')}
@@ -1318,7 +1391,7 @@ function RuleList({
           const action = recs.length
             ? explainRecommendation(recs[0], shadowEvalEnabled)
             : explainNoRecommendation(state, rule, minSamples);
-          const observed = observedFpRate(rule.total, rule.fp);
+          const observed = observedRatioText(rule);
           const rowInert = inertNote(rule);
           const actionLabel = recs.length > 1
             ? `${fmtNumber(recs.length)} bounded changes`
@@ -1406,7 +1479,7 @@ function RuleList({
                   <PolicySignalBar value={rule.fp_rate} target={target} state={state} />
                 </span>
                 <span className="mt-1.5 block text-xs text-muted-foreground">
-                  <span className="tabular-nums">{fmtPercent(observed)}</span> observed false-positive ratio
+                  <span className="tabular-nums">{observed}</span> observed false-positive ratio
                 </span>
               </span>
 
@@ -1511,6 +1584,7 @@ function RuleDetailPanel({
   onApplyRule,
   onOpenApprovals,
   onClose,
+  wilsonZ = DEFAULT_TUNING_CONFIG.wilson_z,
 }: {
   id?: string;
   variant?: 'aside' | 'sheet';
@@ -1525,6 +1599,8 @@ function RuleDetailPanel({
   onApplyRule: (ruleId: string) => void;
   onOpenApprovals: () => void;
   onClose: () => void;
+  /** The configured Wilson z the conservative estimate uses (1.96 by default). */
+  wilsonZ?: number;
 }) {
   const state = ruleState(rule, minSamples);
   const Root = variant === 'aside' ? 'aside' : 'div';
@@ -1540,12 +1616,19 @@ function RuleDetailPanel({
   const hasRestrictedChange = recommendations.some((recommendation) => !recommendation.auto_apply);
   const headlineStats = [
     { label: 'Analyst outcomes', value: fmtNumber(rule.total) },
-    { label: 'Conservative estimate', value: fmtPercent(rule.fp_rate) },
+    {
+      label: 'Conservative estimate',
+      value: (
+        <ExplainTrigger explanation={conservativeEstimateExplanation(rule, wilsonZ)}>
+          {fmtPercent(rule.fp_rate)}
+        </ExplainTrigger>
+      ),
+    },
     { label: 'Policy target', value: fmtPercent(target) },
   ];
   const technicalStats = [
     { label: 'Observed cases', value: fmtNumber(rule.observed ?? rule.total) },
-    { label: 'Observed FP ratio', value: fmtPercent(observedFpRate(rule.total, rule.fp)) },
+    { label: 'Observed FP ratio', value: observedRatioText(rule) },
     { label: 'Unconfirmed', value: fmtNumber(rule.unconfirmed ?? 0) },
     {
       label: 'Recent average volume',
