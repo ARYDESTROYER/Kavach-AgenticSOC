@@ -12134,3 +12134,136 @@
 - Tests: docs records pytest passed; no product code changed.
 - Status: done.
 - Next: build in waves per SPEC §4 (merge order: WP15A, WP05 part 1, WP01, WP15B and WP15C, WP04 and WP06, WP07 and WP05 part 2, WP15E part 1, WP08 then WP10 and WP15D, WP13, WP02 then WP03, the Console feature packages, WP15F, WP16, then WP17, WP18 and WP19).
+
+### 2026-11-25 07:50Z - WP05 sub-agent - Round 16 WP05 part 1: version 0.2.0, identity, license, guards
+- Context: SPEC 4.3 WP05 part 1 as scoped by the orchestrator: version move (3.8), repository identity (D2), Apache-2.0 (D3), check_version guards, Dependabot forward-port (D13), B52, B54. The notes-JSON guard is part 2, after WP07.
+- Did: moved every current-version string to 0.2.0 and the docs line to 0.2. New release pages 0.2.md and 0.2.0.md; 0.1.13.md folded into 0.2.0; CHANGELOG headings. The docs bundle writes /docs/0.1/ redirect pages that keep the fragment, and validates them. The plan builder admits below 0.3.0. The new repository name is in the updater default, Dockerfiles, CI smoke step, MkDocs, issue templates and Console links. The bootstrap refuses a missing, old or wrong-case repository and never edits .env. ReleaseUpdateConfig repairs the old name and keeps forks. Apache-2.0 LICENSE with backend and updater copies, pyproject and package.json declarations, the image label and text in all three images, README notices. check_version requires the license label and, on main, a v* tag or a PR into main, an empty [Unreleased] and a release body of at most 100,000 characters. Dependabot pins forward-ported and every block targets Testing. B52: bootstrap is offered only on PostgreSQL, and the closing note shows only with a job. B54: the Stable docs link always shows.
+- Tests: backend 13,175 passed, 24 skipped, 5 sandbox-only env failures. test:strict 8,883 passed, 1 skipped, 7 load timeouts; the 6 files pass alone (73 of 73). Build clean, entry 329,114 B (+34 B, inside the 1,024 B budget). check_version, check_docs, check_ci_contract, build_app_knowledge --check, docs bundle, theme, updater and bootstrap tests pass. Regression proofs done for B52, B54, the bootstrap refusals and the config repair.
+- Status: done (part 1). Branch r16-wp05 at 9561830, detached.
+- Next: WP05 part 2 adds the notes guard after WP07. WP18 updates HANDOFF:9, the AGENTS 0.1.13 contract sentences, USAGE.md:69 and :2813, and the testing.md baseline counts. WP17 refreshes the Help Center screenshot alt text and captions. WP19 writes the 0.2.0 notes and empties [Unreleased].
+
+### 2026-11-25 08:45Z - WP04 agent - Sign-in page rebuilt on Console tokens; B25 and B50 fixed
+- Context: Round 16 WP04 (SPEC 4.4, D6, D9; [login] R1 to R12, R14, R15). Built in worktree r16-wp04 from cd9ed95, in parallel with WP15A, WP05 part 1 and WP01.
+- Did: Login.tsx is now one 400px column on bg-canvas with a static brand wash, the primary Button, 44px fields on --input, the heading "Sign in to {organization}" ("Welcome back" only for a remembered device), Continue always shown, inline field errors, labelled full-width SSO buttons, a three-button appearance group, OTP cells that submit once, and a Forgot password note. Motion is CSS only in theme.css (opacity and transform, 300 ms or less, backwards fill, reduced-motion gated). The final shell paints during the probes, with a spinner that appears after 300 ms. App.tsx CenterSpinner reveals after 300 ms. theme.tsx gains brandingFresh and markBrandingUsed, so a cold load sends one branding request. The Remember me row is the label alone (D6). B25: sso_error codes map to fixed sentences in a lazy ssoErrors chunk, with a generic fallback. B50: the Branding editor reads its default accents from the live --primary and --accent2 after each render, and its preview matches the new column. D9 subject removal: LoginAuthBackdrop, ShineButton, ThemeModePill, the identity canvas CSS and gate-login-accents (with gates.mjs step 6 and its tests) are deleted. gate-contrast gains sign-in pairs on --canvas. The ui-standard Identity sections and first-run.md text are rewritten, and the knowledge corpus is regenerated.
+- Tests: backend pytest gave 13,143 passed, 24 skipped and 5 failed (the known sandbox-only environment tests, which pass with the proxy and AWS variables unset). webui test:strict gave 8,864 passed, 16 skipped and 6 failed; the 6 were load timeouts in unrelated suites and passed alone (188 of 188), but the full strict suite was not re-run. typecheck, lint, gates (178 axes), check:types, build, docs:check, check_docs, check_version, check_ci_contract and build_app_knowledge --check all pass. The B25 and B50 regression tests failed before the fix. Entry chunk 323,536 B (down 5,544 B; the SPEC expected about 7 KB). Global CSS down 16,201 B.
+- Status: done. Committed on r16-wp04 (f10b75f); HEAD detached.
+- Next: WP16 should ratchet PRE_REVAMP_ENTRY_BYTES, fix the stale ui-standard sentence near line 223 about the login identity canvas, lower the grep-baseline count for BrandingEditor.tsx (4 to 2), and remove the unused Tailwind keyframes and the stale --accent2 comment in theme.css. WP17 should replace the two first-run sign-in screenshots and their alt text. If WP15A adds a new sso_error code, login.sso-errors.test.tsx fails until ssoErrors.ts gains a sentence for it.
+
+### 2026-11-25 08:45Z - WP06 sub-agent - Round 16 performance extras
+- Context: WP06 of the Round 16 SPEC ([be] R2 layer 1, R4, R1, R5). Built in its own worktree from cd9ed95 on r16-wp06.
+- Did: api/metrics_shared keeps the all-time case population for 60 s, then serves it stale (marked, with its read time) for up to 120 s while one background read replaces it; windowed reads keep 5 s. Every population carries read_at, generated_at and freshness(). stores/auto_close_review decodes the ledger once per revision and stored text, hands out copies and looks entries up by case id; routes_auto_close_review passes the loaded ledger into _repair, and its metrics carry the population read time. stores/sql/vectorstore ranks with a cached normalised float32 matrix (rebuilt on its own writes, on a count or max(id) change, and every 60 s), rescores the returned rows exactly, and falls back to Python without numpy. On PostgreSQL with pgvector, <=> over the JSON column ranks only a corpus above 25M stored numbers or a process without numpy (measured: <=> over JSON took 1.1 to 1.4 s against about 40 ms for the matrix). engine.py probes pg_extension once. routes_diagnostics adds LoopLagMonitor (event_loop) and case_population to /api/diagnostics/health; state.py starts and stops it. Regenerated openapi.json and api-types.gen.ts for one docstring.
+- Tests: full backend 13,176 passed, 28 skipped, 5 sandbox-only failures (55/55 pass without proxy and AWS variables). WP06 module 34 passed. PostgreSQL lane 26 passed on a local PostgreSQL 16 with pgvector 0.6.0. Base code fails the new tests (12 reads, 5 and 3 decodes, 1.4 s). Ruff fatal checks and the version, CI, docs and knowledge guards pass. check:types and typecheck are clean.
+- Status: done
+- Next: WP12 stamps generated_at from population.generated_at on its all-time rollups. WP16 checks the reset path invalidates the population cache. WP18 updates the pgvector docs (RUNBOOK, TROUBLESHOOTING A2, api.md) and describes event_loop and case_population.
+
+### 2026-11-25 09:20Z - WP15A agent - Round 16 security and access fixes
+- Context: Round 16 SPEC 4.3 WP15A, merges first. Fix B01 (with B70), B15 to B24, B51, B55.
+- Did: added permission gates to 18 read routes and a GET coverage rule with a reviewed allowlist and a gated-in-body list. Server-side forced password change (403 password_change_required). Hashing off the event loop. A per-account MFA failure lock (auth.mfa_locked) and single-use pending tokens. A 409 on enrolment for an enrolled account, plus fresh sign-in on setup, confirm and disable. Compare-and-swap code consumption (UserStore.consume_mfa). Session revocation after a password change or reset. Trusted-proxy session IP. Deprecated the refresh route. Single sign-on: Super-admin-only changes, role validation, same-provider linking, hd for Google only, no group-map demotion of a Super admin. Settings coherence 422s with inline Console checks. Sessions event labels. Standup and Models nav perms; best-effort roles read on Users. Added tests/_auth_helpers.ready_user (sign in, change the temporary password to the same value, sign out) and used it in 48 test files. Updated SECURITY, USAGE, DEMO, DEPLOY and the authentication Help Center page. Regenerated openapi, api-types, the console map and the knowledge corpus.
+- Tests: full pytest 13,182 passed, 24 skipped, 10 failed. Five were fixed with ready_user and now pass; five are sandbox-only and pass with the proxy and AWS variables unset. test_round16_security 41 passed, and each test fails on the base tree. test:strict 8,893 passed, 3 failed (pinned registry gates, updated, 42 of 42 pass). Lint, gates, check:types, build, docs and version checks clean. Entry 329,090 B (+10 B).
+- Status: done. Branch r16-wp15a at 7308595, HEAD detached.
+- Next: merge first. The engine/state.py owner can delete the now-unused state.client_ip_from and update the audit/context.py docstring that mentions it. The orchestrator writes the CHANGELOG and What's new from this report.
+
+### 2026-11-25 09:40Z - WP01 agent - Round 16 contracts and foundations
+- Context: Round 16 SPEC section 4.3 WP01. Land every shared contract and stub mount point so later packages run in parallel without touching shared files. No visible behaviour.
+- Did:
+  - models.py: RiskInputs, RiskWeightsSnapshot and RiskReferences as RiskBreakdown.inputs (unreadable reads as None, omitted while unset); InvestigationView, InvestigationSlots, InvestigationsActive; TraceSpanDetail plus TraceSpan.detail and cost_basis; six UsageDoc rate fields (omitted while unset); CaseUsagePage, CaseUsageTotals, CaseEventsPage; Citation.case_number; the UserPrefs.misc keys whats_new_seen and whats_new_auto, normalised on load.
+  - New engine/risk_explain.py: explain_risk and factors_from_inputs.
+  - New engine/investigation_registry.py: begin, started, attach_case, phase, end, active, for_case, for_signature, recent, new_runs, snapshot, clear.
+  - realtime.py: CASE_INVESTIGATION_EVENT, INVESTIGATIONS_TOPIC, EventBus.publish_many, publish_case_investigation and CASE_INVESTIGATION_FRAME_KEYS. publish_review_frame now uses publish_many.
+  - Audit table: case.close_replaced and case.events_viewed under Case work.
+  - Stores: UsageRepository.records_for_case (Elasticsearch and SQL), AuditRepository.count_for_case, utils.round_half_up.
+  - Console: the channel string; types.ts mirrors pinned in types-contract-pins.ts; regenerated openapi.json and api-types.gen.ts; lib/explain (types, builders, explain.contract.json); design-system/explain ExplainTrigger; the investigations, casedetail/explain and casedetail/records stubs; the optional ConfirmActionDialog caseIds prop.
+- Tests:
+  - pytest: 13,195 passed, 24 skipped, 5 sandbox-only failures (they pass with the proxy and AWS variables unset).
+  - test:strict: 8,898 passed, 1 skipped in 681 files, no stderr.
+  - lint, gates, tsc and check:types clean; ruff fatal clean.
+  - check_version, check_ci_contract, check_docs and build_app_knowledge --check pass.
+  - Entry chunk 329,101 B, +21 B.
+- Status: done. Commit a4414807b02c33a6961e88712e5fb368b437d928 on r16-wp01; HEAD detached.
+- Next:
+  - WP03: mount ReinvestigateDialog and pass onReinvestigated and onCloseAutoFocus; remove the inline copy and re-export reinvestigateErrorText; mount FindingsList, CaseUsageButton and AwaitingReason.
+  - WP10: write breakdown.inputs at the three compute_risk call sites.
+  - WP08: wire the registry and add investigations to the topic grants.
+  - WP15G: add ChatCitation.case_number and the producer.
+  - WP11, WP13 and WP14: fill the stub bodies.
+
+### 2026-11-25 09:45Z - WP06 reviewer - independent review of the Round 16 performance extras
+- Context: Adversarial review of WP06 (R2 layer 1, R4, R1, R5) on r16-wp06 from cd9ed95, against SPEC §4.4, §3 and §4.1.
+- Did: Confirmed decide() and engine/risk.py are untouched and edits stay in owned files. Fixed five defects in commit 727601c, each with a test:
+  - api/metrics_shared: a windowed population never evicts the all-time one under the cache budget (at scale every LIVE tick re-read it). A request whose shared read is cancelled reads again instead of failing.
+  - stores/sql/vectorstore: both float32 ranking paths (matrix and pgvector) read back every row within a rounding band of the top_k cut, so near ties never hide the best chunk. The matrix is scored with numpy's single-threaded einsum, not the BLAS thread pool, and large matrices are ranked in a worker thread.
+  - The 50 ms timing test takes the best of 15 runs.
+  - Docstrings corrected.
+- Tests: Backend 13,184 passed, 29 skipped, 5 sandbox-only failures (55/55 without the proxy and AWS variables). WP06 module 41 passed. PostgreSQL lane 27 passed on a throwaway PostgreSQL 16 with pgvector 0.6.0. Each fix's test fails when it is reverted. Ruff fatal checks and the version, CI, docs and knowledge guards pass. check:types, typecheck, lint, gates, build (entry 329,080 B) and docs:check pass. test:strict had 8,871 passed and 3 load timeouts that pass alone with zero stderr.
+- Status: done
+- Next:
+  - WP12 stamps population.generated_at on the all-time payloads in routes_metrics.py (GET /api/metrics has none, and the Console stamps the settle time).
+  - WP16 calls metrics_shared.invalidate_case_page_cache() from the cases-tier reset.
+  - Whoever owns agents/chat_tools/metrics.py stamps the all-time noise funnel with population.generated_at.
+  - WP18 updates the pgvector docs and documents event_loop and case_population.
+
+### 2026-11-25 10:30Z - WP04 reviewer - Sign-in page review: focus return fix and test gaps closed
+- Context: Independent adversarial review of Round 16 WP04 (f10b75f on r16-wp04) against SPEC 4.4, D6, D9, 3.1, 3.6 and [login] R1 to R15.
+- Did: Read the whole diff. Proved the B25 and B50 regression tests fail when each fix is reverted. Checked the live demo (8914/5914) in both themes at 1440x900 and 390x844: identity, password, empty and wrong-password errors, SSO error with stubbed providers, loading gate, two-factor, recovery code, setup, forced change, remembered device, Remember me dialog, keyboard focus and hand-off. Captured 63 screenshots. The production build sends one branding request on a cold load. Fixed one defect: a wrong recovery code, a refused forced change or a refused first-admin setup left focus on the page body. Focus now goes back to the field through a focusSoon helper, with ui-standard Identity surfaces updated. Added tests: the B50 preview stripe and Gradient tile, every _fail() in sso_callback passes a literal code, and the boot spinner's 300 ms delayed reveal. Commits 8f4b5af, 28af36b and 4dfa5ef on r16-wp04; HEAD detached.
+- Tests: Each new test fails without its fix. typecheck, lint, gates (178 axes), check:types, build, docs:check, check_version, check_ci_contract, check_docs and build_app_knowledge --check all pass. Entry 323,288 B (build:app). test:strict gave 8,883 passed, 1 skipped, 7 failed: load timeouts in 6 unrelated files, which passed 256 of 256 alone. pytest gave 13,143 passed, 24 skipped and the 5 known sandbox failures, which pass 55 of 55 with the proxy and AWS variables unset. decide() and risk.py are untouched.
+- Status: done.
+- Next: WP16 ratchets PRE_REVAMP_ENTRY_BYTES to the merged measurement and fixes the stale ui-standard sentence about the login identity canvas under prefers-contrast. It also removes the unused Tailwind keyframes and the stale --accent2 comment, and lowers the BrandingEditor grep baseline. WP17 replaces the two first-run sign-in screenshots and their alt text. WP15A decides whether the raw lowercase "invalid credentials" detail should become a sentence.
+
+### 2026-11-25 11:10Z - WP05 reviewer - Round 16 WP05 part 1 adversarial review
+- Context: independent review of r16-wp05 (9561830) against SPEC 3.8, 4.3 WP05, D1 to D3, D13, B52, B54 and Appendix C.
+- Did: confirmed the version move, the fragment-keeping /docs/0.1/ redirect pages, the plan range below 0.3.0, the identity repair and bootstrap refusals, the Apache-2.0 license and labels, the check_version guards, the Dependabot pins, B52 and B54. Proved each regression by reverting it once. Fixed three defects in a52b2b9: (1) 118 doc lines still named 0.1 as the running line ("This guide applies to Agentic SOC 0.1", page descriptions, "Version 0.1 runs one backend replica", "Known limits of 0.1"); they now say 0.2, the 0.1.x protocol sentences say updater protocol 1, and a new guard test reads the earlier lines from LEGACY_DOC_LINES; app knowledge corpus regenerated. (2) The release-guard tests depended on the live [Unreleased] holding notes and would fail after the frozen preparation empties it; each case now plants its own state. (3) The system update panel dropped focus on the page body when it closed; focus now returns to the top-bar control.
+- Tests: backend 13,176 passed, 24 skipped, 5 sandbox-only env failures. test:strict 8,888 passed, 1 skipped, 3 load timeouts that pass alone (108 of 108). typecheck, lint, gates, check:types, build (entry 329,240 B, inside the 330,104 B budget), docs:check, check_version, check_ci_contract, check_docs, build_app_knowledge --check, the docs bundle, theme, updater and bootstrap tests all pass. Live demo 48 of 48 checks in both themes at 1440x900 and 390x844, 0 console errors.
+- Status: done. r16-wp05 at a52b2b9, detached.
+- Next: WP05 part 2 adds the notes guard after WP07. WP18: docs/USAGE.md:69, HANDOFF.md:9, the AGENTS.md 0.1.13 sentences and "Version 0.1 adds only" (line 1129), ROADMAP.md:1020. WP17: the Help Center screenshot alt text and captions. WP19: refresh the build-info sample SHA in INSTALL.md and install.md.
+
+### 2026-11-25 11:50Z - WP01 reviewer - Round 16 contracts and foundations review
+- Context: independent adversarial review of WP01 (r16-wp01 at a441480, base cd9ed95) against the Round 16 SPEC (sections 3, 4.1, 4.3 WP01, 4.10, 5.1, Appendix C).
+- Did:
+  - Verified the shared contracts against the SPEC:
+    - RiskInputs, InvestigationView, the frame keys, TraceSpanDetail, the UsageDoc rate fields, the case events and usage pages, and Citation.case_number;
+    - the What's new prefs normaliser, publish_many and the review frame;
+    - the registry lifecycle, the store methods and the audit actions;
+    - the Console stubs and their props, and the types.ts mirrors (script check).
+  - Confirmed decide() and engine/risk.py are byte-identical to 3cd362c.
+  - Fixed one defect: explain_risk recorded a NaN or infinite asset criticality as 0, while compute_risk scored it as 100. It now records the clamped value. Regression test over NaN, plus and minus infinity and out-of-range values; it failed before the fix.
+  - Pinned the investigation frame test to the SPEC's literal key list.
+  - Demo smoke at 8913/5913 (light and dark; 1440x900 and 390x844): no visible change and no errors.
+- Tests:
+  - pytest: 13,200 passed, 24 skipped, 5 sandbox-only failures (55/55 with the proxy and AWS variables unset). Ruff fatal clean.
+  - typecheck, lint, gates and check:types clean.
+  - build: entry 329,101 B (+21 B).
+  - test:strict: 8,889 passed, 9 load timeouts in 7 files unrelated to WP01 (all 7 pass rerun alone), no stderr.
+  - check_version, check_ci_contract, check_docs and build_app_knowledge --check pass.
+- Status: done. Commits 28d65a4 and 8414d80 on r16-wp01; HEAD detached.
+- Next: WP14 (or WP03) adds detail and cost_basis to the Console TraceSpan mirror in pages/CaseDetail.api.ts. WP08 wires the registry. WP10 writes breakdown.inputs after WP15B's mapping.
+
+### 2026-11-25 12:15Z - WP15A reviewer - Round 16 security and access fixes, adversarial review
+- Context: independent review of WP15A (r16-wp15a, 7308595 from cd9ed95) against SPEC 4.3 WP15A, 3.3, 3.6, 4.1, 4.10, Appendix A and C, and the bug-hunt entries for B01, B70, B15 to B24, B51 and B55.
+- Did:
+  - Checked the full diff, ownership and copy. decide() and risk.py are untouched.
+  - Reverted 18 fix hunks one at a time; every regression test failed and then passed again.
+  - Ran the live demo (8911/5911) in both themes at 1440x900 and 390x844 and captured 26 screenshots.
+  - Fixed 5 defects on r16-wp15a, each with a regression test that failed before the fix (303f0e8):
+    - Users no longer removes an account's custom roles when the roles read is refused.
+    - Sessions says when the activity read failed.
+    - A refused single sign-on change says "Only a Super admin can change single sign-on."
+    - A Google account without hd takes its domain only from a verified email.
+    - An administrator turning MFA off clears the second-factor lock.
+  - Updated SECURITY.md and the authentication Help Center page, and regenerated the knowledge corpus.
+- Tests:
+  - pytest: 13,190 passed, 24 skipped, 5 sandbox-only failures; those four files pass 55 of 55 with the proxy and AWS variables unset.
+  - test:strict: 8,889 passed, 9 failed, 1 skipped. All 9 are load timeouts (load average 19 to 24) in files WP15A does not touch. On rerun, overview and drilldown pass and RunbookEditor passes with a longer timeout. Chat.earlier fails on the base tree too.
+  - typecheck, lint, gates, check:types, build, docs:check, check_version, check_ci_contract, check_docs, build_app_knowledge --check and ruff fatal pass. Entry 329,090 B.
+- Status: done. r16-wp15a at 303f0e8, HEAD detached.
+- Next:
+  - WP04: on the Login MFA step, return to the password step when the pending token is spent.
+  - WP15E: make the Security SSO editor read-only for anyone but a Super admin.
+  - WP18: drop "refresh rotation" from docs/reference/security.md, docs/reference/api.md and docs/ENVIRONMENT.md.
+  - Orchestrator: decide whether SSO role values may name custom roles (User.role is a UserRole).
+
+### 2026-11-25 13:04Z - orchestrator - Round 16 opening packages merged (WP15A, WP05 part 1, WP01, WP04, WP06)
+- Context: SPEC §4.8 merge steps 1 to 3 and 5: the opening packages and the two independent Wave 0 packages, each built in its own worktree and passed by an independent adversarial review.
+- Did: merged into claude/round16 in this order: WP15A (security and access, review 303f0e8), WP05 part 1 (0.2.0, repository identity, Apache-2.0, guards; review a52b2b9; the builder also built identity, license, Dependabot and guards, so part 2 is only the release-notes guard after WP07), WP01 (contracts and foundations; review 8414d80), WP06 (performance; review 727601c) and WP04 (sign-in page; review 4dfa5ef). The only conflicts were the generated knowledge corpus files; they, the OpenAPI snapshot, the generated API types and the console map were regenerated after each merge. Decisions recorded for later packages: SSO role values stay built-in roles only for 0.2.0 (WP16); RealESClient gains get_index_template so an upgraded Elasticsearch deployment stores recorded risk inputs (WP10); the sign-in step returns to the password step once a pending second-factor token is spent (WP16).
+- Tests: on the merged tree, backend full suite 13,320 passed, 29 skipped, 6 failed: the five known sandbox-only environment tests and one Round 13 chat starter timing test that dropped its case families at load average 15 to 19 and passes alone (WP16 checks it). The 29 changed Console test files pass (379 tests). check:types no drift; build_app_knowledge --check current (980 chunks); check_version (app 0.2.0, docs 0.2); fatal ruff clean; typecheck clean; build:app entry 323,479 B (5,601 B under the 329,080 B baseline). decide() and engine/risk.py unchanged since cd9ed95.
+- Status: done.
+- Next: merge WP15B and WP15C once their reviews finish (WP15B passed review at ffcff82), then WP07 and WP05 part 2, WP15E part 1, and start Wave 1 (WP08, WP13, WP15D, WP15G) from the merged base.
