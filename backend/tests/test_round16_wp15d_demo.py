@@ -128,6 +128,20 @@ def test_b35_fresh_seeded_demo_raises_no_agent_health_alert(demo: TestClient) ->
     assert stats["by_source"].get("resolved_case", 0) > 0, stats["by_source"]
 
 
+def test_b35_no_seeded_review_contradicts_an_analyst_label(demo: TestClient) -> None:
+    """The analyst confirmations B35 adds to historical automatic closes never land on
+    the case the disagreeing seeded review labels a true positive: one case never says
+    both "an analyst confirmed this false positive" and "a reviewer found a missed
+    threat". Every seeded review still lands."""
+    reviewed = 0
+    for case in _seeded_cases(demo):
+        plain = {f.actual_outcome for f in case.feedback if f.actual_outcome and not f.review_id}
+        grades = {f.actual_outcome for f in case.feedback if f.review_id}
+        reviewed += len(grades)
+        assert not (plain and grades and plain != grades), (case.case_id, plain, grades)
+    assert reviewed == sum(1 for kind in gen.DEMO_REVIEW_PLAN if kind != "pending")
+
+
 # --------------------------------------------------------------------------- #
 # B48 (with B69): a seeded case's cost is its Demo ledger rows.
 # --------------------------------------------------------------------------- #

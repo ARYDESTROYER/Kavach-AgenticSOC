@@ -57,7 +57,7 @@ from ..models import (
     UsageDoc,
 )
 from ..ocsf import OCSFEvent, ecs_to_ocsf
-from .analyst_outcomes import CLASSIFIED_DISPOSITION_KEY
+from .analyst_outcomes import CLASSIFIED_DISPOSITION_KEY, analyst_confirmed_outcome
 from .case_manager import Decision, decide
 from .risk import compute_risk
 from .risk_explain import explain_risk
@@ -2646,8 +2646,11 @@ async def seed_demo_auto_close_reviews(
                 continue
             # The disagreeing review labels its case a true positive: never one of the
             # tuner seed's same-rule false positives, whose demo tuning observation
-            # needs every label to agree.
-            if kind == "disagree" and case.case_id.startswith("demo-tune-"):
+            # needs every label to agree, and never a close an analyst already
+            # confirmed (Round 16, B35), so no case reads as both.
+            if kind == "disagree" and (
+                case.case_id.startswith("demo-tune-") or analyst_confirmed_outcome(case)[0] is not None
+            ):
                 continue
             per_rule[rule] = per_rule.get(rule, 0) + 1
             picked.append((case, kind))
