@@ -452,6 +452,36 @@ describe('CaseDetail: a section of a tab, from a rewritten link (Round 16, D8)',
     );
   });
 
+  it('keeps focus on the Related cases heading when the link closes the inspector sheet', async () => {
+    // A narrow pane: the inspector is a side sheet. The link closes the sheet, and the
+    // sheet's close must not take focus back to the "Case facts" toggle after the section
+    // took it (Radix returns focus on a timer once the sheet has gone).
+    const proto = HTMLElement.prototype as HTMLElement & { checkVisibility?: () => boolean };
+    const original = proto.checkVisibility;
+    proto.checkVisibility = function checkVisibility(this: HTMLElement) {
+      const id = this.getAttribute('data-testid');
+      return id !== 'case-facts-column' && id !== 'case-inspector-probe';
+    };
+    try {
+      apiGetCase().mockImplementation((id: string) =>
+        Promise.resolve({ ...CASE, case_id: id, related_case_ids: ['c-rel-1'], source_breakdown: { splunk: 2 } }),
+      );
+      render(<Host />);
+      await loaded();
+      fireEvent.click(screen.getByTestId('case-inspector-toggle'));
+      const sheet = await screen.findByRole('dialog', { name: 'Case facts' });
+      fireEvent.click(within(sheet).getByTestId('facts-related'));
+      await waitFor(() => expect(selectedTab()).toHaveTextContent(/^Evidence/));
+      await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Case facts' })).toBeNull());
+      await pastTheBeat();
+      const section = document.querySelector('[data-section="related-cases"]') as HTMLElement;
+      expect(document.activeElement).toBe(within(section).getByRole('heading', { name: 'Related cases' }));
+    } finally {
+      if (original) proto.checkVisibility = original;
+      else delete proto.checkVisibility;
+    }
+  });
+
   it('holds the section at the top of the lane while the content above it loads, until the analyst scrolls', async () => {
     // jsdom has no layout: the section sits `sectionOffset` px into the lane, and the lane's
     // ResizeObserver is driven by hand (a disconnected one is never called again).

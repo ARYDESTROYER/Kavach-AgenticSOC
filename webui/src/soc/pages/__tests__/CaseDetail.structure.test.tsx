@@ -239,6 +239,19 @@ describe('the meta strip', () => {
   });
 });
 
+describe('one back control below the split', () => {
+  it('puts Back first in the title row, marked so Case Manager drops its own back bar', async () => {
+    await renderCase();
+    const row = screen.getByTestId('case-title-row');
+    const back = within(row).getByTestId('case-back');
+    // Case Manager hides its below-xl back bar while the case header holds a control
+    // with this marker (a CSS `:has` rule), so a phone shows one Back, not two.
+    expect(back).toHaveAttribute('data-case-header-back');
+    expect(back).toHaveAccessibleName('Back to case queue');
+    expect(row.querySelector('button')).toBe(back);
+  });
+});
+
 describe('a finding cites its events', () => {
   it('"Cites N events" opens Evidence with the events filtered to them', async () => {
     const user = userEvent.setup();

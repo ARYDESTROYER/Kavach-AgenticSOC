@@ -893,6 +893,9 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
   const [tagsEditor, setTagsEditor] = React.useState<'column' | 'sheet' | null>(null);
   const railColumnRef = React.useRef<HTMLDivElement | null>(null);
   const tagsInSheetRef = React.useRef(false);
+  // The sheet was closed by a link that moves focus itself (the related cases): its close
+  // then leaves focus where that link put it, instead of on the toggle.
+  const sheetLeavesFocusRef = React.useRef(false);
   const inspectorOpenRef = React.useRef(inspectorOpen);
   inspectorOpenRef.current = inspectorOpen;
   const openTagsEditor = React.useCallback(() => {
@@ -1951,7 +1954,10 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
           setDispositionAction ? () => openFromControl(setDispositionAction, takeActionTriggerRef.current) : undefined
         }
         onShowRelated={() => {
-          if (placement === 'sheet') setDetailsOpen(false);
+          if (placement === 'sheet') {
+            sheetLeavesFocusRef.current = true;
+            setDetailsOpen(false);
+          }
           openTabSection('evidence', 'related-cases');
         }}
         canTag={canTag}
@@ -2037,13 +2043,16 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
                   Take action ("Ask about this case"). */}
               <header className="flex h-11 min-w-0 flex-nowrap items-center gap-2 @[40rem]/case:gap-3" data-testid="case-title-row">
                 {presentation === 'embedded' ? (
-                  /* Below the split (one screen at a time) Back is the first item. */
+                  /* Below the split (one screen at a time) Back is the first item. The
+                     marker tells Case Manager the header has its own Back, so its separate
+                     back bar steps aside and a phone keeps one back control. */
                   <Button
                     variant="ghost"
                     size="icon"
                     className="h-8 w-8 shrink-0 xl:hidden"
                     aria-label="Back to case queue"
                     data-testid="case-back"
+                    data-case-header-back=""
                     onClick={onClose}
                   >
                     <ChevronLeft className="h-4 w-4" aria-hidden />
@@ -2735,6 +2744,12 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
             detailsTitleRef.current?.focus();
           }}
           onCloseAutoFocus={(event) => {
+            // Closed by the related-cases link: the section's heading already has focus.
+            if (sheetLeavesFocusRef.current) {
+              sheetLeavesFocusRef.current = false;
+              event.preventDefault();
+              return;
+            }
             const trigger = detailsTriggerRef.current;
             if (trigger && trigger.isConnected) {
               event.preventDefault();

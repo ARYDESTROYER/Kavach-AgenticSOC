@@ -335,17 +335,41 @@ export const FactsRail: React.FC<FactsRailProps> = ({
   // ("auto-close off") beside "Auto-closed as false positive" would contradict it.
   const barLine = c.verdict && !humanSettled && !outcome.terminal ? autoCloseBarLine(policy, c.verdict) : null;
   const displayId = caseDisplayId(c);
+  // T and "Edit tags" open the tag editor, which lives inside "Tags and campaign": a
+  // folded section renders none of its content, so the editor opens the section with it,
+  // and the section stays open (the viewer asked for the tags). Folding the section while
+  // the editor is open closes the editor too, so nothing holds the case keys.
+  const tagsSectionOpen = openSections.tags || tagsOpen;
+  React.useEffect(() => {
+    if (tagsOpen && !openSections.tags) setSectionOpen('tags', true);
+  }, [tagsOpen, openSections.tags, setSectionOpen]);
+  // The section sits low in the inspector, often below the fold of its column or sheet:
+  // bring it into view as the editor opens, so the editor anchored to it is on screen
+  // (it would otherwise open, and take focus, out of sight).
+  const railRef = React.useRef<HTMLElement | null>(null);
+  React.useLayoutEffect(() => {
+    if (!tagsOpen) return;
+    const tags = railRef.current?.querySelector<HTMLElement>('[data-section-id="tags"]');
+    if (tags && typeof tags.scrollIntoView === 'function') tags.scrollIntoView({ block: 'nearest' });
+  }, [tagsOpen]);
+  const onSectionOpenChange = React.useCallback(
+    (id: InspectorSectionId, next: boolean) => {
+      setSectionOpen(id, next);
+      if (id === 'tags' && !next && tagsOpen) onTagsOpenChange?.(false);
+    },
+    [setSectionOpen, tagsOpen, onTagsOpenChange],
+  );
   const section = (id: InspectorSectionId) => ({
     id,
     title: INSPECTOR_SECTIONS.find((s) => s.id === id)!.title,
-    open: openSections[id],
-    onOpenChange: setSectionOpen,
+    open: id === 'tags' ? tagsSectionOpen : openSections[id],
+    onOpenChange: onSectionOpenChange,
   });
 
   return (
     // A labelled region, not an aside: it sits inside the case's own region, and a
     // complementary landmark must be top level (axe landmark-complementary-is-top-level).
-    <section aria-label="Case facts" data-testid="case-facts-rail" className={cn('text-sm', className)}>
+    <section ref={railRef} aria-label="Case facts" data-testid="case-facts-rail" className={cn('text-sm', className)}>
       <RailSection {...section('outcome')} testId="facts-outcome">
         <p data-testid="facts-outcome-headline" className="font-medium text-foreground">
           {outcome.headline}

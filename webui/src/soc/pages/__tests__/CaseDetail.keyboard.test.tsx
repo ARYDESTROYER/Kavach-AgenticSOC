@@ -201,6 +201,44 @@ describe('CaseDetail keyboard model', () => {
     await waitFor(() => expect(field.closest('[role="dialog"]')).not.toBeNull());
   });
 
+  it('T opens the tag editor when the viewer folded the Tags and campaign section', async () => {
+    // The section's content is not rendered while it is folded, so the editor needs the
+    // section open first; the viewer asked for the tags, so it stays open afterwards.
+    window.localStorage.setItem('soc.caseManager.inspectorSections', JSON.stringify({ tags: false }));
+    await renderLoaded();
+    const column = screen.getByTestId('case-facts-column');
+    expect(within(column).queryByTestId('case-detail-tags')).toBeNull();
+    act(() => (document.activeElement as HTMLElement | null)?.blur());
+    fireEvent.keyDown(document.body, { key: 't' });
+    const field = await screen.findByRole('textbox', { name: 'New tag' });
+    await waitFor(() => expect(field.closest('[role="dialog"]')).not.toBeNull());
+    expect(within(column).getByTestId('case-detail-tags')).toBeInTheDocument();
+    expect(JSON.parse(window.localStorage.getItem('soc.caseManager.inspectorSections') ?? '{}')).toMatchObject({
+      tags: true,
+    });
+  });
+
+  it('brings the Tags and campaign section into view as the editor opens, so the editor is on screen', async () => {
+    // The section sits low in the inspector, below the column's fold at 1440x900; the
+    // editor is anchored to it and would open, and take focus, out of sight.
+    const proto = Element.prototype as Element & { scrollIntoView?: (arg?: unknown) => void };
+    const original = proto.scrollIntoView;
+    const calls: Array<{ section: string | null; arg: unknown }> = [];
+    proto.scrollIntoView = function scrollIntoView(this: Element, arg?: unknown) {
+      calls.push({ section: this.getAttribute('data-section-id'), arg });
+    };
+    try {
+      await renderLoaded();
+      act(() => (document.activeElement as HTMLElement | null)?.blur());
+      fireEvent.keyDown(document.body, { key: 't' });
+      await screen.findByRole('textbox', { name: 'New tag' });
+      expect(calls).toContainEqual({ section: 'tags', arg: { block: 'nearest' } });
+    } finally {
+      if (original) proto.scrollIntoView = original;
+      else delete proto.scrollIntoView;
+    }
+  });
+
   it('keeps the title row one 44px line: the title truncates before the actions wrap', async () => {
     await renderLoaded();
     const row = screen.getByTestId('case-title-row');

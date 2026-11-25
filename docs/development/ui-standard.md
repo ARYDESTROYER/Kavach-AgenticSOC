@@ -665,7 +665,9 @@ that folds it, kept open or closed per viewer: Outcome (with why the case is wai
 Signal, Times, Source and entity (with the related-cases link to Evidence), Tags and
 campaign, and Record, closed at first (the cost with its per-call rows, the build, the
 investigator runbook, the classification history and "View all fields"). T and "Edit
-tags" open a hidden column first when it fits, and the sheet first when it does not. The
+tags" open a hidden column first when it fits, and the sheet first when it does not; they
+open a folded Tags and campaign section and bring it into view, so the editor is never
+out of sight. The
 record sections are six underline tabs, one lane each: Brief, Evidence, AI
 investigation, Response, Activity and Chat, on Alt+1 to Alt+6. Older links still land:
 the retired Timeline tab and the "what happened" section open Evidence there, and so do
