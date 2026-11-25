@@ -849,9 +849,20 @@ REGRESSIONS_R2 = [
       params=(P("case_stats", status_group="terminal", window="last_week", metrics="re:auto_closed"),),
       figures=(Fig("**{n} cases** opened last week were closed automatically", "last_week", _AI_CLOSED,
                    zero="No closed case matched last week"),)),
-    G("Which users had the most cases this quarter?", tools=("search_cases", "case_stats"),
+    # Round 16 (B62): a seeded case's risk is computed from its own inputs, and only an
+    # IP has a reputation factor, so the highest-risk Demo cases are IP cases. The users
+    # question then says honestly that no user is on them; the IPs question counts each
+    # candidate's cases exactly.
+    G("Which users had the most cases this quarter?", tools=("search_cases",),
+      params=(P("search_cases", window="this_quarter", sort_field="risk_score"),),
+      forbid=(P("log_stats"),), contains=("is recorded against a user", "is not ranked here")),
+    G("Which IPs had the most cases this quarter?", tools=("search_cases", "case_stats"),
       params=(P("search_cases", window="this_quarter"), P("case_stats", window="this_quarter", entity="re:.")),
       forbid=(P("log_stats"),), contains=("(exact)",)),
+    # Round 16 (B41): what needs attention first is the open work, riskiest first.
+    G("Which of the cases opened in the last 24 hours need attention first?", tools=("search_cases",),
+      params=(P("search_cases", status_group="active", sort_field="risk_score", window="now-24h"),),
+      absent=(", closed)", ", resolved)")),
     # R2-9: the automation-rate trend is its own measure.
     G("What's the automation rate trend by month?", tools=("case_stats",),
       params=(P("case_stats", bucket="month", metrics="re:auto_closed"),),

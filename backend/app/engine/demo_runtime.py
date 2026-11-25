@@ -711,7 +711,10 @@ class DemoStack:
         for case in cases:
             try:
                 before = await self.open_proposal_count()
-                await automation.run(case, dprefs, save=self.cases.save)
+                # Round 16 (B08): read the case again just before the save, as the
+                # pipeline's post-decision automation does, so a stale copy never
+                # overwrites work saved meanwhile.
+                await automation.run(case, dprefs, save=self.cases.save, fetch=self.cases.get)
                 after = await self.open_proposal_count()
                 opened += max(0, after - before)
             except Exception as exc:  # noqa: BLE001 — a HITL seed glitch never breaks enable

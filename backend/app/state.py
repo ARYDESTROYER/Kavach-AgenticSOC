@@ -3673,9 +3673,10 @@ class AppState:
     ) -> dict:
         """Engage demo mode: stamp a run_id, build the isolated stack, pre-generate a
         backdated historical case spread + a tight "just happened" pre-seed (recent
-        cases + already-processed events), eagerly seed the shared RAG corpus, run one
-        demo-local capability pass, and (in ``live``) start the simulator. If a demo is
-        already running it is disabled first (clean re-seed)."""
+        cases + already-processed events), run one demo-local capability pass, write
+        the seeded cases' Demo ledger rows, seed the shared RAG corpus once every seeded
+        case exists, and (in ``live``) start the simulator. If a demo is already running
+        it is disabled first (clean re-seed)."""
         from .config import DemoConfig
         from .engine.demo_generator import (
             build_org, generate_historical_cases, generate_recent_preseed, hits_to_raw,
@@ -3756,19 +3757,15 @@ class AppState:
             ),
         )
 
-        # Eagerly seed the SHARED demo RAG corpus so the Knowledge page shows a populated
-        # corpus immediately (idempotent; picks up any CLOSED demo cases too).
-        try:
-            await demo_stack.rag_service.ensure_seeded()
-        except Exception as exc:  # noqa: BLE001 — a cold RAG never breaks enable
-            logger.debug("demo RAG eager-seed failed: %s", exc)
-
         # Pre-generate the backdated historical spread so "old" cases exist instantly.
+        # Round 16 (B62): each seeded case's risk is computed from its own inputs, with
+        # the asset map the Demo runs under, so it matches the case's impact chip.
         org = build_org(new_demo.seed)
         now_ms = to_millis(now_utc())
+        seed_prefs = demo_stack._demo_prefs()
         cases = generate_historical_cases(
             new_demo.seed, org, history_days=new_demo.history_days,
-            run_id=new_demo.run_id, now_millis=now_ms,
+            run_id=new_demo.run_id, now_millis=now_ms, prefs=seed_prefs,
         )
 
         # Pre-seed a tight "just happened" window: a varied trio of recent cases (1
@@ -3780,6 +3777,7 @@ class AppState:
             recent_minutes=new_demo.preseed_recent_minutes,
             case_count=new_demo.preseed_case_count,
             event_count=new_demo.preseed_event_count,
+            prefs=seed_prefs,
         )
         # The capability seed cases (generated here so every seeded case is numbered
         # together; saved and acted on below).
@@ -3791,6 +3789,7 @@ class AppState:
 
                 hitl_cases, tuner_cases = generate_capability_seed_cases(
                     new_demo.seed, org, run_id=new_demo.run_id, now_millis=now_ms,
+                    prefs=seed_prefs,
                 )
             except Exception as exc:  # noqa: BLE001 — capability seeding never blocks enable
                 logger.warning("demo capability seeding failed: %s", exc)
@@ -3798,6 +3797,18 @@ class AppState:
         # Every seeded case gets its display number before it is saved, oldest first,
         # from the same nomenclature and sequence the demo pipeline continues.
         await demo_stack.number_seeded_cases([*cases, *recent_cases, *hitl_cases, *tuner_cases])
+        # Round 16: each seeded case's own rows are kept in its Demo source before it is
+        # saved, with the trigger reason correlation records from them (its source's
+        # severity), so the Evidence tab reads its events from the first paint and the
+        # runbook match below reads the same severity the case shows. Never blocks enable.
+        try:
+            from .engine.demo_generator import seed_demo_case_rows
+
+            seed_demo_case_rows(
+                demo_stack.sources, [*cases, *recent_cases, *hitl_cases, *tuner_cases], seed_prefs,
+            )
+        except Exception as exc:  # noqa: BLE001 - seeded rows never block enable
+            logger.warning("demo seeded case rows not kept: %s", exc)
         # Round 14 (SPEC §4.10.9, §4.10.18, D45): the seeded cases never pass through the
         # pipeline, so each investigated one is stamped, before it is saved, with the
         # runbook the investigator would have read (the same match as the seeded runs
@@ -3935,6 +3946,30 @@ class AppState:
             await seed_demo_team_activity(demo_stack.audit, list(seeded_counter_cases), now_millis=now_ms)
         except Exception as exc:  # noqa: BLE001 - seeded rows never block enable
             logger.warning("demo team activity seeding failed: %s", exc)
+
+        # Round 16 (B48, B69): the Demo ledger rows of the seeded investigations, one per
+        # seeded case with a cost (simulated Demo spend), so a case's cost, its usage,
+        # the Cost page and Agent effectiveness agree. Seeds of the Demo usage store,
+        # never a model call (#6). Never blocks enable.
+        try:
+            from .engine.demo_generator import demo_seeded_usage_docs
+
+            for doc in demo_seeded_usage_docs(
+                seeded_counter_cases, model=seed_prefs.investigator_model.model,
+            ):
+                await demo_stack.usage_store.write_strict(doc)
+        except Exception as exc:  # noqa: BLE001 - seeded rows never block enable
+            logger.warning("demo seeded usage rows not written: %s", exc)
+
+        # Round 16 (B35, B47, B65): seed the Demo knowledge corpus once every seeded case
+        # and review is saved, so its first projection holds the analyst-confirmed seeded
+        # cases as precedent and the Knowledge page is full from the first paint
+        # (seeding it earlier, before the cases existed, left the precedent corpus empty
+        # and raised false agent-health alerts). A cold corpus never breaks enable.
+        try:
+            await demo_stack.rag_service.ensure_seeded()
+        except Exception as exc:  # noqa: BLE001 - a cold RAG never breaks enable
+            logger.debug("demo RAG seed failed: %s", exc)
 
         # Commit the fully-built stack. Only the Demo switch is written, onto the LIVE
         # settings read inside the write lock: a real settings save that landed while
