@@ -937,9 +937,10 @@ class _UsageAttribution:
         row_times_by_role: dict[str, list[datetime | None]] | None = None,
     ) -> dict[str, list[dict[str, Any]]]:
         """The roles whose LLM audit rows can each be paired with their own call: both
-        reads complete, exactly one call per row, and no other row of the role between a
-        call and the row it is paired with (a router prompt is written just before its
-        call, a formatter prompt just after it). Equal counts alone prove nothing: a
+        reads complete, exactly one call per row, and every call on the same side of its
+        own row with no other row of the role in between (a router prompt is written
+        just before its call, a formatter prompt just after it; see
+        :func:`_calls_pair_with_their_rows`). Equal counts alone prove nothing: a
         three-call run and a one-call run give four calls for four rows, and pairing
         them by position would give a later run's prompt an earlier run's call. Every
         other role keeps the even split."""
@@ -955,21 +956,34 @@ class _UsageAttribution:
 
 
 def _calls_pair_with_their_rows(row_times: list[datetime | None], calls: list[dict[str, Any]]) -> bool:
-    """Whether the i-th call of a role (oldest first) sits between the role's LLM audit
-    rows i-1 and i+1, for every i: no other row of the role separates a call from the
-    row it is paired with, whether the row is written before its call or after it. A
+    """Whether the i-th call of a role (oldest first) is the i-th LLM audit row's own
+    call, for every i, with one direction for the whole role: every call made after its
+    own row and before the role's next row (a row written before its call, as a router
+    or a chat step prompt is), or every call made before its own row and after the
+    role's previous row (a row written after its call, as a formatter prompt is). A
+    role whose rows sit on both sides of its calls (an investigation's prompt and
+    verdict) is never paired call by call: allowing either side per call would give a
+    later run's prompt the call an earlier run made before that prompt was written. A
     row or call without a readable time fails."""
     if len(row_times) != len(calls) or any(at is None for at in row_times):
         return False
-    for index, call in enumerate(calls):
-        call_at = _parse_ts(call.get("ts"))
-        if call_at is None:
-            return False
-        before = row_times[index - 1] if index > 0 else None
-        after = row_times[index + 1] if index + 1 < len(row_times) else None
-        if (before is not None and call_at < before) or (after is not None and call_at > after):
-            return False
-    return True
+    call_times = [_parse_ts(call.get("ts")) for call in calls]
+    if any(at is None for at in call_times):
+        return False
+    last = len(calls) - 1
+
+    def _within(at: datetime, low: datetime | None, high: datetime | None) -> bool:
+        return (low is None or at >= low) and (high is None or at <= high)
+
+    row_first = all(
+        _within(at, row_times[i], row_times[i + 1] if i < last else None)
+        for i, at in enumerate(call_times)
+    )
+    call_first = all(
+        _within(at, row_times[i - 1] if i > 0 else None, row_times[i])
+        for i, at in enumerate(call_times)
+    )
+    return row_first or call_first
 
 
 async def _usage_attribution(state: Any, case_id: str) -> _UsageAttribution:

@@ -206,6 +206,24 @@ async def test_b13_every_compute_risk_site_records_inputs(app_state, mock_provid
     assert inputs.event_count == 4 and inputs.reputation_source == "not_looked_up"
     assert inputs.scored_at
 
+    # The third site: a rule the operator declared benign closes with no model call,
+    # and its score records its inputs too (reputation never looked up).
+    from app.config import AnalystRulePolicy
+
+    prefs = state.prefs.model_copy(update={"analyst_rule_policies": [
+        AnalystRulePolicy(rule_id="ci_runner_scan", reason="Internal CI runner."),
+    ]})
+    await state.update_prefs(prefs)
+    closed = await state.pipeline.investigate_cluster(
+        _events_cluster(5, ip="203.0.113.78", rule="ci_runner_scan"),
+        SourceSurface.AUTOMATED_SCAN, state.prefs,
+    )
+    assert closed.decision_by == DecisionBy.ANALYST_POLICY and mock_provider.calls == []
+    inputs = (await state.cases.get(closed.case_id)).risk_breakdown.inputs
+    assert inputs is not None
+    assert inputs.event_count == 5 and inputs.rule_values == ["ci_runner_scan"]
+    assert inputs.reputation_source == "not_looked_up" and inputs.scored_at
+
 
 def test_the_worked_example_reproduces_from_stored_inputs() -> None:
     """[expl] §3: risk 81.11 from 40 events over 120 s, 3 rules, reputation 75 and an
@@ -544,6 +562,15 @@ async def test_the_risk_chip_bands_the_shown_integer_on_the_four_band_ladder(app
         await state.cases.save(case)
         chip = (await case_triage(case.case_id, state))["chips"]["risk"]
         assert (chip["display"], chip["band"]) == (display, band)
+    # The shared explain contract's rounding vectors, through the chip the route serves,
+    # so the triage chip and every Console surface band the same shown integer.
+    from app.engine.priority import derive_triage
+
+    for vector in _CONTRACT["rounding"]["vectors"]:
+        case = _case(case_id="case-chip-contract", risk_score=vector["value"],
+                     risk_breakdown=RiskBreakdown(total=vector["value"]))
+        chip = derive_triage(case, state.prefs)["risk"]
+        assert (chip["display"], chip["band"]) == (vector["display"], vector["band"]), vector
 
 
 async def test_the_risk_definition_states_the_weights_in_force(app_state):
@@ -895,6 +922,31 @@ async def test_equal_counts_out_of_order_keep_the_even_split(app_state):
     res = await case_timeline(after, _request(state), state)
     formatters = [s for s in res["spans"] if s["name"] == "formatter"]
     assert [(s["cost"], s["cost_basis"]) for s in formatters] == [(0.003, "exact"), (0.004, "exact")]
+
+
+async def test_a_call_paired_against_its_own_direction_keeps_the_even_split(app_state):
+    """Second review fix: run 1 made two investigator calls and then failed (a prompt
+    row, no verdict row) and run 2 made one call (a prompt and a verdict row). Three
+    calls meet three rows, and each call sits next to a row, but run 2's prompt would be
+    given run 1's second call, made before that prompt was written. A role's rows are
+    paired call by call only when every call sits on the same side of its own row."""
+    state = app_state
+    cid = "case-crash-then-run"
+    await state.cases.save(_case(case_id=cid))
+    for ts, cost in (("10:00:01", 0.01), ("10:00:02", 0.02), ("11:00:01", 0.5)):
+        await state.usage_store.write(UsageDoc(
+            ts=f"2026-11-01T{ts}+00:00", case_id=cid, role="investigator", model="mock",
+            total_tokens=10, cost=cost, latency_ms=100))
+    for ts, at in (("10:00:00", ActionType.PROMPT), ("11:00:00", ActionType.PROMPT),
+                   ("11:00:02", ActionType.VERDICT)):
+        await state.audit.write(AuditDoc(ts=f"2026-11-01T{ts}+00:00", case_id=cid,
+                                         actor="investigator", action_type=at))
+    res = await case_timeline(cid, _request(state), state)
+    spans = [s for s in res["spans"] if s["name"] == "investigator"]
+    assert [s["cost_basis"] for s in spans] == ["split"] * 3
+    assert all(s["latency_ms"] is None for s in spans)
+    # Each even slice is rounded to 6 decimals, so the three add up to within 1e-6.
+    assert res["totals"]["cost"] == pytest.approx(0.53, abs=1e-5)
 
 
 async def test_spend_older_than_a_year_still_counts(app_state):
