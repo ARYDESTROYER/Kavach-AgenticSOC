@@ -2237,7 +2237,10 @@ describe('CaseManager', () => {
       const slot = screen.getByTestId('case-queue-ai-notice');
       expect(screen.getByTestId('case-queue-controls')).toContainElement(slot);
       expect(slot).toBeEmptyDOMElement();
-      expect(slot).toHaveClass('empty:hidden', 'mt-1');
+      // The 4px gap belongs to a child with content, never to the wrapper, so a live
+      // region WP09 keeps in place while it is empty adds no height to the 92px band.
+      expect(slot).toHaveClass('empty:hidden', '[&>*:not(:empty)]:mt-1');
+      expect(slot.className.split(/\s+/)).not.toContain('mt-1');
       unmount();
       mocks.queueNotice = true;
       render(<CaseManager />);
@@ -2265,12 +2268,13 @@ describe('CaseManager', () => {
       expect(screen.getByRole('separator', { name: 'Resize case queue' })).toHaveClass('xl:hidden');
       expect(window.localStorage.getItem('soc.caseManager.queueCollapsed')).toBe('1');
       expect(within(strip).getByTestId('case-queue-strip-position')).toHaveTextContent('Case 1 of 2 loaded');
-      expect(within(strip).getByRole('button', { name: 'Previous case' })).toBeDisabled();
+      // At an end the step is dimmed but stays focusable (`aria-disabled`, see below).
+      expect(within(strip).getByRole('button', { name: 'Previous case' })).toHaveAttribute('aria-disabled', 'true');
 
       // J and K work from anywhere on the page while the list cannot take focus.
       fireEvent.keyDown(document.body, { key: 'j' });
       await waitFor(() => expect(screen.getByTestId('embedded-case-detail')).toHaveAttribute('data-case-id', OPEN_HIGH.case_id));
-      expect(within(strip).getByRole('button', { name: 'Next case' })).toBeDisabled();
+      expect(within(strip).getByRole('button', { name: 'Next case' })).toHaveAttribute('aria-disabled', 'true');
       fireEvent.keyDown(document.body, { key: 'k' });
       await waitFor(() =>
         expect(screen.getByTestId('embedded-case-detail')).toHaveAttribute('data-case-id', OPEN_CRITICAL.case_id),
@@ -2290,6 +2294,71 @@ describe('CaseManager', () => {
       expect(screen.getByTestId('case-queue-content')).not.toHaveClass('hidden');
       expect(window.localStorage.getItem('soc.caseManager.queueCollapsed')).toBeNull();
       await waitFor(() => expect(openButtonOf('Suspicious S3 bucket exfiltration')).toHaveFocus());
+    });
+
+    it('keeps focus on the strip step that reached an end (review: a disabled button drops focus)', async () => {
+      mocks.media.split = true;
+      render(<CaseManager />);
+      await screen.findByTestId('embedded-case-detail');
+      fireEvent.keyDown(document.body, { key: '[' });
+      const strip = await screen.findByTestId('case-queue-strip');
+      const next = within(strip).getByRole('button', { name: 'Next case' });
+      act(() => next.focus());
+      fireEvent.click(next);
+      await waitFor(() => expect(screen.getByTestId('embedded-case-detail')).toHaveAttribute('data-case-id', OPEN_HIGH.case_id));
+      // The last case: Next is dimmed with `aria-disabled` but never `disabled`, which
+      // would blur it and drop a keyboard user to <body>.
+      expect(next).toHaveAttribute('aria-disabled', 'true');
+      expect(next).not.toBeDisabled();
+      expect(next).toHaveFocus();
+      // Pressing it at the end does nothing.
+      fireEvent.click(next);
+      expect(screen.getByTestId('embedded-case-detail')).toHaveAttribute('data-case-id', OPEN_HIGH.case_id);
+      const previous = within(strip).getByRole('button', { name: 'Previous case' });
+      expect(previous).toHaveAttribute('aria-disabled', 'false');
+      expect(previous).not.toBeDisabled();
+    });
+
+    it('lands focus on Show queue when the case closes while the queue is folded (review)', async () => {
+      const user = userEvent.setup();
+      mocks.media.split = true;
+      render(<CaseManager />);
+      await screen.findByTestId('embedded-case-detail');
+      fireEvent.keyDown(document.body, { key: '[' });
+      const strip = await screen.findByTestId('case-queue-strip');
+      // The folded queue's rows and search are hidden, so neither can take focus: the
+      // close path lands on the strip, never on a hidden row or <body>.
+      await user.click(screen.getByRole('button', { name: 'Mock back' }));
+      await screen.findByTestId('case-manager-empty-pane');
+      await waitFor(() => expect(within(strip).getByRole('button', { name: 'Show queue' })).toHaveFocus());
+      expect(screen.getByTestId('case-queue-content')).toHaveClass('hidden');
+    });
+
+    it('offers no pane shortcut while the queue first loads or cannot be read (review)', async () => {
+      mocks.media.split = true;
+      mocks.reviewSummary.mockResolvedValue({ enabled: true, pending: 2, disagreed_open: 0, sampled_today: 2, daily_cap: 10 });
+      // The queue's first read never answers: the pane is empty only until the first case
+      // opens on arrival, so it offers nothing to click meanwhile.
+      mocks.listCases.mockImplementation(() => new Promise(() => {}));
+      const { unmount } = render(<CaseManager />);
+      const pane = await screen.findByTestId('case-manager-empty-pane');
+      await waitFor(() => expect(mocks.reviewSummary).toHaveBeenCalled());
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(within(pane).queryByRole('button')).toBeNull();
+      expect(within(pane).queryByTestId('case-manager-pane-shortcuts')).toBeNull();
+      unmount();
+
+      // The queue read fails: the queue shows its error and the pane offers no shortcut.
+      mocks.listCases.mockRejectedValue(new Error('unavailable'));
+      render(<CaseManager />);
+      await screen.findByText('Could not load cases');
+      const failedPane = screen.getByTestId('case-manager-empty-pane');
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(within(failedPane).queryByRole('button', { name: /reviews? waiting/ })).toBeNull();
     });
 
     it('folds from "Hide queue" in the view menu and lands focus on the strip', async () => {

@@ -201,6 +201,8 @@ const DENSITY_STORAGE_KEY = 'soc.caseManager.density';
 const COLLAPSED_STORAGE_KEY = 'soc.caseManager.queueCollapsed';
 /** The folded queue's strip width. */
 const QUEUE_STRIP_PX = 44;
+/** The strip's Previous and Next at either end: dimmed, still focusable, inert on press. */
+const STRIP_STEP_INERT = 'aria-disabled:cursor-not-allowed aria-disabled:opacity-50 aria-disabled:hover:bg-transparent';
 /** Where the queue and the case sit side by side (Tailwind `xl`). Below it they are two screens. */
 const SPLIT_QUERY = '(min-width: 1280px)';
 /** A touch screen: no hover reveals the row checkbox, so it always shows. */
@@ -786,6 +788,9 @@ export const CASE_MANAGER_HELP =
 export const NO_CASE_OPEN_TITLE = 'No case open';
 export const NO_CASE_OPEN_DESCRIPTION = 'Pick a case from the queue to work on it here.';
 
+/** The empty pane's counts before (or between) reads: unknown, so no button shows. */
+const NO_PANE_COUNTS: { critical: number | null; awaiting: number | null } = { critical: null, awaiting: null };
+
 /** A counted queue shortcut the empty pane offers: what it opens and how many it holds. */
 export type PaneShortcutKind = 'critical' | 'awaiting' | 'review';
 
@@ -948,6 +953,24 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
   const viewMenuRef = React.useRef<HTMLButtonElement | null>(null);
   /** The selected-case workspace; its case title is the focus target when the queue is hidden. */
   const detailRef = React.useRef<HTMLElement | null>(null);
+
+  // Focus mode (Round 16, WP02; [cmux] §5.2): `[` (or "Hide queue" in the view menu)
+  // folds the queue to a 44px strip, so the case gets the width. Only where the queue and
+  // the case sit side by side: below xl they are separate screens, so the saved preference
+  // waits there and the queue shows in full. `setQueueFolded` is further down.
+  const [collapsedPref, setCollapsedPref] = React.useState<boolean>(readCollapsed);
+  const queueCollapsed = collapsedPref && splitShown;
+  const queueCollapsedRef = React.useRef(queueCollapsed);
+  queueCollapsedRef.current = queueCollapsed;
+  const splitShownRef = React.useRef(splitShown);
+  splitShownRef.current = splitShown;
+  /** The full queue (band, list and footer), hidden while the queue is folded. */
+  const queueContentRef = React.useRef<HTMLDivElement | null>(null);
+  /** The strip's Show queue: where focus lands when the folded queue's own controls cannot take it. */
+  const stripExpandRef = React.useRef<HTMLButtonElement | null>(null);
+  /** Set when "Hide queue" is chosen in the view menu, whose trigger the fold hides. */
+  const focusStripOnMenuCloseRef = React.useRef(false);
+
   const [shortcutsOpen, setShortcutsOpen] = React.useState(false);
   const shortcutsOpenerRef = React.useRef<HTMLElement | null>(null);
   const openShortcuts = React.useCallback(() => {
@@ -1286,9 +1309,10 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
     setDismissedSelection(true);
     goQueue();
     // The pane that held focus is gone: land on the case's queue row (or the roving
-    // stop, or the search when the queue is empty) instead of <body>.
+    // stop, or the search when the queue is empty) instead of <body>. While the queue is
+    // folded its rows and search are hidden, so the strip's Show queue takes focus.
     requestAnimationFrame(() => {
-      const target = queueRowButton(previous) ?? searchField();
+      const target = queueCollapsedRef.current ? stripExpandRef.current : queueRowButton(previous) ?? searchField();
       target?.focus();
     });
   }, [goQueue, queueRowButton, searchField]);
@@ -1699,21 +1723,8 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
   );
 
   // ---- focus mode (Round 16, WP02; [cmux] §5.2) ------------------------------ //
-  // `[` (or "Hide queue" in the view menu) folds the queue to a 44px strip, so the case
-  // gets the width. Only where the queue and the case sit side by side: below xl they are
-  // separate screens, so the saved preference waits there and the queue shows in full.
-  const [collapsedPref, setCollapsedPref] = React.useState<boolean>(readCollapsed);
-  const queueCollapsed = collapsedPref && splitShown;
-  const queueCollapsedRef = React.useRef(queueCollapsed);
-  queueCollapsedRef.current = queueCollapsed;
-  const splitShownRef = React.useRef(splitShown);
-  splitShownRef.current = splitShown;
-  /** The full queue (band, list and footer), hidden while the queue is folded. */
-  const queueContentRef = React.useRef<HTMLDivElement | null>(null);
-  const stripExpandRef = React.useRef<HTMLButtonElement | null>(null);
-  /** Set when "Hide queue" is chosen in the view menu, whose trigger the fold hides. */
-  const focusStripOnMenuCloseRef = React.useRef(false);
-
+  // The fold's state and refs are declared with the selection state above, so the close
+  // path can land focus on the strip.
   const setQueueFolded = React.useCallback(
     (next: boolean) => {
       if (!splitShownRef.current || next === queueCollapsedRef.current) return;
@@ -2265,17 +2276,23 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
   // ---- the empty case pane (Round 16, WP02; [cmux] §5.9) ----------------------- //
   // With no case open (and the pane on screen, so only in the split), up to three counted
   // shortcuts into the queue. Each count is the server's exact total for the filter the
-  // button applies; an unknown or zero count leaves its button out. Read only once the
-  // pane will stay empty: a dismissed case or an empty queue, not the moment before the
-  // first case opens on arrival.
+  // button applies; an unknown or zero count leaves its button out. Read and offered only
+  // once the pane will stay empty: a dismissed case or an empty queue, not the moment
+  // before the first case opens on arrival, and not while the queue cannot be read.
   const emptyPaneShown =
-    splitShown && !selectedCaseId && (dismissedSelection || (!loading && visibleCases.length === 0));
-  const [paneCounts, setPaneCounts] = React.useState<{ critical: number | null; awaiting: number | null }>({
-    critical: null,
-    awaiting: null,
-  });
+    splitShown &&
+    !selectedCaseId &&
+    !error &&
+    (dismissedSelection || (!loading && visibleCases.length === 0));
+  const [paneCounts, setPaneCounts] = React.useState<{ critical: number | null; awaiting: number | null }>(
+    NO_PANE_COUNTS,
+  );
   React.useEffect(() => {
-    if (!emptyPaneShown) return undefined;
+    if (!emptyPaneShown) {
+      // A count is read afresh each time the pane shows, never carried over stale.
+      setPaneCounts(NO_PANE_COUNTS);
+      return undefined;
+    }
     let cancelled = false;
     const count = (filter: Record<string, string>) =>
       api
@@ -2341,12 +2358,15 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
   const pendingReviews = reviewSummary?.pending ?? 0;
   const offerReview =
     scope === 'review' || Boolean(reviewSummary && (reviewSummary.enabled || reviewSummary.pending > 0));
-  // The empty pane's counted shortcuts (the review count is the review summary's).
-  const emptyPaneShortcuts = paneShortcuts({
-    critical: paneCounts.critical,
-    awaiting: paneCounts.awaiting,
-    review: offerReview && reviewSummary ? reviewSummary.pending : null,
-  });
+  // The empty pane's counted shortcuts (the review count is the review summary's), only
+  // while the pane will stay empty (see `emptyPaneShown`).
+  const emptyPaneShortcuts = emptyPaneShown
+    ? paneShortcuts({
+        critical: paneCounts.critical,
+        awaiting: paneCounts.awaiting,
+        review: offerReview && reviewSummary ? reviewSummary.pending : null,
+      })
+    : [];
   const selectedRow = selectedCaseId ? rowsById.get(selectedCaseId) ?? null : null;
   const prefetched = selectedCaseId ? prefetchedRef.current.get(selectedCaseId) ?? null : null;
   const selectedCase =
@@ -2510,10 +2530,12 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
                         <Button
                           variant="ghost"
                           size="icon"
-                          className="h-8 w-8"
+                          className={cn('h-8 w-8', STRIP_STEP_INERT)}
                           aria-label="Previous case"
                           aria-keyshortcuts="K ArrowUp"
-                          disabled={visibleCases.length === 0 || position === 1}
+                          // `aria-disabled`, not `disabled`: a button disabled while it holds
+                          // focus drops focus to <body>. At the first case it does nothing.
+                          aria-disabled={visibleCases.length === 0 || position === 1}
                           onClick={() => stepCase(-1)}
                         >
                           <ChevronUp className="size-4" aria-hidden />
@@ -2526,10 +2548,10 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
                         <Button
                           variant="ghost"
                           size="icon"
-                          className="h-8 w-8"
+                          className={cn('h-8 w-8', STRIP_STEP_INERT)}
                           aria-label="Next case"
                           aria-keyshortcuts="J ArrowDown"
-                          disabled={visibleCases.length === 0 || position === visibleCases.length}
+                          aria-disabled={visibleCases.length === 0 || position === visibleCases.length}
                           onClick={() => stepCase(1)}
                         >
                           <ChevronDown className="size-4" aria-hidden />
@@ -2837,9 +2859,11 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
                       </div>
                     </div>
                     {/* "N new alerts under investigation" (WP09 fills it; nothing at 0). It is
-                        one 16px line at most, so the band grows by 20px at most, and the
-                        wrapper takes no room while it renders nothing. */}
-                    <div className="mt-1 empty:hidden" data-testid="case-queue-ai-notice">
+                        one 16px line at most, so the band grows by 20px at most. The wrapper
+                        takes no room while it renders nothing, and the 4px gap belongs to a
+                        child with content, so a live region kept in place while empty adds
+                        no height either. */}
+                    <div className="empty:hidden [&>*:not(:empty)]:mt-1" data-testid="case-queue-ai-notice">
                       <AiQueueNotice />
                     </div>
                   </div>
