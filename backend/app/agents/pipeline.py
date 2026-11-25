@@ -32,7 +32,9 @@ from ..constants import (
     DecisionBy,
     Disposition,
     EntityType,
+    OPEN_CASE_STATUSES,
     RUNBOOK_SELECTOR_ACTOR,
+    TERMINAL_CASE_STATUSES,
     SourceSurface,
     Verdict,
 )
@@ -128,6 +130,167 @@ INVESTIGATION_RUN_PREFIX = "inv-"
 def current_investigation_run_id() -> str | None:
     """The id of the investigation running in this task, or ``None``."""
     return _INVESTIGATION_RUN_ID.get()
+
+
+# --------------------------------------------------------------------------- #
+# Round 16 (SPEC §4.5 WP08): which runs are queued or running, and how each ended.
+# The registry (``engine/investigation_registry.py``) is memory only; the pipeline
+# registers a run before the investigation gate and ends it in a ``finally``. Nothing
+# here reads the registry to decide anything (#3), and a registry error never reaches
+# a run (each registry method swallows its own errors).
+# --------------------------------------------------------------------------- #
+_CURRENT_INVESTIGATION: contextvars.ContextVar[Any] = contextvars.ContextVar(
+    "current_investigation", default=None,
+)
+
+#: ``status_history`` writers that are code, not a person: a close by one of them is
+#: never reported as a person's close replaced by a run.
+_MACHINE_STATUS_ACTORS = frozenset(
+    {"", DecisionBy.AGENT.value, DecisionBy.SYSTEM.value, DecisionBy.ANALYST_POLICY.value, "pipeline"}
+)
+
+
+def _mark_run(outcome: str | None = None, case: Case | None = None) -> None:
+    """Record this run's outcome and the case's status and verdict after it on the
+    current registry handle. A no-op without one; never raises."""
+    handle = _CURRENT_INVESTIGATION.get()
+    if handle is None:
+        return
+    try:
+        if outcome is not None:
+            handle.outcome = outcome
+        if case is not None:
+            handle.status_after = getattr(case.status, "value", case.status)
+            verdict = getattr(case, "verdict", None)
+            handle.verdict_after = getattr(verdict, "value", verdict) if verdict is not None else None
+    except Exception:  # noqa: BLE001 (tracking never reaches a run)
+        pass
+
+
+def _attach_run_case(registry: Any, case_id: str | None) -> None:
+    """Tell the registry which case the current run is on (a frame when it was
+    unknown). Never raises."""
+    handle = _CURRENT_INVESTIGATION.get()
+    if registry is None or handle is None or not case_id:
+        return
+    try:
+        registry.attach_case(handle, case_id)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _run_started(registry: Any, handle: Any, prefs: Any) -> None:
+    """The run holds its slot. ``queued`` is only the phase of a run waiting for one,
+    so the running frame names the first stage, triage. The registry calls never
+    raise."""
+    if registry is None or handle is None:
+        return
+    registry.phase(handle, "triage")
+    registry.started(handle, time_cap_seconds=prefs.caps.timeout_seconds)
+
+
+def _parse_iso(value: Any) -> Any:
+    from datetime import datetime, timezone
+
+    try:
+        parsed = datetime.fromisoformat(str(value or "").replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def replaced_close(stored: Case | None, decided: Case, *, since: Any) -> dict[str, str] | None:
+    """The person's close this run's result replaced, or ``None``.
+
+    ``stored`` is the case as re-read just before the rebuild, ``decided`` the case the
+    run saved and ``since`` when the run was queued. A close counts when the stored case
+    is terminal, its newest move to that status was made by a person at or after
+    ``since`` (so while the run was queued or running; a case closed before the run was
+    asked for, then reinvestigated, is not a replaced close), and the decided status
+    differs. Reads decided values only (#3); never raises."""
+    try:
+        if stored is None or since is None:
+            return None
+        before = str(getattr(stored.status, "value", stored.status) or "")
+        after = str(getattr(decided.status, "value", decided.status) or "")
+        if before not in TERMINAL_CASE_STATUSES or after == before:
+            return None
+        entry = next(
+            (e for e in reversed(stored.status_history or []) if e.to_status == before), None,
+        )
+        if entry is None or str(entry.by or "").strip().lower() in _MACHINE_STATUS_ACTORS:
+            return None
+        at = _parse_iso(entry.at)
+        if at is None or at < since:
+            return None
+        return {"by": str(entry.by), "from_status": before, "to_status": after}
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _note_replaced_close(stored: Case | None, decided: Case) -> None:
+    """Record on the current handle a person's close this run replaced (SPEC D10)."""
+    handle = _CURRENT_INVESTIGATION.get()
+    if handle is None:
+        return
+    replaced = replaced_close(stored, decided, since=getattr(handle, "queued_at", None))
+    if replaced is not None:
+        try:
+            handle.close_replaced = replaced
+        except Exception:  # noqa: BLE001
+            pass
+
+
+class CaseLocks:
+    """Process-local per-case write locks (Round 16 SPEC §4.5 WP08, research R11).
+
+    A rebuild reads the stored case, then saves the whole document; a person's action
+    does the same. Holding one lock per case id across read and save keeps one writer
+    from erasing the other's work. A ``WeakValueDictionary`` bounds it, as the signature
+    locks are bounded: a lock exists only while someone holds a reference to it.
+
+    Lock order: the pipeline (and ``engine.ingest.attach_cluster``) takes a case lock
+    only INSIDE the cluster's signature lock; a person's action takes the case lock
+    alone. No path holds a case lock while it waits for a signature lock."""
+
+    def __init__(self) -> None:
+        self._locks: "weakref.WeakValueDictionary[str, asyncio.Lock]" = weakref.WeakValueDictionary()
+
+    def lock(self, case_id: str) -> asyncio.Lock:
+        key = str(case_id or "")
+        lock = self._locks.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._locks[key] = lock
+        return lock
+
+    def clear(self) -> None:
+        """Forget every lock (factory reset, after every writer task was cancelled)."""
+        self._locks.clear()
+
+    def __len__(self) -> int:
+        return len(self._locks)
+
+
+class _CaseWriteHold:
+    """One run's hold on its case lock: idempotent :meth:`hold` and :meth:`release`, so
+    the success path, the failure path and the ``finally`` can each call them."""
+
+    __slots__ = ("_lock", "_held")
+
+    def __init__(self, lock: asyncio.Lock) -> None:
+        self._lock = lock
+        self._held = False
+
+    async def hold(self) -> None:
+        if not self._held:
+            await self._lock.acquire()
+            self._held = True
+
+    def release(self) -> None:
+        if self._held:
+            self._held = False
+            self._lock.release()
 
 
 def audit_actor_type(actor: str) -> str:
@@ -291,8 +454,16 @@ class InvestigationPipeline:
         runbook_catalog: RunbookCatalogProvider | None = None,
         runbook_attacher: RunbookAttacher | None = None,
         review_sampler: ReviewSamplerHook | None = None,
+        investigation_registry: Any = None,
+        case_locks: CaseLocks | None = None,
     ) -> None:
         self._es = es
+        # Round 16 (SPEC §4.5 WP08): the memory-only run registry (None: untracked, as
+        # the replay stack and direct constructions are; post-settable) and the per-case
+        # write locks, shared with the person's case actions (AppState passes one
+        # registry to the real and Demo pipelines).
+        self.investigation_registry = investigation_registry
+        self._case_locks = case_locks if case_locks is not None else CaseLocks()
         # The agent's read-only log surface. Defaults to wrapping ``es`` in an
         # ElasticConnector (full back-compat) so a direct construction without a
         # source keeps working; state wiring injects the configured connector.
@@ -404,6 +575,12 @@ class InvestigationPipeline:
             self._sig_locks[signature] = lock
         return lock
 
+    def case_lock(self, case_id: str) -> asyncio.Lock:
+        """The shared per-case write lock (:class:`CaseLocks`). The pipeline takes it
+        only inside the cluster's signature lock, from the re-read of the stored case
+        to its save."""
+        return self._case_locks.lock(case_id)
+
     def _emit_step(
         self, case_id: str, step: str, *, status: str = "running",
         detail: str = "", extra: dict | None = None,
@@ -419,6 +596,11 @@ class InvestigationPipeline:
         (#3/#11). ``detail`` is a SHORT, already-render-safe label (a persona/runbook
         id, a verdict enum, a status word) — never raw log/AI text (#9; the UI escapes
         it regardless)."""
+        # Round 16 (WP08): the run's phase, served by GET /api/investigations/active
+        # and carried on its next frame. No frame of its own; never raises.
+        registry = self.investigation_registry
+        if registry is not None:
+            registry.phase(_CURRENT_INVESTIGATION.get(), step)
         try:
             bus = self.event_bus
             from ..realtime import AGENT_STEP_EVENT, get_event_bus
@@ -804,17 +986,31 @@ class InvestigationPipeline:
         force: bool = False,
         query_source: PullConnector | None | object = _DEFAULT_QUERY_SOURCE,
         investigation_priority: str = "ingest",
+        trigger: str = "automatic",
+        requested_by: str | None = None,
+        known_case_id: str | None = None,
+        target_case_id: str | None = None,
+        run_id: str | None = None,
     ) -> Case:
         """Investigate a cluster into a case. The ``find_open_by_signature → save``
         critical section is serialized PER SIGNATURE (:meth:`signature_lock`) so two
         concurrent per-source pollers correlating the SAME signature never both mint a
-        case (#4). Different signatures still run concurrently."""
+        case (#4). Different signatures still run concurrently.
+
+        Round 16 (SPEC §4.5 WP08), all defaulted: ``trigger`` (``automatic``,
+        ``manual``, ``job``, ``drain``, ``detection``) and ``requested_by`` say who asked,
+        for the run registry; ``known_case_id`` is the case the caller expects the run
+        on; ``target_case_id`` is the case a person asked to reinvestigate, updated in
+        place even when it is closed (unless an open case holds its signature);
+        ``run_id`` is the run's id, minted when absent (the audit rows carry it)."""
         async with self.signature_lock(cluster.signature):
             return await self._investigate_cluster_locked(
                 cluster, source_surface, prefs,
                 force=force,
                 query_source=query_source,
                 investigation_priority=investigation_priority,
+                trigger=trigger, requested_by=requested_by, known_case_id=known_case_id,
+                target_case_id=target_case_id, run_id=run_id,
             )
 
     async def _investigate_cluster_locked(
@@ -826,27 +1022,61 @@ class InvestigationPipeline:
         force: bool = False,
         query_source: PullConnector | None | object = _DEFAULT_QUERY_SOURCE,
         investigation_priority: str = "ingest",
+        trigger: str = "automatic",
+        requested_by: str | None = None,
+        known_case_id: str | None = None,
+        target_case_id: str | None = None,
+        run_id: str | None = None,
     ) -> Case:
         gate = self._investigation_gate
-        if gate is None:
-            return await self._investigate_cluster_effect(
-                cluster,
-                source_surface,
-                prefs,
-                force=force,
-                query_source=query_source,
+        cap = max(1, int(getattr(prefs.caps, "max_concurrent", 3)))
+        run_id = run_id or new_id(INVESTIGATION_RUN_PREFIX)
+        # Round 16 (SPEC §4.5 WP08): register the run before the gate and end it in the
+        # ``finally``, whatever way the run ends. A queued frame only when the gate is
+        # full. The registry never raises into the run and never feeds a decision (#3).
+        registry = self.investigation_registry
+        handle = None
+        if registry is not None:
+            handle = registry.begin(
+                run_id=run_id, signature=cluster.signature, case_id=known_case_id,
+                trigger=trigger, requested_by=requested_by,
+                announce_queued=bool(gate is not None and gate.active >= cap),
             )
-        async with gate.permit(
-            max(1, int(getattr(prefs.caps, "max_concurrent", 3))),
-            "background" if investigation_priority == "background" else "ingest",
-        ):
-            return await self._investigate_cluster_effect(
-                cluster,
-                source_surface,
-                prefs,
-                force=force,
-                query_source=query_source,
-            )
+        token = _CURRENT_INVESTIGATION.set(handle)
+        try:
+            if gate is None:
+                _run_started(registry, handle, prefs)
+                case = await self._investigate_cluster_effect(
+                    cluster, source_surface, prefs,
+                    force=force, query_source=query_source, run_id=run_id,
+                    trigger=trigger, known_case_id=known_case_id, target_case_id=target_case_id,
+                )
+            else:
+                async with gate.permit(
+                    cap, "background" if investigation_priority == "background" else "ingest",
+                ):
+                    _run_started(registry, handle, prefs)
+                    case = await self._investigate_cluster_effect(
+                        cluster, source_surface, prefs,
+                        force=force, query_source=query_source, run_id=run_id,
+                        trigger=trigger, known_case_id=known_case_id,
+                        target_case_id=target_case_id,
+                    )
+            if handle is not None and handle.outcome is None:
+                _mark_run("decided", case)
+            return case
+        except asyncio.CancelledError:
+            _mark_run("cancelled")
+            raise
+        except Exception:
+            # Only the fail-to-human persistence error (or a failed case lookup, B10)
+            # leaves a run with an exception: the case was not saved.
+            _mark_run("failed")
+            raise
+        finally:
+            if handle is not None:
+                registry.end(handle, outcome=handle.outcome or "failed")
+            _CURRENT_INVESTIGATION.reset(token)
 
     async def _investigate_cluster_effect(
         self,
@@ -856,13 +1086,19 @@ class InvestigationPipeline:
         *,
         force: bool = False,
         query_source: PullConnector | None | object = _DEFAULT_QUERY_SOURCE,
+        run_id: str | None = None,
+        trigger: str = "automatic",
+        known_case_id: str | None = None,
+        target_case_id: str | None = None,
     ) -> Case:
-        # One investigation run: every audit row until it returns carries its id.
-        run_token = _INVESTIGATION_RUN_ID.set(new_id(INVESTIGATION_RUN_PREFIX))
+        # One investigation run: every audit row until it returns carries its id (the
+        # same id the run registry serves, Round 16 WP08).
+        run_token = _INVESTIGATION_RUN_ID.set(run_id or new_id(INVESTIGATION_RUN_PREFIX))
         try:
             return await self._investigate_cluster_run(
                 cluster, source_surface, prefs,
                 force=force, query_source=query_source,
+                trigger=trigger, known_case_id=known_case_id, target_case_id=target_case_id,
             )
         finally:
             _INVESTIGATION_RUN_ID.reset(run_token)
@@ -875,13 +1111,68 @@ class InvestigationPipeline:
         *,
         force: bool = False,
         query_source: PullConnector | None | object = _DEFAULT_QUERY_SOURCE,
+        trigger: str = "automatic",
+        known_case_id: str | None = None,
+        target_case_id: str | None = None,
     ) -> Case:
+        registry = self.investigation_registry
+        # Round 16 (SPEC D10): a deferred candidate's drain run re-reads its case inside
+        # the signature lock, after the gate. A candidate a person closed or moved while
+        # the run waited is returned as stored and never re-run: a close made meanwhile
+        # would otherwise miss the open-case lookup below and mint a second case for the
+        # same events. New events after a close still open a new case (``handle_clusters``
+        # passes no known case, #4).
+        if trigger == "drain" and known_case_id and not force:
+            stored = await self._cases.get(known_case_id)
+            if stored is not None and (
+                str(getattr(stored.status, "value", stored.status)) not in OPEN_CASE_STATUSES
+                or stored.decision_by == DecisionBy.ANALYST
+            ):
+                _attach_run_case(registry, stored.case_id)
+                _mark_run("unchanged", stored)
+                await self._audit.record(
+                    action_type=ActionType.DECISION, surface=source_surface.value,
+                    actor="pipeline", case_id=stored.case_id,
+                    result_summary=(
+                        "the candidate was closed or moved by a person before its deferred "
+                        "run started; not investigated"
+                    ),
+                )
+                return stored
         # The case identity is known BEFORE the run's failure boundary (Round 16 B10):
         # a lookup that fails (a store timeout) propagates to the caller's retry
         # boundary (the poll tick is not committed, a pushed batch is retried, a person
         # sees an error) instead of minting a second open case for this signature (#4).
         existing: Case | None = await find_open_case_for_cluster(self._cases, cluster)
+        # Round 16 (SPEC §4.5 WP08, research R5): the case a person asked to
+        # reinvestigate is updated in place, even when it is closed, unless an open case
+        # holds its signature (new events arrived after the close): then the target is
+        # not reopened and is returned as stored (#4: one open case per signature).
+        if target_case_id and (existing is None or existing.case_id != target_case_id):
+            target = await self._cases.get(target_case_id)
+            target_open = target is not None and str(
+                getattr(target.status, "value", target.status)
+            ) in OPEN_CASE_STATUSES
+            if target is not None and existing is not None and not target_open:
+                _attach_run_case(registry, target.case_id)
+                _mark_run("unchanged", target)
+                await self._audit.record(
+                    action_type=ActionType.DECISION, surface=source_surface.value,
+                    actor="pipeline", case_id=target.case_id,
+                    result_summary=(
+                        f"open case {existing.case_id} holds this signature; "
+                        "the closed case was not reopened"
+                    ),
+                )
+                return target
+            if (
+                existing is None and target is not None
+                and target.cluster_signature in {cluster.signature, cluster.legacy_signature}
+            ):
+                existing = target
         case_id = existing.case_id if existing else new_id("case-")
+        if existing is not None:
+            _attach_run_case(registry, case_id)
         # A candidate a person acted on (escalated, acknowledged, put on hold,
         # reopened) is theirs (Round 16 B05): a run nobody asked for attaches the
         # events and leaves the case as the person left it. Only an automated run is
@@ -897,7 +1188,7 @@ class InvestigationPipeline:
             and existing.verdict is None
             and existing.decision_by == DecisionBy.ANALYST
         ):
-            await attach_cluster(self._cases, existing, cluster)
+            await attach_cluster(self._cases, existing, cluster, pipeline=self)
             await self._audit.record(
                 action_type=ActionType.DECISION, surface=source_surface.value,
                 actor="pipeline", case_id=case_id,
@@ -905,10 +1196,16 @@ class InvestigationPipeline:
                     "a person owns this candidate; events attached, not investigated"
                 ),
             )
+            _mark_run("unchanged", existing)
             return existing
         # Kept outside the investigation try block so a later failure can preserve a
         # successfully completed retrieval observation instead of erasing it.
         procedure_provenance: dict[str, Any] = {}
+        # Round 16 (SPEC §4.5 WP08, research R11): the case lock, held from the re-read
+        # of the stored case to its save (success and failure paths alike), inside the
+        # signature lock held by the caller. A person's action holds it across its own
+        # read and save, so neither write erases the other.
+        write_hold = _CaseWriteHold(self.case_lock(case_id))
         try:
             # --- Operator analyst rule policy (deterministic, $0, no LLM) ----------
             # An explicit, audited, revocable operator declaration that this detection
@@ -920,6 +1217,8 @@ class InvestigationPipeline:
                 case_id=case_id, existing=existing, force=force,
             )
             if policy_case is not None:
+                _attach_run_case(registry, policy_case.case_id)
+                _mark_run("closed_by_policy", policy_case)
                 return policy_case
 
             # --- P1: case/verdict stability ---
@@ -951,6 +1250,7 @@ class InvestigationPipeline:
                             f"(verdict={existing.verdict.value})"
                         ),
                     )
+                    _mark_run("unchanged", existing)
                     return existing
 
             # Live progress: the investigation has begun (router/triage stage). Pure
@@ -1208,6 +1508,7 @@ class InvestigationPipeline:
 
             # Round 15 (SPEC D6.10): rebuild on the case as it is stored NOW, so work a
             # person did while this run was in flight is carried, not overwritten.
+            await write_hold.hold()
             existing = await self._latest_stored_case(case_id, existing)
             case_number = await self._allocate_case_number(existing, cluster, prefs)
             retrieval_measured = procedure_provenance.get("retrieval_status") == "measured"
@@ -1250,6 +1551,12 @@ class InvestigationPipeline:
                 case.token_cost = recorded_cost
             CaseManager(prefs).apply(case)
             await self._cases.save(case)
+            write_hold.release()
+            # Round 16 (WP08): a new case exists now; a person's close made while this
+            # run was queued or running, and replaced by its result, is recorded for
+            # the finish notice (read after apply(), never fed back, #3).
+            _attach_run_case(registry, case_id)
+            _note_replaced_close(existing, case)
             # The gate INPUTS, recorded beside the gate OUTPUT. Without them a missed
             # auto-close could not be explained from the append-only trail at all: the
             # row said the case routed to a human but not which side of the bar it
@@ -1312,6 +1619,7 @@ class InvestigationPipeline:
             retrieval_measured = procedure_provenance.get("retrieval_status") == "measured"
             # Round 15 (SPEC D6.10): a failed run keeps the work a person did while it was
             # in flight, too (the run may have failed before the re-read above).
+            await write_hold.hold()
             existing = await self._latest_stored_case(case_id, existing)
             case = _fail_to_human_case(
                 case_id,
@@ -1345,6 +1653,14 @@ class InvestigationPipeline:
             except Exception as save_exc:  # noqa: BLE001
                 persist_error = save_exc
                 logger.exception("Could not persist fail-to-human case %s", case_id)
+            write_hold.release()
+            # Round 16 (WP08, research F1): the run's TERMINAL frame, so a narration
+            # never stays "in progress" after a failure. Reports the routed case only.
+            self._emit_step(case_id, "decision", status="failed", detail=case.status.value)
+            if persist_error is None:
+                _attach_run_case(registry, case_id)
+                _note_replaced_close(existing, case)
+                _mark_run("routed_to_person", case)
             try:
                 await self._audit.record(
                     action_type=ActionType.ERROR, surface=source_surface.value,
@@ -1364,6 +1680,10 @@ class InvestigationPipeline:
             # gets the matching runbook like any other (§4.10.4).
             await self._maybe_attach_runbook(case)
             return case
+        finally:
+            # A cancelled run (or one that raised before its save) never keeps the
+            # case lock.
+            write_hold.release()
 
     async def _close_by_analyst_policy(
         self,
@@ -1605,7 +1925,7 @@ class InvestigationPipeline:
         # same rule the realtime path applies. Rebuilding it would wipe its verdict,
         # decision and escalation and hand it back to a run that could re-decide it.
         if existing is not None and is_attach_only(existing):
-            await attach_cluster(self._cases, existing, cluster)
+            await attach_cluster(self._cases, existing, cluster, pipeline=self)
             return existing
         breakdown = compute_risk(cluster, prefs, 0.0)
         cluster.risk_score = breakdown.total

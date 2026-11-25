@@ -208,6 +208,18 @@ class AppState:
         from .engine.investigation_gate import InvestigationGate
 
         self.investigation_gate = InvestigationGate()
+        # Round 16 (SPEC §4.5 WP08): which AI investigations are queued or running, in
+        # memory only (frames on the process bus, never the Demo one), and the per-case
+        # write locks the real and Demo pipelines share with a person's case actions.
+        # Built here (not in _wire) so a credential-driven rebuild keeps both.
+        from .agents.pipeline import CaseLocks
+        from .engine.investigation_registry import InvestigationRegistry
+        from .realtime import get_event_bus
+
+        self.investigation_registry = InvestigationRegistry(
+            get_event_bus, on_finished=self._investigation_finished,
+        )
+        self.case_locks = CaseLocks()
         # Process-local registry of running chat turns (chat revamp SPEC §6.1(b)):
         # strong references to each turn task, per-user/global concurrency admission
         # and Stop. Built lazily by ``chat_turns``.
@@ -331,7 +343,10 @@ class AppState:
         return task
 
     async def cancel_mutation_tasks(self) -> int:
-        """Cancel and await every detached tenant writer registered before reset."""
+        """Cancel and await every detached tenant writer registered before reset.
+
+        Then forget every tracked AI investigation and case lock (Round 16 WP08): a
+        cancelled spawned run has ended its handle, and nothing writes a case now."""
 
         cancelled = 0
         while self._mutation_tasks:
@@ -340,7 +355,158 @@ class AppState:
             for task in tasks:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
+        self.investigation_registry.clear()
+        self.case_locks.clear()
         return cancelled
+
+    # ------------------------------------------------------------------ #
+    # Round 16 (SPEC §4.5 WP08, D10): AI investigation runs. The registry is memory
+    # only; the Demo stack holds its own while Demo Mode is on.
+    # ------------------------------------------------------------------ #
+    @property
+    def investigations(self):
+        """The AI investigation registry for the active real/Demo boundary (SPEC §3.2):
+        ``GET /api/investigations/active`` answers from the Demo stack's own registry
+        while Demo Mode is on."""
+        demo = self._demo
+        if demo is not None:
+            registry = getattr(demo, "investigation_registry", None)
+            if registry is not None:
+                return registry
+        return self.investigation_registry
+
+    def case_lock(self, case_id: str) -> asyncio.Lock:
+        """The per-case write lock a person's case action holds across its read and
+        save (shared with the pipelines, which take it only inside a signature lock)."""
+        return self.case_locks.lock(case_id)
+
+    def _investigation_finished(self, handle, *, demo=None) -> None:
+        """The registry's finish hook (SPEC §4.5 WP08, D10): the Inbox notices of a
+        finished run, written by a tracked task so the run never waits on them and a
+        factory reset can cancel them. Only a manual run's requester and a person whose
+        close the run replaced get one; job and automatic runs get no item. Never
+        raises."""
+        coro = None
+        try:
+            manual = handle.trigger == "manual" and bool(handle.requested_by)
+            if not handle.case_id or not (manual or handle.close_replaced):
+                return
+            coro = self._write_investigation_notices(handle, demo)
+            self.spawn_mutation_task(coro, name=f"investigation-notices:{handle.run_id}")
+        except Exception as exc:  # noqa: BLE001 (a notice never touches a run)
+            if coro is not None:
+                coro.close()
+            logger.debug("investigation finish notices skipped: %s", exc)
+
+    async def _write_investigation_notices(self, handle, demo=None) -> int:
+        """Write the finish notices of one run into the stores of the stack that ran it
+        (the Demo stack's own Inbox, audit and bus while it is the active one). Copy is
+        built from enums only (#7, #9). The ``case.close_replaced`` row is written
+        before the Inbox item it explains (#2). Returns the items delivered."""
+        from .constants import ActionType, NotificationCategory
+        from .models import InAppNotification
+        from .realtime import get_event_bus
+
+        if demo is not None:
+            inbox, audit, cases, bus = demo.inbox, demo.audit, demo.cases, demo.event_bus
+        else:
+            inbox, audit, cases, bus = self._real_inbox, self._real_audit, self._real_cases, get_event_bus()
+        case_id = str(handle.case_id)
+        label = case_id
+        try:
+            stored = await cases.get(case_id)
+            label = str(getattr(stored, "case_number", "") or "") or case_id
+        except Exception:  # noqa: BLE001 - the id stands in for the number
+            pass
+        notes: list[InAppNotification] = []
+        replaced = handle.close_replaced if isinstance(handle.close_replaced, dict) else None
+        replaced_by = str((replaced or {}).get("by") or "").strip()
+        if replaced and replaced_by:
+            try:
+                await audit.record_strict(
+                    action_type=ActionType.DECISION, surface="case", actor="pipeline",
+                    actor_type="system", outcome="success", case_id=case_id,
+                    action="case.close_replaced", run_id=handle.run_id,
+                    result_summary=(
+                        f"an AI investigation replaced the close by {replaced_by}: "
+                        f"{replaced.get('from_status')} -> {replaced.get('to_status')}"
+                    ),
+                    tool_input={
+                        "run_id": handle.run_id, "closed_by": replaced_by,
+                        "from_status": replaced.get("from_status"),
+                        "to_status": replaced.get("to_status"),
+                    },
+                )
+            except Exception as exc:  # noqa: BLE001 - no row, no notice
+                logger.warning("case.close_replaced audit failed for %s: %s", case_id, exc)
+                replaced_by = ""
+            if replaced_by and await self._inbox_category_allows(
+                replaced_by, NotificationCategory.ASSIGNMENT.value,
+            ):
+                notes.append(InAppNotification(
+                    recipient=replaced_by,
+                    category=NotificationCategory.ASSIGNMENT.value,
+                    title=f"An AI investigation replaced your close of case {label}",
+                    body=(
+                        "It was already running when you closed the case. It finished with "
+                        f"the verdict {_ai_verdict_words(handle.verdict_after)} and set the "
+                        f"status to {_ai_status_words(handle.status_after)}. Your disposition "
+                        "and note are kept."
+                    ),
+                    case_id=case_id, url=f"/cases/{case_id}",
+                    ref={"kind": "investigation", "run_id": handle.run_id, "event": "close_replaced"},
+                ))
+        requester = str(handle.requested_by or "").strip()
+        if (
+            handle.trigger == "manual" and requester
+            and requester.lower() != replaced_by.lower()
+            and await self._inbox_category_allows(requester, NotificationCategory.SYSTEM.value)
+        ):
+            notes.append(InAppNotification(
+                recipient=requester,
+                category=NotificationCategory.SYSTEM.value,
+                title=f"AI investigation finished on case {label}",
+                body=_ai_finish_body(handle),
+                case_id=case_id, url=f"/cases/{case_id}",
+                ref={"kind": "investigation", "run_id": handle.run_id},
+            ))
+        delivered = 0
+        for note in notes:
+            try:
+                await inbox.append(note)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("investigation notice for %s failed: %s", note.recipient, exc)
+                continue
+            delivered += 1
+            try:
+                await audit.record(
+                    action_type=ActionType.INAPP_NOTIFY, surface="investigation",
+                    actor="pipeline", actor_type="system", outcome="success", case_id=case_id,
+                    result_summary=f"investigation_{handle.outcome or 'finished'} -> {note.recipient}",
+                )
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                bus.publish(
+                    "notifications", "inapp", {"category": note.category, "case_id": case_id},
+                    audience=[note.recipient],
+                )
+            except Exception:  # noqa: BLE001
+                pass
+        return delivered
+
+    async def _inbox_category_allows(self, user: str, category: str) -> bool:
+        """False when ``user`` switched ``category`` off in their Inbox preferences (the
+        rule of ``routes_auto_close_review._inapp_allows``). A read failure delivers."""
+        store = getattr(self, "notif_prefs", None)
+        if store is None:
+            return True
+        try:
+            pref = await store.get(user)
+            entry = (getattr(pref, "categories", {}) or {}).get(category)
+        except Exception:  # noqa: BLE001
+            return True
+        return not (isinstance(entry, dict) and entry.get("enabled") is False)
 
     def restore_environment_runtime_secrets(self) -> dict[str, int]:
         """Drop tenant runtime overlays while preserving deployment/boot values.
@@ -1337,6 +1503,8 @@ class AppState:
             # preserved; only this already-available collaborator moves to the ctor.
             event_bus=self.event_bus,
             investigation_gate=self.investigation_gate,
+            investigation_registry=self.investigation_registry,
+            case_locks=self.case_locks,
             mutation_task_spawner=self.spawn_mutation_task,
             # Forward fixture capture for the replay harness. Wired ONLY on the real
             # pipeline: demo traffic is synthetic and must never enter a replay corpus.
@@ -2108,6 +2276,7 @@ class AppState:
                 await self._real_pipeline.investigate_cluster(
                     cluster, SourceSurface.AUTOMATED_SCAN, prefs,
                     query_source=self.poller.source_for_id(getattr(_src, "id", None)),
+                    trigger="detection",
                 )
                 count += 1
             return count
@@ -2788,7 +2957,7 @@ class AppState:
         try:
             if await self.users.count() > 0:
                 return
-            from .auth.passwords import hash_password
+            from .auth.passwords import ahash_password
             from .constants import UserRole
 
             # When an env single-admin is configured (auth_admin_password set), that
@@ -2799,7 +2968,9 @@ class AppState:
             if self.secrets.auth_seed_admin and not env_admin:
                 created = await self.users.create_if_absent(
                     username=self.secrets.auth_seed_admin_username,
-                    password_hash=hash_password(self.secrets.auth_seed_admin_password),
+                    # Off the event loop (PBKDF2): seeding also runs after a factory reset,
+                    # while the backend serves requests.
+                    password_hash=await ahash_password(self.secrets.auth_seed_admin_password),
                     role=UserRole.SUPER_ADMIN.value,
                     active=True,
                     must_change_password=False,
@@ -3577,6 +3748,12 @@ class AppState:
             runbook_automation=bind_demo_runbook_automation(
                 self, lambda: demo_stack is not None and self._demo is demo_stack,
             ),
+            # Round 16 (SPEC §4.5 WP08): the shared case locks; the Demo registry's
+            # finish notices go to this stack's own Inbox, audit and bus.
+            case_locks=self.case_locks,
+            on_investigation_finished=lambda handle: self._investigation_finished(
+                handle, demo=demo_stack,
+            ),
         )
 
         # Eagerly seed the SHARED demo RAG corpus so the Knowledge page shows a populated
@@ -4296,22 +4473,49 @@ def parse_user_agent(ua: str) -> dict[str, str]:
     return {"ua_browser": browser, "ua_os": os_name, "client_type": client_type}
 
 
-def client_ip_from(request) -> str:
-    """Best-effort client IP from a Starlette/FastAPI request (Wave 3, stdlib only).
+#: A verdict and a status in the Console's words, for the AI investigation notices
+#: (Round 16 SPEC §4.5 WP08; research ``ai-investigating`` §4.5). Enums only (#9).
+_AI_VERDICT_WORDS = {
+    "TRUE_POSITIVE": "True positive",
+    "FALSE_POSITIVE": "False positive",
+    "NEEDS_HUMAN": "Needs a person",
+}
+_AI_STATUS_WORDS = {
+    "new": "New",
+    "open": "Open",
+    "needs_human": "Open, awaiting analyst",
+    "investigating": "Investigating",
+    "escalated": "Escalated",
+    "on_hold": "On hold",
+    "resolved": "Resolved",
+    "closed": "Closed",
+}
 
-    Honors a single ``X-Forwarded-For`` hop (first entry) when present, else the
-    socket peer. PLAIN text, never raises. (No trust decision is made here — the IP
-    is metadata only, never an authz input.)"""
-    try:
-        xff = request.headers.get("x-forwarded-for") or ""
-        if xff:
-            first = xff.split(",")[0].strip()
-            if first:
-                return first
-        client = getattr(request, "client", None)
-        return str(getattr(client, "host", "") or "")
-    except Exception:  # noqa: BLE001
-        return ""
+
+def _ai_verdict_words(value: Any) -> str:
+    return _AI_VERDICT_WORDS.get(str(value or "").upper(), "not recorded")
+
+
+def _ai_status_words(value: Any) -> str:
+    return _AI_STATUS_WORDS.get(str(value or "").lower(), "not recorded")
+
+
+def _ai_finish_body(handle: Any) -> str:
+    """The body of the requester's "AI investigation finished" notice, by outcome."""
+    outcome = getattr(handle, "outcome", None)
+    status = _ai_status_words(getattr(handle, "status_after", None))
+    if outcome == "routed_to_person":
+        return (
+            "The investigation could not finish, so the case was routed to a person. "
+            f"Status: {status}."
+        )
+    if outcome == "cancelled":
+        return "The investigation was stopped before it finished. The case was not changed."
+    if outcome == "failed":
+        return "The investigation could not finish and the case was not saved."
+    if outcome == "unchanged":
+        return "An open case already holds these events, so this case was not changed."
+    return f"Verdict: {_ai_verdict_words(getattr(handle, 'verdict_after', None))}. Status: {status}."
 
 
 def geo_for_ip(ip: str) -> dict[str, str]:

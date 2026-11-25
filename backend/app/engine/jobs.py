@@ -717,6 +717,12 @@ class JobRunner:
             case = await self.state.real_cases.get(case_id)
             if case is None:
                 raise HTTPException(status_code=404, detail="Case not found")
+            # Round 16 (SPEC §4.5 WP08): a closed case is reinvestigated in place, unless
+            # an open case already holds its signature (#4); the item then fails with
+            # that reason, before the audit row and the rebuild.
+            from ..api.routes_investigations import open_case_conflict
+
+            await open_case_conflict(self.state.real_cases, case)
             cluster = await self.state.cluster_for_case(case)
             if cluster is None:
                 raise HTTPException(
@@ -749,6 +755,10 @@ class JobRunner:
                 force=True,
                 query_source=query_source,
                 investigation_priority="background",
+                trigger="job",
+                requested_by=job.actor,
+                known_case_id=case_id,
+                target_case_id=case_id,
             )
             # A failed investigation does not raise: the pipeline routes the case to a
             # person and records why on the case (``error``, written only by this run,

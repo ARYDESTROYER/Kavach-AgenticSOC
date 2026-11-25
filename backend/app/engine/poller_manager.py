@@ -502,11 +502,15 @@ class PollerManager:
             if cluster is None:
                 continue
             query_source = self.source_for_id(case.source_id)
+            # Round 16 (SPEC D10, WP08): the run re-reads this candidate inside its
+            # signature lock and skips it when a person closed or moved it meanwhile.
             await self._state.real_pipeline.investigate_cluster(
                 cluster,
                 case.source_surface,
                 prefs,
                 query_source=query_source,
+                trigger="drain",
+                known_case_id=case.case_id,
             )
             drained += 1
         return drained

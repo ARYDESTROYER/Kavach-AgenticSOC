@@ -244,9 +244,50 @@ def is_attach_only(case) -> bool:
     return case.verdict is not None or case.decision_by == DecisionBy.ANALYST
 
 
-async def attach_cluster(cases: "CaseStore", existing, cluster: Cluster) -> bool:
+async def attach_cluster(
+    cases: "CaseStore", existing, cluster: Cluster, *, pipeline: Any = None,
+    awaiting_reason: str | None = None,
+) -> bool:
     """Merge a cluster's new events into an open case. Idempotent; returns True iff
-    something new was attached."""
+    something new was attached.
+
+    ``awaiting_reason`` (optional) is the candidate's refreshed stage label, set with
+    the attach and saved even when no event is new.
+
+    With a ``pipeline`` that exposes ``case_lock`` (Round 16 SPEC §4.5 WP08), the case
+    is re-read by id under that lock (inside the signature lock the caller holds) and
+    the attach is applied to the fresh copy, so a person's close or comment saved since
+    ``existing`` was read is never overwritten; ``existing`` is then updated to what was
+    saved. Without one, today's behaviour."""
+    case_lock = getattr(pipeline, "case_lock", None) if pipeline is not None else None
+    case_id = getattr(existing, "case_id", None)
+    if not callable(case_lock) or not case_id:
+        return await _attach_cluster_to(cases, existing, cluster, awaiting_reason=awaiting_reason)
+    async with case_lock(case_id):
+        try:
+            fresh = await cases.get(case_id)
+        except Exception as exc:  # noqa: BLE001 - the attach must not fail on this read
+            logger.warning("Re-reading case %s before an attach failed: %s", case_id, exc)
+            fresh = None
+        if fresh is None or fresh is existing or type(fresh) is not type(existing):
+            return await _attach_cluster_to(cases, existing, cluster, awaiting_reason=awaiting_reason)
+        # A case a person closed meanwhile keeps the events, not a candidate's label.
+        still_open = str(getattr(fresh.status, "value", fresh.status)) in OPEN_CASE_STATUSES
+        attached = await _attach_cluster_to(
+            cases, fresh, cluster, awaiting_reason=awaiting_reason if still_open else None,
+        )
+        for name in type(fresh).model_fields:
+            setattr(existing, name, getattr(fresh, name))
+        return attached
+
+
+async def _attach_cluster_to(
+    cases: "CaseStore", existing, cluster: Cluster, *, awaiting_reason: str | None = None,
+) -> bool:
+    reason_changed = False
+    if awaiting_reason is not None and existing.awaiting_reason != awaiting_reason:
+        existing.awaiting_reason = awaiting_reason
+        reason_changed = True
     prior_keys = list(existing.member_event_keys or existing.member_event_ids)
     incoming_keys = list(cluster.member_event_keys or cluster.member_event_ids)
     if existing.member_event_keys:
@@ -264,6 +305,8 @@ async def attach_cluster(cases: "CaseStore", existing, cluster: Cluster) -> bool
     merged_keys = list(dict.fromkeys(prior_keys + new_keys))
     before = len(prior_keys)
     if len(merged_keys) == before:
+        if reason_changed:
+            await cases.save(existing)
         return False  # nothing new
     existing.member_event_keys = merged_keys
     existing.member_event_ids = list(dict.fromkeys(
@@ -364,7 +407,7 @@ async def handle_clusters(
             # close it as the agent. It uses no cap slot and a person can still ask for
             # the AI (Investigate, Reinvestigate).
             if existing is not None and is_attach_only(existing):
-                await attach_cluster(cases, existing, cluster)
+                await attach_cluster(cases, existing, cluster, pipeline=pipeline)
                 stats["attached"] += 1
                 continue
             # Alerts-role index patterns carry SIEM-generated detections the operator
@@ -457,11 +500,11 @@ async def handle_clusters(
                     cluster, prefs, capped=capped, floor=floor,
                     routing_score=routing_score,
                 )
-                reason_changed = existing.awaiting_reason != new_reason
-                existing.awaiting_reason = new_reason
-                attached = await attach_cluster(cases, existing, cluster)
-                if reason_changed and not attached:
-                    await cases.save(existing)
+                # The refreshed label is set with the attach, on the case as stored now
+                # (saved even when no event is new; Round 16 WP08).
+                await attach_cluster(
+                    cases, existing, cluster, pipeline=pipeline, awaiting_reason=new_reason,
+                )
                 stats["attached"] += 1
             else:
                 if capped:
