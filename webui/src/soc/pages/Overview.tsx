@@ -209,6 +209,10 @@ import {
   type LifecycleMetricKey,
 } from './posture.format';
 import type { PostureResponse, StatBlock } from './Metrics.posture.api';
+import type { MttrByDecider } from '@/lib/types-metrics-explain';
+import type { Explanation } from '@/lib/explain/types';
+import { explainCount, explainKpiShare } from '@/soc/components/metrics-explain/builders';
+import { TimingExplain } from '@/soc/components/metrics-explain/TimingExplain';
 import { GrantsUnknownNotice, isPermissionRefusal, usePageGrants } from './PageAccess';
 
 /**
@@ -958,12 +962,15 @@ function TimingStat({
   block,
   dotClass,
   help,
+  explain,
 }: {
   label: string;
   sub: string;
   block: StatBlock | undefined;
   dotClass: string;
   help?: string;
+  /** Round 16 (WP12): wraps the shown value in its explanation (hover and click). */
+  explain?: (value: React.ReactNode) => React.ReactNode;
 }) {
   const available = block?.available === true;
   const value = available ? humanizeMins(block!.p50) : DASH;
@@ -982,7 +989,7 @@ function TimingStat({
         {label}
       </div>
       <div className="mt-1.5 text-3xl font-semibold leading-none tabular-nums text-foreground">
-        {value}
+        {explain && available ? explain(value) : value}
       </div>
       <div className="mt-1.5 text-sm text-muted-foreground">{sub}</div>
       <div className="text-xs tabular-nums text-muted-foreground" data-timing-detail="">
@@ -994,8 +1001,12 @@ function TimingStat({
 
 type LatestCaseBadgeVariant = NonNullable<React.ComponentProps<typeof Badge>['variant']>;
 
-/** Prototype status vocabulary: compact, operational, and semantically tokenised. */
-function latestCaseStatus(status: string | null | undefined): {
+/**
+ * Prototype status vocabulary: compact, operational, and semantically tokenised. Closed
+ * and resolved are distinct lifecycle states, so each keeps its own word (Round 16 B67),
+ * as the queue and the Cases list say them.
+ */
+export function latestCaseStatus(status: string | null | undefined): {
   label: string;
   variant: LatestCaseBadgeVariant;
 } {
@@ -1007,7 +1018,8 @@ function latestCaseStatus(status: string | null | undefined): {
   if (key === 'investigating' || key === 'in_progress') {
     return { label: 'Investigating', variant: 'low' };
   }
-  if (key === 'closed' || key === 'resolved') return { label: 'Resolved', variant: 'success' };
+  if (key === 'closed') return { label: 'Closed', variant: 'success' };
+  if (key === 'resolved') return { label: 'Resolved', variant: 'success' };
   return { label: humanizeToken(key), variant: 'secondary' };
 }
 
@@ -1515,6 +1527,15 @@ function VolumeColumns({ data }: { data: Array<{ x: string; y: number }> }) {
   );
 }
 
+/**
+ * The least time between two `GET /api/metrics` reads on LIVE ticks (Round 16 WP12,
+ * backend roadmap R2 layer 3): its all-time figures change slowly and their server copy
+ * lives 60 s. Exported for its test.
+ */
+export const METRICS_LIVE_MIN_MS = 30_000;
+/** A LIVE tick's stand-in for a metrics read it did not send. */
+const METRICS_KEPT = Symbol('metrics kept');
+
 /** Re-render on an interval so relative stamps ("Updated 2m ago") stay true. */
 function useNow(intervalMs: number): number {
   const [now, setNow] = React.useState(() => Date.now());
@@ -1647,6 +1668,21 @@ const RESPONSE_TIME_HELP =
   'Medians (p50) over the cases that arrived in this window, computed on the server from ' +
   "each case's own timestamps. A measured figure says how many cases it measured, and " +
   'its p90 when the server reports one; a figure that is not measured says why.';
+
+/**
+ * The detect and respond figures say what they are (Round 16 B66): each value is the
+ * median (p50), and the Respond clock is the MTTA clock, which only a person's
+ * acknowledgement or a move to investigating, escalated or on hold stops. Assigning a
+ * case does not stop it.
+ */
+export const MTTD_HELP =
+  "Median (p50) time to detect: the cluster's first event to the case being opened. " +
+  'Not measured when no case records a first-event time.';
+export const RESPOND_SUB =
+  'First human acknowledgement, or a move to investigating, escalated or on hold · same clock as MTTA';
+export const RESPOND_HELP =
+  'Median (p50) time to respond: case open to the first human acknowledgement, or a human move to ' +
+  'investigating, escalated or on hold. Assigning a case alone does not stop this clock.';
 
 /** The Response time and Latest cases `h2` ids: each panel is the region its title names. */
 const RESPONSE_TIME_HEADING_ID = 'overview-response-title';
@@ -2246,9 +2282,25 @@ export default function Overview({ onNavigate }: OverviewProps) {
   // covered by the seq check alone.
   const loadSeqRef = React.useRef(0);
   const loadAbortRef = React.useRef<AbortController | null>(null);
+  /**
+   * Round 16 (WP12, backend roadmap R2 layer 3): `GET /api/metrics` reads the ALL-TIME
+   * population, whose server copy lives 60 s, so a LIVE tick re-reads it at most once
+   * per `METRICS_LIVE_MIN_MS`. A window change, a manual refresh and the first load
+   * always read it. `liveTickRef` marks the batch a LIVE tick started.
+   */
+  const liveTickRef = React.useRef(false);
+  const metricsReadRef = React.useRef<{ hours: number; at: number } | null>(null);
 
   const load = React.useCallback(async () => {
     const seq = (loadSeqRef.current += 1);
+    const liveTick = liveTickRef.current;
+    liveTickRef.current = false;
+    const lastMetricsRead = metricsReadRef.current;
+    const metricsFresh =
+      liveTick &&
+      lastMetricsRead !== null &&
+      lastMetricsRead.hours === hours &&
+      Date.now() - lastMetricsRead.at < METRICS_LIVE_MIN_MS;
     loadAbortRef.current?.abort();
     const controller = new AbortController();
     loadAbortRef.current = controller;
@@ -2279,7 +2331,12 @@ export default function Overview({ onNavigate }: OverviewProps) {
         // honour the range (backend caps at 200 by created-desc).
         api.listCases({ limit: 200, from: `now-${hours}h` }),
         // The metric totals and LLM spend are read only with their grants (roles-02).
-        canMetrics ? api.getMetrics(hours) : Promise.resolve(null),
+        // A LIVE tick inside the metrics cadence keeps the figures it has (WP12).
+        canMetrics
+          ? metricsFresh
+            ? Promise.resolve(METRICS_KEPT)
+            : api.getMetrics(hours)
+          : Promise.resolve(null),
         canCost ? api.usageSummary(hours) : Promise.resolve(null),
         noiseP,
         // The immediately-preceding equal window — powers the honest open/resolved
@@ -2310,10 +2367,14 @@ export default function Overview({ onNavigate }: OverviewProps) {
         });
         setCasesLoadedAt(settledAt);
       }
-      if (m.status === 'fulfilled') {
-        setMetrics(m.value);
-        // A read that was not sent is not a freshness the page can claim.
-        setMetricsLoadedAt(m.value ? settledAt : null);
+      if (m.status === 'fulfilled' && m.value !== METRICS_KEPT) {
+        const read = m.value as Metrics | null;
+        setMetrics(read);
+        if (read) metricsReadRef.current = { hours, at: Date.now() };
+        // A read that was not sent is not a freshness the page can claim. The all-time
+        // figures say when the server read their cases (`generated_at`, WP06 and WP12);
+        // an older server does not, and then the settle time stands in.
+        setMetricsLoadedAt(read ? (typeof read.generated_at === 'string' && read.generated_at) || settledAt : null);
       }
       if (u.status === 'fulfilled') {
         setUsage(u.value);
@@ -2470,6 +2531,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
   /** A refresh the operator did not just ask for a new window with: numerals do not roll. */
   const refreshQuietly = React.useCallback(() => {
     setRollKpis(false);
+    liveTickRef.current = true;
     void refreshAll();
   }, [refreshAll]);
 
@@ -2667,6 +2729,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
         key: metric,
         label: copy.label,
         help: copy.help,
+        block: b,
         value: b && b.available ? humanizeMins(b.p50) : DASH,
         sub:
           b && b.available
@@ -2690,6 +2753,19 @@ export default function Overview({ onNavigate }: OverviewProps) {
   // series is likewise ACK-based server-side.
   const mttdBlock = posture?.lifecycle?.mttd_minutes;
   const respondBlock = posture?.lifecycle?.mtta_minutes;
+  /** MTTR split by who closed the cases (Round 16 WP12, additive on the posture rollup). */
+  const mttrByDecider = (posture?.lifecycle as { mttr_by_decider?: MttrByDecider } | undefined)
+    ?.mttr_by_decider;
+  /**
+   * Which timing figure's explanation is open, so its hover trend card stands down: two
+   * floating cards over one number would cover each other (Round 16 WP12).
+   */
+  const [timingExplainOpen, setTimingExplainOpen] = React.useState<string | null>(null);
+  const timingExplainOpenChange = React.useCallback(
+    (id: string) => (open: boolean) =>
+      setTimingExplainOpen((prev) => (open ? id : prev === id ? null : prev)),
+    [],
+  );
 
   /*
    * The newest cases for the live queue — up to LATEST_MAX_ROWS (Round 12). The panel
@@ -3323,7 +3399,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
     /** A context string as-is, or nothing when it is the "no honest denominator" dash. */
     const orNone = (s: string): string | undefined => (s === DASH ? undefined : s);
 
-    return [
+    const tiles: KpiItem[] = [
       {
         label: 'Total cases',
         // Re-keyed WITH the label. `KpiTile` derives its anchor from `testId` when one
@@ -3734,6 +3810,116 @@ export default function Overview({ onNavigate }: OverviewProps) {
         },
       },
     ];
+
+    /*
+     * Round 16 (WP12): every tile explains its numeral with the real numbers (the hover
+     * card's arithmetic line; the drill-down's "Show the calculation"). Each reads the
+     * very numbers the tile shows, so the two cannot disagree; a tile that withholds its
+     * numeral (an outage, an uncovered window for a share) explains nothing.
+     */
+    const windowWords = `the last ${trendSpanLabel(hours)}`;
+    const partialCaveat = covered
+      ? []
+      : ['Part of the window could not be read, so this is a lower bound.'];
+    const explanations: Record<string, Explanation | null> = {
+      'total-cases': explainCount({
+        metric: 'case_count',
+        title: 'Total cases',
+        value: caseCount,
+        noun: 'cases',
+        window: windowWords,
+        summary: `${fmtNumber(caseCount)} cases arrived in ${windowWords}, policy-closed included.`,
+        formula: 'count of cases created in the window',
+        caveats: partialCaveat,
+      }),
+      'total-critical': covered
+        ? explainKpiShare({
+            metric: 'critical_share',
+            title: 'Total critical',
+            numerator: criticalCount,
+            denominator: caseCount,
+            numeratorLabel: `${topBandLabel.toLowerCase()} cases`,
+            denominatorLabel: 'cases',
+            window: windowWords,
+            dividedBy: 'console',
+            tileRounding: 'The tile shows the count; its share is a whole percent.',
+          })
+        : explainCount({
+            metric: 'critical_count',
+            title: 'Total critical',
+            value: criticalCount,
+            noun: `${topBandLabel.toLowerCase()} cases`,
+            window: windowWords,
+            summary: `${fmtNumber(criticalCount)} ${topBandLabel.toLowerCase()} cases arrived in ${windowWords}.`,
+            formula: `count of cases in the ${topBandLabel.toLowerCase()} severity band`,
+            caveats: partialCaveat,
+          }),
+      'open-cases': explainCount({
+        metric: 'open_now',
+        title: 'Open cases',
+        value: openNowCount,
+        noun: 'open cases',
+        window: 'Now, any arrival date',
+        summary: `${fmtNumber(openNowCount)} cases are open now, whenever they arrived.`,
+        formula: 'count of cases that are not resolved or closed, all time',
+        caveats: openNowComplete ? [] : ['The store held more cases than were read, so this is a lower bound.'],
+      }),
+      'false-positive-rate': fpPercent === undefined
+        ? null
+        : explainKpiShare({
+            metric: 'fp_rate',
+            title: 'AI-verdict FP rate',
+            numerator: quality?.false_positive_cases,
+            denominator: quality?.verdicted_cases,
+            numeratorLabel: 'false positive verdicts',
+            denominatorLabel: 'verdicted cases',
+            window: windowWords,
+            dividedBy: 'server',
+            tileRounding: 'The tile shows a whole percent.',
+            caveats: [
+              'Cases an analyst rule policy closed are left out: no model ran on them.',
+              ...(typeof analystFp === 'number'
+                ? [`Analysts confirmed ${fmtNumber(analystFp)} of the window's cases as false positive; that count is separate.`]
+                : []),
+            ],
+          }),
+      'resolved-closed': covered
+        ? explainKpiShare({
+            metric: 'terminal_share',
+            title: 'Resolved or closed',
+            numerator: terminalCases,
+            denominator: caseCount,
+            numeratorLabel: 'resolved or closed cases',
+            denominatorLabel: 'cases',
+            window: windowWords,
+            dividedBy: 'console',
+            tileRounding: 'The tile shows the count; its share is a whole percent.',
+            caveats: policyClosedReported
+              ? [`Includes ${fmtNumber(policyClosed as number)} declared benign by an analyst rule policy.`]
+              : [],
+          })
+        : null,
+      'auto-closed': automationPercent === undefined
+        ? null
+        : explainKpiShare({
+            metric: 'automation_rate',
+            title: 'Auto-closed',
+            numerator: autoClosedCases,
+            denominator: strippedTerminal,
+            numeratorLabel: 'closed by the AI agent',
+            denominatorLabel: 'agent-worked closes',
+            window: windowWords,
+            dividedBy: 'server',
+            tileRounding: 'The tile shows the count; its share is a whole percent.',
+            caveats: [
+              'Agent-worked closes leave out analyst rule policy closes. Who closed a case is the last decider it records.',
+            ],
+          }),
+    };
+    return tiles.map((tile) => ({
+      ...tile,
+      drilldown: { ...tile.drilldown, explanation: explanations[tile.testId] ?? null },
+    }));
   }, [
     posture,
     postureCovered,
@@ -4360,14 +4546,19 @@ export default function Overview({ onNavigate }: OverviewProps) {
                   // focus stop. Every card is FORCED closed while ANY drill-down or help
                   // popover is open (two stacked explanations of one numeral is worse than
                   // either alone, and the focus return would otherwise pop one back open).
-                  return kpi.trend ? (
+                  const formula = kpi.drilldown.explanation?.summary;
+                  return kpi.trend || formula ? (
                     <MetricHoverTrend
                       key={kpi.testId}
-                      {...kpi.trend}
+                      {...(kpi.trend ?? { metric: kpi.label, points: undefined, windowLabel: '' })}
+                      showTrend={Boolean(kpi.trend)}
                       preview={{
                         eyebrow: kpi.label,
                         population: kpi.drilldown.population,
-                        affordance: 'Select for the full population, filters and paging.',
+                        formula,
+                        affordance: formula
+                          ? 'Select for the calculation, the full population, filters and paging.'
+                          : 'Select for the full population, filters and paging.',
                       }}
                       focusable={false}
                       forceClosed={openKpi !== null || helpOpenKpi !== null}
@@ -4740,13 +4931,26 @@ export default function Overview({ onNavigate }: OverviewProps) {
                           colorToken="info"
                           side="top"
                           className="h-auto"
+                          forceClosed={timingExplainOpen === 'response-mttd'}
                         >
                           <TimingStat
                             label="MTTD"
                             sub="Detect · log arrival → case"
                             block={mttdBlock}
                             dotClass="bg-info"
-                            help="Mean time to detect: the cluster's first event → case-open. Shown as an honest n/a when no case carries a first-event instant."
+                            help={MTTD_HELP}
+                            explain={(value) => (
+                              <TimingExplain
+                                metric="mttd"
+                                title="Time to detect"
+                                block={mttdBlock}
+                                windowHours={hours}
+                                window={`the ${windowPhrase}`}
+                                onOpenChange={timingExplainOpenChange('response-mttd')}
+                              >
+                                {value}
+                              </TimingExplain>
+                            )}
                           />
                         </MetricHoverTrend>
                         <MetricHoverTrend
@@ -4757,6 +4961,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
                           colorToken="success"
                           side="top"
                           className="h-auto"
+                          forceClosed={timingExplainOpen === 'response-respond'}
                         >
                           {/* "Respond" is the ACK clock (`mtta_minutes`), NOT `mttr_minutes`:
                               calling it MTTR would present time-to-first-human-action as
@@ -4765,10 +4970,22 @@ export default function Overview({ onNavigate }: OverviewProps) {
                               figures read as one measurement shown twice, not a coincidence. */}
                           <TimingStat
                             label="Respond"
-                            sub="First human action, e.g. assignment or acknowledgement · same clock as MTTA"
+                            sub={RESPOND_SUB}
                             block={respondBlock}
                             dotClass="bg-success"
-                            help="Mean time to respond: the first active human response (investigating / escalated / assignment / ack)."
+                            help={RESPOND_HELP}
+                            explain={(value) => (
+                              <TimingExplain
+                                metric="mtta"
+                                title="Respond"
+                                block={respondBlock}
+                                windowHours={hours}
+                                window={`the ${windowPhrase}`}
+                                onOpenChange={timingExplainOpenChange('response-respond')}
+                              >
+                                {value}
+                              </TimingExplain>
+                            )}
                           />
                         </MetricHoverTrend>
                       </div>
@@ -4907,6 +5124,23 @@ export default function Overview({ onNavigate }: OverviewProps) {
                                     : s.help
                                 }
                                 askTopic={kpiTopic(s.key)}
+                                explain={
+                                  measured
+                                    ? (numeral) => (
+                                        <TimingExplain
+                                          metric={s.key}
+                                          title={s.label}
+                                          block={s.block}
+                                          windowHours={hours}
+                                          window={`the ${windowPhrase}`}
+                                          byDecider={s.key === 'mttr' ? mttrByDecider : undefined}
+                                          onOpenChange={timingExplainOpenChange(`deeper-${s.key}`)}
+                                        >
+                                          {numeral}
+                                        </TimingExplain>
+                                      )
+                                    : undefined
+                                }
                                 // The context/state line wraps in its two-line slot (KpiTile,
                                 // every hero strip since the final review): at 1280 with the
                                 // navigation pinned these tiles are ~215px, and a server reason
@@ -4931,6 +5165,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
                                 // not clickable, so a press toggles the card (touch).
                                 focusable={false}
                                 toggleOnClick={true}
+                                forceClosed={timingExplainOpen === `deeper-${s.key}`}
                               >
                                 {tile}
                               </MetricHoverTrend>

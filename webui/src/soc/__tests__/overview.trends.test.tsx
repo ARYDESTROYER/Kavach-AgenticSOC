@@ -203,10 +203,12 @@ describe('Overview — hover trendlines', () => {
     expect(tile.closest('[data-testid="metric-trend-trigger"]')).toBeNull();
     expect(tile.querySelector('svg.recharts-surface')).toBeNull();
     await userEvent.hover(tile);
-    // Give any (wrong) hover card a beat to appear, then assert none did. The arrivals
-    // series belongs to Total Cases; charting it under a window-exempt stock would
-    // pair a cohort line with a number that is not a cohort.
-    await new Promise((r) => setTimeout(r, 350));
+    // The hover gives the arithmetic (Round 16 WP12) in a preview card with no series.
+    // The arrivals series belongs to Total Cases; charting it under a window-exempt stock
+    // would pair a cohort line with a number that is not a cohort.
+    const preview = await screen.findByTestId('metric-preview-card');
+    expect(within(preview).queryByText('No trend data yet.')).toBeNull();
+    expect(preview.querySelector('svg.recharts-surface')).toBeNull();
     expect(screen.queryByTestId('metric-trend-card')).toBeNull();
   });
 
@@ -252,8 +254,10 @@ describe('Overview — hover trendlines', () => {
     // corroborate: a tile with no honest series shows no trend of ANY kind.
     expect(tile.querySelector('svg.recharts-surface')).toBeNull();
     await userEvent.hover(tile);
-    // Give any (wrong) hover card a beat to appear, then assert none did.
-    await new Promise((r) => setTimeout(r, 350));
+    // The hover gives the arithmetic (Round 16 WP12) in a preview card, never a trend.
+    const preview = await screen.findByTestId('metric-preview-card');
+    expect(within(preview).queryByText('No trend data yet.')).toBeNull();
+    expect(preview.querySelector('svg.recharts-surface')).toBeNull();
     expect(screen.queryByTestId('metric-trend-card')).toBeNull();
   });
 

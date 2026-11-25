@@ -30,7 +30,7 @@ import math
 from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Callable, NamedTuple
 
 from ..constants import (
     SEVERITY_BANDS,
@@ -166,9 +166,13 @@ def feedback_stats(cases: list[Case]) -> dict:
             entries.extend(own)
     rated_zero = {f"{name}_rated": 0 for name in _FEEDBACK_SUBSCORES}
     if not entries:
+        # Round 16 (WP12, research explainability D10): nothing was graded, so there is
+        # no agreement rate. ``None``, never ``0.0``: a 0% agreement would claim that
+        # every graded case disagreed.
         return {
-            "graded_cases": 0, "feedback_count": 0, "agreement_rate": 0.0,
+            "graded_cases": 0, "feedback_count": 0, "agreement_rate": None,
             "agreement_signals": 0,
+            "agreement_agreed": 0, "agreement_partial": 0, "agreement_disagreed": 0,
             "avg_accuracy": 0.0, "avg_reasoning_quality": 0.0,
             "avg_action_appropriateness": 0.0, "time_saved_minutes": 0,
             "outcome_distribution": {},
@@ -191,6 +195,12 @@ def feedback_stats(cases: list[Case]) -> dict:
         "feedback_count": n,
         "agreement_signals": len(signals),
         "agreement_rate": round((agree + partial) / len(signals), 4) if signals else None,
+        # Round 16 (WP12, D10): the rate's population, so an explanation can print the
+        # arithmetic: (agreed + 0.5 x partial) / agreement_signals, over grade ENTRIES
+        # with an assessment (not graded cases).
+        "agreement_agreed": agree,
+        "agreement_partial": sum(1 for a in signals if a == "partial"),
+        "agreement_disagreed": sum(1 for a in signals if a == "disagree"),
         **averages,
         "time_saved_minutes": int(sum(e.time_saved_minutes for e in entries)),
         "outcome_distribution": dict(Counter(e.actual_outcome for e in entries if e.actual_outcome)),
@@ -358,11 +368,17 @@ def compute_metrics(
     # same per-case clock as the lifecycle MTTR (``lifecycle_intervals``), so the two
     # agree on the same cases. A later edit (a comment, a tag, a grade) moves
     # ``updated_at`` but never this figure, and a reopened case is not resolved.
+    # Round 16 (WP12, research explainability D3 and R9): the same samples also give the
+    # lifecycle stat block (``mttr_lifecycle``: p50, p90, mean, max, count), the figure
+    # the Analytics MTTR tile shows, and its split by decider (``mttr_by_decider``). The
+    # mean ``mttr_minutes`` stays on the wire for one release.
     resolution_minutes: list[float] = []
+    resolution_deciders: list[str] = []
     for c in cases:
         start, end = _created_dt(c), _resolved_dt(c)
         if start and end and end >= start:
             resolution_minutes.append((end - start).total_seconds() / 60.0)
+            resolution_deciders.append(_decider_key(c))
     mttr = round(sum(resolution_minutes) / len(resolution_minutes), 1) if resolution_minutes else 0.0
 
     # Per-day created trend (UTC date buckets) for the last ``trend_days`` days.
@@ -406,6 +422,8 @@ def compute_metrics(
         "active_risk_case_count": active_risk_case_count,
         "mttr_minutes": mttr,
         "resolved_count": len(resolution_minutes),
+        "mttr_lifecycle": _stat_block(resolution_minutes, missing_reason=LIFECYCLE_MISSING["mttr"]),
+        "mttr_by_decider": mttr_by_decider(resolution_minutes, resolution_deciders),
         "cases_per_day": [{"date": d, "count": n} for d, n in trend],
         "burndown": burndown,
         "timing_trend": timing_trend(cases, trend_days=trend_days),
@@ -589,11 +607,98 @@ def lifecycle_intervals(
     ``webui/src/soc/pages/posture.format.ts`` (``LIFECYCLE_METRICS``). NOTE (#3): none of
     these is EVER read by ``case_manager.decide()`` — they are read-time reporting only.
     MTTD is now a real detection-latency measurement (we store the first-event instant on
-    the case); dwell remains time-to-first-response (a distinct human-response metric)."""
-    mtta: list[float] = []
-    mttr: list[float] = []
-    dwell: list[float] = []
-    mttd: list[float] = []
+    the case); dwell remains time-to-first-response (a distinct human-response metric).
+
+    Round 16 (WP12): the samples come from :func:`lifecycle_samples`, the one loop the
+    metric explanations (``GET /api/metrics/explain``) also read, so an explained median
+    is always the median shown. ``mttr_by_decider`` (additive) splits the MTTR samples by
+    the case's recorded decider (see :func:`mttr_by_decider`); its counts sum to
+    ``mttr_minutes.count``."""
+    samples = lifecycle_samples(cases, _timings=_timings)
+    return {
+        "mtta_minutes": _stat_block(samples["mtta"], missing_reason=LIFECYCLE_MISSING["mtta"]),
+        "mttr_minutes": _stat_block(samples["mttr"], missing_reason=LIFECYCLE_MISSING["mttr"]),
+        "dwell_minutes": _stat_block(samples["dwell"], missing_reason=LIFECYCLE_MISSING["dwell"]),
+        "mttd_minutes": _stat_block(samples["mttd"], missing_reason=LIFECYCLE_MISSING["mttd"]),
+        "mttr_by_decider": mttr_by_decider(samples["mttr"], samples["mttr_deciders"]),
+    }
+
+
+#: Why a lifecycle block is not measured, per clock (the ``_stat_block`` reasons).
+LIFECYCLE_MISSING: dict[str, str] = {
+    "mtta": "no case has been acknowledged yet",
+    "mttr": "no case has been resolved/closed yet",
+    "dwell": "no case has received a first response yet",
+    "mttd": "detection latency not available yet",
+}
+
+#: The deciders an MTTR sample is split by (Round 16 WP12, research explainability D3):
+#: the case's recorded ``decision_by`` (agent, analyst, analyst_policy, system), and
+#: ``unrecorded`` for a case that records none, so the split always sums to the total.
+MTTR_DECIDERS: tuple[str, ...] = ("agent", "analyst", "analyst_policy", "system", "unrecorded")
+
+
+class IntervalSample(NamedTuple):
+    """One lifecycle sample with the records behind it (``detail=True``)."""
+
+    minutes: float
+    case: Case
+    start: datetime | None
+    end: datetime
+    start_anchor: str
+    end_anchor: str
+
+
+def _decider_key(case: Case) -> str:
+    """The case's recorded decider as an ``MTTR_DECIDERS`` key. This is the LAST
+    recorded decider (see the caveat in :func:`quality_metrics`), not proof of who
+    performed the close."""
+    raw = getattr(case, "decision_by", None)
+    value = str(getattr(raw, "value", raw) or "").strip().lower()
+    return value if value in MTTR_DECIDERS[:-1] else "unrecorded"
+
+
+def mttr_by_decider(minutes: list[Any], deciders: list[str]) -> dict[str, Any]:
+    """The MTTR samples split by decider: one ``_stat_block`` per ``MTTR_DECIDERS`` key,
+    over the samples whose case records that decider. ``minutes`` and ``deciders`` are
+    parallel lists (floats or :class:`IntervalSample`); the counts sum to the total."""
+    groups: dict[str, list[float]] = {key: [] for key in MTTR_DECIDERS}
+    for value, decider in zip(minutes, deciders):
+        number = value.minutes if isinstance(value, IntervalSample) else value
+        groups[decider if decider in groups else "unrecorded"].append(float(number))
+    return {
+        key: _stat_block(values, missing_reason="no case in this group was resolved or closed")
+        for key, values in groups.items()
+    }
+
+
+def _from_millis(value: float) -> datetime | None:
+    try:
+        return datetime.fromtimestamp(float(value) / 1000.0, tz=timezone.utc)
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
+def lifecycle_samples(
+    cases: list[Case],
+    *,
+    _timings: dict[int, _CaseTimings] | None = None,
+    detail: bool = False,
+) -> dict[str, list[Any]]:
+    """The samples behind :func:`lifecycle_intervals`, in one pass over ``cases``.
+
+    Returns ``{"mtta", "mttr", "dwell", "mttd": [minutes, ...], "mttr_deciders":
+    [decider, ...]}`` (``mttr_deciders`` is parallel to ``mttr``). With ``detail`` each
+    sample is an :class:`IntervalSample` naming its case, its start and end instants
+    and the record each came from, for the metric explanations; without it each sample
+    is the plain float, so the posture rollup pays nothing extra. The minutes are the
+    same floats either way (one computation), so an explanation's median is the
+    rollup's median. Pure and advisory (#3)."""
+    mtta: list[Any] = []
+    mttr: list[Any] = []
+    dwell: list[Any] = []
+    mttd: list[Any] = []
+    mttr_deciders: list[str] = []
 
     for case in cases:
         timings = _timings_for(case, _timings)
@@ -606,30 +711,49 @@ def lifecycle_intervals(
             if created is not None:
                 created_ms = created.timestamp() * 1000.0
                 if created_ms >= fs:
-                    mttd.append((created_ms - fs) / 60000.0)
+                    minutes = (created_ms - fs) / 60000.0
+                    mttd.append(
+                        IntervalSample(minutes, case, _from_millis(fs), created,
+                                       "first_seen_millis", "created_at")
+                        if detail else minutes
+                    )
 
         start = timings.created
         if start is None:
             continue
+        start_anchor = ""
+        if detail:
+            start_anchor = "detected_at" if _as_dt(case.detected_at) is not None else "created_at"
 
         ack = timings.ack_anchor or timings.ack_human
         if ack and ack >= start:
-            mtta.append((ack - start).total_seconds() / 60.0)
+            minutes = (ack - start).total_seconds() / 60.0
+            mtta.append(
+                IntervalSample(minutes, case, start, ack, start_anchor,
+                               "acknowledged_at" if timings.ack_anchor else "status_history")
+                if detail else minutes
+            )
 
         resp = timings.resp_anchor or timings.resp_human
         if resp and resp >= start:
-            dwell.append((resp - start).total_seconds() / 60.0)
+            minutes = (resp - start).total_seconds() / 60.0
+            dwell.append(
+                IntervalSample(minutes, case, start, resp, start_anchor,
+                               "first_response_at" if timings.resp_anchor else "status_history")
+                if detail else minutes
+            )
 
         end = _resolved_dt(case, timings)  # guarded: a reopened (currently-open) case isn't resolved
         if end and end >= start:
-            mttr.append((end - start).total_seconds() / 60.0)
+            minutes = (end - start).total_seconds() / 60.0
+            mttr.append(
+                IntervalSample(minutes, case, start, end, start_anchor,
+                               "status_history" if timings.terminal_any is not None else "updated_at")
+                if detail else minutes
+            )
+            mttr_deciders.append(_decider_key(case))
 
-    return {
-        "mtta_minutes": _stat_block(mtta, missing_reason="no case has been acknowledged yet"),
-        "mttr_minutes": _stat_block(mttr, missing_reason="no case has been resolved/closed yet"),
-        "dwell_minutes": _stat_block(dwell, missing_reason="no case has received a first response yet"),
-        "mttd_minutes": _stat_block(mttd, missing_reason="detection latency not available yet"),
-    }
+    return {"mtta": mtta, "mttr": mttr, "dwell": dwell, "mttd": mttd, "mttr_deciders": mttr_deciders}
 
 
 def timing_trend(cases: list[Case], *, trend_days: int = 14) -> list[dict[str, Any]]:
@@ -1612,6 +1736,281 @@ def posture_metrics(
         }
 
     return rollup
+
+
+# --------------------------------------------------------------------------- #
+# Metric explanations (Round 16 WP12; research explainability D-API-4, R8, R9).
+#
+# ``GET /api/metrics/explain`` lists the cases behind one dashboard figure so a reader
+# can cross-check it. Every figure here is computed by the SAME code as the figure it
+# explains (the posture window filter, ``lifecycle_samples``, ``_stat_block``,
+# ``sla_case_reading``), so an explained median is the median shown. Ids, enums and
+# our own numbers only (#7); pure and advisory (#3).
+# --------------------------------------------------------------------------- #
+
+#: The figures the explain route answers for.
+EXPLAIN_METRICS: tuple[str, ...] = (
+    "mtta", "mttr", "dwell", "mttd", "active_risk_index", "fp_rate", "sla_attainment",
+)
+#: The timing figures and the lifecycle block each one is.
+EXPLAIN_TIMINGS: dict[str, str] = {
+    "mtta": "mtta_minutes", "mttr": "mttr_minutes", "dwell": "dwell_minutes", "mttd": "mttd_minutes",
+}
+#: The most sample rows one explanation returns.
+EXPLAIN_MAX_SAMPLES = 200
+
+_EXPLAIN_POPULATION: dict[str, str] = {
+    "mtta": "Cases created in {window} that a person acknowledged, or moved to investigating, escalated or on hold.",
+    "mttr": "Cases created in {window} that are resolved or closed now.",
+    "dwell": "Cases created in {window} that received a first response (investigating, escalated, on hold, resolved or closed).",
+    "mttd": "Cases created in {window} whose first event time is recorded.",
+    "active_risk_index": "Every case that is not resolved or closed, all time.",
+    "fp_rate": "Cases created in {window} with an AI verdict, without the cases an analyst rule policy closed.",
+    "sla_attainment": "Cases created in {window} whose priority has an SLA target.",
+}
+
+
+def _window_words(window_hours: int) -> str:
+    if window_hours <= 0:
+        return "all time"
+    if window_hours % 24 == 0 and window_hours > 48:
+        return f"the last {window_hours // 24} days"
+    return f"the last {window_hours} hours"
+
+
+def _iso_or_none(value: datetime | None) -> str | None:
+    return value.isoformat() if isinstance(value, datetime) else None
+
+
+def _case_ref(case: Case) -> dict[str, Any]:
+    return {
+        "case_id": case.case_id,
+        "case_number": case.case_number or case.case_id,
+        "status": case.status.value if case.status else "",
+    }
+
+
+def _select_rows(rows: list[Any], *, max_samples: int, centre_rank: float | None) -> tuple[list[Any], int]:
+    """At most ``max_samples`` rows and the rank of the first one. With more rows than
+    that, a timing explanation keeps the run centred on the median rank (so the two
+    values the median interpolates between are always listed) and the others keep the
+    first rows of their order."""
+    if len(rows) <= max_samples:
+        return rows, 0
+    if centre_rank is None:
+        return rows[:max_samples], 0
+    start = int(math.floor(centre_rank)) - max_samples // 2 + 1
+    start = max(0, min(start, len(rows) - max_samples))
+    return rows[start:start + max_samples], start
+
+
+def _sample_payload(
+    rows: list[Any], cases_of: Callable[[Any], Case], visible: Callable[[Case], bool] | None,
+    *, max_samples: int, centre: bool,
+) -> dict[str, Any]:
+    shown = [r for r in rows if visible is None or visible(cases_of(r))]
+    chosen, offset = _select_rows(
+        shown, max_samples=max_samples, centre_rank=(0.5 * (len(shown) - 1)) if centre and shown else None,
+    )
+    return {
+        "chosen": chosen,
+        "sample_count": len(rows),
+        "visible_count": len(shown),
+        "hidden_by_scope": len(rows) - len(shown),
+        "samples_offset": offset,
+        "samples_truncated": len(chosen) < len(shown),
+    }
+
+
+def explain_metric(
+    cases: list[Case],
+    metric: str,
+    *,
+    window_hours: int = 24,
+    now: datetime | None = None,
+    sla_policy: Any = None,
+    prefs: Any = None,
+    visible: Callable[[Case], bool] | None = None,
+    max_samples: int = EXPLAIN_MAX_SAMPLES,
+) -> dict[str, Any]:
+    """The explanation of one dashboard figure over ``cases`` (the route's population).
+
+    * ``mtta``, ``mttr``, ``dwell``, ``mttd``: the posture lifecycle block for the window
+      (``stat``: p50, p90, mean, max, count) and its samples sorted by minutes, each
+      naming its case, start and end instants and the record each came from. With more
+      than ``max_samples`` samples the run around the median rank is listed and
+      ``samples_offset`` is the rank of its first row. ``mttr`` adds ``by_decider``.
+    * ``active_risk_index``: the mean risk score of every case that is not resolved or
+      closed (``GET /api/metrics``), with its sum and count; rows by risk, highest first.
+    * ``fp_rate``: false-positive verdicts over verdicted cases (posture ``quality``),
+      analyst-policy closes left out; rows are the verdicted cases, the counted ones first.
+    * ``sla_attainment``: met over evaluated (posture ``sla``); rows are the evaluated
+      cases, breached first.
+
+    ``visible`` (optional) says which cases the caller may see (object scope); a hidden
+    case still counts in the figure and in ``sample_count`` but is left out of the rows,
+    and ``hidden_by_scope`` says how many were. Pure; never raises on a malformed case."""
+    now = now or datetime.now(timezone.utc)
+    wh = max(0, int(window_hours))
+    if metric not in EXPLAIN_METRICS:
+        raise ValueError(f"unknown metric {metric!r}")
+    window = "all time" if metric == "active_risk_index" else _window_words(wh)
+    base: dict[str, Any] = {
+        "metric": metric,
+        "window_hours": 0 if metric == "active_risk_index" else wh,
+        "window": window,
+        "generated_at": now.isoformat(),
+        "population": _EXPLAIN_POPULATION[metric].format(window=window),
+    }
+    timings: dict[int, _CaseTimings] = {}
+    current = cases if metric == "active_risk_index" else _window_filter(
+        cases, window_hours=wh, now=now, _timings=timings,
+    )
+    base["population_size"] = len(current)
+
+    if metric in EXPLAIN_TIMINGS:
+        samples = lifecycle_samples(current, _timings=timings, detail=True)[metric]
+        block = _stat_block([s.minutes for s in samples], missing_reason=LIFECYCLE_MISSING[metric])
+        ordered = sorted(samples, key=lambda s: (s.minutes, s.case.case_id))
+        picked = _sample_payload(ordered, lambda s: s.case, visible, max_samples=max_samples, centre=True)
+        rows = [
+            {
+                **_case_ref(s.case),
+                "value": round(s.minutes, 4),
+                "minutes": round(s.minutes, 4),
+                "start_at": _iso_or_none(s.start),
+                "end_at": _iso_or_none(s.end),
+                "start_anchor": s.start_anchor,
+                "anchor": s.end_anchor,
+                "decided_by": _decider_key(s.case),
+            }
+            for s in picked.pop("chosen")
+        ]
+        out = {
+            **base, "kind": "timing", "unit": "minutes", "headline": "p50",
+            "value": block["p50"], "available": block["available"], "reason": block["reason"],
+            "stat": block, **picked, "samples": rows, "samples_order": "minutes_ascending",
+        }
+        if metric == "mttr":
+            out["by_decider"] = mttr_by_decider(samples, [_decider_key(s.case) for s in samples])
+        return out
+
+    if metric == "active_risk_index":
+        active = [
+            c for c in current
+            if isinstance(c.risk_score, (int, float))
+            and (c.status.value if c.status else "") not in TERMINAL_CASE_STATUSES
+        ]
+        total = sum(float(c.risk_score) for c in active)
+        count = len(active)
+        ordered = sorted(active, key=lambda c: (-float(c.risk_score), c.case_id))
+        picked = _sample_payload(ordered, lambda c: c, visible, max_samples=max_samples, centre=False)
+        rows = [{**_case_ref(c), "value": round(float(c.risk_score), 2)} for c in picked.pop("chosen")]
+        return {
+            **base, "kind": "mean", "unit": "score", "headline": "mean",
+            "value": round(total / count, 1) if count else None,
+            "available": bool(count),
+            "reason": "" if count else "no case is open, so there is no index",
+            "numerator": round(total, 2), "denominator": count,
+            **picked, "samples": rows, "samples_order": "value_descending",
+        }
+
+    if metric == "fp_rate":
+        agent_worked = [c for c in current if not is_policy_closed(c)]
+        verdicted = [c for c in agent_worked if c.verdict is not None]
+        fp = sum(1 for c in verdicted if c.verdict == Verdict.FALSE_POSITIVE)
+        ordered = sorted(
+            verdicted,
+            key=lambda c: (c.verdict != Verdict.FALSE_POSITIVE, -(_created_ts(c)), c.case_id),
+        )
+        picked = _sample_payload(ordered, lambda c: c, visible, max_samples=max_samples, centre=False)
+        rows = [
+            {
+                **_case_ref(c),
+                "value": 1 if c.verdict == Verdict.FALSE_POSITIVE else 0,
+                "verdict": c.verdict.value if c.verdict else "",
+                "counted": c.verdict == Verdict.FALSE_POSITIVE,
+                "created_at": c.created_at,
+            }
+            for c in picked.pop("chosen")
+        ]
+        return {
+            **base, "kind": "ratio", "unit": "fraction", "headline": "ratio",
+            "value": _ratio(fp, len(verdicted)) if verdicted else None,
+            "available": bool(verdicted),
+            "reason": "" if verdicted else "no case in this window has an AI verdict",
+            "numerator": fp, "denominator": len(verdicted),
+            "policy_closed": len(current) - len(agent_worked),
+            **picked, "samples": rows, "samples_order": "counted_first_newest_first",
+        }
+
+    # sla_attainment: the same readings ``sla_metrics`` counts.
+    summary = sla_metrics(current, sla_policy, now=now, _timings=timings, prefs=prefs)
+    if not summary.get("enabled"):
+        return {
+            **base, "kind": "ratio", "unit": "percent", "headline": "ratio", "value": None,
+            "available": False, "reason": str(summary.get("reason") or "SLA policy disabled"),
+            "numerator": 0, "denominator": 0, "sample_count": 0, "visible_count": 0,
+            "hidden_by_scope": 0, "samples_offset": 0, "samples_truncated": False,
+            "samples": [], "samples_order": "breached_first",
+        }
+    targets = getattr(sla_policy, "targets", {}) or {}
+    scored: list[tuple[Case, str, SlaCaseReading]] = []
+    for c in current:
+        prio = _sla_priority(c, prefs)
+        target = targets.get(prio)
+        if target is None:
+            continue
+        reading = sla_case_reading(c, target, _timings_for(c, timings), now=now)
+        if reading.start is None:
+            continue
+        scored.append((c, prio, reading))
+
+    def _breached(reading: SlaCaseReading) -> bool:
+        return any(
+            clock is not None and clock.state == "breached"
+            for clock in (reading.response, reading.resolution)
+        )
+
+    ordered_sla = sorted(scored, key=lambda t: (not _breached(t[2]), t[0].case_number or t[0].case_id))
+    picked = _sample_payload(ordered_sla, lambda t: t[0], visible, max_samples=max_samples, centre=False)
+
+    def _clock(clock: SlaClockReading | None) -> dict[str, Any] | None:
+        if clock is None:
+            return None
+        return {
+            "state": clock.state,
+            "elapsed_minutes": round(clock.elapsed_minutes, 1),
+            "target_minutes": round(clock.target_minutes, 1),
+            "running": clock.running,
+            "stop_source": clock.stop_source,
+        }
+
+    rows = [
+        {
+            **_case_ref(c), "priority": prio,
+            "value": 0 if _breached(reading) else 1,
+            "counted": not _breached(reading),
+            "response": _clock(reading.response),
+            "resolution": _clock(reading.resolution),
+        }
+        for c, prio, reading in picked.pop("chosen")
+    ]
+    evaluated = int(summary.get("evaluated") or 0)
+    met = sum(1 for _c, _p, reading in scored if not _breached(reading))
+    return {
+        **base, "kind": "ratio", "unit": "percent", "headline": "ratio",
+        "value": summary.get("attainment_pct"),
+        "available": summary.get("attainment_pct") is not None,
+        "reason": str(summary.get("attainment_reason") or ""),
+        "numerator": met, "denominator": evaluated,
+        **picked, "samples": rows, "samples_order": "breached_first",
+    }
+
+
+def _created_ts(case: Case) -> float:
+    created = _parse_iso(case.created_at)
+    return created.timestamp() if created is not None else 0.0
 
 
 # --------------------------------------------------------------------------- #

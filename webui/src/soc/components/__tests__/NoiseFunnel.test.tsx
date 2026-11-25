@@ -19,6 +19,7 @@ import {
   parentStageKey,
   ribbonPath,
   stageShare,
+  SHARE_DASH,
 } from '../NoiseFunnel';
 import { NoiseLineageView } from '../NoiseLineage';
 import type { NoiseLineage, NoiseReduction } from '@/lib/types';
@@ -952,6 +953,43 @@ describe('NoiseFunnel Simple-mode stage shares', () => {
     // The conserved case split below it is still fully measurable.
     expect(shareText(view.container, 'auto_cleared')).toBe('· 63%');
     expect(shareText(view.container, 'closed')).toBe('· 47%');
+  });
+
+  // Round 16 B64: the counters cover part of the window (a fresh install younger than
+  // it, a counter gap) while the case tally covers all of it, so cases can outnumber
+  // the clusters counted. The flow said "Cases opened 56 · 147%"; it now says what the
+  // Detection and data health board says, and never prints a share above 100%.
+  it('says partial coverage instead of a share above 100% when the counters cover part of the window', () => {
+    const data = withStageTotals({ clustered: 38, cases: 56, auto_cleared: 36, escalated: 20 });
+    data.counters = { available: true, since: '2026-07-04T20:30:09Z', incomplete: true };
+    const view = render(<NoiseFunnel data={data} animate={false} variant="flat" />);
+
+    expect(shareText(view.container, 'cases')).toBe(`· ${SHARE_DASH}`);
+    expect(directLabel(view.container, 'cases')).toHaveAttribute(
+      'aria-label',
+      'Cases opened: 56 cases, not measured: partial coverage.',
+    );
+    expect(view.container.textContent).not.toMatch(/14[0-9]%/);
+    // Both totals come from the counters, so this share still stands.
+    expect(shareText(view.container, 'clustered')).toBe('· 4%');
+  });
+
+  it('never prints a reduction share above 100%', () => {
+    expect(stageShare('cases', 56, 38, { countersIncomplete: true })).toMatchObject({
+      pct: null,
+      text: SHARE_DASH,
+      sentence: 'not measured: partial coverage',
+    });
+    expect(stageShare('cases', 56, 38)).toMatchObject({
+      pct: null,
+      text: SHARE_DASH,
+      sentence: 'share unavailable, more than the clusters counted in this window',
+    });
+    expect(stageShare('closed', 9, 7).pct).toBeNull();
+    // A stage equal to its parent is a real 100%; an incomplete counter window leaves
+    // the case split below Cases opened alone (both sides are case tallies).
+    expect(stageShare('cases', 38, 38)).toMatchObject({ pct: 100, text: '100%' });
+    expect(stageShare('auto_cleared', 25, 40, { countersIncomplete: true })).toMatchObject({ text: '63%' });
   });
 
   it('derives parent-relative shares without ever inventing a percentage', () => {

@@ -21,6 +21,7 @@ import { cn } from '@/lib/cn';
 import { fmtNumber, humanizeToken } from '@/lib/format';
 import type { NoiseReduction, RecordedAutoCloseHealth } from '@/lib/types';
 import { alertReduction } from '@/soc/components/alert-reduction';
+import { PARTIAL_COVERAGE_NOTE } from '@/soc/components/coverage-notes';
 import { RuleLink } from '@/soc/components/RuleLink';
 import {
   isLedgerRowActive,
@@ -79,8 +80,11 @@ export interface FunnelStageRow {
   tone: string;
 }
 
-/** The note a share takes when its counts cover only part of the window. */
-export const PARTIAL_COVERAGE_NOTE = 'not measured: partial coverage';
+/**
+ * The note a share takes when its counts cover only part of the window. It lives in
+ * `components/coverage-notes` so the Overview noise flow says the same words (B64).
+ */
+export { PARTIAL_COVERAGE_NOTE };
 
 /**
  * The stages the board shows, in flow order, each with its plain-words note. Alert stages

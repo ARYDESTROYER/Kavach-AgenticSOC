@@ -288,6 +288,11 @@ export interface MetricPreview {
   eyebrow?: string;
   /** ONE plain sentence naming what the numeral counts. Rendered as plain text (#9). */
   population?: string;
+  /**
+   * Round 16 (WP12): the numeral's arithmetic with its real numbers ("12 of 40 cases =
+   * 30%"), the hover line of its explanation. Plain text (#9).
+   */
+  formula?: string;
   /** A small partition of the numeral: 2-3 cells, each already formatted. */
   breakdown?: readonly { key: string; label: string; value: string }[];
   /** What activating the tile does. Present on every tile, so the click is discoverable. */
@@ -341,6 +346,11 @@ export interface MetricHoverTrendProps extends MetricTrendSeries {
   closeDelay?: number;
   /** Classes for the trigger wrapper (layout only). */
   className?: string;
+  /**
+   * Round 16 (WP12): `false` for a metric with no honest series, whose card then holds
+   * only the preview (what it counts and its arithmetic). Default `true`.
+   */
+  showTrend?: boolean;
   children: React.ReactNode;
 }
 
@@ -363,6 +373,7 @@ export function MetricHoverTrend({
   openDelay = 160,
   closeDelay = 120,
   className,
+  showTrend = true,
   children,
 }: MetricHoverTrendProps) {
   // Controlled open so a press can toggle the card (touch has no hover); Radix
@@ -492,7 +503,8 @@ export function MetricHoverTrend({
             (WCAG 1.4.13); mirrors CaseHoverCard's tabIndex=0 clone contract.
             `focusable={false}` removes the stop when the child is itself focusable. */}
         <div
-          data-testid="metric-trend-trigger"
+          // A card with no series is a preview, not a trend affordance: its own test id.
+          data-testid={showTrend ? 'metric-trend-trigger' : 'metric-preview-trigger'}
           tabIndex={focusable ? 0 : undefined}
           onPointerDown={toggle ? handlePressStart : undefined}
           onPointerUp={toggle ? handlePressEnd : undefined}
@@ -527,7 +539,7 @@ export function MetricHoverTrend({
       <HoverCardContent
         side={side}
         align={align}
-        data-testid="metric-trend-card"
+        data-testid={showTrend ? 'metric-trend-card' : 'metric-preview-card'}
         className="w-72 p-3"
       >
         {/* WHAT the numeral counts, above the series that moves it. Plain text (#9). */}
@@ -543,17 +555,27 @@ export function MetricHoverTrend({
                 {preview.population}
               </p>
             ) : null}
+            {preview.formula ? (
+              <p
+                className="mt-1 text-2xs font-medium leading-relaxed tabular-nums text-foreground"
+                data-testid="metric-trend-formula"
+              >
+                {preview.formula}
+              </p>
+            ) : null}
           </div>
         ) : null}
 
-        <MetricTrendBody
-          metric={metric}
-          points={points}
-          windowLabel={windowLabel}
-          caption={caption}
-          format={format}
-          colorToken={colorToken}
-        />
+        {showTrend ? (
+          <MetricTrendBody
+            metric={metric}
+            points={points}
+            windowLabel={windowLabel}
+            caption={caption}
+            format={format}
+            colorToken={colorToken}
+          />
+        ) : null}
 
         {/* A small partition of the numeral. Each cell arrives already formatted, so this
             never re-derives a share and never disagrees with the tile it explains. */}

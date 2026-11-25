@@ -505,6 +505,16 @@ export interface KpiTileProps {
    * severity), so the rule before it is the strong structural line instead of a hairline.
    */
   breakBefore?: boolean;
+  /**
+   * Round 16 (WP12): an explanation slot. Given the rendered numeral, it returns the node
+   * shown in its place, typically the numeral inside an Explain trigger (hover for the
+   * one-line formula, click for the arithmetic). The tile imports nothing from the
+   * Explain kit itself, so the kit stays in the lazy chunks of the pages that pass it.
+   * Applied only to a tile that is not itself a button (a trigger inside a button is
+   * invalid), and not to an abbreviated numeral (its exact value is the screen-reader
+   * text beside it).
+   */
+  explain?: (numeral: React.ReactNode) => React.ReactNode;
   className?: string;
 }
 
@@ -705,6 +715,7 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
       chrome = 'strip',
       pressed,
       breakBefore = false,
+      explain,
       className,
     },
     ref,
@@ -1253,7 +1264,13 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
             {/* An abbreviated numeral is hidden from assistive tech and replaced by the
                 EXACT value below, so "5.4k" is a display decision and never a loss of
                 precision for a screen-reader user. */}
-            {heroCompact ? <span aria-hidden>{valueNode}</span> : valueNode}
+            {heroCompact ? (
+              <span aria-hidden>{valueNode}</span>
+            ) : explain && !clickable ? (
+              explain(valueNode)
+            ) : (
+              valueNode
+            )}
           </span>
           {heroCompact ? <span className="sr-only">{heroText}</span> : null}
           {bound && !boundShownInLine ? <span className="sr-only">{bound}</span> : null}
