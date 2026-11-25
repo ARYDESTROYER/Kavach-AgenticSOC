@@ -374,6 +374,30 @@ describe.skipIf(!HAS_DIST && !REQUIRE_DIST)('first-paint bundle graph', () => {
     expect(offenders, `unexpected static entry imports: ${offenders.join(', ')}`).toEqual([]);
   });
 
+  it("What's new: the notes, the dialog and the page stay off first paint (Round 16 §3.6)", () => {
+    // The entry carries only the gate (a marker compare, the newest update id and one
+    // import thunk). A notes string, the dialog's title and its test id live in lazy chunks.
+    const entry = readEntry();
+    const notes = readWhatsNewNotes();
+    expect(entry).toContain(JSON.stringify(notes.latest).slice(1, -1));
+    expect(entry).not.toContain(notes.releases[0].summary);
+    expect(entry).not.toContain(notes.releases[0].updates[0].highlights[0].summary);
+    expect(entry).not.toContain('Welcome to Agentic SOC');
+    expect(entry).not.toContain('whats-new-dialog');
+    expect(entry).not.toContain('whats-new-page');
+    const assets = fs.readdirSync(path.join(DIST, 'assets'));
+    const holding = (marker: string) =>
+      assets.filter((f) => f.endsWith('.js') && fs.readFileSync(path.join(DIST, 'assets', f), 'utf8').includes(marker));
+    expect(assets.some((f) => /^WhatsNew-[^/]+\.js$/.test(f)), 'a lazy WhatsNew page chunk').toBe(true);
+    expect(holding('Welcome to Agentic SOC').length, 'the dialog is emitted in a lazy chunk').toBeGreaterThan(0);
+    expect(holding(notes.releases[0].summary).length, 'the notes are emitted in a lazy chunk').toBeGreaterThan(0);
+    const statics = entryStaticImports();
+    for (const name of [...holding('Welcome to Agentic SOC'), ...holding(notes.releases[0].summary)]) {
+      expect(statics, name).not.toContain(name);
+      expect(readHtml()).not.toContain(name);
+    }
+  });
+
   it('the heavy Settings section tree is code-split out of the entry', () => {
     // The Settings renderer tree (BrandingEditor/RolesInner/DangerZone/…) lands in its
     // own chunk (today `settings-dirty-*.js`), NOT the entry. Assert such a chunk exists
@@ -396,6 +420,15 @@ describe.skipIf(!HAS_DIST && !REQUIRE_DIST)('first-paint bundle graph', () => {
  */
 const SETTINGS_META_MARKERS = ["'analysis bundle'", "'severity weight'"];
 const SETTINGS_META_MARKER = readSettingsMetaMarker();
+
+/** The generated What's new notes (scripts/build_release_notes.py), read from source. */
+function readWhatsNewNotes(): {
+  latest: string;
+  releases: { summary: string; updates: { highlights: { summary: string }[] }[] }[];
+} {
+  const file = path.join(WEBUI_ROOT, 'src', 'soc', 'whats-new', 'release-notes.gen.json');
+  return JSON.parse(fs.readFileSync(file, 'utf8'));
+}
 
 function readSettingsMetaMarker(): string {
   const file = path.join(WEBUI_ROOT, 'src', 'soc', 'pages', 'settings', 'settings-sections-meta.ts');
@@ -494,6 +527,25 @@ describe('first-paint shell keeps the palette and Settings metadata lazy (source
     const mark = loader.match(/'__CHUNK_LIST:([^']+)__'/)?.[1];
     expect(mark).toBe('src/soc/components/nav-rail-interactions.tsx');
     expect(fs.existsSync(path.join(WEBUI_ROOT, mark as string))).toBe(true);
+  });
+
+  it("What's new reaches first paint only as the gate: the notes, host, dialog and page are lazy", () => {
+    const { files } = firstPaintGraph();
+    const gate = path.join(WEBUI_ROOT, 'src', 'soc', 'whats-new', 'WhatsNewGate.tsx');
+    expect(files.has(gate), 'the gate is an entry module (App mounts it)').toBe(true);
+    const lazyOnly = ['notes.ts', 'decide.ts', 'WhatsNewHost.tsx', 'WhatsNewDialog.tsx', 'ReleaseFigure.tsx']
+      .map((name) => path.join(WEBUI_ROOT, 'src', 'soc', 'whats-new', name))
+      .concat(path.join(WEBUI_ROOT, 'src', 'soc', 'pages', 'WhatsNew.tsx'));
+    const reached = lazyOnly
+      .filter((file) => files.has(file))
+      .map((file) => `${path.relative(WEBUI_ROOT, file)} (imported by ${files.get(file)})`);
+    expect(reached, "What's new modules on the first-paint graph").toEqual([]);
+    for (const file of files.keys()) {
+      expect(fs.readFileSync(file, 'utf8'), path.relative(WEBUI_ROOT, file)).not.toMatch(/release-notes\.gen\.json/);
+    }
+    // The gate loads the host only through import() of the What's new chunk, the same
+    // thunk the registry route uses.
+    expect(fs.readFileSync(gate, 'utf8')).toMatch(/import\('\.\.\/pages\/WhatsNew'\)/);
   });
 
   it('AppShell reaches the command palette only through import()', () => {

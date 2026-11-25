@@ -913,17 +913,33 @@ describe('destinations', () => {
     expect(screen.queryByTestId('nav-playbooks')).toBeNull();
   });
 
-  it('draws Notifications as a plain destination (no chevron) and names the Help Center', () => {
-    setup({ page: 'cases' });
+  it("draws Communication as a disclosure of Inbox and What's new, and names the Help Center", () => {
+    setup({ page: 'cases', open: ['inbox'] });
+    // Round 16 (SPEC D5): the group row opens Inbox, its own page; the list holds both.
+    const row = screen.getByTestId('nav-inbox');
+    expect(row).toHaveAttribute('href', '#/inbox');
+    expect(row).toHaveTextContent('Communication');
     expect(screen.queryByRole('button', { name: /Notifications pages/ })).toBeNull();
-    expect(screen.getByTestId('nav-inbox')).toHaveAttribute('href', '#/inbox');
+    expect(screen.getByRole('button', { name: 'Hide Communication pages' })).toBeInTheDocument();
+    const list = screen.getByRole('list', { name: 'Communication pages' });
+    const links = within(list).getAllByRole('link');
+    expect(links.map((link) => [link.textContent, link.getAttribute('href')])).toEqual([
+      ['Inbox', '#/inbox'],
+      ["What's new", '#/whats_new'],
+    ]);
     expect(within(screen.getByTestId('nav-footer')).getByRole('link', { name: 'Help Center' })).toBeInTheDocument();
+  });
+
+  it("marks What's new current inside Communication on #/whats_new", () => {
+    setup({ page: 'whats_new', open: ['inbox'] });
+    const list = screen.getByRole('list', { name: 'Communication pages' });
+    expect(within(list).getByRole('link', { name: "What's new" })).toHaveAttribute('aria-current', 'page');
   });
 
   it('gives a group that repeats its one item a hairline, not a heading', () => {
     setup({ page: 'cases' });
     const nav = screen.getByRole('navigation', { name: 'Console destinations' });
-    // Triage and Platform name themselves; Intelligence, Analytics and Notifications do not.
+    // Triage and Platform name themselves; Intelligence, Analytics and Communication do not.
     expect(within(nav).getByText('Triage')).toBeInTheDocument();
     expect(within(nav).getByText('Platform')).toBeInTheDocument();
     expect(nav.querySelectorAll('[id^="nav-heading-"]')).toHaveLength(2);

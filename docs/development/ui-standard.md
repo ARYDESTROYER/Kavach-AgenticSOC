@@ -1289,7 +1289,7 @@ own page instead.
   `h1`; a longer form belongs in the page's help tip. Group rows are exempt (the
   Overview row reads "Overview" while its pages are titled "Cyber Defence Center" and
   "Dashboards"), as are hosts whose own id is also one of their pages (Workspace and
-  Chat, Notifications and Inbox). `nav-titles.round14.test.ts` checks it.
+  Chat, Communication and Inbox). `nav-titles.round14.test.ts` checks it.
 - **Landing and the Overview group.** The Console lands on the Cyber Defence Center
   (`#/overview`) after sign-in, at `#/`, at an unknown hash and after the first-run
   wizard; `#/dashboard` is its old alias and is replaced by `#/overview`. The Overview
@@ -1340,10 +1340,11 @@ own page instead.
   page's other URL asks too), a modified click opens a new tab. A
   group row opens its target and never opens or closes its group; the chevron beside it
   is a separate 28px button named "Show <group> pages" or "Hide <group> pages" that only
-  toggles the list. A group whose only page is its own (Notifications) is a plain
-  destination with no chevron. A section holding one item of its own name
-  (Intelligence, Analytics, Notifications) gets a hairline, not a heading that repeats
-  it; other section headings are 12px sentence case. The current page is a tinted pill
+  toggles the list. A group whose only page is its own is a plain destination with no
+  chevron. Communication holds two pages, Inbox and What's new, so it is a disclosure
+  whose row opens Inbox; the top-bar bell keeps the name Notifications. A section holding
+  one item of its own name (Intelligence, Analytics, Communication) gets a hairline, not a
+  heading that repeats it; other section headings are 12px sentence case. The current page is a tinted pill
   and a tinted icon, never an accent bar at the window edge.
 - **The 64px rail.** A grouped icon opens its page on a click, with no flyout flash. Its
   pages appear in one flyout after a 300ms pointer rest (any movement restarts the

@@ -145,6 +145,7 @@ from ..utils import (
     relative_to_millis,
     to_millis,
 )
+from ..whats_new import stamp_new_account
 from .deps import (
     _bearer,
     _sid_tag,
@@ -6120,6 +6121,8 @@ async def _provision_sso_user(
         return (again.username if again else None), None
     except _SsoAccountGone:
         return None, None
+    # Round 16 (SPEC D7): a new account starts with What's new marked seen (best effort).
+    await stamp_new_account(state, created_name)
     return created_name, None
 
 
@@ -6452,6 +6455,8 @@ async def create_user(
             + (f" [{' '.join(extras)}]" if extras else "")
         ),
     )
+    # Round 16 (SPEC D7): a new account starts with What's new marked seen (best effort).
+    await stamp_new_account(state, user.username)
     await state.refresh_users()
     return {"ok": True, "user": user.public()}
 

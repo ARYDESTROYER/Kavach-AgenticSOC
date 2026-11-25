@@ -26,6 +26,7 @@ import { Badge } from '@/ui/badge';
 import { Button } from '@/ui/button';
 import { Input } from '@/ui/input';
 import { Label } from '@/ui/label';
+import { Switch } from '@/ui/switch';
 import { SegmentedControl } from '@/soc/components/SegmentedControl';
 import { SectionTitle } from '@/soc/pages/settings/primitives';
 import {
@@ -68,7 +69,7 @@ const TERM_KEYS: Array<{ key: string; label: string; help: string }> = [
 ];
 
 export const CustomizationSection: React.FC = () => {
-  const { prefs, themeMode, setThemeMode, savedViews, deleteView, cloneView, refresh } = usePrefs();
+  const { prefs, themeMode, setThemeMode, savedViews, deleteView, cloneView, refresh, patchMisc } = usePrefs();
   const isAdmin = useCan('settings', 'manage');
 
   // "Reduce transparency": start from what the page is showing right now (the pre-paint
@@ -227,6 +228,29 @@ export const CustomizationSection: React.FC = () => {
           options={TRANSPARENCY_OPTIONS}
           className="max-w-full"
         />
+      </section>
+
+      {/* ---- What's new after updates (personal, Round 16 D7) ---------------- */}
+      <section className="border-t border-border py-5">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h3 id="whats-new-auto-label" className="text-sm font-semibold text-foreground">
+              Show What&apos;s new after updates
+            </h3>
+            <p id="whats-new-auto-help" className="text-sm text-muted-foreground">
+              After an update, a short welcome shows once with what changed. Every release
+              stays in Communication, What&apos;s new. Saved to your account.
+            </p>
+          </div>
+          <Switch
+            aria-labelledby="whats-new-auto-label"
+            aria-describedby="whats-new-auto-help"
+            checked={prefs.misc?.whats_new_auto !== false}
+            onCheckedChange={(on) => void patchMisc({ whats_new_auto: on })}
+            className="mt-0.5"
+            data-testid="whats-new-auto-switch"
+          />
+        </div>
       </section>
 
       {/* ---- Saved views (personal) ----------------------------------------- */}

@@ -183,7 +183,7 @@ export const SETTINGS_SECTIONS_META: SectionMeta[] = [
     help: 'Your theme and saved views. Administrators can also set the organization terminology and defaults here.',
     icon: Palette,
     width: 'full',
-    keywords: ['theme', 'dark mode', 'light mode', 'appearance', 'saved views', 'views', 'terminology', 'labels', 'rename', 'customize', 'customization', 'columns', 'reduce transparency', 'transparency', 'frosted glass', 'blur'],
+    keywords: ['theme', 'dark mode', 'light mode', 'appearance', 'saved views', 'views', 'terminology', 'labels', 'rename', 'customize', 'customization', 'columns', 'reduce transparency', 'transparency', 'frosted glass', 'blur', "what's new", 'release notes'],
   },
 
   /* ---- General (org, low blast radius) ---------------------------------- */

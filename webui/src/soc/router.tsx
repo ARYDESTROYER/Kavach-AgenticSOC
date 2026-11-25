@@ -173,6 +173,9 @@ const DEEP_LINK_KEYS: Readonly<Record<string, Readonly<Record<string, Check>>>> 
   dashboards: { board: navId },
   // `new` is reserved, so no runbook can carry it (SPEC §4.10.2).
   runbooks: { id: re(/^[a-z0-9][a-z0-9_-]{0,63}$/) },
+  // Round 16 (SPEC §4.4 WP07): a release (`v`) and one of its highlights (`h`); the page
+  // uses only values that name a release and a highlight it ships.
+  whats_new: { v: navId, h: navId },
   audit: {
     scope: re(/^(people|agent|all)$/),
     from: navTime,

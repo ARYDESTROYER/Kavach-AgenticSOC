@@ -33,7 +33,7 @@ describe('ROUTES registry', () => {
     const EXPECTED = [
       'overview', 'dashboard', 'dashboards', 'cases', 'case_manager', 'investigate', 'chat',
       'intelligence', 'metrics', 'team', 'effectiveness', 'models', 'scans', 'standup', 'catalog', 'runbooks', 'playbooks', 'personas',
-      'approvals', 'knowledge', 'memory', 'sources', 'cost', 'inbox', 'account',
+      'approvals', 'knowledge', 'memory', 'sources', 'cost', 'inbox', 'whats_new', 'account',
       'sessions', 'settings', 'security', 'roles', 'users', 'audit', 'admin_sessions',
       'logs', 'campaigns', 'tuning', 'batchjobs', 'baseline',
       'docs',

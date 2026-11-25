@@ -3,6 +3,7 @@ import { defineConfig } from 'vitest/config';
 import react from '@vitejs/plugin-react';
 import path from 'node:path';
 import { resolveBuildReleaseIdentity } from './release.config';
+import { resolveWhatsNewLatest } from './whats-new.config';
 
 const RELEASE_IDENTITY = resolveBuildReleaseIdentity();
 
@@ -15,6 +16,7 @@ export default defineConfig({
   plugins: [react()],
   define: {
     __TLSOC_RELEASE_IDENTITY__: JSON.stringify(RELEASE_IDENTITY),
+    __AGENTIC_SOC_WHATS_NEW_LATEST__: JSON.stringify(resolveWhatsNewLatest()),
   },
   resolve: {
     alias: { '@': path.resolve(__dirname, 'src') },

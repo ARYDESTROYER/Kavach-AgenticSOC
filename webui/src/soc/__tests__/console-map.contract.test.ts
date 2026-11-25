@@ -137,6 +137,9 @@ const PAGE_KEYWORDS: Record<string, string[]> = {
   baseline: ['baseline', 'anomaly', 'silent source'],
   batchjobs: ['jobs', 'background jobs', 'export download', 'batch'],
   inbox: ['notifications', 'alerts', 'mentions'],
+  // Round 16 (SPEC D5): the release tracker. Not 'updates': installing an update is the
+  // Settings release section's task, and the word would pull those questions here.
+  whats_new: ["what's new", 'release notes', 'changelog', 'new features', 'release tracker', 'what changed'],
   sources: ['connectors', 'siem', 'edr', 'ingest', 'data source', 'connect', 'coverage'],
   // Round 14: the Audit log's own Export menu (CSV or JSON Lines, `audit:export`) is where
   // audit events are exported; the whole-application Data export is a different task. The

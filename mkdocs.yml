@@ -203,6 +203,7 @@ nav:
           - Testing and contracts: development/testing.md
           - Replay harness: development/replay-harness.md
   - Releases and versions:
+      - What's new: releases/whats-new.md
       - Agentic SOC 0.2: releases/0.2.md
       - Agentic SOC 0.2.0: releases/0.2.0.md
       - Agentic SOC 0.1: releases/0.1.md
