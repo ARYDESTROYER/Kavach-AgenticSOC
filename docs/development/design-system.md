@@ -59,6 +59,15 @@ The public barrel currently exposes:
   shared sticky `PageHeader`, `ControlBar`, `FilterBar` and `TableHeader` already use
   it). Shared primitives import it from `@/design-system/material` rather than the
   barrel, so the catalog never rides into their chunks;
+- the Explain kit: `ExplainTrigger` and `ExplainPanel` (catalog id `feedback.explain`),
+  which make a number explainable. Hover or keyboard focus shows a one-line formula with
+  the real numbers, in a hover card that meets WCAG 2.2 SC 1.4.13 (Escape dismisses it);
+  a click, Enter, Space or a tap opens the full arithmetic with "Copy calculation", and a
+  queue row uses the mouse-only `row-hover` mode with no focusable content. Like the
+  material, it is a separate entry: import it from `@/design-system/explain`, never from
+  the barrel, and only from lazy route chunks, so it never reaches the entry bundle. The
+  numbers come from the pure builders in `webui/src/lib/explain/`, pinned against the
+  server by `explain.contract.json`;
 - the per-user transparency override: `applyTransparencyPreference` with
   `TRANSPARENCY_PREF_KEY` and `TRANSPARENCY_STORAGE_KEY`;
 - `SourceMark` and the source-mark metadata;

@@ -165,7 +165,7 @@ describe('StageTimeline', () => {
       'Volume20/1000.25 (25%)5 pts',
     );
     expect(screen.getByTestId('risk-formula')).toHaveTextContent(
-      'Σ(value × weight) = 7; 7 ÷ 1 = 7/100 → displayed as 7/100.',
+      'Σ(value × weight) = 7; 7 ÷ 1 = 7/100, shown as 7/100 (rounded half up).',
     );
     expect(screen.queryByText(/Exact arithmetic cannot be reconstructed/i)).toBeNull();
     expect(await axe(container)).toHaveNoViolations();

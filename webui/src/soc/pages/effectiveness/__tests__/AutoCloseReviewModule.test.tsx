@@ -14,6 +14,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 
 import type { AutoCloseReviewMetrics } from '@/lib/types-reviews';
 
@@ -73,8 +74,24 @@ describe('AutoCloseReviewBody', () => {
         })}
       />,
     );
-    expect(screen.getByText(/Agreement 90%, 95% interval 74\.4% to 96\.5%/)).toBeInTheDocument();
+    expect(screen.getByTestId('review-agreement')).toHaveTextContent(/Agreement 90%, 95% interval 74\.4% to 96\.5%/);
     expect(screen.queryByText('Not enough reviews yet')).toBeNull();
+  });
+
+  it('explains the interval with the Wilson arithmetic and the real counts (Round 16 WP11)', async () => {
+    const user = userEvent.setup();
+    render(
+      <AutoCloseReviewBody
+        data={metrics({
+          agreement: { status: 'ok', agreed: 27, disagreed: 3, reviews: 30, minimum: 30, rate: 0.9,
+            interval: { low: 0.7438, high: 0.9654 }, statement: STATEMENT },
+        })}
+      />,
+    );
+    await user.hover(screen.getByRole('button', { name: /74\.4% to 96\.5%/ }));
+    expect(await screen.findByTestId('explain-hover')).toHaveTextContent(
+      'Wilson 95% interval for 27 of 30: 74.4% to 96.5%.',
+    );
   });
 
   it('says when the review is off and when counts are lower bounds', () => {

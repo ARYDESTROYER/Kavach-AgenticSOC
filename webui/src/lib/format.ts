@@ -207,3 +207,11 @@ export function humanizeToken(token?: string | null): string {
  * never carries them: Rollup keeps a re-export-only module in the lazy chunks that use it.
  */
 export { caseLabel, fmtDuration, fmtOverage, type CaseLabelSource } from './format-values';
+
+/*
+ * Round 16 (SPEC §4.5 WP11, research explainability D4): the one rounding rule for every
+ * shown score, round half up (`floor(x + 0.5)`) and band the shown integer, the same rule
+ * as the server's `app/utils.round_half_up`. Re-exported from its own module for the same
+ * reason as above: the entry chunk never carries it.
+ */
+export { displayBand, displayScore, roundHalfUp } from './explain/rounding';

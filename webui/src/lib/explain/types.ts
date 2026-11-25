@@ -45,6 +45,8 @@ export interface ExplanationLink {
 export interface Explanation {
   /** What is explained: "risk_score", "priority", "mttr_p50" and so on. */
   metric: string;
+  /** The click panel's heading, for example "Risk score". Defaults to the metric. */
+  title?: string;
   value: number | string | null;
   /** Exactly what the trigger shows. */
   display: string;
@@ -57,6 +59,8 @@ export interface Explanation {
   /** How the shown value was rounded, for example "half up to an integer". */
   rounding?: string;
   provenance: ExplanationProvenance;
+  /** One sentence on the provenance, for example when the inputs were recorded. */
+  provenanceNote?: string;
   /** Bounds, truncation and exclusions. */
   caveats: string[];
   link?: ExplanationLink;

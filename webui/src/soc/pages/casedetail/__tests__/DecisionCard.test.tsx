@@ -65,6 +65,8 @@ const CASE = {
   status: 'closed',
   decision_by: 'agent',
   risk_score: 12,
+  confidence: 0.92,
+  objection_window_expires_at: FUTURE_ISO,
 } as unknown as Case;
 
 const RATIONALE = {
@@ -107,11 +109,12 @@ describe('DecisionCard — policy clause from the timeline fixture', () => {
     ).toBeInTheDocument();
   });
 
-  it('shows an Escalate flag when the decision escalated', () => {
+  it('shows an Escalate flag when the recorded decision escalated', () => {
     const escalated: TimelineResponse = {
       ...TIMELINE,
       spans: [
         decisionSpan({
+          source: 'recorded',
           verdict: 'needs_human',
           decision_status: 'escalated',
           decision_by: 'agent',
@@ -120,9 +123,11 @@ describe('DecisionCard — policy clause from the timeline fixture', () => {
         }),
       ],
     };
-    render(<DecisionCard c={CASE} rationale={null} timeline={escalated} />);
+    render(<DecisionCard c={{ ...CASE, verdict: 'needs_human', status: 'escalated' } as Case} rationale={null} timeline={escalated} />);
     expect(screen.getByText('Escalate')).toBeInTheDocument();
     expect(screen.getByText('off')).toBeInTheDocument(); // auto_closable false
+    // A needs-human verdict never closes automatically: fixed by code, not by policy.
+    expect(screen.getByTestId('decision-conditions')).toHaveTextContent('fixed by code, not by policy');
   });
 
   it('degrades to the case fields and hides the clause block when no timeline', () => {
@@ -139,5 +144,109 @@ describe('DecisionCard — policy clause from the timeline fixture', () => {
       <DecisionCard c={CASE} rationale={RATIONALE} timeline={TIMELINE} />,
     );
     expect(await axe(container)).toHaveNoViolations();
+  });
+});
+
+/* Round 16 (research explainability D1, D8): the RECORDED decision, both conditions. */
+describe('DecisionCard: the recorded decision, never a read-time re-run (D1)', () => {
+  /** An older build's decision span: `decide()` re-run with TODAY's policy at read time. */
+  const READ_TIME: TimelineResponse = {
+    ...TIMELINE,
+    spans: [
+      decisionSpan({
+        deterministic: true,
+        verdict: 'FALSE_POSITIVE',
+        confidence: 0.97,
+        risk_score: 20,
+        decision_status: 'closed',
+        decision_by: 'agent',
+        escalate: false,
+        objection_window_expires_at: '2099-01-01T00:00:00Z',
+        policy_clause: {
+          verdict_class: 'FALSE_POSITIVE',
+          enabled: true,
+          auto_closable: true,
+          min_confidence: 0.85,
+          max_risk_score: 30,
+          objection_window_minutes: 1440,
+        },
+      }),
+    ],
+  };
+  const ANALYST_CLOSED = {
+    case_id: 'c2',
+    verdict: 'FALSE_POSITIVE',
+    confidence: 0.97,
+    risk_score: 20,
+    status: 'closed',
+    decision_by: 'analyst',
+    objection_window_expires_at: null,
+  } as unknown as Case;
+
+  it("an analyst's close reads as the analyst's, with no objection window invented by a re-run", () => {
+    render(<DecisionCard c={ANALYST_CLOSED} rationale={null} timeline={READ_TIME} />);
+    expect(screen.getByText(/Decided by Analyst/)).toBeInTheDocument();
+    expect(screen.queryByText(/Decided by Automated/)).toBeNull();
+    expect(screen.queryByText(/Auto-closed by AI/)).toBeNull();
+    expect(screen.queryByText(/Objection window open until/)).toBeNull();
+    // The re-run's rationale never stands in for the recorded one.
+    expect(screen.queryByText(/Auto-closed as false positive/)).toBeNull();
+    // The thresholds are labelled as today's policy, not as the recorded gate.
+    expect(screen.getByTestId('decision-clause-basis')).toHaveTextContent('thresholds were not recorded');
+  });
+
+  it('states both auto-close conditions with their numbers (D8)', () => {
+    render(
+      <DecisionCard
+        c={{ ...ANALYST_CLOSED, risk_score: 45, status: 'needs_human', decision_by: 'system' } as Case}
+        rationale={null}
+        timeline={READ_TIME}
+      />,
+    );
+    expect(screen.getByTestId('decision-conditions')).toHaveTextContent(
+      'Routed to a person: confidence 97% >= 85% (met); risk 45 <= 30 (not met).',
+    );
+  });
+
+  it('reads the gate recorded at decision time and notes a policy that changed since', () => {
+    const recorded: TimelineResponse = {
+      ...TIMELINE,
+      spans: [
+        decisionSpan({
+          source: 'recorded',
+          decision_status: 'closed',
+          decision_by: 'agent',
+          objection_window_expires_at: FUTURE_ISO,
+          gate: {
+            verdict: 'FALSE_POSITIVE',
+            confidence: 0.92,
+            risk_score: 12,
+            class_enabled: true,
+            min_confidence: 0.8,
+            max_risk_score: 40,
+            objection_window_minutes: 30,
+            escalation_confidence: 0.6,
+            critical_severity: 7,
+            outcome: 'closed',
+            demo: false,
+          },
+          current_policy: { enabled: true, min_confidence: 0.95, max_risk_score: 40, objection_window_minutes: 30 },
+          policy_changed: true,
+        }),
+      ],
+    };
+    render(<DecisionCard c={CASE} rationale={RATIONALE} timeline={recorded} />);
+    expect(screen.getByTestId('decision-clause-basis')).toHaveTextContent('as recorded at decision time');
+    expect(screen.getByTestId('decision-conditions')).toHaveTextContent(
+      'Closes automatically: confidence 92% >= 80% (met) and risk 12 <= 40 (met).',
+    );
+    expect(screen.getByTestId('decision-policy-changed')).toHaveTextContent(
+      "The auto-close policy changed since this decision. With today's policy: Routed to a person: confidence 92% >= 95% (not met); risk 12 <= 40 (met).",
+    );
+  });
+
+  it('shows the risk fact as the integer rounded half up', () => {
+    render(<DecisionCard c={{ ...CASE, risk_score: 73.5 } as Case} rationale={null} timeline={null} />);
+    expect(screen.getByText('74/100')).toBeInTheDocument();
   });
 });

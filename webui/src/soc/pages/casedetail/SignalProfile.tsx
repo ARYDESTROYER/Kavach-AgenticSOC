@@ -12,13 +12,17 @@
 import * as React from 'react';
 import { ChevronRight, Info } from 'lucide-react';
 
-import type { Case } from '@/lib/types';
+import type { Case, RiskInputs } from '@/lib/types';
 import { humanizeToken } from '@/lib/format';
 import { cn } from '@/lib/cn';
+import { displayBand, displayScore, trimmed } from '@/lib/explain/rounding';
+import { memberCountNote } from '@/lib/explain/risk';
 
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/ui/tooltip';
 import { scoreBand, type ScoreBand } from '@/soc/components/palette';
 import type { TriageChips } from '@/soc/pages/CaseDetail.api';
+
+import { RiskExplain } from './explain/RiskExplain';
 
 const FIELD_LABEL = 'text-xs font-medium text-muted-foreground';
 
@@ -45,8 +49,13 @@ export const SignalMeter: React.FC<{
   display: string;
   tone: ScoreBand | 'primary';
   description: string;
-}> = ({ label, value, display, tone, description }) => {
+  /** Wraps the visible value (the risk score's explainer); the progressbar keeps `display`. */
+  renderValue?: (node: React.ReactNode) => React.ReactNode;
+}> = ({ label, value, display, tone, description, renderValue }) => {
   const bounded = boundedScore(value);
+  const valueNode = (
+    <span className="shrink-0 text-lg font-semibold tabular-nums text-foreground">{display}</span>
+  );
   return (
     <div className="space-y-1.5">
       <div className="flex items-end justify-between gap-4">
@@ -54,9 +63,7 @@ export const SignalMeter: React.FC<{
           <div className="text-sm font-medium text-foreground">{label}</div>
           <p className="mt-0.5 text-xs text-muted-foreground">{description}</p>
         </div>
-        <span className="shrink-0 text-lg font-semibold tabular-nums text-foreground">
-          {display}
-        </span>
+        {renderValue ? renderValue(valueNode) : valueNode}
       </div>
       <div
         role="progressbar"
@@ -135,12 +142,56 @@ export type RiskFactor = {
 };
 
 export type RiskFactorContext = {
+  /** The events the score was computed from (recorded at scoring), never the member count. */
   eventCount: number | null;
   ruleTypeCount: number | null;
   reputationInput: number | null;
   entityType: string | null;
   entityValue: string;
+  /** The inputs recorded at scoring (`risk_breakdown.inputs`), when the case has them. */
+  scored?: RiskInputs | null;
+  /** The events the case holds now: shown only as its own fact, never as the Volume input. */
+  memberCount?: number | null;
 };
+
+const REPUTATION_SOURCE_WORDS: Record<string, string> = {
+  enrichment: 'from enrichment',
+  not_ip_entity: 'not looked up, because the entity is not an IP address',
+  enrichment_off: 'not looked up, because enrichment is off',
+  not_looked_up: 'not looked up in this scoring run',
+};
+const ASSET_MATCH_WORDS: Record<string, string> = {
+  exact: 'from an exact entry for this entity',
+  network: 'from an internal network range',
+  none: 'no asset entry matched',
+};
+
+function events(n: number): string {
+  return `${n.toLocaleString('en-US')} event${n === 1 ? '' : 's'}`;
+}
+
+/** The factor sentence from the inputs recorded at scoring (B13). */
+function recordedReason(key: RiskFactorKey, score: number, inputs: RiskInputs, memberCount: number | null): string {
+  if (key === 'volume') {
+    const note = memberCountNote(memberCount, inputs.event_count);
+    return `The scoring run counted ${events(inputs.event_count)}; Volume is ${score}/100.${note ? ` ${note}` : ''}`;
+  }
+  if (key === 'velocity') {
+    if (inputs.velocity_rule === 'below_min_events' || inputs.rate_per_minute === null) {
+      return `The scoring run counted ${events(inputs.event_count)}; Velocity is ${score}/100 because this factor needs at least 3 events.`;
+    }
+    return `${events(inputs.event_count)} over ${trimmed(inputs.effective_window_seconds)} s is ${trimmed(inputs.rate_per_minute)} per minute; Velocity is ${score}/100.`;
+  }
+  if (key === 'reputation') {
+    const source = REPUTATION_SOURCE_WORDS[inputs.reputation_source] ?? inputs.reputation_source;
+    return `The reputation input was ${trimmed(inputs.reputation_input)}, ${source}; Reputation is ${score}/100.`;
+  }
+  if (key === 'diversity') {
+    return `The scoring run saw ${inputs.rule_type_count} distinct rule type${inputs.rule_type_count === 1 ? '' : 's'}; Diversity is ${score}/100.`;
+  }
+  const match = ASSET_MATCH_WORDS[inputs.asset_match] ?? inputs.asset_match;
+  return `The asset criticality input was ${trimmed(inputs.asset_value)}, ${match}; Asset criticality is ${score}/100.`;
+}
 
 /** Case-specific half of a factor tooltip; never reverse-engineers missing inputs. */
 export function riskFactorCaseReason(
@@ -149,16 +200,21 @@ export function riskFactorCaseReason(
   context: RiskFactorContext,
 ): string {
   const score = Math.round(boundedScore(value));
+  if (context.scored) return recordedReason(key, score, context.scored, context.memberCount ?? null);
+  // No recorded inputs: never pair the case's member count with a factor (B13). A case
+  // keeps gaining events after it was scored, so that count is not the count used.
   if (key === 'volume') {
-    return context.eventCount !== null
-      ? `The case records ${context.eventCount} correlated event${context.eventCount === 1 ? '' : 's'}; its stored Volume factor is ${score}/100.`
-      : `The deterministic breakdown stores Volume at ${score}/100; the underlying event count is not retained in this view.`;
+    if (context.eventCount !== null) {
+      return `The scoring run counted ${events(context.eventCount)}; Volume is ${score}/100.`;
+    }
+    const note = memberCountNote(context.memberCount ?? null, null);
+    return `The deterministic breakdown stores Volume at ${score}/100; the event count used at scoring was not recorded.${note ? ` ${note}` : ''}`;
   }
   if (key === 'velocity') {
     if (context.eventCount !== null && context.eventCount < 3 && score === 0) {
-      return `The case records ${context.eventCount} event${context.eventCount === 1 ? '' : 's'}; Velocity is 0/100 because this factor does not contribute below 3 events.`;
+      return `The scoring run counted ${events(context.eventCount)}; Velocity is 0/100 because this factor does not contribute below 3 events.`;
     }
-    return `The deterministic breakdown stores Velocity at ${score}/100. This view does not retain the exact observed span, so it does not infer an event rate.`;
+    return `The deterministic breakdown stores Velocity at ${score}/100. The observed span was not recorded, so the event rate is not shown.`;
   }
   if (key === 'reputation') {
     if (context.reputationInput !== null) {
@@ -168,8 +224,8 @@ export function riskFactorCaseReason(
   }
   if (key === 'diversity') {
     return context.ruleTypeCount !== null
-      ? `The case records ${context.ruleTypeCount} distinct rule type${context.ruleTypeCount === 1 ? '' : 's'}; its stored Diversity factor is ${score}/100.`
-      : `The deterministic breakdown stores Diversity at ${score}/100; the contributing rule-type list is not retained in this view.`;
+      ? `The scoring run saw ${context.ruleTypeCount} distinct rule type${context.ruleTypeCount === 1 ? '' : 's'}; Diversity is ${score}/100.`
+      : `The deterministic breakdown stores Diversity at ${score}/100; the rule types used at scoring were not recorded.`;
   }
   const entity = context.entityValue
     ? `${context.entityType ? `${humanizeToken(context.entityType)} ` : ''}${context.entityValue}`
@@ -254,10 +310,7 @@ export const RiskFactorProfile: React.FC<{ factors: RiskFactor[] }> = ({ factors
 
 /** Build the recorded risk-factor rows for a case (never infers a missing input). */
 export function caseRiskFactors(c: Case, triage: TriageChips | null): RiskFactor[] {
-  const trigger = c.trigger_reason as
-    | { observed_count?: number; rule_values?: unknown[]; entity?: string }
-    | undefined;
-  const ruleIds = (c.rule_ids || []).filter((r) => typeof r === 'string' && r.trim());
+  const trigger = c.trigger_reason as { entity?: string } | undefined;
   const caseEnrichment =
     c.enrichment && typeof c.enrichment === 'object'
       ? (c.enrichment as Record<string, unknown>)
@@ -268,26 +321,25 @@ export function caseRiskFactors(c: Case, triage: TriageChips | null): RiskFactor
       : null;
   const recorded = triage?.risk?.breakdown ?? caseRiskBreakdown;
   if (!recorded) return [];
+  // B13: the inputs recorded at scoring are the only source of the counts; the case's
+  // member count is shown only as its own fact.
+  const scored = (c.risk_breakdown?.inputs ?? (recorded as { inputs?: RiskInputs | null }).inputs ?? null) as
+    | RiskInputs
+    | null;
   const memberEventCount = c.member_event_keys?.length || c.member_event_ids?.length || 0;
-  const observedCount =
-    typeof trigger?.observed_count === 'number' && Number.isFinite(trigger.observed_count)
-      ? Math.max(0, Math.round(trigger.observed_count))
-      : null;
-  const triggerRuleValues = Array.isArray(trigger?.rule_values)
-    ? trigger.rule_values.filter((value): value is string => typeof value === 'string' && !!value)
-    : [];
-  const distinctRuleCount = new Set(triggerRuleValues.length ? triggerRuleValues : ruleIds).size;
   const reputationInput =
     typeof caseEnrichment?.reputation_score === 'number' &&
     Number.isFinite(caseEnrichment.reputation_score)
       ? caseEnrichment.reputation_score
       : null;
   const context: RiskFactorContext = {
-    eventCount: memberEventCount > 0 ? memberEventCount : observedCount,
-    ruleTypeCount: distinctRuleCount > 0 ? distinctRuleCount : null,
-    reputationInput,
+    eventCount: scored ? scored.event_count : null,
+    ruleTypeCount: scored ? scored.rule_type_count : null,
+    reputationInput: scored ? scored.reputation_input : reputationInput,
     entityType: c.entity?.type || c.entity_type || null,
     entityValue: c.entity?.value || trigger?.entity || '',
+    scored,
+    memberCount: memberEventCount > 0 ? memberEventCount : null,
   };
   return RISK_FACTOR_META.flatMap(({ key, label, definition }) => {
     const raw = (recorded as Record<string, unknown>)[key];
@@ -311,7 +363,9 @@ export interface SignalProfileProps {
  */
 export const SignalProfile: React.FC<SignalProfileProps> = ({ c, triage, className }) => {
   const riskVal = typeof triage?.risk?.value === 'number' ? triage.risk.value : c.risk_score;
-  const ourRiskBand: ScoreBand | null = typeof riskVal === 'number' ? scoreBand(riskVal) : null;
+  // The shown integer (rounded half up) and ITS band: the one rule for every score (D4).
+  const shown = displayScore(riskVal);
+  const ourRiskBand: ScoreBand | null = typeof riskVal === 'number' ? displayBand(riskVal) : null;
   const factors = caseRiskFactors(c, triage);
   const [showFactors, setShowFactors] = React.useState(false);
   const factorsId = React.useId();
@@ -320,10 +374,15 @@ export const SignalProfile: React.FC<SignalProfileProps> = ({ c, triage, classNa
       {typeof riskVal === 'number' && ourRiskBand ? (
         <SignalMeter
           label="Risk score"
-          value={riskVal}
-          display={`${Math.round(boundedScore(riskVal))}/100`}
+          value={shown ?? 0}
+          display={`${shown ?? 0}/100`}
           tone={ourRiskBand}
           description="Deterministic case input"
+          renderValue={(node) => (
+            <RiskExplain caseId={c.case_id} score={riskVal} breakdown={c.risk_breakdown}>
+              {node}
+            </RiskExplain>
+          )}
         />
       ) : (
         <p className="text-xs text-muted-foreground">No risk score recorded.</p>

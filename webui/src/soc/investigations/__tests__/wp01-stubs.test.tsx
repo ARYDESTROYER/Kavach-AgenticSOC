@@ -132,17 +132,16 @@ describe('the explain stubs', () => {
     }
   });
 
-  it('answer null from every builder until the kit lands', () => {
-    const block = { p50: 1, p90: 2, mean: 1.5, max: 3, count: 4, available: true, reason: '' };
-    expect(builders.explainRisk(CASE, null)).toBeNull();
+  it('answer null from a builder only when nothing can be explained honestly (WP11 filled them)', () => {
+    expect(builders.explainRisk({ case_id: 'case-1' } as Case, null)).toBeNull();
     expect(builders.explainDecision(CASE, null)).toBeNull();
     expect(builders.explainSla(null)).toBeNull();
     expect(builders.explainPriority(null)).toBeNull();
     expect(builders.explainSeverity(null)).toBeNull();
-    expect(builders.explainShare(1, 2)).toBeNull();
-    expect(builders.explainPercentile(block, [1, 2])).toBeNull();
-    expect(builders.explainWilson(27, 30)).toBeNull();
+    expect(builders.explainShare(Number.NaN, 2)).toBeNull();
+    expect(builders.explainWilson(1, 0)).toBeNull();
     expect(builders.explainCost([])).toBeNull();
+    expect(builders.explainRisk(CASE, null)?.display).toBe('Risk 81');
   });
 });
 
