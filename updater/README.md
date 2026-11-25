@@ -31,7 +31,8 @@ entire public signed publication and verified anonymous access, but canonical
 v0.1.1 bootstrap failed closed before application mutation because matching absent
 legacy state-schema labels were normalized asymmetrically. It is cryptographically
 valid but bootstrap-blocked and is not a supported installation source. Version
-0.1.13 is the current release candidate and
+0.2.0 is the current release candidate (it folds in the never-tagged 0.1.13 correction
+and is signed as `ARYDESTROYER/Kavach-AgenticSOC`, the renamed repository) and
 becomes installable only after
 its own complete signed/public publication and canonical acceptance succeed.
 
@@ -46,7 +47,7 @@ catalog-verify a PostgreSQL custom-format backup. After cancellation is durably 
 it atomically promotes the pending pins to the updater-private and host-visible active
 overrides, then switches backend and Web separately.
 
-Version 0.1.10 introduced, and 0.1.13 carries forward,
+Version 0.1.10 introduced, and 0.2.0 carries forward,
 `TUF_ROOT=/var/lib/agentic-soc-updater/sigstore-root`, so cosign 3 initializes its
 TUF trust state on the existing writable updater-state volume instead of its
 read-only `/root/.sigstore` default. The release gate also installs the canonical
@@ -120,7 +121,7 @@ through the Console.
 
 ## Retention and cleanup
 
-Version 0.1.13 deliberately performs no automatic pruning. The updater state volume
+Version 0.2.0 deliberately performs no automatic pruning. The updater state volume
 retains durable jobs and preflights, cached `upgrade-plan.json` and Sigstore bundles,
 release overrides, deployment snapshots, and receipts. The separate backup volume
 retains the catalog-verified PostgreSQL dumps. Operators must monitor free space and
@@ -141,7 +142,7 @@ Do not delete:
 An older record may be archived or removed only after a later successful release has
 superseded its rollback authority, the backend has durably mirrored its terminal
 outcome into application audit, and operator policy permits disposal. There is no
-supported online per-record cleanup command in v0.1.13; never edit the live volume's
+supported online per-record cleanup command in v0.2.0; never edit the live volume's
 files while the supervisor is running or treat age alone as deletion authority.
 
 Future automatic pruning requires a versioned acknowledgement/retention protocol

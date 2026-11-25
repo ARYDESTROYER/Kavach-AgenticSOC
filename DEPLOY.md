@@ -5,22 +5,22 @@ The product is a read-only triage layer that consumes alerts from
 **any** SIEM / EDR / XDR and turns raw alert volume into audited, cost-metered,
 human-reviewable cases.
 
-The current source version is `0.1.13` (documentation line `0.1`). Source builds
+The current source version is `0.2.0` (documentation line `0.2`). Source builds
 default to `TLSOC_RELEASE_CHANNEL=testing`; set `stable` only while building the
-exact accepted `main` commit from its immutable `v0.1.13` tag. Version and channel
+exact accepted `main` commit from its immutable `v0.2.0` tag. Version and channel
 are independent, so a Testing candidate cannot report itself as Stable merely
 because it already carries the final SemVer.
 
 > **Release topology:** the remote uses `Testing` for integration and default
-> `main` for accepted Stable source. Version 0.1.13 is Stable only when its exact
-> verified `main` commit has the immutable `v0.1.13` tag and matching artifacts. Branch
+> `main` for accepted Stable source. Version 0.2.0 is Stable only when its exact
+> verified `main` commit has the immutable `v0.2.0` tag and matching artifacts. Branch
 > protections, required checks, and release-environment policies are repository
 > administration controls; verify them independently rather than inferring
 > acceptance from a branch or tag name.
 
 > **Do not deploy or bootstrap from `v0.1.4` or `v0.1.5`.** Those immutable
 > publication attempts did not produce a canonical signed plan and public GitHub
-> Release, so neither is an installation source. Use `v0.1.13` only when the complete
+> Release, so neither is an installation source. Use `v0.2.0` only when the complete
 > publication gate, canonical signed Release,
 > anonymous digest-pull evidence, and canonical PostgreSQL Compose runtime acceptance
 > verify; otherwise use a previously verified
@@ -46,8 +46,17 @@ because it already carries the final SemVer.
 > signed/public publication gate, including anonymous reads and Stable documentation,
 > but canonical v0.1.1 bootstrap failed closed before application mutation because
 > two matching missing legacy state-schema labels were normalized asymmetrically.
-> These historical attempts are superseded by the separately gated `v0.1.13`
-> correction and are not supported installation sources.
+> These historical attempts are superseded by the separately gated `v0.2.0`
+> release, which folds in the never-tagged 0.1.13 correction, and are not supported
+> installation sources.
+
+> **Repository identity.** The repository is `ARYDESTROYER/Kavach-AgenticSOC`, and
+> releases from 0.2.0 on are signed under that name. Set
+> `AGENTIC_SOC_UPDATE_REPOSITORY=ARYDESTROYER/Kavach-AgenticSOC` in `.env` before you
+> bootstrap. The bootstrap refuses a missing line, the repository's former name in any
+> letter case, and the new name in the wrong letter case, because the signing identity
+> is case-sensitive. It never edits `.env`. Artifacts of v0.1.12 and earlier stay valid
+> under the former identity.
 
 > **The SIEM is NOT baked into the stack.** You connect your log source(s) from
 > the **first-run wizard** ("add a source") AFTER the stack is up — not in a
@@ -300,7 +309,7 @@ You can also pre-seed one pull source at boot via `TLSOC_ES_URL` +
 > every enabled pull-source/feed pair with an independent durable cursor and
 > in-flight signature lock, so one deployment can poll multiple configured pull
 > clusters. Native PULL for Splunk / Microsoft Sentinel / QRadar / Chronicle /
-> EDR-XDR vendors remains outside 0.1; those vendors can push to the suite today
+> EDR-XDR vendors remains outside 0.2; those vendors can push to the suite today
 > through the generic receivers below.
 
 ### 3.6 Connecting a PUSH source (webhook / HEC / syslog / queues / object stores)
@@ -414,7 +423,7 @@ organization deliberately publishes the `core` target under a site-specific imag
 name, add only the required clients in a derived image, for example:
 
 ```dockerfile
-FROM registry.example/tlsoc-backend-core:0.1.13
+FROM registry.example/tlsoc-backend-core:0.2.0
 RUN pip install --no-cache-dir confluent-kafka boto3   # only what you need
 ```
 
@@ -553,21 +562,22 @@ independently. Back up first and follow
 ```bash
 cd <repo-root>
 git fetch --tags origin
-git checkout v0.1.13   # replace with the exact accepted release tag
+git checkout v0.2.0   # replace with the exact accepted release tag
 ./scripts/agentic-soc-compose.sh up -d --build
 ```
 
-Once its immutable publication gate completes, version 0.1.13 is the supported
-bootstrap boundary for supervised updates. The supported v0.1.1→v0.1.13 transition must run
-from the clean, exact annotated v0.1.13 tag whose commit remains contained in
-`origin/main`, while the reference v0.1.1 PostgreSQL stack is still running:
+Once its immutable publication gate completes, version 0.2.0 is the supported
+bootstrap boundary for supervised updates. The supported v0.1.1 to v0.2.0 transition must run
+from the clean, exact annotated v0.2.0 tag whose commit remains contained in
+`origin/main`, while the reference v0.1.1 PostgreSQL stack is still running, with
+`AGENTIC_SOC_UPDATE_REPOSITORY=ARYDESTROYER/Kavach-AgenticSOC` already in `.env`:
 
 ```bash
 ./scripts/bootstrap-updater.sh
 ```
 
 That host-authorized step installs the private Unix-socket supervisor transport, then
-has it verify, preflight, and apply the signed, digest-pinned v0.1.13 release. The
+has it verify, preflight, and apply the signed, digest-pinned v0.2.0 release. The
 bootstrap transition therefore uses the same pull-first, quiesce, PostgreSQL backup,
 identity/readiness, receipt, and automatic rollback state machine as later Console
 updates. After bootstrap, a freshly authenticated built-in super administrator can
@@ -583,11 +593,11 @@ publication attempts, the published-but-bootstrap-blocked `v0.1.6` through
 `v0.1.8` records, the failed-publication `v0.1.9` through `v0.1.11` records, and the
 fully published but bootstrap-blocked `v0.1.12` record cannot be relabeled Stable.
 If an earlier attempt left an inspectable idle supervisor
-while the application remained on v0.1.1, the 0.1.13
+while the application remained on v0.1.1, the 0.2.0
 bootstrap replaces that version-mismatched supervisor before signature verification.
-Reconcile other states only through the documented 0.1.13 path appropriate to their
+Reconcile other states only through the documented 0.2.0 path appropriate to their
 actual installed release. Bootstrap requires a strictly newer target, so an already
-running 0.1.13 deployment cannot bootstrap itself from the same plan.
+running 0.2.0 deployment cannot bootstrap itself from the same plan.
 
 The supported one-click profile is intentionally narrow: the reference standalone,
 single-replica Docker Compose deployment with the signed canonical base-file hash,
@@ -632,8 +642,8 @@ host-visible active override is published only at the deployment switch boundary
 After a restart, only a marker naming an exact durable terminal job is reconciled
 automatically. Unknown or malformed lifecycle state remains fail-closed.
 
-The updater never transports or replaces the base Compose file. The 0.1.x update
-protocol pins its version-invariant bytes in `deploy/update-base-v1.sha256`; release
+The updater never transports or replaces the base Compose file. Updater protocol 1
+pins its version-invariant bytes in `deploy/update-base-v1.sha256`; release
 images and versions live only in the signed generated override. Compatible patch
 releases must preserve that exact base, which permits sequential N→N+1→N+2 updates.
 Any topology/base edit requires an explicitly versioned updater protocol and manual
@@ -668,8 +678,8 @@ Before rolling back, ask users with more than 50 conversations to export the ext
 conversations they want to keep (history row menu → **Export**) and delete them, so
 the older build has nothing to evict.
 
-**Round 15 (current build).** Still version `0.1.13`; no database migration, index or
-table is added. The new state (case screenshots, the auto-close review ledger) lives in
+**Round 15 (in 0.2.0).** Built during the 0.1.13 candidate, which 0.2.0 replaces; no
+database migration, index or table is added. The new state (case screenshots, the auto-close review ledger) lives in
 two new key-value namespaces, `case_files` and `auto_close_review`. The full list is in
 `docs/operations/upgrades.md` ("Round 15 changes").
 
@@ -696,8 +706,8 @@ two new key-value namespaces, `case_files` and `auto_close_review`. The full lis
   feedback statistics count review grades as ordinary grades; back on this build they
   are excluded again, because each reviewed case's history keeps the marker.
 
-**Round 14 (same candidate).** Still version `0.1.13`; no database migration, index or
-table is added. The full list is in `docs/operations/upgrades.md` ("Round 14 changes").
+**Round 14 (in 0.2.0).** Built during the same candidate; no database migration, index
+or table is added. The full list is in `docs/operations/upgrades.md` ("Round 14 changes").
 
 - **Audit index on Elasticsearch (required step).** New audit rows carry structured
   fields. On an Elasticsearch state backend upgraded from an earlier build, **before**
@@ -945,7 +955,7 @@ Mode A PostgreSQL reports the desired policy as advisory until timestamp partiti
 and an operator-managed scheduler/tablespace/archive workflow exist. SQLite reports
 export-only. Connected source indices and buckets are always external/read-only.
 
-The 0.1.13 Apply operation does not configure Glacier and never adds an ILM delete
+The 0.2.0 Apply operation does not configure Glacier and never adds an ILM delete
 phase. To archive safely, write a separate immutable export, manifest and checksums,
 verify restore, then apply S3 lifecycle to that **independent archive prefix**. Never
 transition the Elasticsearch snapshot-repository prefix itself.
@@ -953,7 +963,7 @@ transition the Elasticsearch snapshot-repository prefix itself.
 ### 7.4 Unsupported archived-plugin revival
 
 The plugin is **archived** (`archive/kibana-plugin/`) and is no longer built,
-tested, version-stamped, or shipped as a supported 0.1 surface. Existing committed
+tested, version-stamped, or shipped as a supported 0.2 surface. Existing committed
 zips are historical artifacts, not release deliverables. A site that elects to
 revive one owns compatibility and verification; never compile on a production
 server. The old matching artifacts were:

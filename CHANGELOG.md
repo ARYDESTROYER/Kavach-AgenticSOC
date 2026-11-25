@@ -2357,7 +2357,12 @@ and, just as importantly, makes each of these conditions a state an operator can
   a stale pending proposal may briefly show both the old row and its honest re-draft; the
   old one lapses at its own expiry and is then swept.
 
-## [0.1.13] - 2026-08-05
+## [0.2.0] - 2026-11-25
+
+Testing candidate for the 0.2 line, not yet tagged. The frozen release preparation moves the
+`[Unreleased]` notes here and sets the tag date.
+
+## Development snapshot - 2026-08-05 - 0.1.13 Testing candidate (never tagged; folded into 0.2.0)
 
 **Canonical legacy-bootstrap identity correction.** The immutable `v0.1.12`
 release passed protected source and tag CI, published the complete signed release,

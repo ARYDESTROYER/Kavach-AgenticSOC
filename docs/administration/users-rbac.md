@@ -5,7 +5,7 @@ description: Manage Agentic SOC users, built-in roles, custom roles, and least-p
 
 # Users and RBAC
 
-Agentic SOC 0.1 provides local users, six built-in roles, custom roles, and deny-wins
+Agentic SOC 0.2 provides local users, six built-in roles, custom roles, and deny-wins
 permission overrides. RBAC is enforced only when authentication and RBAC are enabled.
 
 ## Turn on role-based access
@@ -154,7 +154,7 @@ Before assigning a custom role:
 5. Test with a non-administrator account.
 
 Avoid broad `*` grants. Object/row-level scope is an opt-in capability and is not a
-default tenant-isolation boundary in version 0.1.
+default tenant-isolation boundary in version 0.2.
 
 Treat `data_export:export` as a privileged data-access grant. It permits a bounded
 portable snapshot across selected cases, audit, usage, configuration, automation,
@@ -187,7 +187,7 @@ ratings and reports, and stops their running chat answers. Audit records are kep
 
 - Agentic SOC does not yet expose a complete API-key lifecycle for automation clients.
 - Custom role quality depends on operator testing; there is no policy-as-code release
-  pipeline in 0.1.
+  pipeline in 0.2.
 - Authentication is off by default in the base configuration. RBAC alone cannot
   protect a deployment until authentication is enabled.
 

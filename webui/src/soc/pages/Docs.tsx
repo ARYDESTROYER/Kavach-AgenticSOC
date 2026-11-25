@@ -7,8 +7,8 @@
  * while the Console owns release context, category discovery, and local filtering.
  *
  * Round 14 (HC1 to HC3): the header is the title "Help Center" (the navigation label)
- * with a help tip, and the release is one muted line in its actions ("Version 0.1.13 ·
- * docs 0.1 · Testing") instead of a pill and a band; the directory and the other
+ * with a help tip, and the release is one muted line in its actions ("Version 0.2.0 ·
+ * docs 0.2 · Testing") instead of a pill and a band; the directory and the other
  * versions are panels; a selected category looks like the selected navigation item; and
  * the whole guide row is the link, with no "Open guide" repeated on every row.
  */
@@ -41,14 +41,14 @@ import { Button } from '@/ui/button';
 import { Input } from '@/ui/input';
 
 export const PUBLIC_STABLE_DOCS_URL =
-  'https://arydestroyer.github.io/Agentic-Kibana/stable/';
+  'https://arydestroyer.github.io/Kavach-AgenticSOC/stable/';
 export const DEVELOPMENT_DOCS_URL =
-  'https://github.com/ARYDESTROYER/Agentic-Kibana/tree/Testing/docs';
+  'https://github.com/ARYDESTROYER/Kavach-AgenticSOC/tree/Testing/docs';
 
 /** Source tree matching the immutable Console bundle, never a guessed branch. */
 export function documentationSourceUrl(identity: ReleaseIdentity): string {
   const sourceRef = identity.channel === 'stable' ? `v${identity.version}` : 'Testing';
-  return `https://github.com/ARYDESTROYER/Agentic-Kibana/tree/${sourceRef}/docs`;
+  return `https://github.com/ARYDESTROYER/Kavach-AgenticSOC/tree/${sourceRef}/docs`;
 }
 
 /** The page help: what the Help Center is (the description that used to sit under the title). */
@@ -56,7 +56,7 @@ const PAGE_HELP =
   'Guidance for using, administering and operating this installed version of Agentic SOC. ' +
   'These articles ship with the application and stay available from the same host.';
 
-/** The one muted release line: "Version 0.1.13 · docs 0.1 · Testing". */
+/** The one muted release line: "Version 0.2.0 · docs 0.2 · Testing". */
 export function docsReleaseLine(version: string, docsLine: string, channelLabel: string): string {
   return `Version ${version} · docs ${docsLine} · ${channelLabel}`;
 }
@@ -601,21 +601,16 @@ export default function Docs({
           </p>
         </div>
         <div className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2">
-          {release.channel === 'stable' ? (
-            <a
-              href={PUBLIC_STABLE_DOCS_URL}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center gap-1.5 font-medium text-primary underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            >
-              Latest Stable
-              <ArrowUpRight className="size-3.5" aria-hidden />
-            </a>
-          ) : (
-            <span className="text-sm text-muted-foreground">
-              Stable site publishes with the first Stable release
-            </span>
-          )}
+          {/* B54: the Stable site exists on every channel, so the link always renders. */}
+          <a
+            href={PUBLIC_STABLE_DOCS_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1.5 font-medium text-primary underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            Latest Stable
+            <ArrowUpRight className="size-3.5" aria-hidden />
+          </a>
           <a
             href={DEVELOPMENT_DOCS_URL}
             target="_blank"

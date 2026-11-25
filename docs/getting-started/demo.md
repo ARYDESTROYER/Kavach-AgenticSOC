@@ -1,11 +1,11 @@
 ---
 title: Run the demo
-description: Explore Agentic SOC 0.1 with isolated synthetic data and a deterministic zero-cost model.
+description: Explore Agentic SOC 0.2 with isolated synthetic data and a deterministic zero-cost model.
 ---
 
 # Run the demo
 
-This guide applies to **Agentic SOC 0.1** and is for evaluators who want to explore the
+This guide applies to **Agentic SOC 0.2** and is for evaluators who want to explore the
 complete analyst workflow without external sources or model spend.
 
 ## Requirements

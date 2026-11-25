@@ -1,11 +1,11 @@
 ---
 title: Connect sources
-description: Add, validate, monitor, and safely expand an Agentic SOC 0.1 source.
+description: Add, validate, monitor, and safely expand an Agentic SOC 0.2 source.
 ---
 
 # Connect sources
 
-This guide applies to **Agentic SOC 0.1** and is for operators and integrators. A source is
+This guide applies to **Agentic SOC 0.2** and is for operators and integrators. A source is
 one configured connector instance: a particular cluster, sender, broker, bucket, or
 file input with its own identity, transport, feeds, mappings, and secret presence.
 
@@ -63,7 +63,7 @@ Use source health and coverage to answer:
 The per-source log view is bounded. Pull sources run a scoped read; push sources show
 a recent process-local live tail. Neither replaces the authoritative source archive.
 
-## Agentic SOC 0.1 boundaries
+## Agentic SOC 0.2 boundaries
 
 Operate one backend replica. Runtime-entered source secrets are memory-only. HTTP
 push has no durable receipt inbox before processing, and several receivers have

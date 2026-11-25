@@ -8,6 +8,9 @@ ship in the wheel, the sdist and the image instead.
 
 from __future__ import annotations
 
+import hashlib
+import importlib.util
+import json
 import os
 import re
 import shutil
@@ -26,6 +29,13 @@ from tests.test_runbook_removals import has_source
 
 BACKEND = Path(__file__).resolve().parents[1]
 REPO = BACKEND.parent
+#: The verbatim Apache License 2.0 text (https://www.apache.org/licenses/LICENSE-2.0.txt).
+APACHE_2_LICENSE_SHA256 = "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+APACHE_2_LICENSE_BYTES = 11_358
+#: The three shipping images and where each one's build context finds the license text.
+SHIPPING_DOCKERFILES = ("backend/Dockerfile", "webui/Dockerfile", "updater/Dockerfile")
+LICENSE_LABEL = 'org.opencontainers.image.licenses="Apache-2.0"'
+LICENSE_IN_IMAGE = "COPY LICENSE /usr/share/doc/agentic-soc/LICENSE"
 #: The wheel paths of the 12 built-in runbooks.
 LIBRARY_FILES = frozenset(f"app/runbooks/library/{rid}.md" for rid in BUILTIN_RUNBOOK_IDS)
 #: The retired procedure files (SPEC §4.10.16); none of them may ship again.
@@ -86,8 +96,51 @@ def test_dockerfile_is_non_root_complete_and_explicitly_tiered() -> None:
     assert "requirements-connectors.txt" in dockerfile
     assert dockerfile.rstrip().endswith("USER 10001:10001")
     assert "org.opencontainers.image.source" in dockerfile
-    assert "org.opencontainers.image.licenses" not in dockerfile
+    assert LICENSE_LABEL in dockerfile
     assert "/api/health/ready" in dockerfile
+
+
+def test_the_license_is_the_verbatim_apache_2_text_with_two_identical_copies() -> None:
+    """The root ``LICENSE`` is the exact Apache-2.0 text; the backend and updater build
+    contexts cannot see the root file, so each carries a byte-identical copy."""
+    root = (REPO / "LICENSE").read_bytes()
+    assert len(root) == APACHE_2_LICENSE_BYTES
+    assert hashlib.sha256(root).hexdigest() == APACHE_2_LICENSE_SHA256
+    assert root.isascii()
+    assert b"\r" not in root
+    for copy in ("backend/LICENSE", "updater/LICENSE"):
+        assert (REPO / copy).read_bytes() == root, copy
+
+
+def test_every_shipping_image_declares_and_carries_the_license() -> None:
+    for relative in SHIPPING_DOCKERFILES:
+        dockerfile = (REPO / relative).read_text(encoding="utf-8")
+        assert LICENSE_LABEL in dockerfile, relative
+        assert LICENSE_IN_IMAGE in dockerfile, relative
+        assert "ARG TLSOC_SOURCE_URL=https://github.com/ARYDESTROYER/Kavach-AgenticSOC" in dockerfile, relative
+    # The webui and updater contexts allow only listed paths; the backend context
+    # ignores only listed paths and must not ignore the license.
+    for relative in (".dockerignore", "updater/.dockerignore"):
+        lines = (REPO / relative).read_text(encoding="utf-8").splitlines()
+        assert "!LICENSE" in lines, relative
+    backend_ignored = (BACKEND / ".dockerignore").read_text(encoding="utf-8").splitlines()
+    assert not any(line.strip().lstrip("/") == "LICENSE" for line in backend_ignored)
+
+
+def test_package_metadata_declares_apache_2() -> None:
+    data = tomllib.loads((BACKEND / "pyproject.toml").read_text(encoding="utf-8"))
+    project = data["project"]
+    assert project["license"] == "Apache-2.0"
+    # PEP 639: no ``license-files`` path may leave the project directory, and the SPDX
+    # expression replaces the License classifier.
+    assert all(not str(path).startswith("..") for path in project.get("license-files", []))
+    assert not any(c.startswith("License ::") for c in project.get("classifiers", []))
+    requires = data["build-system"]["requires"]
+    assert "setuptools>=77" in requires, requires
+    web = json.loads((REPO / "webui/package.json").read_text(encoding="utf-8"))
+    lock = json.loads((REPO / "webui/package-lock.json").read_text(encoding="utf-8"))
+    assert web["license"] == "Apache-2.0"
+    assert lock["packages"][""]["license"] == "Apache-2.0"
 
 
 def test_docker_context_keeps_runtime_data() -> None:
@@ -146,7 +199,7 @@ def _pristine_source_tree(dest: Path) -> Path:
     sources no longer ship."""
     root = dest / "src"
     root.mkdir()
-    for name in ("pyproject.toml", "MANIFEST.in", "README.md", "requirements.txt",
+    for name in ("pyproject.toml", "MANIFEST.in", "README.md", "LICENSE", "requirements.txt",
                  "requirements-connectors.txt"):
         shutil.copy2(BACKEND / name, root / name)
     shutil.copytree(
@@ -156,11 +209,35 @@ def _pristine_source_tree(dest: Path) -> Path:
     return root
 
 
+def _offline_build_env(tmp_path: Path) -> dict[str, str]:
+    """The environment for a build without isolation or network.
+
+    Without isolation the build backend imports the suite's own ``packaging``, which
+    ``langchain-core`` holds below 24. setuptools 77 or later reads the SPDX
+    ``license`` string through ``packaging.licenses`` (packaging 24.2 or later), and
+    it vendors such a copy. The build subprocess is pointed at that copy first, so the
+    offline build reads the license the way an isolated build does.
+    """
+    env = {**os.environ, "PIP_NO_INDEX": "1"}
+    if importlib.util.find_spec("packaging.licenses") is None:
+        import setuptools
+
+        vendored = Path(setuptools.__file__).resolve().parent / "_vendor" / "packaging"
+        assert (vendored / "licenses").is_dir(), vendored
+        shim = tmp_path / "packaging-shim"
+        shim.mkdir()
+        (shim / "packaging").symlink_to(vendored, target_is_directory=True)
+        env["PYTHONPATH"] = os.pathsep.join(
+            part for part in (str(shim), env.get("PYTHONPATH", "")) if part
+        )
+    return env
+
+
 def test_built_wheel_contains_all_python_modules_and_runtime_data(tmp_path: Path) -> None:
     """Build without isolation/network and inspect the actual wheel, not config intent."""
     out = tmp_path / "dist"
     source = _pristine_source_tree(tmp_path)
-    env = {**os.environ, "PIP_NO_INDEX": "1"}
+    env = _offline_build_env(tmp_path)
     subprocess.run(
         [sys.executable, "-m", "build", "--sdist", "--wheel", "--no-isolation", "--outdir", str(out)],
         cwd=source,
@@ -200,6 +277,9 @@ def test_built_wheel_contains_all_python_modules_and_runtime_data(tmp_path: Path
         metadata_name = next(name for name in names if name.endswith(".dist-info/METADATA"))
         metadata = archive.read(metadata_name).decode("utf-8")
         assert "Provides-Extra: connectors" in metadata
+        assert "License-Expression: Apache-2.0" in metadata.splitlines()
+        license_name = next(n for n in names if n.endswith(".dist-info/licenses/LICENSE"))
+        assert archive.read(license_name) == (BACKEND / "LICENSE").read_bytes()
         for dependency in _requirement_names(BACKEND / "requirements-connectors.txt"):
             assert f"requires-dist: {dependency}" in metadata.lower()
 

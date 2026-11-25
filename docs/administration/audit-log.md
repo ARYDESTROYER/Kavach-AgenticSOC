@@ -1,6 +1,6 @@
 ---
 title: Audit log
-description: Open, filter and export the append-only record of every action by people, the AI agent and the system in Agentic SOC 0.1.
+description: Open, filter and export the append-only record of every action by people, the AI agent and the system in Agentic SOC 0.2.
 ---
 
 # Audit log

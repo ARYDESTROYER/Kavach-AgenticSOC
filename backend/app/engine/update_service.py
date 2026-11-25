@@ -489,12 +489,18 @@ class UpdateService:
                 protocol_version=supervisor.protocol_version,
                 updater_version=supervisor.updater_version,
             ),
+            # Bootstrap is the remedy only on the supported PostgreSQL Compose
+            # profile. Any other state backend can never update itself, so the
+            # Console must not offer "Enable updates" there.
             bootstrap_required=(
-                not socket_present
-                or not supervisor.available
-                or supervisor.protocol_version != SUPERVISOR_PROTOCOL_MIN
-                or bool(missing_capabilities)
-                or release_identity_blocked
+                state_backend == "postgres"
+                and (
+                    not socket_present
+                    or not supervisor.available
+                    or supervisor.protocol_version != SUPERVISOR_PROTOCOL_MIN
+                    or bool(missing_capabilities)
+                    or release_identity_blocked
+                )
             ),
         )
         return (

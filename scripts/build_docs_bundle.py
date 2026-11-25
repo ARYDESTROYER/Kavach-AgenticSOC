@@ -24,6 +24,13 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT = ROOT / "webui" / "public" / "docs"
+#: Earlier installed documentation lines. Each page address of these lines gets a
+#: redirect page to the same page of the current line, so stored chat citations,
+#: report links and bookmarks keep working. Every later minor release extends it.
+LEGACY_DOC_LINES = ("0.1",)
+#: The page that stored chat citations name with a fragment (``#sources``). The
+#: bundle check requires its redirect page whenever the current tree has the page.
+ANCHORED_STUB_PAGE = "analyst/chat/"
 SEMVER = re.compile(
     r"^(0|[1-9]\d*)\."
     r"(0|[1-9]\d*)\."
@@ -62,14 +69,27 @@ def release_channel(environment: Mapping[str, str] = os.environ) -> str:
     return "Stable" if configured == "stable" else "Testing"
 
 
-def _redirect_page(target: str, label: str) -> str:
+def _fragment_script(target: str) -> str:
+    """The inline script that redirects and keeps the URL fragment.
+
+    The target is JSON-encoded, with ``<`` escaped so it can never close the script.
+    """
+
+    encoded = json.dumps(target).replace("<", "\\u003c")
+    return f"<script>location.replace({encoded} + location.hash)</script>"
+
+
+def _redirect_page(target: str, label: str, *, keep_fragment: bool = False) -> str:
     safe_target = html.escape(target, quote=True)
     safe_label = html.escape(label)
+    # A meta refresh drops the fragment, so a page that must keep it redirects from
+    # a script first; the meta refresh stays the no-script fallback.
+    script = f"\n    {_fragment_script(target)}" if keep_fragment else ""
     return f"""<!doctype html>
 <html lang=\"en\">
   <head>
     <meta charset=\"utf-8\">
-    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">
+    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">{script}
     <meta http-equiv=\"refresh\" content=\"0; url={safe_target}\">
     <link rel=\"canonical\" href=\"{safe_target}\">
     <title>{safe_label}</title>
@@ -115,6 +135,80 @@ def write_bundle_metadata(
     )
 
 
+def current_pages(version_root: Path) -> list[str]:
+    """Every page address of the built tree, relative and ending in ``/``.
+
+    MkDocs writes directory URLs, so a page is a directory with an ``index.html``;
+    the home page is the empty string.
+    """
+
+    pages: list[str] = []
+    for index in sorted(version_root.rglob("index.html")):
+        relative = index.parent.relative_to(version_root).as_posix()
+        pages.append("" if relative == "." else f"{relative}/")
+    return pages
+
+
+def legacy_lines(docs_version: str) -> tuple[str, ...]:
+    """The earlier lines that redirect into ``docs_version`` (never the line itself)."""
+
+    return tuple(line for line in LEGACY_DOC_LINES if line != docs_version)
+
+
+def write_legacy_redirects(output: Path, *, docs_version: str) -> int:
+    """Write ``/docs/<old>/<page>/index.html`` for every current page and old line."""
+
+    pages = current_pages(output / docs_version)
+    written = 0
+    for line in legacy_lines(docs_version):
+        for page in pages:
+            stub = output / line / page / "index.html"
+            stub.parent.mkdir(parents=True, exist_ok=True)
+            stub.write_text(
+                _redirect_page(
+                    f"/docs/{docs_version}/{page}",
+                    f"Agentic SOC {docs_version} documentation",
+                    keep_fragment=True,
+                ),
+                encoding="utf-8",
+            )
+            written += 1
+    return written
+
+
+def validate_legacy_redirects(output: Path, *, docs_version: str) -> None:
+    """Every current page has a fragment-keeping redirect in every earlier line."""
+
+    pages = current_pages(output / docs_version)
+    problems: list[str] = []
+    for line in legacy_lines(docs_version):
+        if ANCHORED_STUB_PAGE in pages and not (
+            output / line / ANCHORED_STUB_PAGE / "index.html"
+        ).is_file():
+            problems.append(f"/docs/{line}/{ANCHORED_STUB_PAGE} (anchored citation page)")
+        for page in pages:
+            stub = output / line / page / "index.html"
+            target = f"/docs/{docs_version}/{page}"
+            if not stub.is_file():
+                problems.append(f"/docs/{line}/{page} is missing")
+                continue
+            source = stub.read_text(encoding="utf-8")
+            safe_target = html.escape(target, quote=True)
+            script = _fragment_script(target)
+            refresh = f'<meta http-equiv="refresh" content="0; url={safe_target}">'
+            if (
+                script not in source
+                or refresh not in source
+                or f'<link rel="canonical" href="{safe_target}">' not in source
+                or source.index(script) > source.index(refresh)
+            ):
+                problems.append(f"/docs/{line}/{page} does not redirect to {target}")
+    if problems:
+        raise RuntimeError(
+            "documentation redirect pages are incomplete: " + ", ".join(problems[:10])
+        )
+
+
 def validate_bundle(
     output: Path,
     *,
@@ -153,6 +247,7 @@ def validate_bundle(
                 f"documentation manifest {key} mismatch: "
                 f"expected {value!r}, found {manifest.get(key)!r}"
             )
+    validate_legacy_redirects(output, docs_version=docs_version)
 
 
 def _validated_output(path: Path) -> Path:
@@ -220,6 +315,7 @@ def build(output: Path) -> None:
             docs_version=docs_version,
             channel=channel,
         )
+        write_legacy_redirects(staged_root, docs_version=docs_version)
         validate_bundle(
             staged_root,
             version=version,

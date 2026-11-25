@@ -1,11 +1,11 @@
 ---
 title: Known limitations
-description: Release gates and explicit operating constraints for Agentic SOC 0.1.13.
+description: Release gates and explicit operating constraints for Agentic SOC 0.2.0.
 ---
 
 # Known limitations
 
-This list is part of the product contract for Agentic SOC `0.1.13` in Testing and,
+This list is part of the product contract for Agentic SOC `0.2.0` in Testing and,
 if the exact verified commit is published, its Stable artifacts. It distinguishes
 release gates from documented beta constraints so a green unit-test suite is never
 mistaken for release or production evidence.
@@ -23,21 +23,39 @@ promotion into `main`, set Pages source to **GitHub Actions**, and protect the
 `github-pages` environment as appropriate. Verify those settings before treating a
 new commit or documentation deployment as accepted merely because its workflow ran.
 
-### No project license
+### Project license (resolved in 0.2.0)
 
-The repository does not contain a `LICENSE` file. Publicly visible source is not
-automatically open source and does not grant redistribution rights.
+The maintainer chose the Apache License, Version 2.0. The verbatim text is `LICENSE` at
+the repository root, with byte-identical copies in `backend/` and `updater/` for their
+image build contexts. Each shipping image carries it at
+`/usr/share/doc/agentic-soc/LICENSE` with the label
+`org.opencontainers.image.licenses="Apache-2.0"`, and the backend package declares
+`License-Expression: Apache-2.0`. Bundled fonts, Unicode data and the MITRE ATT&CK subset
+keep their own terms; the README lists them under "Third-party notices".
 
-**Required decision:** choose and commit the intended license before publishing
-binaries, containers, or an “open-source” announcement. Apache-2.0 is permissive and
-patent-explicit; AGPL-3.0 requires network-service modifications to be offered to
-users. This is an owner/product decision and must not be guessed by automation.
+### The repository was renamed, so the update trust root changed
+
+The repository is now `ARYDESTROYER/Kavach-AgenticSOC`. From 0.2.0 on, that name is the
+signing identity of every release plan, the GHCR namespace and the OCI source label. The
+frozen Compose base (`deploy/docker-compose.agnostic.yml`) cannot change under updater
+protocol 1, so it still defaults `AGENTIC_SOC_UPDATE_REPOSITORY` to the former name.
+
+**Required control:** set
+`AGENTIC_SOC_UPDATE_REPOSITORY=ARYDESTROYER/Kavach-AgenticSOC` in `.env` before running
+`scripts/bootstrap-updater.sh`. The bootstrap refuses a missing line, the former name in
+any letter case, and the new name in the wrong letter case, because the signing identity
+is case-sensitive; it never edits `.env`. Artifacts of v0.1.12 and earlier stay valid
+under the former identity and are not re-signed. GitHub does not redirect project Pages
+after a rename, so old `arydestroyer.github.io/Agentic-Kibana/` links answer 404; the
+public Help Center is `https://arydestroyer.github.io/Kavach-AgenticSOC/`. A saved
+**Updates & releases** preference that names the former repository reads as the new one;
+a fork is kept.
 
 ### Signed update acceptance is external to local unit tests
 
 The updater protocol, release plan, signature verification, rollback state machine,
 and reference Compose contracts have offline coverage. That does not prove the exact
-published `v0.1.13` images and signed assets work through a real PostgreSQL Compose
+published `v0.2.0` images and signed assets work through a real PostgreSQL Compose
 upgrade, interruption, cancellation, automatic rollback, and post-success rollback.
 
 **Required control:** after the exact accepted `main` commit passes remote CI, publish
@@ -145,18 +163,18 @@ new case. Add tests for retries of one incident, distinct rules on the same enti
 NAT/shared IPs, distant/reopened activity, legacy migration, and cross-source
 related-but-not-merged cases.
 
-## Version 0.1 constraints
+## Version 0.2 constraints
 
 ### One-click updates support one deployment profile
 
 The unpublished 0.1.2 snapshot introduced source discovery and coherent-pair
 activation but did not publish the host supervisor or signed upgrade plan. Version
-0.1.13 carries the version-1 supervisor protocol and canonical base-Compose contract
+0.2.0 carries the version-1 supervisor protocol and canonical base-Compose contract
 without broadening its supported topology. It still cannot retroactively install a
 privileged host component. A supported canonical v0.1.1 installation requires one manual
-`scripts/bootstrap-updater.sh` step from the clean, exact annotated `v0.1.13` tag whose
+`scripts/bootstrap-updater.sh` step from the clean, exact annotated `v0.2.0` tag whose
 commit remains contained in `origin/main`; that step delegates the full
-v0.1.1→v0.1.13 transition to the signed plan. That tag is not an installation source
+v0.1.1 to v0.2.0 transition to the signed plan. That tag is not an installation source
 until the complete signed publication and canonical runtime acceptance evidence exists.
 Testing/source-built 0.1.3 and the
 non-installable v0.1.4/v0.1.5 attempts, plus the published-but-bootstrap-blocked
@@ -187,10 +205,11 @@ Version 0.1.12 restored the runner-owned fixture directory to mode `0700` only a
 verifier exit, then removed it. That release completed its entire signed/public
 publication gate, but canonical v0.1.1 bootstrap failed closed before application
 mutation because both legacy images omit the state-schema label and one absence was
-normalized while the other remained raw. Version 0.1.13 normalizes matching absent
-legacy schema labels symmetrically while retaining every mixed/later-identity
-rejection. It changes no application schema, updater protocol, publisher identity,
-process privilege, trust predicate, or frozen-base bytes.
+normalized while the other remained raw. The never-tagged 0.1.13 candidate, folded
+into 0.2.0, normalizes matching absent legacy schema labels symmetrically while
+retaining every mixed/later-identity rejection. Version 0.2.0 changes no application
+schema, updater protocol, process privilege, or frozen-base bytes. It does change the
+publisher identity to the renamed repository (see the release gate above).
 Subsequent compatible Stable releases can be installed from the Console only for
 the reference, single-replica
 standalone Docker Compose topology with PostgreSQL-owned state, durable authentication/secrets, a
@@ -232,7 +251,7 @@ credential. See [Upgrades](../operations/upgrades.md).
 
 ### Updater artifacts are not auto-pruned
 
-The updater foundation included in version 0.1.13 retains updater jobs, preflights,
+The updater foundation included in version 0.2.0 retains updater jobs, preflights,
 signed plan assets, receipts, and deployment snapshots in the updater-state volume
 and verified PostgreSQL dumps in the
 updater-backup volume. It does not implement age-, count-, or status-based pruning.
@@ -711,7 +730,7 @@ rotation, state backup/restore, log retention, monitoring, image scanning, and a
 documented incident/upgrade procedure.
 
 The project has not published a compliance certification or an independent
-production security assessment for version 0.1.
+production security assessment for version 0.2.
 
 ## What is safe to evaluate
 
@@ -729,5 +748,5 @@ Suitable evaluation goals include:
 - case provenance, audit, collaboration, and notification UX;
 - fault-injection and performance work needed to close the blockers above.
 
-Version 0.1 should not be marketed as lossless, horizontally scalable, production
+Version 0.2 should not be marketed as lossless, horizontally scalable, production
 certified, or independently assessed until the corresponding evidence is published.

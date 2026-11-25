@@ -1,6 +1,6 @@
 ---
 title: Models and spend controls
-description: Configure model routing, provider connectivity, pricing, and cost limits in Agentic SOC 0.1.
+description: Configure model routing, provider connectivity, pricing, and cost limits in Agentic SOC 0.2.
 ---
 
 # Models and spend controls

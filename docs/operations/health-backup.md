@@ -117,7 +117,7 @@ download re-verifies size/SHA-256. Download and independently retain an export n
 for recovery or evidence; an Inbox entry is not a backup.
 
 The desired Storage & retention archive stage is also not a backup mechanism in
-0.1.13. Glacier requires an independent immutable export, manifest, checksums, and a
+0.2.0. Glacier requires an independent immutable export, manifest, checksums, and a
 tested restore path. Never transition an Elasticsearch snapshot-repository prefix to
 Glacier; every repository object must remain directly readable by Elasticsearch.
 
@@ -140,7 +140,7 @@ destinations from the restore environment.
 
 ## Limitations
 
-Agentic SOC 0.1 has no built-in backup scheduler or complete versioned database migration
+Agentic SOC 0.2 has no built-in backup scheduler or complete versioned database migration
 framework. A successful dump is not sufficient evidence; test a full restore and retain
 upstream data long enough to replay after failure.
 

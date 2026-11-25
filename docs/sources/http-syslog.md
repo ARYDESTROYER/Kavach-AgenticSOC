@@ -1,11 +1,11 @@
 ---
 title: HTTP and syslog sources
-description: Configure authenticated webhook, HEC-compatible, and network-restricted syslog ingestion in Agentic SOC 0.1.
+description: Configure authenticated webhook, HEC-compatible, and network-restricted syslog ingestion in Agentic SOC 0.2.
 ---
 
 # HTTP and syslog sources
 
-This guide applies to **Agentic SOC 0.1** and is for integrators forwarding events directly
+This guide applies to **Agentic SOC 0.2** and is for integrators forwarding events directly
 to Agentic SOC. HTTP uses the Agentic SOC API listener; syslog binds a separate UDP or TCP port.
 
 ## Generic webhook
@@ -48,7 +48,7 @@ Authentication happens before payload parsing. If the batch cannot be persisted,
 Agentic SOC returns `503` with a retry hint rather than claiming success. The sender must
 retain and retry the complete request with stable native event IDs.
 
-Agentic SOC 0.1 does not yet commit an independent durable receipt before correlation. A
+Agentic SOC 0.2 does not yet commit an independent durable receipt before correlation. A
 process or host failure in that window can lose a pushed record, so keep the sender's
 retry/retention path authoritative.
 
@@ -67,7 +67,7 @@ Use a high port such as `5514` when the container or process does not have permi
 to bind below 1024. Publish or route that port explicitly; the shared HTTP API port
 does not receive syslog datagrams.
 
-!!! danger "The `tls` selection is not encrypted in 0.1"
+!!! danger "The `tls` selection is not encrypted in 0.2"
 
     The current syslog TLS option does not build a certificate-backed TLS context.
     Treat it as plain TCP. Terminate TLS in a trusted forwarder or proxy, or use an

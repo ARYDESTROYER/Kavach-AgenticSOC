@@ -12,16 +12,16 @@ feature branches → Testing → main (Stable)
 ```
 
 `Testing` is the integration and acceptance branch. `main` is the supported Stable
-branch. The current source candidate is represented as `0.1.13` in packages/images
-and becomes Stable only if the immutable `v0.1.13` tag and its complete signed/public
+branch. The current source candidate is represented as `0.2.0` in packages/images
+and becomes Stable only if the immutable `v0.2.0` tag and its complete signed/public
 artifact set pass every publication and canonical runtime acceptance gate; its
-documentation line remains `0.1`.
+documentation line is `0.2`.
 
 !!! note "Canonical topology and administrative controls"
 
     The remote now uses `Testing` for integration and default `main` for accepted
-    Stable source. Version 0.1.13 is Stable only when the exact verified `main`
-    commit has the immutable `v0.1.13` tag, matching signed/public artifacts, and
+    Stable source. Version 0.2.0 is Stable only when the exact verified `main`
+    commit has the immutable `v0.2.0` tag, matching signed/public artifacts, and
     completed canonical runtime acceptance.
     Pull-request protections,
     required checks, and release-environment policy are repository settings rather
@@ -51,7 +51,7 @@ documentation line remains `0.1`.
     images, but constrained plan verification could not traverse the runner-owned
     verification directory. The workflow stopped before GitHub Release publication,
     so no installable signed plan exists for that tag. It is also historical,
-    bootstrap-blocked, and superseded by 0.1.13.
+    bootstrap-blocked, and superseded by 0.2.0.
 
     The immutable `v0.1.10` tag passed source and exact-tag CI, then its signed-release
     workflow timed out while the architecture-neutral Web Console builder ran under
@@ -88,7 +88,7 @@ Before promoting `Testing` to `main`:
 - ensure every package, image, OpenAPI document, and documentation page uses the same
   release identity.
 
-Promote through a reviewed pull request. Tag the accepted `main` commit `v0.1.13` and
+Promote through a reviewed pull request. Tag the accepted `main` commit `v0.2.0` and
 publish artifacts identified by digest. Do not move a release tag.
 
 ### Version and promotion checklist
@@ -114,11 +114,11 @@ publish artifacts identified by digest. Do not move a release tag.
    publish by digest, and let the docs workflow move `stable`/`latest`.
 
 `TLSOC_VERSION` and `TLSOC_RELEASE_CHANNEL` answer different questions. Promoting
-`0.1.13` from Testing to Stable changes provenance, not its SemVer.
+`0.2.0` from Testing to Stable changes provenance, not its SemVer.
 
 ## Supported one-click upgrades
 
-Agentic SOC 0.1.13 includes the updater foundation for the reference deployment and
+Agentic SOC 0.2.0 includes the updater foundation for the reference deployment and
 becomes installable only after the candidate completes the immutable Stable
 publication and canonical runtime acceptance gates.
 After one explicit bootstrap, a built-in `super_admin` can authorize a compatible
@@ -126,7 +126,7 @@ Stable release from the Console and the updater performs the host-side work. The
 ordinary backend and browser never receive Docker access, registry credentials,
 arbitrary command execution, or a writable deployment file.
 
-The 0.1.13 updater bakes
+The 0.2.0 updater bakes
 `TUF_ROOT=/var/lib/agentic-soc-updater/sigstore-root`, so cosign's TUF trust state
 lives on the existing writable updater-state volume while the root filesystem stays
 read-only. Stable publication materializes the canonical plan and bundle as read-only
@@ -138,8 +138,8 @@ nginx runtime remains target-platform-specific. After the constrained verifier e
 release-fixture cleanup restores its runner-owned parent directory to private mode
 `0700`, then removes it; the plan and bundle remain mode `0444` beneath mode `0555`
 throughout verification. There is no state-schema,
-updater-protocol, publisher-identity, process-privilege, trust-policy, or frozen-base
-change.
+updater-protocol, process-privilege, or frozen-base change. The publisher identity
+does change, to the renamed repository; see "The repository was renamed" below.
 
 The first implementation is deliberately narrow:
 
@@ -167,14 +167,19 @@ that file is a manual upgrade even when every image and signature is otherwise v
 
 An installation made before the updater exists cannot grant itself host update
 authority. The supported transition from the final pre-supervisor Stable release,
-v0.1.1, to v0.1.13 therefore requires one host-authorized bootstrap. On the host:
+v0.1.1, to v0.2.0 therefore requires one host-authorized bootstrap. On the host:
 
 1. keep the existing reference PostgreSQL Compose deployment running;
 2. configure durable `.env` values for `TLSOC_PG_PASSWORD`,
    `TLSOC_AUTH_ENABLED=true`, a `TLSOC_AUTH_JWT_SECRET` of at least 32 characters,
-   and the trusted `AGENTIC_SOC_UPDATE_REPOSITORY`;
+   and the trusted repository, exactly
+   `AGENTIC_SOC_UPDATE_REPOSITORY=ARYDESTROYER/Kavach-AgenticSOC`. A v0.1.1 `.env`
+   usually has no such line or names the repository's former name; add or change it
+   first. The bootstrap refuses a missing line, the former name in any letter case,
+   and the new name in the wrong letter case, prints the line to add, and never
+   edits `.env`;
 3. after the complete publication and acceptance evidence verifies, check out the
-   clean, exact annotated `v0.1.13` tag whose commit is contained in
+   clean, exact annotated `v0.2.0` tag whose commit is contained in
    `origin/main`; and
 4. run `./scripts/bootstrap-updater.sh` from that checkout.
 
@@ -196,7 +201,7 @@ it is deleted only after bootstrap observes that exact job terminal. An unreadab
 invalid supervisor or any active job fails closed for operator recovery; bootstrap
 never force-replaces work in progress.
 It builds only the initial supervisor transport from the verified checkout, then
-asks that supervisor to fetch, verify, preflight, and apply the signed v0.1.13 plan.
+asks that supervisor to fetch, verify, preflight, and apply the signed v0.2.0 plan.
 The full transition therefore uses the same digest-pinned pull, quiesce, verified
 backup, identity/health checks, durable receipt, and automatic rollback state machine
 as later Console-initiated updates. It is not an unverified local rebuild of the
@@ -209,13 +214,33 @@ application pair.
     through `v0.1.8` records and the failed-publication `v0.1.9` through `v0.1.11` records cannot be
     relabelled Stable. If an earlier attempt left
     an inspectable idle older supervisor while the application
-    remained on v0.1.1, the v0.1.13 bootstrap preserves durable state and replaces
+    remained on v0.1.1, the v0.2.0 bootstrap preserves durable state and replaces
     that version-mismatched supervisor before signed-plan verification. Reconcile
-    other states only through the documented 0.1.13 path appropriate to their actual
+    other states only through the documented 0.2.0 path appropriate to their actual
     installed release. Bootstrap also requires a strictly newer target, so an
-    already-running 0.1.13 deployment cannot bootstrap itself from the 0.1.13 plan.
+    already-running 0.2.0 deployment cannot bootstrap itself from the 0.2.0 plan.
 
-Once a supported 0.1.13 deployment has the supervisor, later compatible Stable
+### The repository was renamed
+
+The repository is now `ARYDESTROYER/Kavach-AgenticSOC`. From 0.2.0 on, that name is
+the update trust root: the signing identity of every release plan, the GHCR namespace
+`ghcr.io/arydestroyer/kavach-agenticsoc`, the OCI source label, the release discovery
+default and the public documentation address. The updater passes it verbatim to the
+signature check, which compares it exactly, letter case included.
+
+- The frozen base Compose file cannot change under updater protocol 1, so it still
+  defaults `AGENTIC_SOC_UPDATE_REPOSITORY` to the former name. That is why the
+  bootstrap requires the line in `.env` (step 2 above).
+- Artifacts of v0.1.12 and earlier stay valid under the former identity. They are
+  not re-signed.
+- GitHub does not redirect project Pages after a rename, so old
+  `arydestroyer.github.io/Agentic-Kibana/` links answer 404. The public Help Center is
+  now `https://arydestroyer.github.io/Kavach-AgenticSOC/`.
+- A saved **Updates & releases** preference that names the former repository, in any
+  letter case and with or without `.git`, reads as the new repository. Any other
+  repository, a fork included, is kept.
+
+Once a supported 0.2.0 deployment has the supervisor, later compatible Stable
 releases can be applied from the Console. A missing supervisor or a safely inspectable,
 idle older protocol or version is remediated by the host-authorized bootstrap; active, unreadable,
 or invalid supervisor state remains an explicit manual blocker. The product never
@@ -412,7 +437,7 @@ updater does not claim zero downtime or immunity from loss of its trusted host.
 
 ### Updater retention and capacity
 
-Version 0.1.13 does **not** automatically prune updater jobs, preflights, cached signed
+Version 0.2.0 does **not** automatically prune updater jobs, preflights, cached signed
 plans and signature bundles, deployment snapshots/receipts, or PostgreSQL backups.
 The reference deployment keeps updater state in the persistent
 `agentic-soc-updater-state` volume and verified dumps in the separate
@@ -436,7 +461,7 @@ Never remove or rotate away:
 Archive or remove eligible history only after **all** of these are true: a later
 successfully installed release has superseded the record's rollback authority; the
 exact terminal outcome is present in application audit; and the operator's backup and
-retention policy permits disposal. Version 0.1.13 provides no supported online,
+retention policy permits disposal. Version 0.2.0 provides no supported online,
 per-record cleanup command, so do not delete individual live-volume files while the
 supervisor is running or infer eligibility from age alone.
 
@@ -467,13 +492,15 @@ that correctly reports **Manual upgrade required**:
 
 ## Changes that need attention when upgrading to this build
 
-This build (the current `0.1.13` source candidate, after the Round 12, Round 13, Round 14
-and Round 15 changes) needs no database migration and no new index or table. It changes
+This build (the `0.2.0` source candidate, which carries the Round 12, Round 13, Round 14
+and Round 15 changes of the never-tagged 0.1.13 candidate) needs no database migration and
+no new index or table. It changes
 these behaviours, which operators should know about before upgrading.
 
 ### Round 15 changes
 
-Round 15 keeps version `0.1.13` and adds no database migration, index or table. Case
+Round 15 (built as the 0.1.13 candidate, now part of 0.2.0) adds no database migration,
+index or table. Case
 screenshots and the auto-close review ledger live in two new key-value namespaces,
 `case_files` and `auto_close_review`. Read these before upgrading:
 
@@ -542,7 +569,7 @@ the keys it does not model. After an image-only rollback and the return:
 
 ### Round 14 changes
 
-Round 14 keeps version `0.1.13` and adds no database migration, index or table. Its
+Round 14 (built as the same candidate) adds no database migration, index or table. Its
 new state lives in the existing key-value store. Read these before upgrading:
 
 - **Elasticsearch audit mapping (required step).** New audit rows carry structured
@@ -784,7 +811,7 @@ with these effects:
 
 ### Round 12 and Round 13 changes
 
-These earlier changes in the same `0.1.13` candidate still apply:
+These earlier changes in the same candidate still apply:
 
 - **Chat limits migrate once.** The stored chat configuration moves to **Unlimited**
   per-question limits on first read unless an administrator had changed a per-question
@@ -866,7 +893,7 @@ GitHub repository and the branch used for each release channel. Fresh installati
 observe:
 
 ```text
-Repository: https://github.com/ARYDESTROYER/Agentic-Kibana
+Repository: https://github.com/ARYDESTROYER/Kavach-AgenticSOC
 Stable branch: main
 Testing branch: Testing
 Check interval: 360 minutes
@@ -918,7 +945,7 @@ see [Runbooks](../intelligence/runbooks.md).
 ## Rollback
 
 Rollback is not merely starting an older image. A newer version may have written state
-that older code does not understand. Version 0.1 does not provide a general schema
+that older code does not understand. Version 0.2 does not provide a general schema
 migration framework. The v1 supervisor therefore accepts only signed plans whose
 migration strategy is `none`, verifies a PostgreSQL custom-format backup before
 switching, and retains it only for explicit break-glass recovery. Automatic in-flight,
@@ -970,6 +997,6 @@ Stable fixes start on a focused branch from the affected source, merge into
 release. Emergency timing may shorten review, but it must not reverse the permanent
 Testing-to-Stable direction or patch only `main`.
 
-See [Version 0.1](../releases/0.1.md),
+See [Version 0.2](../releases/0.2.md),
 [Documentation versions](../releases/documentation-versions.md), and
 [Health, backup, and restore](health-backup.md).

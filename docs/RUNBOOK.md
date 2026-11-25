@@ -22,7 +22,7 @@ below are therefore **backend-conditional** — the section flags which.
 ```bash
 # Direct (the agnostic stack publishes :8088; or exec into the container)
 curl -s localhost:8088/api/health ; echo
-#   -> {"status":"ok","version":"0.1.13","es_connected":...,"store_type":"...","setup_complete":true}
+#   -> {"status":"ok","version":"0.2.0","es_connected":...,"store_type":"...","setup_complete":true}
 
 # THROUGH the web UI's nginx (proves the SPA → backend path end-to-end)
 curl -fsS http://localhost:8080/api/health ; echo
@@ -118,7 +118,7 @@ management key:
 | `tlsoc-agent-cursor` | single-doc (`primary`) | constant |
 
 - Use **Settings → Organization → Storage & retention** to preview and explicitly
-  apply the owned-state ILM policy. In 0.1.13 it applies only to the append-only audit
+  apply the owned-state ILM policy. In 0.2.0 it applies only to the append-only audit
   and usage aliases; mutable cases and live metadata remain Hot. The desired default
   is 180 days Hot + 90 days Warm, with deletion always off. Do not attach a blanket
   ILM policy to every `tlsoc-agent-*` alias.
