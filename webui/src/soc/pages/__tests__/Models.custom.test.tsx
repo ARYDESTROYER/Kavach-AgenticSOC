@@ -137,6 +137,19 @@ describe('Models — Add local model', () => {
     );
   });
 
+  it('gives example URLs the backend container can reach ([oss] B3)', async () => {
+    renderPage();
+    fireEvent.click(await screen.findByRole('button', { name: /add local model/i }));
+    const field = await screen.findByLabelText(/base url/i);
+    // Inside the Compose stack, localhost is the backend container itself.
+    expect(field).toHaveAttribute('placeholder', 'http://host.docker.internal:4000/v1');
+    const help = screen.getByTestId('local-base-url-help');
+    expect(help).toHaveTextContent('http://host.docker.internal:4000/v1 (LiteLLM)');
+    expect(help).toHaveTextContent('http://host.docker.internal:11434/v1 (Ollama)');
+    expect(help).toHaveTextContent('host-gateway');
+    expect(help.textContent).not.toMatch(/localhost:(4000|11434)/);
+  });
+
   it('fetches models from the endpoint via the reachability probe', async () => {
     renderPage();
     fireEvent.click(await screen.findByRole('button', { name: /add local model/i }));

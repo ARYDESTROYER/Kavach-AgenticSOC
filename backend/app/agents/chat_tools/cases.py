@@ -935,9 +935,11 @@ class GetCaseTool(ChatTool):
         )
         citation = None
         try:
+            # Round 16 (B42): the display number travels for the Sources chip; the
+            # internal id stays the navigation target.
             citation = Citation(
                 id=citation_id("C", 1, ctx), kind="case", title=case.title or case.case_id,
-                case_id=case.case_id, untrusted=True,
+                case_id=case.case_id, case_number=(case.case_number or None), untrusted=True,
             )
         except Exception:  # noqa: BLE001 — an unusual case id simply is not citable
             citation = None

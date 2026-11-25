@@ -3341,6 +3341,11 @@ export interface ChatCitation {
   /** `/docs/<major.minor>/<path>/#anchor` (validated). */
   doc?: string | null;
   case_id?: string | null;
+  /**
+   * Round 16 (B42): the case's display number (`CASE-000043`) for a case citation.
+   * Display text only; navigation uses `case_id`. Absent on older transcripts.
+   */
+  case_number?: string | null;
   /** `T1234` or `T1234.001`. */
   technique?: string | null;
   snippet?: string | null;
