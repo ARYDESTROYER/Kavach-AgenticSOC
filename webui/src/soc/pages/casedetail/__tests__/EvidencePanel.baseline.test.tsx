@@ -1,9 +1,8 @@
 /**
- * OverviewPanel: anomaly-baseline advisory embedding (#4).
+ * EvidencePanel: anomaly-baseline advisory embedding (#4).
  *
- * The `BaselineSignatureCard` warm-up/percentile panel was fully built but shipped to
- * NO user: its stated purpose was a CaseDetail embedding that was never wired. It is
- * now mounted in the CaseDetail Overview when the case has a cluster signature AND the
+ * The `BaselineSignatureCard` warm-up/percentile panel is mounted on the case's Evidence
+ * tab (Round 16, D8; the Overview before it) when the case has a cluster signature AND the
  * baseline has recorded data for it. This spec pins:
  *   1. the embedded "Anomaly baseline" card renders when the case's cluster signature
  *      has baseline data (found=true), and the source-derived signature is plain text (#9);
@@ -27,7 +26,7 @@ vi.mock('@/lib/api', () => ({
   api: { get: getMock, listCases: listCasesMock },
 }));
 
-import { OverviewPanel } from '../OverviewPanel';
+import { EvidencePanel } from '../EvidencePanel';
 import type { Case } from '@/lib/types';
 import type { BaselineSignature } from '@/soc/Baseline.api';
 
@@ -48,10 +47,8 @@ function baseCase(extra: Partial<Case>): Case {
   return { case_id: 'c1', status: 'open', verdict: 'true_positive', ...extra } as unknown as Case;
 }
 
-function renderOverview(c: Case) {
-  return render(
-    <OverviewPanel c={c} />,
-  );
+function renderEvidence(c: Case) {
+  return render(<EvidencePanel c={c} />);
 }
 
 /** Flush the best-effort baseline fetch chain (resolve → api.get → setData) under act. */
@@ -61,7 +58,7 @@ async function flush() {
   });
 }
 
-describe('OverviewPanel: anomaly-baseline advisory (#4)', () => {
+describe('EvidencePanel: anomaly-baseline advisory (#4)', () => {
   beforeEach(() => {
     getMock.mockReset();
     listCasesMock.mockReset();
@@ -70,7 +67,7 @@ describe('OverviewPanel: anomaly-baseline advisory (#4)', () => {
 
   it('embeds the "Anomaly baseline" card when the case signature has baseline data', async () => {
     getMock.mockResolvedValue(WARM);
-    renderOverview(baseCase({ cluster_signature: WARM.signature }));
+    renderEvidence(baseCase({ cluster_signature: WARM.signature }));
 
     expect(await screen.findByText('Anomaly baseline')).toBeInTheDocument();
     // Fetched the case's OWN cluster signature (encoded path).
@@ -82,7 +79,7 @@ describe('OverviewPanel: anomaly-baseline advisory (#4)', () => {
   });
 
   it('renders NO baseline panel when the case has no cluster signature', () => {
-    renderOverview(baseCase({}));
+    renderEvidence(baseCase({}));
     expect(screen.queryByText('Anomaly baseline')).toBeNull();
     // No signature → no fetch at all.
     expect(getMock).not.toHaveBeenCalled();
@@ -90,10 +87,10 @@ describe('OverviewPanel: anomaly-baseline advisory (#4)', () => {
 
   it('fails quiet when the baseline has no data for the signature (found=false)', async () => {
     getMock.mockResolvedValue({ ...WARM, found: false, buckets: 0, warm_buckets: 0, series: [] });
-    renderOverview(baseCase({ cluster_signature: 'sig::never-seen' }));
+    renderEvidence(baseCase({ cluster_signature: 'sig::never-seen' }));
 
-    // The panel itself mounts (its Summary section is always present)…
-    await screen.findByText('Summary');
+    // The panel itself mounts (its What happened section is always present)…
+    await screen.findByText('What happened');
     await waitFor(() => expect(getMock).toHaveBeenCalledTimes(1));
     await flush();
 
@@ -104,9 +101,9 @@ describe('OverviewPanel: anomaly-baseline advisory (#4)', () => {
 
   it('fails quiet when the baseline fetch errors (e.g. baseline disabled)', async () => {
     getMock.mockRejectedValue(new Error('baseline disabled'));
-    renderOverview(baseCase({ cluster_signature: 'sig::x' }));
+    renderEvidence(baseCase({ cluster_signature: 'sig::x' }));
 
-    await screen.findByText('Summary');
+    await screen.findByText('What happened');
     await waitFor(() => expect(getMock).toHaveBeenCalled());
     await flush();
 

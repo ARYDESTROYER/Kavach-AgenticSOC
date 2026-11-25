@@ -633,29 +633,43 @@ the headline. One shared helper decides it for the case header,
 queue rows, the Cases list, hover cards and grading; a disposition value alone is never
 treated as an analyst's call.
 
-**Case header.** The header stays put above every tab: the title (one line at every
-width, its full text on hover and in its accessible name), then one primary contextual
-action, the Take action menu (every other verb), a "More options" menu (copy link, open
-in new tab) and, below a 60rem pane, the Details button. Under it, one meta row: the case
-number with its copy control, severity, the status while the case is open or its outcome
-once it ended, the AI verdict chip, the owner (its one editable home), the opened age and,
-while open, the SLA. Tags, the campaign, the risk reading, Ask AI and the Sample mark live
-in the facts rail; T and "Edit tags" open the Details sheet first when the rail is hidden.
-The primary action follows the status: Acknowledge when new; Close case while open,
+**Case header.** The header stays put above every tab and is the same height for every
+case: a 44px title row, a 24px meta strip and 36px underline tabs, 118px in all, with the
+same padding at the top of every tab body. The title row holds the title (one line at
+every width, truncating first, its full text on hover and in its accessible name), one
+primary contextual action, the Take action menu (every other verb), Ask AI, a "More
+options" menu (copy link, open in new tab), the inspector toggle (`]`) and Back. Below a
+40rem pane the primary action and Take action show as icons, named for assistive
+technology. The meta strip never wraps: the case number with its copy control, severity,
+the status while the case is open or its outcome once it ended, the Risk chip (its
+explanation on hover or click), the AI verdict (explained the same way) with the live AI
+run chip after it, the owner (its one editable home, opened with M), the SLA while open
+and the review chip while an auto-close review waits. As the pane narrows, items give way
+by container query, never the viewport: the Risk chip below 30rem, the verdict and the
+long severity label below 36rem, the owner's name and the review chip below 44rem, the SLA
+below 52rem. The owner's monogram never hides, and the status truncates instead. A review
+sample has no band in the header: its sentence is the review chip's hover and the Brief's
+first block. Tags, the campaign, the factor reading of the risk, Ask AI about the case
+and the Sample mark live in the inspector. The primary action follows the status: Acknowledge when new; Close case while open,
 investigating or awaiting an analyst (Escalate is in Take action, and C opens the close
 dialog wherever a close is allowed); Resume when on hold; Mark resolved when escalated;
 Close case when resolved; Reopen when closed. A case the AI agent closed whose auto-close
 review is pending shows Start review instead, and Reopen moves into Take action; on any
 other case the agent closed, Take action offers "Review this auto-close" in place of Set
 disposition while a review can still be recorded (Set disposition stays hidden either
-way). Facts about the case live once, in a facts
-rail beside every tab (a non-blocking Details sheet in a narrow pane): eight sections
-divided by hairlines, with no icon headings (Outcome, Signal, Runbook, Times, Tags with
-the campaign, Source with the primary entity, Related cases, Record). The record
-sections are five underline tabs (Overview, Runbook, Investigation, Collaboration, Chat;
-Alt+1 to Alt+5); the retired Timeline and Threat context tab links open the Overview's
-"What happened" and Investigation's "Threat context" sections. The tabs hold the evidence
-narrative.
+way). Facts about the case live once, in the inspector: a column beside every tab from a
+52rem pane (272px, 304px from a 72rem pane), shown or hidden with `]` or the header's
+toggle and kept per viewer, and a non-blocking side sheet in a narrower pane, where the
+toggle opens it. It has six sections divided by hairlines, each heading the plain control
+that folds it, kept open or closed per viewer: Outcome (with why the case is waiting),
+Signal, Times, Source and entity (with the related-cases link to Evidence), Tags and
+campaign, and Record, closed at first (the cost with its per-call rows, the build, the
+investigator runbook, the classification history and "View all fields"). T and "Edit
+tags" open a hidden column first when it fits, and the sheet first when it does not. The
+record sections are six underline tabs, one lane each: Brief, Evidence, AI
+investigation, Response, Activity and Chat, on Alt+1 to Alt+6. Older links still land:
+the retired Timeline tab and the "what happened" section open Evidence there, and so do
+the retired Threat context tab and the threat-context and related-cases sections.
 
 **Case tab bodies.** Every tab body is flat: sections divided by one hairline, each under
 a plain `text-base` heading (no icon, no card, no tinted panel), with a section's
@@ -665,22 +679,33 @@ are set apart by space under a smaller heading, never by a second hairline that 
 read as a sibling section. A link to a section holds it at the top of the pane while the
 content above it loads, and lets go when the analyst scrolls. A fact has one home: a
 tab never repeats the verdict, confidence, risk, status or owner the header and rail
-already show. The **Overview** is the brief: the runbook's Next step card (open cases),
-the Summary, What happened (the trigger sentence and the six-stage story), Key entities,
-Related cases and the baseline. Its summary is the model's own reasoning (its first two
-or three sentences), tagged AI; it never falls back to the deterministic decision's
-text, which belongs to the code and is shown, attributed to the code, only under
-Investigation's Decision (G17). A case the AI did not assess shows its system summary,
-untagged. **Investigation** reads in order: AI assessment (reasoning, found and ruled
-out, reproduce query, the full evidence one click away), Decision (the decision line,
-the authority sentence, the auto-close reading, automation applied, the policy inputs
-one click away), Threat context, Investigation inputs, the trace and earlier gradings.
-**Collaboration** is Discussion and Files in the main column with Tasks (a pointer to
-the Runbook tab) and History in a side column from a 52rem pane (a container query,
-never the viewport); it has no owner control. History is the case's own lifecycle,
+already show. The **Brief** opens with the review sentence on a review sample and, on an
+open case, the runbook's next step as one 48px row, then four lanes, each tagged with who
+wrote it: Evidence (source: the trigger sentence and one quiet line of events, entity,
+times and source), AI (ai: the model's own reasoning, its first two or three sentences,
+and the recommendation while the case is open), Decision (code, or analyst when a person
+settled it: the decision line, the authority sentence once, the auto-close reading
+against the policy entry for the case's verdict, with Policy inputs and Automation
+applied one disclosure away each) and People (analyst: the last action and the counts of
+tasks, messages and screenshots). Each lane links to its tab. The AI lane never falls
+back to the deterministic decision's text, which belongs to the code and is shown,
+attributed to the code, only under the Brief's Decision lane (G17). A case the AI did not
+assess shows its system summary, untagged. "How this case was built" (the six-stage
+story) is folded at the end. **Evidence** is what the sources said, and nothing the AI or
+the code made of it: What happened (the trigger, the source stage and the case's events,
+filtered when a finding's "Cites N events" opened the tab), Entities, Threat context,
+Related cases and the baseline. **AI investigation** is what the model said and did: one
+muted line saying it is advisory and that code decides the route, the AI assessment
+(reasoning, the findings, found and ruled out, the reproduce query, the full evidence
+one click away), the investigation inputs, the trace (open while an AI run is under way)
+and earlier gradings; no code provenance tag shows on it. **Response** is the runbook run
+for a viewer who may read runbooks and the case's tasks for everyone. **Activity** is
+Discussion and Files in the main column with History in a side column from a 52rem pane
+(a container query, never the viewport); it has no owner control and no tasks. History is the case's own lifecycle,
 newest first, with who, when and the actions taken; the full activity feed is one
-disclosure away and names a load failure while closed. The title shares its row with the actions only when the whole title fits
-beside them; otherwise the actions wrap below it, so the title is never squeezed. Lifecycle dialogs keep their actions in a footer that never scrolls
+disclosure away and names a load failure while closed. The title row never wraps: the
+title takes the room the actions leave and truncates, and the actions keep their place.
+Lifecycle dialogs keep their actions in a footer that never scrolls
 away, open with focus on the field the analyst must fill (the disposition), and return
 focus to the control that opened it, or, when that control left with its row, to the
 row that took its place ("Close & next" lands on the next case's row). The close
@@ -694,7 +719,7 @@ their reason, Actions taken (toggle chips from a fixed vocabulary, at most eight
 action needed" exclusive), the note (required only on an override, because it is kept as
 precedent, with the footer naming what is missing), the screenshots slot, and a
 collapsed "Rate the AI (optional)". There is no resolution select, no outcome select and
-no tag field in it; tags are edited in the facts rail. The confirmation
+no tag field in it; tags are edited in the inspector. The confirmation
 after a close offers **Reopen**, never "Undo": reopening keeps the recorded outcome until
 the case is closed again with a new one, and the toast says so. Closing a Needs-human
 case the analyst did not grade records no AI agreement either way; a grade the analyst

@@ -115,6 +115,29 @@ describe('TabsList variants (Round 14, SPEC §4.9.2)', () => {
     expect(list.className).not.toMatch(/(^|\s)px-/);
   });
 
+  it('underline: 40px triggers by default, 36px at compact density (the case header)', () => {
+    const { unmount } = renderVariant('underline');
+    expect(screen.getByRole('tab', { name: 'Overview' })).toHaveClass('h-10');
+    expect(screen.getByRole('tablist', { name: 'Sections' })).not.toHaveAttribute('data-density');
+    unmount();
+    render(
+      <Tabs defaultValue="a">
+        <TabsList variant="underline" density="compact" aria-label="Sections">
+          <TabsTrigger value="a">Brief</TabsTrigger>
+          <TabsTrigger value="b">Evidence</TabsTrigger>
+        </TabsList>
+        <TabsContent value="a">Panel A</TabsContent>
+        <TabsContent value="b">Panel B</TabsContent>
+      </Tabs>,
+    );
+    expect(screen.getByRole('tablist', { name: 'Sections' })).toHaveAttribute('data-density', 'compact');
+    for (const name of ['Brief', 'Evidence']) {
+      const tab = screen.getByRole('tab', { name });
+      expect(tab).toHaveClass('h-9', 'px-1.5', 'text-sm');
+      expect(tab).not.toHaveClass('h-10');
+    }
+  });
+
   it('underline tabs select on click', () => {
     renderVariant('underline');
     const second = screen.getByRole('tab', { name: 'Runbook' });

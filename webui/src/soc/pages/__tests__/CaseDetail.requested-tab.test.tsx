@@ -1,13 +1,14 @@
 /**
  * CaseDetail opens the tab a link asks for (closing QA integ-06): the audit log's "Open
  * case trace" links to `#/case_manager?caseId=…&tab=investigation`, and the case opens on
- * its Investigation tab, where the trace is, never on Overview, with the trace itself open
- * and brought into view once (closing QA integ-06). The trace opens for the linked case
- * only, never for the case it replaces, and an analyst who moves to another tab first
+ * its AI investigation tab, where the trace is, never on the Brief, with the trace itself
+ * open and brought into view once (closing QA integ-06). The trace opens for the linked
+ * case only, never for the case it replaces, and an analyst who moves to another tab first
  * keeps their own choice. The request applies when it or the case changes; the analyst's
- * own tab choice stands until then. Anything that is not a case tab is ignored, and the
- * Runbook tab opens only for a viewer who has it. When focus has dropped (the link left
- * with its page), it lands on the trace heading; a control the analyst is using keeps it.
+ * own tab choice stands until then. Anything that is not a case tab is ignored. Every tab
+ * opens for every viewer (Round 16: Response lists the tasks to a viewer who may not read
+ * runbooks). When focus has dropped (the link left with its page), it lands on the trace
+ * heading; a control the analyst is using keeps it.
  *
  * The same CaseDetail shows each case the queue opens, so a read still running for the
  * case it replaces never leaves the next case waiting: each lazy read happens once for
@@ -199,11 +200,11 @@ function holdSecondCase(): { arrive: () => Promise<void> } {
 const pastTheBeat = () => act(() => new Promise<void>((resolve) => window.setTimeout(resolve, 150)));
 
 describe('CaseDetail: the tab a link asks for', () => {
-  it('opens on Investigation for "Open case trace"', async () => {
+  it('opens on AI investigation for "Open case trace"', async () => {
     render(<Host tab="investigation" />);
     await loaded();
-    expect(selectedTab()).toHaveTextContent(/^Investigation/);
-    expect(screen.getByRole('tab', { name: /^Overview/ })).toHaveAttribute('aria-selected', 'false');
+    expect(selectedTab()).toHaveTextContent(/^AI investigation/);
+    expect(screen.getByRole('tab', { name: /^Brief/ })).toHaveAttribute('aria-selected', 'false');
   });
 
   it('opens the trace and brings it into view for "Open case trace", once', async () => {
@@ -222,10 +223,10 @@ describe('CaseDetail: the tab a link asks for', () => {
     expect(timelineReads() - before).toBe(1);
 
     // Returning to the tab shows the analyst's view, not the link's request again.
-    fireEvent.mouseDown(screen.getByRole('tab', { name: /^Overview/ }));
-    await waitFor(() => expect(selectedTab()).toHaveTextContent(/^Overview/));
-    fireEvent.mouseDown(screen.getByRole('tab', { name: /^Investigation/ }));
-    await waitFor(() => expect(selectedTab()).toHaveTextContent(/^Investigation/));
+    fireEvent.mouseDown(screen.getByRole('tab', { name: /^Brief/ }));
+    await waitFor(() => expect(selectedTab()).toHaveTextContent(/^Brief/));
+    fireEvent.mouseDown(screen.getByRole('tab', { name: /^AI investigation/ }));
+    await waitFor(() => expect(selectedTab()).toHaveTextContent(/^AI investigation/));
     const again = await screen.findByTestId('investigation-trace');
     expect(within(again).getByRole('button', { name: /Show trace/ })).toBeInTheDocument();
     expect(scrolled.filter((el) => el === again || el === trace)).toHaveLength(1);
@@ -244,10 +245,10 @@ describe('CaseDetail: the tab a link asks for', () => {
     expect(timelineReads() - before).toBe(1);
   });
 
-  it('leaves the trace closed when the Investigation tab is opened by hand', async () => {
+  it('leaves the trace closed when the AI investigation tab is opened by hand', async () => {
     render(<Host />);
     await loaded();
-    fireEvent.mouseDown(screen.getByRole('tab', { name: /^Investigation/ }));
+    fireEvent.mouseDown(screen.getByRole('tab', { name: /^AI investigation/ }));
     const trace = await screen.findByTestId('investigation-trace');
     expect(within(trace).getByRole('button', { name: /Show trace/ })).toBeInTheDocument();
     await pastTheBeat();
@@ -273,7 +274,7 @@ describe('CaseDetail: the tab a link asks for', () => {
     await loaded();
     const { arrive } = holdSecondCase();
     rerender(<Host caseId="c-tab-2" tab="investigation" />);
-    await waitFor(() => expect(selectedTab()).toHaveTextContent(/^Investigation/));
+    await waitFor(() => expect(selectedTab()).toHaveTextContent(/^AI investigation/));
     // The previous case stays on screen, dimmed, while the linked one loads: its trace is
     // not the one the link names, so it stays as it was.
     const before = await screen.findByTestId('investigation-trace');
@@ -298,7 +299,7 @@ describe('CaseDetail: the tab a link asks for', () => {
         : Promise.resolve({ ...CASE, case_id: id, title: id === 'c-tab-3' ? 'Case picked from the queue' : CASE.title }),
     );
     rerender(<Host caseId="c-tab-2" tab="investigation" />);
-    await waitFor(() => expect(selectedTab()).toHaveTextContent(/^Investigation/));
+    await waitFor(() => expect(selectedTab()).toHaveTextContent(/^AI investigation/));
     // Before it arrives, the analyst opens another case from the queue, with no tab in the
     // address. The tab stays on Investigation, but the link named the other case's trace.
     rerender(<Host caseId="c-tab-3" tab={null} />);
@@ -306,7 +307,7 @@ describe('CaseDetail: the tab a link asks for', () => {
       expect(document.querySelector('[data-case-title]')).toHaveTextContent('Case picked from the queue'),
     );
     await pastTheBeat();
-    expect(selectedTab()).toHaveTextContent(/^Investigation/);
+    expect(selectedTab()).toHaveTextContent(/^AI investigation/);
     expect(within(screen.getByTestId('investigation-trace')).getByRole('button', { name: /Show trace/ })).toBeInTheDocument();
     expect(scrolled).toHaveLength(0);
     expect(document.activeElement).not.toBe(traceHeading());
@@ -329,13 +330,13 @@ describe('CaseDetail: the tab a link asks for', () => {
     await loaded();
     const { arrive } = holdSecondCase();
     rerender(<Host caseId="c-tab-2" tab="investigation" />);
-    await waitFor(() => expect(selectedTab()).toHaveTextContent(/^Investigation/));
-    fireEvent.mouseDown(screen.getByRole('tab', { name: /^Collaboration/ }));
-    await waitFor(() => expect(selectedTab()).toHaveTextContent(/^Collaboration/));
+    await waitFor(() => expect(selectedTab()).toHaveTextContent(/^AI investigation/));
+    fireEvent.mouseDown(screen.getByRole('tab', { name: /^Activity/ }));
+    await waitFor(() => expect(selectedTab()).toHaveTextContent(/^Activity/));
     await arrive();
 
     // Back on Investigation by hand: an ordinary visit, the trace as the analyst left it.
-    fireEvent.mouseDown(screen.getByRole('tab', { name: /^Investigation/ }));
+    fireEvent.mouseDown(screen.getByRole('tab', { name: /^AI investigation/ }));
     const trace = await screen.findByTestId('investigation-trace');
     expect(within(trace).getByRole('button', { name: /Show trace/ })).toBeInTheDocument();
     await pastTheBeat();
@@ -372,69 +373,83 @@ describe('CaseDetail: the tab a link asks for', () => {
     }
   });
 
-  it('opens on Overview with no request, and ignores a value that is not a case tab', async () => {
+  it('opens on the Brief with no request, and ignores a value that is not a case tab', async () => {
     const { unmount } = render(<Host />);
     await loaded();
-    expect(selectedTab()).toHaveTextContent(/^Overview/);
+    expect(selectedTab()).toHaveTextContent(/^Brief/);
     unmount();
     render(<Host tab="trace" />);
     await loaded();
-    expect(selectedTab()).toHaveTextContent(/^Overview/);
+    expect(selectedTab()).toHaveTextContent(/^Brief/);
   });
 
   it('keeps the analyst’s own choice until the link or the case changes', async () => {
     const { rerender } = render(<Host tab="investigation" />);
     await loaded();
-    fireEvent.mouseDown(screen.getByRole('tab', { name: /^Collaboration/ }));
-    await waitFor(() => expect(selectedTab()).toHaveTextContent(/^Collaboration/));
+    fireEvent.mouseDown(screen.getByRole('tab', { name: /^Activity/ }));
+    await waitFor(() => expect(selectedTab()).toHaveTextContent(/^Activity/));
     // The same request re-rendered changes nothing.
     rerender(<Host tab="investigation" />);
-    expect(selectedTab()).toHaveTextContent(/^Collaboration/);
+    expect(selectedTab()).toHaveTextContent(/^Activity/);
     // The queue opened another case without a tab: the analyst's tab stays.
     rerender(<Host caseId="c-tab-2" tab={null} />);
-    expect(selectedTab()).toHaveTextContent(/^Collaboration/);
+    expect(selectedTab()).toHaveTextContent(/^Activity/);
     // A link to a case's trace applies again.
     rerender(<Host caseId="c-tab-3" tab="investigation" />);
-    await waitFor(() => expect(selectedTab()).toHaveTextContent(/^Investigation/));
+    await waitFor(() => expect(selectedTab()).toHaveTextContent(/^AI investigation/));
   });
 
-  it('opens the Runbook tab only for a viewer who has it', async () => {
+  it('opens the Response tab for every viewer: the tasks without runbooks:read', async () => {
     const { unmount } = render(<Host tab="runbook" />);
-    await waitFor(() => expect(selectedTab()).toHaveTextContent(/^Runbook/));
+    await waitFor(() => expect(selectedTab()).toHaveTextContent(/^Response/));
     unmount();
     permissions.runbooks = false;
     render(<Host tab="runbook" />);
     await loaded();
-    expect(selectedTab()).toHaveTextContent(/^Overview/);
-    expect(screen.queryByRole('tab', { name: /^Runbook/ })).toBeNull();
+    expect(selectedTab()).toHaveTextContent(/^Response/);
+    expect(await screen.findByTestId('response-tasks')).toBeInTheDocument();
   });
 });
 
-describe('CaseDetail: a section of a tab, from a rewritten retired-tab link (Round 15, D8.3)', () => {
-  it('opens Investigation on its Threat context section without opening the trace', async () => {
-    render(<Host tab="investigation" section="threat-context" />);
+describe('CaseDetail: a section of a tab, from a rewritten link (Round 16, D8)', () => {
+  it('opens Evidence on its Threat context section, and opens no trace', async () => {
+    render(<Host tab="evidence" section="threat-context" />);
     await loaded();
-    expect(selectedTab()).toHaveTextContent(/^Investigation/);
+    expect(selectedTab()).toHaveTextContent(/^Evidence/);
     const section = document.querySelector('[data-section="threat-context"]') as HTMLElement;
     expect(section).not.toBeNull();
     expect(within(section).getByRole('heading', { name: 'Threat context' })).toBeInTheDocument();
-    // Threat context loads when Investigation opens.
+    // Threat context loads when Evidence opens.
     await waitFor(() => expect(readsOf(CASE.case_id, 'threat-context')).toBe(1));
-    // The link asked for the section, not the trace: the trace stays as it was.
-    const trace = await screen.findByTestId('investigation-trace');
+    // The link asked for the section, not the trace: the trace is not read for it.
     await pastTheBeat();
-    expect(within(trace).getByRole('button', { name: /Show trace/ })).toBeInTheDocument();
+    expect(timelineReads()).toBe(0);
     // A link's request scrolls only; it never takes focus from the queue.
     expect(document.activeElement).not.toBe(within(section).getByRole('heading', { name: 'Threat context' }));
   });
 
-  it('opens Overview on What happened, and reads its stages there', async () => {
-    render(<Host tab="overview" section="what-happened" />);
+  it('opens Evidence on What happened, and reads its stages there', async () => {
+    render(<Host tab="evidence" section="what-happened" />);
     await loaded();
-    expect(selectedTab()).toHaveTextContent(/^Overview/);
+    expect(selectedTab()).toHaveTextContent(/^Evidence/);
     const section = document.querySelector('[data-section="what-happened"]') as HTMLElement;
     expect(within(section).getByRole('heading', { name: 'What happened' })).toBeInTheDocument();
     await waitFor(() => expect(readsOf(CASE.case_id, 'stages')).toBe(1));
+  });
+
+  it('opens Evidence on Related cases from the inspector, moving focus to the heading', async () => {
+    apiGetCase().mockImplementation((id: string) =>
+      Promise.resolve({ ...CASE, case_id: id, related_case_ids: ['c-rel-1'], source_breakdown: { splunk: 2 } }),
+    );
+    render(<Host />);
+    await loaded();
+    const column = screen.getByTestId('case-facts-column');
+    fireEvent.click(within(column).getByTestId('facts-related'));
+    await waitFor(() => expect(selectedTab()).toHaveTextContent(/^Evidence/));
+    const section = document.querySelector('[data-section="related-cases"]') as HTMLElement;
+    await waitFor(() =>
+      expect(document.activeElement).toBe(within(section).getByRole('heading', { name: 'Related cases' })),
+    );
   });
 
   it('holds the section at the top of the lane while the content above it loads, until the analyst scrolls', async () => {
@@ -465,7 +480,7 @@ describe('CaseDetail: a section of a tab, from a rewritten retired-tab link (Rou
       return DOMRect.fromRect({ x: 0, y: 0, width: 600, height: 400 });
     });
     try {
-      render(<Host tab="investigation" section="threat-context" />);
+      render(<Host tab="evidence" section="threat-context" />);
       await loaded();
       const lane = screen.getByTestId('case-detail-scroll');
       // Placed once the tab is on screen.
@@ -475,8 +490,8 @@ describe('CaseDetail: a section of a tab, from a rewritten retired-tab link (Rou
       expect(laneObservers()).toHaveLength(1);
       const resize = () => act(() => laneObservers().forEach((o) => o.callback([], {} as ResizeObserver)));
 
-      // The AI assessment above it arrives and grows: the section is placed again, so a late
-      // load never leaves the link above its section.
+      // The story above it arrives and grows: the section is placed again, so a late load
+      // never leaves the link above its section.
       sectionOffset = 520;
       resize();
       expect(lane.scrollTop).toBe(520);
@@ -497,7 +512,7 @@ describe('CaseDetail: a section of a tab, from a rewritten retired-tab link (Rou
   it('ignores a section that is not on the requested tab', async () => {
     render(<Host tab="overview" section="threat-context" />);
     await loaded();
-    expect(selectedTab()).toHaveTextContent(/^Overview/);
+    expect(selectedTab()).toHaveTextContent(/^Brief/);
     expect(readsOf(CASE.case_id, 'threat-context')).toBe(0);
   });
 });
@@ -508,9 +523,9 @@ describe('CaseDetail: the next case while a read for the one it replaces is stil
   // wait forever on one that will never report.
   it.each([
     { tab: 'investigation', read: 'timeline' },
-    // Round 15 (D8.3): the stages load on Overview, threat context on Investigation.
-    { tab: 'overview', read: 'stages' },
-    { tab: 'investigation', read: 'threat-context' },
+    // Round 16 (D8): the stages and threat context load on Evidence.
+    { tab: 'evidence', read: 'stages' },
+    { tab: 'evidence', read: 'threat-context' },
     { tab: 'collab', read: 'thread' },
   ])('reads the $read of the next case once on the $tab tab', async ({ tab, read }) => {
     titledCases();

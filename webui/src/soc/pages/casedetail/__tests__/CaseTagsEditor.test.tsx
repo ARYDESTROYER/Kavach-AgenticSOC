@@ -153,7 +153,9 @@ describe('the header meta row (D8.2)', () => {
     expect(meta).toHaveTextContent('High severity');
     expect(within(meta).getByTestId('case-detail-status')).toHaveTextContent('Open');
     expect(within(meta).queryByTestId('case-detail-tags')).toBeNull();
-    expect(within(meta).queryByTestId('case-detail-risk')).toBeNull();
+    // Round 16 (D8): the Risk chip joined the meta strip (its explanation one hover away);
+    // the factor reading stays in the inspector.
+    expect(within(meta).getByTestId('case-detail-risk')).toHaveTextContent(/^Risk \d+$/);
     expect(meta).not.toHaveTextContent('SAMPLE');
     expect(meta).not.toHaveTextContent('existing');
     expect(within(meta).queryByRole('button', { name: /Ask AI/ })).toBeNull();

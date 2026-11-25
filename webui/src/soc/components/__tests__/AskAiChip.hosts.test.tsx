@@ -2,14 +2,14 @@
  * Ask AI chips in their hosts (Round 12 WP-ASK): next to the entity values of the Cases
  * list's sibling surfaces that render without a page shell here: the unified Logs
  * table and its row detail, the Case Manager facts rail, the case header id, the case
- * Overview's primary entity and the Threat context indicators and asset: each opening a
+ * Evidence tab's primary entity and the Threat context indicators and asset: each opening a
  * NEW Workspace chat with a TYPED reference to the right value (never free text), and
  * none shown to a viewer who cannot use chat. (The Cases list itself is exercised by
  * `Cases.askai.test.tsx`.) The hosts load the chip lazily, so the first chip of each
  * render is awaited.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 const { authState, navigate, fetchUnifiedLogsMock } = vi.hoisted(() => ({
@@ -43,7 +43,7 @@ import { TooltipProvider } from '@/ui/tooltip';
 import { caseOutcome } from '@/soc/components/outcome';
 import { UnifiedLogsBody } from '../UnifiedLogsSheet';
 import { FactsRail } from '@/soc/pages/casedetail/FactsRail';
-import { OverviewPanel } from '@/soc/pages/casedetail/OverviewPanel';
+import { EvidencePanel } from '@/soc/pages/casedetail/EvidencePanel';
 import { ThreatContextPanel } from '@/soc/pages/casedetail/ThreatContextPanel';
 
 const CASE = {
@@ -64,6 +64,12 @@ const CASE = {
 } as unknown as Case;
 
 const ref = (kind: string, value: string) => ({ newChat: true, entity: { kind, value } });
+
+/** The inspector's Record section starts closed (Round 16): open it. */
+function openRecord() {
+  fireEvent.click(screen.getByRole('button', { name: 'Record' }));
+  return screen.getByTestId('facts-record');
+}
 
 /** Let the lazily loaded chip module resolve, so an absent chip is really absent. */
 const settleLazy = () =>
@@ -100,6 +106,7 @@ afterEach(() => {
   authState.denied = new Set();
   navigate.mockReset();
   fetchUnifiedLogsMock.mockReset();
+  window.localStorage.clear();
 });
 
 describe('Ask AI in the Logs table and row detail', () => {
@@ -213,7 +220,7 @@ describe('Ask AI in the Case Manager', () => {
         <FactsRail c={CASE} outcome={caseOutcome(CASE)} triage={null} canViewCost={false} onCaseChange={vi.fn()} />
       </TooltipProvider>,
     );
-    const record = screen.getByTestId('facts-record');
+    const record = openRecord();
     // The id already says "case", so the name does not say it twice.
     const chip = await within(record).findByRole('button', { name: 'Ask AI about CASE-2026-0042' });
     // An icon the size of a row action: no label-wide gap in the row.
@@ -236,18 +243,18 @@ describe('Ask AI in the Case Manager', () => {
       );
       // The number the analyst sees names the chip; the question asks about the id that
       // always has a question (chat finds the case by either).
-      const chip = await within(screen.getByTestId('facts-record')).findByRole('button', { name: /^Ask AI about (case )?/ });
+      const chip = await within(openRecord()).findByRole('button', { name: /^Ask AI about (case )?/ });
       expect(chip).toHaveAccessibleName(expect.stringContaining(caseNumber));
       await user.click(chip);
       expect(navigate).toHaveBeenLastCalledWith('chat', ref('case', 'case-7f2a'));
     },
   );
 
-  it('shows the Overview primary entity chip always, beside Copy', async () => {
+  it('shows the Evidence primary entity chip always, beside Copy', async () => {
     const user = userEvent.setup();
     render(
       <TooltipProvider>
-        <OverviewPanel c={CASE} />
+        <EvidencePanel c={CASE} />
       </TooltipProvider>,
     );
     const chip = await screen.findByRole('button', { name: 'Ask AI about 203.0.113.9' });
@@ -303,9 +310,10 @@ describe('Ask AI in the Case Manager', () => {
     render(
       <TooltipProvider>
         <FactsRail c={CASE} outcome={caseOutcome(CASE)} triage={null} canViewCost={false} onCaseChange={vi.fn()} />
-        <OverviewPanel c={CASE} />
+        <EvidencePanel c={CASE} />
       </TooltipProvider>,
     );
+    openRecord();
     await settleLazy();
     expect(screen.getByTestId('facts-entity')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /^Ask AI/ })).toBeNull();

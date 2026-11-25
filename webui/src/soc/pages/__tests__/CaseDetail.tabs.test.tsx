@@ -1,32 +1,23 @@
 /**
- * CaseDetail: the five-tab story shell (Round 15, SPEC D8.3; Round 14 added the Runbook
- * tab second, SPEC §4.10.11).
+ * CaseDetail: the six-tab shell, one lane each (Round 16, SPEC D8, §4.4 WP03; Round 15
+ * D8.3 had five, Round 14 added the Runbook tab).
  *
- *     overview · runbook · investigation · collab · chat
+ *     overview · evidence · investigation · runbook · collab · chat
+ *     Brief      Evidence   AI investigation Response Activity Chat
  *
- *   - "Overview" holds the AI summary and, as its "What happened" section, the six-stage
- *     narrative that was the Timeline tab (<TimelinePanel>); its stages load when Overview
- *     opens.
- *   - "Investigation" holds the AI assessment, the decision card and the trace
- *     (<InvestigationPanel>), and, as its "Threat context" section, what was the Threat
- *     context tab (<ThreatContextPanel>); threat context loads when Investigation opens.
+ *   - "Brief" holds the Next step row, the four lanes and, folded, the six-stage story
+ *     (<TimelinePanel>, its stages load when it opens).
+ *   - "Evidence" holds What happened (the ingestion stage of the story and the events),
+ *     entities, threat context (<ThreatContextPanel>, loaded when Evidence opens), related
+ *     cases and the baseline (<EvidencePanel>).
+ *   - "AI investigation" holds the assessment, the inputs, the trace and the gradings
+ *     (<InvestigationPanel>); the decision moved to the Brief.
+ *   - "Response" holds the runbook (lazy, `runbooks:read`) and the tasks, for everyone.
  *
- * A link to a retired tab id (`timeline`, `threat`) is rewritten by the router to the tab
- * it became with the section to scroll to (router-case-tabs.round15.test.tsx, and the
- * mounted CaseDetail.requested-tab.test.tsx). The standalone Feedback tab stays retired.
- * This spec pins, as STATIC assertions on the orchestrator source (the load-bearing tab
- * wiring), not a full mount:
- *
- *   1. The `tab` union is EXACTLY the five tabs; the removed values are gone.
- *   2. Exactly five <TabsTrigger> on the underline list, each `value` matching its label,
- *      in order, with Alt+1 to Alt+5.
- *   3. Each <TabsContent> renders the RIGHT panel; the merged sub-panels (StageTimeline /
- *      WhyPanel / TraceTimeline) and the retired FeedbackTab are NOT mounted in the shell.
- *   4. The stage timeline and the threat context are passed INTO the Overview and the
- *      Investigation panels (`whatHappened`, `threatContext`), which render them as the
- *      `data-section` the router's rewrite scrolls to (OverviewPanel.test.tsx and
- *      InvestigationPanel.test.tsx pin the sections, and the mounted
- *      CaseDetail.requested-tab.test.tsx the scroll).
+ * A link to a retired tab id (`timeline`, `threat`), or to a section that moved, is
+ * rewritten by the router (router-case-tabs.round15.test.tsx, and the mounted
+ * CaseDetail.requested-tab.test.tsx). This spec pins, as STATIC assertions on the
+ * orchestrator source (the load-bearing tab wiring), not a full mount.
  */
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
@@ -44,34 +35,36 @@ function slice(text: string, needle: string, end: string): string {
   return text.slice(i, j === -1 ? text.length : j);
 }
 
-const TAB_VALUES = ['overview', 'runbook', 'investigation', 'collab', 'chat'] as const;
+const TAB_VALUES = ['overview', 'evidence', 'investigation', 'runbook', 'collab', 'chat'] as const;
 const REMOVED_TABS = ['why', 'trace', 'feedback', 'timeline', 'threat'] as const;
 
 /** value → expected human label + the panel component(s) mounted for it. */
 const TAB_LABEL: Record<(typeof TAB_VALUES)[number], string> = {
-  overview: 'Overview',
-  runbook: 'Runbook',
-  investigation: 'Investigation',
-  collab: 'Collaboration',
+  overview: 'Brief',
+  evidence: 'Evidence',
+  investigation: 'AI investigation',
+  runbook: 'Response',
+  collab: 'Activity',
   chat: 'Chat',
 };
 const TAB_PANELS: Record<(typeof TAB_VALUES)[number], readonly string[]> = {
   overview: ['OverviewPanel', 'TimelinePanel'],
-  runbook: ['RunbookPanel'],
-  investigation: ['InvestigationPanel', 'ThreatContextPanel'],
+  evidence: ['EvidencePanel', 'TimelinePanel', 'ThreatContextPanel'],
+  investigation: ['InvestigationPanel'],
+  runbook: ['RunbookPanel', 'OtherTasksLoader'],
   collab: ['CollaborationThreadTab'],
   chat: ['ChatTab'],
 };
 
-describe('CaseDetail: the five-tab story shell (Round 15, D8.3)', () => {
-  it('the tab union is exactly the five tabs (the removed panels are gone)', () => {
-    // Overview by default; a link's tab (Case Manager's `tab` key, closing QA integ-06)
-    // opens first, validated against the union below.
-    expect(src).toContain("requestedTab && requestedTab !== 'runbook' ? requestedTab : 'overview'");
+describe('CaseDetail: the six-tab shell (Round 16, D8)', () => {
+  it('the tab union is exactly the six tabs (the removed panels are gone)', () => {
+    // The Brief by default; a link's tab (Case Manager's `tab` key) opens first, validated
+    // against the union below. Every tab is shown to every viewer.
+    expect(src).toContain("React.useState<CaseTab>(() => requestedTab ?? 'overview')");
     expect(src).toContain('const requestedTab = isCaseTab(requestedTabId) ? requestedTabId : null;');
-    // The page reads the ONE tab list the router's `tab` key also validates against
-    // (closing review: a hand-written router copy could drift); it defines none itself.
-    expect(src).toContain("import { CASE_TABS, isCaseTab, type CaseTab } from '@/soc/case-tabs';");
+    // The page reads the ONE tab list the router's `tab` key also validates against; it
+    // defines none itself.
+    expect(src).toContain("import { CASE_SECTION_TABS, CASE_TABS, isCaseTab, type CaseTab } from '@/soc/case-tabs';");
     expect(src).not.toMatch(/const CASE_TABS\b/);
     expect(src).not.toMatch(/function isCaseTab\b/);
     expect([...CASE_TABS]).toEqual([...TAB_VALUES]);
@@ -85,17 +78,19 @@ describe('CaseDetail: the five-tab story shell (Round 15, D8.3)', () => {
     }
   });
 
-  it('renders exactly five underline TabsTrigger, each value matching its human label', () => {
+  it('renders exactly six compact underline TabsTrigger, each value matching its label, on Alt+1 to Alt+6', () => {
     const tabsList = slice(src, '<TabsList', '</TabsList>');
-    // Record sections are underline tabs (ui-standard Page anatomy 6; D8.5).
-    expect(tabsList).toContain('<TabsList variant="underline"');
+    // Record sections are underline tabs, 36px in the case header (`density="compact"`).
+    expect(tabsList).toContain('<TabsList variant="underline" density="compact"');
     const triggers = tabsList.match(/<TabsTrigger\s+value="[^"]+"/g) || [];
-    expect(triggers.length).toBe(5);
+    expect(triggers.length).toBe(6);
     expect(triggers.map((t) => /value="([^"]+)"/.exec(t)?.[1])).toEqual([...TAB_VALUES]);
-    // Alt+1 to Alt+5 follow the tab order (the keyboard handler indexes CASE_TABS).
     const keys = tabsList.match(/aria-keyshortcuts="Alt\+(\d)"/g) || [];
     expect(keys).toEqual(TAB_VALUES.map((_, i) => `aria-keyshortcuts="Alt+${i + 1}"`));
-    expect(src).toContain('/^Digit([1-5])$/');
+    // The key handler accepts Digit1 to Digit6 and indexes CASE_TABS, with no grant gate.
+    expect(src).toContain('/^Digit([1-6])$/');
+    expect(src).toContain('setTab(CASE_TABS[Number(digit[1]) - 1]);');
+    expect(src).not.toContain('hasRunbookTab');
 
     for (const v of TAB_VALUES) {
       const trigger = slice(tabsList, `value="${v}"`, 'TabsTrigger>');
@@ -104,70 +99,88 @@ describe('CaseDetail: the five-tab story shell (Round 15, D8.3)', () => {
     for (const v of REMOVED_TABS) {
       expect(tabsList).not.toContain(`value="${v}"`);
     }
-    // The hand-rolled 12px trigger classes are gone with the shared underline grammar.
-    expect(src).not.toContain('EMBEDDED_TAB_TRIGGER');
+    // No Console copy names the old tab labels.
+    expect(tabsList).not.toMatch(/>\s*(Overview|Runbook|Investigation|Collaboration)\s*</);
   });
 
-  it('each TabsContent mounts its panels, and each panel has ONE mount site', () => {
+  it('each TabsContent mounts its panels', () => {
     for (const v of TAB_VALUES) {
       const content = slice(src, `<TabsContent value="${v}"`, '</TabsContent>');
       for (const panel of TAB_PANELS[v]) {
         expect(content, `TabsContent '${v}' should mount <${panel}>`).toContain(`<${panel}`);
       }
     }
-    for (const comp of Object.values(TAB_PANELS).flat()) {
+    // One mount site per panel, except the story (the Brief's fold and Evidence's input stage).
+    for (const comp of ['OverviewPanel', 'EvidencePanel', 'InvestigationPanel', 'ThreatContextPanel', 'CollaborationThreadTab', 'ChatTab']) {
       expect((src.match(new RegExp(`<${comp}\\b`, 'g')) || []).length).toBe(1);
     }
+    expect((src.match(/<TimelinePanel\b/g) || []).length).toBe(2);
     for (const v of REMOVED_TABS) {
       expect(src).not.toContain(`<TabsContent value="${v}"`);
     }
   });
 
   it('the merged sub-panels + retired Feedback tab are not mounted in the shell', () => {
-    for (const gone of ['StageTimeline', 'WhyPanel', 'TraceTimeline', 'FeedbackTab']) {
+    for (const gone of ['StageTimeline', 'WhyPanel', 'TraceTimeline', 'FeedbackTab', 'ReviewBand', 'OverviewNextStep']) {
       expect(src, `${gone} must not be referenced by the shell`).not.toContain(gone);
     }
   });
 
-  it('Overview carries the "What happened" story with the stages state + retry', () => {
+  it('the Brief carries the folded story, the Next step row and the Decision lane inputs', () => {
     const content = slice(src, '<TabsContent value="overview"', '</TabsContent>');
-    // The stage story is the Overview's `whatHappened` section (rendered between the
-    // summary and the key entities, D8.3).
-    const section = slice(content, 'whatHappened={', 'runbookCard={');
-    expect(section).toContain('<TimelinePanel');
-    for (const prop of ['stages={stages}', 'onRetryStages={loadStages}']) {
-      expect(section, `the What happened story should receive ${prop}`).toContain(prop);
+    const story = slice(content, 'buildStory={', '/>');
+    expect(story).toContain('<TimelinePanel');
+    for (const prop of ['stages={stages}', 'onRetryStages={loadStages}', "onOpenInvestigation={() => setTab('investigation')}"]) {
+      expect(story, `the story should receive ${prop}`).toContain(prop);
     }
-    // Its stage CTA still jumps to the Investigation tab.
-    expect(section).toContain("onOpenInvestigation={() => setTab('investigation')}");
-    // The Overview reads the model's reasoning for its summary (G17).
-    expect(content).toContain('rationale={rationale}');
+    for (const prop of [
+      'rationale={rationale}',
+      'buildStoryOpen={storyOpen}',
+      'onBuildStoryOpenChange={setStoryOpen}',
+      'policy={verdictPolicy}',
+      'timeline={timeline}',
+      'reviewPending={layout.startReview}',
+      'onOpenTab={setTab}',
+    ]) {
+      expect(content, `the Brief should receive ${prop}`).toContain(prop);
+    }
+    // The Next step row needs a run the viewer may read (an open case, checked in the Brief).
+    expect(content).toContain('runbookRun={canReadRunbooks ? shownRun : null}');
   });
 
-  it('Investigation carries the rationale/timeline state and the "Threat context" section', () => {
+  it('Evidence carries the ingestion stage, the threat context and the finding filter', () => {
+    const content = slice(src, '<TabsContent value="evidence"', '</TabsContent>');
+    const story = slice(content, 'sourceStory={', 'threatContext={');
+    expect(story).toContain('<TimelinePanel');
+    expect(story).toContain('kinds={SOURCE_STAGES}');
+    expect(src).toContain("const SOURCE_STAGES: readonly string[] = ['input'];");
+    const threat = slice(content, 'threatContext={', '</TabPanelMotion>');
+    expect(threat).toContain('<ThreatContextPanel');
+    expect(threat).toContain('panel={threat}');
+    expect(threat).toContain('onRetry={loadThreat}');
+    expect(content).toContain('filterEventIds={eventFilter}');
+    expect(content).toContain('onClearEventFilter={() => setEventFilter(null)}');
+  });
+
+  it('AI investigation carries the rationale and timeline state, and no decision or threat context', () => {
     const content = slice(src, '<TabsContent value="investigation"', '</TabsContent>');
     for (const prop of [
       'rationale={rationale}',
       'onRetryRationale={loadRationale}',
       'timeline={timeline}',
       'onRetryTimeline={loadTimeline}',
+      'aiRunning={aiRunning}',
+      'onShowEvents={showFindingEvents}',
     ]) {
       expect(content, `investigation panel should receive ${prop}`).toContain(prop);
     }
     expect(content).not.toContain('stages={stages}');
-    // The threat context is the Investigation's `threatContext` section (D8.3).
-    const section = slice(content, 'threatContext={', '</TabPanelMotion>');
-    expect(section).toContain('<ThreatContextPanel');
-    expect(section).toContain('panel={threat}');
-    expect(section).toContain('onRetry={loadThreat}');
-    // The decision's auto-close reading needs the FP policy.
-    expect(content).toContain('fpPolicy={fpPolicy}');
+    expect(content).not.toContain('threatContext');
+    expect(content).not.toContain('fpPolicy');
+    expect(content).not.toContain('policy=');
   });
 
   it('renders every panel in its one Case Manager layout, with no presentation to choose', () => {
-    // Round 12 converged the sheet host on the Case Manager design; Round 15 (D8.7) removed
-    // the panels' unused 'default' layout, so no tab passes a presentation any more. The
-    // Runbook panel takes the shared panel padding.
     const runbook = slice(src, '<TabsContent value="runbook"', '</TabsContent>');
     expect(runbook).toContain('className={CASE_MANAGER_PANEL_PADDING}');
     for (const value of TAB_VALUES) {
@@ -189,25 +202,22 @@ describe('CaseDetail: the five-tab story shell (Round 15, D8.3)', () => {
     }
   });
 
-  it('stages lazy-load on Overview, threat context on Investigation, rationale for both and embedded', () => {
-    expect(src).toContain("tab === 'overview' && stages === null && !stagesLoading && !stagesError");
-    expect(src).toContain("tab === 'investigation' && threat === null && !threatLoading && !threatError");
-    // The Overview's summary and the Investigation's assessment both read the reasoning.
+  it('stages and threat context load with Evidence, the trace with AI investigation, rationale with the Brief', () => {
+    expect(src).toContain("const wantsStages = tab === 'evidence' || (tab === 'overview' && storyOpen);");
+    expect(src).toContain('wantsStages && stages === null && !stagesLoading && !stagesError');
+    expect(src).toContain("tab === 'evidence' && threat === null && !threatLoading && !threatError");
     expect(src).toContain(
       "const needsRationale = tab === 'investigation' || tab === 'overview' || presentation === 'embedded'",
     );
     expect(src).toContain('needsRationale && rationale === null && !rationaleLoading && !rationaleError');
-    expect(src).toContain("tab === 'investigation' && timeline === null && !timelineLoading && !timelineError");
-    // No lingering effect keyed on a removed tab value.
+    expect(src).toContain("const wantsTimeline = tab === 'investigation' || (tab === 'overview' && timelineWanted);");
+    expect(src).toContain('wantsTimeline && timeline === null && !timelineLoading && !timelineError');
     for (const v of REMOVED_TABS) {
       expect(src).not.toContain(`tab === '${v}'`);
     }
   });
 
-  it('the header keeps the ONE outcome badge and the facts rail its auto-close deadline', () => {
-    // Round 12 (D15): the header meta row carries the ONE outcome badge, which says
-    // "Auto-closed" for an AI auto-close; Round 15 (D8.2) shows it in place of the status
-    // once the case ended. The facts rail keeps the objection deadline ("Reopen before").
+  it('the header keeps the ONE outcome badge and the inspector its auto-close deadline', () => {
     const header = readFileSync(path.resolve(__dirname, '..', 'casedetail', 'CaseHeaderMeta.tsx'), 'utf8');
     expect(header).toContain('<OutcomeBadge outcome={outcome}');
     const rail = readFileSync(path.resolve(__dirname, '..', 'casedetail', 'FactsRail.tsx'), 'utf8');
@@ -219,6 +229,7 @@ describe('CaseDetail: the five-tab story shell (Round 15, D8.3)', () => {
     const tabsList = slice(src, '<TabsList', '</TabsList>');
     expect(tabsList).toContain('<TabCount label="steps">');
     expect(tabsList).toContain('<TabCount label="messages">');
+    expect(tabsList).toContain('<RunbookTabCount progress={runbookProgress} abandoned={runbookData.runs.length > 0} />');
     expect(tabsList).not.toContain('<TabCount label="MITRE techniques">');
   });
 
@@ -227,13 +238,12 @@ describe('CaseDetail: the five-tab story shell (Round 15, D8.3)', () => {
     expect(more).toContain('Copy link');
     expect(more).toContain('openInNewTab()');
     expect(more).toContain('Open in new tab');
-    // The default sheet still targets Cases; embedded mode preserves Case Manager.
     expect(src).toContain("presentation === 'embedded' ? 'case_manager' : 'cases'");
     expect(src).toContain('#/${routeId}?caseId=${encodeURIComponent(id)}');
     expect(src).toContain('max-w-[min(98vw,1400px)]');
   });
 
-  it('supports an embedded presentation without forking the five-tab workflow', () => {
+  it('supports an embedded presentation without forking the six-tab workflow', () => {
     expect(src).toContain("type CaseDetailPresentation = 'sheet' | 'embedded'");
     expect(src).toContain("presentation = 'sheet'");
     expect(src).toContain("if (presentation === 'embedded')");
@@ -243,29 +253,26 @@ describe('CaseDetail: the five-tab story shell (Round 15, D8.3)', () => {
   });
 });
 
-describe('CaseDetail: the Runbook tab (Round 14, SPEC §4.10.11)', () => {
-  it('shows the Runbook tab only to a viewer who can read runbooks, with its progress count', () => {
+describe('CaseDetail: the Response tab (Round 16, D8; Round 14 SPEC §4.10.11)', () => {
+  it('shows the Response tab to every viewer: the runbook with runbooks:read, the tasks always', () => {
     const tabsList = slice(src, '<TabsList', '</TabsList>');
-    const trigger = slice(tabsList, '{showRunbookTab ? (', ') : null}');
-    expect(trigger).toContain('value="runbook"');
-    // "Abandoned", never "None", when the only runs on the case were abandoned.
-    expect(trigger).toContain('<RunbookTabCount progress={runbookProgress} abandoned={runbookData.runs.length > 0} />');
+    // The trigger is unconditional, so Alt+4 always means Response.
+    expect(tabsList).not.toContain('showRunbookTab');
     expect(src).toContain("const canReadRunbooks = hasPermission('runbooks', 'read') && hasPermission('cases', 'read');");
-    expect(src).toContain('const showRunbookTab = canReadRunbooks;');
-    // Alt+2 does nothing for a viewer with no Runbook tab.
-    expect(src).toContain("if (next === 'runbook' && !state.hasRunbookTab) return;");
+    const content = slice(src, '<TabsContent value="runbook"', '</TabsContent>');
+    const tasks = slice(content, ') : (', '</TabPanelMotion>');
+    expect(tasks).toContain('<PanelSection title="Tasks"');
+    expect(tasks).toContain('<OtherTasksLoader caseId={c.case_id} canWrite={canWriteCase} nameOf={nameOf} />');
   });
 
-  it('loads the Runbook panel lazily and only from the Runbook tab', () => {
+  it('loads the Runbook panel lazily and only from the Response tab', () => {
     expect(src).toMatch(/const RunbookPanel = React\.lazy\(\(\) => import\('\.\/casedetail\/RunbookPanel'\)\)/);
     const content = slice(src, '<TabsContent value="runbook"', '</TabsContent>');
     expect(content).toContain('<React.Suspense');
-    // Runbooks turned off make the run read only too (the server refuses every run write).
     expect(content).toContain('canRun={canRunRunbooks && shownIsCurrent}');
     expect(content).toContain('enabled={runbookPrefs.enabled}');
     expect(content).toContain('viewer={runbookViewer}');
     expect(content).toContain('focusRequest={runbookRequest}');
-    // A handled request is forgotten, so coming back to the tab never replays it.
     expect(content).toContain('onFocusRequestHandled={runbookRequestHandled}');
     expect(src).toContain('setRunbookRequest((current) => (current?.tick === tick ? null : current));');
     expect(src).toContain('runbookTickRef.current += 1;');
@@ -278,14 +285,11 @@ describe('CaseDetail: the Runbook tab (Round 14, SPEC §4.10.11)', () => {
     expect(menu).toContain('Start runbook');
   });
 
-  it('repeats the Next step card on the Overview of an open case and points Collaboration at Other tasks', () => {
-    const overview = slice(src, '<TabsContent value="overview"', '</TabsContent>');
-    expect(overview).toContain('runbookCard={');
-    expect(overview).toContain('!caseIsTerminal(c.status)');
-    expect(overview).toContain('<OverviewNextStep');
+  it('Activity no longer points at the tasks: they are on Response', () => {
     const collab = slice(src, '<TabsContent value="collab"', '</TabsContent>');
-    expect(collab).toContain("onOpenTasks={showRunbookTab ? () => requestRunbook({ kind: 'tasks' }) : undefined}");
-    expect(collab).toContain('<OtherTasksLoader');
+    expect(collab).not.toContain('onOpenTasks');
+    expect(collab).not.toContain('tasksSection');
+    expect(collab).not.toContain('<OtherTasksLoader');
   });
 
   it('asks the close dialog for a reason when required steps are open (D34)', () => {
@@ -297,8 +301,15 @@ describe('CaseDetail: the Runbook tab (Round 14, SPEC §4.10.11)', () => {
       'openSteps={dialogOpenSteps}',
       'openStepsReason={openStepsReason}',
       'openStepsError={openStepsError}',
+      'caseIds={c && shownIsCurrent ? [c.case_id] : undefined}',
     ]) {
       expect(dialog).toContain(prop);
     }
+  });
+
+  it('mounts the Reinvestigate dialog stub in place of the inline dialog', () => {
+    expect(src).toContain('<ReinvestigateDialog');
+    expect(src).not.toContain('Re-run the investigation');
+    expect(src).not.toContain('runReinvestigate');
   });
 });

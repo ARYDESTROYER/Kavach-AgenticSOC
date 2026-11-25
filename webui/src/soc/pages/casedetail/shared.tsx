@@ -26,7 +26,7 @@ import {
 } from 'lucide-react';
 
 import type { components } from '@/lib/api-types.gen';
-import type { Case } from '@/lib/types';
+import type { AutoClosePolicy, Case } from '@/lib/types';
 import { cn } from '@/lib/cn';
 
 import { isAutoClosedByAI } from '@/soc/components/badges';
@@ -40,9 +40,12 @@ type WireDisposition = components['schemas']['Disposition'];
  * One content rail for every panel embedded in Case Manager. Keeping this in the
  * shared case-detail vocabulary prevents tabs from drifting back to independent
  * 32px gutters and gives the resizable workspace a stable alignment axis.
+ *
+ * Round 16 (SPEC §4.4 WP03): container queries on the case pane, never the viewport, and
+ * 16px above the first content at every width, so the first content of a tab starts
+ * 207px from the top of the window under the 118px case header.
  */
-export const CASE_MANAGER_PANEL_PADDING =
-  'px-4 py-4 sm:px-5 sm:py-5 lg:px-6';
+export const CASE_MANAGER_PANEL_PADDING = 'px-4 pt-4 pb-6 @[48rem]/case:px-5 @[64rem]/case:px-6';
 
 /**
  * THE analyst-comment disclosure: shown wherever a note the analyst writes on a
@@ -429,11 +432,46 @@ export function tsValue(ts?: string): number {
   return Number.isNaN(ms) ? 0 : ms;
 }
 
+/**
+ * One verdict class's entry of the auto-close policy (`VerdictAutoClose`), or null when
+ * it is unknown. The name is historical: since Round 16 (B27) it is the entry for the
+ * case's own verdict ({@link policyForVerdict}), never the deprecated `fp_auto_close`.
+ */
 export type FpPolicy = {
   enabled?: boolean;
   min_confidence?: number;
   max_risk_score?: number;
+  objection_window_minutes?: number;
 } | null;
+
+/** The verdict class an auto-close entry applies to. */
+export type AutoCloseClass = 'false_positive' | 'true_positive' | 'needs_human';
+
+/** The auto-close class of a verdict: benign reads as a false positive (`decide()`'s rule). */
+export function autoCloseClass(verdict?: string | null): AutoCloseClass {
+  const v = String(verdict ?? '').trim().toLowerCase();
+  if (v === 'false_positive' || v === 'fp' || v === 'benign' || v.includes('false') || v.includes('benign')) {
+    return 'false_positive';
+  }
+  if (v === 'true_positive' || v === 'tp' || v.includes('true')) return 'true_positive';
+  return 'needs_human';
+}
+
+/**
+ * The auto-close entry for a case's verdict (Round 16, B27): the false-positive entry for
+ * a false-positive or benign verdict, the true-positive entry for a true positive, and
+ * `{enabled: false}` for Needs human or any other verdict, which never auto-closes (the
+ * code enforces it, whatever the stored policy says). `policy` is `prefs.auto_close`, the
+ * field `decide()` acts on; the deprecated `prefs.fp_auto_close` is never read. Null when
+ * the policy is not known.
+ */
+export function policyForVerdict(policy: AutoClosePolicy | null | undefined, verdict?: string | null): FpPolicy {
+  if (!policy || typeof policy !== 'object') return null;
+  const cls = autoCloseClass(verdict);
+  if (cls === 'needs_human') return { enabled: false };
+  const entry = cls === 'false_positive' ? policy.false_positive : policy.true_positive;
+  return entry && typeof entry === 'object' ? { ...entry } : null;
+}
 
 /**
  * The agent trace's two layouts (`TraceTimeline`, a shared component). Every case panel
@@ -442,19 +480,18 @@ export type FpPolicy = {
  */
 export type CasePanelPresentation = 'default' | 'case-manager';
 
-/** Derive the ConfidenceBadge threshold/note from the FP auto-close policy. */
+/**
+ * The confidence bar and its note for a case, from the auto-close entry for its verdict
+ * ({@link policyForVerdict}). Needs human never has a bar.
+ */
 export function confidenceCalibration(
   policy: FpPolicy,
   verdict?: string,
 ): { threshold?: number; note?: string } {
+  if (autoCloseClass(verdict) === 'needs_human') return {};
   if (!policy || typeof policy.min_confidence !== 'number') return {};
-  const v = (verdict || '').toLowerCase();
-  const isFp = v.includes('false') || v === 'fp' || v.includes('benign');
-  const note = policy.enabled
-    ? isFp
-      ? 'FP auto-close enabled at this bar'
-      : 'bar governs FP only'
-    : 'auto-close off';
+  const what = autoCloseClass(verdict) === 'true_positive' ? 'true-positive' : 'false-positive';
+  const note = policy.enabled ? `${what} auto-close on at this bar` : `${what} auto-close off`;
   return { threshold: policy.min_confidence, note };
 }
 
@@ -521,6 +558,11 @@ export interface PanelSectionProps extends Omit<React.HTMLAttributes<HTMLElement
   testId?: string;
   /** The heading's id (generated when omitted). */
   headingId?: string;
+  /**
+   * The first section of a tab body (Round 16, SPEC §4.4 WP03): its heading row carries
+   * `data-testid="case-tab-first"`, the point the Case Manager geometry is measured at.
+   */
+  tabFirst?: boolean;
 }
 
 export const PanelSection: React.FC<PanelSectionProps> = ({
@@ -531,6 +573,7 @@ export const PanelSection: React.FC<PanelSectionProps> = ({
   description,
   testId,
   headingId: headingIdProp,
+  tabFirst = false,
   className,
   children,
   ...rest
@@ -545,7 +588,7 @@ export const PanelSection: React.FC<PanelSectionProps> = ({
       aria-labelledby={headingId}
       className={cn('space-y-3 border-t border-border/60 pt-6 first:border-t-0 first:pt-0', className)}
     >
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2" data-testid={tabFirst ? 'case-tab-first' : undefined}>
         <div className="flex min-w-0 flex-wrap items-center gap-2">
           <h2
             id={headingId}

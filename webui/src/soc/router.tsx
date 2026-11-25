@@ -27,7 +27,7 @@ import {
   isSafeCaseResultStatus,
   isSafeCaseResultTag,
 } from './case-result-route';
-import { isCaseTab, LEGACY_CASE_TABS } from './case-tabs';
+import { CASE_SECTION_TABS, isCaseTab, LEGACY_CASE_TABS } from './case-tabs';
 
 export type { PageId } from './nav';
 
@@ -224,7 +224,7 @@ function hashKeys(page: PageId): Readonly<Record<string, Check>> {
   // `tab` opens one of the case detail's tabs, validated against the same CASE_TABS the
   // page renders (./case-tabs): the audit log's "Open case trace" opens `investigation`,
   // a case-chat toast `chat`. A retired tab id (`timeline`, `threat`) is accepted too and
-  // rewritten by {@link redirectRoute}. `review` is the auto-close review queue (Round 15).
+  // rewritten by {@link redirectRoute} to Evidence. `review` is the auto-close review queue (Round 15).
   if (page === 'case_manager') {
     return {
       caseId: isSafeCaseId,
@@ -316,6 +316,12 @@ export function redirectRoute(page: PageId, opts?: NavOpts): { page: PageId; opt
   if (page === 'case_manager' && opts?.tab && hasOwn(LEGACY_CASE_TABS, opts.tab)) {
     const [tab, section] = LEGACY_CASE_TABS[opts.tab];
     return { page, opts: { ...opts, tab, section }, redirected: true };
+  }
+  // A section that moved to another tab (Round 16, D8: Threat context and Related cases
+  // are on Evidence now) opens the tab it is on, whatever tab the request still names.
+  if (page === 'case_manager' && opts?.section && hasOwn(CASE_SECTION_TABS, opts.section)) {
+    const tab = CASE_SECTION_TABS[opts.section];
+    if (opts.tab !== tab) return { page, opts: { ...opts, tab }, redirected: true };
   }
   return { page, opts, redirected: false };
 }

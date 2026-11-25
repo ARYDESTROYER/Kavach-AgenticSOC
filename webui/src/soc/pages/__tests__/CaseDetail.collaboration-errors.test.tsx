@@ -168,12 +168,12 @@ describe('CaseDetail: collaboration endpoint failures', () => {
       });
   });
 
-  it('shows a retryable activity failure, recovers it without a false empty state, and points tasks at the Runbook tab', async () => {
+  it('shows a retryable activity failure, recovers it without a false empty state, and leaves the tasks to Response', async () => {
     const user = userEvent.setup();
     renderWithProviders(<CaseDetail caseId="case-collab" onClose={vi.fn()} />);
 
     await screen.findByText('Suspicious identity activity');
-    const collaborationTab = screen.getByRole('tab', { name: /Collaboration/i });
+    const collaborationTab = screen.getByRole('tab', { name: /^Activity/i });
     await user.click(collaborationTab);
     await waitFor(() => expect(collaborationTab).toHaveAttribute('data-state', 'active'));
     await waitFor(() => expect(getActivityMock).toHaveBeenCalledTimes(1));
@@ -186,8 +186,9 @@ describe('CaseDetail: collaboration endpoint failures', () => {
     expect(await screen.findByText('Could not load activity')).toBeInTheDocument();
     expect(screen.getByText('activity endpoint unavailable')).toBeInTheDocument();
     expect(screen.queryByText('No activity yet')).not.toBeInTheDocument();
-    // The tasks are not read here any more: the rail points at the Runbook tab.
-    expect(screen.getByText('Case tasks are in the Runbook tab, under Other tasks.')).toBeInTheDocument();
+    // The tasks are not read here any more, and nothing points at them: they are on the
+    // Response tab (Round 16, D8).
+    expect(screen.queryByText(/Case tasks are in the Runbook tab/)).toBeNull();
     expect(getTasksMock).not.toHaveBeenCalled();
 
     await user.click(screen.getByRole('button', { name: 'Retry activity' }));
@@ -202,9 +203,10 @@ describe('CaseDetail: collaboration endpoint failures', () => {
     // Discussion remains independently available throughout the failure.
     expect(screen.getByText('No discussion yet')).toBeInTheDocument();
 
-    await user.click(screen.getByRole('button', { name: 'Open the Runbook tab' }));
+    expect(screen.queryByRole('button', { name: 'Open the Runbook tab' })).toBeNull();
+    await user.click(screen.getByRole('tab', { name: /^Response/ }));
     await waitFor(() =>
-      expect(screen.getByRole('tab', { name: /^Runbook/ })).toHaveAttribute('data-state', 'active'),
+      expect(screen.getByRole('tab', { name: /^Response/ })).toHaveAttribute('data-state', 'active'),
     );
   });
 
@@ -238,7 +240,7 @@ describe('CaseDetail: collaboration endpoint failures', () => {
     renderWithProviders(<CaseDetail caseId="case-collab" onClose={vi.fn()} />);
 
     await screen.findByText('Suspicious identity activity');
-    const collaborationTab = screen.getByRole('tab', { name: /Collaboration/i });
+    const collaborationTab = screen.getByRole('tab', { name: /^Activity/i });
     await user.click(collaborationTab);
     expect(await screen.findByText(message.body)).toBeInTheDocument();
 

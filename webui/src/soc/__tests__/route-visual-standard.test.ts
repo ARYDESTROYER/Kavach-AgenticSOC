@@ -100,21 +100,26 @@ describe("Console route visual standard", () => {
   it("keeps every embedded Case Manager tab on one shared content rail", () => {
     const shared = source("soc/pages/casedetail/shared.tsx");
     expect(shared).toContain("export const CASE_MANAGER_PANEL_PADDING");
-    expect(shared).toContain("px-4 py-4 sm:px-5 sm:py-5 lg:px-6");
+    // Round 16 (SPEC §4.4 WP03): container queries on the case pane, never the viewport,
+    // and 16px above the first content at every width.
+    expect(shared).toContain("'px-4 pt-4 pb-6 @[48rem]/case:px-5 @[64rem]/case:px-6'");
+    expect(shared).not.toMatch(/CASE_MANAGER_PANEL_PADDING =[^;]*\b(sm|lg):/);
 
     for (const file of [
       "soc/pages/casedetail/OverviewPanel.tsx",
+      "soc/pages/casedetail/EvidencePanel.tsx",
       "soc/pages/casedetail/InvestigationPanel.tsx",
       "soc/pages/casedetail/CollaborationPanel.tsx",
       "soc/pages/casedetail/CaseChatPanel.tsx",
+      "soc/pages/CaseDetail.tsx",
     ]) {
       expect(source(file), `${file} must reuse the Case Manager content rail`).toContain(
         "CASE_MANAGER_PANEL_PADDING",
       );
     }
-    // Round 15 (D8.3): the stage timeline and the threat context are SECTIONS of the
-    // Overview and Investigation tabs, which own the rail, so they never add their own
-    // (a second rail would stack 32px gutters inside the tab).
+    // The stage timeline and the threat context are SECTIONS of the Brief and Evidence
+    // tabs, which own the rail, so they never add their own (a second rail would stack
+    // 32px gutters inside the tab).
     for (const file of [
       "soc/pages/casedetail/TimelinePanel.tsx",
       "soc/pages/casedetail/ThreatContextPanel.tsx",

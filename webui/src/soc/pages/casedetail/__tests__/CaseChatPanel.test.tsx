@@ -248,7 +248,8 @@ describe('ChatTab: the case-scoped chat', () => {
   it('keeps the Case Manager frame on the shared rail with the composer docked below the transcript', async () => {
     const { container } = await renderTab();
     const panel = container.querySelector('[data-case-panel="chat"][data-presentation="case-manager"]');
-    expect(panel).toHaveClass('flex', 'h-full', 'min-h-0', 'overflow-hidden', 'px-4', 'py-4', 'sm:px-5', 'sm:py-5', 'lg:px-6');
+    // The shared rail (Round 16): container queries on the case pane, 16px on top.
+    expect(panel).toHaveClass('flex', 'h-full', 'min-h-0', 'overflow-hidden', 'px-4', 'pt-4', 'pb-6', '@[48rem]/case:px-5', '@[64rem]/case:px-6');
     const frame = container.querySelector('[data-chat-presentation="case-manager"]');
     expect(frame).toHaveClass('h-full', 'min-h-0', 'w-full', 'overflow-hidden');
     expect(container.querySelector('[data-chat-scroll-lane="true"]')).toHaveClass('min-h-0', 'flex-1', 'overflow-y-auto');
