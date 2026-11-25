@@ -12616,3 +12616,40 @@
 - Tests: on the merged tree, the WP15E part 2 backend tests with route coverage and the Demo source tests 48 passed; its 15 Console test files 130 passed; typecheck clean.
 - Status: done.
 - Next: WP15D, WP14 and WP09 after their reviews; WP12 and WP11I are building.
+
+### 2026-11-25 20:45Z - WP09 builder (resumed) - AI run Console and one stream per page
+- Context: Round 16 SPEC section 4.5 WP09. Resumed from the work-in-progress commit d8ca23e after a container restart. Base 3f64fa0.
+- Did: Finished the investigation store, chip, popover, mark, band line, non-blocking Reinvestigate dialog, close and bulk-close notes, Activity "Investigation finished" heading and the navigation AI count. Turned the useEventStream multiplexer into a closure. Moved the store out of the entry chunk behind an entry-safe count (investigations/count.ts, loaded after first paint like the chat activity observer). Fixed five defects found on the way: an expiry re-read loop, a poll spin during a slow read, late reads bringing ended runs back, a quick run never shown as yours, and a finish toast lost on reload. Added tests: investigations, AiRunChip, ReinvestigateDialog, CloseDialogs.airun, NavSidebar.ai, CaseActivityFeed.narration, and more store cases. Bulk-close copy now names the Activity tab.
+- Tests: pytest gave 13,550 passed, 29 skipped, 12 failed. Those are 2 expected router-count tests, 5 sandbox-only environment tests and 5 test_docs_round15_records failures; the last five fail on the base tree too and WP09 changes none of their files. test:strict gave 705 files, 9,171 passed, 1 skipped, zero stderr. typecheck, lint, gates, check:types, build, docs:check, check_version, check_ci_contract, check_docs and build_app_knowledge --check pass. Entry is 328,842 B against a base of 325,135 B (+3,707 B; multiplexer +2,313 B), within budget.
+- Status: done. Committed d700fa3 on r16-wp09, then detached.
+- Next: WP16 should add W to caseManagerShortcuts (CaseManager.tsx); disable Reinvestigate in Take action while a run is in flight (CaseDetail.tsx); dim the verdict chip during a run (CaseHeaderMeta.tsx); look at the status words truncating beside the AI mark and chip at 1440; and add the AI signals to ui-standard.md. Bulk close cannot be shown in Demo (bulk is off there).
+
+### 2026-11-25 22:10Z - WP09 reviewer - AI run Console and one stream per page, review
+- Context: Independent adversarial review of r16-wp09 (d700fa3, base 3f64fa0) against Round 16 SPEC section 4.5 WP09, the ai-investigating research copy and Appendix C (C27, C30, C32, C38).
+- Did: Read the whole diff. Confirmed the package edits only its own files, changes no backend, leaves decide() and engine/risk.py untouched, renders untrusted values as text, and has clean copy. Fixed four defects in 8b19ca5, each with a test that fails without its fix:
+  - a stream for a new topic set that failed before it opened, while the old stream served, was never retried;
+  - a read sent before a frame could drop the run that frame announced, or turn a running run back to queued;
+  - the poll-spin test did not detect the spin;
+  - a 409 investigation_running showed no chip on a page without a stream.
+  Spot-checked the builder's regression tests by reverting each fix: the late-read and quick-run tests fail, and the expiry-loop test hangs. The reload-toast proof is inconclusive. Checked the live seeded Demo in both themes at 1440 by 900 and 390 by 844: one EventSource per page, the 202, finish toast, tint, Inbox item, both 409 toasts, chip keyboard and focus, and the error state.
+- Tests:
+  - pytest: 13,550 passed, 29 skipped, 12 failed, the same 12 the builder reported.
+  - test:strict: 9,173 passed, 1 skipped, 2 failed. Both failures are timing flakes in CaseDetail.structure and Chat.earlier, which pass when run alone.
+  - typecheck, lint, gates, check:types, build, docs:check, check_version, check_ci_contract, check_docs and build_app_knowledge --check pass.
+  - Entry chunk: 328,857 B, within budget.
+- Status: done. r16-wp09 at 8b19ca5, worktree detached.
+- Next: WP16 should:
+  - add W to caseManagerShortcuts;
+  - disable Reinvestigate in Take action during a run;
+  - dim the verdict chip during a run;
+  - fix the header meta row, whose status words vanish entirely while the chip shows (pass compact to AiRunChip on a narrow row, or shorten the verdict chip);
+  - add the AI note to the Case Manager bulk Acknowledge confirm;
+  - mock api.prefs.getUser in CaseDetail.structure.test.tsx;
+  - add the AI signals to ui-standard.md.
+
+### 2026-11-25 21:49Z - orchestrator - WP09 merged (the AI run Console, one event stream per page)
+- Context: SPEC §4.8 step 11, the operator's first ask: show when the AI is investigating. The header chip and popover (steps, origin, time against the cap), the queue row mark, the band line for runs on new events, the navigation count, a non-blocking Reinvestigate that closes on the 202, the close dialog warnings, the finish toast and Inbox item, and one multiplexed EventSource per page. The builder resumed from its saved work after the container restart.
+- Did: merged review 8b19ca5 into claude/round16 with no conflicts; generated files unchanged. Carried to WP16: W in the Case Manager shortcuts, Reinvestigate disabled during a run, the verdict chip dimmed during a run, the status words giving way to the chip in the header meta row, the bulk Acknowledge note, the AI signal wording in ui-standard.
+- Tests: on the merged tree, the WP09 test files with the first-paint check 128 passed, 1 skipped; the investigations, case detail, Case Manager and lib tests 1,019 passed; typecheck and lint clean; build:app entry 329,627 B (inside the 330,104 B budget).
+- Status: done.
+- Next: WP15D, WP14, WP11I and WP12 as their reviews finish; then WP15F and WP16.
