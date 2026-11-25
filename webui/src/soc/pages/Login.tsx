@@ -98,6 +98,13 @@ const LINK_BUTTON =
 const ACTION_BUTTON = 'h-11 w-full';
 /** The inline error region's id: the field it belongs to points `aria-describedby` here. */
 const ERROR_ID = 'login-error';
+/**
+ * Focus a field once the next render has committed: the step that holds it may only
+ * just be mounting, or the field may still be disabled by the request that just ended.
+ */
+function focusSoon(ref: React.RefObject<HTMLElement | null>): void {
+  window.setTimeout(() => ref.current?.focus(), 0);
+}
 /** The username a previous remembered sign-in left on this device (not a secret). */
 function rememberedUsernameOnDevice(): string | null {
   try {
@@ -522,7 +529,7 @@ export default function Login({ onAuthenticated }: LoginProps) {
     clearError();
     setSigninStep('identity');
     setStepMotion('back');
-    window.setTimeout(() => signinIdentityRef.current?.focus(), 0);
+    focusSoon(signinIdentityRef);
   };
 
   const startSso = async (providerId: string) => {
@@ -564,7 +571,7 @@ export default function Login({ onAuthenticated }: LoginProps) {
     setSigninStep('password');
     setStepMotion('forward');
     setShowForgotHelp(false);
-    window.setTimeout(() => signinPasswordRef.current?.focus(), 0);
+    focusSoon(signinPasswordRef);
   };
 
   // --- Mode 1: first-run create admin (OOBE account-setup) ------------------ //
@@ -602,7 +609,7 @@ export default function Login({ onAuthenticated }: LoginProps) {
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Could not create the admin account.');
       setBusy(false);
-      window.setTimeout(() => setupPasswordRef.current?.focus(), 0);
+      focusSoon(setupPasswordRef);
     }
   };
 
@@ -682,7 +689,7 @@ export default function Login({ onAuthenticated }: LoginProps) {
       );
       setPassword('');
       setBusy(false);
-      window.setTimeout(() => signinPasswordRef.current?.focus(), 0);
+      focusSoon(signinPasswordRef);
     }
   };
 
@@ -716,7 +723,7 @@ export default function Login({ onAuthenticated }: LoginProps) {
       setOtpAttempt((n) => n + 1);
       setBusy(false);
       // A recovery code is typed into one field, so focus goes back to that field.
-      if (useRecovery) window.setTimeout(() => mfaRecoveryRef.current?.focus(), 0);
+      if (useRecovery) focusSoon(mfaRecoveryRef);
     } finally {
       mfaInFlightRef.current = false;
     }
@@ -756,7 +763,7 @@ export default function Login({ onAuthenticated }: LoginProps) {
     setPageError(
       'Your setup session expired. Sign in again to continue setting up two-factor authentication.',
     );
-    window.setTimeout(() => signinPasswordRef.current?.focus(), 0);
+    focusSoon(signinPasswordRef);
   };
 
   // --- Mode 3: set a new password (forced change) --------------------------- //
@@ -779,7 +786,7 @@ export default function Login({ onAuthenticated }: LoginProps) {
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Could not change the password.');
       setBusy(false);
-      window.setTimeout(() => changePasswordRef.current?.focus(), 0);
+      focusSoon(changePasswordRef);
     }
   };
 
@@ -1141,7 +1148,7 @@ export default function Login({ onAuthenticated }: LoginProps) {
                         setStepMotion('back');
                         setPassword('');
                         clearError();
-                        window.setTimeout(() => signinIdentityRef.current?.focus(), 0);
+                        focusSoon(signinIdentityRef);
                       }}
                       disabled={busy}
                     >
@@ -1258,7 +1265,7 @@ export default function Login({ onAuthenticated }: LoginProps) {
                     clearError();
                     setSigninStep('password');
                     setStepMotion('forward');
-                    window.setTimeout(() => signinPasswordRef.current?.focus(), 0);
+                    focusSoon(signinPasswordRef);
                   }}
                   disabled={busy}
                 >
