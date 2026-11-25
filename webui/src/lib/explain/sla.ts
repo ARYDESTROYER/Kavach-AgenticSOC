@@ -76,8 +76,10 @@ export function explainSla(reading: SlaReadingWire | null | undefined): Explanat
   const kind = String(reading.clock).toLowerCase() === 'resolution' ? 'Resolution' : 'Response';
   const priority = (reading.priority || '').trim().toUpperCase() || 'No priority';
   const state = String(reading.state).toLowerCase();
-  const words = STATE_WORDS[state] ?? state;
   const stopped = Boolean(reading.responded_at) && kind === 'Response';
+  // A response clock a person stopped inside its target is met, not "on track": it no
+  // longer runs, so it can no longer be at risk.
+  const words = stopped && state === 'ok' ? 'met' : STATE_WORDS[state] ?? state;
   const atRiskFrom = target * SLA_AT_RISK_FRACTION;
   const left = target - elapsed;
 
@@ -106,7 +108,9 @@ export function explainSla(reading: SlaReadingWire | null | undefined): Explanat
   const summary =
     state === 'breached'
       ? `${kind} SLA ${priority}: ${minutesWords(elapsed)} elapsed against a ${minutesWords(target)} target, so it is breached by ${minutesWords(-left)}.`
-      : `${kind} SLA ${priority}: ${minutesWords(elapsed)} of ${minutesWords(target)} elapsed, ${words}. At risk from ${minutesWords(atRiskFrom)}.`;
+      : stopped
+        ? `${kind} SLA ${priority}: answered after ${minutesWords(elapsed)} against a ${minutesWords(target)} target, ${words}.`
+        : `${kind} SLA ${priority}: ${minutesWords(elapsed)} of ${minutesWords(target)} elapsed, ${words}. At risk from ${minutesWords(atRiskFrom)}.`;
 
   return {
     metric: 'sla',

@@ -104,8 +104,12 @@ export function shortDuration(ms: number, round: (n: number) => number = Math.ro
   return `${round(abs / 86_400_000)}d`;
 }
 
-/** The time left on a "due in" line: rounded down, never more than remains (B32). */
+/**
+ * The time left on a "due in" line: rounded down, never more than remains (B32). Under a
+ * minute reads "under 1m": rounded down it would be 0, and "1m" would claim a minute.
+ */
 export function timeLeft(ms: number): string {
+  if (Math.abs(ms) < 60_000) return 'under 1m';
   return shortDuration(ms, Math.floor);
 }
 

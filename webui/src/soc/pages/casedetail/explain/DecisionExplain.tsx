@@ -52,29 +52,44 @@ export const DecisionExplain: React.FC<DecisionExplainProps> = ({ caseRecord, ch
   const caseId = caseRecord?.case_id ?? '';
   const [payload, setPayload] = React.useState<DecisionPayload | null>(null);
   const [forwarding, setForwarding] = React.useState<ForwardingReading | null>(null);
+  const [read, setRead] = React.useState<'idle' | 'loading' | 'done' | 'failed'>('idle');
   const requested = React.useRef<string | null>(null);
 
   React.useEffect(() => {
     setPayload(null);
     setForwarding(null);
+    setRead('idle');
     requested.current = null;
   }, [caseId]);
 
-  const explanation = React.useMemo(
-    () => (caseRecord ? explainDecision(caseRecord, payload) : null),
-    [caseRecord, payload],
-  );
+  const explanation = React.useMemo(() => {
+    const base = caseRecord ? explainDecision(caseRecord, payload) : null;
+    // While the decision record is read, or after it failed, the panel says so instead of
+    // showing "Not known" without a reason.
+    const note =
+      read === 'loading'
+        ? 'Reading the decision record.'
+        : read === 'failed'
+          ? 'The decision record could not be read, so the auto-close thresholds are not shown.'
+          : null;
+    return base && note ? { ...base, caveats: [...base.caveats, note] } : base;
+  }, [caseRecord, payload, read]);
 
   const onOpenChange = React.useCallback(
     (open: boolean) => {
       if (!open || !caseId || requested.current === caseId) return;
       requested.current = caseId;
       const forCase = caseId;
+      setRead('loading');
       void loadDecision(forCase)
         .then((next) => {
-          if (requested.current === forCase) setPayload(next);
+          if (requested.current !== forCase) return;
+          setPayload(next);
+          setRead('done');
         })
-        .catch(() => undefined);
+        .catch(() => {
+          if (requested.current === forCase) setRead('failed');
+        });
       void loadForwarding(forCase)
         .then((next) => {
           if (requested.current === forCase) setForwarding(next);

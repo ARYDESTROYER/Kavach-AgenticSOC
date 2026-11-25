@@ -30,7 +30,9 @@ import type { Case, CaseRationale } from '@/lib/types';
 import type { DecisionPayload, TimelineResponse, TraceSpan } from '@/soc/pages/CaseDetail.api';
 import { DASH, formatTimestamp, humanizeToken } from '@/lib/format';
 import { cn } from '@/lib/cn';
-import { displayScore } from '@/lib/explain/rounding';
+import { ExplainTrigger } from '@/design-system/explain';
+import { displayScore, trimmed } from '@/lib/explain/rounding';
+import type { Explanation } from '@/lib/explain/types';
 import {
   compareWithPolicy,
   comparisonSentence,
@@ -102,20 +104,98 @@ interface PrecedentSignalView {
 const count = (value: unknown): number => (typeof value === 'number' && Number.isFinite(value) ? value : 0);
 
 /**
+ * Why a precedent signal did not qualify, in words, by its status. A status the server
+ * reads no counts for (`disabled`, `not_applicable`, an unreadable history) never shows
+ * counts: its zeros were not read, so stating them would invent a history.
+ */
+const PRECEDENT_NOT_USED: Record<string, string> = {
+  disabled: 'not used, because precedent promotion is off',
+  not_applicable: 'not used, because this case has no detection rule to match',
+  unavailable: 'not used, because the confirmed history could not be read',
+};
+const PRECEDENT_WHY: Record<string, string> = {
+  conflicting: 'this rule has confirmed malicious outcomes',
+  insufficient: 'fewer confirmed benign outcomes than needed',
+  not_retrieved: 'no matching precedent was retrieved for this case',
+  unavailable: 'the read was cut short, so the counts are lower bounds',
+};
+
+/** True when the server read this rule's confirmed counts for the signal. */
+function precedentCounted(signal: PrecedentSignalView): boolean {
+  const status = String(signal.status || '');
+  if (signal.qualifies || ['qualified', 'conflicting', 'insufficient', 'not_retrieved'].includes(status)) return true;
+  // An unavailable read carries counts only when it was cut short (lower bounds).
+  return status === 'unavailable' && signal.truncated === true;
+}
+
+function outcomes(n: number, kind: string, atLeast: boolean): string {
+  return `${atLeast ? 'at least ' : ''}${n.toLocaleString('en-US')} confirmed ${kind}`;
+}
+
+/**
  * The precedent line (research data-visibility R9): always shown, so a decision that did
- * not lean on precedent says why. Counts, the minimum and the reason are our own data;
- * the reason token is shown in words.
+ * not lean on precedent says why. Counts, the minimum and the reason are our own data,
+ * stated only when the server read them; the reason is shown in words.
  */
 export function precedentLine(signal: PrecedentSignalView | null): string {
   if (!signal) return 'Precedent: not recorded for this investigation.';
+  const status = String(signal.status || '');
+  if (!precedentCounted(signal)) {
+    return `Precedent: ${PRECEDENT_NOT_USED[status] ?? 'not used for this investigation'}.`;
+  }
+  const atLeast = signal.truncated === true;
   const benign = count(signal.confirmed_false_positive);
   const malicious = count(signal.confirmed_true_positive);
-  const counts = `${benign} confirmed benign and ${malicious} confirmed malicious outcome${malicious === 1 ? '' : 's'} for this rule`;
+  const counts = `${outcomes(benign, 'benign', atLeast)} and ${outcomes(malicious, 'malicious', atLeast)} outcome${
+    malicious === 1 ? '' : 's'
+  } for this rule`;
   const needed = count(signal.min_confirmed);
-  const neededText = needed ? `; ${needed} needed` : '';
+  const neededText = needed ? `; ${needed.toLocaleString('en-US')} needed` : '';
   if (signal.qualifies) return `Precedent: ${counts}${neededText}; it qualified as evidence.`;
-  const why = signal.reason || signal.status;
-  return `Precedent: ${counts}${neededText}; it did not qualify${why ? ` (${humanizeToken(why).toLowerCase()})` : ''}.`;
+  const why = PRECEDENT_WHY[status];
+  return `Precedent: ${counts}${neededText}; it did not qualify${why ? ` (${why})` : ''}.`;
+}
+
+/** The precedent facts in full (research data-visibility R9): the click panel of the line. */
+export function precedentExplanation(signal: PrecedentSignalView | null): Explanation | null {
+  if (!signal) return null;
+  const counted = precedentCounted(signal);
+  const source = 'Recorded with the investigation';
+  const inputs: Explanation['inputs'] = [
+    { key: 'status', label: 'Status', value: humanizeToken(signal.status || 'unknown'), source },
+  ];
+  if (counted) {
+    const atLeast = signal.truncated === true ? 'at least ' : '';
+    inputs.push(
+      { key: 'benign', label: 'Confirmed benign', value: `${atLeast}${count(signal.confirmed_false_positive).toLocaleString('en-US')}`, source },
+      { key: 'malicious', label: 'Confirmed malicious', value: `${atLeast}${count(signal.confirmed_true_positive).toLocaleString('en-US')}`, source },
+    );
+  }
+  if (count(signal.min_confirmed)) {
+    inputs.push({ key: 'min_confirmed', label: 'Benign outcomes needed', value: count(signal.min_confirmed).toLocaleString('en-US'), source: 'Precedent settings' });
+  }
+  if (typeof signal.top_score === 'number' && Number.isFinite(signal.top_score)) {
+    inputs.push({
+      key: 'top_score',
+      label: 'Best match',
+      value: `${trimmed(signal.top_score, 4)} against a floor of ${trimmed(count(signal.min_similarity), 4)}`,
+      source,
+    });
+  }
+  if (signal.truncated) inputs.push({ key: 'truncated', label: 'History read', value: 'Cut short', source });
+  return {
+    metric: 'precedent',
+    title: 'Precedent',
+    value: signal.status ?? null,
+    display: precedentLine(signal),
+    summary: precedentLine(signal),
+    formula: 'qualifies when no confirmed malicious outcome, at least the needed confirmed benign outcomes, and a match above the floor',
+    inputs,
+    steps: [],
+    provenance: 'recorded',
+    provenanceNote: 'Recorded when the investigation ran.',
+    caveats: ['Precedent can add evidence for the AI. It never closes a case on its own.'],
+  };
 }
 function precedentSignal(c: Case): PrecedentSignalView | null {
   const raw = (c as { precedent_signal?: PrecedentSignalView | null }).precedent_signal;
@@ -300,7 +380,7 @@ export const DecisionCard: React.FC<DecisionCardProps> = ({ c, rationale, timeli
 
       {/* The precedent facts behind the decision, always (data-visibility R9). */}
       <p className="mt-3 text-xs text-muted-foreground" data-testid="decision-precedent">
-        {precedentLine(precedent)}
+        <ExplainTrigger explanation={precedentExplanation(precedent)}>{precedentLine(precedent)}</ExplainTrigger>
       </p>
 
       {/* ------------------------------------------------ outcome badge row */}
@@ -389,7 +469,7 @@ export const DecisionCard: React.FC<DecisionCardProps> = ({ c, rationale, timeli
           {policyChanged ? (
             <p className="mt-2 text-xs text-warning-text" role="note" data-testid="decision-policy-changed">
               {todayComparison
-                ? `The auto-close policy changed since this decision. With today's policy: ${comparisonSentence(todayComparison)}`
+                ? `The auto-close policy changed since this decision. ${comparisonSentence(todayComparison, 'current')}`
                 : 'The auto-close policy changed since this decision. The values above are the ones in force at the time.'}
             </p>
           ) : null}

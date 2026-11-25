@@ -192,7 +192,7 @@ describe('DecisionExplain', () => {
     });
     await waitFor(() =>
       expect(screen.getByTestId('explain-hover')).toHaveTextContent(
-        'Routed to a person: confidence 97% >= 85% (met); risk 45 <= 30 (not met).',
+        "Today's policy routes it to a person: confidence 97% >= 85% (met); risk 45 <= 30 (not met).",
       ),
     );
     await user.click(trigger);
@@ -210,6 +210,50 @@ describe('DecisionExplain', () => {
       </DecisionExplain>,
     );
     expect(screen.queryByRole('button')).toBeNull();
+  });
+});
+
+describe('loading and error states (WP11 review)', () => {
+  const LEGACY = { volume: 61, velocity: 0, reputation: 0, diversity: 0, asset_criticality: 0, total: 61 };
+
+  it('RiskExplain says it is reading, then that the timeline could not be read', async () => {
+    let fail: (e: unknown) => void = () => undefined;
+    h.getCaseStages.mockReturnValue(new Promise((_, reject) => { fail = reject; }));
+    const user = userEvent.setup();
+    render(
+      <RiskExplain caseId="legacy" score={61} breakdown={LEGACY}>
+        <span>Risk 61</span>
+      </RiskExplain>,
+    );
+    await user.click(screen.getByRole('button', { name: /Risk 61/ }));
+    expect(await screen.findByTestId('explain-caveats')).toHaveTextContent("Reading today's weights from the case timeline.");
+    fail(new Error('500'));
+    await waitFor(() =>
+      expect(screen.getByTestId('explain-caveats')).toHaveTextContent(
+        "The case timeline could not be read, so the calculation with today's weights is not shown.",
+      ),
+    );
+    expect(screen.getByTestId('explain-caveats')).not.toHaveTextContent('Reading today');
+  });
+
+  it('DecisionExplain says it is reading the decision record, then that it failed', async () => {
+    let fail: (e: unknown) => void = () => undefined;
+    h.getTimeline.mockReturnValue(new Promise((_, reject) => { fail = reject; }));
+    h.apiGet.mockRejectedValue(new Error('500'));
+    const user = userEvent.setup();
+    render(
+      <DecisionExplain caseRecord={{ case_id: 'c-err', verdict: 'FALSE_POSITIVE', confidence: 0.9, risk_score: 20, status: 'open' } as unknown as Case}>
+        <span>AI verdict False positive</span>
+      </DecisionExplain>,
+    );
+    await user.click(screen.getByRole('button', { name: /AI verdict/ }));
+    expect(await screen.findByTestId('explain-caveats')).toHaveTextContent('Reading the decision record.');
+    fail(new Error('500'));
+    await waitFor(() =>
+      expect(screen.getByTestId('explain-caveats')).toHaveTextContent(
+        'The decision record could not be read, so the auto-close thresholds are not shown.',
+      ),
+    );
   });
 });
 

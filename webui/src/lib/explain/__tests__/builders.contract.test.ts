@@ -235,15 +235,34 @@ describe('decision', () => {
   const fp = (risk: number, extra: Partial<Case> = {}) =>
     ({ case_id: 'd', verdict: 'FALSE_POSITIVE', confidence: 0.97, risk_score: risk, status: 'needs_human', decision_by: 'system', ...extra }) as unknown as Case;
 
+  const gate = (min: number, max: number, extra: Record<string, unknown> = {}) => ({
+    source: 'recorded',
+    gate: {
+      verdict: 'FALSE_POSITIVE', confidence: 0.97, risk_score: null, class_enabled: true,
+      min_confidence: min, max_risk_score: max, objection_window_minutes: 30,
+      escalation_confidence: 0.6, critical_severity: 7, outcome: 'routed', demo: false,
+      ...extra,
+    },
+  });
+
   it('met: both conditions with the numbers', () => {
-    expect(explainDecision(fp(20, { status: 'closed', decision_by: 'agent' }), policy(0.85, 30))?.summary).toBe(
+    expect(explainDecision(fp(20, { status: 'closed', decision_by: 'agent' }), gate(0.85, 30, { risk_score: 20 }) as never)?.summary).toBe(
       'Closes automatically: confidence 97% >= 85% (met) and risk 20 <= 30 (met).',
     );
   });
 
   it('not met: the failing condition is named', () => {
-    expect(explainDecision(fp(45), policy(0.85, 30))?.summary).toBe(
+    expect(explainDecision(fp(45), gate(0.85, 30, { risk_score: 45 }) as never)?.summary).toBe(
       'Routed to a person: confidence 97% >= 85% (met); risk 45 <= 30 (not met).',
+    );
+  });
+
+  it("with today's policy (no recorded gate) the sentence says so, never reading as what happened", () => {
+    expect(explainDecision(fp(20, { status: 'closed', decision_by: 'agent' }), policy(0.85, 30))?.summary).toBe(
+      "Today's policy closes it automatically: confidence 97% >= 85% (met) and risk 20 <= 30 (met).",
+    );
+    expect(explainDecision(fp(45), policy(0.85, 30))?.summary).toBe(
+      "Today's policy routes it to a person: confidence 97% >= 85% (met); risk 45 <= 30 (not met).",
     );
   });
 

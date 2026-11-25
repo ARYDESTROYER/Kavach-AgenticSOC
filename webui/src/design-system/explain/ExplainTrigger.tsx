@@ -22,6 +22,7 @@
 import * as React from 'react';
 
 import { cn } from '@/lib/cn';
+import { hasClickHint, summaryWithoutHint } from '@/lib/explain/text';
 import type { Explanation } from '@/lib/explain/types';
 import { HoverCard, HoverCardContent, HoverCardTrigger } from '@/ui/hover-card';
 import { Popover, PopoverContent, PopoverTrigger } from '@/ui/popover';
@@ -50,10 +51,15 @@ const CLOSE_DELAY_MS = 150;
 const HOVER_CARD = 'w-auto max-w-[min(26rem,calc(100vw-2rem))] px-3 py-2 text-xs leading-relaxed text-foreground';
 
 function HoverLine({ explanation, hint }: { explanation: Explanation; hint: boolean }) {
+  // One pointer to the full calculation: a summary that already ends with one ("Click for
+  // inputs.") gets no second line. A queue row (no hint) has no panel to click into, so its
+  // line drops the pointer: a click there opens the case.
+  const showHint = hint && !hasClickHint(explanation.summary);
+  const summary = hint ? explanation.summary : summaryWithoutHint(explanation.summary);
   return (
     <div data-testid="explain-hover">
-      <p className="tabular-nums">{explanation.summary}</p>
-      {hint ? <p className="mt-1 text-muted-foreground">Select it for the full calculation.</p> : null}
+      <p className="tabular-nums">{summary}</p>
+      {showHint ? <p className="mt-1 text-muted-foreground">Select it for the full calculation.</p> : null}
     </div>
   );
 }
@@ -85,6 +91,7 @@ export const ExplainTrigger: React.FC<ExplainTriggerProps> = ({
   // the pointer or focus leaves, so closing the panel does not reopen a second surface.
   const quiet = React.useRef(false);
   const titleId = React.useId();
+  const panelRef = React.useRef<HTMLDivElement>(null);
   const notify = React.useRef(onOpenChange);
   notify.current = onOpenChange;
 
@@ -144,9 +151,16 @@ export const ExplainTrigger: React.FC<ExplainTriggerProps> = ({
         </HoverCardContent>
       </HoverCard>
       <PopoverContent
+        ref={panelRef}
         align="start"
         collisionPadding={16}
         aria-labelledby={titleId}
+        // Focus lands on the panel itself, so reading starts at its title rather than at
+        // "Copy calculation" at the bottom (the first control) of a long calculation.
+        onOpenAutoFocus={(event) => {
+          event.preventDefault();
+          panelRef.current?.focus({ preventScroll: true });
+        }}
         className="max-h-[var(--radix-popover-content-available-height)] w-[min(28rem,calc(100vw-2rem))] overflow-y-auto"
       >
         <ExplainPanel explanation={explanation} detail={detail} titleId={titleId} />

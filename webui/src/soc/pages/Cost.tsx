@@ -70,7 +70,6 @@ import type { Explanation } from '@/lib/explain/types';
 // Local types + constants
 // --------------------------------------------------------------------------- //
 
-/** The page title: the navigation label of `#/cost` (one name per page, D25). */
 /** The inputs of the Cost KPI arithmetic (the usage summary for the range). */
 export interface CostKpiInputs {
   totalCost: number;
@@ -154,6 +153,7 @@ export function costKpiExplanations({ totalCost, totalTokens, callCount, currenc
   };
 }
 
+/** The page title: the navigation label of `#/cost` (one name per page, D25). */
 const PAGE_TITLE = 'Cost';
 
 /** The header help tip (the page explains itself there, never in a line, C8). */

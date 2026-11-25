@@ -12,11 +12,28 @@ export const PROVENANCE_WORDS: Record<ExplanationProvenance, string> = {
   not_recorded: 'Not recorded',
 };
 
+/**
+ * A summary's closing pointer to the full calculation ("Click for inputs.", "Select it to
+ * compare them with the auto-close policy."). The hover line keeps it; the open panel and
+ * the copied text drop it, because the reader is already there.
+ */
+const CLICK_HINT = /\s*(?:Click for [^.]*|Select it [^.]*)\.\s*$/;
+
+/** True when a summary already ends by pointing at the full calculation. */
+export function hasClickHint(summary: string): boolean {
+  return CLICK_HINT.test(summary);
+}
+
+/** The summary without its closing pointer to the full calculation. */
+export function summaryWithoutHint(summary: string): string {
+  return summary.replace(CLICK_HINT, '');
+}
+
 /** The whole explanation as plain text lines. */
 export function explanationText(explanation: Explanation): string {
   const lines: string[] = [];
   lines.push(`${explanation.title ?? explanation.metric}: ${explanation.display}`);
-  lines.push(explanation.summary);
+  lines.push(summaryWithoutHint(explanation.summary));
   lines.push(`Formula: ${explanation.formula}`);
   if (explanation.inputs.length) {
     lines.push('Inputs:');

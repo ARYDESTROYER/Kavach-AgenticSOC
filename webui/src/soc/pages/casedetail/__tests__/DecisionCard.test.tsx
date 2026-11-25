@@ -8,6 +8,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { axe, toHaveNoViolations } from 'jest-axe';
 
 import { DecisionCard } from '../DecisionCard';
@@ -241,12 +242,125 @@ describe('DecisionCard: the recorded decision, never a read-time re-run (D1)', (
       'Closes automatically: confidence 92% >= 80% (met) and risk 12 <= 40 (met).',
     );
     expect(screen.getByTestId('decision-policy-changed')).toHaveTextContent(
-      "The auto-close policy changed since this decision. With today's policy: Routed to a person: confidence 92% >= 95% (not met); risk 12 <= 40 (met).",
+      "The auto-close policy changed since this decision. Today's policy routes it to a person: confidence 92% >= 95% (not met); risk 12 <= 40 (met).",
     );
   });
 
   it('shows the risk fact as the integer rounded half up', () => {
     render(<DecisionCard c={{ ...CASE, risk_score: 73.5 } as Case} rationale={null} timeline={null} />);
     expect(screen.getByText('74/100')).toBeInTheDocument();
+  });
+});
+
+describe('the precedent line (WP11 review: counts only when they were read)', () => {
+  // A signal the server never read counts for carries zeros by default; stating them as
+  // "0 confirmed benign ... for this rule" would invent a history.
+  const withSignal = (signal: Record<string, unknown> | null) =>
+    ({ ...CASE, precedent_signal: signal }) as unknown as Case;
+  // The visible line (the trigger adds an sr-only ", explain" to its accessible name).
+  const line = () => (screen.getByTestId('decision-precedent').textContent ?? '').replace(/, explain$/, '');
+
+  it('says precedent was not used, with no counts, when promotion is off', () => {
+    render(
+      <DecisionCard
+        c={withSignal({
+          status: 'disabled',
+          reason: 'analyst-confirmed precedent promotion is turned off for this deployment',
+          qualifies: false,
+          confirmed_false_positive: 0,
+          confirmed_true_positive: 0,
+          min_confirmed: 3,
+        })}
+        rationale={null}
+        timeline={null}
+      />,
+    );
+    expect(line()).toBe('Precedent: not used, because precedent promotion is off.');
+  });
+
+  it('says so for a case with no rule and for an unreadable history', () => {
+    const { unmount } = render(
+      <DecisionCard
+        c={withSignal({ status: 'not_applicable', qualifies: false, confirmed_false_positive: 0, confirmed_true_positive: 0 })}
+        rationale={null}
+        timeline={null}
+      />,
+    );
+    expect(line()).toBe('Precedent: not used, because this case has no detection rule to match.');
+    unmount();
+    render(<DecisionCard c={withSignal({ status: 'unavailable', qualifies: false, truncated: false })} rationale={null} timeline={null} />);
+    expect(line()).toBe('Precedent: not used, because the confirmed history could not be read.');
+  });
+
+  it('states the counts it read, the minimum and the reason in words', () => {
+    render(
+      <DecisionCard
+        c={withSignal({
+          status: 'insufficient',
+          reason: '1 analyst-confirmed benign precedent(s) for this rule identity; 3 are required',
+          qualifies: false,
+          confirmed_false_positive: 1,
+          confirmed_true_positive: 0,
+          min_confirmed: 3,
+        })}
+        rationale={null}
+        timeline={null}
+      />,
+    );
+    expect(line()).toBe(
+      'Precedent: 1 confirmed benign and 0 confirmed malicious outcomes for this rule; 3 needed; it did not qualify (fewer confirmed benign outcomes than needed).',
+    );
+  });
+
+  it('says "at least" for a history read that was cut short', () => {
+    render(
+      <DecisionCard
+        c={withSignal({ status: 'unavailable', qualifies: false, truncated: true, confirmed_false_positive: 4, confirmed_true_positive: 0, min_confirmed: 3 })}
+        rationale={null}
+        timeline={null}
+      />,
+    );
+    expect(line()).toBe(
+      'Precedent: at least 4 confirmed benign and at least 0 confirmed malicious outcomes for this rule; 3 needed; it did not qualify (the read was cut short, so the counts are lower bounds).',
+    );
+  });
+
+  it('a qualifying signal, and an older run without one', () => {
+    const { unmount } = render(
+      <DecisionCard
+        c={withSignal({ status: 'qualified', qualifies: true, confirmed_false_positive: 5, confirmed_true_positive: 0, min_confirmed: 3 })}
+        rationale={null}
+        timeline={null}
+      />,
+    );
+    expect(line()).toBe(
+      'Precedent: 5 confirmed benign and 0 confirmed malicious outcomes for this rule; 3 needed; it qualified as evidence.',
+    );
+    unmount();
+    render(<DecisionCard c={withSignal(null)} rationale={null} timeline={null} />);
+    expect(line()).toBe('Precedent: not recorded for this investigation.');
+  });
+
+  it('opens the full facts on click: the best match against its floor', async () => {
+    const user = userEvent.setup();
+    render(
+      <DecisionCard
+        c={withSignal({
+          status: 'not_retrieved',
+          qualifies: false,
+          confirmed_false_positive: 4,
+          confirmed_true_positive: 0,
+          min_confirmed: 3,
+          top_score: 0.4123,
+          min_similarity: 0.6,
+        })}
+        rationale={null}
+        timeline={null}
+      />,
+    );
+    await user.click(screen.getByRole('button', { name: /Precedent: 4 confirmed benign/ }));
+    const panel = await screen.findByTestId('explain-panel');
+    expect(panel).toHaveTextContent('Best match0.4123 against a floor of 0.6');
+    expect(panel).toHaveTextContent('Benign outcomes needed3');
   });
 });

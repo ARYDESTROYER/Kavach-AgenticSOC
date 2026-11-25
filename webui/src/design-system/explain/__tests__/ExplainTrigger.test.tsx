@@ -141,6 +141,43 @@ describe('ExplainTrigger (interactive)', () => {
   });
 });
 
+describe('ExplainTrigger (one pointer, panel focus)', () => {
+  it('shows one pointer to the full calculation: none added when the summary has its own', async () => {
+    const user = userEvent.setup();
+    renderTrigger();
+    await user.hover(screen.getByRole('button', { name: /Risk 81/ }));
+    const hover = await screen.findByTestId('explain-hover');
+    expect(hover).toHaveTextContent('Click for inputs.');
+    expect(hover).not.toHaveTextContent('Select it for the full calculation.');
+  });
+
+  it('adds the pointer when the summary has none', async () => {
+    const user = userEvent.setup();
+    renderTrigger({ explanation: { ...EXPLANATION, summary: 'Per call = $4.12 / 318 calls = $0.0130.' } });
+    await user.hover(screen.getByRole('button', { name: /Risk 81/ }));
+    expect(await screen.findByTestId('explain-hover')).toHaveTextContent('Select it for the full calculation.');
+  });
+
+  it('drops the pointer inside the open panel', async () => {
+    const user = userEvent.setup();
+    renderTrigger();
+    await user.click(screen.getByRole('button', { name: /Risk 81/ }));
+    const summary = await screen.findByTestId('explain-summary');
+    expect(summary).toHaveTextContent('/ 1.00.');
+    expect(summary).not.toHaveTextContent('Click for inputs.');
+  });
+
+  it('puts focus on the panel itself, so reading starts at its title', async () => {
+    const user = userEvent.setup();
+    renderTrigger();
+    await user.tab();
+    await user.keyboard('{Enter}');
+    const dialog = await screen.findByRole('dialog', { name: 'Risk score' });
+    await waitFor(() => expect(dialog).toHaveFocus());
+    expect(screen.getByRole('button', { name: 'Copy calculation' })).not.toHaveFocus();
+  });
+});
+
 describe('ExplainTrigger (row-hover)', () => {
   it('adds no focusable control inside a row and shows the line on mouse hover only', async () => {
     const user = userEvent.setup();
@@ -158,6 +195,8 @@ describe('ExplainTrigger (row-hover)', () => {
     const hover = await screen.findByTestId('explain-hover');
     expect(hover).toHaveTextContent('Risk 81.11 = ');
     expect(hover).not.toHaveTextContent('Select it for the full calculation.');
+    // A click on the row opens the case, not a panel: the row line carries no pointer.
+    expect(hover).not.toHaveTextContent('Click for inputs.');
     expect(hover.querySelectorAll('button, a, [tabindex]')).toHaveLength(0);
   });
 });

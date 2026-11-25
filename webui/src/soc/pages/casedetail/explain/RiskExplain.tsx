@@ -33,31 +33,48 @@ async function loadCalculation(caseId: string): Promise<StageRiskCalculation | n
   return stage?.state?.risk_calculation ?? null;
 }
 
+/** The read of today's weights for a case scored before its inputs were recorded. */
+type ReadState = 'idle' | 'loading' | 'done' | 'failed';
+
+/** What the panel says while the read runs, or after it failed (never a silent wait). */
+const READ_NOTE: Partial<Record<ReadState, string>> = {
+  loading: "Reading today's weights from the case timeline.",
+  failed: "The case timeline could not be read, so the calculation with today's weights is not shown.",
+};
+
 export const RiskExplain: React.FC<RiskExplainProps> = ({ caseId, score, breakdown, children, variant }) => {
   const [calculation, setCalculation] = React.useState<StageRiskCalculation | null>(null);
+  const [read, setRead] = React.useState<ReadState>('idle');
   const requested = React.useRef<string | null>(null);
   const recorded = Boolean(breakdown?.inputs);
 
   React.useEffect(() => {
     setCalculation(null);
+    setRead('idle');
     requested.current = null;
   }, [caseId]);
 
-  const explanation = React.useMemo(
-    () => explainRiskScore({ score, breakdown, calculation: recorded ? null : calculation }),
-    [score, breakdown, calculation, recorded],
-  );
+  const explanation = React.useMemo(() => {
+    const base = explainRiskScore({ score, breakdown, calculation: recorded ? null : calculation });
+    const note = recorded ? undefined : READ_NOTE[read];
+    return base && note ? { ...base, caveats: [...base.caveats, note] } : base;
+  }, [score, breakdown, calculation, recorded, read]);
 
   const onOpenChange = React.useCallback(
     (open: boolean) => {
       if (!open || recorded || variant === 'row' || !caseId || requested.current === caseId) return;
       requested.current = caseId;
       const forCase = caseId;
+      setRead('loading');
       void loadCalculation(forCase)
         .then((next) => {
-          if (requested.current === forCase) setCalculation(next);
+          if (requested.current !== forCase) return;
+          setCalculation(next);
+          setRead('done');
         })
-        .catch(() => undefined);
+        .catch(() => {
+          if (requested.current === forCase) setRead('failed');
+        });
     },
     [caseId, recorded, variant],
   );

@@ -129,6 +129,30 @@ function pct(fraction: number): string {
   return `${Math.floor(fraction * 100 + 0.5)}%`;
 }
 
+/**
+ * Two numbers of one comparison, shown with just enough decimals that the shown pair
+ * never contradicts the comparison: 0.849 against a 0.85 bar reads "84.9% >= 85% (not
+ * met)", never "85% >= 85% (not met)". `format(value, digits)` prints one number.
+ */
+function comparisonPair(
+  value: number,
+  bar: number,
+  met: boolean,
+  startDigits: number,
+  format: (n: number, digits: number) => string,
+): [string, string] {
+  let digits = startDigits;
+  let pair: [string, string] = [format(value, digits), format(bar, digits)];
+  while (!met && value !== bar && pair[0] === pair[1] && digits < startDigits + 4) {
+    digits += 1;
+    pair = [format(value, digits), format(bar, digits)];
+  }
+  return pair;
+}
+
+const percentDigits = (fraction: number, digits: number): string =>
+  digits === 0 ? pct(fraction) : `${trimmed(fraction * 100, digits)}%`;
+
 /** True when `decision_by` names a person (never the analyst-policy declaration). */
 export function decidedByPerson(decisionBy: unknown): boolean {
   const d = typeof decisionBy === 'string' ? decisionBy.trim().toLowerCase() : '';
@@ -176,24 +200,34 @@ export function compareWithPolicy(
 export function conditionText(kind: 'confidence' | 'risk', c: DecisionComparison): string | null {
   if (kind === 'confidence') {
     if (c.confidence === null || c.minConfidence === null) return null;
-    return `confidence ${pct(c.confidence)} >= ${pct(c.minConfidence)} (${c.confidenceMet ? 'met' : 'not met'})`;
+    const [value, bar] = comparisonPair(c.confidence, c.minConfidence, Boolean(c.confidenceMet), 0, percentDigits);
+    return `confidence ${value} >= ${bar} (${c.confidenceMet ? 'met' : 'not met'})`;
   }
   if (c.risk === null || c.maxRisk === null) return null;
-  return `risk ${trimmed(c.risk)} <= ${trimmed(c.maxRisk)} (${c.riskMet ? 'met' : 'not met'})`;
+  const [value, bar] = comparisonPair(c.risk, c.maxRisk, Boolean(c.riskMet), 2, trimmed);
+  return `risk ${value} <= ${bar} (${c.riskMet ? 'met' : 'not met'})`;
 }
 
-/** The one-line reading of a comparison, for the hover and the case's policy line. */
-export function comparisonSentence(c: DecisionComparison): string {
+/**
+ * The one-line reading of a comparison, for the hover and the case's policy line. With
+ * `basis: 'current'` the thresholds are today's policy, not the ones in force at the
+ * decision, and the sentence says so rather than reading as what happened (D1).
+ */
+export function comparisonSentence(c: DecisionComparison, basis?: 'current'): string {
   if (c.policyOutcome === 'fixed_by_code') {
     return 'Needs a person: a needs-human verdict never closes automatically. This is fixed by code, not by policy.';
   }
+  const today = basis === 'current';
+  const routes = today ? "Today's policy routes it to a person" : 'Routed to a person';
   if (c.policyOutcome === 'class_off') {
-    return `Routed to a person: auto-close is off for ${CLASS_WORDS[c.klass]}.`;
+    return `${routes}: auto-close is off for ${CLASS_WORDS[c.klass]}.`;
   }
   const conf = conditionText('confidence', c);
   const risk = conditionText('risk', c);
-  if (c.policyOutcome === 'closes') return `Closes automatically: ${conf} and ${risk}.`;
-  if (c.policyOutcome === 'routes') return `Routed to a person: ${conf}; ${risk}.`;
+  if (c.policyOutcome === 'closes') {
+    return `${today ? "Today's policy closes it automatically" : 'Closes automatically'}: ${conf} and ${risk}.`;
+  }
+  if (c.policyOutcome === 'routes') return `${routes}: ${conf}; ${risk}.`;
   return 'The auto-close thresholds are not known for this decision.';
 }
 
@@ -267,8 +301,14 @@ export function explainDecision(caseRecord: Case, decision?: DecisionPayload | n
   const inputs: ExplanationInput[] = [
     { key: 'verdict', label: 'AI verdict', value: verdictLabel(verdict), source: gate ? 'Recorded at decision' : 'The case' },
   ];
+  // The confidence and its bar share their decimals, so the two inputs never read equal
+  // when the comparison says they differ.
+  const [confidenceText, minConfidenceText] =
+    confidence !== null && policy?.min_confidence != null
+      ? comparisonPair(confidence, policy.min_confidence, Boolean(comparison.confidenceMet), 0, percentDigits)
+      : [confidence !== null ? pct(confidence) : '', policy?.min_confidence != null ? pct(policy.min_confidence) : ''];
   if (confidence !== null) {
-    inputs.push({ key: 'confidence', label: 'AI confidence', value: pct(confidence), source: gate ? 'Recorded at decision' : 'The case' });
+    inputs.push({ key: 'confidence', label: 'AI confidence', value: confidenceText, source: gate ? 'Recorded at decision' : 'The case' });
   }
   if (risk !== null) {
     inputs.push({ key: 'risk_score', label: 'Risk score', value: trimmed(risk), source: gate ? 'Recorded at decision' : 'The case' });
@@ -282,7 +322,7 @@ export function explainDecision(caseRecord: Case, decision?: DecisionPayload | n
       source: where,
     });
     if (policy.min_confidence !== null) {
-      inputs.push({ key: 'min_confidence', label: 'Minimum confidence', value: pct(policy.min_confidence), source: where });
+      inputs.push({ key: 'min_confidence', label: 'Minimum confidence', value: minConfidenceText, source: where });
     }
     if (policy.max_risk_score !== null) {
       inputs.push({ key: 'max_risk_score', label: 'Maximum risk', value: trimmed(policy.max_risk_score), source: where });
@@ -328,7 +368,14 @@ export function explainDecision(caseRecord: Case, decision?: DecisionPayload | n
     }
   }
   if (reading?.policyChanged) {
-    caveats.push('The auto-close policy changed after this decision; today it would decide differently.');
+    // A changed policy does not always change the outcome: state today's reading with its
+    // numbers instead of claiming a different decision.
+    const today = recordedThresholds && reading.current ? compareWithPolicy(verdict, confidence, risk, reading.current) : null;
+    caveats.push(
+      today && today.policyOutcome !== 'unknown'
+        ? `The auto-close policy changed after this decision. ${comparisonSentence(today, 'current')}`
+        : 'The auto-close policy changed after this decision.',
+    );
   }
   if (reading && !recordedSpan && !gate) {
     caveats.push('The decision record shows the case\'s own status and decider. The thresholds are today\'s values, not the ones in force at the time.');
@@ -348,7 +395,7 @@ export function explainDecision(caseRecord: Case, decision?: DecisionPayload | n
     value: outcome,
     display: outcome,
     summary: known
-      ? comparisonSentence(comparison)
+      ? comparisonSentence(comparison, recordedThresholds ? undefined : 'current')
       : `${outcome}: ${numbers}. Select it to compare them with the auto-close policy.`,
     formula: 'Closes when auto-close is on for the verdict class, confidence >= minimum and risk <= maximum',
     inputs,

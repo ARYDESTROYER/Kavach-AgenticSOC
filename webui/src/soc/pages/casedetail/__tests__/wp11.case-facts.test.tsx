@@ -218,4 +218,21 @@ describe('B80 hunk: the untrusted marker wraps as one unit', () => {
   });
 });
 
+describe('B32 (WP11 review): under a minute left never reads "1m"', () => {
+  it('timeLeft says "under 1m" below a minute', () => {
+    expect(timeLeft(30_000)).toBe('under 1m');
+    expect(timeLeft(60_000)).toBe('1m');
+  });
+
+  it('a P3 with 20 seconds left reads "Response due in under 1m"', () => {
+    const c = {
+      case_id: 'c',
+      priority_level: 'P3',
+      status: 'open',
+      created_at: new Date(NOW - (120 * 60_000 - 20_000)).toISOString(),
+    } as unknown as Case;
+    expect(slaReading(c, POLICY, NOW)?.text).toBe('Response due in under 1m');
+  });
+});
+
 void React;

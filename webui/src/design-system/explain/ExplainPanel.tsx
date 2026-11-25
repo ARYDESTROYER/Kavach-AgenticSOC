@@ -12,7 +12,7 @@ import { Check, Copy } from 'lucide-react';
 
 import { cn } from '@/lib/cn';
 import { copyText } from '@/lib/clipboard';
-import { PROVENANCE_WORDS, explanationText } from '@/lib/explain/text';
+import { PROVENANCE_WORDS, explanationText, summaryWithoutHint } from '@/lib/explain/text';
 import type { Explanation, ExplanationLink } from '@/lib/explain/types';
 
 /** A Console hash link for an explanation's records link (`#/cases?status=open`). */
@@ -64,7 +64,7 @@ export function ExplainPanel({ explanation, detail, titleId, className }: Explai
           {explanation.display}
         </p>
         <p className="leading-relaxed text-foreground/90" data-testid="explain-summary">
-          {explanation.summary}
+          {summaryWithoutHint(explanation.summary)}
         </p>
       </div>
 
