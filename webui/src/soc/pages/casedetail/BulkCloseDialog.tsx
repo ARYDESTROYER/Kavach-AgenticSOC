@@ -16,6 +16,10 @@
  * says how many and offers ONE shared, optional reason (`open_steps_reason`). A bulk close
  * never fails a case for open steps; each such close is audited with the reason.
  *
+ * Round 16 (SPEC §4.5 WP09, D10): for the cases it covers, the dialog reads the AI
+ * investigation store and says how many have a run in flight (their results replace the
+ * close when they finish). It never blocks the submit.
+ *
  * SECURITY (#9): option labels are fixed enums; the note is collected as plain text.
  */
 import * as React from 'react';
@@ -43,6 +47,7 @@ import {
 
 import { DispositionPicker, focusDispositionPicker } from './DispositionPicker';
 import { DURABLE_CONTEXT_NOTE, RESOLUTION_OPTIONS } from './shared';
+import { AiRunCloseNotice } from '@/soc/investigations/AiRunCloseNotice';
 
 export type BulkTerminalAction = 'close' | 'resolve';
 
@@ -78,7 +83,8 @@ export interface BulkCloseDialogProps {
   returnFocusTo?: React.RefObject<HTMLElement | null>;
   /**
    * The cases the submission covers. When given, their runbook progress is read so the
-   * dialog can say how many have required steps open and offer a shared reason.
+   * dialog can say how many have required steps open and offer a shared reason, and the
+   * AI investigation store says how many have a run in flight.
    */
   caseIds?: readonly string[];
 }
@@ -185,6 +191,7 @@ export const BulkCloseDialog: React.FC<BulkCloseDialogProps> = ({
             </DialogDescription>
           </DialogHeader>
           <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-6 pb-5">
+            <AiRunCloseNotice caseIds={caseIds} open action="close" />
             <DispositionPicker
               value={disposition}
               onChange={setDisposition}
@@ -262,8 +269,8 @@ export const BulkCloseDialog: React.FC<BulkCloseDialogProps> = ({
             {/* Round 15 (D4.6): this dialog keeps its shape and takes no screenshots. */}
             <p className="text-xs leading-relaxed text-muted-foreground" data-testid="bulk-close-screenshots-note">
               {count > 1
-                ? 'The selected case IDs are snapshotted when you submit; later selection changes do not alter the job. Screenshots are added on each case, in its Collaboration tab.'
-                : 'Screenshots are added on the case, in its Collaboration tab.'}
+                ? 'The selected case IDs are snapshotted when you submit; later selection changes do not alter the job. Screenshots are added on each case, in its Activity tab.'
+                : 'Screenshots are added on the case, in its Activity tab.'}
             </p>
           </div>
           <DialogFooter className="shrink-0 border-t border-border bg-card px-6 py-4">

@@ -2,12 +2,11 @@
  * Round 16 WP01: the cross-package mount points exist with their final props and change
  * nothing yet (SPEC §4.1 "Stub-first mount points", §4.3 WP01).
  *
- * * The AI run stubs say nothing and render nothing.
+ * * The AI run stubs are filled by WP09 (their tests are `investigations.test.tsx`,
+ *   `AiRunChip.test.tsx` and `ReinvestigateDialog.test.tsx` beside this file).
  * * The explain stubs render their children unchanged; every builder answers `null`.
  * * The records stubs render nothing, except the two that replace today's markup:
  *   `FindingsList` (today's first-sentence list) and `CaseUsageButton` (the cost text).
- * * `ReinvestigateDialog` is today's blocking dialog: it posts, hands the returned case
- *   over and closes; a refusal is worded.
  * * The explainability contract file parses and names every section.
  */
 import * as React from 'react';
@@ -15,7 +14,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { render, screen } from '@testing-library/react';
 
 const h = vi.hoisted(() => {
   class FakeApiError extends Error {
@@ -42,14 +41,8 @@ vi.mock('@/soc/auth', () => ({
   useAuth: () => ({ hasPermission: (r: string, a: string) => (r === 'cost' && a === 'view' ? h.canViewCost : true) }),
 }));
 
-import type { Case, InvestigationView } from '@/lib/types';
+import type { Case } from '@/lib/types';
 import { fmtMoney } from '@/lib/format';
-import { aiRunAccessibleText } from '../aiRunText';
-import { useAiRun } from '../useAiRun';
-import { AiRunChip } from '../AiRunChip';
-import { AiRunMark } from '../AiRunMark';
-import { AiQueueNotice } from '../AiQueueNotice';
-import { ReinvestigateDialog, reinvestigateErrorText } from '../ReinvestigateDialog';
 import { ExplainTrigger } from '@/design-system/explain';
 import * as builders from '@/lib/explain/builders';
 import { RiskExplain } from '@/soc/pages/casedetail/explain/RiskExplain';
@@ -62,45 +55,11 @@ import { AwaitingReason } from '@/soc/pages/casedetail/records/AwaitingReason';
 import { FindingsList } from '@/soc/pages/casedetail/records/FindingsList';
 
 const CASE = { case_id: 'case-1', case_number: 'CASE-0001', token_cost: 0.25, risk_score: 81 } as Case;
-const VIEW: InvestigationView = {
-  run_id: 'inv-1',
-  case_id: 'case-1',
-  state: 'running',
-  phase: 'evidence',
-  trigger: 'manual',
-  queued_at: '2026-11-24T10:00:00Z',
-  started_at: '2026-11-24T10:00:01Z',
-  deadline_at: '2026-11-24T10:10:01Z',
-  time_cap_seconds: 600,
-  finished_at: null,
-  outcome: null,
-  status_after: null,
-  verdict_after: null,
-};
 
 beforeEach(() => {
   h.reinvestigateCase.mockReset();
   h.toastError.mockReset();
   h.canViewCost = true;
-});
-
-describe('the AI run stubs', () => {
-  it('say nothing and render nothing', () => {
-    expect(aiRunAccessibleText(VIEW, Date.now())).toBeNull();
-    expect(aiRunAccessibleText(null, Date.now())).toBeNull();
-    const Probe = () => <span data-testid="run">{String(useAiRun('case-1'))}</span>;
-    render(<Probe />);
-    expect(screen.getByTestId('run')).toHaveTextContent('null');
-    const { container } = render(
-      <>
-        <AiRunChip caseId="case-1" />
-        <AiRunChip caseId="case-1" compact />
-        <AiRunMark caseId="case-1" />
-        <AiQueueNotice />
-      </>,
-    );
-    expect(container).toBeEmptyDOMElement();
-  });
 });
 
 describe('the explain stubs', () => {
@@ -183,43 +142,6 @@ describe('the records stubs', () => {
     expect(screen.getByText('Clear')).toBeInTheDocument();
     expect(screen.getByText('<img src=x onerror=alert(1)> is a value.')).toBeInTheDocument();
     expect(document.querySelector('img')).toBeNull();
-  });
-});
-
-describe('the Reinvestigate dialog stub (today\'s dialog)', () => {
-  it('posts, hands the returned case over and closes', async () => {
-    const next = { ...CASE, verdict: 'TRUE_POSITIVE' } as Case;
-    h.reinvestigateCase.mockResolvedValue(next);
-    const onOpenChange = vi.fn();
-    const onReinvestigated = vi.fn();
-    render(
-      <ReinvestigateDialog
-        caseRecord={CASE}
-        open
-        onOpenChange={onOpenChange}
-        models={{ providers: {} } as never}
-        onReinvestigated={onReinvestigated}
-      />,
-    );
-    expect(screen.getByText('Re-run the investigation')).toBeInTheDocument();
-    expect(screen.getByText(`Investigation cost to date ${fmtMoney(0.25)}.`, { exact: false })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: /Reinvestigate/ }));
-    await waitFor(() => expect(onReinvestigated).toHaveBeenCalledWith(next));
-    expect(h.reinvestigateCase).toHaveBeenCalledWith('case-1', undefined);
-    expect(onOpenChange).toHaveBeenCalledWith(false);
-  });
-
-  it('words a refusal and hides the cost without cost:view', async () => {
-    h.canViewCost = false;
-    h.reinvestigateCase.mockRejectedValue(new h.FakeApiError(403, 'permission denied: cases:reinvestigate'));
-    const onOpenChange = vi.fn();
-    render(<ReinvestigateDialog caseRecord={CASE} open onOpenChange={onOpenChange} models={null} />);
-    expect(screen.queryByText(/Investigation cost to date/)).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: /Reinvestigate/ }));
-    await waitFor(() => expect(h.toastError).toHaveBeenCalledWith('You do not have permission to reinvestigate cases.'));
-    expect(onOpenChange).not.toHaveBeenCalled();
-    expect(reinvestigateErrorText(new Error('boom'))).toBe('boom');
-    expect(reinvestigateErrorText(null)).toBe('The reinvestigation could not be started.');
   });
 });
 

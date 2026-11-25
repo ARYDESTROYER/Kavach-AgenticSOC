@@ -12,12 +12,18 @@
  * not, remove the caller's polling fallback.
  *
  * What it does when realtime IS enabled:
- *   - subscribes to the requested `topics` over a single `EventSource`
- *     (cookie-authenticated: an `EventSource` cannot set an `Authorization` header,
- *     so the same-origin session cookie is the only auth — `withCredentials` is set
- *     so it also flows under a CORS dev proxy);
- *   - resumes after a drop via the browser's native `Last-Event-ID` (the backend
- *     emits monotonic `id:` frames and replays missed events from a bounded ring);
+ *   - ONE `EventSource` per page (Round 16 SPEC §4.5 WP09): every hook and store on the
+ *     page shares one stream over the reference-counted union of their topics
+ *     (browsers allow six connections per origin over HTTP/1.1, and the shell, the
+ *     queue and an open case used to hold about six). Each frame is routed by its
+ *     channel (`CHANNEL_TOPICS`), so a hook receives only the frames its topics can
+ *     carry, and a case-room hook only frames for its case;
+ *   - cookie-authenticated: an `EventSource` cannot set an `Authorization` header, so
+ *     the same-origin session cookie is the only auth (`withCredentials` is set so it
+ *     also flows under a CORS dev proxy);
+ *   - resumes after a drop or a change of the topic set with `lastEventId` (the
+ *     backend emits monotonic `id:` frames and replays missed retained events from a
+ *     bounded ring); a frame seen twice is dropped by its id;
  *   - reconnects with capped exponential backoff + jitter;
  *   - GRACEFULLY FALLS BACK: it first PROBES the endpoint with `fetch` — a 204 means
  *     realtime is disabled, so it stays in polling mode and never opens a stream that
@@ -112,29 +118,432 @@ export const STREAM_CHANNELS = [
   'overflow',
 ] as const;
 
+/**
+ * Which hooks a typed frame is for, by its channel (Round 16 SPEC §4.5 WP09). An SSE frame
+ * does not say which topic it was published on, so the page's one stream routes each
+ * frame by its channel: a hook receives a frame only when one of its topics can carry
+ * that channel. `cases:{id}` stands for a case room: a hook on `cases:X` receives such a
+ * frame only when its `data.case_id` is `X`. `*` reaches every hook (`message`, the
+ * untyped default, and `overflow`, the "you missed frames" notice). Keep it in step with
+ * `STREAM_CHANNELS` (a test checks that every channel has a row).
+ */
+export const CHANNEL_TOPICS: Readonly<Record<string, readonly string[]>> = {
+  message: ['*'],
+  inapp: ['notifications', 'inbox'],
+  'case.activity': ['cases:{id}'],
+  [AGENT_STEP_CHANNEL]: ['cases:{id}'],
+  job: ['jobs'],
+  'chat.turn': ['chat'],
+  'chat.read': ['chat'],
+  'case.changed': ['cases'],
+  'case.runbook': ['runbooks'],
+  'case.review': ['cases', 'cases:{id}'],
+  'case.investigation': ['cases', 'cases:{id}', 'investigations'],
+  overflow: ['*'],
+};
+
 /** Backoff schedule (ms) for reconnect attempts; index is clamped to the last slot. */
 const BACKOFF_MS = [1000, 2000, 5000, 10000, 30000];
 /**
  * How many consecutive immediate failures (a connect that errors before it was ever
- * confirmed open) before we GIVE UP on realtime for this mount and stay in polling
- * mode. Bounds an error-loop against a backend that 204s without a clean probe (e.g.
- * a proxy that rewrites the status), so we never thrash forever.
+ * confirmed open) before we GIVE UP on realtime and stay in polling mode, until the
+ * page's topic set changes. Bounds an error-loop against a backend that 204s without a
+ * clean probe (e.g. a proxy that rewrites the status), so we never thrash forever.
  */
 const MAX_COLD_FAILURES = 4;
+/** A change of the page's topic set waits this long, so a route change reopens once. */
+const UNION_DEBOUNCE_MS = 300;
+/** How many recent event ids are remembered to drop a frame seen twice. */
+const SEEN_IDS = 512;
 
 /** Small +/- jitter so many tabs don't reconnect in lockstep. */
 function jitter(ms: number): number {
   return ms + Math.floor((Math.random() - 0.5) * Math.min(ms, 1000));
 }
 
+/** Options of {@link subscribeEvents}, the imperative form of {@link useEventStream}. */
+export interface EventSubscriptionOptions {
+  /** Called for every frame meant for these topics. */
+  onEvent?: (ev: StreamEvent) => void;
+  /** Called when the stream starts or stops carrying every one of these topics. */
+  onLive?: (live: boolean) => void;
+  /** Override the endpoint path (tests). Defaults to `/api/events`. */
+  url?: string;
+}
+
+interface Subscriber {
+  topics: readonly string[];
+  opts: EventSubscriptionOptions;
+  live: boolean;
+}
+
+/** One EventSource (or the probe that precedes it) for one topic set. */
+interface Connection {
+  key: string;
+  topics: ReadonlySet<string>;
+  es: EventSource | null;
+  ctrl: AbortController;
+  open: boolean;
+  dead: boolean;
+}
+
+/** The page's stream for one endpoint (see {@link createMultiplexer}). */
+interface Multiplexer {
+  add(sub: Subscriber): void;
+  remove(sub: Subscriber): void;
+}
+
+/**
+ * THE page's stream for one endpoint: one EventSource over the reference-counted union
+ * of every subscriber's topics. A change of the union is debounced, then a stream for
+ * the new union is opened (with `lastEventId`, so retained frames missed in between are
+ * replayed) and the old one is closed only once the new one is open: no frame falls in
+ * a gap, and a subscriber whose topics both streams carry stays live throughout. Frames
+ * are deduped by event id (the two streams overlap for a moment, and the backend gives a
+ * frame published on several topics one id). The last unsubscribe closes everything.
+ *
+ * A closure rather than a class, so the minifier can shorten its state and helpers: it
+ * rides the entry chunk (Round 16 SPEC §3.1).
+ */
+function createMultiplexer(url: string): Multiplexer {
+  const subs = new Set<Subscriber>();
+  let current: Connection | null = null;
+  let next: Connection | null = null;
+  let lastId = '';
+  let seen: string[] = [];
+  let cold = 0;
+  let idle = false;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let queued = false;
+
+  const union = (): string => {
+    const all = new Set<string>();
+    for (const sub of subs) for (const topic of sub.topics) all.add(topic);
+    return [...all].sort().join(',');
+  };
+
+  const clearTimer = (): void => {
+    if (timer !== null) {
+      clearTimeout(timer);
+      timer = null;
+    }
+  };
+
+  const schedule = (ms: number): void => {
+    clearTimer();
+    timer = setTimeout(() => {
+      timer = null;
+      ensure();
+    }, ms);
+  };
+
+  /** The topic set moved: open a stream for it (at once for the first, else debounced). */
+  function changed(): void {
+    const target = next ?? current;
+    if (target && target.key === union()) return;
+    // A new topic set retries realtime afresh, as a new hook's mount always did.
+    idle = false;
+    cold = 0;
+    if (!target && !timer) {
+      if (queued) return;
+      // Every hook mounted in one commit joins the first stream (a microtask later).
+      queued = true;
+      void Promise.resolve().then(ensure);
+      return;
+    }
+    schedule(UNION_DEBOUNCE_MS);
+  }
+
+  function ensure(): void {
+    queued = false;
+    clearTimer();
+    if (!subs.size || idle) return;
+    const key = union();
+    if (next) {
+      if (next.key === key) return;
+      retire(next);
+    }
+    if (current && current.key === key) return;
+    start(key);
+  }
+
+  /**
+   * PROBE then CONNECT. We `fetch` the endpoint first so we can read the STATUS: a 204
+   * unambiguously means realtime is disabled; we then stay in polling mode and never open
+   * an `EventSource` (which cannot see a 204 and would reconnect forever). A 200
+   * (text/event-stream) means realtime is live: open the persistent stream. A network or
+   * other error falls back to polling (and a capped retry).
+   */
+  function start(key: string): void {
+    const conn: Connection = {
+      key,
+      topics: new Set(key.split(',')),
+      es: null,
+      ctrl: new AbortController(),
+      open: false,
+      dead: false,
+    };
+    next = conn;
+    const query = `${url}?topics=${encodeURIComponent(key)}`;
+    // Set once the probe resolves with ANY definitive status, all handled in `.then`.
+    // The success-path `abort()` can reject into `.catch` in some runtimes; this flag
+    // keeps `.catch` a genuine pre-response network error path only, so the no-retry 204
+    // fallback can never leak into a reconnect storm.
+    let resolved = false;
+    fetch(query, {
+      method: 'GET',
+      credentials: 'include',
+      headers: { Accept: 'text/event-stream' },
+      signal: conn.ctrl.signal,
+    })
+      .then((res) => {
+        resolved = true;
+        // We only needed the status line; never read the (infinite) body.
+        abort(conn);
+        if (conn.dead) return;
+        if (res.status === 204) {
+          // Realtime disabled: graceful fallback to polling, no retries.
+          retire(conn);
+          idle = true;
+          return;
+        }
+        // A 2xx only means the endpoint ACCEPTED the request, not that the stream will
+        // open: the cold counter resets on a confirmed open or frame, never here.
+        if (res.status >= 200 && res.status < 300) openStream(conn, query);
+        else fail(conn); // auth bounce or server error: poll, retry with backoff
+      })
+      .catch(() => {
+        abort(conn);
+        if (conn.dead || resolved || conn.es) return;
+        fail(conn);
+      });
+  }
+
+  function openStream(conn: Connection, query: string): void {
+    let es: EventSource;
+    try {
+      // Cookie auth: an EventSource cannot set an Authorization header.
+      es = new EventSource(lastId ? `${query}&lastEventId=${encodeURIComponent(lastId)}` : query, {
+        withCredentials: true,
+      });
+    } catch {
+      fail(conn);
+      return;
+    }
+    conn.es = es;
+    es.onopen = () => {
+      if (!conn.dead) promote(conn);
+    };
+    for (const channel of STREAM_CHANNELS) {
+      es.addEventListener(channel, (ev) => {
+        if (conn.dead) return;
+        if (!conn.open) promote(conn);
+        const frame = ev as MessageEvent;
+        deliver(channel === 'message' ? frame.type || 'message' : channel, frame);
+      });
+    }
+    es.onerror = () => {
+      if (conn.dead) return;
+      // An error fires on a drop AND on a hard failure. One that never opened counts as
+      // a cold failure (capped). We close and reschedule with our own capped backoff
+      // rather than the browser's auto-reconnect.
+      const wasOpen = conn.open || es.readyState === EventSource.OPEN;
+      retire(conn);
+      if (!wasOpen) cold += 1;
+      if (!current && !next) backoff();
+    };
+  }
+
+  /** `conn` is open: it serves the page now, and the stream it replaces closes. */
+  function promote(conn: Connection): void {
+    conn.open = true;
+    cold = 0;
+    if (next === conn) next = null;
+    const previous = current;
+    current = conn;
+    if (previous && previous !== conn) retire(previous);
+    // A plain (re)connect: the server may have restarted its ids, so start afresh (the
+    // replay it sends after `lastEventId` sets them again).
+    else if (!previous) {
+      seen = [];
+      lastId = '';
+    }
+    refreshLive();
+    if (union() !== conn.key) schedule(UNION_DEBOUNCE_MS);
+  }
+
+  function fail(conn: Connection): void {
+    retire(conn);
+    cold += 1;
+    backoff();
+  }
+
+  function backoff(): void {
+    if (cold >= MAX_COLD_FAILURES) {
+      // Give up on realtime until the topic set changes; every hook stays on polling.
+      idle = true;
+      return;
+    }
+    schedule(jitter(BACKOFF_MS[Math.min(cold, BACKOFF_MS.length - 1)]));
+  }
+
+  function retire(conn: Connection): void {
+    conn.dead = true;
+    abort(conn);
+    const es = conn.es;
+    if (es) {
+      // Drop the handlers and close, so a stale socket cannot deliver after teardown.
+      es.onopen = null;
+      es.onerror = null;
+      es.onmessage = null;
+      try {
+        es.close();
+      } catch {
+        /* closing an already-closed source is harmless */
+      }
+      conn.es = null;
+    }
+    if (next === conn) next = null;
+    if (current === conn) {
+      current = null;
+      refreshLive();
+    }
+  }
+
+  /** A subscriber is live while the open stream carries every one of its topics. */
+  function refreshLive(): void {
+    const open = current && current.open ? current : null;
+    for (const sub of subs) {
+      const live = open !== null && sub.topics.every((topic) => open.topics.has(topic));
+      if (live === sub.live) continue;
+      sub.live = live;
+      safely(() => sub.opts.onLive?.(live));
+    }
+  }
+
+  function deliver(type: string, frame: MessageEvent): void {
+    const id = frame.lastEventId || '';
+    if (id) {
+      if (seen.includes(id)) return;
+      seen.push(id);
+      if (seen.length > SEEN_IDS) seen.shift();
+      if (!(Number(lastId) > Number(id))) lastId = id;
+    }
+    let data: unknown = null;
+    const raw = typeof frame.data === 'string' ? frame.data : '';
+    if (raw) {
+      try {
+        data = JSON.parse(raw);
+      } catch {
+        // Non-JSON payload: hand the raw string through rather than dropping it.
+        data = raw;
+      }
+    }
+    const ev: StreamEvent = { type, data, lastEventId: id };
+    for (const sub of [...subs]) {
+      if (subs.has(sub) && frameIsFor(sub.topics, type, data)) safely(() => sub.opts.onEvent?.(ev));
+    }
+  }
+
+  const mux: Multiplexer = {
+    add(sub) {
+      subs.add(sub);
+      refreshLive();
+      changed();
+    },
+    remove(sub) {
+      subs.delete(sub);
+      if (subs.size) {
+        changed();
+        return;
+      }
+      clearTimer();
+      queued = false;
+      if (next) retire(next);
+      if (current) retire(current);
+      if (streams.get(url) === mux) streams.delete(url);
+    },
+  };
+  return mux;
+}
+
+/** Abort a connection's probe (best effort). */
+function abort(conn: Connection): void {
+  try {
+    conn.ctrl.abort();
+  } catch {
+    /* aborting is best-effort */
+  }
+}
+
+/** Run a caller's handler: its error must never break the stream. */
+function safely(run: () => void): void {
+  try {
+    run();
+  } catch {
+    /* a caller handler error must never break the stream */
+  }
+}
+
+/** Whether a frame on `channel` (with payload `data`) is for a hook on `topics`. */
+export function frameIsFor(topics: readonly string[], channel: string, data: unknown): boolean {
+  const routes = CHANNEL_TOPICS[channel];
+  // A channel without a row reaches every hook (the test keeps the table complete).
+  if (!routes || routes.includes('*')) return true;
+  const caseId =
+    data && typeof data === 'object' ? String((data as { case_id?: unknown }).case_id ?? '') : '';
+  return topics.some((topic) =>
+    topic.startsWith('cases:')
+      ? routes.includes('cases:{id}') && caseId !== '' && topic.slice(6) === caseId
+      : routes.includes(topic),
+  );
+}
+
+/** The page's streams, one per endpoint. */
+const streams = new Map<string, Multiplexer>();
+
+/**
+ * Subscribe to `topics` on the page's one stream (Round 16 SPEC §4.5 WP09): the
+ * imperative form of {@link useEventStream}, for a store outside React. Returns the
+ * unsubscribe; the last one closes the stream. Without topics, or without
+ * `EventSource`, it stays inert and reports `live: false`.
+ */
+export function subscribeEvents(
+  topics: readonly string[],
+  opts: EventSubscriptionOptions = {},
+): () => void {
+  const list = [...new Set(topics.map((t) => String(t).trim()).filter(Boolean))].sort();
+  if (!list.length || typeof EventSource === 'undefined') {
+    opts.onLive?.(false);
+    return () => undefined;
+  }
+  const url = opts.url || DEFAULT_URL;
+  let mux = streams.get(url);
+  if (!mux) {
+    mux = createMultiplexer(url);
+    streams.set(url, mux);
+  }
+  const owner = mux;
+  const sub: Subscriber = { topics: list, opts, live: false };
+  owner.add(sub);
+  let done = false;
+  return () => {
+    if (done) return;
+    done = true;
+    owner.remove(sub);
+  };
+}
+
 /**
  * Subscribe to the live event stream for `topics`, with a graceful fallback to the
- * caller's existing polling when realtime is disabled or unavailable.
+ * caller's existing polling when realtime is disabled or unavailable. Every hook on a
+ * page shares ONE EventSource (`subscribeEvents`); a hook receives only the frames its
+ * topics can carry (`CHANNEL_TOPICS`).
  *
  * @param topics  the SSE topics to subscribe to (e.g. `['notifications','inbox']` or
  *                `['cases:case-1234']`). An empty list disables the stream (inert).
- * @returns `{ live }` — true only while a healthy stream is open. Callers gate their
- *          poll on `!live` (keep polling when there is no live stream).
+ * @returns `{ live }`: true only while the page's stream is open and carries every one
+ *          of `topics`. Callers gate their poll on `!live`.
  */
 export function useEventStream(
   topics: string[],
@@ -143,15 +552,15 @@ export function useEventStream(
   const { enabled = false, onEvent, url = DEFAULT_URL } = opts;
   const [live, setLive] = React.useState(false);
 
-  // Keep the latest callback in a ref so a changing `onEvent` identity does NOT tear
-  // down + reopen the stream (the effect depends only on enabled + the topic key).
+  // Keep the latest callback in a ref so a changing `onEvent` identity does NOT
+  // resubscribe (the effect depends only on enabled + the topic key).
   const onEventRef = React.useRef<typeof onEvent>(onEvent);
   React.useEffect(() => {
     onEventRef.current = onEvent;
   }, [onEvent]);
 
-  // Stable, order-independent key for the topic set so the connect effect re-runs
-  // only when the actual topics change (not on every array-literal re-render).
+  // Stable, order-independent key for the topic set so the effect re-runs only when
+  // the actual topics change (not on every array-literal re-render).
   const topicKey = React.useMemo(
     () => [...topics].filter(Boolean).sort().join(','),
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -159,209 +568,21 @@ export function useEventStream(
   );
 
   React.useEffect(() => {
-    // Inert unless explicitly enabled with at least one topic. This is the
-    // default-OFF path: the caller keeps polling, `live` stays false.
+    // Inert unless explicitly enabled with at least one topic (the default-OFF path:
+    // the caller keeps polling, `live` stays false).
     if (!enabled || !topicKey) {
       setLive(false);
       return undefined;
     }
-    // No EventSource (SSR / very old runtime): stay in polling mode.
-    if (typeof EventSource === 'undefined') {
-      setLive(false);
-      return undefined;
-    }
-
-    let cancelled = false;
-    let es: EventSource | null = null;
-    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-    let coldFailures = 0; // consecutive failures with no successful open in between
-
-    const queryUrl = `${url}?topics=${encodeURIComponent(topicKey)}`;
-
-    const clearTimer = () => {
-      if (reconnectTimer !== null) {
-        clearTimeout(reconnectTimer);
-        reconnectTimer = null;
-      }
-    };
-
-    const teardownEs = () => {
-      if (es) {
-        // Drop listeners + close so a stale socket can't deliver after teardown.
-        es.onopen = null;
-        es.onerror = null;
-        es.onmessage = null;
-        try {
-          es.close();
-        } catch {
-          /* closing an already-closed source is harmless */
-        }
-        es = null;
-      }
-    };
-
-    const scheduleReconnect = () => {
-      if (cancelled) return;
-      if (coldFailures >= MAX_COLD_FAILURES) {
-        // Give up on realtime for this mount — the caller stays on polling.
-        return;
-      }
-      const base = BACKOFF_MS[Math.min(coldFailures, BACKOFF_MS.length - 1)];
-      clearTimer();
-      reconnectTimer = setTimeout(() => {
-        if (!cancelled) connect();
-      }, jitter(base));
-    };
-
-    const handleFrame = (type: string, e: MessageEvent) => {
-      // A confirmed message means the stream is healthy — reset the cold counter.
-      coldFailures = 0;
-      let data: unknown = null;
-      const raw = typeof e.data === 'string' ? e.data : '';
-      if (raw) {
-        try {
-          data = JSON.parse(raw);
-        } catch {
-          // Non-JSON payload: hand the raw string through rather than dropping it.
-          data = raw;
-        }
-      }
-      const cb = onEventRef.current;
-      if (cb) {
-        try {
-          cb({ type, data, lastEventId: e.lastEventId || '' });
-        } catch {
-          /* a caller handler error must never break the stream */
-        }
-      }
-    };
-
-    // The exact typed channels the backend publishes (see STREAM_CHANNELS above).
-    const CHANNELS: readonly string[] = STREAM_CHANNELS;
-
-    const openStream = () => {
-      teardownEs();
-      try {
-        es = new EventSource(queryUrl, { withCredentials: true });
-      } catch {
-        // Constructing the source threw (bad URL / blocked) — treat as a cold fail.
-        coldFailures += 1;
-        setLive(false);
-        scheduleReconnect();
-        return;
-      }
-      const source = es;
-      source.onopen = () => {
-        if (cancelled) return;
-        // A CONFIRMED open is the only signal that realtime is actually healthy, so
-        // the cold-failure counter is cleared HERE (and in handleFrame), never on a
-        // mere probe 200. A 200 probe followed by a stream that never opens must keep
-        // accruing cold failures until MAX_COLD_FAILURES engages the give-up cap —
-        // otherwise the probe→open→onerror loop resets the counter and thrashes forever.
-        coldFailures = 0;
-        setLive(true);
-      };
-      for (const ch of CHANNELS) {
-        source.addEventListener(ch, (ev) => {
-          if (cancelled) return;
-          // The first real frame also implies the stream is up.
-          setLive(true);
-          handleFrame(ch === 'message' ? (ev as MessageEvent).type || 'message' : ch, ev as MessageEvent);
-        });
-      }
-      source.onerror = () => {
-        if (cancelled) return;
-        // An EventSource error fires on a drop AND on a hard failure. If it never
-        // opened, count it as a cold failure (a disabled-but-non-204 backend would
-        // error-loop here, so we cap it). The browser auto-reconnects an OPEN stream
-        // via Last-Event-ID; we additionally close + reschedule to apply our own
-        // capped backoff and to honour the give-up cap.
-        const wasOpen = source.readyState === EventSource.OPEN;
-        if (!wasOpen) coldFailures += 1;
-        setLive(false);
-        teardownEs();
-        scheduleReconnect();
-      };
-    };
-
-    /**
-     * PROBE then CONNECT. We `fetch` the endpoint first so we can read the STATUS: a
-     * 204 unambiguously means realtime is disabled — we then stay in polling mode and
-     * never open an `EventSource` (which cannot see a 204 and would reconnect forever).
-     * A 200 (text/event-stream) means realtime is live → open the persistent stream.
-     * A network/other error falls back to polling (and a capped retry).
-     */
-    const connect = () => {
-      if (cancelled) return;
-      // The probe must not itself hang an open stream; it's a cheap HEAD-of-stream
-      // GET that we abort immediately once we have the status line.
-      const ctrl = new AbortController();
-      // Set once the probe resolves with ANY definitive status (204 / 2xx / error
-      // status), all of which are handled fully inside `.then`. The success-path
-      // `ctrl.abort()` can reject into `.catch` in some runtimes; this flag keeps
-      // `.catch` a genuine-PRE-response-network-error path only, so the no-retry 204
-      // fallback can never leak into a reconnect storm.
-      let probeResolved = false;
-      fetch(queryUrl, {
-        method: 'GET',
-        credentials: 'include',
-        headers: { Accept: 'text/event-stream' },
-        signal: ctrl.signal,
-      })
-        .then((res) => {
-          probeResolved = true;
-          // We only needed the status + headers; never read the (infinite) body.
-          try {
-            ctrl.abort();
-          } catch {
-            /* aborting is best-effort */
-          }
-          if (cancelled) return;
-          if (res.status === 204) {
-            // Realtime disabled — graceful fallback to polling, no retries.
-            setLive(false);
-            return;
-          }
-          if (res.status >= 200 && res.status < 300) {
-            // Do NOT reset coldFailures here — a 200 probe only means the endpoint
-            // ACCEPTED the request, not that the EventSource will actually open. The
-            // reset happens on a confirmed open/frame; a stream that 200-probes but
-            // never opens must reach the give-up cap instead of looping forever.
-            openStream();
-            return;
-          }
-          // Auth bounce / server error → fall back to polling, retry with backoff.
-          coldFailures += 1;
-          setLive(false);
-          scheduleReconnect();
-        })
-        .catch(() => {
-          try {
-            ctrl.abort();
-          } catch {
-            /* ignore */
-          }
-          if (cancelled) return;
-          // A response was already received + fully handled in `.then` (the no-retry
-          // 204 path, the stream-open 2xx path, and the abort we issue on success that
-          // rejects here in some runtimes) — only a genuine PRE-response network error
-          // (probe never resolved, no stream open) should count as a cold failure.
-          if (probeResolved || es) return;
-          coldFailures += 1;
-          setLive(false);
-          scheduleReconnect();
-        });
-    };
-
-    connect();
-
+    const off = subscribeEvents(topicKey.split(','), {
+      url,
+      onLive: setLive,
+      onEvent: (ev) => onEventRef.current?.(ev),
+    });
     return () => {
-      cancelled = true;
-      clearTimer();
-      teardownEs();
+      off();
       setLive(false);
     };
-    // Re-run only when the enable flag, topic set, or endpoint changes.
   }, [enabled, topicKey, url]);
 
   return { live };

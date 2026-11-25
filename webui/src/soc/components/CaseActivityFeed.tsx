@@ -23,6 +23,11 @@
  * stream (rather than opening a second `EventSource` on the same room) keeps one socket
  * per case, which matters because CaseDetail already mounts two components on it.
  *
+ * THE NARRATION ENDS (Round 16 SPEC §4.5 WP09, research ai-investigating F2 and R3): a
+ * `decision` step that is `done` or `failed` (the pipeline now sends one when a run fails)
+ * turns the heading into "Investigation finished"; the next run's `router` step clears
+ * the old steps and starts a new narration.
+ *
  * PLAIN WORDS (Round 14, SPEC §4.9.4, ui-audit CM4): a row reads as a sentence. The
  * `key=value` summaries some writers record ("rule=... action=request_approval
  * proposal=...") are shown as one plain sentence (`caseActivityText.ts`), internal actor
@@ -157,7 +162,9 @@ export const CaseActivityFeed: React.FC<CaseActivityFeedProps> = ({
         return;
       }
       const entry = agentStepFromFrame(ev, liveCaseId);
-      if (entry) setLiveSteps((prev) => appendAgentStep(prev, entry, LIVE_STEP_LIMIT));
+      if (!entry) return;
+      // A new run begins with its `router` step: the last run's narration goes.
+      setLiveSteps((prev) => appendAgentStep(entry.step === 'router' ? [] : prev, entry, LIVE_STEP_LIMIT));
     },
     [liveCaseId, onLiveActivity],
   );
@@ -196,15 +203,23 @@ export const CaseActivityFeed: React.FC<CaseActivityFeedProps> = ({
   );
 };
 
+/** A run's last word: its `decision` step, done or failed. */
+export function narrationFinished(steps: readonly AgentStep[]): boolean {
+  const last = steps[steps.length - 1];
+  return Boolean(last && last.step === 'decision' && (last.status === 'done' || last.status === 'failed'));
+}
+
 /** The in-flight run narration. Renders nothing when no step has arrived. */
 const LiveAgentSteps: React.FC<{ steps: AgentStep[] }> = ({ steps }) => {
   if (!steps.length) return null;
+  const heading = narrationFinished(steps) ? 'Investigation finished' : 'Investigation in progress';
   return (
     <section
-      aria-label="Investigation in progress"
+      aria-label={heading}
+      data-testid="case-activity-live-steps"
       className="rounded-md border border-info/40 bg-info/5 px-3 py-2"
     >
-      <p className="text-xs font-medium text-info-text">Investigation in progress</p>
+      <p className="text-xs font-medium text-info-text">{heading}</p>
       <ol className="mt-1 space-y-0.5">
         {steps.map((s, i) => (
           <li

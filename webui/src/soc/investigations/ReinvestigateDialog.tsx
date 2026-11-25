@@ -1,12 +1,18 @@
 /**
- * The Reinvestigate dialog (Round 16 SPEC §4.3 WP01 stub; WP09 replaces the body).
+ * The Reinvestigate dialog (Round 16 SPEC §4.5 WP09, research ai-investigating R4).
  *
- * The stub body is today's Reinvestigate dialog from `CaseDetail.tsx`, moved here
- * unchanged in behaviour: it is blocking (the request waits for the run) and, on
- * success, hands the returned case to `onReinvestigated` and closes. WP03 mounts it in
- * place of the inline copy; WP09 makes it non-blocking (`wait=false`, a `202`, the
- * run's progress on the case header chip) and turns a second request into the
- * `409 investigation_running` notice.
+ * NON-BLOCKING. It posts `wait: false`, closes on the `202` and hands the run to the
+ * investigation store (`noteReinvestigationStarted`), so the case header chip shows at
+ * once; you keep working while the run goes on. A second request while a run is queued
+ * or running answers `409 investigation_running`, shown as a toast. A closed case whose
+ * events another open case now holds answers `409 open_case_exists`, also a toast with
+ * the server's words. A refusal (403) is worded, never the raw permission string.
+ *
+ * When a run on this case finishes while the case is open (this one or any other), the
+ * dialog reads the case again and hands it to `onReinvestigated`, so the case shows the
+ * run's result. A toast says so for your own run, or when the status changed under you:
+ * "AI investigation finished on CASE-0042: <status words>." Nothing here decides
+ * anything: the run's result comes from the server (#3).
  */
 import * as React from 'react';
 import { AlertTriangle, LoaderCircle, Play, Zap } from 'lucide-react';
@@ -14,8 +20,9 @@ import { toast } from 'sonner';
 
 import { api, ApiError } from '@/lib/api';
 import { fmtMoney } from '@/lib/format';
-import type { Case, ModelsResponse } from '@/lib/types';
+import type { Case, InvestigationView, ModelsResponse } from '@/lib/types';
 import { useAuth } from '@/soc/auth';
+import { statusWords } from '@/soc/pages/casedetail/caseFacts';
 import { Alert, AlertDescription, AlertTitle } from '@/ui/alert';
 import { Button } from '@/ui/button';
 import {
@@ -29,28 +36,71 @@ import {
 import { Label } from '@/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/ui/select';
 
+import { capWords } from './AiRunPopover';
+import { noteReinvestigationStarted, useInvestigations } from './store';
+import { useAiRunFinished } from './useAiRun';
+
 export interface ReinvestigateDialogProps {
   caseRecord: Case | null;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   /** The models the picker offers (best effort; `null` offers the configured model only). */
   models: ModelsResponse | null;
-  /** The case the run returned (the blocking stub; WP09's body reports through the store). */
+  /** The case after a run on it finished (read again when the run ends). */
   onReinvestigated?: (next: Case) => void;
   /** Where focus returns when the dialog closes (the control that opened it). */
   onCloseAutoFocus?: (event: Event) => void;
 }
 
+/** The `202` body of a reinvestigation that does not wait for its run. */
+export interface ReinvestigationStarted {
+  run_id: string;
+  case_id: string;
+  state: 'queued';
+}
+
+/**
+ * `POST /api/cases/{id}/reinvestigate` with `wait: false` (`cases:reinvestigate`): the
+ * run starts in the background and the route answers `202` at once. It goes through the
+ * existing client call, which forwards the body as is; without `wait` that call still
+ * waits for the run and answers the case, as before.
+ */
+export function startReinvestigation(caseId: string, input: { model?: string } = {}): Promise<ReinvestigationStarted> {
+  const body = { ...input, wait: false } as { model?: string };
+  return api.reinvestigateCase(caseId, body) as unknown as Promise<ReinvestigationStarted>;
+}
+
+/** The `code` of a refused call (`{detail: {code}}`), when it has one. */
+export function refusalCode(error: unknown): string | null {
+  const detail = ((error as { body?: { detail?: unknown } } | null)?.body?.detail ?? null) as { code?: unknown } | null;
+  return typeof detail?.code === 'string' ? detail.code : null;
+}
+
+export const ALREADY_RUNNING_TEXT = 'An AI investigation is already running on this case.';
+
 /**
  * The toast for a reinvestigation that did not start. A refusal (403: the grant is
  * missing, or was removed after the case opened) is worded, never the server's raw
  * "permission denied: cases:reinvestigate"; any other failure keeps its message.
- * (The same wording as `CaseDetail.reinvestigateErrorText`.)
  */
 export function reinvestigateErrorText(error: unknown): string {
   if (error instanceof ApiError && error.status === 403) return 'You do not have permission to reinvestigate cases.';
+  if (refusalCode(error) === 'investigation_running') return ALREADY_RUNNING_TEXT;
   return error instanceof Error && error.message ? error.message : 'The reinvestigation could not be started.';
 }
+
+/** "AI investigation finished on CASE-0042: Open · awaiting analyst." and the like. */
+export function finishedToastText(run: InvestigationView, caseLabel: string): string {
+  if (run.outcome === 'cancelled') return `The AI investigation on ${caseLabel} stopped before it finished. The case was not changed.`;
+  if (run.outcome === 'failed') return `The AI investigation on ${caseLabel} could not finish.`;
+  if (run.outcome === 'unchanged') return `AI investigation finished on ${caseLabel}: no change to the case.`;
+  return run.status_after
+    ? `AI investigation finished on ${caseLabel}: ${statusWords(run.status_after)}.`
+    : `AI investigation finished on ${caseLabel}.`;
+}
+
+/** Outcomes after which the stored case may differ from the one on screen. */
+const CHANGED = new Set(['decided', 'closed_by_policy', 'routed_to_person']);
 
 export const ReinvestigateDialog: React.FC<ReinvestigateDialogProps> = ({
   caseRecord,
@@ -63,8 +113,9 @@ export const ReinvestigateDialog: React.FC<ReinvestigateDialogProps> = ({
   const { hasPermission } = useAuth();
   const canViewCost = hasPermission('cost', 'view');
   const [reinvestModel, setReinvestModel] = React.useState('');
-  const [reinvesting, setReinvesting] = React.useState(false);
+  const [starting, setStarting] = React.useState(false);
   const caseId = caseRecord?.case_id ?? '';
+  const timeCap = useInvestigations((s) => s.timeCapSeconds, Boolean(caseId));
 
   const modelOptions = React.useMemo<Array<{ value: string; text: string }>>(() => {
     const out: Array<{ value: string; text: string }> = [];
@@ -78,18 +129,86 @@ export const ReinvestigateDialog: React.FC<ReinvestigateDialogProps> = ({
 
   const runReinvestigate = React.useCallback(async () => {
     if (!caseId) return;
-    setReinvesting(true);
+    setStarting(true);
     try {
-      const input = reinvestModel.trim() ? { model: reinvestModel.trim() } : undefined;
-      const next = await api.reinvestigateCase(caseId, input);
-      onReinvestigated?.(next);
+      const input = reinvestModel.trim() ? { model: reinvestModel.trim() } : {};
+      const started = await startReinvestigation(caseId, input);
+      if (started?.run_id) noteReinvestigationStarted(caseId, started.run_id);
       onOpenChange(false);
     } catch (e) {
-      toast.error(reinvestigateErrorText(e));
+      if (refusalCode(e) === 'investigation_running') {
+        toast.info(ALREADY_RUNNING_TEXT);
+        onOpenChange(false);
+      } else {
+        toast.error(reinvestigateErrorText(e));
+      }
     } finally {
-      setReinvesting(false);
+      setStarting(false);
     }
-  }, [caseId, reinvestModel, onReinvestigated, onOpenChange]);
+  }, [caseId, reinvestModel, onOpenChange]);
+
+  // A run on this case finished while it is open: read the case again so it shows the
+  // result, and say so for your own run or when the status changed under you. The case
+  // on screen may blank for a moment while it reloads (`caseRecord` null), so the open
+  // time and the case follow the last case shown, and a read in flight is dropped only
+  // when the dialog goes or another case opens. A quick run can end before its `202`
+  // says it is yours: the store then marks it, and this effect runs again for it.
+  const done = useAiRunFinished(caseId || null);
+  const opened = React.useRef({ id: '', at: Date.now() });
+  const tracked = React.useRef<{ runId: string; state: 'waiting' | 'reading' | 'read'; told: boolean } | null>(null);
+  const mounted = React.useRef(true);
+  React.useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+  React.useEffect(() => {
+    if (caseId && caseId !== opened.current.id) opened.current = { id: caseId, at: Date.now() };
+  }, [caseId]);
+  const shownRef = React.useRef<Case | null>(caseRecord);
+  if (caseRecord) shownRef.current = caseRecord;
+  const onDoneRef = React.useRef(onReinvestigated);
+  onDoneRef.current = onReinvestigated;
+  const latestRef = React.useRef<InvestigationView | null>(null);
+  latestRef.current = done?.view ?? null;
+  React.useEffect(() => {
+    const run = done?.view;
+    if (!run || !caseId || run.case_id !== caseId) return;
+    let t = tracked.current;
+    if (!t || t.runId !== run.run_id) t = tracked.current = { runId: run.run_id, state: 'waiting', told: false };
+    const entry = t;
+    const label = shownRef.current?.case_number || 'this case';
+    const changed = CHANGED.has(run.outcome || '');
+    const tell = (latest: InvestigationView, moved: boolean) => {
+      if (entry.told || !(moved || (latest.run_id === entry.runId && latest.requested_by_you))) return;
+      entry.told = true;
+      (changed ? toast.success : toast.info)(finishedToastText(latest, label));
+    };
+    // The same run again, once read: only its requester can have become known.
+    if (entry.state === 'read') return tell(run, false);
+    if (entry.state === 'reading') return;
+    // Only a run this console followed, ending after the case opened: one that ended
+    // before is already in what the case loaded.
+    if (!done.active || done.at < opened.current.at) return;
+    if (!changed) {
+      entry.state = 'read';
+      return tell(run, false);
+    }
+    entry.state = 'reading';
+    const shown = shownRef.current;
+    void api
+      .getCase(caseId)
+      .then((next) => {
+        if (!mounted.current || opened.current.id !== caseId || !next || next.case_id !== caseId) return;
+        entry.state = 'read';
+        onDoneRef.current?.(next);
+        tell(latestRef.current ?? run, Boolean(shown?.status) && next.status !== shown?.status);
+      })
+      .catch(() => {
+        entry.state = 'read';
+      });
+  }, [done, caseId]);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -100,8 +219,10 @@ export const ReinvestigateDialog: React.FC<ReinvestigateDialogProps> = ({
             Re-run the investigation
           </DialogTitle>
           <DialogDescription>
-            Force a fresh AI investigation. This runs the LLM pipeline and may take a few
-            seconds.
+            {timeCap
+              ? `Runs a fresh AI investigation. It can take up to the investigation time cap (${capWords(timeCap)}). `
+              : 'Runs a fresh AI investigation. It can take up to the investigation time cap. '}
+            You can keep working; the result appears on the case when it finishes.
           </DialogDescription>
         </DialogHeader>
         <Alert variant="warning">
@@ -120,7 +241,7 @@ export const ReinvestigateDialog: React.FC<ReinvestigateDialogProps> = ({
           <Select
             value={reinvestModel || '__configured__'}
             onValueChange={(value) => setReinvestModel(value === '__configured__' ? '' : value)}
-            disabled={reinvesting}
+            disabled={starting}
           >
             <SelectTrigger aria-label="Model">
               <SelectValue placeholder="Use configured model" />
@@ -136,11 +257,11 @@ export const ReinvestigateDialog: React.FC<ReinvestigateDialogProps> = ({
           </Select>
         </div>
         <DialogFooter>
-          <Button variant="ghost" onClick={() => onOpenChange(false)} disabled={reinvesting}>
+          <Button variant="ghost" onClick={() => onOpenChange(false)}>
             Cancel
           </Button>
-          <Button onClick={() => void runReinvestigate()} disabled={reinvesting || !caseId}>
-            {reinvesting ? (
+          <Button onClick={() => void runReinvestigate()} disabled={starting || !caseId}>
+            {starting ? (
               <LoaderCircle className="h-4 w-4 motion-safe:animate-spin" aria-hidden />
             ) : (
               <Play className="h-4 w-4" aria-hidden />

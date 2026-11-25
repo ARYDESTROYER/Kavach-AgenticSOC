@@ -33,12 +33,12 @@ describe('BulkCloseDialog', () => {
   it('keeps its shape and says screenshots are added on each case (Round 15, D4.6)', () => {
     const { rerender } = render(<BulkCloseDialog action="close" count={3} onCancel={vi.fn()} onSubmit={vi.fn()} />);
     expect(screen.getByTestId('bulk-close-screenshots-note')).toHaveTextContent(
-      'Screenshots are added on each case, in its Collaboration tab.',
+      'Screenshots are added on each case, in its Activity tab.',
     );
     expect(screen.getByRole('combobox', { name: 'Resolution (optional)' })).toBeInTheDocument();
     rerender(<BulkCloseDialog action="close" count={1} onCancel={vi.fn()} onSubmit={vi.fn()} />);
     expect(screen.getByTestId('bulk-close-screenshots-note')).toHaveTextContent(
-      'Screenshots are added on the case, in its Collaboration tab.',
+      'Screenshots are added on the case, in its Activity tab.',
     );
   });
 
