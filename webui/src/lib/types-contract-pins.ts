@@ -152,6 +152,13 @@ import type {
   CaseLifecycleInput,
   CaseLifecycleParams,
   DashboardLayout,
+  RiskAssetMatch,
+  RiskBreakdown,
+  RiskInputs,
+  RiskReferences,
+  RiskReputationSource,
+  RiskVelocityRule,
+  RiskWeightsSnapshot,
 } from './types';
 import type { AuditExportJobParams } from './types-audit';
 import type { UnifiedLogsQuery } from '@/soc/UnifiedLogs.api';
@@ -267,6 +274,11 @@ export type MirrorFieldPins = [
   Expect<SameFields<StepApprovalBody, 'StepApprovalBody'>>,
   Expect<SameFields<StepDraftConfirmBody, 'StepDraftConfirmBody'>>,
   Expect<SameFields<RunbookLookupTestBody, 'RunbookLookupTestBody'>>,
+  // types.ts: the Round 16 recorded risk inputs (SPEC §4.3 WP01)
+  Expect<SameFields<RiskBreakdown, 'RiskBreakdown'>>,
+  Expect<SameFields<RiskInputs, 'RiskInputs'>>,
+  Expect<SameFields<RiskWeightsSnapshot, 'RiskWeightsSnapshot'>>,
+  Expect<SameFields<RiskReferences, 'RiskReferences'>>,
 ];
 
 /** Query parameter names of the reads the lazy clients make. */
@@ -285,6 +297,10 @@ export type QueryPins = [
 
 /** Every closed vocabulary a mirror declares equals the backend's. */
 export type VocabularyPins = [
+  // Risk inputs (Round 16)
+  Expect<Equal<RiskVelocityRule, Field<'RiskInputs', 'velocity_rule'>>>,
+  Expect<Equal<RiskReputationSource, Field<'RiskInputs', 'reputation_source'>>>,
+  Expect<Equal<RiskAssetMatch, Field<'RiskInputs', 'asset_match'>>>,
   // Audit
   Expect<Equal<AuditOutcome, Field<'AuditRecord', 'outcome'>>>,
   Expect<Equal<AuditActorType, Field<'AuditRecord', 'actor_type'>>>,

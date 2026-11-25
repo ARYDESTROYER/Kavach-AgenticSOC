@@ -257,6 +257,8 @@ export const AUDIT_ACTIONS: readonly AuditActionEntry[] = [
   { action: 'case.review_record_failed', category: 'case_work', label: 'Auto-close review not recorded' },
   { action: 'case.review_requested', category: 'system', label: 'Auto-close review requested' },
   { action: 'case.review_request_failed', category: 'system', label: 'Auto-close review request failed' },
+  { action: 'case.close_replaced', category: 'case_work', label: 'Close replaced by an AI investigation' },
+  { action: 'case.events_viewed', category: 'case_work', label: 'Case events viewed' },
   { action: 'team.viewed', category: 'access', label: 'Team activity viewed' },
 ];
 
