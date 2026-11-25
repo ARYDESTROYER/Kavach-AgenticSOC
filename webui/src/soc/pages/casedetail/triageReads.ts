@@ -4,17 +4,17 @@
  *
  * Case detail calls `GET /api/settings` only for a holder of `settings:read`. Without it,
  * the auto-close entry for the case's verdict and the SLA reading come from
- * `GET /api/cases/{id}/triage` (WP10 adds `auto_close_policy` and `sla` there). Both
- * fields are read defensively: a build whose triage read does not carry them yet, or a
- * value of the wrong shape, reads as "not known" and the fact is left out.
+ * `GET /api/cases/{id}/triage` (WP10 adds `auto_close_policy` and `sla` there). Every
+ * field is read defensively: a build whose triage read does not carry it yet, or a value
+ * of the wrong shape, reads as "not known" and the fact is left out.
  *
  * Pure: nothing here fetches, decides or mutates (#3). Every value is plain data for the
  * caller to render as text (#9).
  */
-import type { SlaReadingWire } from '@/lib/explain/builders';
+import type { AssetRangeReading, SlaClockWire, SlaReadingWire } from '@/lib/explain/builders';
 import type { Case, SlaPolicy } from '@/lib/types';
 
-import { millis, shortDuration, slaReading, type SlaReading, type SlaState } from './caseFacts';
+import { serverSlaReading, slaReading, type SlaReading } from './caseFacts';
 import type { FpPolicy } from './shared';
 
 function record(value: unknown): Record<string, unknown> | null {
@@ -23,6 +23,8 @@ function record(value: unknown): Record<string, unknown> | null {
 
 const num = (value: unknown): number | undefined =>
   typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+const str = (value: unknown): string | null => (typeof value === 'string' && value.trim() ? value : null);
+const bool = (value: unknown): boolean | null => (typeof value === 'boolean' ? value : null);
 
 /** The triage read's auto-close entry for the case's verdict, or null when it has none. */
 export function triageAutoClosePolicy(response: unknown): FpPolicy {
@@ -36,11 +38,27 @@ export function triageAutoClosePolicy(response: unknown): FpPolicy {
   };
 }
 
+/** One clock of the triage read's SLA reading, or null when it is not a clock. */
+function slaClock(value: unknown): SlaClockWire | null {
+  const clock = record(value);
+  if (!clock) return null;
+  return {
+    target_minutes: num(clock.target_minutes) ?? null,
+    start_at: str(clock.start_at),
+    due_at: str(clock.due_at),
+    stopped_at: str(clock.stopped_at),
+    stop_source: str(clock.stop_source),
+    elapsed_minutes: num(clock.elapsed_minutes) ?? null,
+    running: bool(clock.running),
+    state: str(clock.state),
+  };
+}
+
 /** The triage read's SLA reading, or null when it has none. */
 export function triageSla(response: unknown): SlaReadingWire | null {
   const sla = record(record(response)?.sla);
   if (!sla || typeof sla.state !== 'string') return null;
-  const str = (value: unknown): string | null => (typeof value === 'string' && value.trim() ? value : null);
+  const clocks = record(sla.clocks);
   return {
     clock: typeof sla.clock === 'string' ? sla.clock : 'response',
     start_at: str(sla.start_at),
@@ -52,48 +70,52 @@ export function triageSla(response: unknown): SlaReadingWire | null {
     state: sla.state,
     priority: str(sla.priority),
     priority_source: str(sla.priority_source),
+    running: bool(sla.running),
+    breached: bool(sla.breached),
+    clocks: clocks ? { response: slaClock(clocks.response), resolution: slaClock(clocks.resolution) } : null,
+    computed_by: 'server',
   };
 }
 
-const SERVER_STATE: Record<string, SlaState> = {
-  ok: 'running',
-  running: 'running',
-  at_risk: 'due_soon',
-  due_soon: 'due_soon',
-  breached: 'breached',
-  met: 'met',
-};
+/**
+ * The triage read's `asset_cidr` (WP10): the internal network range of today's settings
+ * that holds the case's entity. The server sends the key only to a `settings:read`
+ * holder; it is today's configuration, never the range in force at scoring. Null when it
+ * is absent or not of that shape.
+ */
+export function triageAssetCidr(response: unknown): AssetRangeReading | null {
+  const entry = record(record(response)?.asset_cidr);
+  const cidr = str(entry?.cidr);
+  if (!entry || !cidr) return null;
+  return { cidr: cidr.trim(), criticality: num(entry.criticality) ?? null, matchesRecorded: bool(entry.matches_recorded) };
+}
 
 /**
  * The meta strip's SLA phrase from the server's reading ("Response due in 45m",
- * "Resolution overdue by 2h"), in the same shape as `caseFacts.slaReading`. Null when the
- * reading names no due time or priority, so nothing is claimed that was not read.
+ * "Resolution overdue by 2h"): `caseFacts.serverSlaReading`, the one formatter, which
+ * reads `breached` and `running`, floors the time left (B32) and reads a clock that is
+ * never due as "not due".
  */
 export function slaFromServer(reading: SlaReadingWire | null | undefined, now: number = Date.now()): SlaReading | null {
-  if (!reading) return null;
-  const state = SERVER_STATE[String(reading.state).toLowerCase()];
-  const priority = (reading.priority || '').trim().toUpperCase();
-  const due = millis(reading.due_at);
-  if (!state || !priority || due === null) return null;
-  const kind = String(reading.clock).toLowerCase() === 'resolution' ? 'Resolution' : 'Response';
-  if (state === 'met') return { text: 'SLA met', state, priority };
-  const left = due - now;
-  if (state === 'breached' || left < 0) {
-    return { text: `${kind} overdue by ${shortDuration(Math.abs(left))}`, state: 'breached', priority };
-  }
-  return { text: `${kind} due in ${shortDuration(left)}`, state, priority };
+  return serverSlaReading(reading, now);
 }
 
 /**
  * The SLA reading the meta strip and the inspector show: the server's reading from the
  * triage read when it carries one (it is computed with the clock rules of the SLA
- * metrics), else the reading from the SLA policy when the settings were read.
+ * metrics), else the reading from the SLA policy when the settings were read. For an
+ * ended case (`terminal`) only the server's reading counts: it is the one that knows
+ * whether a stopped clock was late, and the Console's own reading of a closed case says
+ * nothing ("SLA closed").
  */
 export function caseSlaReading(
   c: Case,
   slaPolicy: SlaPolicy | null | undefined,
   serverSla: SlaReadingWire | null | undefined,
   now: number = Date.now(),
+  terminal = false,
 ): SlaReading | null {
-  return slaFromServer(serverSla, now) ?? (slaPolicy ? slaReading(c, slaPolicy, now) : null);
+  const server = slaFromServer(serverSla, now);
+  if (server || terminal) return server;
+  return slaPolicy ? slaReading(c, slaPolicy, now) : null;
 }

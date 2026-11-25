@@ -122,9 +122,11 @@ describe('B27: the case page states the auto-close policy decide() acts on', () 
   it('reads prefs.auto_close for the verdict, never the deprecated prefs.fp_auto_close', async () => {
     const user = userEvent.setup();
     await renderCase();
-    // The facts: the 85% bar of the false-positive entry, on.
+    // The facts: the 85% bar of the false-positive entry, on, with both conditions (D8).
     const bar = await screen.findByTestId('facts-auto-close-bar');
-    expect(bar).toHaveTextContent('Auto-close bar 85%');
+    expect(bar).toHaveTextContent(
+      "Today's policy closes it automatically: confidence 87% >= 85% (met) and risk 12 <= 30 (met).",
+    );
     expect(bar).not.toHaveTextContent('95%');
     expect(bar).not.toHaveTextContent('auto-close off');
     // No tab that states the decision says false-positive auto-close is off (the Brief
@@ -182,7 +184,7 @@ describe('settings:read gates the settings read (C60)', () => {
     await renderCase();
     // The policy line comes from the triage read's entry for the verdict.
     expect(await screen.findByText(/Eligible for auto-close: confidence is at or above the 0\.85 bar/)).toBeInTheDocument();
-    expect(await screen.findByTestId('facts-auto-close-bar')).toHaveTextContent('Auto-close bar 85%');
+    expect(await screen.findByTestId('facts-auto-close-bar')).toHaveTextContent('confidence 87% >= 85% (met)');
     expect(api.getSettings).not.toHaveBeenCalled();
   });
 

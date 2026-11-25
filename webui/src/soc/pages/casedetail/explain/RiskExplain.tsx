@@ -14,7 +14,7 @@
 import * as React from 'react';
 
 import { ExplainTrigger } from '@/design-system/explain';
-import { explainRiskScore } from '@/lib/explain/risk';
+import { explainRiskScore, recordedRiskInputs, type AssetRangeReading } from '@/lib/explain/risk';
 import type { RiskBreakdown } from '@/lib/types';
 import { getCaseStages, type StageRiskCalculation } from '@/soc/pages/CaseDetail.api';
 
@@ -24,6 +24,11 @@ export interface RiskExplainProps {
   breakdown: RiskBreakdown | null | undefined;
   children: React.ReactNode;
   variant?: 'row';
+  /**
+   * Today's internal network range that holds the entity (the triage read's
+   * `asset_cidr`, sent only to a person who may read the settings).
+   */
+  assetRange?: AssetRangeReading | null;
 }
 
 /** The risk stage's read-time calculation, or null when the timeline has none. */
@@ -42,11 +47,13 @@ const READ_NOTE: Partial<Record<ReadState, string>> = {
   failed: "The case timeline could not be read, so the calculation with today's weights is not shown.",
 };
 
-export const RiskExplain: React.FC<RiskExplainProps> = ({ caseId, score, breakdown, children, variant }) => {
+export const RiskExplain: React.FC<RiskExplainProps> = ({ caseId, score, breakdown, children, variant, assetRange }) => {
   const [calculation, setCalculation] = React.useState<StageRiskCalculation | null>(null);
   const [read, setRead] = React.useState<ReadState>('idle');
   const requested = React.useRef<string | null>(null);
-  const recorded = Boolean(breakdown?.inputs);
+  // Recorded only when the inputs have the recorded shape: a partial object reads as not
+  // recorded, so today's reconstruction is still read for it.
+  const recorded = recordedRiskInputs(breakdown) !== null;
 
   React.useEffect(() => {
     setCalculation(null);
@@ -55,10 +62,10 @@ export const RiskExplain: React.FC<RiskExplainProps> = ({ caseId, score, breakdo
   }, [caseId]);
 
   const explanation = React.useMemo(() => {
-    const base = explainRiskScore({ score, breakdown, calculation: recorded ? null : calculation });
+    const base = explainRiskScore({ score, breakdown, calculation: recorded ? null : calculation, assetRange });
     const note = recorded ? undefined : READ_NOTE[read];
     return base && note ? { ...base, caveats: [...base.caveats, note] } : base;
-  }, [score, breakdown, calculation, recorded, read]);
+  }, [score, breakdown, calculation, recorded, read, assetRange]);
 
   const onOpenChange = React.useCallback(
     (open: boolean) => {

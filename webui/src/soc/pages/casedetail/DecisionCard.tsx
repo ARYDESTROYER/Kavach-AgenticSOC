@@ -34,6 +34,7 @@ import { ExplainTrigger } from '@/design-system/explain';
 import { displayScore, trimmed } from '@/lib/explain/rounding';
 import type { Explanation } from '@/lib/explain/types';
 import {
+  FAILED_RUN_SENTENCE,
   compareWithPolicy,
   comparisonSentence,
   readDecision,
@@ -243,6 +244,9 @@ export const DecisionCard: React.FC<DecisionCardProps> = ({ c, rationale, timeli
   // A span that reports the recorded decision may supply the outcome; an older span is a
   // read-time re-run with today's policy and never does (D1).
   const recordedSpan = reading?.source === 'recorded';
+  // The newest run failed (WP10 `run_failed`): code routed the case without comparing
+  // anything with the auto-close policy, so no clause is shown as if it decided.
+  const runFailed = reading?.runFailed === true;
   const gate = reading?.gate ?? null;
 
   const verdict = gate?.verdict ?? c.verdict ?? rationale?.verdict ?? d.verdict;
@@ -282,8 +286,8 @@ export const DecisionCard: React.FC<DecisionCardProps> = ({ c, rationale, timeli
         note: null,
       }
     : null;
-  const currentThresholds = reading?.current ?? null;
-  const thresholds = recordedThresholds ?? currentThresholds;
+  const currentThresholds = runFailed ? null : reading?.current ?? null;
+  const thresholds = runFailed ? null : recordedThresholds ?? currentThresholds;
   const clause = d.policy_clause;
   const verdictText = typeof verdict === 'string' ? verdict : null;
   const comparison = thresholds
@@ -420,7 +424,14 @@ export const DecisionCard: React.FC<DecisionCardProps> = ({ c, rationale, timeli
       </div>
 
       {/* ---------------------------------- the matched AutoClosePolicy clause */}
-      {thresholds || clause ? (
+      {runFailed ? (
+        <p
+          className="mt-3 rounded-lg border border-border bg-card p-3 text-xs text-foreground/90"
+          data-testid="decision-run-failed"
+        >
+          {FAILED_RUN_SENTENCE} No auto-close policy was evaluated for this run.
+        </p>
+      ) : thresholds || clause ? (
         <div className="mt-3 rounded-lg border border-border bg-card p-3" data-testid="decision-clause">
           <div className="mb-1.5 flex flex-wrap items-center gap-1.5 text-xs font-medium text-muted-foreground">
             <GitBranch className="h-3 w-3" />

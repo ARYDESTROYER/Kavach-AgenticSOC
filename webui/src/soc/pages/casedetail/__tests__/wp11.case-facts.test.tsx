@@ -71,7 +71,7 @@ describe('B32: the SLA countdown never overstates the time left', () => {
       priority: 'P3',
       priority_source: 'priority_level',
     };
-    expect(serverSlaReading(reading, NOW)).toEqual({ text: 'Response due in 1h', state: 'running', priority: 'P3' });
+    expect(serverSlaReading(reading, NOW)).toMatchObject({ text: 'Response due in 1h', state: 'running', priority: 'P3' });
     expect(serverSlaReading({ ...reading, state: 'met' }, NOW)?.text).toBe('SLA met');
   });
 });

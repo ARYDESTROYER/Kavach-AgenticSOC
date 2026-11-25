@@ -72,13 +72,67 @@ function storedFactors(breakdown: RiskBreakdown | null | undefined): Record<Risk
   return out;
 }
 
-function recordedInputs(breakdown: RiskBreakdown | null | undefined): RiskInputs | null {
+/** The numbers every recorded-input sentence and row prints (the arithmetic needs them). */
+const RECORDED_NUMBERS = [
+  'event_count',
+  'span_seconds',
+  'effective_window_seconds',
+  'rule_type_count',
+  'reputation_input',
+  'asset_value',
+  'total_weight',
+] as const;
+
+/**
+ * The inputs recorded at scoring (`risk_breakdown.inputs`), or null when the case has
+ * none or they are not of the recorded shape (a store that left them out, a partial
+ * document): such a case reads "not recorded", never "undefined events".
+ */
+export function recordedRiskInputs(breakdown: RiskBreakdown | null | undefined): RiskInputs | null {
   const inputs = breakdown?.inputs;
-  if (!inputs || typeof inputs !== 'object') return null;
+  if (!inputs || typeof inputs !== 'object' || Array.isArray(inputs)) return null;
   const weights = inputs.weights as RiskWeightsSnapshot | undefined;
-  if (!weights || RISK_FACTOR_KEYS.some((key) => finite(weights[key]) === null)) return null;
-  if (finite(inputs.event_count) === null || finite(inputs.total_weight) === null) return null;
+  if (!weights || typeof weights !== 'object' || RISK_FACTOR_KEYS.some((key) => finite(weights[key]) === null)) return null;
+  if (RECORDED_NUMBERS.some((key) => finite((inputs as unknown as Record<string, unknown>)[key]) === null)) return null;
   return inputs;
+}
+
+const recordedInputs = recordedRiskInputs;
+
+/**
+ * The internal network range of TODAY's settings that holds the case's entity, from the
+ * triage read (`asset_cidr`), which the server sends only to a person who may read the
+ * settings. Labelled "current configuration": the range in force at scoring is not stored.
+ */
+export interface AssetRangeReading {
+  cidr: string;
+  criticality: number | null;
+  /** Whether today's range gives the criticality the score recorded (null: not known). */
+  matchesRecorded: boolean | null;
+}
+
+/** Add today's internal network range to a risk explanation, when it was read. */
+function withAssetRange(explanation: Explanation, range: AssetRangeReading | null | undefined, recorded: RiskInputs | null): Explanation {
+  if (!range || !range.cidr) return explanation;
+  const inputs = [
+    ...explanation.inputs,
+    {
+      key: 'asset_cidr',
+      label: 'Internal network range',
+      value:
+        range.criticality !== null
+          ? `${range.cidr}, criticality ${trimmed(range.criticality)} (current configuration)`
+          : `${range.cidr} (current configuration)`,
+      source: "Today's settings",
+    },
+  ];
+  const caveats = [...explanation.caveats];
+  if (range.matchesRecorded === false && recorded && range.criticality !== null) {
+    caveats.push(
+      `Today's range gives criticality ${trimmed(range.criticality)}, not the ${trimmed(recorded.asset_value)} recorded at scoring: the settings changed since.`,
+    );
+  }
+  return { ...explanation, inputs, caveats };
 }
 
 /** The weighted sum of the stored factors, as the hover line prints it. */
@@ -208,13 +262,22 @@ export interface RiskExplainSource {
   memberCount?: number | null;
   /** A read-time reconstruction with today's weights (the stage timeline's), when known. */
   calculation?: StageRiskCalculation | null;
+  /** Today's internal network range that holds the entity (`settings:read` only). */
+  assetRange?: AssetRangeReading | null;
 }
 
 /**
  * The risk explanation from a score, its stored breakdown and, for a case scored before
- * the inputs were recorded, the reconstruction with today's weights.
+ * the inputs were recorded, the reconstruction with today's weights. With today's
+ * internal network range (read only by a person who may read the settings), the asset
+ * input names it, labelled as today's configuration.
  */
 export function explainRiskScore(source: RiskExplainSource): Explanation | null {
+  const explanation = baseRiskExplanation(source);
+  return explanation ? withAssetRange(explanation, source.assetRange, recordedInputs(source.breakdown)) : null;
+}
+
+function baseRiskExplanation(source: RiskExplainSource): Explanation | null {
   const score = finite(source.score);
   if (score === null) return null;
   const shown = displayScore(score) ?? 0;

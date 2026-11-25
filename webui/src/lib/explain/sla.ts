@@ -13,6 +13,19 @@
 import { trimmed } from './rounding';
 import type { Explanation, ExplanationInput } from './types';
 
+/** One clock of the server's reading (`sla.clocks.response` or `sla.clocks.resolution`). */
+export interface SlaClockWire {
+  target_minutes: number | null;
+  start_at: string | null;
+  /** `null` when the clock is never due (a target past the last date it can count to). */
+  due_at: string | null;
+  stopped_at: string | null;
+  stop_source: string | null;
+  elapsed_minutes: number | null;
+  running: boolean | null;
+  state: string | null;
+}
+
 /** The server's per-case SLA reading (`GET /api/cases/{id}/triage`, field `sla`). */
 export interface SlaReadingWire {
   clock: 'response' | 'resolution' | string;
@@ -20,11 +33,52 @@ export interface SlaReadingWire {
   anchor: 'created' | 'acknowledged' | 'status_history' | string;
   responded_at: string | null;
   target_minutes: number | null;
+  /** `null` when the clock is never due (a target past the last date it can count to). */
   due_at: string | null;
   elapsed_minutes: number | null;
   state: string;
   priority: string | null;
   priority_source: string | null;
+  /** Whether the shown clock still runs (absent from a build before WP10's reading). */
+  running?: boolean | null;
+  /** True when ANY clock of the case is breached: the rule the SLA metrics count by. */
+  breached?: boolean | null;
+  /** Both clocks, `null` where the policy sets no target. */
+  clocks?: { response?: SlaClockWire | null; resolution?: SlaClockWire | null } | null;
+  /** `console` when the Console computed the reading from the SLA policy itself. */
+  computed_by?: 'server' | 'console';
+}
+
+/**
+ * The clock a case's SLA line shows: the server's current clock, unless another clock of
+ * the case is breached while the current one is not. Then the breached clock is shown, so
+ * a closed case whose response was late reads its late response, not "met", and agrees
+ * with the SLA metrics, which count the case as a breach. Null for no reading.
+ */
+export function shownSlaClock(reading: SlaReadingWire | null | undefined): SlaReadingWire | null {
+  if (!reading || typeof reading.state !== 'string') return null;
+  const state = reading.state.toLowerCase();
+  if (reading.breached !== true || state === 'breached') return reading;
+  const clocks = reading.clocks ?? null;
+  const current = String(reading.clock).toLowerCase() === 'resolution' ? 'resolution' : 'response';
+  const order: Array<'response' | 'resolution'> =
+    current === 'response' ? ['resolution', 'response'] : ['response', 'resolution'];
+  for (const name of order) {
+    const clock = clocks?.[name];
+    if (!clock || String(clock.state || '').toLowerCase() !== 'breached') continue;
+    return {
+      ...reading,
+      clock: name,
+      start_at: clock.start_at ?? reading.start_at,
+      target_minutes: typeof clock.target_minutes === 'number' ? clock.target_minutes : null,
+      due_at: clock.due_at ?? null,
+      elapsed_minutes: typeof clock.elapsed_minutes === 'number' ? clock.elapsed_minutes : null,
+      running: typeof clock.running === 'boolean' ? clock.running : null,
+      state: 'breached',
+    };
+  }
+  // The server says a clock is breached but did not say which: never read "met" then.
+  return { ...reading, state: 'breached' };
 }
 
 /** The share of a target after which a running clock is at risk (contract `sla`). */
@@ -77,12 +131,17 @@ export function explainSla(reading: SlaReadingWire | null | undefined): Explanat
   const priority = (reading.priority || '').trim().toUpperCase() || 'No priority';
   const state = String(reading.state).toLowerCase();
   // A clock that stopped (a person answered, or the case closed; the server reads it
-  // "met") is met, not "on track": it no longer runs, so it can no longer be at risk.
-  const stopped = state === 'met' || (Boolean(reading.responded_at) && kind === 'Response');
+  // "met") is met, not "on track": it no longer runs, so it can no longer be at risk. The
+  // server says so in `running`; a reading without it falls back to its other fields.
+  const stopped =
+    typeof reading.running === 'boolean'
+      ? !reading.running
+      : state === 'met' || (Boolean(reading.responded_at) && kind === 'Response');
   const words = stopped && (state === 'ok' || state === 'met') ? 'met' : STATE_WORDS[state] ?? state;
   const stoppedBy = kind === 'Response' ? 'answered' : 'resolved';
   const atRiskFrom = target * SLA_AT_RISK_FRACTION;
   const left = target - elapsed;
+  const byConsole = reading.computed_by === 'console';
 
   const inputs: ExplanationInput[] = [
     {
@@ -105,10 +164,13 @@ export function explainSla(reading: SlaReadingWire | null | undefined): Explanat
     });
   }
   if (reading.due_at) inputs.push({ key: 'due_at', label: 'Due', value: reading.due_at, source: 'Start plus target' });
+  else inputs.push({ key: 'due_at', label: 'Due', value: 'Not due', source: 'The target is longer than the clock can count' });
 
   const summary =
     state === 'breached'
-      ? `${kind} SLA ${priority}: ${minutesWords(elapsed)} elapsed against a ${minutesWords(target)} target, so it is breached by ${minutesWords(-left)}.`
+      ? stopped
+        ? `${kind} SLA ${priority}: ${stoppedBy} after ${minutesWords(elapsed)} against a ${minutesWords(target)} target, so it was breached by ${minutesWords(-left)}.`
+        : `${kind} SLA ${priority}: ${minutesWords(elapsed)} elapsed against a ${minutesWords(target)} target, so it is breached by ${minutesWords(-left)}.`
       : stopped
         ? `${kind} SLA ${priority}: ${stoppedBy} after ${minutesWords(elapsed)} against a ${minutesWords(target)} target, ${words}.`
         : `${kind} SLA ${priority}: ${minutesWords(elapsed)} of ${minutesWords(target)} elapsed, ${words}. At risk from ${minutesWords(atRiskFrom)}.`;
@@ -127,7 +189,8 @@ export function explainSla(reading: SlaReadingWire | null | undefined): Explanat
       { label: 'State', expression: `${trimmed(elapsed)} against ${trimmed(target)}`, result: words },
     ],
     rounding: 'Time left is rounded down, so the due line never claims more time than remains.',
-    provenance: 'server_computed',
+    provenance: byConsole ? 'reconstructed_current' : 'server_computed',
+    ...(byConsole ? { provenanceNote: 'Computed in the Console from the SLA policy, because the server sent no reading.' } : {}),
     caveats: ['Advisory only: the SLA never closes or escalates a case.'],
   };
 }
