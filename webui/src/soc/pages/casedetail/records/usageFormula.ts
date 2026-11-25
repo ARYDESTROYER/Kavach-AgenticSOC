@@ -64,10 +64,23 @@ export function exactMoney(value: number, currency?: string): string {
 }
 
 /**
+ * The discounted tier a row's half price came from. The ledger's `batch` flag is set for
+ * a provider Batch call and for a Flex call alike (`llm/providers.py` sets it for Flex),
+ * and `processing_tier` tells them apart: "Flex" for `flex`, else "Batch". Null for a
+ * row billed at the full price.
+ */
+export function discountTier(row: Pick<CaseUsageRow, 'batch' | 'processing_tier'>): 'Batch' | 'Flex' | null {
+  const tier = String(row.processing_tier || '').toLowerCase();
+  if (tier === 'flex') return row.batch ? 'Flex' : null;
+  return row.batch ? 'Batch' : null;
+}
+
+/**
  * The formula line with the row's own numbers, for example
  * `1,240 in x $1.25/M + 310 out x $10/M = $0.00465`. A cache term shows only when the
- * row used the cache; a Batch row ends with `x 0.5 (Batch)`. The result is the
- * recompute to the ledger's 8 decimals. Null when the row recorded no rates.
+ * row used the cache; a half-price row ends with `x 0.5 (Batch)` or `x 0.5 (Flex)`. The
+ * result is the recompute to the ledger's 8 decimals. Null when the row recorded no
+ * rates.
  */
 export function costFormula(row: CaseUsageRow): string | null {
   const input = rate(row.input_rate_per_million);
@@ -82,7 +95,8 @@ export function costFormula(row: CaseUsageRow): string | null {
   }
   const sum = terms.join(' + ');
   const total = recomputeCost(row) ?? row.cost;
-  return `${row.batch ? `(${sum}) x 0.5 (Batch)` : sum} = ${exactMoney(total, row.currency)}`;
+  const half = discountTier(row);
+  return `${half ? `(${sum}) x 0.5 (${half})` : sum} = ${exactMoney(total, row.currency)}`;
 }
 
 /** Where a row's rates came from, in words. */

@@ -114,14 +114,28 @@ function safeName(value: string): string {
   return value.replace(/[^\w.-]+/g, '_').slice(0, 80) || 'case';
 }
 
+/**
+ * The values the Logs page takes from a link (`UnifiedLogs.tsx` `SOURCE_ID_RE` and
+ * `RULE_RE`). Logs ignores a link whole when any part breaks them, so a source id or a
+ * rule outside them is left out and the window still opens.
+ */
+const LOGS_SOURCE_ID_RE = /^[\w.:-]{1,128}$/;
+const LOGS_RULE_RE = /^[^\p{C}\u2028\u2029]{1,256}$/u;
+
 /** The Logs view over a window around `rows` (a minute either side), on one source. */
 export function logsHrefFor(rows: readonly CaseEventRow[]): string | null {
   const times = rows.map((row) => Date.parse(row.ts)).filter((ms) => Number.isFinite(ms));
   if (!times.length) return null;
   const pad = 60_000;
   const iso = (ms: number) => `${new Date(ms).toISOString().slice(0, 19)}Z`;
-  const sources = new Set(rows.map((row) => row.source_id).filter((id): id is string => typeof id === 'string' && !!id));
-  const rules = new Set(rows.map((row) => row.rule).filter((rule): rule is string => typeof rule === 'string' && !!rule));
+  const sources = new Set(
+    rows.map((row) => row.source_id).filter((id): id is string => typeof id === 'string' && LOGS_SOURCE_ID_RE.test(id)),
+  );
+  const rules = new Set(
+    rows
+      .map((row) => row.rule)
+      .filter((rule): rule is string => typeof rule === 'string' && rule.trim() !== '' && LOGS_RULE_RE.test(rule)),
+  );
   return pageHash('logs', {
     from: iso(Math.min(...times) - pad),
     to: iso(Math.max(...times) + pad),
@@ -145,6 +159,9 @@ export const CaseEvents: React.FC<CaseEventsProps> = ({ caseId, filterEventIds =
   const [error, setError] = React.useState<unknown>(null);
   const [reload, setReload] = React.useState(0);
   const [openRow, setOpenRow] = React.useState<CaseEventRow | null>(null);
+  // The row's time button, so closing the sheet returns focus where it was (the sheet
+  // opens from state, so Radix has no trigger of its own to return to).
+  const opener = React.useRef<HTMLElement | null>(null);
   const controller = React.useRef<AbortController | null>(null);
 
   const fetchPage = React.useCallback(
@@ -325,7 +342,10 @@ export const CaseEvents: React.FC<CaseEventsProps> = ({ caseId, filterEventIds =
                     key={`${row.index ?? ''}-${row.id}-${index}`}
                     className="cursor-pointer"
                     data-testid="case-event-row"
-                    onClick={() => setOpenRow(row)}
+                    onClick={(event) => {
+                      opener.current = event.currentTarget.querySelector('button');
+                      setOpenRow(row);
+                    }}
                   >
                     <TableCell density="compact" numeric className="whitespace-nowrap align-top">
                       <button
@@ -416,7 +436,7 @@ export const CaseEvents: React.FC<CaseEventsProps> = ({ caseId, filterEventIds =
         </div>
       ) : null}
 
-      <EventSheet caseId={caseId} row={openRow} onClose={() => setOpenRow(null)} />
+      <EventSheet caseId={caseId} row={openRow} onClose={() => setOpenRow(null)} returnFocusTo={opener} />
     </div>
   );
 };
@@ -424,7 +444,12 @@ export const CaseEvents: React.FC<CaseEventsProps> = ({ caseId, filterEventIds =
 type EventView = 'table' | 'json';
 
 /** One event: every field as a path and a value, or the source record as JSON. */
-const EventSheet: React.FC<{ caseId: string; row: CaseEventRow | null; onClose: () => void }> = ({ caseId, row, onClose }) => {
+const EventSheet: React.FC<{
+  caseId: string;
+  row: CaseEventRow | null;
+  onClose: () => void;
+  returnFocusTo?: React.RefObject<HTMLElement | null>;
+}> = ({ caseId, row, onClose, returnFocusTo }) => {
   const [view, setView] = React.useState<EventView>('table');
   const [announce, setAnnounce] = React.useState('');
   const record = React.useMemo(() => row?._raw ?? {}, [row]);
@@ -432,7 +457,19 @@ const EventSheet: React.FC<{ caseId: string; row: CaseEventRow | null; onClose: 
   const logsHref = row ? logsHrefFor([row]) : null;
   return (
     <Sheet open={row !== null} onOpenChange={(open) => (open ? undefined : onClose())}>
-      <SheetContent side="right" size="lg" className="gap-0 overflow-y-auto p-0" data-testid="case-event-sheet">
+      <SheetContent
+        side="right"
+        size="lg"
+        className="gap-0 overflow-y-auto p-0"
+        data-testid="case-event-sheet"
+        onCloseAutoFocus={(event) => {
+          const target = returnFocusTo?.current;
+          if (target?.isConnected) {
+            event.preventDefault();
+            target.focus();
+          }
+        }}
+      >
         {row ? (
           <div className="flex min-h-0 flex-col gap-4 p-5 pt-4">
             <SheetHeader className="pr-12 text-left">

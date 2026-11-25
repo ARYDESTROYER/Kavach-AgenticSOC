@@ -42,12 +42,33 @@ function safeFilename(name: string, caseId: string): string {
   return clean && /\.json$/i.test(clean) ? clean : `${caseId.replace(/[^\w.-]+/g, '_').slice(0, 100) || 'case'}.json`;
 }
 
-export const AllFieldsSheet: React.FC<AllFieldsSheetProps> = ({ caseId, open, onOpenChange, load = getCaseRecord }) => {
+/**
+ * Says the costs are left out for a viewer without `cost:view`. It reads the grants only
+ * inside the open sheet, so the inspector that mounts the closed sheet asks nothing of
+ * the auth context.
+ */
+const CostWithheldNote: React.FC = () => {
   const { hasPermission } = useAuth();
-  const canViewCost = hasPermission('cost', 'view');
+  if (hasPermission('cost', 'view')) return null;
+  return (
+    <p className="text-xs text-muted-foreground" data-testid="all-fields-cost-withheld">
+      Costs are left out. They need permission to view costs.
+    </p>
+  );
+};
+
+export const AllFieldsSheet: React.FC<AllFieldsSheetProps> = ({ caseId, open, onOpenChange, load = getCaseRecord }) => {
   const [loaded, setLoaded] = React.useState<Loaded>({ state: 'idle' });
   const [reload, setReload] = React.useState(0);
   const [announce, setAnnounce] = React.useState('');
+  // Where focus was when the sheet opened (the "View all fields" button), so closing
+  // it returns there: the sheet opens from state, so Radix has no trigger to return to.
+  const opener = React.useRef<HTMLElement | null>(null);
+  React.useLayoutEffect(() => {
+    if (open && document.activeElement instanceof HTMLElement && document.activeElement !== document.body) {
+      opener.current = document.activeElement;
+    }
+  }, [open]);
 
   React.useEffect(() => {
     if (!open) return undefined;
@@ -87,7 +108,19 @@ export const AllFieldsSheet: React.FC<AllFieldsSheetProps> = ({ caseId, open, on
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent side="right" size="lg" className="gap-0 overflow-y-auto p-0" data-testid="all-fields-sheet">
+      <SheetContent
+        side="right"
+        size="lg"
+        className="gap-0 overflow-y-auto p-0"
+        data-testid="all-fields-sheet"
+        onCloseAutoFocus={(event) => {
+          const target = opener.current;
+          if (target?.isConnected) {
+            event.preventDefault();
+            target.focus();
+          }
+        }}
+      >
         <div className="flex min-h-0 flex-col gap-4 p-5 pt-4">
           <SheetHeader className="pr-12 text-left">
             <SheetTitle>All fields</SheetTitle>
@@ -96,11 +129,7 @@ export const AllFieldsSheet: React.FC<AllFieldsSheetProps> = ({ caseId, open, on
               {fieldCount !== null ? ` ${fieldCount.toLocaleString('en-US')} top-level fields.` : ''}
             </SheetDescription>
           </SheetHeader>
-          {!canViewCost ? (
-            <p className="text-xs text-muted-foreground" data-testid="all-fields-cost-withheld">
-              Costs are left out. They need permission to view costs.
-            </p>
-          ) : null}
+          <CostWithheldNote />
           <p aria-live="polite" className="sr-only">
             {announce}
           </p>

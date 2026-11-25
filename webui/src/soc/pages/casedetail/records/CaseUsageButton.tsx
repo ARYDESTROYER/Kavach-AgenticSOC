@@ -21,7 +21,7 @@ import type { CaseUsagePage, CaseUsageRow } from '@/lib/types';
 import { Badge } from '@/ui/badge';
 import { Popover, PopoverContent, PopoverTrigger } from '@/ui/popover';
 
-import { costFormula, priceBasisWords, tokens } from './usageFormula';
+import { costFormula, exactMoney, priceBasisWords, recomputeCost, tokens } from './usageFormula';
 import { eventTime } from './time';
 
 export interface CaseUsageButtonProps {
@@ -39,17 +39,31 @@ function roleWords(row: CaseUsageRow): string {
   return row.role ? humanizeToken(row.role) : 'Model call';
 }
 
-/** The tier a call ran on: Batch, Flex or the standard tier. */
-function tierWords(row: CaseUsageRow): string {
-  if (row.batch) return 'Batch';
+/**
+ * The tier a call ran on: Flex, Batch or the standard tier. The ledger's `batch` flag is
+ * set for a Flex call too, so the recorded tier is read first.
+ */
+export function tierWords(row: Pick<CaseUsageRow, 'batch' | 'processing_tier'>): string {
   const tier = String(row.processing_tier || '').toLowerCase();
   if (tier === 'flex') return 'Flex';
+  if (tier === 'batch' || row.batch) return 'Batch';
   if (!tier || tier === 'standard' || tier === 'default' || tier === 'auto') return 'Standard tier';
   return humanizeToken(tier);
 }
 
+/**
+ * Whether a row's recorded rates do not lead to its recorded cost, so the formula never
+ * stands beside a different amount without a word. One unit of the 8th decimal is allowed
+ * for the two runtimes rounding a half differently.
+ */
+function costDiffers(row: CaseUsageRow): boolean {
+  const recomputed = recomputeCost(row);
+  return recomputed !== null && typeof row.cost === 'number' && Math.abs(recomputed - row.cost) > 1.5e-8;
+}
+
 const UsageRow: React.FC<{ row: CaseUsageRow }> = ({ row }) => {
   const formula = costFormula(row);
+  const differs = costDiffers(row);
   const failed = row.outcome && row.outcome !== 'ok' && row.outcome !== 'success';
   return (
     <li className="space-y-0.5 py-2 first:pt-0 last:pb-0" data-testid="case-usage-row">
@@ -59,7 +73,11 @@ const UsageRow: React.FC<{ row: CaseUsageRow }> = ({ row }) => {
         <span className="min-w-0 truncate font-mono text-xs text-muted-foreground" title={row.model}>
           {row.model || 'Model not recorded'}
         </span>
-        <span className="ml-auto shrink-0 text-xs tabular-nums text-foreground">{fmtMoney(row.cost, row.currency)}</span>
+        {/* To the ledger's precision, like the formula below, so a cheap call never
+            reads $0.0000 beside a formula that ends in its real cost. */}
+        <span className="ml-auto shrink-0 text-xs tabular-nums text-foreground">
+          {typeof row.cost === 'number' && Number.isFinite(row.cost) ? exactMoney(row.cost, row.currency) : fmtMoney(row.cost, row.currency)}
+        </span>
       </div>
       <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-2xs text-muted-foreground">
         <time dateTime={row.ts}>{eventTime(row.ts)}</time>
@@ -92,9 +110,16 @@ const UsageRow: React.FC<{ row: CaseUsageRow }> = ({ row }) => {
         {`${tokens(row.prompt_tokens)} in, ${tokens(row.completion_tokens)} out, ${tokens(row.cache_read_tokens)} cache read, ${tokens(row.cache_write_tokens)} cache write`}
       </p>
       {formula ? (
-        <p className="font-mono text-2xs text-foreground/90 [overflow-wrap:anywhere]" data-testid="case-usage-formula">
-          {formula}
-        </p>
+        <>
+          <p className="font-mono text-2xs text-foreground/90 [overflow-wrap:anywhere]" data-testid="case-usage-formula">
+            {formula}
+          </p>
+          {differs ? (
+            <p className="text-2xs text-muted-foreground" data-testid="case-usage-differs">
+              {`The ledger records ${exactMoney(row.cost, row.currency)} for this call, not the amount its rates give.`}
+            </p>
+          ) : null}
+        </>
       ) : (
         <p className="text-2xs text-muted-foreground">Rates not recorded for this call. The cost is shown as stored.</p>
       )}

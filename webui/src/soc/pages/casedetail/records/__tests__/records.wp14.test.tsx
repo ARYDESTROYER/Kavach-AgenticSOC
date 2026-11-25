@@ -12,6 +12,7 @@
  * * `FindingsList`: "More" and "Cites N events".
  * * `AwaitingReason`: why a candidate waits, and the gates behind it.
  */
+import * as React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { axe, toHaveNoViolations } from 'jest-axe';
@@ -31,7 +32,9 @@ vi.mock('@/lib/download-blob', () => ({ downloadBlob: h.downloadBlob }));
 import type { Case, CaseEventRow, CaseEventsPage, CaseUsagePage, CaseUsageRow } from '@/lib/types';
 import { searchJson } from '@/soc/components/JsonTree';
 import { CaseEvents, flattenRecord, logsHrefFor, timeParts } from '../CaseEvents';
-import { CaseUsageButton } from '../CaseUsageButton';
+import { CaseUsageButton, tierWords } from '../CaseUsageButton';
+import { optsFromHash } from '@/soc/router';
+import { parseLogsDeepLink } from '@/soc/pages/UnifiedLogs';
 import { AllFieldsSheet } from '../AllFieldsSheet';
 import { FindingsList } from '../FindingsList';
 import { AwaitingReason, awaitingWords } from '../AwaitingReason';
@@ -160,6 +163,17 @@ describe('CaseEvents', () => {
     expect(document.querySelector('img')).toBeNull();
   });
 
+  it('returns focus to the row it opened from when the event sheet closes', async () => {
+    render(<CaseEvents caseId="case-1" load={vi.fn(async () => page([event('e1'), event('e2', { ts: '2026-11-20T10:00:09+00:00' })]))} />);
+    const second = await screen.findByRole('button', { name: /^Open event 2026-11-20 10:00:09 UTC$/ });
+    second.focus();
+    fireEvent.click(second);
+    const sheet = await screen.findByRole('dialog');
+    fireEvent.keyDown(sheet, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await waitFor(() => expect(document.activeElement).toBe(second));
+  });
+
   it('downloads the shown events as NDJSON and links them to Logs', async () => {
     render(<CaseEvents caseId="case-1" load={vi.fn(async () => page([event('e1'), event('e2')]))} />);
     await screen.findAllByTestId('case-event-row');
@@ -177,6 +191,23 @@ describe('CaseEvents', () => {
     expect(link.getAttribute('href')).toBe(logsHrefFor([event('e1'), event('e2')]));
     expect(link.getAttribute('href')).toContain('sourceId=src-1');
     expect(link.getAttribute('href')).toContain('rule=ssh-brute');
+  });
+
+  it('leaves out a rule the Logs page would refuse, so the link still opens the window', () => {
+    // Logs ignores a link whole when one part breaks its grammar (a control character,
+    // more than 256 characters); the source and the window must still reach it.
+    for (const rule of ['ssh\u0007brute', 'x'.repeat(257), '   ']) {
+      const href = logsHrefFor([event('e1', { rule })]) ?? '';
+      window.location.hash = href;
+      const link = parseLogsDeepLink(optsFromHash());
+      expect(link).not.toBeNull();
+      expect(link?.sourceId).toBe('src-1');
+      expect(link?.from).toBeTruthy();
+      expect(link?.rule).toBeUndefined();
+    }
+    window.location.hash = logsHrefFor([event('e1')]) ?? '';
+    expect(parseLogsDeepLink(optsFromHash())?.rule).toBe('ssh-brute');
+    window.location.hash = '';
   });
 
   it('has no accessibility violations', async () => {
@@ -303,6 +334,40 @@ describe('CaseUsageButton', () => {
     expect(within(dialog).getByTestId('case-usage-summary')).toHaveTextContent('Older calls are not listed.');
   });
 
+  it('names a Flex call as Flex, not Batch, though the ledger marks both half price', async () => {
+    // `llm/providers.py` sets `batch` for a Flex call; `processing_tier` tells them apart.
+    const flex = usageRow({ batch: true, processing_tier: 'flex', cost: 0.00275 });
+    expect(tierWords(flex)).toBe('Flex');
+    expect(tierWords(usageRow({ batch: true, processing_tier: 'batch' }))).toBe('Batch');
+    expect(tierWords(usageRow())).toBe('Standard tier');
+    expect(costFormula(flex)).toBe('(2,000 in x $1.25/M + 300 out x $10/M) x 0.5 (Flex) = $0.00275');
+    render(<CaseUsageButton caseId="case-1" totalCost={0.00275} load={vi.fn(async () => usagePage([flex]))} />);
+    fireEvent.click(screen.getByRole('button', { name: /show the AI calls behind it/ }));
+    const [row] = await screen.findAllByTestId('case-usage-row');
+    expect(within(row).getByText('Flex')).toBeInTheDocument();
+    expect(within(row).queryByText('Batch')).toBeNull();
+  });
+
+  it('shows a cheap call at the ledger precision, the same amount its formula ends in', async () => {
+    const tiny = usageRow({ prompt_tokens: 100, completion_tokens: 0, input_rate_per_million: 0.15, cost: 0.000015 });
+    render(<CaseUsageButton caseId="case-1" totalCost={0.000015} load={vi.fn(async () => usagePage([tiny]))} />);
+    fireEvent.click(screen.getByRole('button', { name: /show the AI calls behind it/ }));
+    const [row] = await screen.findAllByTestId('case-usage-row');
+    expect(within(row).getByText('$0.000015')).toBeInTheDocument();
+    expect(within(row).queryByText('$0.0000')).toBeNull();
+  });
+
+  it("says so when a call's recorded cost is not what its rates give", async () => {
+    const odd = usageRow({ cost: 0.0021 });
+    render(<CaseUsageButton caseId="case-1" totalCost={0.0076} load={vi.fn(async () => usagePage([usageRow(), odd]))} />);
+    fireEvent.click(screen.getByRole('button', { name: /show the AI calls behind it/ }));
+    const [plain, differs] = await screen.findAllByTestId('case-usage-row');
+    expect(within(plain).queryByTestId('case-usage-differs')).toBeNull();
+    expect(within(differs).getByTestId('case-usage-differs')).toHaveTextContent(
+      'The ledger records $0.0021 for this call, not the amount its rates give.',
+    );
+  });
+
   it('says honestly when the ledger holds no call for the case', async () => {
     const load = vi.fn(async () =>
       usagePage([], { totals: { pipeline: 0, chat: 0, other: 0 }, reconciles: false, token_cost: 0.04 }),
@@ -344,6 +409,30 @@ describe('AllFieldsSheet', () => {
     await waitFor(() => expect(h.copyText).toHaveBeenCalledWith(content));
     fireEvent.click(within(sheet).getByRole('button', { name: 'Download' }));
     expect(h.downloadBlob.mock.calls[0][0]).toBe('case-1.json');
+  });
+
+  it('returns focus to the button that opened it when it closes', async () => {
+    const load = vi.fn(async () => ({ filename: 'case-1.json', content_type: 'application/json', content }));
+    const Host = () => {
+      const [open, setOpen] = React.useState(false);
+      return (
+        <>
+          <button type="button" onClick={() => setOpen(true)}>
+            View all fields
+          </button>
+          <AllFieldsSheet caseId="case-1" open={open} onOpenChange={setOpen} load={load} />
+        </>
+      );
+    };
+    render(<Host />);
+    const opener = screen.getByRole('button', { name: 'View all fields' });
+    opener.focus();
+    fireEvent.click(opener);
+    const sheet = await screen.findByRole('dialog', { name: 'All fields' });
+    await within(sheet).findByRole('group', { name: 'Case record' });
+    fireEvent.keyDown(sheet, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await waitFor(() => expect(document.activeElement).toBe(opener));
   });
 
   it('says costs are left out without cost:view', async () => {

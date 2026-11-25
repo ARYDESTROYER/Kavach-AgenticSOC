@@ -37,6 +37,9 @@ vi.mock('@/lib/api', () => ({
     get: vi.fn().mockResolvedValue({ found: false }),
   },
 }));
+// The Evidence tab's events table (Round 16 WP14) reads its own route through the shared
+// request helper, which this narrow api mock leaves out; this spec is about the chips.
+vi.mock('@/soc/pages/casedetail/records/CaseEvents', () => ({ CaseEvents: () => null }));
 
 import type { Case, ThreatContextPanel as ThreatContextPanelData } from '@/lib/types';
 import { TooltipProvider } from '@/ui/tooltip';

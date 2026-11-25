@@ -147,7 +147,7 @@ describe('the explain stubs', () => {
 });
 
 describe('the records stubs', () => {
-  it('render nothing where there is nothing to show (WP14 filled them; records.wp14.test.tsx covers the rest)', () => {
+  it('render nothing where there is nothing to show (WP14 filled them; records.wp14.test.tsx covers the rest)', async () => {
     const { container } = render(
       <>
         <AllFieldsSheet caseId="case-1" open={false} onOpenChange={() => undefined} />
@@ -164,6 +164,8 @@ describe('the records stubs', () => {
     }));
     render(<CaseEvents caseId="case-1" filterEventIds={['e1']} onClearFilter={() => undefined} load={load} />);
     expect(load).toHaveBeenCalledWith('case-1', expect.objectContaining({ limit: 50 }));
+    // Let the read settle inside act, so the strict run sees no act warning.
+    expect(await screen.findByText('This case lists no events.')).toBeInTheDocument();
   });
 
   it('show the cost as text, as the facts rail does today', () => {
