@@ -37,12 +37,15 @@ import { ReauthDialog } from './components/ReauthDialog';
 import { ConfirmProvider } from './components/ConfirmDialog';
 import { PageSkeleton } from './components/PageSkeleton';
 
+// The boot and sign-in hand-off spinner. It fades in only after 300ms
+// (`login-delayed-reveal`, theme.css), so a fast load goes from the sign-in page to the
+// shell without a spinner flash; it sits on the same canvas as both, so no colour jumps.
 const CenterSpinner: React.FC<{ label: string }> = ({ label }) => (
   <LoadingState
     label={label}
     description="Preparing your secure workspace."
     layout="page"
-    className="min-h-dvh bg-canvas"
+    className="login-delayed-reveal min-h-dvh bg-canvas"
   />
 );
 

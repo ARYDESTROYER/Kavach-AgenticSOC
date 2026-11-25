@@ -582,10 +582,9 @@ describe('eager login chain does not pull framer-motion (source guard)', () => {
       ['soc', 'pages', 'Login.tsx'],
       ['soc', 'pages', 'Wizard.tsx'],
       ['soc', 'components', 'auth', 'loginParts.tsx'],
-      // The identity accents are statically imported by Login.tsx, so they are on
-      // the eager chain too. They animate with CSS only — this keeps it that way.
-      ['soc', 'components', 'auth', 'ShineButton.tsx'],
-      ['soc', 'components', 'auth', 'ThemeModePill.tsx'],
+      // Statically imported by Login.tsx, so on the eager chain too. The sign-in page
+      // animates with CSS only (theme.css); this keeps it that way.
+      ['soc', 'components', 'auth', 'login.api.ts'],
     ];
     // The `motion` PACKAGE specifier only — local `@/soc/components/motion` /
     // `./components/motion/*` imports start with `@`/`.` and never match.

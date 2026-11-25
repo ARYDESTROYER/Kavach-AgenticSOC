@@ -209,7 +209,7 @@ describe('Login — branding probe folded into the first-paint gate (FOUC fix, f
 
     // Now the form paints AND the operator's headline is present in the same frame.
     expect(await screen.findByLabelText('Username')).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Continue' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Continue' })).toBeInTheDocument();
     expect(screen.getByText('Late Co')).toBeInTheDocument();
   });
 });

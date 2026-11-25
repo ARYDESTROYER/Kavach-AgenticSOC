@@ -210,12 +210,12 @@ describe('loginParts — curated key sets', () => {
     expect(parts.asLoginIllustration('radar')).toBe('radar');
   });
 
-  it('renders every illustration variant without throwing', async () => {
-    const parts = await import('../auth/loginParts');
-    for (const key of parts.LOGIN_ILLUSTRATIONS) {
-      const { unmount } = render(<parts.LoginIllustration variant={key} />);
-      unmount();
-    }
-    expect(true).toBe(true);
+  it('keeps the keys as data only: no illustration or hero component is exported', async () => {
+    // Round 16 WP04 deleted the drawn illustrations and the hero; the keys still
+    // round-trip through Branding (see "preserves hidden legacy layout ..." above).
+    const parts = (await import('../auth/loginParts')) as Record<string, unknown>;
+    expect(parts.LoginIllustration).toBeUndefined();
+    expect(parts.BrandHero).toBeUndefined();
+    expect(parts.LOGIN_ILLUSTRATION_LABELS).toBeUndefined();
   });
 });

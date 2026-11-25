@@ -1906,126 +1906,115 @@ paths, registry/deployment credentials, migration instructions, or Compose fragm
 
 ## Identity surfaces
 
-The sign-in experience is intentionally minimal. Use one vertically and horizontally
-centred, borderless 480px by 492px identity slab for the normal desktop sign-in state
-on the isolated identity canvas, with a 384px content measure: one standalone 56px
-mark, the current auth-mode heading, one short
-description, credential controls, one primary action, and quiet support or operator-
-configured footer text. The hierarchy remains left-aligned inside the centred slab. A
-configured sign-in headline replaces the default heading; it never stacks above a
-second `h1`. Do not add a synthetic audit-status claim: auditing is a platform
-invariant, not useful sign-in instructions. The form is the page. Do not add a marketing
-hero, split context pane, assurance rail, trust-path diagram, decorative illustration,
-fake telemetry, or repeated security claims. Exactly two controls carry a gradient and
-a glow — the primary CTA and the corner appearance pill, both described under
-*Identity accents* below. Nothing else on this canvas may, and nothing in the Console
-may at all.
+The sign-in page is one quiet column on the Console's own tokens. The form is the page.
+Round 16 (SPEC D9) replaced the earlier isolated identity canvas, its ambient tiles and
+its two gradient controls; nothing on this page has a palette of its own.
 
-The slab has no radius, border, or elevation. It uses 48px top/side and 96px bottom
-desktop insets. Its fixed, login-scoped palette is intentionally independent of Console
-branding tokens: Light canvas/slab/muted tile are `#fbfbf8` / `#fff` / `#f5f4ef`;
-Dark uses `#1a1a1e` / `#101013` / `#27272b`. Four explicit 0.5px viewport guides
-align to the slab edges. The ambient layer follows the live Mistral sign-in choreography:
-exactly four neutral 240px tiles reveal sparsely, dwell, move on a 1,800ms ease-in-out
-transition, then fade away before scheduling their next randomized cycle. Top and bottom
-use two horizontal endpoints; left and right use a two-column by two-row outer lattice and
-choose a next cell sharing the current row or column. Only the top and bottom tiles may
-emit an occasional warm directional trail (`gold`, amber, orange, vermilion, or red), one
-tile behind the current move. Side tiles never emit colour. The trail belongs to the same
-movement lifecycle and retracts when that movement settles; there are no detached colour
-anchors or independently timed stationary blocks. The light/dark neutral tile, canvas,
-and guide tokens remain the dominant visual treatment, so the background reads as a quiet
-grid with rare colour rather than a perpetual saturated animation. Do not replace this
-backdrop with a gradient, glow, blurred blob, perpetual CSS drift, or tile border; the
-*Identity accents* exception below covers controls, never this ambient layer. The decoration
-is pointer-inert, `aria-hidden`, reduced-motion-safe, layered below the opaque slab, and
-never crosses behind credential content. Light/Dark changes snap the neutral tile palette
-atomically while preserving the active movement; never interpolate white tiles through a
-large grey flash during a theme switch. Below the small breakpoint, all
-guides and ambient tiles disappear and the
-surface becomes a full-width, full-height flow with 32px side/top and 80px bottom insets.
-A small pre-auth appearance control may sit in the viewport corner: the Light/Dark
-pill plus a round *Use system theme* reset that is pressed while `system` is active.
-System, Light, and Dark all remain reachable — the pill reflects and sets the RESOLVED
-appearance, and choosing either explicitly releases `system`. It delegates to
-`ThemeProvider.setTheme`, while authenticated surfaces continue through the preference
-layer. Sign-in, setup, MFA, MFA enrollment, and forced password change
-share the same centred slab; taller modes grow naturally and the slab scrolls within the
-viewport so software keyboards never trap the primary action. The form owns the page's
-single `h1`.
-Credential entry is identity-first: the initial surface contains only the username field;
-once it has a non-empty value, **Continue** appears and advances to the password step.
-The password step repeats the selected identity as quiet context and provides an explicit
-way back without discarding it. Credential inputs are 48px and primary/SSO actions are
-40px or taller. Inputs use a 16px mobile font and 14px desktop font to avoid browser
-focus zoom while keeping the reference's editorial density, password-manager
-autocomplete, and paste available. Seeded demo credentials label username and password
-explicitly beneath the primary credential form; their optional `Use` action fills the
-form, advances to the password step, and never submits it. When configured, icon-led,
-accessibly named SSO actions follow the identity step in one equal-width row; no empty
-divider or provider region is reserved when SSO is absent.
-External support links say they open a new tab, and the blocking first-paint gate uses
-the shared `LoadingState`.
+- **Canvas.** The page is `bg-canvas`, the same surface as the boot spinner and the
+  Console, so moving between them never changes colour. One static brand wash sits at the
+  top: `radial-gradient(60rem 28rem at 50% -8rem, hsl(var(--primary) / 0.08), transparent
+  70%)` on `.login-canvas::before`. It follows the organization accent, costs no
+  JavaScript, and is removed under `prefers-reduced-transparency: reduce` and
+  `forced-colors: active`. No slab, card, border, shadow, hero, illustration, fake
+  telemetry or repeated security claim.
+- **Column.** One column, 400px wide from the small breakpoint up and centred in the
+  viewport. On phones it is full width with 24px gutters, top aligned at
+  `max(4rem, 12dvh)`, in the ordinary document scroll (no nested scroller). Every mode
+  (sign-in, setup, MFA, MFA enrollment, forced password change) uses the same column;
+  taller modes grow and scroll with the page.
+- **Hierarchy.** The organization logo (40px, `object-contain`) or the built-in shield
+  (28px, `text-primary`), 32px above the heading. The page's one `h1` is
+  "Sign in to {organization}"; "Welcome back" appears only when this device remembers a
+  username; an operator `login_headline` replaces either and never stacks above a second
+  `h1`. A description appears only when it carries information: the operator's
+  `login_body` or `login_subtitle` on the identity step, and the instructions of the setup,
+  MFA, enrollment and forced-change modes. The password step has none, because the
+  identity row above the field already names the account. The hierarchy is left aligned
+  inside the centred column.
+- **Fields and actions.** Labels above fields; inputs 44px, 16px text on phones (no
+  browser focus zoom) and 14px from the small breakpoint up, with the Console `--input`
+  edge (at least 3:1 on the canvas and on the field fill) and the Console focus ring. The
+  primary action is the ordinary primary `Button` (`--primary` and
+  `--primary-foreground`, AA guarded for any operator accent), full width and 44px.
+  Credential fields keep password-manager `autocomplete` and paste.
+- **Identity first.** The identity step holds the username and **Continue**, which is
+  always rendered: an empty submit shows "Enter your username." under the field and keeps
+  the step. The password step repeats the identity as a quiet row with **Back** (or "Use a
+  different account" for a remembered device), the password with its reveal toggle, a
+  "Forgot password?" disclosure that says to ask an administrator, the Remember me row,
+  and **Sign in**. A hidden `autocomplete="username"` field stays in the password form.
+- **Single sign-on.** When providers exist, an "or" divider follows the identity form,
+  then one full-width 44px outline button per provider with its mark and visible text
+  "Sign in with {name}". The visible text is the accessible name. No region is reserved
+  when single sign-on is off. When single sign-on is offered, the Remember me row also
+  sits under Continue.
+- **Remember me.** When it can be ticked, the row is the label "Remember me" alone, with
+  no duration and no accessible description (Round 16 D6). The warning dialog the first
+  tick opens is the disclosure and states every limit. When an administrator turned it
+  off, or the connection is not secure, the row stays visible and disabled with its
+  one-line reason.
+- **Errors.** A field error (an empty field, wrong credentials, too many attempts, no
+  connection) renders under its field: 14px `text-critical-text` with a 16px alert icon,
+  `id="login-error"`, `role="alert"`, the field `aria-invalid` and described by it. A quieter
+  second line may count attempts. Page errors that belong to no field (a single sign-on
+  callback failure, an expired enrollment) keep the top alert. A single sign-on error is a
+  backend code mapped to a fixed sentence; the page never renders a query-string value
+  (B25). The session-ended notice keeps its calm info style.
+- **Appearance.** One `role="group"` named "Appearance" in the top-right corner: three
+  round icon buttons, "Use system theme", "Light theme" and "Dark theme", each with
+  `aria-pressed`. The pressed one is an inverted fill (`bg-foreground text-background`),
+  and under forced colours the system highlight. It delegates to `ThemeProvider.setTheme`;
+  signed-in pages use the preference layer.
+- **Two-factor.** Six code cells, 48px tall with 6px gaps (about 40px wide on a 320px
+  phone). The cells submit once when the sixth digit arrives; "Verify and continue" stays
+  for recovery codes and as a fallback. A wrong code clears the cells and focuses the
+  first one.
+- **Loading.** The page waits for the setup status, the single sign-on providers, the
+  branding and the Remember me chunk before it paints the form, so nothing flashes or pops
+  in. Meanwhile the final shell is in place: the canvas, the appearance group and the
+  column, with a small `LoadingGlyph` that reveals only after 300ms. On a cold load the page
+  waits for ThemeProvider's own branding fetch instead of sending a second one; after a
+  sign-out, or when that fetch is older than 30 seconds, it fetches again.
+- **Hand-off.** The boot and hand-off spinner (`CenterSpinner`) reveals after 300ms on the
+  same canvas, so a fast sign-in goes from the form to the Console without a spinner flash
+  or a colour jump. What's new appears only inside the Console, after the hand-off.
+- **Footer.** The support link (it says it opens a new tab), operator notes and
+  `footer_text` as one muted 12px line under the form, all plain text. Seeded demo
+  credentials label the username and password under the form; their **Use** action fills
+  the form and moves to the password step, and never submits it.
 
-Legacy `split`, `centered`, and `full` branding values remain readable and round-trip for
-configuration compatibility, but all render the same minimal shell. Bounded operator
-wordmark, logo, subtitle, optional short welcome copy, footer notes, and support URL may
-remain; they must stay plain text and must not rebuild a second content pane. The Branding
-editor preview mirrors this exact minimal geometry and tokens.
+Legacy `split`, `centered` and `full` branding values remain readable and round-trip for
+configuration compatibility, and so does `login_illustration`; all render the same column
+and no illustration is drawn. The Branding editor preview mirrors this column and its
+tokens.
 
 ### Identity accents
 
-The identity canvas — and only the identity canvas — carries two expressive controls:
-`ShineButton`, the primary CTA, and `ThemeModePill`, the corner appearance switch. Both
-live in `webui/src/soc/components/auth/`, both are styled entirely by
-`.login-auth-canvas`-scoped CSS in `theme.css`, and both animate with CSS transitions
-and one keyframe — no animation library, and neither sits on a lazy chunk. Every rule
-is scoped under the canvas class, so the restriction is structural rather than
-advisory: used off the identity canvas these degrade to a plain, legible button rather
-than an invisible one. They are a
-deliberate exception to the surface grammar above, not a licence to reintroduce
-decoration elsewhere: no Console page may adopt either, and the ambient backdrop stays
-neutral.
+There are none. Round 16 (SPEC D9) retired the sign-in page's two expressive controls,
+the gradient primary button and the gradient appearance pill, together with the
+`gate-login-accents` design gate that measured their raw gradients. That is subject
+removal, not a softened gate: the page now paints only Console tokens, which the contrast
+gate measures in both themes, with sign-in pairs added in the same change (body,
+secondary and error text on `--canvas` at 4.5:1; `--input` on `--canvas` and on
+`--background`, and the focus ring on `--canvas`, at 3:1).
 
-The exception holds only while these rules do:
+The rules that keep it that way:
 
-- **Colour is measured, never eyeballed.** These are the only surfaces that paint text
-  on a raw gradient rather than a semantic token pair, so the token contrast gate cannot
-  see them. `webui/scripts/gate-login-accents.mjs` re-derives the worst case from
-  `theme.css` on every `npm run gates` and every Vitest run, compositing each face stop
-  with the sweep at its peak keyframe opacity and the overlay tint at its declared
-  per-theme opacity, and measuring against both label stops. Every composite clears
-  4.5:1. The reference palettes these are modelled on do not; that is why the ramps here
-  are deeper.
-- **Decoration never reaches the measured surface.** The CTA's halo renders outside an
-  opaque face; the pill's flair orbs render behind an opaque track. Both controls paint
-  no background of their own so their glow layers can sit beneath the opaque child.
-- **The pill's glyphs own fixed side cells.** The label can never drift over the bright
-  end of either ramp, which is what makes the measured label zone true. Ink and track
-  swap instantly between states — the two ramps are not interpolable, so a crossfade
-  would pair each ink with the wrong ramp mid-transition.
-- **The focus ring is drawn on the opaque child, never on the button.** An element's
-  outer box-shadow paints before its descendants, so a ring on the button itself sits
-  underneath the halo and the flair — on precisely the state that shows the ring. It
-  goes on the face and the track instead, with a 2px opaque offset so its contrast is
-  measured against the slab or the canvas rather than against whatever the glow is
-  painting behind it.
-- **Disabled and busy are different states.** The CTA is disabled both while nothing is
-  typed and while the request is in flight. Flattening it the instant it is clicked
-  reads as the form going dead, so the inert treatment excludes `[data-busy]`; busy
-  keeps the identity and lets the spinner carry the state.
-- **Every fallback is explicit.** The sweep is gated behind
-  `prefers-reduced-motion: no-preference`; translucent and blurred layers — the tint
-  included — are dropped under `prefers-reduced-transparency: reduce`; and under
-  `forced-colors: active` both controls return to the system palette AND the
-  gradient-clipped label is un-clipped, without which it would stay transparent over a
-  system-painted face and vanish. Those fallbacks carry `!important` deliberately:
-  `forced-color-adjust: none` opts the elements out of the UA's own correction, so any
-  state selector that survives on specificity — the pill's `[data-appearance]` ink, the
-  disabled CTA's muted face — keeps a hard-coded colour the system theme never sees.
-- **The CTA's accessible name is its label alone.** The sweep is `aria-hidden`, the halo
-  is a pseudo-element, and any icon renders outside the clipped label span (text-fill
-  transparency is inherited, so an icon nested inside it would disappear).
+- **One accent.** The organization's `--primary` drives the button, the focus ring, the
+  mark and the wash. No other colour, gradient or glow appears on the page.
+- **Motion is CSS, short and once.** The column enters once (opacity and an 8px rise,
+  280ms), the incoming form of a step change slides 12px (forward or back, 200ms) while
+  the outgoing one leaves at once, a field error fades in (150ms), the spinners reveal
+  after 300ms, and the wash may fade in once (600ms). Every keyframe animates only
+  `opacity` and `transform`, fills `backwards` (a finished `both` fill would leave a
+  backdrop root), sets no `will-change`, never repeats and exists only under
+  `prefers-reduced-motion: no-preference`; under reduce the page simply appears. A
+  source test (`login-motion-guard.test.ts`) holds `theme.css` to this.
+- **Nothing moves after it settles.** No timers, intervals or perpetual animation run on
+  the page after the first paint, so there is nothing to pause (WCAG 2.2.2) and nothing
+  re-renders while the page sits open (`login.quiet.test.tsx`).
+- **No animation library.** The sign-in chain stays off `motion`, so the first paint
+  pulls nothing extra (`bundle-first-paint.test.ts`).
 
 ## Forms, Settings, and dangerous actions
 

@@ -1,17 +1,11 @@
 /**
- * Login building blocks — the brand hero, a client-side password-strength meter,
- * per-provider SSO brand icons, and a segmented one-time-code input.
+ * Login building blocks: the credential fields, a client-side password-strength
+ * meter, per-provider SSO brand icons, a segmented one-time-code input, and the
+ * curated login white-label key sets.
  *
- * These are presentational pieces composed by `pages/Login.tsx`. They deliberately
- * add NO new dependencies and render all branding text as PLAIN text (#9): the hero
- * never uses dangerouslySetInnerHTML, the logo `alt` is empty, and the
- * wordmark/tagline are rendered as text nodes only.
- *
- * The brand-hero motion (two drifting aurora blobs + the two content entrances) is
- * implemented in PURE CSS (`@keyframes` in tailwind.config.js, classes below), NOT
- * framer-motion. This keeps framer-motion OUT of the eager login chain so it never
- * loads on first paint. All motion is neutralised by the global
- * `@media (prefers-reduced-motion: reduce)` rule in styles/theme.css.
+ * These are presentational pieces composed by `pages/Login.tsx`. They add NO new
+ * dependencies and render all branding text as PLAIN text (#9). Nothing here animates:
+ * the sign-in page's only motion is the CSS entrance in styles/theme.css.
  */
 import * as React from 'react';
 import {
@@ -24,17 +18,19 @@ import { cn } from '@/lib/cn';
 import { Input, type InputProps } from '@/ui/input';
 
 // --------------------------------------------------------------------------- //
-// Login controls — one local grammar for every credential field.
+// Login controls: one local grammar for every credential field.
 //
-// These are deliberately login-specific rather than another global Input variant:
-// the 48px target and quieter fill belong to the identity surface,
-// while the Console's dense tables and filters continue to use the 36px base Input.
+// These are login-specific rather than another global Input variant: the 44px
+// target belongs to the sign-in page, while the Console's dense tables and filters
+// keep the 36px base Input. The edge is the Console's `--input` (at least 3:1 on the
+// canvas and the field fill), the ring the Console's focus ring, and the text 16px
+// on phones (no browser focus zoom) and 14px from the small breakpoint up.
 // --------------------------------------------------------------------------- //
 
 const LOGIN_CONTROL_CLASS = cn(
-  'login-auth-control h-12 rounded-md border-input bg-background text-lg shadow-none sm:text-base',
+  'h-11 rounded-md border border-input bg-background text-lg shadow-none sm:text-base',
   'transition-[border-color,background-color,box-shadow] duration-150',
-  'placeholder:text-muted-foreground/70 hover:border-border-strong',
+  'placeholder:text-muted-foreground hover:border-border-strong',
   'focus-visible:bg-background focus-visible:ring-2 focus-visible:ring-ring',
 );
 
@@ -409,7 +405,8 @@ export const OtpInput: React.FC<OtpInputProps> = ({
   };
 
   return (
-    <div className="flex items-center justify-between gap-2" role="group" aria-label={ariaLabel}>
+    // gap-1.5 keeps every cell about 40px wide on a 320px phone.
+    <div className="flex items-center justify-between gap-1.5" role="group" aria-label={ariaLabel}>
       {digits.map((d, i) => (
         <input
           key={i}
@@ -430,7 +427,7 @@ export const OtpInput: React.FC<OtpInputProps> = ({
           aria-label={`${ariaLabel} digit ${i + 1}`}
           className={cn(
             LOGIN_CONTROL_CLASS,
-            'w-full min-w-0 px-0 text-center font-mono text-lg font-semibold',
+            'h-12 w-full min-w-0 px-0 text-center font-mono text-lg font-semibold',
             'focus-visible:outline-none',
             'disabled:cursor-not-allowed disabled:opacity-50',
             d ? 'border-ring/60' : '',
@@ -442,14 +439,13 @@ export const OtpInput: React.FC<OtpInputProps> = ({
 };
 
 // --------------------------------------------------------------------------- //
-// Login white-label (#6/#9) — the CURATED layout + illustration sets.
+// Login white-label (#6/#9): the CURATED layout + illustration key sets.
 //
-// Everything an operator can pick from is DEFINED HERE IN CODE. The branding doc
-// only ever carries: bounded PLAIN-TEXT copy (headline/body/chips) + an enum
-// LAYOUT key + an enum ILLUSTRATION key. It never carries HTML, SVG markup, or a
-// URL, so nothing operator-supplied is ever interpolated as markup (BrandHero
-// renders text as plain React text nodes; the illustrations are code-authored SVG
-// with no operator input). This is the whole security boundary for the login page.
+// The branding doc only ever carries bounded PLAIN-TEXT copy (headline/body/chips)
+// plus an enum LAYOUT key and an enum ILLUSTRATION key. It never carries HTML, SVG
+// markup, or a URL, so nothing operator-supplied is ever interpolated as markup.
+// Both keys stay accepted and round-trip for compatibility; the sign-in page renders
+// one shell for every layout and draws no illustration (Round 16 WP04).
 // --------------------------------------------------------------------------- //
 
 /** The three curated login arrangements (mirror `login_layout` on the backend). */
@@ -458,9 +454,7 @@ export const LOGIN_LAYOUTS: readonly LoginLayout[] = ['split', 'centered', 'full
 
 /**
  * The curated login-illustration keys (mirror `login_illustration` +
- * `_LOGIN_ILLUSTRATIONS` on the backend). `''` selects the default signal field.
- * Each key maps to a code-defined, PURE-CSS/SVG decorative backdrop below — never a
- * URL or operator-supplied asset.
+ * `_LOGIN_ILLUSTRATIONS` on the backend). Accepted and preserved, never drawn.
  */
 export const LOGIN_ILLUSTRATIONS = [
   '',
@@ -474,25 +468,6 @@ export const LOGIN_ILLUSTRATIONS = [
 ] as const;
 export type LoginIllustration = (typeof LOGIN_ILLUSTRATIONS)[number];
 
-/** Human labels for the illustration picker (BrandingEditor consumes this). */
-export const LOGIN_ILLUSTRATION_LABELS: Record<LoginIllustration, string> = {
-  '': 'Signal field (default)',
-  shield: 'Shield',
-  radar: 'Radar sweep',
-  grid: 'Grid',
-  waves: 'Waves',
-  aurora: 'Aurora bloom',
-  constellation: 'Constellation',
-  mesh: 'Mesh',
-};
-
-/** Human labels for the layout picker (BrandingEditor consumes this). */
-export const LOGIN_LAYOUT_LABELS: Record<LoginLayout, string> = {
-  split: 'Split workspace',
-  centered: 'Centered',
-  full: 'Wide workspace',
-};
-
 /** Coerce an arbitrary string to a known layout (defensive; unknown → 'split'). */
 export function asLoginLayout(v: string | undefined | null): LoginLayout {
   return v === 'centered' || v === 'full' ? v : 'split';
@@ -504,356 +479,3 @@ export function asLoginIllustration(v: string | undefined | null): LoginIllustra
     ? ((v ?? '') as LoginIllustration)
     : '';
 }
-
-/**
- * The curated decorative backdrop for a login-illustration key. PURE code-authored
- * CSS/SVG — no operator input reaches these (the branding doc only carries the KEY).
- * All layers are `aria-hidden` and pointer-events:none; every one tints from the
- * `--primary` brand var so it still tracks the org accent. Every variant now belongs
- * to the same quiet signal-diagram grammar: static hairlines, nodes and topology. The
- * wire keys stay compatible, but no variant depends on blur, gradients, or perpetual
- * decorative motion.
- */
-export const LoginIllustration: React.FC<{ variant?: LoginIllustration }> = ({
-  variant = '',
-}) => {
-  const key = asLoginIllustration(variant);
-
-  // A faint square grid shared by several variants.
-  const gridLayer = (size = 40, opacity = 0.18) => (
-    <div
-      aria-hidden
-      className="absolute inset-0"
-      style={{
-        opacity,
-        backgroundImage:
-          'linear-gradient(hsl(var(--foreground) / 0.055) 1px, transparent 1px), linear-gradient(90deg, hsl(var(--foreground) / 0.055) 1px, transparent 1px)',
-        backgroundSize: `${size}px ${size}px`,
-      }}
-    />
-  );
-
-  const signalField = (
-    <>
-      {gridLayer(36, 0.5)}
-      <svg
-        className="absolute -right-24 bottom-8 h-[34rem] w-[44rem] text-foreground/[0.08]"
-        viewBox="0 0 720 520"
-        fill="none"
-        aria-hidden
-      >
-        <path d="M20 406 C164 406 190 320 310 320 S466 214 700 214" stroke="currentColor" />
-        <path d="M20 448 C194 448 230 376 360 376 S520 302 700 302" stroke="currentColor" />
-        <path d="M112 96 H288 L364 170 H612" stroke="currentColor" />
-        <path d="M176 148 H262 L336 222 H558" stroke="currentColor" />
-        {[['112', '96'], ['288', '96'], ['364', '170'], ['612', '170'], ['310', '320'], ['466', '214'], ['360', '376'], ['520', '302']].map(
-          ([cx, cy], index) => (
-            <circle
-              key={`${cx}-${cy}`}
-              cx={cx}
-              cy={cy}
-              r={index === 3 || index === 5 ? 5 : 3}
-              fill={index === 3 || index === 5 ? 'hsl(var(--primary))' : 'currentColor'}
-            />
-          ),
-        )}
-      </svg>
-    </>
-  );
-
-  if (key === 'shield') {
-    return (
-      <div aria-hidden className="pointer-events-none absolute inset-0 overflow-hidden">
-        {signalField}
-        <ShieldCheck
-          className="absolute right-[-3rem] top-1/2 h-[34rem] w-[34rem] -translate-y-1/2 text-foreground/[0.035]"
-          aria-hidden
-        />
-      </div>
-    );
-  }
-
-  if (key === 'radar') {
-    return (
-      <div aria-hidden className="pointer-events-none absolute inset-0 overflow-hidden">
-        {gridLayer(48, 0.14)}
-        <svg
-          className="absolute left-1/2 top-1/2 h-[42rem] w-[42rem] -translate-x-1/2 -translate-y-1/2 text-foreground/10"
-          viewBox="0 0 200 200"
-          fill="none"
-          aria-hidden
-        >
-          {[30, 55, 80].map((r) => (
-            <circle key={r} cx="100" cy="100" r={r} stroke="currentColor" strokeWidth="0.5" />
-          ))}
-          <line x1="100" y1="100" x2="100" y2="20" stroke="currentColor" strokeWidth="0.5" />
-          <line x1="100" y1="100" x2="180" y2="100" stroke="currentColor" strokeWidth="0.5" />
-          <path d="M100 100 L146 34 A80 80 0 0 1 178 118 Z" fill="hsl(var(--primary) / 0.08)" />
-          <circle cx="146" cy="58" r="2.5" fill="hsl(var(--primary))" />
-        </svg>
-      </div>
-    );
-  }
-
-  if (key === 'grid') {
-    return (
-      <div aria-hidden className="pointer-events-none absolute inset-0 overflow-hidden">
-        {gridLayer(32, 0.28)}
-        <div className="absolute left-[18%] top-[22%] h-1.5 w-1.5 rounded-full bg-primary" />
-        <div className="absolute bottom-[25%] right-[20%] h-1.5 w-1.5 rounded-full bg-primary" />
-      </div>
-    );
-  }
-
-  if (key === 'waves') {
-    return (
-      <div aria-hidden className="pointer-events-none absolute inset-0 overflow-hidden">
-        <svg
-          className="absolute inset-x-0 bottom-0 h-2/3 w-full text-foreground/[0.08]"
-          viewBox="0 0 400 200"
-          preserveAspectRatio="none"
-          fill="none"
-          aria-hidden
-        >
-          {[0, 24, 48, 72].map((dy) => (
-            <path
-              key={dy}
-              d={`M0 ${120 + dy} C 80 ${90 + dy}, 160 ${150 + dy}, 240 ${120 + dy} S 400 ${100 + dy}, 400 ${120 + dy}`}
-              stroke="currentColor"
-              strokeWidth="1"
-            />
-          ))}
-        </svg>
-      </div>
-    );
-  }
-
-  if (key === 'constellation') {
-    // A small, fixed set of code-defined nodes/edges — deterministic, no operator data.
-    const nodes = [
-      [40, 50], [90, 30], [140, 70], [70, 110], [150, 130],
-      [30, 140], [120, 160], [180, 60],
-    ];
-    const edges: Array<[number, number]> = [
-      [0, 1], [1, 2], [2, 7], [0, 3], [3, 6], [2, 4], [4, 6], [3, 5],
-    ];
-    return (
-      <div aria-hidden className="pointer-events-none absolute inset-0 overflow-hidden">
-        {gridLayer(48, 0.1)}
-        <svg
-          className="absolute left-1/2 top-1/2 h-[40rem] w-[40rem] -translate-x-1/2 -translate-y-1/2 text-foreground/12"
-          viewBox="0 0 210 190"
-          fill="none"
-          aria-hidden
-        >
-          {edges.map(([a, b], i) => (
-            <line
-              key={i}
-              x1={nodes[a][0]}
-              y1={nodes[a][1]}
-              x2={nodes[b][0]}
-              y2={nodes[b][1]}
-              stroke="currentColor"
-              strokeWidth="0.5"
-            />
-          ))}
-          {nodes.map(([x, y], i) => (
-            <circle key={i} cx={x} cy={y} r="2" fill="hsl(var(--primary) / 0.9)" />
-          ))}
-        </svg>
-      </div>
-    );
-  }
-
-  if (key === 'mesh') {
-    return (
-      <div aria-hidden className="pointer-events-none absolute inset-0 overflow-hidden">
-        {gridLayer(56, 0.14)}
-        <svg className="absolute inset-0 h-full w-full text-foreground/10" viewBox="0 0 800 600" fill="none" aria-hidden>
-          <path d="M0 490 L160 350 L300 430 L470 240 L630 330 L800 170" stroke="currentColor" />
-          <path d="M0 390 L180 250 L330 320 L490 150 L670 240 L800 110" stroke="currentColor" />
-          {[['160', '350'], ['300', '430'], ['470', '240'], ['630', '330'], ['180', '250'], ['490', '150']].map(([cx, cy], index) => (
-            <circle key={`${cx}-${cy}`} cx={cx} cy={cy} r="4" fill={index === 2 || index === 5 ? 'hsl(var(--primary))' : 'currentColor'} />
-          ))}
-        </svg>
-      </div>
-    );
-  }
-
-  // '' (default) and 'aurora' now share the restrained signal field. The legacy
-  // key remains valid for saved branding documents.
-  return (
-    <div aria-hidden className="pointer-events-none absolute inset-0 overflow-hidden">
-      {signalField}
-    </div>
-  );
-};
-
-// --------------------------------------------------------------------------- //
-// Brand hero — the left split panel (dark command-center aesthetic).
-// --------------------------------------------------------------------------- //
-export interface BrandHeroProps {
-  wordmark: string;
-  tagline: string;
-  logoUrl: string;
-  /**
-   * The hero HEADLINE (operator-set `login_headline`, plain text). Falls back to a
-   * built-in line when blank. NOTE: distinct from `subtitle` — the headline is the
-   * big line; `subtitle` is the legacy welcome line reused as the form description.
-   */
-  headline?: string;
-  /** The hero BODY copy (operator-set `login_body`, plain text). Blank → built-in. */
-  body?: string;
-  /** The feature chips (operator-set `login_chips`, plain text). Empty → built-in. */
-  chips?: string[];
-  /** Legacy welcome line — kept for back-compat; only used when `headline` is blank. */
-  subtitle?: string;
-  /** Optional classification / footer line. */
-  footerText?: string;
-  /** The curated backdrop illustration key. */
-  illustration?: LoginIllustration;
-  /**
-   * How the hero fills its container:
-   *  - 'panel'    — the left column of the split layout (default).
-   *  - 'full'     — a full-bleed backdrop the form floats over ('full' layout).
-   *  - 'backdrop' — a decorative-only band behind the centered card (no copy).
-   */
-  variant?: 'panel' | 'full' | 'backdrop';
-}
-
-const DEFAULT_HEADLINE = 'Triage at machine speed, with a human in the loop.';
-const DEFAULT_BODY =
-  'Audited, cost-metered agentic triage — every alert turned into a reviewable, explainable case.';
-const DEFAULT_CHIPS = ['Audited', 'Cost-metered', 'Human-reviewable'];
-
-/**
- * The brand context pane. It uses the same theme surface grammar as the Console and
- * spends its space on product context, operator assurances, and a restrained trust
- * path instead of a marketing gradient or floating dashboard fragments.
- *
- * SECURITY (#6/#9): every text field (wordmark/tagline/headline/body/chips/footer)
- * is operator-set → rendered as a PLAIN React text node (never dangerouslySetInnerHTML).
- * The illustration is a CODE key selecting a code-authored backdrop — no operator
- * markup/URL ever reaches the DOM.
- */
-export const BrandHero: React.FC<BrandHeroProps> = ({
-  wordmark,
-  tagline,
-  logoUrl,
-  headline,
-  body,
-  chips,
-  subtitle,
-  footerText,
-  illustration = '',
-  variant = 'panel',
-}) => {
-  const heroHeadline = (headline || '').trim() || (subtitle || '').trim() || DEFAULT_HEADLINE;
-  const heroBody = (body || '').trim() || DEFAULT_BODY;
-  const heroChips = chips && chips.length > 0 ? chips : DEFAULT_CHIPS;
-
-  // 'backdrop' is decoration only — no copy, no logo, just the illustration band.
-  if (variant === 'backdrop') {
-    return (
-      <div
-        aria-hidden
-        className="absolute inset-0 overflow-hidden bg-surface"
-      >
-        <LoginIllustration variant={illustration} />
-      </div>
-    );
-  }
-
-  const isFull = variant === 'full';
-  const rootClass = isFull
-    ? 'absolute inset-0 flex flex-col overflow-hidden bg-surface'
-    : 'relative hidden overflow-hidden border-r border-border bg-surface lg:flex lg:flex-col';
-
-  return (
-    <div className={rootClass}>
-      <LoginIllustration variant={illustration} />
-
-      {/* Content (z-10 over the glow). */}
-      <div
-        className={cn(
-          'relative z-10 flex h-full flex-col justify-between p-10 text-foreground xl:p-14',
-          isFull && 'mx-auto w-full max-w-6xl',
-        )}
-      >
-        <div className="flex items-center justify-between gap-4">
-          <div className="flex min-w-0 items-center gap-3">
-            <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-border bg-card">
-              {logoUrl ? (
-                <img src={logoUrl} alt="" className="h-6 w-6 rounded-sm object-contain" />
-              ) : (
-                <ShieldCheck className="h-5 w-5 text-primary" aria-hidden />
-              )}
-            </span>
-            <div className="min-w-0">
-              <p className="truncate text-sm font-semibold tracking-tight">{wordmark}</p>
-              <p className="mt-0.5 truncate font-mono text-xs uppercase tracking-[0.16em] text-muted-foreground">
-                {tagline}
-              </p>
-            </div>
-          </div>
-          <span className="hidden items-center gap-2 font-mono text-xs uppercase tracking-[0.16em] text-muted-foreground xl:flex">
-            <span className="h-1.5 w-1.5 rounded-full bg-status-closed" aria-hidden />
-            Secure access
-          </span>
-        </div>
-
-        <div className="max-w-xl py-10">
-          <p className="font-mono text-xs font-medium uppercase tracking-[0.18em] text-primary">
-            Operator access / Agentic SOC
-          </p>
-          <h2 className="mt-4 max-w-[34rem] whitespace-pre-line text-4xl font-semibold leading-[1.08] tracking-[-0.035em] lg:text-5xl 2xl:text-6xl">
-            {heroHeadline}
-          </h2>
-          <p className="mt-5 max-w-[33rem] whitespace-pre-line text-base leading-6 text-muted-foreground">
-            {heroBody}
-          </p>
-          {heroChips.length > 0 ? (
-            <div className="mt-8 grid border-y border-border sm:grid-cols-3">
-              {heroChips.map((chip, i) => (
-                <div
-                  key={`${chip}-${i}`}
-                  className="min-w-0 border-b border-border py-3 pr-3 last:border-b-0 sm:border-b-0 sm:border-l sm:px-4 sm:first:border-l-0 sm:first:pl-0"
-                >
-                  <span className="block font-mono text-xs text-muted-foreground">
-                    {String(i + 1).padStart(2, '0')}
-                  </span>
-                  <span className="mt-1 block truncate text-xs font-medium text-foreground" title={chip}>
-                    {chip}
-                  </span>
-                </div>
-              ))}
-            </div>
-          ) : null}
-
-          <div className="mt-8" aria-label="Trust path">
-            <p className="font-mono text-xs uppercase tracking-[0.16em] text-muted-foreground">
-              Trust path
-            </p>
-            <div className="mt-3 grid grid-cols-[auto_1fr_auto_1fr_auto] items-center gap-2" aria-hidden>
-              <span className="h-2 w-2 rounded-full border border-primary bg-primary/15" />
-              <span className="h-px bg-border" />
-              <span className="h-2 w-2 rounded-full border border-primary bg-primary/15" />
-              <span className="h-px bg-border" />
-              <span className="h-2 w-2 rounded-full bg-primary" />
-            </div>
-            <div className="mt-2 grid grid-cols-3 gap-4 text-xs leading-4 text-muted-foreground">
-              <span>Read-only telemetry</span>
-              <span className="text-center">Reviewable evidence</span>
-              <span className="text-right">Code decision</span>
-            </div>
-          </div>
-        </div>
-
-        <div className="flex items-center justify-between gap-4 border-t border-border pt-4 font-mono text-xs uppercase tracking-[0.14em] text-muted-foreground">
-          <span>{footerText || 'Session activity is audited'}</span>
-          <span className="hidden sm:inline">Human authority preserved</span>
-        </div>
-      </div>
-    </div>
-  );
-};

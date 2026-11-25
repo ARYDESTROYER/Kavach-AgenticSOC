@@ -82,13 +82,14 @@ export function RememberMeControl({
   const interactive = available && !busy;
   const duration = formatRememberDuration(status.duration_seconds);
   const idle = rememberIdleLimit(status);
-  // "Up to": a remembered device can be signed out sooner (inactivity, an
-  // administrator); the warning spells out each limit.
+  // Round 16 D6: when the box can be ticked the row is the label alone, with no
+  // duration and no accessible description. The warning dialog the first tick opens is
+  // the disclosure: it states every limit. An inert box keeps its one-line reason.
   const hint = !status.enabled
     ? 'Turned off by your administrator'
     : status.insecure_blocked
       ? insecureRememberHint()
-      : `Stay signed in on this device for up to ${duration}`;
+      : null;
 
   const name = username.trim();
   const nameKey = name.toLowerCase();
@@ -133,7 +134,7 @@ export function RememberMeControl({
             }
           }}
           aria-labelledby="login-remember-label"
-          aria-describedby="login-remember-hint"
+          aria-describedby={hint ? 'login-remember-hint' : undefined}
         />
         <span className="min-w-0">
           <span
@@ -142,9 +143,11 @@ export function RememberMeControl({
           >
             Remember me
           </span>
-          <span id="login-remember-hint" className="block text-xs text-muted-foreground">
-            {hint}
-          </span>
+          {hint ? (
+            <span id="login-remember-hint" className="block text-xs text-muted-foreground">
+              {hint}
+            </span>
+          ) : null}
         </span>
       </label>
       <ConfirmDialog

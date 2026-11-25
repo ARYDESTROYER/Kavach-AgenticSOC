@@ -1,53 +1,49 @@
 /**
- * Login — branded sign-in surface for the SOC console, with Wave-1/2 identity flows.
+ * Login: the sign-in page for the SOC console, with every identity flow.
  *
  * Modes, decided from GET /api/setup/status (public) + the login response:
- *   1. FIRST-RUN ("create your admin account") — `needs_user` true (auth on, no
- *      users yet): POST /api/setup/init-admin, then sign in.            (`setup`)
- *   2. NORMAL sign-in — POST /api/auth/login.                           (`signin`)
- *   3. TWO-FACTOR — when the password is correct but MFA is required, exchange the
+ *   1. FIRST-RUN ("create your admin account"): `needs_user` true (auth on, no
+ *      users yet): POST /api/setup/account, then sign in.            (`setup`)
+ *   2. NORMAL sign-in: POST /api/auth/login.                          (`signin`)
+ *   3. TWO-FACTOR: when the password is correct but MFA is required, exchange the
  *      pending token at /api/auth/mfa/verify.                           (`mfa`)
- *   4. SET-A-NEW-PASSWORD — when `must_change_password`.                (`change`)
- *   5. MANDATED MFA ENROLLMENT — when the login returns
+ *   4. SET-A-NEW-PASSWORD: when `must_change_password`.                (`change`)
+ *   5. MANDATED MFA ENROLLMENT: when the login returns
  *      `mfa_enrollment_required` (the account MUST use MFA but has not enrolled):
  *      complete enrollment inside the login via the pending-token-gated
  *      /api/auth/mfa/enroll-setup + /enroll-confirm (confirm mints the session).
- *      There is NO skip — the only exits are finishing enrollment or going back
+ *      There is NO skip: the only exits are finishing enrollment or going back
  *      to sign-in.                                        (`mfa-enroll-required`)
  *
- * The page deliberately stays minimal: one quiet, vertically-centred identity slab in
- * every stored layout, with no marketing hero or decorative command-center chrome.
- * The authentication state machine remains presentation-independent; the visual
- * layer adds stable credential controls, segmented OTP, original SSO marks, and the
- * appearance control (a Light/Dark pill plus a system reset) without introducing
- * another theme path.
- *
- * Two controls carry a deliberate identity treatment that no Console surface shares:
- * the primary CTA is a `ShineButton` and the corner appearance control is a
- * `ThemeModePill`. Both are scoped to `.login-auth-canvas`, both are pure CSS, and
- * both have measured palettes enforced by the `login accents` design gate — see
- * `docs/development/ui-standard.md` for the recorded exception.
+ * Presentation (Round 16 WP04, ui-standard "Identity surfaces"): one quiet column on
+ * the Console's own tokens (`bg-canvas`, `--input`, `--primary`), a static brand wash
+ * that follows the organization accent, the ordinary primary Button, and one short CSS
+ * entrance plus a step transition (theme.css, `transform` and `opacity` only, reduced
+ * motion safe). Nothing moves after the page settles: no timers, no ambient motion.
+ * The authentication state machine is unchanged and presentation independent.
  *
  * When `seeded_default` is true, a subtle hint surfaces the demo Admin / Admin@123
  * credentials. When auth is disabled this component is never mounted, so the
- * no-auth experience is untouched. All branding text is operator-set → rendered as
- * PLAIN text (#9).
+ * no-auth experience is untouched. All branding text is operator-set and rendered as
+ * PLAIN text (#9). Nothing from the query string is ever rendered: a single sign-on
+ * callback error is a code mapped to a fixed sentence (`ssoErrors.ts`, B25).
  *
- * a11y — WCAG 2.2 §3.3.8 Accessible Authentication (Round-5 W0-E): every credential
- * field carries the correct `autocomplete` for password-manager autofill —
- * `username`, `current-password`, `new-password`, and `one-time-code` for the MFA /
- * recovery-code inputs — and NONE of them block paste (no `onPaste` interception),
+ * a11y: WCAG 2.2 §3.3.8 Accessible Authentication (Round-5 W0-E): every credential
+ * field carries the correct `autocomplete` for password-manager autofill
+ * (`username`, `current-password`, `new-password`, and `one-time-code` for the MFA /
+ * recovery-code inputs) and NONE of them block paste (no `onPaste` interception),
  * so a manager can paste secrets and no cognitive-function test is imposed.
  *
- * Remember me (Round 12, SPEC D14): a checkbox row in the password step (and in the
- * identity step when single sign-on is offered) asks the server for a persistent,
- * server-bounded session; the first check on a device opens a warning. After a
- * successful remembered sign-in this device keeps the USERNAME (never the password —
- * that is the browser password manager's job, helped by a hidden
- * `autocomplete="username"` field in the password form and, in Chromium,
- * `PasswordCredential`). A session that ended on its own is explained with a calm
- * notice. The controls live in a LAZY chunk (`RememberMeControls`) loaded in parallel
- * with the startup probes, so this first-paint page stays lean.
+ * Remember me (Round 12, SPEC D14; Round 16 D6): a checkbox row in the password step
+ * (and in the identity step when single sign-on is offered) asks the server for a
+ * persistent, server-bounded session. The row says only "Remember me"; the warning
+ * dialog the first check opens states the limits. After a successful remembered
+ * sign-in this device keeps the USERNAME (never the password: that is the browser
+ * password manager's job, helped by a hidden `autocomplete="username"` field in the
+ * password form and, in Chromium, `PasswordCredential`). A session that ended on its
+ * own is explained with a calm notice. The controls live in a LAZY chunk
+ * (`RememberMeControls`) loaded in parallel with the startup probes, so this
+ * first-paint page stays lean.
  */
 import * as React from 'react';
 import {
@@ -62,6 +58,9 @@ import {
   IdCard,
   ArrowLeft,
   Monitor,
+  Sun,
+  Moon,
+  type LucideIcon,
 } from 'lucide-react';
 import { api, ApiError } from '@/lib/api';
 import type { LoginResult, SetupStatus, SsoProviderPublic } from '@/lib/types';
@@ -69,12 +68,6 @@ import { useTheme } from '@/soc/theme';
 import { useOptionalAuth } from '@/soc/auth';
 import { cn } from '@/lib/cn';
 import { Button } from '@/ui/button';
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-} from '@/ui/card';
 import { Label } from '@/ui/label';
 import { Alert, AlertDescription } from '@/ui/alert';
 import {
@@ -85,20 +78,26 @@ import {
   PasswordStrengthMeter,
   SsoBrandIcon,
 } from '@/soc/components/auth/loginParts';
-import { ShineButton } from '@/soc/components/auth/ShineButton';
-import { ThemeModePill } from '@/soc/components/auth/ThemeModePill';
 import { setupAccount, type LoginBranding } from '@/soc/components/auth/login.api';
 import { MfaSetupCard } from '@/soc/components/MfaSetupCard';
-import { LoginAuthBackdrop } from '@/soc/components/auth/LoginAuthBackdrop';
-import { LoadingState } from '@/design-system';
+import { LoadingGlyph } from '@/design-system/loading';
 
-// Remember me (Round 12) — one lazy chunk for the controls and the device helpers.
+// Remember me (Round 12): one lazy chunk for the controls and the device helpers.
 const loadRememberControls = () => import('@/soc/components/auth/RememberMeControls');
 const loadRememberDevice = () => import('@/soc/components/auth/rememberMe');
+// The single sign-on error sentences (B25): a small lazy chunk, loaded only for a
+// callback error. The fallback is `SSO_ERROR_FALLBACK` in that module, repeated here
+// for a chunk that fails to load (login.sso-errors.test.tsx keeps the two equal).
+const loadSsoErrors = () => import('@/soc/components/auth/ssoErrors');
+const SSO_ERROR_FALLBACK = 'Single sign-on failed. Try again.';
 type RememberUi = Awaited<ReturnType<typeof loadRememberControls>>;
 /** The quiet text-link buttons under a form ("Back to sign in", recovery codes). */
 const LINK_BUTTON =
   'h-auto p-0 text-xs font-normal text-muted-foreground underline-offset-2 hover:text-foreground hover:underline';
+/** The primary and single sign-on actions: full width and 44px, like the fields. */
+const ACTION_BUTTON = 'h-11 w-full';
+/** The inline error region's id: the field it belongs to points `aria-describedby` here. */
+const ERROR_ID = 'login-error';
 /** The username a previous remembered sign-in left on this device (not a secret). */
 function rememberedUsernameOnDevice(): string | null {
   try {
@@ -116,29 +115,29 @@ export interface LoginProps {
 // `setup` is the OOBE create-first-admin flow; `mfa-enroll` is the optional
 // prompted MFA step shown AFTER the admin account is created (never forced);
 // `mfa-enroll-required` is the MANDATED enrollment step DURING login (no session
-// yet — gated by the pending token; cannot be skipped into the console).
+// yet: gated by the pending token; cannot be skipped into the console).
 type Mode = 'signin' | 'setup' | 'change' | 'mfa' | 'mfa-enroll' | 'mfa-enroll-required';
 type LoginThemeMode = 'system' | 'light' | 'dark';
 type SigninStep = 'identity' | 'password';
+/** Which way the form last moved, for the one step transition (null: no move yet). */
+type StepMotion = 'forward' | 'back' | null;
+
+const APPEARANCE: ReadonlyArray<{ mode: LoginThemeMode; label: string; Icon: LucideIcon }> = [
+  { mode: 'system', label: 'Use system theme', Icon: Monitor },
+  { mode: 'light', label: 'Light theme', Icon: Sun },
+  { mode: 'dark', label: 'Dark theme', Icon: Moon },
+];
 
 /**
- * The appearance control: the Light/Dark pill plus a quiet "follow the system"
- * reset beside it.
- *
- * The pill is a two-state switch, but the console's theme has THREE modes and
- * `system` is the default — dropping it here would strand anyone who wants the
- * login to keep following their OS. So `system` keeps its own compact toggle,
- * pressed while it is the active mode, and the pill always shows (and changes)
- * the RESOLVED appearance. Choosing light or dark from the pill is an explicit
- * choice and therefore releases `system`, which the pressed state reflects.
+ * The appearance control: three icon buttons, each pressed while its mode is the
+ * stored one. `system` is the default and stays one press away. It delegates to
+ * `ThemeProvider.setTheme`; signed-in pages use the preference layer instead.
  */
 function LoginThemeControl({
   value,
-  isDark,
   onChange,
 }: {
   value: LoginThemeMode;
-  isDark: boolean;
   onChange: (mode: LoginThemeMode) => void;
 }) {
   return (
@@ -146,30 +145,50 @@ function LoginThemeControl({
       data-login-theme-control
       role="group"
       aria-label="Appearance"
-      className="inline-flex items-center gap-2"
+      className="inline-flex items-center gap-0.5 rounded-full border border-border bg-card p-0.5"
     >
-      <button
-        type="button"
-        title="Use system theme"
-        aria-label="Use system theme"
-        aria-pressed={value === 'system'}
-        onClick={() => onChange('system')}
-        className={cn(
-          // Round, to rhyme with the pill it sits beside rather than reading as a
-          // leftover square chip next to it.
-          'inline-flex h-9 w-9 items-center justify-center rounded-full border border-border text-muted-foreground transition-colors',
-          'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-canvas',
-          // `bg-muted` alone is ~1.1:1 against this canvas, so the pressed state
-          // would be conveyed by a difference nobody can see (WCAG 1.4.11).
-          // Inverting the chip makes it unmistakable.
-          value === 'system'
-            ? 'border-foreground bg-foreground text-background'
-            : 'hover:bg-muted/70 hover:text-foreground',
-        )}
-      >
-        <Monitor className="h-3.5 w-3.5" aria-hidden />
-      </button>
-      <ThemeModePill dark={isDark} onToggle={onChange} />
+      {APPEARANCE.map(({ mode, label, Icon }) => (
+        <button
+          key={mode}
+          type="button"
+          title={label}
+          aria-label={label}
+          aria-pressed={value === mode}
+          onClick={() => onChange(mode)}
+          className={cn(
+            'inline-flex h-9 w-9 items-center justify-center rounded-full transition-colors sm:h-7 sm:w-7',
+            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-card',
+            // The pressed state is an inverted fill: `bg-muted` alone would be about
+            // 1.1:1 on the card, a difference nobody can see (WCAG 1.4.11).
+            value === mode
+              ? 'bg-foreground text-background'
+              : 'text-muted-foreground hover:bg-muted hover:text-foreground',
+          )}
+        >
+          <Icon className="h-4 w-4 sm:h-3.5 sm:w-3.5" aria-hidden />
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * The inline error under the field it belongs to: one line in the critical text
+ * colour, an optional quieter second line, announced when it appears.
+ */
+function FieldError({ message, detail }: { message: string | null; detail?: string | null }) {
+  if (!message) return null;
+  return (
+    <div
+      id={ERROR_ID}
+      role="alert"
+      className="login-field-error flex items-start gap-2 text-base text-critical-text"
+    >
+      <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
+      <div className="min-w-0 break-words">
+        <p>{message}</p>
+        {detail ? <p className="mt-0.5 text-xs text-muted-foreground">{detail}</p> : null}
+      </div>
     </div>
   );
 }
@@ -177,7 +196,7 @@ function LoginThemeControl({
 // The OOBE password policy MIRRORS the server-side gate in routes_setup.py
 // (min length + not equal to the username + not a trivially-common password) so the
 // button-disable + inline hint match what the backend will accept. This is a UX
-// nicety; the server remains authoritative (#9 — never client-trusted).
+// nicety; the server remains authoritative (#9: never client-trusted).
 const OOBE_MIN_PASSWORD_LEN = 12;
 const OOBE_COMMON_PASSWORDS = new Set(
   [
@@ -193,7 +212,7 @@ const OOBE_COMMON_PASSWORDS = new Set(
   ].map((p) => p.toLowerCase()),
 );
 
-/** The client mirror of the server strong-password policy — reason string or null. */
+/** The client mirror of the server strong-password policy: reason string or null. */
 function oobePasswordPolicyError(password: string, username: string): string | null {
   const pw = password || '';
   if (pw.length < OOBE_MIN_PASSWORD_LEN) {
@@ -212,24 +231,25 @@ export default function Login({ onAuthenticated }: LoginProps) {
   const {
     branding: brandingBase,
     refreshBranding,
+    brandingFresh,
+    markBrandingUsed,
+    ready: themeReady,
     theme,
-    isDark,
     setTheme,
   } = useTheme();
   // Read the additive Round-4 login white-label fields structurally (they are not in
-  // the shared `Branding` interface yet; see login.api.ts). All are operator-set →
-  // rendered as PLAIN text / mapped to CODE-defined layouts (#6/#9).
+  // the shared `Branding` interface yet; see login.api.ts). All are operator-set and
+  // rendered as PLAIN text or mapped to CODE-defined layouts (#6/#9).
   const branding = brandingBase as LoginBranding;
 
   const wordmark = branding.org_name?.trim() || 'Agentic SOC';
-  const tagline = branding.product_name?.trim() || 'Security operations console';
   const logoUrl = branding.logo_data_url?.trim() || '';
   const loginSubtitle = branding.login_subtitle?.trim() || '';
   const footerText = branding.footer_text?.trim() || '';
   const rawSupport = branding.support_url?.trim() || '';
   const supportUrl = /^https?:\/\//i.test(rawSupport) ? rawSupport : '';
 
-  // Login white-label (bounded plain-text copy + curated enum layout/illustration).
+  // Login white-label (bounded plain-text copy + a legacy layout key).
   const loginHeadline = branding.login_headline?.trim() || '';
   const loginBody = branding.login_body?.trim() || '';
   const loginChips = Array.isArray(branding.login_chips)
@@ -251,6 +271,7 @@ export default function Login({ onAuthenticated }: LoginProps) {
   const [signinStep, setSigninStep] = React.useState<SigninStep>(() =>
     rememberedUser ? 'password' : 'identity',
   );
+  const [stepMotion, setStepMotion] = React.useState<StepMotion>(null);
   const [username, setUsername] = React.useState(() => rememberedUser ?? '');
   const [rememberFor, setRememberFor] = React.useState(() => rememberedUser?.toLowerCase());
   // The sign-out notice is showing: the focused field is described by it.
@@ -266,7 +287,7 @@ export default function Login({ onAuthenticated }: LoginProps) {
   const signinPasswordRef = React.useRef<HTMLInputElement>(null);
   // Mandated-MFA enrollment focus target: entering 'mfa-enroll-required' unmounts
   // the sign-in form (focus would drop to <body> and the requirement would go
-  // unannounced), so the mode HEADING takes programmatic focus instead — SR +
+  // unannounced), so the mode HEADING takes programmatic focus instead: SR +
   // keyboard users land on "Set up two-factor authentication", whose
   // aria-describedby reads the requirement explanation.
   const modeHeadingRef = React.useRef<HTMLHeadingElement>(null);
@@ -276,23 +297,31 @@ export default function Login({ onAuthenticated }: LoginProps) {
     const t = window.setTimeout(() => modeHeadingRef.current?.focus(), 0);
     return () => window.clearTimeout(t);
   }, [mode]);
-  const [themePaletteSettling, setThemePaletteSettling] = React.useState(false);
-  const themePaletteFrameRef = React.useRef<number | null>(null);
   const [confirm, setConfirm] = React.useState('');
   const [newPassword, setNewPassword] = React.useState('');
+  // The error of the active field (sign-in and two-factor steps render it inline
+  // under that field; the other modes keep it at the top of the form).
   const [error, setError] = React.useState<string | null>(null);
   // A secondary, quieter line under the main error (e.g. the honest client-side
   // failed-attempt count). Kept separate from `error` so the primary line stays the
   // backend/validation message and the count is visually subordinate.
   const [errorDetail, setErrorDetail] = React.useState<string | null>(null);
-  const clearError = () => {
+  // A page-level message that belongs to no field: a single sign-on callback failure
+  // or an expired enrollment. Shown at the top of the form.
+  const [pageError, setPageError] = React.useState<string | null>(null);
+  /** Typing into the field clears only its own error. */
+  const clearFieldError = () => {
     setError(null);
     setErrorDetail(null);
+  };
+  const clearError = () => {
+    clearFieldError();
+    setPageError(null);
   };
   const [busy, setBusy] = React.useState(false);
   // How many times sign-in has failed IN THIS BROWSER SESSION. This is an honest
   // client-side tally (the backend rate-limiter is per-IP and returns no count), used
-  // only to surface "You've tried N times." — never trusted for any security decision.
+  // only to surface "You've tried N times." Never trusted for any security decision.
   const signinAttemptsRef = React.useRef(0);
 
   // MFA phase 2 (Wave 2): the half-auth pending token + the entered code.
@@ -301,43 +330,29 @@ export default function Login({ onAuthenticated }: LoginProps) {
   const [useRecovery, setUseRecovery] = React.useState(false);
   // Disclosure toggle for the "Where can I find my recovery codes?" help text.
   const [showRecoveryHelp, setShowRecoveryHelp] = React.useState(false);
+  // A failed code remounts the cells empty with the first one focused.
+  const [otpAttempt, setOtpAttempt] = React.useState(0);
+  // The six cells submit on their own; this keeps it to one request per code.
+  const mfaInFlightRef = React.useRef(false);
+  // Disclosure toggle for "Forgot password?" on the password step.
+  const [showForgotHelp, setShowForgotHelp] = React.useState(false);
 
-  // SSO providers (Wave 2): the enabled "Sign in with …" buttons.
+  // SSO providers (Wave 2): the enabled "Sign in with ..." buttons.
   const [ssoProviders, setSsoProviders] = React.useState<SsoProviderPublic[]>([]);
   // Whether the SSO-providers probe has settled. Folded into the first-paint gate so
-  // the "or continue with" divider + provider buttons never POP IN ~1 RTT after the
-  // form paints (which grew/re-centred the card). Fails safe: set on both ok + error.
+  // the provider buttons never POP IN about 1 RTT after the form paints. Fails safe:
+  // set on both ok + error.
   const [ssoResolved, setSsoResolved] = React.useState(false);
   const [ssoBusy, setSsoBusy] = React.useState<string | null>(null);
 
-  // Whether the branding probe has settled. Folded into the first-paint gate so the
-  // login never paints with stale/default branding then SNAPS to the operator's real
-  // login_layout/headline/illustration (a FOUC). Fails safe: set on both ok + error.
+  // Whether the branding is settled for this page. Folded into the first-paint gate so
+  // the login never paints with stale/default branding then SNAPS to the operator's
+  // real copy (a FOUC). Fails safe: set on both ok + error.
   const [brandingResolved, setBrandingResolved] = React.useState(false);
-
-  const changeLoginTheme = React.useCallback((next: LoginThemeMode) => {
-    if (themePaletteFrameRef.current !== null) {
-      window.cancelAnimationFrame(themePaletteFrameRef.current);
-    }
-    // The reference tiles deliberately cross-fade between their two neutral shades.
-    // Theme changes are different: allowing that same 1.8s transition to interpolate
-    // Light white into Dark charcoal creates giant grey flashes around the slab. Keep
-    // the motion running, but snap the palette itself over two paint frames.
-    setThemePaletteSettling(true);
-    setTheme(next);
-    themePaletteFrameRef.current = window.requestAnimationFrame(() => {
-      themePaletteFrameRef.current = window.requestAnimationFrame(() => {
-        themePaletteFrameRef.current = null;
-        setThemePaletteSettling(false);
-      });
-    });
-  }, [setTheme]);
-
-  React.useEffect(() => () => {
-    if (themePaletteFrameRef.current !== null) {
-      window.cancelAnimationFrame(themePaletteFrameRef.current);
-    }
-  }, []);
+  // Whether a single sign-on callback error has its sentence (true when there is none).
+  const [ssoErrorResolved, setSsoErrorResolved] = React.useState(
+    () => !new URLSearchParams(window.location.search).has('sso_error'),
+  );
 
   // Load the Remember-me chunk in parallel with the probes below; first paint waits
   // for it (fail-safe) so the row and notice never pop in.
@@ -378,7 +393,7 @@ export default function Login({ onAuthenticated }: LoginProps) {
 
   // Load the enabled SSO providers (best-effort; empty when SSO is off). This runs in
   // PARALLEL with the setup-status probe above (both fire on mount), and both gate the
-  // first paint, so painting waits for the slower of the two — no extra serial latency,
+  // first paint, so painting waits for the slower of the two: no extra serial latency,
   // and the SSO block is present from the first frame instead of popping in late.
   React.useEffect(() => {
     let alive = true;
@@ -397,15 +412,19 @@ export default function Login({ onAuthenticated }: LoginProps) {
     };
   }, []);
 
-  // Force a fresh GET /api/branding whenever Login mounts (e.g. immediately after a
-  // logout, in the SAME SPA session): ThemeProvider (mounted once at the app root)
-  // otherwise fetches branding exactly ONCE for the whole session, so a just-saved
-  // BrandingEditor edit would never reach the login screen without a hard page reload.
-  // Folded into the first-paint gate below (same pattern as the statusResolved /
-  // ssoResolved probes) so the operator's branding is never shown stale-then-corrected.
-  // Fails safe: the flag flips in `finally`, so an unreachable backend still resolves to
-  // whatever branding is already in the shared context.
+  // Branding without a second request on a cold load (Round 16 WP04): ThemeProvider
+  // fetches GET /api/branding once at boot, so while that first fetch is in flight the
+  // page waits for it (`ready`), and a fresh result is used as it is. The page fetches
+  // again when the branding is stale: older than about 30 s, or used by a sign-in since
+  // (the page shown after a sign-out), so a change saved elsewhere still shows. A
+  // BrandingEditor save refreshes the shared context itself. Fails safe: the flag
+  // flips in `finally`, so an unreachable backend resolves to the branding in effect.
   React.useEffect(() => {
+    if (!themeReady) return undefined;
+    if (brandingFresh()) {
+      setBrandingResolved(true);
+      return undefined;
+    }
     let alive = true;
     void refreshBranding().finally(() => {
       if (alive) setBrandingResolved(true);
@@ -413,20 +432,34 @@ export default function Login({ onAuthenticated }: LoginProps) {
     return () => {
       alive = false;
     };
-  }, [refreshBranding]);
+  }, [themeReady, brandingFresh, refreshBranding]);
 
-  // Surface an SSO callback error (the backend redirects to /login?sso_error=...).
+  // Surface an SSO callback error (the backend redirects to /login?sso_error=<code>).
+  // Only the fixed sentence for the code is shown, never the query value (B25). The
+  // sentences load only when there is an error to show, and the first paint waits for
+  // them (in parallel with the probes) so the message never pops in. No `alive` guard:
+  // the URL is cleaned on the first run, so a StrictMode re-run finds nothing to load.
   React.useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const e = params.get('sso_error');
-    if (e) {
-      setError(`Single sign-on failed: ${e}`);
-      // Clean the URL so a refresh doesn't keep showing the error.
-      const url = new URL(window.location.href);
-      url.searchParams.delete('sso_error');
-      window.history.replaceState({}, '', url.toString());
-    }
+    const code = new URLSearchParams(window.location.search).get('sso_error');
+    if (code === null) return;
+    // Clean the URL so a refresh doesn't keep showing the error.
+    const url = new URL(window.location.href);
+    url.searchParams.delete('sso_error');
+    window.history.replaceState({}, '', url.toString());
+    loadSsoErrors()
+      .then(
+        (m) => setPageError(m.ssoErrorMessage(code)),
+        () => setPageError(SSO_ERROR_FALLBACK),
+      )
+      .finally(() => setSsoErrorResolved(true));
   }, []);
+
+  // Hand off into the Console. The branding this page painted counts as used, so the
+  // sign-in page shown after a sign-out fetches it again.
+  const handOff = () => {
+    markBrandingUsed();
+    onAuthenticated();
+  };
 
   // Remember me availability (public /setup/status): shown only when advertised;
   // the control itself explains why it is unavailable.
@@ -454,7 +487,7 @@ export default function Login({ onAuthenticated }: LoginProps) {
       />
     ) : null;
 
-  // A SUCCESSFUL sign-in (password, MFA, or mandated enrollment) — never a failed
+  // A SUCCESSFUL sign-in (password, MFA, or mandated enrollment), never a failed
   // one, so a typo or a probed name is never remembered.
   const recordSuccessfulSignin = (res: LoginResult) => {
     const opts = { username, requested: rememberRequestedRef.current, password };
@@ -466,6 +499,7 @@ export default function Login({ onAuthenticated }: LoginProps) {
   const backToSignIn = () => {
     setMode('signin');
     setSigninStep('identity');
+    setStepMotion('back');
     setPendingToken('');
     setPassword('');
     clearError();
@@ -480,6 +514,7 @@ export default function Login({ onAuthenticated }: LoginProps) {
     setPassword('');
     clearError();
     setSigninStep('identity');
+    setStepMotion('back');
     window.setTimeout(() => signinIdentityRef.current?.focus(), 0);
   };
 
@@ -494,28 +529,41 @@ export default function Login({ onAuthenticated }: LoginProps) {
       );
       window.location.assign(res.auth_url);
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Could not start single sign-on.');
+      setPageError(err instanceof ApiError ? err.message : 'Could not start single sign-on.');
       setSsoBusy(null);
     }
   };
 
   const firstPaintReady =
-    statusResolved && ssoResolved && brandingResolved && rememberUi !== undefined;
+    statusResolved &&
+    ssoResolved &&
+    brandingResolved &&
+    ssoErrorResolved &&
+    rememberUi !== undefined;
 
   const seededHint = Boolean(status?.seeded_default) && mode === 'signin';
 
   const continueSignin = (e?: React.FormEvent) => {
     e?.preventDefault();
-    if (busy || username.trim().length === 0) return;
+    if (busy) return;
+    // Continue is always there; an empty submit names the field and keeps focus on it.
+    if (username.trim().length === 0) {
+      setError('Enter your username.');
+      setErrorDetail(null);
+      signinIdentityRef.current?.focus();
+      return;
+    }
     clearError();
     setSigninStep('password');
+    setStepMotion('forward');
+    setShowForgotHelp(false);
     window.setTimeout(() => signinPasswordRef.current?.focus(), 0);
   };
 
   // --- Mode 1: first-run create admin (OOBE account-setup) ------------------ //
-  // Round-4 Wave-5: the OOBE step now calls POST /api/setup/account (the force-set,
+  // Round-4 Wave-5: the OOBE step calls POST /api/setup/account (the force-set,
   // strong-password writer that REPLACES init-admin) with a client-mirrored policy
-  // gate, then signs the new admin in and — when the server prompts — offers an
+  // gate, then signs the new admin in and, when the server prompts, offers an
   // OPTIONAL (never forced) MFA-enrollment step before continuing.
   const submitSetup = async (e?: React.FormEvent) => {
     e?.preventDefault();
@@ -534,15 +582,16 @@ export default function Login({ onAuthenticated }: LoginProps) {
     setError(null);
     try {
       const res = await setupAccount(uname, password, displayName);
-      // The account writer does NOT mint a session — sign the new admin in now.
+      // The account writer does NOT mint a session: sign the new admin in now.
       await api.auth.login(uname, password);
       if (res.mfa_prompt) {
         // Offer (prompted-optional) two-factor enrollment before entering the console.
         setMode('mfa-enroll');
+        setStepMotion('forward');
         setBusy(false);
         return;
       }
-      onAuthenticated();
+      handOff();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Could not create the admin account.');
       setBusy(false);
@@ -557,6 +606,7 @@ export default function Login({ onAuthenticated }: LoginProps) {
     // nothing): an empty submit names the missing field and puts focus on it.
     if (!password) {
       setError('Enter your password.');
+      setErrorDetail(null);
       signinPasswordRef.current?.focus();
       return;
     }
@@ -569,7 +619,7 @@ export default function Login({ onAuthenticated }: LoginProps) {
         password,
         rememberChecked ? { remember: true } : undefined,
       );
-      // MANDATED-BUT-UNENROLLED (branch FIRST — the response also carries
+      // MANDATED-BUT-UNENROLLED (branch FIRST: the response also carries
       // requires_mfa): the account must use MFA but has no factor yet, so a code
       // challenge is impossible. Walk the user through enrollment IN the login,
       // gated by the same short-lived pending token (still no session).
@@ -577,6 +627,7 @@ export default function Login({ onAuthenticated }: LoginProps) {
         setPendingToken(res.pending_token);
         setMfaCode('');
         setMode('mfa-enroll-required');
+        setStepMotion('forward');
         setBusy(false);
         return;
       }
@@ -587,6 +638,7 @@ export default function Login({ onAuthenticated }: LoginProps) {
         setMfaCode('');
         setUseRecovery(false);
         setMode('mfa');
+        setStepMotion('forward');
         setBusy(false);
         return;
       }
@@ -596,10 +648,11 @@ export default function Login({ onAuthenticated }: LoginProps) {
         setNewPassword('');
         setConfirm('');
         setMode('change');
+        setStepMotion('forward');
         setBusy(false);
         return;
       }
-      onAuthenticated();
+      handOff();
     } catch (err) {
       signinAttemptsRef.current += 1;
       if (err instanceof ApiError) {
@@ -626,13 +679,16 @@ export default function Login({ onAuthenticated }: LoginProps) {
   };
 
   // --- Mode (MFA phase 2): exchange the TOTP / recovery code for a session ----- //
-  const submitMfa = async (e?: React.FormEvent) => {
-    e?.preventDefault();
-    if (busy) return;
+  // The six cells call this on their own when the last digit arrives (once: the ref
+  // and `busy` both guard it), and "Verify and continue" stays for recovery codes and
+  // as a fallback.
+  const verifyMfa = async (code: string) => {
+    if (busy || mfaInFlightRef.current) return;
+    mfaInFlightRef.current = true;
     setBusy(true);
-    setError(null);
+    clearError();
     try {
-      const res: LoginResult = await api.auth.mfa.verify(pendingToken, mfaCode.trim());
+      const res: LoginResult = await api.auth.mfa.verify(pendingToken, code.trim());
       recordSuccessfulSignin(res);
       if (res.user?.must_change_password) {
         // Session minted, but the password is still flagged for change. The verify
@@ -640,20 +696,29 @@ export default function Login({ onAuthenticated }: LoginProps) {
         setNewPassword('');
         setConfirm('');
         setMode('change');
+        setStepMotion('forward');
         setBusy(false);
         return;
       }
-      onAuthenticated();
+      handOff();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Verification failed. Please try again.');
       setMfaCode('');
+      // A fresh, empty set of cells with the first one focused.
+      setOtpAttempt((n) => n + 1);
       setBusy(false);
+    } finally {
+      mfaInFlightRef.current = false;
     }
+  };
+  const submitMfa = (e?: React.FormEvent) => {
+    e?.preventDefault();
+    void verifyMfa(mfaCode);
   };
 
   // --- Mode (mandated MFA enrollment during login) -------------------------- //
   // The enroll-confirm endpoint minted the FULL session and returned the exact
-  // /auth/mfa/verify success payload — finish exactly the way submitMfa does
+  // /auth/mfa/verify success payload: finish exactly the way verifyMfa does
   // (incl. the forced password change, which the fresh cookie lets us perform).
   const completeEnrollLogin = (res: LoginResult) => {
     recordSuccessfulSignin(res);
@@ -661,23 +726,26 @@ export default function Login({ onAuthenticated }: LoginProps) {
       setNewPassword('');
       setConfirm('');
       setMode('change');
+      setStepMotion('forward');
       return;
     }
-    onAuthenticated();
+    handOff();
   };
 
   // The short-lived pending token lapsed mid-enrollment (401). Return to the
-  // password step (identity preserved) with a clear, non-alarming explanation —
+  // password step (identity preserved) with a clear, non-alarming explanation:
   // signing in again simply restarts the 5-minute enrollment window.
   const expireEnrollLogin = () => {
     setMode('signin');
     setSigninStep('password');
+    setStepMotion('back');
     setPendingToken('');
     setPassword('');
-    setError(
+    setError(null);
+    setErrorDetail(null);
+    setPageError(
       'Your setup session expired. Sign in again to continue setting up two-factor authentication.',
     );
-    setErrorDetail(null);
     window.setTimeout(() => signinPasswordRef.current?.focus(), 0);
   };
 
@@ -697,7 +765,7 @@ export default function Login({ onAuthenticated }: LoginProps) {
     setError(null);
     try {
       await api.auth.changePassword(password, newPassword);
-      onAuthenticated();
+      handOff();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Could not change the password.');
       setBusy(false);
@@ -705,15 +773,20 @@ export default function Login({ onAuthenticated }: LoginProps) {
   };
 
   const titleByMode: Record<Mode, string> = {
-    signin: 'Welcome back',
+    // "Welcome back" only greets someone this device remembers; anyone else is told
+    // where they are signing in.
+    signin: loginHeadline || (rememberedUser ? 'Welcome back' : `Sign in to ${wordmark}`),
     setup: 'Create your admin account',
     change: 'Set a new password',
     mfa: 'Two-factor authentication',
     'mfa-enroll': 'Secure your account',
     'mfa-enroll-required': 'Set up two-factor authentication',
   };
+  // A description only where it carries information: the operator's copy on the
+  // identity step, and the instructions of the other modes. The password step has
+  // none, because the identity row above the field already names the account.
   const descByMode: Record<Mode, string> = {
-    signin: loginSubtitle || `Sign in to continue to ${wordmark}.`,
+    signin: signinStep === 'identity' ? loginBody || loginSubtitle : '',
     setup:
       'No accounts exist yet. Create the first administrator to get started. Choose a strong, unique password.',
     change: 'Your password must be changed before you can continue.',
@@ -726,18 +799,13 @@ export default function Login({ onAuthenticated }: LoginProps) {
       'Your administrator requires multi-factor authentication for this account. ' +
       'Set up an authenticator app now to finish signing in.',
   };
-  const activeTitle =
-    mode === 'signin'
-      ? loginHeadline || 'Welcome back'
-      : titleByMode[mode];
-  const activeDescription =
-    mode === 'signin' && signinStep === 'password'
-      ? `Enter the password for ${username.trim()}.`
-      : mode === 'signin' && loginBody
-        ? loginBody
-        : descByMode[mode];
+  const activeTitle = titleByMode[mode];
+  const activeDescription = descByMode[mode];
+  // The sign-in and two-factor steps show a field's error under that field.
+  const inlineErrors = mode === 'signin' || mode === 'mfa';
+  const describedBy = error ? ERROR_ID : noticeId;
 
-  // OOBE submit guard — mirror the server policy so the button reflects acceptance.
+  // OOBE submit guard: mirror the server policy so the button reflects acceptance.
   const setupPolicyError = React.useMemo(
     () => oobePasswordPolicyError(password, username.trim()),
     [password, username],
@@ -757,530 +825,587 @@ export default function Login({ onAuthenticated }: LoginProps) {
     return p.id;
   };
 
-  // One quiet identity slab serves every legacy stored layout. Authentication state
-  // remains above this presentation boundary; the slab owns only hierarchy and the
-  // current mode's controlled form.
-  const formInner = (
-    <div className="relative isolate my-auto w-full sm:w-[30rem] sm:max-w-[30rem]">
-      <LoginAuthBackdrop />
-      <div
-        className="login-auth-slab relative z-30 flex max-h-[100dvh] min-h-[100dvh] w-full flex-col overflow-y-auto px-8 pb-20 pt-8 sm:min-h-[30.75rem] sm:w-[30rem] sm:px-12 sm:pb-24 sm:pt-12"
-        data-login-slab
-        data-login-identity-pane
-      >
-        <div className="relative mx-auto my-auto w-full max-w-sm sm:my-0">
-        <div className="mb-5 flex h-14 min-w-0 items-center" aria-label={`${wordmark}: ${tagline}`}>
-          <div className="flex h-14 w-14 shrink-0 items-center justify-start">
-            {logoUrl ? (
-              <img src={logoUrl} alt="" className="h-14 w-14 object-contain" />
-            ) : (
-              <Shield className="h-12 w-12 stroke-[1.35] text-primary" aria-hidden />
-            )}
+  const themeControl = (
+    <div className="absolute right-4 top-4 z-10 sm:right-6 sm:top-6">
+      <LoginThemeControl value={theme} onChange={setTheme} />
+    </div>
+  );
+  // One column for every mode: full width with 24px gutters on phones, top aligned so
+  // a software keyboard never pushes it around, and centred at 400px from 640px up.
+  const mainClass =
+    'login-canvas relative isolate flex min-h-dvh flex-col items-center overflow-x-hidden bg-canvas px-6 pb-16 pt-[max(4rem,12dvh)] sm:justify-center sm:px-8 sm:py-16';
+  const columnClass = 'w-full sm:w-[25rem]';
+  const markSlot = 'mb-8 flex h-10 items-center';
+
+  // Hold the form until the setup-status probe, the SSO-providers probe, the branding
+  // and the Remember me chunk settle, so a first-run install never flashes the sign-in
+  // form before the create-admin form, the SSO block never pops in a beat after the
+  // form, and the login never paints with stale branding then snaps to the operator's
+  // copy. The probes fire on mount in parallel, so this waits for the slowest one, not
+  // their sum, and each fails safe. Meanwhile the final shell is already in place: the
+  // canvas, the appearance control and the column, with a small glyph that shows only
+  // when the wait passes 300ms.
+  if (!firstPaintReady) {
+    return (
+      <main data-login-shell="minimal" data-login-loading className={mainClass}>
+        {themeControl}
+        <div className={columnClass}>
+          <div className={markSlot} aria-hidden />
+          <div
+            role="status"
+            aria-live="polite"
+            className="flex min-h-48 items-center justify-center"
+          >
+            <LoadingGlyph size="sm" className="login-delayed-reveal" />
+            <span className="sr-only">Loading sign-in</span>
           </div>
-          <span className="sr-only">{wordmark}. {tagline}.</span>
+        </div>
+      </main>
+    );
+  }
+
+  const stepClass =
+    stepMotion === 'forward'
+      ? 'login-step-forward'
+      : stepMotion === 'back'
+        ? 'login-step-back'
+        : undefined;
+  const ssoOffered = mode === 'signin' && signinStep === 'identity' && ssoProviders.length > 0;
+
+  // Legacy split / centered / full preferences remain readable and round-trip through
+  // Branding, but intentionally converge on one surface.
+  return (
+    <main data-login-layout={loginLayout} data-login-shell="minimal" className={mainClass}>
+      {themeControl}
+      <div data-login-identity-pane className={cn('login-enter', columnClass)}>
+        <div className={markSlot} aria-hidden>
+          {logoUrl ? (
+            <img src={logoUrl} alt="" className="h-10 w-10 object-contain" />
+          ) : (
+            <Shield className="h-7 w-7 text-primary" aria-hidden />
+          )}
         </div>
 
-        <Card
-          data-login-panel
-          data-login-surface="minimal"
-          elevation="none"
-          className="rounded-none border-0 bg-transparent shadow-none"
+        {/* tabIndex={-1}: the mandated-MFA transition focuses this heading
+            programmatically (see modeHeadingRef), never a tab stop. The describedby
+            hands SRs the mode description (i.e. WHY enrollment is required) as the
+            heading's accessible context on focus. */}
+        <h1
+          ref={modeHeadingRef}
+          tabIndex={-1}
+          aria-describedby={activeDescription ? 'login-mode-description' : undefined}
+          className="break-words text-3xl text-foreground outline-0"
         >
-            <CardHeader className="space-y-0 px-0 pb-0 pt-0 text-left">
-              {/* tabIndex={-1}: the mandated-MFA transition focuses this heading
-                  programmatically (see modeHeadingRef) — never a tab stop. The
-                  describedby hands SRs the mode description (i.e. WHY enrollment
-                  is required) as the heading's accessible context on focus. */}
-              <h1
-                ref={modeHeadingRef}
-                tabIndex={-1}
-                aria-describedby="login-mode-description"
-                className="break-words text-display font-medium text-foreground outline-0"
-              >
-                {activeTitle}
-              </h1>
-              <CardDescription
-                id="login-mode-description"
-                className="mt-3 max-w-sm break-words text-base leading-5"
-              >
-                {activeDescription}
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="px-0 pb-0 pt-9">
-              {!error && mode === 'signin' && SessionEndNotice ? (
-                <SessionEndNotice reason={endedSession?.reason} onShownChange={setNoticeShown} />
-              ) : null}
-              {error ? (
-                <Alert
-                  id={mode === 'signin' ? 'login-error' : undefined}
-                  variant="destructive"
-                  className="mb-5"
-                >
-                  <AlertCircle aria-hidden />
-                  <AlertDescription>
-                    <span className="font-medium">{error}</span>
-                    {errorDetail ? (
-                      <span className="mt-0.5 block text-xs opacity-80">{errorDetail}</span>
-                    ) : null}
-                  </AlertDescription>
-                </Alert>
-              ) : null}
+          {activeTitle}
+        </h1>
+        {activeDescription ? (
+          <p
+            id="login-mode-description"
+            className="mt-2 whitespace-pre-line break-words text-base text-muted-foreground"
+          >
+            {activeDescription}
+          </p>
+        ) : null}
 
-              {/* ---- Mode: create first admin (OOBE account-setup) ----------- */}
-              {mode === 'setup' ? (
-                <form onSubmit={submitSetup} className="space-y-5" noValidate>
+        <div className="mt-8">
+          {!error && !pageError && mode === 'signin' && SessionEndNotice ? (
+            <SessionEndNotice reason={endedSession?.reason} onShownChange={setNoticeShown} />
+          ) : null}
+          {pageError && mode === 'signin' ? (
+            <Alert variant="destructive" className="mb-5" data-login-page-error>
+              <AlertCircle aria-hidden />
+              <AlertDescription>{pageError}</AlertDescription>
+            </Alert>
+          ) : null}
+          {error && !inlineErrors ? (
+            <Alert variant="destructive" className="mb-5">
+              <AlertCircle aria-hidden />
+              <AlertDescription>
+                <span className="font-medium">{error}</span>
+                {errorDetail ? (
+                  <span className="mt-0.5 block text-xs opacity-80">{errorDetail}</span>
+                ) : null}
+              </AlertDescription>
+            </Alert>
+          ) : null}
+
+          {/* Keyed by step, so the incoming form mounts fresh and plays the one step
+              transition (forward or back); the outgoing form leaves at once. */}
+          <div key={`${mode}:${signinStep}`} className={stepClass} data-login-step={`${mode}:${signinStep}`}>
+            {/* ---- Mode: create first admin (OOBE account-setup) ----------- */}
+            {mode === 'setup' ? (
+              <form onSubmit={submitSetup} className="space-y-5" noValidate>
+                <div className="space-y-2">
+                  <Label htmlFor="setup-username">Admin username</Label>
+                  <LoginTextInput
+                    id="setup-username"
+                    icon={User}
+                    value={username}
+                    onChange={(e) => setUsername(e.target.value)}
+                    autoComplete="username"
+                    placeholder="Choose an admin username"
+                    disabled={busy}
+                    required
+                    /* eslint-disable-next-line jsx-a11y/no-autofocus -- deliberate focus placement on the primary field of a focused dialog/login flow; behavior-preserving */
+                    autoFocus
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="setup-display">
+                    Display name <span className="text-muted-foreground">(optional)</span>
+                  </Label>
+                  <LoginTextInput
+                    id="setup-display"
+                    icon={IdCard}
+                    value={displayName}
+                    onChange={(e) => setDisplayName(e.target.value)}
+                    autoComplete="name"
+                    placeholder="e.g. Alex Morgan"
+                    disabled={busy}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="setup-password">Password</Label>
+                  <PasswordInput
+                    id="setup-password"
+                    value={password}
+                    onChange={setPassword}
+                    autoComplete="new-password"
+                    placeholder="Create a strong password"
+                    ariaDescribedBy="setup-password-help"
+                    disabled={busy}
+                    required
+                  />
+                  {/* Reserve a fixed-height slot for the strength meter so the FIRST
+                      keystroke (meter appears) never shoves the fields/button below
+                      it downward (reserve-space; the meter is null until typing). */}
+                  <div className="min-h-[1.75rem] pt-0.5">
+                    <PasswordStrengthMeter password={password} />
+                  </div>
+                  {/* Policy hint mirrors the server gate (min 12, not the username, not common). */}
+                  <p
+                    id="setup-password-help"
+                    className={cn(
+                      'text-xs',
+                      password && setupPolicyError ? 'text-critical' : 'text-muted-foreground',
+                    )}
+                  >
+                    {password && setupPolicyError
+                      ? setupPolicyError
+                      : `Use at least ${OOBE_MIN_PASSWORD_LEN} characters, not your username or a common password.`}
+                  </p>
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="setup-confirm">Confirm password</Label>
+                  <PasswordInput
+                    id="setup-confirm"
+                    value={confirm}
+                    onChange={setConfirm}
+                    autoComplete="new-password"
+                    placeholder="Repeat your password"
+                    disabled={busy}
+                    required
+                  />
+                  {/* Reserved slot: the mismatch line inserts on a typing mismatch;
+                      keep its height always so it never shoves the submit button. */}
+                  <div className="min-h-[1rem]" aria-live="polite">
+                    {confirm && password !== confirm ? (
+                      <p className="text-xs text-critical">Passwords do not match.</p>
+                    ) : null}
+                  </div>
+                </div>
+                <Button type="submit" className={ACTION_BUTTON} disabled={!canSubmitSetup}>
+                  {busy ? <Loader2 className="animate-spin" aria-hidden /> : <UserPlus aria-hidden />}
+                  {busy ? 'Creating…' : 'Create admin & sign in'}
+                </Button>
+              </form>
+            ) : null}
+
+            {/* ---- Mode: OPTIONAL MFA enrollment after account creation ---- */}
+            {mode === 'mfa-enroll' ? (
+              <div className="space-y-4">
+                {/* frameless: the page already supplies the "Secure your account"
+                    heading. Reserve the QR area's height so the second grow (when the
+                    enrollment QR resolves after mount) is absorbed, not a jump. */}
+                <div className="min-h-[24rem]">
+                  <MfaSetupCard enabled={false} frameless onChanged={handOff} />
+                </div>
+                <Button type="button" variant="ghost" className="w-full" onClick={handOff}>
+                  Skip for now &amp; continue
+                </Button>
+              </div>
+            ) : null}
+
+            {/* ---- Mode: MANDATED MFA enrollment during login -------------- */}
+            {mode === 'mfa-enroll-required' ? (
+              <div className="space-y-4">
+                {/* frameless (single surface grammar) + the pending token reroutes the
+                    card's setup/confirm to the PUBLIC enroll endpoints and makes a
+                    successful confirm a COMPLETED login. Deliberately NO skip: there
+                    is no session yet and the mandate is not optional. The only exits
+                    are finishing enrollment or going back to sign-in. The min-h
+                    reserve absorbs the QR growth (same as the optional step). */}
+                <div className="min-h-[24rem]">
+                  <MfaSetupCard
+                    enabled={false}
+                    frameless
+                    pendingToken={pendingToken}
+                    onComplete={completeEnrollLogin}
+                    onPendingExpired={expireEnrollLogin}
+                  />
+                </div>
+                <div className="text-center">
+                  <Button type="button" variant="link" className={LINK_BUTTON} onClick={backToSignIn}>
+                    Back to sign in
+                  </Button>
+                </div>
+              </div>
+            ) : null}
+
+            {/* ---- Mode: normal sign-in ------------------------------------ */}
+            {mode === 'signin' ? (
+              signinStep === 'identity' ? (
+                <form onSubmit={continueSignin} className="space-y-4" noValidate>
                   <div className="space-y-2">
-                    <Label htmlFor="setup-username">Admin username</Label>
+                    <Label htmlFor="login-username">Username</Label>
                     <LoginTextInput
-                      id="setup-username"
-                      icon={User}
+                      ref={signinIdentityRef}
+                      id="login-username"
                       value={username}
-                      onChange={(e) => setUsername(e.target.value)}
+                      onChange={(e) => {
+                        setUsername(e.target.value);
+                        if (error) clearFieldError();
+                      }}
                       autoComplete="username"
-                      placeholder="Choose an admin username"
+                      name="username"
+                      placeholder="Enter your username"
                       disabled={busy}
                       required
+                      aria-describedby={describedBy}
+                      aria-invalid={error ? true : undefined}
                       /* eslint-disable-next-line jsx-a11y/no-autofocus -- deliberate focus placement on the primary field of a focused dialog/login flow; behavior-preserving */
                       autoFocus
                     />
+                    <FieldError message={error} detail={errorDetail} />
                   </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="setup-display">
-                      Display name <span className="text-muted-foreground">(optional)</span>
-                    </Label>
-                    <LoginTextInput
-                      id="setup-display"
-                      icon={IdCard}
-                      value={displayName}
-                      onChange={(e) => setDisplayName(e.target.value)}
-                      autoComplete="name"
-                      placeholder="e.g. Alex Morgan"
-                      disabled={busy}
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="setup-password">Password</Label>
-                    <PasswordInput
-                      id="setup-password"
-                      value={password}
-                      onChange={setPassword}
-                      autoComplete="new-password"
-                      placeholder="Create a strong password"
-                      ariaDescribedBy="setup-password-help"
-                      disabled={busy}
-                      required
-                    />
-                    {/* Reserve a fixed-height slot for the strength meter so the FIRST
-                        keystroke (meter appears) never shoves the fields/button below
-                        it downward (reserve-space; the meter is null until typing). */}
-                    <div className="min-h-[1.75rem] pt-0.5">
-                      <PasswordStrengthMeter password={password} />
-                    </div>
-                    {/* Policy hint mirrors the server gate (min 12, ≠ username, not common). */}
-                    <p
-                      id="setup-password-help"
-                      className={cn(
-                        'text-xs',
-                        password && setupPolicyError ? 'text-critical' : 'text-muted-foreground',
-                      )}
-                    >
-                      {password && setupPolicyError
-                        ? setupPolicyError
-                        : `Use at least ${OOBE_MIN_PASSWORD_LEN} characters, not your username or a common password.`}
-                    </p>
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="setup-confirm">Confirm password</Label>
-                    <PasswordInput
-                      id="setup-confirm"
-                      value={confirm}
-                      onChange={setConfirm}
-                      autoComplete="new-password"
-                      placeholder="Repeat your password"
-                      disabled={busy}
-                      required
-                    />
-                    {/* Reserved slot: the mismatch line inserts on a typing mismatch —
-                        keep its height always so it never shoves the submit button. */}
-                    <div className="min-h-[1rem]" aria-live="polite">
-                      {confirm && password !== confirm ? (
-                        <p className="text-xs text-critical">Passwords do not match.</p>
-                      ) : null}
-                    </div>
-                  </div>
-                  <Button type="submit" className="h-12 w-full" disabled={!canSubmitSetup}>
-                    {busy ? <Loader2 className="animate-spin" aria-hidden /> : <UserPlus aria-hidden />}
-                    {busy ? 'Creating…' : 'Create admin & sign in'}
+                  <Button type="submit" className={ACTION_BUTTON} disabled={busy}>
+                    Continue
                   </Button>
                 </form>
-              ) : null}
-
-              {/* ---- Mode: OPTIONAL MFA enrollment after account creation ---- */}
-              {mode === 'mfa-enroll' ? (
-                <div className="space-y-4">
-                  {/* frameless: the outer login Card already supplies the frame +
-                      the "Secure your account" heading — avoid a card-in-card.
-                      Reserve the QR area's height so the second grow (when the
-                      enrollment QR resolves after mount) is absorbed, not a jump. */}
-                  <div className="min-h-[24rem]">
-                    <MfaSetupCard enabled={false} frameless onChanged={onAuthenticated} />
-                  </div>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    className="w-full"
-                    onClick={onAuthenticated}
+              ) : (
+                <form onSubmit={submitSignin} className="space-y-4" noValidate>
+                  {/* Password managers pair a saved password with a username field
+                      in the SAME form (Chromium's two-step sign-in guidance), so the
+                      password step carries a hidden, non-tabbable copy. */}
+                  <input
+                    type="text"
+                    name="username"
+                    autoComplete="username"
+                    value={username.trim()}
+                    onChange={() => undefined}
+                    tabIndex={-1}
+                    aria-hidden="true"
+                    className="sr-only"
+                    data-login-hidden-username
+                  />
+                  <div
+                    className="flex min-h-8 items-center justify-between gap-3 text-base"
+                    data-login-identity-chip={rememberedChip ? 'remembered' : 'typed'}
                   >
-                    Skip for now &amp; continue
-                  </Button>
-                </div>
-              ) : null}
-
-              {/* ---- Mode: MANDATED MFA enrollment during login -------------- */}
-              {mode === 'mfa-enroll-required' ? (
-                <div className="space-y-4">
-                  {/* frameless (single card grammar) + the pending token reroutes the
-                      card's setup/confirm to the PUBLIC enroll endpoints and makes a
-                      successful confirm a COMPLETED login. Deliberately NO skip: there
-                      is no session yet and the mandate is not optional — the only
-                      exits are finishing enrollment or going back to sign-in. The
-                      min-h reserve absorbs the QR growth (same as the optional step). */}
-                  <div className="min-h-[24rem]">
-                    <MfaSetupCard
-                      enabled={false}
-                      frameless
-                      pendingToken={pendingToken}
-                      onComplete={completeEnrollLogin}
-                      onPendingExpired={expireEnrollLogin}
-                    />
-                  </div>
-                  <div className="text-center">
+                    <span className="min-w-0 truncate font-medium text-foreground">
+                      {username.trim()}
+                    </span>
                     <Button
                       type="button"
-                      variant="link"
-                      className={LINK_BUTTON}
-                      onClick={backToSignIn}
+                      variant="ghost"
+                      size="sm"
+                      className="h-8 shrink-0 px-2 text-xs text-muted-foreground"
+                      onClick={() => {
+                        if (rememberedChip) {
+                          forgetThisDevice();
+                          return;
+                        }
+                        setSigninStep('identity');
+                        setStepMotion('back');
+                        setPassword('');
+                        clearError();
+                        window.setTimeout(() => signinIdentityRef.current?.focus(), 0);
+                      }}
+                      disabled={busy}
                     >
-                      Back to sign in
+                      {rememberedChip ? null : <ArrowLeft className="h-3.5 w-3.5" aria-hidden />}
+                      {rememberedChip ? 'Use a different account' : 'Back'}
                     </Button>
                   </div>
-                </div>
-              ) : null}
-
-              {/* ---- Mode: normal sign-in ------------------------------------ */}
-              {mode === 'signin' ? (
-                signinStep === 'identity' ? (
-                  <form onSubmit={continueSignin} className="space-y-4" noValidate>
-                    <div className="space-y-2">
-                      <Label htmlFor="login-username">Username</Label>
-                      <LoginTextInput
-                        ref={signinIdentityRef}
-                        id="login-username"
-                        value={username}
-                        onChange={(e) => setUsername(e.target.value)}
-                        autoComplete="username"
-                        name="username"
-                        placeholder="Enter your username"
-                        disabled={busy}
-                        required
-                        aria-describedby={noticeId}
-                        /* eslint-disable-next-line jsx-a11y/no-autofocus -- deliberate focus placement on the primary field of a focused dialog/login flow; behavior-preserving */
-                        autoFocus
-                      />
-                    </div>
-                    {username.trim().length > 0 ? (
-                      <ShineButton type="submit" className="h-12 w-full" disabled={busy} busy={busy}>
-                        Continue
-                      </ShineButton>
-                    ) : null}
-                  </form>
-                ) : (
-                  <form onSubmit={submitSignin} className="space-y-4" noValidate>
-                    {/* Password managers pair a saved password with a username field
-                        in the SAME form (Chromium's two-step sign-in guidance), so the
-                        password step carries a hidden, non-tabbable copy. */}
-                    <input
-                      type="text"
-                      name="username"
-                      autoComplete="username"
-                      value={username.trim()}
-                      onChange={() => undefined}
-                      tabIndex={-1}
-                      aria-hidden="true"
-                      className="sr-only"
-                      data-login-hidden-username
-                    />
-                    <div
-                      className="flex min-h-8 items-center justify-between gap-3 text-sm"
-                      data-login-identity-chip={rememberedChip ? 'remembered' : 'typed'}
-                    >
-                      <span className="min-w-0 truncate text-foreground">{username.trim()}</span>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="sm"
-                        className="h-8 shrink-0 px-2 text-xs text-muted-foreground"
-                        onClick={() => {
-                          if (rememberedChip) {
-                            forgetThisDevice();
-                            return;
-                          }
-                          setSigninStep('identity');
-                          setPassword('');
-                          clearError();
-                          window.setTimeout(() => signinIdentityRef.current?.focus(), 0);
-                        }}
-                        disabled={busy}
-                      >
-                        {rememberedChip ? null : <ArrowLeft className="h-3.5 w-3.5" aria-hidden />}
-                        {rememberedChip ? 'Use a different account' : 'Back'}
-                      </Button>
-                    </div>
-                    <div className="space-y-2">
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between gap-3">
                       <Label htmlFor="login-password">Password</Label>
-                      <PasswordInput
-                        ref={signinPasswordRef}
-                        id="login-password"
-                        value={password}
-                        onChange={setPassword}
-                        autoComplete="current-password"
-                        name="password"
-                        placeholder="Enter your password"
-                        ariaDescribedBy={error ? 'login-error' : noticeId}
-                        ariaInvalid={Boolean(error)}
-                        disabled={busy}
-                        required
-                        // A remembered username opens on this step: focus the field so
-                        // the browser's password manager can fill it.
-                        /* eslint-disable-next-line jsx-a11y/no-autofocus -- deliberate focus placement on the only field of the remembered sign-in step */
-                        autoFocus={Boolean(rememberedUser)}
-                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowForgotHelp((v) => !v)}
+                        aria-expanded={showForgotHelp}
+                        aria-controls={showForgotHelp ? 'login-forgot-help' : undefined}
+                        className="rounded-sm text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      >
+                        Forgot password?
+                      </button>
                     </div>
-                    {rememberRow}
-                    <ShineButton
-                      type="submit"
-                      className="h-12 w-full"
+                    <PasswordInput
+                      ref={signinPasswordRef}
+                      id="login-password"
+                      value={password}
+                      onChange={(value) => {
+                        setPassword(value);
+                        if (error) clearFieldError();
+                      }}
+                      autoComplete="current-password"
+                      name="password"
+                      placeholder="Enter your password"
+                      ariaDescribedBy={describedBy}
+                      ariaInvalid={Boolean(error)}
                       disabled={busy}
-                      busy={busy}
-                      icon={
-                        busy ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : null
-                      }
-                    >
-                      {busy ? 'Signing in…' : 'Sign in'}
-                    </ShineButton>
-                  </form>
-                )
-              ) : null}
+                      required
+                      // A remembered username opens on this step: focus the field so
+                      // the browser's password manager can fill it.
+                      /* eslint-disable-next-line jsx-a11y/no-autofocus -- deliberate focus placement on the only field of the remembered sign-in step */
+                      autoFocus={Boolean(rememberedUser)}
+                    />
+                    {showForgotHelp ? (
+                      <p id="login-forgot-help" className="text-xs text-muted-foreground">
+                        Ask an administrator to reset it. There is no self-service reset.
+                      </p>
+                    ) : null}
+                    <FieldError message={error} detail={errorDetail} />
+                  </div>
+                  {rememberRow}
+                  <Button type="submit" className={ACTION_BUTTON} disabled={busy}>
+                    {busy ? <Loader2 className="animate-spin" aria-hidden /> : null}
+                    {busy ? 'Signing in…' : 'Sign in'}
+                  </Button>
+                </form>
+              )
+            ) : null}
 
-              {/* The reference keeps identity providers below the credential path.
-                  Providers stay explicitly named for assistive technology while the
-                  visual controls remain compact and icon-led. */}
-              {mode === 'signin' && signinStep === 'identity' && ssoProviders.length > 0 && rememberRow ? (
-                <div className="mt-4">{rememberRow}</div>
-              ) : null}
-              {mode === 'signin' && signinStep === 'identity' && ssoProviders.length > 0 ? (
-                <div
-                  className="mt-6 grid gap-2"
-                  style={{ gridTemplateColumns: `repeat(${Math.min(ssoProviders.length, 3)}, minmax(0, 1fr))` }}
-                  aria-label="Single sign-on"
-                >
+            {/* With single sign-on, Remember me also sits on the identity step, right
+                under Continue (it applies to the provider buttons below). */}
+            {ssoOffered && rememberRow ? <div className="mt-3">{rememberRow}</div> : null}
+            {ssoOffered ? (
+              <div className="mt-6">
+                <div className="flex items-center gap-3 text-xs text-muted-foreground" aria-hidden>
+                  <span className="h-px flex-1 bg-border" />
+                  or
+                  <span className="h-px flex-1 bg-border" />
+                </div>
+                <div className="mt-6 space-y-2" role="group" aria-label="Single sign-on">
                   {ssoProviders.map((p) => {
                     const label = ssoLabel(p);
                     return (
                       <Button
                         key={p.id}
                         type="button"
-                        variant="secondary"
-                        className="press-scale h-10 min-w-0 px-3"
-                        aria-label={`Sign in with ${label}`}
-                        title={`Sign in with ${label}`}
+                        variant="outline"
+                        className={cn(ACTION_BUTTON, 'min-w-0')}
                         onClick={() => void startSso(p.id)}
                         disabled={Boolean(ssoBusy)}
                       >
                         {ssoBusy === p.id ? (
                           <Loader2 className="animate-spin" aria-hidden />
                         ) : (
-                          <SsoBrandIcon type={p.type} className="h-5 w-5" />
+                          <SsoBrandIcon type={p.type} />
                         )}
-                        <span className="sr-only">Sign in with {label}</span>
+                        <span className="min-w-0 truncate">Sign in with {label}</span>
                       </Button>
                     );
                   })}
                 </div>
-              ) : null}
+              </div>
+            ) : null}
 
-              {seededHint && signinStep === 'identity' ? (
-                <div
-                  data-login-demo-hint
-                  className="mt-5 flex flex-wrap items-center justify-between gap-x-3 gap-y-2 text-xs text-muted-foreground"
+            {seededHint && signinStep === 'identity' ? (
+              <div
+                data-login-demo-hint
+                className="mt-6 flex flex-wrap items-center justify-between gap-x-3 gap-y-2 text-xs text-muted-foreground"
+              >
+                <p className="min-w-0 break-words">
+                  <span className="font-medium text-foreground">Demo credentials</span>
+                  <span aria-hidden> · </span>
+                  <span className="font-mono text-foreground">Admin</span>
+                  <span aria-hidden> / </span>
+                  <span className="font-mono text-foreground">Admin@123</span>
+                  <span className="sr-only">Username Admin. Password Admin at 123.</span>
+                </p>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  aria-label="Use demo credentials"
+                  className="h-8 shrink-0 px-2 text-xs"
+                  onClick={() => {
+                    setUsername('Admin');
+                    setPassword('Admin@123');
+                    clearError();
+                    setSigninStep('password');
+                    setStepMotion('forward');
+                    window.setTimeout(() => signinPasswordRef.current?.focus(), 0);
+                  }}
+                  disabled={busy}
                 >
-                  <p className="min-w-0 break-words">
-                    <span className="font-medium text-foreground">Demo credentials</span>
-                    <span aria-hidden> · </span>
-                    <span className="font-mono text-foreground">Admin</span>
-                    <span aria-hidden> / </span>
-                    <span className="font-mono text-foreground">Admin@123</span>
-                    <span className="sr-only">Username Admin. Password Admin at 123.</span>
-                  </p>
+                  Use
+                </Button>
+              </div>
+            ) : null}
+
+            {/* ---- Mode: MFA second factor (TOTP / recovery) --------------- */}
+            {mode === 'mfa' ? (
+              <form onSubmit={submitMfa} className="space-y-5" noValidate>
+                <div className="space-y-2">
+                  {/* htmlFor only in the recovery branch (id="mfa-code" is the text
+                      Input there). In the OTP branch the control is the segmented
+                      OtpInput group, which carries its own aria-label; a htmlFor
+                      pointing at a non-existent id would be a dead association. */}
+                  <Label htmlFor={useRecovery ? 'mfa-code' : undefined}>
+                    {useRecovery ? 'Recovery code' : 'Authentication code'}
+                  </Label>
+                  {useRecovery ? (
+                    <>
+                      <LoginTextInput
+                        id="mfa-code"
+                        icon={ShieldCheck}
+                        className="font-mono tracking-wider"
+                        inputMode="text"
+                        autoComplete="one-time-code"
+                        placeholder="XXXX-XXXX"
+                        value={mfaCode}
+                        onChange={(e) => setMfaCode(e.target.value)}
+                        disabled={busy}
+                        aria-describedby={error ? ERROR_ID : undefined}
+                        aria-invalid={error ? true : undefined}
+                        /* eslint-disable-next-line jsx-a11y/no-autofocus -- deliberate focus placement on the primary field of a focused dialog/login flow; behavior-preserving */
+                        autoFocus
+                      />
+                      <div className="text-xs">
+                        <button
+                          type="button"
+                          onClick={() => setShowRecoveryHelp((v) => !v)}
+                          aria-expanded={showRecoveryHelp}
+                          className="rounded-sm font-normal text-muted-foreground underline-offset-2 hover:text-foreground hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        >
+                          Where can I find my recovery codes?
+                        </button>
+                        {showRecoveryHelp ? (
+                          <p className="mt-1.5 rounded-md bg-muted/50 p-2 leading-relaxed text-muted-foreground">
+                            Recovery codes were shown when you enabled two-factor authentication.
+                            Each code works once. If you&apos;ve used or lost them all, ask an
+                            administrator to reset your two-factor setup.
+                          </p>
+                        ) : null}
+                      </div>
+                    </>
+                  ) : (
+                    <OtpInput
+                      key={otpAttempt}
+                      value={mfaCode}
+                      onChange={(next) => {
+                        setMfaCode(next);
+                        if (error) setError(null);
+                      }}
+                      onComplete={(code) => void verifyMfa(code)}
+                      disabled={busy}
+                      /* eslint-disable-next-line jsx-a11y/no-autofocus -- deliberate focus placement on the primary field of a focused dialog/login flow; behavior-preserving */
+                      autoFocus
+                      aria-label="Authentication code"
+                    />
+                  )}
+                  <FieldError message={error} />
+                </div>
+                <Button
+                  type="submit"
+                  className={ACTION_BUTTON}
+                  disabled={busy || mfaCode.trim().length === 0}
+                >
+                  {busy ? <Loader2 className="animate-spin" aria-hidden /> : <ShieldCheck aria-hidden />}
+                  {busy ? 'Verifying…' : 'Verify and continue'}
+                </Button>
+                <div className="flex items-center justify-between text-xs">
                   <Button
                     type="button"
-                    variant="ghost"
-                    size="sm"
-                    aria-label="Use demo credentials"
-                    className="h-8 shrink-0 px-2 text-xs"
+                    variant="link"
+                    className={LINK_BUTTON}
                     onClick={() => {
-                      setUsername('Admin');
-                      setPassword('Admin@123');
+                      setUseRecovery((v) => !v);
+                      setMfaCode('');
                       clearError();
-                      setSigninStep('password');
-                      window.setTimeout(() => signinPasswordRef.current?.focus(), 0);
+                      setShowRecoveryHelp(false);
                     }}
                     disabled={busy}
                   >
-                    Use
+                    {useRecovery ? 'Use an authenticator code' : 'Use a recovery code'}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="link"
+                    className={LINK_BUTTON}
+                    onClick={() => {
+                      backToSignIn();
+                      setMfaCode('');
+                      setShowRecoveryHelp(false);
+                    }}
+                    disabled={busy}
+                  >
+                    Back to sign in
                   </Button>
                 </div>
-              ) : null}
+              </form>
+            ) : null}
 
-              {/* ---- Mode: MFA second factor (TOTP / recovery) --------------- */}
-              {mode === 'mfa' ? (
-                <form onSubmit={submitMfa} className="space-y-5" noValidate>
-                  <div className="space-y-2">
-                    {/* htmlFor only in the recovery branch (id="mfa-code" is the text
-                        Input there). In the OTP branch the control is the segmented
-                        OtpInput group, which carries its own aria-label — a htmlFor
-                        pointing at a non-existent id would be a dead association. */}
-                    <Label htmlFor={useRecovery ? 'mfa-code' : undefined}>
-                      {useRecovery ? 'Recovery code' : 'Authentication code'}
-                    </Label>
-                    {useRecovery ? (
-                      <>
-                        <LoginTextInput
-                          id="mfa-code"
-                          icon={ShieldCheck}
-                          className="font-mono tracking-wider"
-                          inputMode="text"
-                          autoComplete="one-time-code"
-                          placeholder="XXXX-XXXX"
-                          value={mfaCode}
-                          onChange={(e) => setMfaCode(e.target.value)}
-                          disabled={busy}
-                          /* eslint-disable-next-line jsx-a11y/no-autofocus -- deliberate focus placement on the primary field of a focused dialog/login flow; behavior-preserving */
-                          autoFocus
-                        />
-                        <div className="text-xs">
-                          <button
-                            type="button"
-                            onClick={() => setShowRecoveryHelp((v) => !v)}
-                            aria-expanded={showRecoveryHelp}
-                            className="rounded-sm font-normal text-muted-foreground underline-offset-2 hover:text-foreground hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                          >
-                            Where can I find my recovery codes?
-                          </button>
-                          {showRecoveryHelp ? (
-                            <p className="mt-1.5 rounded-md bg-muted/50 p-2 leading-relaxed text-muted-foreground">
-                              Recovery codes were shown when you enabled two-factor authentication.
-                              Each code works once. If you&apos;ve used or lost them all, ask an
-                              administrator to reset your two-factor setup.
-                            </p>
-                          ) : null}
-                        </div>
-                      </>
-                    ) : (
-                      <OtpInput
-                        value={mfaCode}
-                        onChange={setMfaCode}
-                        disabled={busy}
-                        /* eslint-disable-next-line jsx-a11y/no-autofocus -- deliberate focus placement on the primary field of a focused dialog/login flow; behavior-preserving */
-                        autoFocus
-                        aria-label="Authentication code"
-                      />
-                    )}
+            {/* ---- Mode: forced password change ---------------------------- */}
+            {mode === 'change' ? (
+              <form onSubmit={submitChange} className="space-y-5" noValidate>
+                <div className="space-y-2">
+                  <Label htmlFor="change-new">New password</Label>
+                  <PasswordInput
+                    id="change-new"
+                    value={newPassword}
+                    onChange={setNewPassword}
+                    autoComplete="new-password"
+                    placeholder="Create a new password"
+                    disabled={busy}
+                    required
+                    /* eslint-disable-next-line jsx-a11y/no-autofocus -- deliberate focus placement on the primary field of the forced password-change step; behavior-preserving */
+                    autoFocus
+                  />
+                  {/* Reserved slot: same reserve-space treatment as the setup form. */}
+                  <div className="min-h-[1.75rem] pt-0.5">
+                    <PasswordStrengthMeter password={newPassword} />
                   </div>
-                  <Button type="submit" className="h-12 w-full" disabled={busy || mfaCode.trim().length === 0}>
-                    {busy ? <Loader2 className="animate-spin" aria-hidden /> : <ShieldCheck aria-hidden />}
-                    {busy ? 'Verifying…' : 'Verify and continue'}
-                  </Button>
-                  <div className="flex items-center justify-between text-xs">
-                    <Button
-                      type="button"
-                      variant="link"
-                      className={LINK_BUTTON}
-                      onClick={() => {
-                        setUseRecovery((v) => !v);
-                        setMfaCode('');
-                        clearError();
-                        setShowRecoveryHelp(false);
-                      }}
-                      disabled={busy}
-                    >
-                      {useRecovery ? 'Use an authenticator code' : 'Use a recovery code'}
-                    </Button>
-                    <Button
-                      type="button"
-                      variant="link"
-                      className={LINK_BUTTON}
-                      onClick={() => {
-                        backToSignIn();
-                        setMfaCode('');
-                        setShowRecoveryHelp(false);
-                      }}
-                      disabled={busy}
-                    >
-                      Back to sign in
-                    </Button>
-                  </div>
-                </form>
-              ) : null}
-
-              {/* ---- Mode: forced password change ---------------------------- */}
-              {mode === 'change' ? (
-                <form onSubmit={submitChange} className="space-y-5" noValidate>
-                  <div className="space-y-2">
-                    <Label htmlFor="change-new">New password</Label>
-                    <PasswordInput
-                      id="change-new"
-                      value={newPassword}
-                      onChange={setNewPassword}
-                      autoComplete="new-password"
-                      placeholder="Create a new password"
-                      disabled={busy}
-                      required
-                      /* eslint-disable-next-line jsx-a11y/no-autofocus -- deliberate focus placement on the primary field of the forced password-change step; behavior-preserving */
-                      autoFocus
-                    />
-                    {/* Reserved slot — same reserve-space treatment as the setup form. */}
-                    <div className="min-h-[1.75rem] pt-0.5">
-                      <PasswordStrengthMeter password={newPassword} />
-                    </div>
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="change-confirm">Confirm new password</Label>
-                    <PasswordInput
-                      id="change-confirm"
-                      value={confirm}
-                      onChange={setConfirm}
-                      autoComplete="new-password"
-                      placeholder="Repeat your new password"
-                      disabled={busy}
-                      required
-                    />
-                  </div>
-                  <Button
-                    type="submit"
-                    className="h-12 w-full"
-                    disabled={busy || newPassword.length === 0 || confirm.length === 0}
-                  >
-                    {busy ? <Loader2 className="animate-spin" aria-hidden /> : <KeyRound aria-hidden />}
-                    {busy ? 'Updating…' : 'Set password & continue'}
-                  </Button>
-                </form>
-              ) : null}
-            </CardContent>
-          </Card>
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="change-confirm">Confirm new password</Label>
+                  <PasswordInput
+                    id="change-confirm"
+                    value={confirm}
+                    onChange={setConfirm}
+                    autoComplete="new-password"
+                    placeholder="Repeat your new password"
+                    disabled={busy}
+                    required
+                  />
+                </div>
+                <Button
+                  type="submit"
+                  className={ACTION_BUTTON}
+                  disabled={busy || newPassword.length === 0 || confirm.length === 0}
+                >
+                  {busy ? <Loader2 className="animate-spin" aria-hidden /> : <KeyRound aria-hidden />}
+                  {busy ? 'Updating…' : 'Set password & continue'}
+                </Button>
+              </form>
+            ) : null}
+          </div>
+        </div>
 
         {supportUrl || (mode === 'signin' && loginChips.length > 0) || footerText ? (
-          <div className="mt-8 space-y-1.5 text-center text-xs leading-5 text-muted-foreground">
+          <div className="mt-10 space-y-1.5 text-center text-xs leading-5 text-muted-foreground">
             <div className="flex flex-wrap items-center justify-center gap-x-2 gap-y-1">
               {supportUrl ? (
                 <a
@@ -1290,7 +1415,7 @@ export default function Login({ onAuthenticated }: LoginProps) {
                   className={cn(
                     'inline-flex min-h-8 items-center gap-1 rounded-sm text-muted-foreground',
                     'transition-colors focus-visible:outline-none hover:text-foreground',
-                    'focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-card',
+                    'focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-canvas',
                   )}
                 >
                   Help &amp; support
@@ -1310,47 +1435,7 @@ export default function Login({ onAuthenticated }: LoginProps) {
             {footerText ? <p className="break-words">{footerText}</p> : null}
           </div>
         ) : null}
-        </div>
       </div>
-    </div>
-  );
-
-  // Hold first paint until the setup-status probe, the SSO-providers probe, AND the
-  // branding probe settle, so a first-run install never flashes the sign-in form before
-  // switching to the create-admin form, the SSO block never pops in a beat after the
-  // form, and the login never paints with stale/default branding then snaps to the
-  // operator's real login_layout/headline/illustration. All three probes fire on mount
-  // in parallel, so this waits for the slowest one, not their sum. Each fails safe (its
-  // flag flips on error too), so an unreachable backend still resolves to the fallback.
-  if (!firstPaintReady) {
-    return (
-      <main className="login-auth-canvas min-h-[100dvh] px-5">
-        <LoadingState
-          label="Loading sign-in"
-          layout="page"
-          shape="page"
-          className="min-h-[100dvh]"
-        />
-      </main>
-    );
-  }
-
-  // Legacy split / centered / full preferences remain readable and round-trip through
-  // Branding, but intentionally converge on one minimal surface. Keeping one geometry
-  // avoids separate branded experiences and makes every auth mode predictable.
-  return (
-    <main
-      data-login-layout={loginLayout}
-      data-login-shell="minimal"
-      data-login-theme-palette-settling={themePaletteSettling ? 'true' : 'false'}
-      className="login-auth-canvas relative min-h-[100dvh] overflow-x-hidden"
-    >
-      <div className="absolute right-4 top-4 z-40 sm:right-6 sm:top-6">
-        <LoginThemeControl value={theme} isDark={isDark} onChange={changeLoginTheme} />
-      </div>
-      <section className="relative flex min-h-[100dvh] items-center justify-center px-0 py-0 sm:px-8 sm:py-12">
-        {formInner}
-      </section>
     </main>
   );
 }
