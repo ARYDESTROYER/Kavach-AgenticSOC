@@ -12674,3 +12674,58 @@
 - Tests: on the merged tree, the WP15D tests with every Demo test file, the chat golden set, the spine guards and the knowledge tests: 2,845 passed.
 - Status: done.
 - Next: WP14, WP11I and WP12 after their reviews; then WP15F and WP16.
+
+### 2026-11-25 20:45Z - WP14 builder (resumed) - Case records reachable: Console
+- Context: Round 16 SPEC 4.5 WP14 (research data-visibility R2 to R8, R11, R13, R15; B30, B31). Resumed from the interrupted work-in-progress commit 6076328 on r16-wp14, based on 848a328.
+- Did: checked each part against the SPEC and finished it. The case events table, usage popover, all-fields sheet, findings More and Cites N events, waiting reason and hold reason, and notifications list fill the WP01 stubs. JsonTree moved to soc/components with search, Copy and Download. TraceTimeline gained Details, person and system kinds, AI-only step counts and filter helpers. History shows reasons, resolutions and attached events; grading shows the full record; threat context lists providers with both reputation readings; the Why panel names the lifetime retrieval markers. B30: screenshot rows are worded and deleted screenshots are listed. B31: files over the limit are reported. New in this session: the usage formula shows the result to the ledger's 8 decimals, and a narrow events table stacks the date over the time. One test-only mock in EvidencePanel.baseline.test.tsx (WP03's test). Seeded Demo screenshots in both themes at 1440 by 900 and 390 by 844; the trace Details shot uses a WP10-shaped fixture.
+- Tests: typecheck, lint, gates, check:types and build clean; entry chunk 325,176 B, +41 B (the shared JsonTree chunk in the preload map). Each B30 and B31 test fails with its fix reverted. The strict webui run was cut short by machine load; the 20 files that failed under load pass on rerun with no stderr. Backend: 13,485 passed, 29 skipped, 13 failed: 2 expected router counts, 5 round 15 docs records tests (no docs changed in WP14), 5 sandbox environment tests, 1 timing test that passes alone. No backend change.
+- Status: done; commit db4a8a8 on r16-wp14, worktree detached.
+- Next: WP16 mounts NotificationsSent in FactsRail, switches InvestigationPanel to TRACE_FILTERS, filterSpans and traceCountsText, links the SignalProfile event count to the events table, and switches usageFormula to the WP11 Explain kit (keeping the 8-decimal result). Rerun npm run test:strict when the machine is quiet.
+
+### 2026-11-25 22:10Z - WP11I agent - Case numbers explained on the case page
+- Context: Round 16 integration package WP11I (SPEC D8, D9, 4.4 WP03, 4.5 WP10 and WP11). It puts the WP10 triage and decision shapes and the WP11 leftovers onto the WP03 case page. Branch r16-wp11i from 6d39130.
+- Did:
+  - SLA: caseFacts.serverSlaReading is the one formatter (triageReads.slaFromServer calls it). It reads breached, running and clocks through shownSlaClock (lib/explain/sla.ts). A closed case with a late response reads the late response, not SLA met. A stopped breached clock reports how late it was (elapsed minus target). The due-in line floors the time left (B32). A clock that is never due reads "not due". The inspector shows the server's SLA reading for ended cases.
+  - D9: the inspector says No priority while the matrix is off.
+  - D8: the policy line states both auto-close conditions (compareWithPolicy, comparisonSentence) and opens a new explainPolicyToday explanation.
+  - New explain triggers: the meta strip's SLA, the SLA's priority and the Console's own SLA reading; the inspector's AI verdict line, policy line and time to detect (new lib/explain/times.ts).
+  - WP10 shapes read defensively: run_failed and gate_source in readDecision, so a failed run shows no policy as if it had decided (DecisionCard and explainDecision); the asset_cidr object reaches the risk explanation as today's configuration; partial risk inputs read not recorded instead of crashing the inspector.
+- Tests: new wp11i.case-page.test.tsx, 17 tests that all fail on base sources and pass after. Related suites 714 of 714. test:strict: 9,228 passed, 1 skipped, 1 known WP03 load flake (CaseDetail.structure Alt+5 and Alt+6, passes alone). typecheck, lint, gates, check:types, build:app (entry 325,263 B, unchanged), check_version, check_ci_contract, check_docs and the knowledge check pass. Spine guards and explain contract: 29 passed. No backend change.
+- Status: done (branch r16-wp11i, commit 55573b2, worktree detached). Live check on the seeded Demo at 1440x900 and 390x844 in both themes: every trigger opened its line and panel, Enter and Escape worked, focus returned to the trigger, no sideways scroll.
+- Next: WP16 fixes the CaseDetail.structure mock (api.prefs.getUser) and picks one wording for the remaining "Runbook (before Round 14)" labels (FactsRail included). WP15D's seeded risk inputs will let the Demo show recorded risk arithmetic. WP17 can reuse the screenshots.
+
+### 2026-11-25 22:40Z - WP14 reviewer - Case records reachable: Console, independent review
+- Context: Adversarial review of WP14 (Round 16 SPEC 4.5; [dv] R2 to R8, R11, R13, R15; B30, B31) on r16-wp14 at db4a8a8, base 848a328.
+- Did: Checked the diff against the SPEC, ownership and the non-negotiables. Reverted the B30 and B31 fixes once: 6 tests fail. Ran seeded Demo on 8938 and 5938 in both themes at 1440x900 and 390x844, using routed fixtures where Demo has no data. Fixed 7 defects in commit 2bc834d, each with a test proven to fail without its fix:
+  - the closed All fields sheet read useAuth and broke the inspector without an auth provider (2 case-surfaces specs);
+  - the event and All fields sheets lost keyboard focus on close;
+  - a Flex call read as Batch;
+  - a cheap call read $0.0000 beside its formula;
+  - a row whose rates do not give its cost now says so;
+  - Open in Logs could carry a rule Logs refuses, which voided the link;
+  - 2 AskAiChip.hosts cases failed and the stubs spec printed an act warning (test-only fixes).
+- Tests: typecheck, lint, gates, check:types and build are clean; entry 325,176 B (+41 B over base). Records suites 36 of 36. Strict run under load: the WP14 failures are fixed, and the other failures pass on rerun. Backend: 13,485 passed, 29 skipped, 13 failed (2 router counts, 5 round 15 docs records, 5 sandbox, 1 timing that passes alone). Check scripts pass. decide() and risk.py are untouched.
+- Status: done; r16-wp14 at 2bc834d, worktree detached.
+- Next: WP16 mounts NotificationsSent, TRACE_FILTERS, filterSpans and traceCountsText, links SignalProfile's count to the events table, and switches usageFormula to the WP11 kit, keeping the 8-decimal amounts, the Flex label and the mismatch line. Rerun npm run test:strict on a quiet machine.
+
+### 2026-11-25 23:40Z - WP11I reviewer - SLA line keeps the running clock; stopped clocks worded truly
+- Context: adversarial review of the Round 16 integration package WP11I (branch r16-wp11i, builder commit 55573b2 on 6d39130). It puts the WP10 triage and decision shapes and the WP11 leftovers onto the WP03 case page.
+- Did:
+  - Read the diff against SPEC WP03, WP10 and WP11 and explainability D8 and D9. Reverted each builder fix and saw its tests fail (13 of 17).
+  - Live check on the seeded Demo in both themes at 1440x900 and 390x844: every trigger opens on hover, Enter and click; Escape returns focus; no sideways scroll; the triage error and decision loading states read correctly. After closing a breached case, the inspector reads "Resolution overdue by 20h".
+  - Fixed 3 defects in webui/src/lib/explain/sla.ts. Tests are in casedetail/__tests__/wp11i.review.test.ts and fail on the old sla.ts.
+    - An open case answered late kept "Response overdue" and lost its resolution countdown. A running current clock now stays the line, and its explanation names the earlier breach that the SLA metrics count.
+    - A response clock stopped by the close now reads "closed with no human response", not "answered".
+    - Time under a minute reads in seconds, not "0m".
+- Tests: new review tests 4 of 4. Related suites 91 of 91. test:strict 9,212 passed, 18 skipped, 5 load flakes; the 5 pass alone. Backend 13,677 passed, 29 skipped, 5 known sandbox env failures. Spine guards and explain contract 29 passed. typecheck, lint, gates, check:types, build (entry 325,263 B), check_version, check_ci_contract, check_docs and the knowledge check all pass. decide() and risk.py are unchanged.
+- Status: done; r16-wp11i at e2f3954, worktree detached.
+- Next:
+  - WP16: fix the CaseDetail.structure api.prefs.getUser mock; pick one wording for "Runbook (before Round 14)" in FactsRail, audit/events.ts and caseActivityText.ts.
+  - WP15D: seed recorded risk inputs (B62) so the recorded-arithmetic and asset-range paths show live.
+
+### 2026-11-25 22:37Z - orchestrator - WP11I and WP14 merged
+- Context: WP11I (the WP10 shapes and WP11 leftovers on the WP03 case page: the SLA reading of closed and late cases, B32, D8, D9, the meta strip and inspector explain triggers) and SPEC §4.8 step 11 WP14 (case records reachable: the events table, the usage popover, All fields, findings, the waiting reason, notifications, trace details, history, grading, threat context providers; B30, B31). WP14's builder resumed from its saved work after the container restart.
+- Did: merged WP11I review e2f3954 and WP14 review 2bc834d into claude/round16 with no conflicts; generated files unchanged. Carried to WP16: InvestigationPanel uses TRACE_FILTERS, filterSpans and traceCountsText; FactsRail mounts NotificationsSent; SignalProfile's count opens the events table; usageFormula moves to the Explain kit keeping exactMoney, the Flex or Batch tier and the mismatch line; caseActivityText learns the status audit row; one wording for the "Runbook (before Round 14)" labels; the CaseDetail.structure test mock.
+- Tests: on the merged tree, the case page, explain, investigations and first-paint suites 806 passed, 1 skipped; the WP14 test files with the case detail suites 680 passed, 1 skipped; typecheck and lint clean; build:app entry 329,668 B (inside the 330,104 B budget).
+- Status: done.
+- Next: WP12 after its review; then WP15F (accessibility) and WP16 (integration and the cross-cutting review).
