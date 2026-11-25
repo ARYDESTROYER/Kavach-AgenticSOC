@@ -199,6 +199,25 @@ async def test_a_run_is_registered_then_ended_with_exact_frames(app_state, bus, 
     )
 
 
+async def test_a_running_frame_never_says_the_queued_phase(app_state, bus, monkeypatch) -> None:
+    """``queued`` is the phase of a run waiting for a slot. Once the run holds a slot,
+    its running frame names the first stage (triage), so a client that reads only the
+    frames never shows a running run as queued."""
+    _patch_run(monkeypatch, lambda *_a, **_k: _async((_verdict(), 0.0)))
+    await app_state.cases.save(_candidate())
+    prefs = _quiet(app_state, max_concurrent=1)
+    async with app_state.investigation_gate.permit(1):
+        task = asyncio.create_task(app_state.pipeline.investigate_cluster(
+            _cluster(), SourceSurface.AUTOMATED_SCAN, prefs, known_case_id="case-r16",
+        ))
+        await _wait_for(lambda: bool(app_state.investigation_registry.active()))
+    await task
+    states = [(f["data"]["state"], f["data"]["phase"]) for f in bus.frames]
+    assert states[0] == ("queued", "queued")
+    assert states[1] == ("running", "triage")
+    assert all(phase != "queued" for state, phase in states if state != "queued")
+
+
 async def test_a_run_on_new_events_attaches_its_case_late(app_state, bus, monkeypatch) -> None:
     async def _run(*_args, **_kwargs):
         handle = app_state.investigation_registry.active()[0]
@@ -792,6 +811,64 @@ def test_wait_false_answers_202_and_a_second_request_answers_409(
     rows = api_client.portal.call(lambda: _state(api_client).audit.records_for_case(case_id))
     requested = [r for r in rows if r.get("actor") == "reinvestigate"]
     assert requested[-1]["run_id"] == body["run_id"]
+
+
+def test_a_background_run_cancelled_before_it_starts_frees_its_reservation(
+    api_client, mock_provider, monkeypatch,
+) -> None:
+    """A ``wait=false`` run cancelled before its first step (a factory reset or a
+    shutdown right after the 202) never runs its own ``finally``. Its reservation must
+    still end, or every later Reinvestigate on the case, and on any case with the same
+    signature, answers ``409 investigation_running`` until a restart."""
+    from app.api.routes_investigations import _reservations
+
+    case_id = _create_case(api_client, mock_provider, "192.0.2.66")
+    state = _state(api_client)
+    original = state.spawn_mutation_task
+
+    def _spawn_then_cancel(coro, *, name=None):
+        task = original(coro, name=name)
+        task.cancel()
+        return task
+
+    monkeypatch.setattr(state, "spawn_mutation_task", _spawn_then_cancel)
+    r = api_client.post(f"/api/cases/{case_id}/reinvestigate", json={"wait": False})
+    assert r.status_code == 202, r.text
+    for _ in range(100):
+        if not _reservations(state.investigations):
+            break
+        time.sleep(0.01)
+    assert _reservations(state.investigations) == {}
+    again = api_client.post(f"/api/cases/{case_id}/reinvestigate", json={"wait": False})
+    assert again.status_code == 202, again.text
+
+
+async def test_a_second_request_before_the_first_run_is_registered_is_refused() -> None:
+    """The reservation refuses a second click that arrives while the first request is
+    still rebuilding its cluster (before the pipeline registers the run)."""
+    from types import SimpleNamespace
+
+    from fastapi import HTTPException
+
+    from app.api.routes_investigations import reserve_manual_run
+    from app.engine.investigation_registry import InvestigationRegistry
+
+    registry = InvestigationRegistry()
+    case = SimpleNamespace(case_id="case-twice", cluster_signature="sig-twice")
+    first = await reserve_manual_run(None, registry, case, run_id="inv-first", requested_by="ann")
+    with pytest.raises(HTTPException) as refused:
+        await reserve_manual_run(None, registry, case, run_id="inv-second", requested_by="ann")
+    assert refused.value.status_code == 409
+    assert refused.value.detail["code"] == "investigation_running"
+    assert (refused.value.detail["run"]["run_id"], refused.value.detail["run"]["state"]) == (
+        "inv-first", "queued",
+    )
+    same_signature = SimpleNamespace(case_id="case-other", cluster_signature="sig-twice")
+    with pytest.raises(HTTPException):
+        await reserve_manual_run(None, registry, same_signature, run_id="inv-third", requested_by="bo")
+    first.release()
+    again = await reserve_manual_run(None, registry, case, run_id="inv-fourth", requested_by="ann")
+    again.release()
 
 
 def test_the_active_route_answers_the_shape(api_client) -> None:

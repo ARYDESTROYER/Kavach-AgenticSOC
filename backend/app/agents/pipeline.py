@@ -179,6 +179,16 @@ def _attach_run_case(registry: Any, case_id: str | None) -> None:
         pass
 
 
+def _run_started(registry: Any, handle: Any, prefs: Any) -> None:
+    """The run holds its slot. ``queued`` is only the phase of a run waiting for one,
+    so the running frame names the first stage, triage. The registry calls never
+    raise."""
+    if registry is None or handle is None:
+        return
+    registry.phase(handle, "triage")
+    registry.started(handle, time_cap_seconds=prefs.caps.timeout_seconds)
+
+
 def _parse_iso(value: Any) -> Any:
     from datetime import datetime, timezone
 
@@ -1035,8 +1045,7 @@ class InvestigationPipeline:
         token = _CURRENT_INVESTIGATION.set(handle)
         try:
             if gate is None:
-                if handle is not None:
-                    registry.started(handle, time_cap_seconds=prefs.caps.timeout_seconds)
+                _run_started(registry, handle, prefs)
                 case = await self._investigate_cluster_effect(
                     cluster, source_surface, prefs,
                     force=force, query_source=query_source, run_id=run_id,
@@ -1046,8 +1055,7 @@ class InvestigationPipeline:
                 async with gate.permit(
                     cap, "background" if investigation_priority == "background" else "ingest",
                 ):
-                    if handle is not None:
-                        registry.started(handle, time_cap_seconds=prefs.caps.timeout_seconds)
+                    _run_started(registry, handle, prefs)
                     case = await self._investigate_cluster_effect(
                         cluster, source_surface, prefs,
                         force=force, query_source=query_source, run_id=run_id,

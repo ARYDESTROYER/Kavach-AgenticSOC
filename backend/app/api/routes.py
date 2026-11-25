@@ -8916,7 +8916,7 @@ async def case_reinvestigate(
             # Round 16 (WP08, research R4): the run goes on as a tracked task (factory
             # reset cancels it); the Console follows it through the registry route and
             # the ``case.investigation`` frames.
-            state.spawn_mutation_task(
+            task = state.spawn_mutation_task(
                 _run_manual_investigation(
                     state.pipeline, cluster, case.source_surface, prefs_eff,
                     query_source=query_source, reservation=reservation, **tracking,
@@ -8924,6 +8924,10 @@ async def case_reinvestigate(
                 name=f"case-reinvestigate:{case_id}",
             )
             spawned = True
+            # The reservation ends with the task however it ends: a task cancelled
+            # before its first step (a factory reset or a shutdown right after this
+            # answer) never runs the coroutine's own ``finally``.
+            task.add_done_callback(lambda _task: reservation.release())
             return JSONResponse(
                 status_code=202,
                 content={"run_id": run_id, "case_id": case_id, "state": "queued"},
