@@ -1021,13 +1021,19 @@ cp .env.example .env   # set TLSOC_PG_PASSWORD + at least one LLM key
 
 ## 10. Current status & roadmap
 
-**Round 15 is the newest work** (a Console switch for role-based access, honest setup-wizard
-copy, a Team activity page, screenshots on cases, a random review of automatically closed cases
-and a cleaner Case Manager). It was built on branch `claude/round15` (from `c4227bd` on
-`Testing`) as a foundation package, five feature packages, an entry package, an integration
-package and a records package, each independently reviewed, then a cross-cutting review of the
-integrated tree (50 candidate findings, 46 confirmed and fixed); every gate is green apart from
-the five sandbox-only environment tests, and it heads to `Testing` through a pull request; see
+**Round 16 is the newest work**, in progress on branch `claude/round16` (from `3cfd5c0` on
+`Testing`) and heading to `Testing` through a pull request, then to the 0.2.0 release: the AI
+agent's work shown live on a case, a cleaner and segregated Case Manager, a quiet sign-in page,
+every number explainable on hover or click, every stored record reachable, a What's new screen
+and a Communication page that tracks every release, the 81 confirmed bug-hunt fixes, version
+0.2.0 under the `ARYDESTROYER/Kavach-AgenticSOC` identity, and the Apache-2.0 license; see
+`docs/research/2026-11-round16/SPEC.md`. Round 15 (a Console switch for role-based access,
+honest setup-wizard copy, a Team activity page, screenshots on cases, a random review of
+automatically closed cases and a cleaner Case Manager) was built on branch `claude/round15`
+(from `c4227bd` on `Testing`) as a foundation package, five feature packages, an entry package,
+an integration package and a records package, each independently reviewed, then a cross-cutting
+review of the integrated tree (50 candidate findings, 46 confirmed and fixed), and merged into
+`Testing` as `3cfd5c0` (PR #143); see
 `docs/research/2026-11-round15/SPEC.md`, whose §8 "As built" records what shipped, the contract
 resolutions, the known limitations and the closing gates. Round 14 (one console grammar, a Dashboards library, an audit log you
 can use, rule drill-down and one Runbooks feature that replaces playbooks) was built on

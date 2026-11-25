@@ -12127,3 +12127,10 @@
 - Tests: none yet.
 - Status: in progress.
 - Next: synthesize the research and confirmed bugs into docs/research/2026-11-round16/SPEC.md, then build, review, gate and prepare the 0.1.13 release.
+
+### 2026-11-25 07:40Z - orchestrator - Round 16 discovery done, decisions taken, SPEC written and reviewed
+- Context: Round 16 discovery (ten research agents and an eight-area bug hunt) and the binding SPEC.
+- Did: the research reports and their synthesis are in docs/research/2026-11-round16/research/; the bug hunt confirmed 81 of 92 candidates (each checked by an independent skeptic), recorded as B01 to B81 in review/bug-hunt.md. The operator chose version 0.2.0 (the never-tagged 0.1.13 folds into it), the ARYDESTROYER/Kavach-AgenticSOC repository identity as the update trust root, and the Apache-2.0 license; the orchestrator took the recommended defaults for the rest (Communication group, What's new once per update id, six case tabs, the run's result stays authoritative with warnings and notifications, standup under metrics:view). A writer drafted SPEC.md (25 work packages, every bug allocated, 6 duplicates merged); three reviewers (backend, Console, release and security) raised 60 findings, all confirmed and resolved in Appendix C. The opening commit names Round 16 as the newest round in AGENTS.md and HANDOFF.md.
+- Tests: docs records pytest passed; no product code changed.
+- Status: done.
+- Next: build in waves per SPEC §4 (merge order: WP15A, WP05 part 1, WP01, WP15B and WP15C, WP04 and WP06, WP07 and WP05 part 2, WP15E part 1, WP08 then WP10 and WP15D, WP13, WP02 then WP03, the Console feature packages, WP15F, WP16, then WP17, WP18 and WP19).

@@ -339,7 +339,8 @@ Where the skeptic's minimal fix conflicts with a non-negotiable, this SPEC repla
 Where the code review of this SPEC tightened a minimal fix (Appendix C), this SPEC also replaces
 that step: B11 (the drain page size), B15 (every SSO change needs a Super admin), B16 (no
 re-binding of an existing subject), B19 (the bound covers `/auth/mfa/disable`), B23 (the
-recovery hash is matched off the event loop) and B45 (the one-time theme copy is idempotent).
+recovery hash is matched off the event loop), B45 (the one-time theme copy is idempotent) and
+B62 (the seeded score equals its breakdown and the seeded decision stays coherent).
 
 **D13. Dependabot forward-port.** The four main-only action bumps on `origin/main` (commits
 `18eb316`, `4c1edc8`, `928949b`, `c3f1fa3`: `actions/upload-pages-artifact` 4.0.0 to 5.0.0,
@@ -703,14 +704,14 @@ everything on the integrated tree.
 | WP05 | Release: version 0.2.0, identity, license, guards | 0, opening (part 1) and 0 (part 2) | L | WP15A; part 2 also WP07 | 2 (B52, B54) |
 | WP01 | Contracts and foundations | 0, opening | M | WP05 part 1 | 0 (contracts for B13, B42) |
 | WP02 | Case Manager queue and frame | 0 | M | WP01 stubs | 0 |
-| WP03 | Case detail: compact header, lanes, inspector | 0 (critical path) | L | WP01 stubs | 2 (B27, B28) |
+| WP03 | Case detail: compact header, lanes, inspector | 0 (critical path) | L | WP01 stubs; merges after WP10 (its triage fields) | 2 (B27, B28) |
 | WP04 | Sign-in page | 0 | M | nothing | 2 (B25, B50) |
 | WP06 | Performance extras | 0 | M | nothing | 0 |
 | WP07 | What's new and Communication | 0 | M to L | WP01, WP15A | 0 |
 | WP15B | Pipeline, ingest and job spine fixes | 0 | L | WP01 merged | 11 (B04 to B12, B14, B33) |
 | WP15C | Metrics, SLA and time-window fixes | 0 | M | WP01 merged | 7 (B02, B03, B26 with B58, B39, B59, B60, B68) |
 | WP08 | AI run tracking: backend | 1 | M to L | WP01, WP15B | 0 |
-| WP09 | AI run Console and one stream per page | 1 | M to L | WP01; live with WP08 | 0 |
+| WP09 | AI run Console and one stream per page | 1 | M to L | WP01; live with WP08; merges after WP03 (the dialog mount) | 0 |
 | WP10 | Case numbers explained: backend | 1 | M to L | WP01, WP08 | 2 (B13 with B62's contract, B63) |
 | WP11 | Explain kit and case explainers: Console | 1 | M | WP01; live with WP10 | 1 (B32) |
 | WP12 | Metrics explained | 1 | M to L | WP01, WP15C, WP11 primitive | 4 (B29, B64, B66, B67) |
@@ -1158,7 +1159,8 @@ Total: 75 fixes plus 6 merged duplicates, 81 bug ids (Appendix A).
     labels Brief, Evidence, AI investigation, Response, Activity, Chat, on Alt+1 to Alt+6 (the
     key handler accepts `Digit1` to `Digit6`, `CaseDetail.tsx:1727`; each trigger's
     `aria-keyshortcuts` follows). Alt+2 (Runbook to Evidence), Alt+4 (Collaboration to Response)
-    and Alt+5 (Chat to Activity) change meaning; Chat moves to Alt+6. Legacy rewrites: `timeline` opens `evidence` at `what-happened`; `threat` opens `evidence` at
+    and Alt+5 (Chat to Activity) change meaning; Chat moves to Alt+6. Legacy rewrites:
+    `timeline` opens `evidence` at `what-happened`; `threat` opens `evidence` at
     `threat-context`; `tab=investigation&section=threat-context` opens `evidence`;
     `section=related-cases` opens `evidence`. `tab=investigation` itself is unchanged (the audit
     "Open case trace" links). Response shows to everyone: tasks always, the runbook with
@@ -1226,7 +1228,8 @@ Total: 75 fixes plus 6 merged duplicates, 81 bug ids (Appendix A).
   first child (`data-testid="case-tab-first"`) is at most 210 px from the top of the window at
   1440 by 900 and at 390 by 844, for a normal case and a pending review case; the header is at
   most 120 px; at 1440 px with the navigation collapsed the inspector shows as a column.
-- **Depends on.** WP01 stubs.
+- **Depends on.** WP01 stubs; WP10's triage `auto_close_policy` for live data (fixtures until
+  then; WP03 merges after WP10).
 - **Effort.** L.
 
 #### WP04. Sign-in page (M; Console)
@@ -1631,7 +1634,18 @@ configuration. Contracts and tests are in §4.5 WP15E.
   the close dialog.
 - **Implements.** [ai] R3 (narration UI), R6, R7, R9 (generalised into a page multiplexer), R10,
   R12; the UI parts of [cmux] R3; the Console part of [comp] R1; D10.
-- **Owned files.** `webui/src/lib/useEventStream.ts`, the multiplexer:
+- **Owned files.**
+  - `webui/src/lib/useEventStream.ts`, the multiplexer (the bullets below).
+  - `webui/src/lib/api-investigations.ts`; `webui/src/soc/investigations/**` (`store.ts` with
+    `useSyncExternalStore`, keyed by case id, plus `newRuns` and `slots`; the WP01 stub bodies;
+    `AiRunPopover.tsx`; the non-blocking `ReinvestigateDialog.tsx` body).
+  - `webui/src/soc/pages/casedetail/ConfirmActionDialog.tsx` and `BulkCloseDialog.tsx` (each reads
+    the investigation store for its `caseIds` prop, which WP01 added).
+  - `webui/src/soc/components/CaseActivityFeed.tsx` (the "Investigation finished" heading, cleared
+    on the next `router` frame).
+  - `webui/src/soc/components/NavSidebar.tsx` (the Case Manager item, from the `investigations`
+    topic, subscribed only for `cases:read` holders).
+- **The multiplexer.**
   - One EventSource per page over a reference-counted topic union. An SSE frame does not say
     which topic it came from (`realtime.py:141-154`), so the client routes each frame by its
     channel through a static `CHANNEL_TOPICS` table in `useEventStream.ts`: `inapp` to
@@ -1647,14 +1661,6 @@ configuration. Contracts and tests are in §4.5 WP15E.
     on several topics one id.
   - A union change is debounced (300 ms), reopens with `Last-Event-ID` and counts as a reconnect
     for reconciliation. The last unsubscribe closes the stream. The hook API is unchanged.
-  `webui/src/lib/api-investigations.ts`; `webui/src/soc/investigations/**` (`store.ts` with
-  `useSyncExternalStore`, keyed by case id, plus `newRuns` and `slots`; the WP01 stub bodies;
-  `AiRunPopover.tsx`; a non-blocking `ReinvestigateDialog.tsx`);
-  `webui/src/soc/pages/casedetail/ConfirmActionDialog.tsx` and `BulkCloseDialog.tsx` (each reads
-  the investigation store for its `caseIds` prop, which WP01 added); `webui/src/soc/components/CaseActivityFeed.tsx` (the "Investigation
-  finished" heading, cleared on the next `router` frame); `webui/src/soc/components/NavSidebar.tsx`
-  (the Case Manager item, from the `investigations` topic, subscribed only for `cases:read`
-  holders).
 - **Two signals, two places.** The queue rows and the Case Manager navigation item already show
   the turning `ActivityGlyph` for case chat (`CaseManager.tsx:512, 521`, `NavSidebar.tsx:142-161`).
   `AiRunMark` replaces the status glyph inside the status node (or the outcome node) with the
@@ -1689,7 +1695,8 @@ configuration. Contracts and tests are in §4.5 WP15E.
 - **Acceptance.** In a browser, Case Manager with a case open on Activity holds one EventSource
   per tab; the seeded Demo manual Reinvestigate flow works end to end with WP08, through the
   dialog WP03 mounted; the entry delta is reported.
-- **Depends on.** WP01; live with WP08 (fakes until then).
+- **Depends on.** WP01; live with WP08 (fakes until then); merges after WP03, which mounts the
+  `ReinvestigateDialog` and passes `caseIds` to the close dialog.
 - **Effort.** M to L.
 
 #### WP10. Case numbers explained: backend (M to L)
@@ -1805,7 +1812,8 @@ configuration. Contracts and tests are in §4.5 WP15E.
 - **Bugs fixed.** B32 (and the Console part of B13).
 - **Tests.** Explain: hover line, click panel, Escape, touch tap, focus return, axe; the builders
   print the `explain.contract.json` vectors exactly; risk: the recorded-weight sum of the stored
-  2-dp factors equals the score within 0.01, a legacy mismatch note, a case with no breakdown; decision: met and not met, NEEDS_HUMAN fixed by
+  2-dp factors equals the score within 0.01, a legacy mismatch note, a case with no breakdown;
+  decision: met and not met, NEEDS_HUMAN fixed by
   code, an analyst close "agrees"; the SLA vectors; Tuning shows "not recorded" instead of
   fabricated counts; the cost lines; first paint has no `explain` module in the entry; hostile
   strings render literally; B32 at 94 minutes reads "1h".
@@ -2098,20 +2106,22 @@ configuration. Contracts and tests are in §4.5 WP15E.
 #### WP16. Integration, entry budget and cross-cutting review (M)
 
 - **Goal.** One tree in which the operator flows work together, inside every budget.
-- **Mounts.** Swap the inline Reinvestigate dialog in `CaseDetail.tsx` for WP09's dialog; wire the
-  hold-reason fact in the inspector, the events link on the signal count, and the trace People and
-  Chat filters in `InvestigationPanel`.
+- **Mounts.** Wire the events link on the signal count and the trace People and Chat filters in
+  `InvestigationPanel`. (WP03 already mounts the `ReinvestigateDialog` and `AwaitingReason`
+  stubs, which WP09 and WP14 fill.)
 - **Regeneration.** Every generated file on the merged tree (§3.9).
 - **Budget.** Measure the entry; set `PRE_REVAMP_ENTRY_BYTES` to the merged measurement; assert
   `motion`, the Explain kit, the What's new page and dialog and the notes JSON are off the entry
-  path.
+  path. Record the value in this SPEC's §8.1 "Entry bundle" item, add the pointer sentence to the
+  Round 15 SPEC §8.1 "Entry bundle" item (§6.4), and move `test_docs_round12_records.py` to read
+  the current value from Round 16 §8.1.
 - **Rollback lane.** The §3.7 plants.
 - **Records.** Consolidate `ui-standard.md`.
 - **Review.** The full gates, then a cross-cutting adversarial review of the integrated tree (the
   Round 15 practice): backend correctness and #3, security, statistics integrity, UI against the
   standard with screenshots, test honesty; each finding verified before it is fixed.
 - **Browser checks** (Playwright 1.63, Chromium at `/opt/pw-browsers`, seeded Demo): the Case
-  Manager geometry; one EventSource per tab; no timers on the sign-in page after paint; What's new
+  Manager geometry with `measure-case-manager.mjs`; one EventSource per tab; no timers on the sign-in page after paint; What's new
   on first sign-in only; the AI chip across a full Reinvestigate; the risk popover numbers; the
   `/docs/0.1/` redirect stubs.
 - **Acceptance.** All gates green, the entry inside the ratcheted budget, zero unexplained console
@@ -2127,11 +2137,17 @@ configuration. Contracts and tests are in §4.5 WP15E.
   ids `0.2.0.<date>`: dated updates from 2026-08-05 to the release, newest first, each titled by
   user-visible change, never "Round"; the 0.1.1 entry; the earlier records group. The newest
   update (this round) highlights the AI indicator, the segregated Case Manager, explainable numbers,
-  the sign-in page, What's new and Communication, the six tabs with the Alt+2 and Alt+4 change, the
+  the sign-in page, What's new and Communication, the six tabs with the Alt+2, Alt+4 and Alt+5
+  changes and Chat on Alt+6, the
   license, and the administrator's repository step (D2). Update ids never change after WP17
   merges.
 - **Capture.** Light and dark, from seeded Demo only, at 1440 by 900 and DPR 2, WebP at most
   250 KB with explicit dimensions and alt text; the §5.3 list.
+- **Docs screenshots.** WP17 owns the refresh of `docs/assets/screenshots/` (§5.3). Before
+  refreshing any file, it copies each image a backfilled What's new update reuses (for example
+  `case-manager.webp`, `users-rbac.webp`, `install-05-setup-ai-runtime.webp`) into
+  `docs/assets/releases/0.2.0/` and points the notes at the copy, so older updates keep showing
+  the interface they describe.
 - **Acceptance.** The generator passes; an upgraded account sees the newest update; the page
   renders every release.
 - **Effort.** M.
@@ -2143,16 +2159,22 @@ configuration. Contracts and tests are in §4.5 WP15E.
   pages of §6.1; `docs/USAGE.md`; `AGENTS.md` §4 layout, §5 contract wording (§3.8), §10 (a Round 16
   bullet, the baseline, the Communication group, the router count, and the new process rule "every
   update that reaches users adds a What's new entry with screenshots, enforced by
-  `check_version.py`"); `ROADMAP.md` (§7 of this SPEC); `docs/HANDOFF.md`; `Journal.md`; this SPEC's
-  §8; the `testing.md` browser matrix rows ([rel] §5.3); the regenerated knowledge corpus.
+  `check_version.py`", and the cases index added to the list of additive Elasticsearch bootstrap
+  exceptions beside audit and config, §3.4); `ROADMAP.md` (§7 of this SPEC); `docs/HANDOFF.md`
+  (the full Round 16 text, the router count and the repository line 9, which names
+  `ARYDESTROYER/Agentic-Kibana`); `docs/analyst/case-manager.md:121` ("Alt+1 to Alt+5" becomes
+  Alt+1 to Alt+6, with the Alt+2, Alt+4 and Alt+5 changes); `Journal.md`; this SPEC's §8; the
+  `testing.md` browser matrix rows ([rel] §5.3); the regenerated knowledge corpus.
 - **Effort.** M.
 
 #### WP19. Frozen release preparation and acceptance (M; release track)
 
 - **Goal.** A candidate that becomes installable only after canonical runtime acceptance passes.
 - **Records.** The CHANGELOG release section for 0.2.0 (the `[Unreleased]` content moved under the
-  dated heading, a one-paragraph summary at the top, the 0.1.13 bootstrap correction as a "Legacy
-  bootstrap correction" subsection) and a fresh `[Unreleased]` containing only `No changes yet.`;
+  dated heading, a one-paragraph summary at the top, and the body of the "Development snapshot ...
+  0.1.13" section of §3.8 moved into a "Legacy bootstrap correction" subsection; the snapshot
+  heading keeps one line, "Folded into [0.2.0]; see Legacy bootstrap correction.", so the
+  correction is described once) and a fresh `[Unreleased]` containing only `No changes yet.`;
   `docs/releases/0.2.0.md` per the [rel] §5.2 outline, under about 60,000 characters, with the
   seven markers; the other files of [rel] §5.3; the notes file `status: released` with the tag date.
 - **Migration and rollback evidence.** Measure the `audit.id` widening at 1, 5 and 10 million rows
@@ -2196,6 +2218,11 @@ lands.
 
 - **Test churn in the Case Manager.** About 20 suites assert ids and structure. WP03 plans a
   dedicated test pass; no assertion is weakened except where its subject is removed.
+- **Test churn from the forced password change.** 43 backend test files create an account through
+  `POST /api/users` (which sets `must_change_password`) and sign in as it; once the server
+  enforces the flag they fail. WP15A, which merges first and blocks the round, updates them through
+  one helper (`_auth_helpers.ready_user`) and budgets for it; no assertion is weakened and no
+  application-side bypass is added.
 - **The spine.** WP15B, WP08 and WP10 edit `pipeline.py` in that order. Every new keyword has a
   default, the registry never raises, and the case lock is taken only inside the signature lock.
 - **The realtime client.** The multiplexer changes the transport of every live page; fake
@@ -2204,9 +2231,11 @@ lands.
   settings dump and the standup; flagged accounts must change their password before any other
   call; MFA locks after 10 failures; a password change signs out other sessions. These go in
   CHANGELOG and What's new.
-- **Behaviour changes users will notice.** Reinvestigate updates a closed case in place; Alt+2 and
-  Alt+4 change meaning; risk banding at exact .5 boundaries can move one band; the Analytics MTTR
-  changes definition; agent-closed cases stop counting as late responses forever.
+- **Behaviour changes users will notice.** Reinvestigate updates a closed case in place (or
+  answers that an open case already holds its signature); Alt+2, Alt+4 and Alt+5 change meaning
+  and Chat moves to Alt+6; risk banding at exact .5 boundaries can move one band; the Analytics
+  MTTR changes definition; agent-closed cases stop counting as late responses forever; only a
+  Super admin with a fresh sign-in can change single sign-on settings.
 - **The Decision card.** It stops presenting a read-time re-run as the recorded decision; older
   cases show "thresholds not recorded".
 - **Release identity.** Hosts whose `.env` keeps the old repository fail closed. That is correct
@@ -2221,11 +2250,16 @@ lands.
 | File | Owner | Other packages allowed a distinct hunk (merge order) |
 |---|---|---|
 | `backend/app/models.py` | WP01 | WP15A (`User` class; merges first) |
-| `backend/app/realtime.py` | WP01 | none |
+| `backend/app/realtime.py` | WP01 (`publish_many`, the channel, the topic) | none |
+| `backend/app/engine/auto_close_review.py` | none (by hunk) | WP01 (`publish_review_frame` through `publish_many`; first), WP10 (the Wilson call) |
+| `backend/app/engine/ingest.py`, `engine/poller.py` | WP15B (incl. the `link_cross_source` call sites) | WP08 (`attach_cluster` case-lock re-read and its three call sites; after) |
+| `backend/app/engine/chat_starters.py` | none (by hunk) | WP15C (the two `sla_aging` calls) |
+| `backend/app/auth/oidc.py`, `auth/mfa.py` | WP15A | none |
+| `backend/app/es/indices.py` | WP15B (`awaiting_reason`, `risk_breakdown.inputs`, `extend_cases_mapping`) | none |
 | `backend/app/audit/event_categories.json`, `webui/src/soc/components/audit/events.ts` | WP01 | WP15A (`auth.mfa_locked`; first) |
 | `backend/app/utils.py` | WP01 (`round_half_up`) | WP15C (the ISO clamps) |
 | `backend/app/agents/pipeline.py` | WP15B | WP08 (registry wrapper, keywords, lock), then WP10 (risk call sites, DECISION gate) |
-| `backend/app/api/routes.py` | none (by region) | WP15A (auth, sessions, users, SSO, `get_settings`, `put_settings` guards, `account_activity`, the case read GETs); WP15C (`_millis_to_iso`); WP15E (source writes); WP08 (reinvestigate, investigate, `_case_view`, topic maps, case lock); WP07 (creation stamps) |
+| `backend/app/api/routes.py` | none (by region) | WP15A (auth, sessions, users, SSO, `get_settings`, `put_settings` guards, `account_activity`, the case read GETs, the `source_feeds`, `models` and `list_roles` dependencies); WP15C (`_millis_to_iso`); WP15E (source writes); WP08 (reinvestigate, investigate, topic maps, case lock; no `_case_view` key); WP07 (creation stamps) |
 | `backend/app/api/routes_cases_collab.py` | WP15A (GET dependencies) | WP08 (writer locks) |
 | `backend/app/api/routes_triage.py` | WP10 | none |
 | `backend/app/api/routes_metrics.py` | WP12 | WP15C (breakdown `other`; first) |
@@ -2234,33 +2268,49 @@ lands.
 | `backend/app/engine/demo_runtime.py` | WP08 | WP15B (`route_event_batch`; first) |
 | `backend/app/engine/jobs.py`, `engine/poller_manager.py` | WP15B | WP08 (after) |
 | `backend/app/state.py` | WP08 | WP15B (`cluster_for_case`, `_reenter_detections`; first), WP06 (loop-lag task), WP15D (`_enable_demo_unlocked`; after WP08) |
-| `backend/app/config.py` | WP05 (`ReleaseUpdateConfig`) | WP15B (`widest_correlation_window_seconds`) |
-| `backend/app/stores/base.py`, `stores/usage.py`, `stores/cases.py`, `stores/sql/repositories.py` | WP01 (`records_for_case`, `count_for_case`) | WP15B (`list_deferred_candidates`) |
+| `backend/app/config.py` | WP05 (`ReleaseUpdateConfig`) | WP15B (`widest_correlation_window_seconds`), WP15E (the B45 `Preferences` after-validator; after WP15B) |
+| `backend/app/stores/base.py`, `stores/usage.py`, `stores/cases.py`, `stores/sql/repositories.py` | WP01 (`records_for_case`, `count_for_case`) | WP15B (`list_deferred_candidates`; the `inputs` save rule in `stores/cases.py`) |
+| `backend/pyproject.toml` | WP05 (version, license, build requirement) | WP07 (`whats_new_latest.json` package data; after WP05 part 1) |
+| `backend/tests/test_distribution_contract.py` | WP05 | none |
 | `backend/app/llm/gateway.py`, `llm/pricing.py` | WP13 | none |
 | `backend/app/llm/providers.py` | WP15G | none |
 | `backend/app/agents/chat_tools/cases.py` | WP15G (citation) | WP15C (shift snapshot item) |
 | `scripts/check_version.py` | WP05 | none |
-| `.github/workflows/ci.yml` | WP05 (action pins, identity) | WP07 (docs lane step) |
+| `.github/workflows/ci.yml` | WP05 (action pins, identity, including line 918) | WP07 (docs lane step, the wheel `required` entry) |
 | `mkdocs.yml` | WP05 (URLs, version, release nav) | WP07 (What's new nav line), WP18 (new Help Center pages) |
 | `CHANGELOG.md` | WP18 (`[Unreleased]` content) | WP05 part 1 (the two headings), WP19 (the frozen prep) |
 | `webui/src/lib/useEventStream.ts` | WP09 | WP01 (the channel string; first) |
 | `webui/src/lib/types.ts` | WP01 | WP15A (`ActivityEvent.event_label`), WP15G (`ChatCitation.case_number`) |
 | `webui/src/soc/registry.tsx` | WP07 | WP15A (two `perm` fields; first) |
+| `webui/src/soc/investigations/**` | WP09 | WP01 (the stubs, incl. `aiRunText.ts` and `ReinvestigateDialog.tsx`; first) |
+| `webui/src/lib/explain/**`, `webui/src/design-system/explain/**` | WP11 | WP01 (`types.ts`, the contract file, the `builders.ts` and `ExplainTrigger` stubs; first) |
+| `webui/src/design-system/catalog.ts` | WP05 (the two version strings) | WP11 (the `feedback.explain` entry) |
+| `docs/development/design-system.md`, `webui/src/design-system/README.md` | none (by hunk) | WP11 (the explain subpath paragraph) |
+| `webui/src/soc/pages/Users.tsx` | none (by hunk) | WP15A (the best-effort roles read) |
+| `webui/src/soc/pages/Investigate.tsx` | none (by hunk) | WP03 (the `settings:read` guard on the look-back seed) |
+| `webui/src/soc/components/CustomizationSection.tsx` | WP15E (B45) | WP07 (the What's new switch row only; merges first) |
+| `webui/src/soc/pages/settings/settings-sections-meta.ts` | none (by hunk) | WP07 (the `customization` keywords) |
+| `webui/src/ui/table.tsx` | WP15F | none |
+| `webui/src/soc/pages/effectiveness/AutoCloseReviewModule.tsx` | WP11 | WP15F (`scrollLabel`; last) |
+| `webui/src/soc/pages/team/PersonSheet.tsx` | WP15E | WP15F (`scrollLabel`, the extra wrapper; last) |
+| `webui/src/soc/components/KpiTile.tsx`, `components/KpiStrip.tsx` | none (by hunk) | WP12 (an optional explain slot prop) |
 | `webui/src/soc/router.tsx` | WP03 (case-tab rewrite) | WP07 (`whats_new` keys), WP15E (hashchange blocker) |
 | `webui/src/soc/App.tsx` | WP07 (gate, wizard stamp) | WP04 (`CenterSpinner`) |
 | `webui/src/soc/AppShell.tsx` | WP07 (`ReleaseBadge` link) | WP15F (skip link, phone navigation focus) |
 | `webui/src/soc/pages/Wizard.tsx` | WP15E | WP15F (skip link) |
 | `webui/src/soc/pages/CaseManager.tsx` | WP02 | WP16 (final mounts) |
-| `webui/src/soc/pages/CaseDetail.tsx`, `casedetail/*` | WP03 | exceptions: `DecisionCard.tsx`, `StageTimeline.tsx`, `SignalProfile.tsx`, `caseFacts.ts`, `explain/**` (WP11); `ConfirmActionDialog.tsx`, `BulkCloseDialog.tsx` (WP09); `CaseHistory.tsx`, `grading.tsx`, `ThreatContextPanel.tsx`, `WhyPanel.tsx`, `files/**`, `records/**` (WP14); WP16 final mounts |
+| `webui/src/soc/pages/CaseDetail.tsx`, `casedetail/*` | WP03 | exceptions: `DecisionCard.tsx`, `StageTimeline.tsx`, `SignalProfile.tsx`, `caseFacts.ts`, `explain/**` (WP11); `ConfirmActionDialog.tsx`, `BulkCloseDialog.tsx` (WP09; WP01 adds the `caseIds` prop first); `CaseHistory.tsx`, `grading.tsx`, `ThreatContextPanel.tsx`, `WhyPanel.tsx`, `files/**`, `records/**` (WP14); WP16 final mounts |
 | `webui/src/soc/pages/Overview.tsx`, `Metrics.tsx`, `components/NoiseFunnel.tsx`, `components/KpiDrilldownPanel.tsx` | WP12 | none |
 | `webui/src/soc/pages/Login.tsx`, `components/auth/*` | WP04 | none |
 | `webui/src/styles/theme.css` | WP04 (login block) | WP15F (one `@layer base` rule) |
 | `webui/src/soc/pages/Docs.tsx` | WP05 | WP07 (helper move, `DOC_CATEGORIES` entry) |
-| `docs/development/ui-standard.md` | WP16 (consolidation) | WP02 ("Queue and detail workspaces"), WP03 ("Case header", "Case tab bodies", G17), WP04 ("Identity surfaces", "Identity accents") |
+| `docs/development/ui-standard.md` | WP16 (consolidation) | WP02 ("Queue and detail workspaces" up to the line before "**Case header.**"), WP03 ("Case header", "Case tab bodies", G17), WP04 ("Identity surfaces", "Identity accents"), WP07 (the Notifications sentences of "Navigation and information architecture") |
 | `webui/src/soc/__tests__/bundle-first-paint.test.ts` | WP16 (ratchet) | WP04 (eager-chain list), WP07 and WP11 (not-in-entry assertions) |
 | `docs/USAGE.md` | WP18 | WP15A (auth passages), WP07 (group mentions) |
 | `backend/app/knowledge/*`, generated files | regeneration only (§3.9) | every package regenerates; WP16 on the integrated tree |
-| `AGENTS.md`, `HANDOFF.md`, `ROADMAP.md`, `Journal.md` | WP18 (Journal entries appended by the orchestrator per package report) | none |
+| `AGENTS.md`, `HANDOFF.md`, `ROADMAP.md`, `Journal.md` | WP18 (Journal entries appended by the orchestrator per package report) | the orchestrator's opening commit (the newest-round sentence in `HANDOFF.md` and `AGENTS.md`, §4.1) |
+| `docs/research/2026-11-round15/SPEC.md` | none | WP16 (one pointer sentence in §8.1 "Entry bundle") |
+| `docs/research/2026-11-round16/acceptance/**` | WP02 (`measure-case-manager.mjs`) | WP16, WP19 (the receipts) |
 
 ### 4.11 Release track and maintainer actions
 
@@ -2275,8 +2325,10 @@ host. Condensed from [rel] §4; that report holds the commands.
 3. [A] WP19, the frozen prep pull request; then the browser receipt on the exact stamped build.
 4. [H] Shipping-image acceptance; [A] a journal-only pull request. The resulting commit is the
    accepted candidate.
-5. [M, H] Dress rehearsal in a disposable test repository (strongly recommended after seven failed
-   or blocked tags).
+5. [M, H] Dress rehearsal in a disposable test repository (required, M7): tag CI, the release
+   workflow, the Documentation publish and deploy jobs (the first run of `configure-pages` 6.0.0
+   and `upload-pages-artifact` 5.0.0), packages made Public, and a v0.1.1 bootstrap under the new
+   identity.
 6. [M] Tree-replacement promotion of the accepted candidate to `main`; the trees must be equal.
    [A] A Stable rebuild and the full matrix on `main`.
 7. [M] The annotated tag `v0.2.0`, three workflows watched; never moved or reused.
@@ -2286,15 +2338,21 @@ host. Condensed from [rel] §4; that report holds the commands.
 
 Maintainer actions this SPEC depends on:
 
-- **M1** Set the GitHub default branch back to `main` (D4), before tagging.
-- **M2** Make the three new GHCR packages Public when the release workflow pauses at the
-  anonymous-read step (irreversible; [rel] B2).
+- **M1** Set the GitHub default branch back to `main` (D4) after the step 6 promotion merge (so
+  `main` carries D13's `target-branch: Testing`) and before the tag.
+- **M2** When the release job's "Prove anonymous pullability and exact OCI release labels" step
+  fails on the first publish, set `ghcr.io/arydestroyer/kavach-agenticsoc/backend`, `/webui` and
+  `/updater` to Public (irreversible; [rel] B2), confirm the repository has write access under
+  each package's "Actions access", and re-run the failed release job. If the Documentation run's
+  2-hour wait for the signed release (`docs.yml` line 197) expired meanwhile, run the
+  Documentation workflow by `workflow_dispatch` on the `v0.2.0` tag.
 - **M3** Verify the `stable-release` and `github-pages` environment policies and the required
   `CI passed` check on `main` and `Testing`.
 - **M4** Authorize the promotion and push the tag.
 - **M5** Run the PostgreSQL timings, the v0.1.1 rollback rehearsal and the canonical bootstrap on
   a Docker host.
 - **M6** Check B81 on an iOS device (focus on a text input does not zoom).
+- **M7** Run the step 5 dress rehearsal in a disposable repository and see it pass before M4.
 
 ---
 
@@ -2351,9 +2409,25 @@ equals `deploy/update-base-v1.sha256`.
 17. An Overview KPI explain panel and the Metrics explain samples.
 18. The Inbox item for a finished manual run.
 19. Case detail at 390 by 844.
+20. Case Manager queue focus mode (collapsed to the 44 px strip) and the empty pane.
+21. Sign-in: the Remember me warning dialog, and the row unavailable with its reason.
+22. The non-blocking Reinvestigate dialog and the bulk-close warning.
+23. The Appearance section with the What's new switch and the read-only Branding theme line.
+24. One contact sheet of the Console bug-fix surfaces at 390 and 1440: Sessions activity labels
+    (B55), Settings inline errors (B51), Approvals (B36, B37), Inbox preferences (B53), Roles
+    labels (B57), wizard Demo rows (B43), Data export in Demo (B49), the Appearance theme line
+    (B45), the Audit reflow (B72, B79), the Help Center Latest Stable link (B54), and the Tuning
+    and Cost explain lines.
 
-Docs screenshots in `docs/assets/screenshots/` are refreshed where the surface changed (Case
-Manager, sign-in, first run); release screenshots live in `docs/assets/releases/0.2.0/`.
+Release screenshots live in `docs/assets/releases/0.2.0/`. WP17 also refreshes the docs
+screenshots in `docs/assets/screenshots/`: `hero-overview-light.webp` and `hero-overview-dark.webp`
+(used by `README.md` and `docs/getting-started/quickstart.md`; they show the old "Notifications"
+group, the "v0.1.13 · Testing" badge, "Enable updates" off PostgreSQL and a closed case labelled
+"Resolved"), and every file that shows the expanded navigation or the release badge
+(`audit-log`, `dashboards-library`, `help-center`, `runbooks`, `sources`, `settings-models`,
+`users-rbac`, `users-add-user`, `workspace-chat`, `case-manager`, the `install-02*` sign-in
+images and `install-07-after-launch`), after copying any image a backfilled update reuses (§4.7
+WP17).
 
 ### 5.4 Browser checks
 
@@ -2416,6 +2490,17 @@ limits stated in the receipt.
 - The registry comments that keep `GET /api/llm/models` auth-only: superseded by §2.3.
 - `ROADMAP.md` section I "Re-investigation keeps person-made case state": the link fields are
   carried (B09); the remaining campaign note is closed (no case writer).
+- Round 15 SPEC §8.1 "Entry bundle": one pointer sentence to the "Entry bundle" item of this
+  SPEC's §8.1 (WP16), which then holds the current value; `test_docs_round12_records.py` reads
+  Round 16 §8.1.
+- `docs/development/ui-standard.md` "Navigation and information architecture": the Notifications
+  single-page-group sentences become Communication with Inbox and What's new (WP07, D5).
+- `docs/development/ui-standard.md` "Case tab bodies", the one-home rule: kept and clarified. The
+  Brief lanes never repeat the header's verdict, confidence, risk, status or owner; the header
+  Risk chip and the inspector's Signal meter are the sanctioned pair, because the inspector is
+  the rail, not a tab (WP03).
+- `AGENTS.md` and `es/indices.py`'s module docstring: the cases index joins audit and config as
+  an additive bootstrap exception (the `risk_breakdown.inputs` mapping, §3.4; WP15B and WP18).
 - `AGENTS.md` §5 "This is an additive 0.1.13 contract" and the other current-version sentences:
   reworded for 0.2.0 (§3.8).
 
@@ -2590,3 +2675,74 @@ WP12 4, WP14 2. Total 75 fixes and 6 merged ids, 81 ids.
 | competitors | R1 (WP08, WP09); R2 (WP01, WP10, WP11); R3 (WP10, WP11, WP14); R4 (WP03); R5 (WP12); R6 (WP07); R7 (D3, WP05) | R8 to R18 |
 | oss-ecosystem | R1 (D3, WP05); R2 with B1, and B3 (WP15G) | R3 to R15, B2, B4, B5 |
 | bug hunt | B01 to B81 (Appendix A) | none |
+
+## Appendix C. Review resolutions
+
+Three independent reviewers (backend, Console, release and security) read this SPEC against the
+tree at `c3014ed`. Each finding was verified against the code before the SPEC changed. Every
+finding below was confirmed; none was rejected. Where a finding offered two fixes, or one fix that
+would not work as written, the resolution says which was taken and why. Duplicates across
+reviewers are marked and resolved once.
+
+| # | Reviewer | Severity | Finding | Resolution |
+|---|---|---|---|---|
+| C1 | backend | medium | 46 `/api` GETs carry no authz dependency; the allowlist left about 14 uncovered, including `GET /api/sources/{source_id}/feeds` (feed queries without `sources:read`), `GET /api/models` (custom `base_urls`) and `GET /api/llm/providers` | Fixed. Verified with the coverage test's own helpers (46 ungated). §3.3 gates feeds with `sources:read`, `/api/models` and `/api/llm/providers` with `models:read`, `/api/roles` with `roles:read` (its sibling `/roles/simulate` already uses it); every other route is on the allowlist with a reason, or on a "gated in body" list (`/api/metrics/breakdown`, `/api/rules/summary`) whose endpoints must still reference `require_permission` or `resolve_access`; the rule skips `PUBLIC_API_PATHS` and `PUBLIC_GET_PATHS` (§3.6). WP15A gains the `source_feeds`, `models`, `list_roles` and `llm_providers` hunks and a best-effort roles read on Users. Duplicate of C45 |
+| C2 | backend | medium | `RiskInputs.rule_values` (source-controlled strings) in a dynamically mapped object on a cases index with date detection on can map a field as `date` and fail every later save | Fixed. Confirmed in `es/indices.py:48-90`. §2.3 and §3.4: `risk_breakdown.inputs` is mapped `enabled: false`; bootstrap extends the stored template and live indices (WP15B, before WP10's first write); when it cannot, the Elasticsearch case store leaves `inputs` out so a case always lands; `rule_values` capped at 50; `rule_type_count` is `len(cluster.rule_values)`. WP18 adds the cases index to the additive bootstrap exceptions (§6.4) |
+| C3 | backend | medium | Reinvestigating a closed case "in place" while another open case holds its signature would leave two open cases (#4) | Fixed. WP08: `409 open_case_exists` with the open case id, before the audit row and the rebuild; the job item fails with the same reason; a race inside the lock ends `unchanged`; a test closes X, opens Y, then reinvestigates X |
+| C4 | backend | medium | The backend suite is red from the round's start: `test_the_start_here_records_name_the_newest_round` expects Round 16 (confirmed: `['15'] == ['16']`) | Fixed with the reviewer's alternative: the orchestrator's opening commit names Round 16 as the newest round in HANDOFF and AGENTS (§4.1), so no package carries a red test it cannot fix; WP18 writes the full text later |
+| C5 | backend | medium | A stored `asset_cidr` cannot be withheld from `cases:read` holders: every route returning a case returns it | Fixed as proposed. WP01 drops `asset_cidr` from `RiskInputs`; WP10's triage route adds it at read time for `settings:read` holders, labelled "current configuration"; §3.3 updated |
+| C6 | backend | medium | B62 omits `risk_score = breakdown.total` and the coherence of `seeded_decision`, which re-runs `decide()` over `case.risk_score` | Fixed. WP15D B62 sets the score at the three seeding sites, solves IP reputation toward the template's risk and keeps `seeded_decision(case).status` in agreement with the templated status class, with a test over every seeded case |
+| C7 | backend | low | The drain re-read does not close the race (a close while the run waits on the lock or gate mints a new case); `known_case_id` has no semantics; `trigger="detection"` needs a `state.py` hunk; the 409 misses an unattached automatic run | Fixed. WP08: for a non-forced `drain` run, re-read inside the signature lock and return unchanged, never mint; `handle_clusters` passes no `known_case_id` so #4 holds for new events; `_reenter_detections` hunk added; the 409 also matches by `cluster_signature` |
+| C8 | backend | low | A read-time `investigation` key in `_case_view` would appear on mutation responses and vanish on `GET /api/cases/{id}` (`response_model=Case`) | Fixed. The hunk is removed; the Console reads run state from the route and frames only |
+| C9 | backend | low | `sla_aging` has two callers in `engine/chat_starters.py` (1381, 1496); left alone, starter cards disagree with Standup | Fixed. WP15C hunk passes `prefs=b.prefs`, with a count-agreement test; §4.10 row added |
+| C10 | backend | low | `link_cross_source(clusters, prefs, *, cases)` has no access to the signature lock | Fixed as proposed. WP15B adds a `pipeline` keyword passed from both call sites (`ingest.py:911`, `poller.py:740`) and uses `pipeline.signature_lock` |
+| C11 | backend | low | Fetching exactly `limit` deferred candidates blocks behind an unrebuildable one | Fixed. WP15B B11 asks for `max(50, 2 * limit)` and iterates until `limit` are investigated, with a test where the oldest cannot be rebuilt |
+| C12 | backend | low | The push look-back reads a 500-event in-memory ring, so a widened window does not reach older events on a busy push source | Fixed by stating it. WP15B B07 records the limit in `known-limitations.md`; the push test uses a rate under the ring |
+| C13 | backend | low | B45's one-time copy has no owner hunk and no idempotence rule | Fixed. WP15E gains one `Preferences` after-validator in `config.py` (after WP15B) that copies once and sets the legacy value to `system`, with an idempotence test; §4.10 updated |
+| C14 | backend | low | `backend/app/whats_new_latest.json` is not package data, so the wheel would omit it | Fixed. WP07 adds the `package-data` entry (a hunk in WP05's `pyproject.toml`) and the `ci.yml` wheel `required` entry; acceptance checks the wheel |
+| C15 | backend | low | The SPDX string license needs setuptools 77 or later; `license-files` cannot reach `../LICENSE` | Fixed in D3: `setuptools>=77`, no outside `license-files`, the CI wheel lane proves it; WP05 acceptance checks `License-Expression` |
+| C16 | backend | low | `check_version` cannot tell a pull request into `main` from `TLSOC_SOURCE_REF` | Fixed with C57's signal (`GITHUB_BASE_REF`, set by GitHub on `pull_request` events), so no new workflow variable is needed; the reviewer's `TLSOC_TARGET_REF` was not taken. Duplicate of C57 |
+| C17 | backend | low | The three Wilson implementations differ (the tuner is unrounded and takes `z`); a rounding helper would move tuner decisions | Fixed. WP10: one unrounded `wilson_interval(successes, n, *, z=1.96)`; the review and effectiveness modules round at their call sites; golden vectors pin each site exactly |
+| C18 | backend | low | `_decision_span` cannot pair the history decision entry with its gate among several DECISION rows | Fixed. WP10 stamps `run_id` on the decision history entry right after `apply()` (`case_manager.py` unchanged) and reads the `case_manager` row with that `run_id`, falling back to "re-derived with today's policy" |
+| C19 | backend | low | The ES audit store (`audit/audit_log.py`) is not in WP01's files, so `count_for_case` has no ES implementation | Fixed with the first option: a base default on `count_matching` in `stores/base.py`, inherited by every audit store |
+| C20 | backend | low | WP10's `sla_reading.py` would re-implement the per-case clock rules inline in `sla_metrics` | Fixed. WP15C extracts `metrics.sla_case_reading(case, target, timings, *, now)`; WP10 calls it |
+| C21 | backend | low | A meta-refresh stub drops the URL fragment of stored citations | Fixed in §3.8: the stub runs `location.replace(TARGET + location.hash)` before the meta refresh; `validate_bundle` checks an anchored stub. Duplicate of C56 |
+| C22 | backend | low | The SQLite matrix cache fingerprint (`count(*)`, `max(id)`) misses a same-rowid upsert; numpy is only transitive | Fixed with a different mechanism. Verified that SQLite reuses the highest rowid after a delete (`RagChunkRow.id` has no `AUTOINCREMENT`), and that the proposed `sum(id)` would not detect it either (same id). WP06: direct invalidation by the store's own writes, the count and maximum fingerprint, and a 60 s expiry; numpy behind an import guard with the Python fallback; numpy confirmed as a requirement of `pgvector==0.4.2` |
+| C23 | backend | low | The 0.005 tolerance holds only from full-precision factors; from the stored 2-dp factors the total can differ by 0.01 | Fixed in WP01 and WP11 tests (0.005 and 0.01 respectively) |
+| C24 | backend | low | An exact raw-string repair misses `.git`, a trailing slash and other case spellings | Fixed in D2 and WP05: the repair runs after canonicalisation and compares owner and repository ignoring case |
+| C25 | backend | low | `price_basis` has no vocabulary and the recompute formula is undefined (Batch, Flex) | Fixed in WP13: the five values, undiscounted rates, the stored `batch` factor, `processing_tier` recorded only (verified: `cost_for` applies no Flex factor), and the exact recompute formula |
+| C26 | backend | low | The case-lock registry is unbounded, and `attach_cluster` saves a stale case outside any case lock | Fixed. WP08: a `WeakValueDictionary` shared by the real and Demo pipelines; `attach_cluster` gains a `pipeline` keyword and re-reads under the case lock inside the signature lock (a WP08 hunk in `engine/ingest.py` after WP15B); lock ordering stated |
+| C27 | console | high | The multiplexer cannot fan out by topic (frames carry no topic) and a frame on three topics arrives three times under three ids | Fixed. WP09 routes by channel through a static `CHANNEL_TOPICS` table, filters `cases:{id}` by `data.case_id`, debounces union changes; WP01 adds `EventBus.publish_many` (one event, one id, replay dedupe) and uses it in `publish_case_investigation` and `publish_review_frame`; tests added |
+| C28 | console | medium | Alt+5 changes meaning too (Chat becomes Activity) and Chat moves to Alt+6 | Fixed in D8, WP03 (the key handler accepts 1 to 6), WP07, WP17, §4.9; WP18 updates `docs/analyst/case-manager.md:121` |
+| C29 | console | medium | Several cross-package mounts still need edits in another package's file (the row accessible name, the dialog's case id, the findings-to-events filter, the explain builders, the row risk HoverCard, `AwaitingReason` and the Reinvestigate dialog) | Fixed. WP01 adds `aiRunText.ts`, the `caseIds` prop on both close dialogs, the `FindingsList` and `CaseEvents` filter props, `builders.ts` and `ExplainTrigger` stubs, `RiskExplain variant="row"`, and a `ReinvestigateDialog` stub carrying today's dialog; WP03 mounts `AwaitingReason` and the dialog; WP16's mounts shrink accordingly |
+| C30 | console | medium | The entry list omits the multiplexer (already an entry module through `NotificationBell` and `JobMonitor`), the NavSidebar subscription and an icon; the 450 B figure is used for two different things | Fixed in §3.1: the additions listed; WP09 reports the multiplexer delta separately; the gate stays at most 450 B and WP07's total growth at most 700 B |
+| C31 | console | medium | The geometry targets cannot be met (phone 206 px, desktop 211 px with the current panel padding), the measured point is undefined, the ReviewBand's fate is unstated, and the band height ignores the AI notice | Fixed. WP03: `CASE_MANAGER_PANEL_PADDING` top 16 px, the ReviewBand leaves the header, the point is the active tab's first child, 210 px at both sizes (the frame keeps its inset, so the phone target is 210 px rather than 200 px); WP02: 92 px without the notice, at most 20 px more with it; A2 updated |
+| C32 | console | medium | The queue rows and the navigation already use the turning glyph for case chat; the AI signal's placement and drawing were unspecified | Fixed in WP02 and WP09: `AiRunMark` replaces the status glyph inside the status node with the words "AI working" or "AI queued"; the navigation shows a separate numeric badge with its own text; a test with both active |
+| C33 | console | medium | The screenshot list misses changed surfaces, stale README and quickstart heroes, and has no owner; backfilled updates would show refreshed images | Fixed in §5.3 (items 20 to 24 and the refresh list) and WP17 (owner, copy reused images into `docs/assets/releases/0.2.0/` first) |
+| C34 | console | low | Hiding the owner item at narrow widths would hide the M shortcut's popover anchor | Fixed in WP03: the owner control never hides (only its name below 44rem); hidden SLA and review chips have stated homes; an M test at a 30rem pane |
+| C35 | console | low | WP07's personal switch sits in `CustomizationSection.tsx`, which WP15E owns | Fixed with a variant of the proposal: WP07 adds only the switch row and merges first (step 6), WP15E's B45 edit follows (step 11), so WP07 keeps its early merge; the section keywords in `settings-sections-meta.ts` are WP07's; §4.10 rows added |
+| C36 | console | low | B78's table half needs `ui/table.tsx`, `AutoCloseReviewModule.tsx` and `PersonSheet.tsx`, none in WP15F | Fixed. WP15F owns `ui/table.tsx` and gains the two `scrollLabel` hunks; §4.10 rows added |
+| C37 | console | low | WP02's ui-standard section contains WP03's paragraphs; two Navigation sentences naming Notifications become false under D5 | Fixed. WP02's hunk ends before "Case header."; WP07 owns the Navigation sentences; §4.10 and §6.4 updated |
+| C38 | console | low | Popover origin lines for the `drain` and `detection` triggers were missing | Fixed in WP09 ("Started when an investigation slot came free", "Started by event detection") and its test |
+| C39 | console | low | The Explain kit has no design-system catalog entry or documented subpath import | Fixed. WP11 hunks in `catalog.ts`, `design-system.md` and `design-system/README.md`; §4.10 rows added |
+| C40 | console | low | No measurement script exists for the geometry acceptance | Fixed. WP02 owns `docs/research/2026-11-round16/acceptance/measure-case-manager.mjs` (global Playwright, outside the build); WP02, WP03 and WP16 use it |
+| C41 | console | low | WP12's "KPI hover components and lifecycle widgets" names no files | Fixed. WP12 lists the files; `KpiTile.tsx` and `KpiStrip.tsx` are hunks for an explain slot only; §4.10 row added |
+| C42 | console | low | The entry ratchet also needs a pointer sentence in the Round 15 SPEC, which the records test reads | Fixed in §6.4 and WP16 (the pointer, the §8.1 value, the test reading Round 16) |
+| C43 | console | low | The Brief lanes could repeat header facts, against the one-home rule | Fixed with the first option: the rule is kept; the lanes never repeat the header's verdict, confidence, risk, status or owner and link to their tab; the header chip and the inspector meter are the sanctioned pair (§6.4) |
+| C44 | release-security | high | B15's capability test misses a provider a stored Super admin is linked to: repointing its issuer signs the attacker in as that Super admin through step 1 | Fixed. Confirmed in `_provision_sso_user` (`routes.py:5646-5671`). WP15A and §3.3: every change to the `sso` block and every provider secret needs a stored Super admin with a strict fresh sign-in; the three regressions added; the bug hunt header records that the SPEC replaces the minimal fix |
+| C45 | release-security | medium | The GET rule cannot pass: twelve authenticated GETs are neither gated nor allowlisted, including the feeds read | Fixed with C1 (duplicate) |
+| C46 | release-security | medium | `/auth/mfa/disable` keeps unlimited code guesses from a bare session, the path B17 now routes every replacement through | Fixed. WP15A B19 covers verify, enroll-confirm, confirm and disable, and disable requires a fresh sign-in; a test added |
+| C47 | release-security | medium | `consume_mfa(recovery_code=...)` runs PBKDF2 inside the CAS mutator on the event loop and on every retry; `auth/mfa.py` is not owned | Fixed. WP15A B23 takes `recovery_hash`, matches off the loop under the B18 semaphore, removes the exact string in the mutator; `auth/mfa.py` owned |
+| C48 | release-security | medium | Enforcing `must_change_password` breaks the 43 test files that create an account and sign in as it; the Console reads `GET /api/prefs/effective` once and would fall back to defaults | Fixed. WP15A owns `_auth_helpers.ready_user` and the test updates (no weakened assertion, no bypass); the self-service reads `account/permissions`, `prefs/effective` and `prefs/user` are exempt; §4.9 risk added |
+| C49 | release-security | medium | Adding the license label fails `test_distribution_contract.py:89`, which asserts it is absent | Fixed. WP05 owns the test, flips the assertion for all three Dockerfiles, and the `check_version.py` marker loop requires the label |
+| C50 | release-security | low | The license change is loose: the images do not carry the text, the build-backend form is ambiguous, nothing checks the text, and third-party notices are missing | Fixed in D3: the SHA-256 of the verbatim text (11,358 bytes), byte-identical `backend/` and `updater/` copies, the text in each image (with the `.dockerignore` lines), `setuptools>=77`, the lockfile root, and a README third-party notices paragraph |
+| C51 | release-security | medium | `configure-pages` 6 and `upload-pages-artifact` 5 run only on a tag, so their first use would be the immutable `v0.2.0`; the dress rehearsal was only recommended | Fixed. D13 states which bumps PR CI proves; §4.11 makes the dress rehearsal required maintainer action M7 before M4 |
+| C52 | release-security | low | Dependabot reads its configuration from the default branch; M1's timing, the open pull requests (two move Python to 3.15) and security updates were unaddressed | Fixed. M1 follows the promotion merge; D13 adds Python ignore rules to the `/backend` and `/webui` docker blocks, keeps the open pull requests unmerged from the frozen prep to the tag, and notes that security updates target the default branch |
+| C53 | release-security | medium | The identity list omits live defaults (`docs/ENVIRONMENT.md:211`, `configuration.md:211`, `upgrades.md:869`, `HANDOFF.md:9`, `ci.yml:918`), the acceptance grep would fail on the legacy checkout directory, and the trust root is case-sensitive | Fixed. D2 and WP05 list the files (HANDOFF as a WP18 item); the grep acceptance names every kept hit, including the `./agentic-kibana` directory literal; the bootstrap refuses the old name in any case and the new name in the wrong case; the repair ignores case |
+| C54 | release-security | low | `identity_from` takes `domain` from `hd` for every provider type, so a non-Google IdP passes any `allowed_domains` | Fixed. WP15A owns `auth/oidc.py`; `hd` only for Google; a test added (the bug hunt's own hardening note) |
+| C55 | release-security | low | The linking rule still re-binds an account's `oauth_sub` to a new subject on a same-provider email match | Fixed. WP15A links by email only to an account of this provider with no `oauth_sub`; an existing subject is never re-bound; no Microsoft exception is needed because `oid` is already the key |
+| C56 | release-security | low | Redirect stubs drop fragments; `scripts/test_docs_theme.py` reads `0.1/index.html`; a hard-coded `"0.1"` repeats the problem next minor | Fixed in §3.8 and WP05: the fragment-keeping stub, `LEGACY_DOC_LINES`, and `test_docs_theme.py` owned and derived from `VERSION`. Duplicate in part of C21 |
+| C57 | release-security | low | The guard for a pull request into `main` has no defined signal | Fixed in WP05: `GITHUB_BASE_REF == "main"`, set by GitHub on `pull_request` events, with a test; no workflow change |
+| C58 | release-security | low | The 0.1.13 correction would be described twice in the released CHANGELOG | Fixed in WP19: the snapshot's body moves into the `[0.2.0]` "Legacy bootstrap correction" subsection and the snapshot heading keeps one pointer line |
+| C59 | release-security | low | M2 lost its recovery steps and the package names | Fixed in §4.11 M2 (the three package paths, Actions access, re-running the release job, `workflow_dispatch` of the Documentation workflow after its 2-hour wait) |
+| C60 | release-security | low | Gating `GET /api/settings` silently drops case-page facts for a `cases:read` holder without `settings:read`, and every case open writes an Access denied row | Fixed. WP03: Case detail and Investigate call it only with `settings:read`; otherwise the policy and SLA come from the triage route, where WP10 adds `auto_close_policy`; WP03 merges after WP10 |

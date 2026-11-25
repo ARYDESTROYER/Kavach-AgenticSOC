@@ -2,7 +2,7 @@
 
 The bug-hunt workflow ran eight finders by area at `3cd362c`: the engine (11 candidates), the backend API (3), authentication and security (11), three live Console walkthroughs on the seeded Demo (7, 11 and 15), data correctness (13), and accessibility and phone (11). Every candidate was checked by an independent skeptic, who tried to refute it, reproduced it where possible and wrote the smallest correct fix. 81 of the 82 candidates were confirmed (one Console finding was rejected). Six confirmed findings are duplicates of another and are merged into it, so 75 fixes land (Round 16 SPEC D12).
 
-Ids B01 to B81 follow the order of the workflow's output and are stable. The Round 16 SPEC Appendix A allocates each one to a work package. Evidence, failure scenario and both fixes are reproduced as the workflow wrote them; only paths into the session scratchpad are shortened to `<scratchpad>/`, and the skeptic's full reasoning is summarised by its first paragraph. Line numbers are as found at `3cd362c` and drift as packages land. Where the SPEC replaces a step of a minimal fix (B09, B13, B20, B24, B48), the SPEC wins.
+Ids B01 to B81 follow the order of the workflow's output and are stable. The Round 16 SPEC Appendix A allocates each one to a work package. Evidence, failure scenario and both fixes are reproduced as the workflow wrote them; only paths into the session scratchpad are shortened to `<scratchpad>/`, and the skeptic's full reasoning is summarised by its first paragraph. Line numbers are as found at `3cd362c` and drift as packages land. Where the SPEC replaces or tightens a step of a minimal fix (B09, B11, B13, B15, B16, B19, B20, B23, B24, B45, B48, B62; the later ones after the SPEC's code review, SPEC Appendix C), the SPEC wins.
 
 ## Summary
 

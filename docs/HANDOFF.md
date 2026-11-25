@@ -7,12 +7,17 @@
 > Everything in here is verified against the repo as of the date below — not from memory.
 
 - **Repo:** `ARYDESTROYER/Agentic-Kibana`  ·  **Integration target:** `Testing`  ·  **Date:** 2026-11-24
-- **Round 15 (newest, 2026-11):** six operator asks on `claude/round15`: a Console switch for
+- **Round 16 (newest, 2026-11):** in progress on `claude/round16`, heading to `Testing` and then
+  the 0.2.0 release: the AI agent's work shown live on a case, a cleaner and segregated Case
+  Manager, a quiet sign-in page, every number explainable on hover or click, every stored record
+  reachable, a What's new screen and a Communication page, the 81 confirmed bug-hunt fixes,
+  version 0.2.0 under the `ARYDESTROYER/Kavach-AgenticSOC` identity and the Apache-2.0 license.
+  See `docs/research/2026-11-round16/SPEC.md`.
+- **Round 15 (2026-11):** six operator asks on `claude/round15`: a Console switch for
   role-based access, honest setup-wizard copy, a Team activity page for managers, screenshots on
-  cases, a random review of automatically closed cases, and a cleaner Case Manager. It is built,
-  each package and the integrated tree were independently reviewed (the cross-cutting review
-  confirmed and fixed 46 of 50 candidate findings), and every gate is green apart from five
-  sandbox-only environment tests (SPEC §8.4); it heads to `Testing` by a pull request. See
+  cases, a random review of automatically closed cases, and a cleaner Case Manager. Each package
+  and the integrated tree were independently reviewed (the cross-cutting review confirmed and
+  fixed 46 of 50 candidate findings); it merged into `Testing` as `3cfd5c0` (PR #143). See
   `docs/research/2026-11-round15/SPEC.md`, whose §8 "As built" records what shipped and the known
   limitations.
 - **Round 14 (2026-10 and 11):** nine operator asks on `claude/round14`. It is built,
