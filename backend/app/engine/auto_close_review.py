@@ -538,15 +538,15 @@ class ReviewSampler:
 
 def publish_review_frame(bus: Any, case_id: str, review_id: str, state: str) -> None:
     """One ``case.review`` nudge on ``cases:{id}`` and on ``cases`` (ids and the state
-    only, #7 and #9). Fire and forget."""
+    only, #7 and #9): one event with one id (``EventBus.publish_many``), so a client
+    on both topics receives it once. Fire and forget."""
     if bus is None:
         return
     payload = {"case_id": case_id, "review_id": review_id, "state": state}
-    for topic in (f"cases:{case_id}", "cases"):
-        try:
-            bus.publish(topic, REVIEW_EVENT, dict(payload))
-        except Exception:  # noqa: BLE001 (realtime is advisory)
-            pass
+    try:
+        bus.publish_many((f"cases:{case_id}", "cases"), REVIEW_EVENT, payload)
+    except Exception:  # noqa: BLE001 (realtime is advisory)
+        pass
 
 
 def eligible_closes_by_day(

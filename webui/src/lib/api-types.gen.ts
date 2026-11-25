@@ -10005,6 +10005,8 @@ export interface components {
         Citation: {
             /** Case Id */
             case_id?: string | null;
+            /** Case Number */
+            case_number?: string | null;
             /** Doc */
             doc?: string | null;
             /** Id */
@@ -12760,6 +12762,7 @@ export interface components {
              * @default 0
              */
             diversity: number;
+            inputs?: components["schemas"]["RiskInputs"] | null;
             /**
              * Reputation
              * @default 0
@@ -12770,6 +12773,163 @@ export interface components {
              * @default 0
              */
             total: number;
+            /**
+             * Velocity
+             * @default 0
+             */
+            velocity: number;
+            /**
+             * Volume
+             * @default 0
+             */
+            volume: number;
+        };
+        /**
+         * RiskInputs
+         * @description What one risk score was computed from (Round 16 SPEC §4.3 WP01, S3, B13).
+         *
+         *     Written beside ``compute_risk`` by the pure ``engine/risk_explain.explain_risk``
+         *     (``engine/risk.py`` stays byte-identical, #3), so a reader can re-derive every
+         *     factor and the total from the record alone, after the case attached more events or
+         *     the weights changed. Read only by explanations: nothing reads it to decide (#3).
+         *
+         *     * ``event_count``, ``span_seconds``: the scoring cluster's count and first-to-last
+         *       span; ``effective_window_seconds`` is the span floored at 1 s;
+         *       ``rate_per_minute`` is ``event_count / (effective_window_seconds / 60)`` when
+         *       ``velocity_rule == "rate"`` and ``None`` below 3 events
+         *       (``"below_min_events"``, velocity 0).
+         *     * ``rule_values``: the distinct rule values, first order, at most
+         *       :data:`RISK_INPUTS_MAX_RULE_VALUES`, each at most
+         *       :data:`RISK_INPUTS_RULE_VALUE_CHARS` characters. Source-controlled strings: a
+         *       reader renders them as text (#9). ``rule_type_count`` is exactly
+         *       ``len(cluster.rule_values)``, the count the diversity factor used.
+         *     * ``reputation_input``: the reputation passed in, before clamping to 0..100;
+         *       ``reputation_source`` says where it came from.
+         *     * ``asset_value``: the criticality the asset policy gave, before clamping;
+         *       ``asset_match`` says how (a network range, an exact entry, or none). The matched
+         *       range is never stored: every route that returns a case would return it
+         *       (SPEC Appendix C, C5).
+         *     * ``weights``, ``total_weight`` (their sum) and ``zero_weight_fallback`` (the sum
+         *       was 0, so the score divided by 1); ``refs`` the factor reference points.
+         *     * ``scored_at``: when the score was computed (the only date); ``inputs_version``.
+         */
+        RiskInputs: {
+            /**
+             * Asset Match
+             * @default none
+             * @enum {string}
+             */
+            asset_match: "network" | "exact" | "none";
+            /**
+             * Asset Value
+             * @default 0
+             */
+            asset_value: number;
+            /**
+             * Effective Window Seconds
+             * @default 1
+             */
+            effective_window_seconds: number;
+            /**
+             * Event Count
+             * @default 0
+             */
+            event_count: number;
+            /**
+             * Inputs Version
+             * @default 1
+             */
+            inputs_version: number;
+            /** Rate Per Minute */
+            rate_per_minute?: number | null;
+            refs?: components["schemas"]["RiskReferences"];
+            /**
+             * Reputation Input
+             * @default 0
+             */
+            reputation_input: number;
+            /**
+             * Reputation Source
+             * @default not_looked_up
+             * @enum {string}
+             */
+            reputation_source: "enrichment" | "not_ip_entity" | "enrichment_off" | "not_looked_up";
+            /**
+             * Rule Type Count
+             * @default 0
+             */
+            rule_type_count: number;
+            /** Rule Values */
+            rule_values?: string[];
+            /**
+             * Scored At
+             * @default
+             */
+            scored_at: string;
+            /**
+             * Span Seconds
+             * @default 0
+             */
+            span_seconds: number;
+            /**
+             * Total Weight
+             * @default 0
+             */
+            total_weight: number;
+            /**
+             * Velocity Rule
+             * @default below_min_events
+             * @enum {string}
+             */
+            velocity_rule: "below_min_events" | "rate";
+            weights?: components["schemas"]["RiskWeightsSnapshot"];
+            /**
+             * Zero Weight Fallback
+             * @default false
+             */
+            zero_weight_fallback: boolean;
+        };
+        /**
+         * RiskReferences
+         * @description The reference points at which a factor reaches full score (``engine/risk.py``).
+         */
+        RiskReferences: {
+            /**
+             * Diversity
+             * @default 5
+             */
+            diversity: number;
+            /**
+             * Velocity
+             * @default 10
+             */
+            velocity: number;
+            /**
+             * Volume
+             * @default 50
+             */
+            volume: number;
+        };
+        /**
+         * RiskWeightsSnapshot
+         * @description The five risk weights in force when a score was computed (a fixed key set).
+         */
+        RiskWeightsSnapshot: {
+            /**
+             * Asset Criticality
+             * @default 0
+             */
+            asset_criticality: number;
+            /**
+             * Diversity
+             * @default 0
+             */
+            diversity: number;
+            /**
+             * Reputation
+             * @default 0
+             */
+            reputation: number;
             /**
              * Velocity
              * @default 0

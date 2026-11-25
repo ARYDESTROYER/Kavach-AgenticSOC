@@ -288,6 +288,10 @@ describe('SSE channel names (A4)', () => {
     expect(STREAM_CHANNELS).not.toContain('agent');
   });
 
+  it('listens on the AI investigation channel (Round 16)', () => {
+    expect(STREAM_CHANNELS as readonly string[]).toContain('case.investigation');
+  });
+
   it('listens on the runbook run channel (Round 14) and hands its frame over', async () => {
     expect(STREAM_CHANNELS as readonly string[]).toContain('case.runbook');
     (globalThis as unknown as { EventSource: unknown }).EventSource = MockEventSource;

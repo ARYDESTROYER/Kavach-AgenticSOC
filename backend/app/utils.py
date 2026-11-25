@@ -152,6 +152,18 @@ def coerce_float(value: Any, default: float = 0.0) -> float:
     return default
 
 
+def round_half_up(x: float) -> int:
+    """Round to the nearest integer, a half always going up (toward +infinity).
+
+    ``floor(x + 0.5)``: 80.5 shows as 81 and 47.5 as 48, where Python's ``round``
+    (half to even) gives 80 for 80.5. The Console rounds a displayed score the
+    same way (``webui/src/lib/explain/explain.contract.json``), so the integer a
+    person reads is the integer the server reports."""
+    import math
+
+    return int(math.floor(float(x) + 0.5))
+
+
 def truncate(text: str | None, limit: int = 500) -> str:
     if not text:
         return ""

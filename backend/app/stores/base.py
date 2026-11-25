@@ -962,6 +962,19 @@ class AuditRepository(ABC):
             return cap, "gte"
         return len(matched), "gte" if capped else "eq"
 
+    async def count_for_case(self, case_id: str, *, cap: int) -> tuple[int, str]:
+        """``(count, relation)`` of a case's audit rows (Round 16 SPEC §4.3 WP01, [dv]
+        R14): exact up to ``cap`` (relation ``eq``), otherwise ``(cap, "gte")``, so a
+        trace that shows the newest :meth:`records_for_case` rows can say how many it
+        left out. Built on :meth:`count_matching`, so every audit store answers it the
+        way it counts any other filter. Raises when the store cannot count; a caller
+        then reports the total as unknown."""
+        from ..audit.query import Eq
+
+        if not case_id:
+            return 0, "eq"
+        return await self.count_matching(Eq("case_id", str(case_id)), cap=max(1, int(cap)))
+
     async def run_totals(
         self, predicate: Any, run_ids: list[str], *, snapshot: Any = None,
     ) -> dict[str, int]:
@@ -1053,6 +1066,17 @@ class UsageRepository(ABC):
         """Newest-first, bounded ledger export. The safe default keeps third-party
         repositories source-compatible; bundled ES/SQL repositories override it."""
         return []
+
+    async def records_for_case(self, case_id: str, limit: int = 500) -> list[dict[str, Any]]:
+        """One case's ledger rows, NEWEST first, at most ``limit`` (1 to 500) (Round 16
+        SPEC §4.3 WP01, [dv] R3): every call written with this ``case_id``, pipeline and
+        case chat alike. Read-only (#6: the gateway stays the only writer).
+
+        Raises when the ledger cannot be read, so a caller reports "unavailable" and
+        never "no spend". The bundled Elasticsearch and SQL repositories implement it;
+        a third-party repository must opt in, so this default raises
+        ``NotImplementedError``."""
+        raise NotImplementedError("usage repository does not implement per-case reads")
 
     async def records_strict(self, *, limit: int = 1000) -> list[dict[str, Any]]:
         """Newest-first bounded rows, raising when availability cannot be proven.

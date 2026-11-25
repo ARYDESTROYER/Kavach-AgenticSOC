@@ -164,6 +164,12 @@ class _Bus:
         self.frames.append((topic, event, payload))
         return "1"
 
+    def publish_many(self, topics: Any, event: str, payload: dict[str, Any], **_kw: Any) -> str:
+        # Round 16 (SPEC §4.3 WP01): one event on several topics; recorded per topic.
+        for topic in topics:
+            self.frames.append((topic, event, payload))
+        return "1"
+
 
 def _sampler(store: AutoCloseReviewStore, audit: _Audit, bus: _Bus | None = None, now: datetime = NOW):
     return acr.ReviewSampler(store=lambda: store, audit=lambda: audit,
@@ -698,13 +704,16 @@ def test_a_recorded_review_tells_open_queues_it_is_completed(env, monkeypatch) -
     _put(c, state, case)
     review_id = _sample(c, state, case)
     frames: list[tuple[str, str, dict[str, Any]]] = []
-    original = state.event_bus.publish
+    original = state.event_bus.publish_many
 
-    def record(topic: str, event: str, payload: Any, **kw: Any) -> Any:
-        frames.append((topic, event, dict(payload) if isinstance(payload, dict) else payload))
-        return original(topic, event, payload, **kw)
+    def record(topics: Any, event: str, payload: Any, **kw: Any) -> Any:
+        # Round 16 (SPEC §4.3 WP01): one event on both topics; recorded per topic.
+        topics = list(topics)
+        for topic in topics:
+            frames.append((topic, event, dict(payload) if isinstance(payload, dict) else payload))
+        return original(topics, event, payload, **kw)
 
-    monkeypatch.setattr(state.event_bus, "publish", record)
+    monkeypatch.setattr(state.event_bus, "publish_many", record)
     r = c.post("/api/cases/case-rv-frame/review", headers=h["t2"], json={"classification": "false_positive"})
     assert r.status_code == 200, r.text
     want = {"case_id": "case-rv-frame", "review_id": review_id, "state": "completed"}

@@ -98,6 +98,24 @@ class UsageStore(UsageRepository):
         )
         return [h.get("_source", {}) or {} for h in resp.get("hits", {}).get("hits", [])]
 
+    async def records_for_case(self, case_id: str, limit: int = 500) -> list[dict[str, Any]]:
+        """One case's ledger rows, newest first, at most ``limit`` (1 to 500). Raises
+        when the ledger cannot be read (Round 16 SPEC §4.3 WP01)."""
+        if not case_id:
+            return []
+        cap = max(1, min(int(limit or 500), 500))
+        resp = await self._es.search(
+            USAGE_READ_PATTERN,
+            {
+                "size": cap,
+                "query": {"bool": {"filter": [{"term": {"case_id": str(case_id)}}]}},
+                "sort": [{"ts": {"order": "desc"}}],
+            },
+        )
+        rows = [h.get("_source", {}) or {} for h in resp.get("hits", {}).get("hits", [])]
+        # Keep exactly this case's rows, whatever the mapping of ``case_id``.
+        return [row for row in rows if row.get("case_id") == case_id][:cap]
+
     async def export_page(
         self, *, limit: int = 1000, cursor: Any = None,
     ) -> tuple[list[dict[str, Any]], Any | None, int | None, str]:

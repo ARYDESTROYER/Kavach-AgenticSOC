@@ -1,0 +1,148 @@
+{
+  "description": "Round 16 explainability contract (SPEC section 4.3 WP01; research explainability section 5.4). Input vectors and expected outputs shared by the server (backend/tests/test_explain_contract.py: utils.round_half_up, engine/risk.compute_risk, engine/risk_explain.explain_risk, engine/auto_close_review.wilson_interval, engine/threshold_tuner.wilson_lower_bound, engine/metrics.percentile, engine/priority.derive_priority, engine/metrics.sla_metrics) and the Console explain builders (webui/src/lib/explain/builders.ts). If either side changes a number, one suite fails.",
+  "version": 1,
+  "rounding": {
+    "rule": "floor(x + 0.5), then band the displayed integer",
+    "band_cuts": { "critical": 74, "high": 48, "medium": 22 },
+    "vectors": [
+      { "value": 80.5, "display": 81, "band": "critical" },
+      { "value": 73.5, "display": 74, "band": "critical" },
+      { "value": 73.6, "display": 74, "band": "critical" },
+      { "value": 47.5, "display": 48, "band": "high" },
+      { "value": 21.5, "display": 22, "band": "medium" }
+    ]
+  },
+  "risk": {
+    "formula": "sum(w_i x f_i) / sum(w_i), divided by 1 when the weights sum to 0",
+    "tolerance_full_precision": 0.005,
+    "tolerance_stored_factors": 0.01,
+    "scored_at": "2026-11-24T10:00:00+00:00",
+    "vectors": [
+      {
+        "name": "worked_example",
+        "cluster": { "entity_value": "10.0.4.12", "event_count": 40, "span_seconds": 120, "rule_values": ["r1", "r2", "r3"] },
+        "reputation": 75,
+        "reputation_source": "enrichment",
+        "asset_criticality": { "10.0.4.12": 60 },
+        "weights": null,
+        "expected": {
+          "breakdown": { "volume": 94.45, "velocity": 100.0, "reputation": 75.0, "diversity": 60.0, "asset_criticality": 60.0, "total": 81.11 },
+          "inputs": {
+            "event_count": 40, "span_seconds": 120.0, "effective_window_seconds": 120.0, "rate_per_minute": 20.0,
+            "velocity_rule": "rate", "rule_values": ["r1", "r2", "r3"], "rule_type_count": 3,
+            "reputation_input": 75.0, "reputation_source": "enrichment", "asset_value": 60.0, "asset_match": "exact",
+            "weights": { "volume": 0.25, "velocity": 0.2, "reputation": 0.3, "diversity": 0.15, "asset_criticality": 0.1 },
+            "total_weight": 1.0, "zero_weight_fallback": false,
+            "refs": { "volume": 50, "velocity": 10.0, "diversity": 5 },
+            "scored_at": "2026-11-24T10:00:00+00:00", "inputs_version": 1
+          },
+          "display": 81,
+          "band": "critical",
+          "hover_line": "Risk 81.11 = (0.25 x 94.45 + 0.20 x 100 + 0.30 x 75 + 0.15 x 60 + 0.10 x 60) / 1.00. Click for inputs."
+        }
+      },
+      {
+        "name": "two_events",
+        "cluster": { "entity_value": "10.0.4.12", "event_count": 2, "span_seconds": 30, "rule_values": ["r1"] },
+        "reputation": 0,
+        "reputation_source": "enrichment",
+        "asset_criticality": {},
+        "weights": null,
+        "expected": {
+          "breakdown": { "volume": 27.94, "velocity": 0.0, "reputation": 0.0, "diversity": 20.0, "asset_criticality": 0.0, "total": 9.99 },
+          "inputs": {
+            "event_count": 2, "span_seconds": 30.0, "effective_window_seconds": 30.0, "rate_per_minute": null,
+            "velocity_rule": "below_min_events", "rule_values": ["r1"], "rule_type_count": 1,
+            "reputation_input": 0.0, "reputation_source": "enrichment", "asset_value": 0.0, "asset_match": "none",
+            "weights": { "volume": 0.25, "velocity": 0.2, "reputation": 0.3, "diversity": 0.15, "asset_criticality": 0.1 },
+            "total_weight": 1.0, "zero_weight_fallback": false,
+            "refs": { "volume": 50, "velocity": 10.0, "diversity": 5 },
+            "scored_at": "2026-11-24T10:00:00+00:00", "inputs_version": 1
+          },
+          "display": 10,
+          "band": "low"
+        }
+      },
+      {
+        "name": "zero_span",
+        "cluster": { "entity_value": "10.0.4.12", "event_count": 5, "span_seconds": 0, "rule_values": ["r1", "r2"] },
+        "reputation": 20,
+        "reputation_source": "enrichment",
+        "asset_criticality": {},
+        "weights": null,
+        "expected": {
+          "breakdown": { "volume": 45.57, "velocity": 100.0, "reputation": 20.0, "diversity": 40.0, "asset_criticality": 0.0, "total": 43.39 },
+          "inputs": {
+            "event_count": 5, "span_seconds": 0.0, "effective_window_seconds": 1.0, "rate_per_minute": 300.0,
+            "velocity_rule": "rate", "rule_values": ["r1", "r2"], "rule_type_count": 2,
+            "reputation_input": 20.0, "reputation_source": "enrichment", "asset_value": 0.0, "asset_match": "none",
+            "weights": { "volume": 0.25, "velocity": 0.2, "reputation": 0.3, "diversity": 0.15, "asset_criticality": 0.1 },
+            "total_weight": 1.0, "zero_weight_fallback": false,
+            "refs": { "volume": 50, "velocity": 10.0, "diversity": 5 },
+            "scored_at": "2026-11-24T10:00:00+00:00", "inputs_version": 1
+          },
+          "display": 43,
+          "band": "medium"
+        }
+      },
+      {
+        "name": "zero_weights",
+        "cluster": { "entity_value": "10.0.4.12", "event_count": 40, "span_seconds": 120, "rule_values": ["r1"] },
+        "reputation": 75,
+        "reputation_source": "enrichment",
+        "asset_criticality": {},
+        "weights": { "volume": 0, "velocity": 0, "reputation": 0, "diversity": 0, "asset_criticality": 0 },
+        "expected": {
+          "breakdown": { "volume": 94.45, "velocity": 100.0, "reputation": 75.0, "diversity": 20.0, "asset_criticality": 0.0, "total": 0.0 },
+          "inputs": {
+            "event_count": 40, "span_seconds": 120.0, "effective_window_seconds": 120.0, "rate_per_minute": 20.0,
+            "velocity_rule": "rate", "rule_values": ["r1"], "rule_type_count": 1,
+            "reputation_input": 75.0, "reputation_source": "enrichment", "asset_value": 0.0, "asset_match": "none",
+            "weights": { "volume": 0.0, "velocity": 0.0, "reputation": 0.0, "diversity": 0.0, "asset_criticality": 0.0 },
+            "total_weight": 0.0, "zero_weight_fallback": true,
+            "refs": { "volume": 50, "velocity": 10.0, "diversity": 5 },
+            "scored_at": "2026-11-24T10:00:00+00:00", "inputs_version": 1
+          },
+          "display": 0,
+          "band": "low"
+        }
+      }
+    ]
+  },
+  "wilson": {
+    "z": 1.96,
+    "decimals": 4,
+    "vectors": [
+      { "successes": 27, "total": 30, "low": 0.7438, "high": 0.9654 },
+      { "successes": 14, "total": 20, "low": 0.481, "high": 0.8545 }
+    ]
+  },
+  "percentile": {
+    "method": "linear interpolation between closest ranks",
+    "vectors": [
+      { "values": [4, 9, 31, 62], "p50": 20.0, "p90": 52.7 }
+    ]
+  },
+  "priority": {
+    "band_cuts": { "high": 48, "medium": 22 },
+    "vectors": [
+      { "asset": 60, "risk": 81.11, "impact": "high", "urgency": "high", "level": "P1" },
+      { "asset": 0, "risk": 81.11, "impact": "low", "urgency": "high", "level": "P3" },
+      { "asset": 30, "risk": 30, "impact": "medium", "urgency": "medium", "level": "P3" },
+      { "asset": 60, "risk": 10, "impact": "high", "urgency": "low", "level": "P3" },
+      { "asset": 0, "risk": 10, "impact": "low", "urgency": "low", "level": "P4" }
+    ]
+  },
+  "sla": {
+    "rule": "breached when the elapsed time is over the target; at_risk when the clock still runs and at least 0.8 of the target has passed; otherwise ok",
+    "at_risk_fraction": 0.8,
+    "vectors": [
+      { "clock": "response", "priority": "P1", "target_minutes": 15, "elapsed_minutes": 10, "responded": false, "state": "ok" },
+      { "clock": "response", "priority": "P1", "target_minutes": 15, "elapsed_minutes": 12, "responded": false, "state": "at_risk" },
+      { "clock": "response", "priority": "P1", "target_minutes": 15, "elapsed_minutes": 15, "responded": false, "state": "at_risk" },
+      { "clock": "response", "priority": "P1", "target_minutes": 15, "elapsed_minutes": 16, "responded": false, "state": "breached" },
+      { "clock": "response", "priority": "P1", "target_minutes": 15, "elapsed_minutes": 14, "responded": true, "state": "ok" },
+      { "clock": "response", "priority": "P1", "target_minutes": 15, "elapsed_minutes": 20, "responded": true, "state": "breached" }
+    ]
+  }
+}
