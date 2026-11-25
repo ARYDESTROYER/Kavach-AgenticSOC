@@ -92,6 +92,30 @@ def test_a_write_to_a_demo_overlay_id_is_refused_and_live_sources_are_unchanged(
     assert {row["id"] for row in client.get("/api/sources").json()["sources"]} == {"real-webhook"}
 
 
+def test_the_reported_make_primary_write_no_longer_reaches_the_live_configuration(client) -> None:
+    # The exact body the wizard sent for the Demo Wazuh row in the report: before the fix
+    # it answered 200 and stored a live, enabled push Wazuh source with Demo-only config.
+    _enable_seeded(client)
+    before = _live_sources(client)
+    response = client.post("/api/sources", json={
+        "id": "demo-wazuh",
+        "source_type": "wazuh",
+        "display_name": "Wazuh Manager (endpoint telemetry)",
+        "enabled": True,
+        "is_primary": True,
+        "ingest_mode": "push_http",
+        "config": {
+            "protocol": "Wazuh JSON",
+            "format": "archives.json events + alerts.json alerts",
+        },
+    })
+    _assert_demo_readonly(response)
+    assert _live_sources(client) == before
+    assert client.post("/api/demo/disable").status_code == 200
+    assert not any(s["id"] == "demo-wazuh" for s in _live_sources(client))
+    assert client.get("/api/settings").json()["prefs"]["sources"] == before
+
+
 def test_real_source_writes_stay_allowed_while_demo_is_active(client) -> None:
     _enable_seeded(client)
 

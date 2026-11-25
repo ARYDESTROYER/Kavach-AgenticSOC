@@ -989,9 +989,11 @@ function SourcesStep({
   // the source is deleted and closes once the delete is done; a failed delete stays in it.
   const [removing, setRemoving] = React.useState(false);
   const [removeError, setRemoveError] = React.useState<unknown>(null);
-  // A removal that went through while the list read after it failed: the page says the
-  // source is gone and offers to reload the list.
-  const [removedListError, setRemovedListError] = React.useState<unknown>(null);
+  // A removal or Make primary that went through while the list read after it failed: the
+  // page says what happened, never that the change was not applied, and offers to reload
+  // the list. The title names the change.
+  const [changedListError, setChangedListError] = React.useState<unknown>(null);
+  const [changedListTitle, setChangedListTitle] = React.useState('');
   // Sources the server has confirmed removed, against the list they were removed from.
   // Their rows leave with the dialog instead of when the list reloads (or never, if that
   // read fails), so the list never offers a source that is gone. The next list replaces it.
@@ -1027,7 +1029,7 @@ function SourcesStep({
   // Read the list again. A read that works answers any earlier list error.
   const refreshList = async () => {
     await onChanged();
-    setRemovedListError(null);
+    setChangedListError(null);
   };
 
   /** Retry the list read from an error panel: it clears when the list loads. */
@@ -1057,15 +1059,22 @@ function SourcesStep({
     setBusyId(source.id);
     setError(null);
     try {
-      const saved = await api.upsertSource({
-        id: source.id,
-        source_type: source.source_type,
-        display_name: source.display_name,
-        enabled: source.enabled,
-        is_primary: true,
-        ingest_mode: source.ingest_mode ?? null,
-        config: (source.config as Record<string, unknown>) || {},
-      });
+      // A failed write says the change was not applied; nothing was saved.
+      const saved = await api
+        .upsertSource({
+          id: source.id,
+          source_type: source.source_type,
+          display_name: source.display_name,
+          enabled: source.enabled,
+          is_primary: true,
+          ingest_mode: source.ingest_mode ?? null,
+          config: (source.config as Record<string, unknown>) || {},
+        })
+        .catch((nextError: unknown) => {
+          setError(nextError);
+          return null;
+        });
+      if (!saved) return;
       // The server answers 200 even when it keeps the source non-primary (B46), so the
       // returned list decides what the toast says.
       if (primaryConfirmed(saved, source.id)) {
@@ -1075,9 +1084,13 @@ function SourcesStep({
       } else {
         toast.warning(PRIMARY_PULL_ONLY);
       }
-      await refreshList();
-    } catch (nextError) {
-      setError(nextError);
+      try {
+        await refreshList();
+      } catch (nextError) {
+        // The write went through: say only that the list did not reload.
+        setChangedListTitle('The list didn’t refresh');
+        setChangedListError(nextError);
+      }
     } finally {
       setBusyId(null);
     }
@@ -1114,7 +1127,8 @@ function SourcesStep({
     try {
       await refreshList();
     } catch (nextError) {
-      setRemovedListError(nextError);
+      setChangedListTitle('The source was removed, but the list didn’t refresh');
+      setChangedListError(nextError);
     }
   };
 
@@ -1142,14 +1156,14 @@ function SourcesStep({
         {removedNote}
       </p>
 
-      {removedListError ? (
+      {changedListError ? (
         <LoadError
-          error={removedListError}
-          title="The source was removed, but the list didn’t refresh"
+          error={changedListError}
+          title={changedListTitle}
           fallback="Reload the list to see the current sources."
           retryLabel="Reload list"
           className="mb-6"
-          onRetry={() => void retryList(setRemovedListError)}
+          onRetry={() => void retryList(setChangedListError)}
         />
       ) : null}
 

@@ -225,4 +225,32 @@ describe('Wizard Data sources step (Round 16 B43, B46)', () => {
     );
     expect(toast.success).not.toHaveBeenCalled();
   });
+
+  it('never says the change was not applied when only the list read after it failed (B46)', async () => {
+    listSourcesMock.mockResolvedValue({ sources: [PULL_ES] });
+    const { user } = await openDataSources();
+
+    upsertSourceMock.mockResolvedValueOnce({ ok: true, sources: [{ ...PULL_ES, is_primary: true }] });
+    listSourcesMock.mockRejectedValueOnce(new Error('offline'));
+    await user.click(await screen.findByRole('button', { name: 'Make primary' }));
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith('Lake search is now the primary source'));
+    // The write went through, so the page says only that the list did not reload.
+    expect(await screen.findByText('The list didn’t refresh')).toBeInTheDocument();
+    expect(screen.queryByText('Couldn’t update data sources')).toBeNull();
+    expect(screen.queryByText('The source change was not applied.')).toBeNull();
+
+    await user.click(screen.getByRole('button', { name: 'Reload list' }));
+    await waitFor(() => expect(screen.queryByText('The list didn’t refresh')).toBeNull());
+  });
+
+  it('still says the change was not applied when the write itself fails (B46)', async () => {
+    listSourcesMock.mockResolvedValue({ sources: [PULL_ES] });
+    const { user } = await openDataSources();
+
+    upsertSourceMock.mockRejectedValueOnce(new Error('offline'));
+    await user.click(await screen.findByRole('button', { name: 'Make primary' }));
+    expect(await screen.findByText('Couldn’t update data sources')).toBeInTheDocument();
+    expect(toast.success).not.toHaveBeenCalled();
+    expect(toast.warning).not.toHaveBeenCalled();
+  });
 });
