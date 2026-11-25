@@ -332,7 +332,10 @@ async def case_timeline(
     # with the ledger for any N (a single-call normal run AND a multi-step ReAct loop).
     # See routes_triage tests test_timeline_totals_reconcile_*.
     audit_llm_rows_by_role = _count_llm_rows_by_role(rows)
-    exact_calls = usage.exact_calls(audit_llm_rows_by_role, audit_complete=not truncated)
+    exact_calls = usage.exact_calls(
+        audit_llm_rows_by_role, audit_complete=not truncated,
+        row_times_by_role=_llm_row_times_by_role(rows),
+    )
 
     spans: list[TraceSpan] = []
     step = 0
@@ -451,6 +454,21 @@ def _count_llm_rows_by_role(rows: Any) -> dict[str, int]:
             continue
         if at in _LLM_ROW_ACTIONS:
             by_role[actor] = by_role.get(actor, 0) + 1
+    return by_role
+
+
+def _llm_row_times_by_role(rows: Any) -> dict[str, list[datetime | None]]:
+    """The times of the LLM-producing audit rows per actor role, in row order (the
+    same rows :func:`_count_llm_rows_by_role` counts), so an exact cost pairing can
+    check that no other row of the role sits between a call and its own row."""
+    by_role: dict[str, list[datetime | None]] = {}
+    for row in rows:
+        actor = str(_get(row, "actor", "") or "")
+        at = str(_get(row, "action_type", "") or "")
+        if actor == "case_manager" and at == ActionType.DECISION.value:
+            continue
+        if at in _LLM_ROW_ACTIONS:
+            by_role.setdefault(actor, []).append(_parse_ts(_get(row, "ts")))
     return by_role
 
 
@@ -708,10 +726,12 @@ def _recorded_gate(row: Any) -> dict[str, Any] | None:
 
 
 def _failed_after(rows: Any, case: Any, since: Any) -> str | None:
-    """The time of a failed investigation run after ``since`` (the recorded decision),
-    or ``None``. A failed run routes the case to a person without a decision entry
+    """The time of a failed investigation run after ``since`` (the recorded decision;
+    ``None`` when the case recorded none, so any failure counts), or ``None``. A failed
+    run routes the case to a person without a decision entry
     (``pipeline._fail_to_human_case``), so the recorded decision would otherwise speak
-    for a later run that never decided anything."""
+    for a later run that never decided anything, and a case whose first run failed
+    would read as a decision re-derived with today's policy."""
     if getattr(case, "verdict", None) != Verdict.NEEDS_HUMAN:
         return None
     floor = _parse_ts(since)
@@ -745,9 +765,10 @@ def _decision_span(
     from today's policy (``gate_source: rederived_current_policy``). ``current_policy``
     is today's clause with what today's policy decides for the same inputs, and
     ``policy_changed`` says whether that differs from the recorded decision. A case
-    whose newest run failed after the decision reports that routing. ``decide()`` runs
-    as the decision only when the case recorded none, marked
-    ``source: rederived_current_policy`` with no time.
+    whose newest run failed after the decision, or whose first run failed before any
+    decision, reports that routing (``run_failed``). ``decide()`` runs as the decision
+    only when the case recorded neither, marked ``source: rederived_current_policy``
+    with no time.
 
     Returns None for a case with neither a recorded decision nor a verdict. Always
     ``trusted`` (our own deterministic prose). MUTATES NOTHING (``decide()`` is pure)."""
@@ -786,7 +807,9 @@ def _decision_span(
         "run_id": entry.get("run_id") if entry is not None else None,
         "run_failed": False,
     }
-    failed_at = _failed_after(rows, case, entry.get("ts")) if entry is not None else None
+    # A failure after the recorded decision, or any failure of a case that recorded no
+    # decision (its first run failed): the run that failed is what routed it.
+    failed_at = _failed_after(rows, case, entry.get("ts") if entry is not None else None)
     if failed_at is not None:
         payload.update({
             "source": DECISION_RECORDED,
@@ -911,16 +934,42 @@ class _UsageAttribution:
 
     def exact_calls(
         self, llm_rows_by_role: dict[str, int], *, audit_complete: bool,
+        row_times_by_role: dict[str, list[datetime | None]] | None = None,
     ) -> dict[str, list[dict[str, Any]]]:
         """The roles whose LLM audit rows can each be paired with their own call: both
-        reads complete and exactly one call per row (a router or formatter prompt, a
-        one-call investigation's verdict). Every other role keeps the even split."""
+        reads complete, exactly one call per row, and no other row of the role between a
+        call and the row it is paired with (a router prompt is written just before its
+        call, a formatter prompt just after it). Equal counts alone prove nothing: a
+        three-call run and a one-call run give four calls for four rows, and pairing
+        them by position would give a later run's prompt an earlier run's call. Every
+        other role keeps the even split."""
         if not (audit_complete and self.calls_complete):
             return {}
+        times = row_times_by_role or {}
         return {
             role: calls for role, calls in self.calls_by_role.items()
-            if role in self.cost_by_role and len(calls) == llm_rows_by_role.get(role, 0) > 0
+            if role in self.cost_by_role
+            and len(calls) == llm_rows_by_role.get(role, 0) > 0
+            and _calls_pair_with_their_rows(times.get(role) or [], calls)
         }
+
+
+def _calls_pair_with_their_rows(row_times: list[datetime | None], calls: list[dict[str, Any]]) -> bool:
+    """Whether the i-th call of a role (oldest first) sits between the role's LLM audit
+    rows i-1 and i+1, for every i: no other row of the role separates a call from the
+    row it is paired with, whether the row is written before its call or after it. A
+    row or call without a readable time fails."""
+    if len(row_times) != len(calls) or any(at is None for at in row_times):
+        return False
+    for index, call in enumerate(calls):
+        call_at = _parse_ts(call.get("ts"))
+        if call_at is None:
+            return False
+        before = row_times[index - 1] if index > 0 else None
+        after = row_times[index + 1] if index + 1 < len(row_times) else None
+        if (before is not None and call_at < before) or (after is not None and call_at > after):
+            return False
+    return True
 
 
 async def _usage_attribution(state: Any, case_id: str) -> _UsageAttribution:

@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import math
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 
@@ -430,6 +431,39 @@ async def test_a_failed_run_after_the_decision_is_reported_as_routed_to_a_person
     assert stage["headline"] == "Held for human review"
 
 
+async def test_a_first_run_that_failed_is_reported_as_routed_to_a_person(app_state):
+    """Review fix: a case whose first run failed has no decision entry at all (the
+    failure path keeps the empty history). Its span reports the failure that routed it,
+    never a decision re-derived with today's policy."""
+    state = app_state
+    failed_at = "2026-11-01T10:00:00+00:00"
+    case = _case(
+        case_id="case-first-failed", verdict=Verdict.NEEDS_HUMAN, confidence=0.0,
+        status=CaseStatus.NEEDS_HUMAN, decision_by=DecisionBy.SYSTEM, risk_score=40.0,
+        risk_breakdown=RiskBreakdown(total=40.0), error="boom",
+    )
+    assert not [h for h in case.history if h.get("event") == "decision"]
+    await state.cases.save(case)
+    await state.audit.write(AuditDoc(ts=failed_at, case_id=case.case_id, actor="pipeline",
+                                     action_type=ActionType.ERROR,
+                                     result_summary="pipeline error: boom"))
+    span = (await case_timeline(case.case_id, _request(state), state))["spans"][-1]
+    pr = span["payload_ref"]
+    assert pr["run_failed"] is True and pr["source"] == "recorded"
+    assert span["ts"] == failed_at
+    assert span["summary"] == routes_triage._FAILED_RUN_SUMMARY
+    stage = next(s for s in (await case_stages(case.case_id, state))["stages"] if s["kind"] == "decide")
+    assert stage["ts"] == failed_at
+    assert not any(s["label"] == "decision source" for s in stage["steps"])
+
+    # Without a failure row, the same case is still re-derived and said so.
+    quiet = _case(case_id="case-no-failure", verdict=Verdict.NEEDS_HUMAN, confidence=0.0,
+                  status=CaseStatus.NEEDS_HUMAN, risk_score=40.0)
+    await state.cases.save(quiet)
+    pr = (await case_timeline(quiet.case_id, _request(state), state))["spans"][-1]["payload_ref"]
+    assert pr["source"] == "rederived_current_policy" and pr["run_failed"] is False
+
+
 # =========================================================================== #
 # The triage read: auto-close entry, SLA, asset range, risk chip
 # =========================================================================== #
@@ -571,25 +605,34 @@ def _sla_case(case_id: str, *, minutes_ago: float, status: CaseStatus = CaseStat
     )
 
 
-@pytest.mark.parametrize("vector", [
-    {"elapsed": 10, "responded": False, "state": "ok"},
-    {"elapsed": 12, "responded": False, "state": "at_risk"},
-    {"elapsed": 15, "responded": False, "state": "at_risk"},
-    {"elapsed": 16, "responded": False, "state": "breached"},
-    {"elapsed": 14, "responded": True, "state": "ok"},
-    {"elapsed": 20, "responded": True, "state": "breached"},
-], ids=lambda v: f"{v['elapsed']}-{v['responded']}")
+#: The shared explain contract (``webui/src/lib/explain/explain.contract.json``): the SLA
+#: vectors are read from it, so the case reading and the Console cannot drift apart.
+_CONTRACT = json.loads(
+    (Path(__file__).resolve().parents[2] / "webui" / "src" / "lib" / "explain"
+     / "explain.contract.json").read_text(encoding="utf-8")
+)
+
+
+@pytest.mark.parametrize(
+    "vector", _CONTRACT["sla"]["vectors"],
+    ids=lambda v: f"{v['elapsed_minutes']}-{v['responded']}",
+)
 def test_the_sla_contract_vectors(vector: dict) -> None:
-    """The explain contract's SLA vectors (P1, response target 15 minutes)."""
-    prefs = _sla_prefs()
+    """The explain contract's SLA vectors, through the per-case reading."""
+    assert vector["clock"] == "response"
+    prefs = _sla_prefs(**{vector["priority"]: SlaTarget(
+        response_minutes=vector["target_minutes"], resolve_minutes=240,
+    )})
+    elapsed = vector["elapsed_minutes"]
     if vector["responded"]:
-        case = _sla_case("c", minutes_ago=30, history=[("investigating", "alice", vector["elapsed"])])
+        case = _sla_case("c", minutes_ago=30, history=[("investigating", "alice", elapsed)],
+                         priority=vector["priority"])
     else:
-        case = _sla_case("c", minutes_ago=vector["elapsed"])
+        case = _sla_case("c", minutes_ago=elapsed, priority=vector["priority"])
     reading = case_sla_reading(case, prefs, now=NOW)
     response = reading["clocks"]["response"]
     assert response["state"] == vector["state"]
-    assert abs(response["elapsed_minutes"] - vector["elapsed"]) < 1e-6
+    assert abs(response["elapsed_minutes"] - elapsed) < 1e-6
     if vector["responded"]:
         assert reading["clock"] == "resolution" and reading["anchor"] == "status_history"
     else:
@@ -801,6 +844,57 @@ async def test_one_call_per_row_carries_its_own_cost_and_latency(app_state):
     assert [s["cost_basis"] for s in inv] == ["split", "split"]
     assert all(s["latency_ms"] is None for s in inv)
     assert res["totals"]["cost"] == pytest.approx(0.041)
+
+
+async def test_equal_counts_out_of_order_keep_the_even_split(app_state):
+    """Review fix: as many calls as rows does not prove one call per row. Run 1 made
+    three investigator calls and run 2 one, so four calls meet four rows (two prompts,
+    two verdicts), but run 2's prompt would be given run 1's third call. A call that is
+    not made after its own row and before the role's next row keeps the even split."""
+    state = app_state
+    cid = "case-mispair"
+    await state.cases.save(_case(case_id=cid))
+    for ts, cost in (("10:00:01", 0.01), ("10:00:02", 0.02), ("10:00:03", 0.03), ("11:00:01", 0.5)):
+        await state.usage_store.write(UsageDoc(
+            ts=f"2026-11-01T{ts}+00:00", case_id=cid, role="investigator", model="mock",
+            total_tokens=10, cost=cost, latency_ms=100))
+    for ts, at in (("10:00:00", ActionType.PROMPT), ("10:00:04", ActionType.VERDICT),
+                   ("11:00:00", ActionType.PROMPT), ("11:00:02", ActionType.VERDICT)):
+        await state.audit.write(AuditDoc(ts=f"2026-11-01T{ts}+00:00", case_id=cid,
+                                         actor="investigator", action_type=at))
+    res = await case_timeline(cid, _request(state), state)
+    spans = [s for s in res["spans"] if s["name"] == "investigator"]
+    assert [s["cost_basis"] for s in spans] == ["split"] * 4
+    assert all(s["latency_ms"] is None for s in spans)
+    assert res["totals"]["cost"] == pytest.approx(0.56)
+
+    # Calls that follow their own rows in order still pair exactly.
+    two = "case-two-runs"
+    await state.cases.save(_case(case_id=two))
+    for ts, cost in (("10:00:01", 0.001), ("11:00:01", 0.002)):
+        await state.usage_store.write(UsageDoc(ts=f"2026-11-01T{ts}+00:00", case_id=two,
+                                               role="router", model="mock", total_tokens=5,
+                                               cost=cost, latency_ms=50))
+    for ts in ("10:00:00", "11:00:00"):
+        await state.audit.write(AuditDoc(ts=f"2026-11-01T{ts}+00:00", case_id=two,
+                                         actor="router", action_type=ActionType.PROMPT))
+    res = await case_timeline(two, _request(state), state)
+    routers = [s for s in res["spans"] if s["name"] == "router"]
+    assert [(s["cost"], s["cost_basis"]) for s in routers] == [(0.001, "exact"), (0.002, "exact")]
+
+    # A formatter row is written just after its call: that pairs exactly too.
+    after = "case-row-after-call"
+    await state.cases.save(_case(case_id=after))
+    for ts, cost in (("10:00:00", 0.003), ("11:00:00", 0.004)):
+        await state.usage_store.write(UsageDoc(ts=f"2026-11-01T{ts}+00:00", case_id=after,
+                                               role="formatter", model="mock", total_tokens=5,
+                                               cost=cost, latency_ms=70))
+    for ts in ("10:00:01", "11:00:01"):
+        await state.audit.write(AuditDoc(ts=f"2026-11-01T{ts}+00:00", case_id=after,
+                                         actor="formatter", action_type=ActionType.PROMPT))
+    res = await case_timeline(after, _request(state), state)
+    formatters = [s for s in res["spans"] if s["name"] == "formatter"]
+    assert [(s["cost"], s["cost_basis"]) for s in formatters] == [(0.003, "exact"), (0.004, "exact")]
 
 
 async def test_spend_older_than_a_year_still_counts(app_state):
