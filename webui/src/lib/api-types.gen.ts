@@ -1865,9 +1865,11 @@ export interface paths {
          *
          *     A pure read-time projection over the Case + its audit rows (the SAME facts the
          *     ``/timeline`` span view reads), reframed into ``input → correlate → risk → triage
-         *     → investigate → decide``. Advisory/observability ONLY — re-derives ``decide()`` to
-         *     DISPLAY the clause, mutates nothing (#3); untrusted source/log text is fenced in
-         *     steps (#9). NEVER 404s — an unknown case returns the six-stage skeleton.
+         *     → investigate → decide``. Advisory/observability ONLY: the Decision stage reports
+         *     the recorded decision (Round 16 B63) and mutates nothing (#3); untrusted source/log
+         *     text is fenced in steps (#9). NEVER 404s: an unknown case returns the six-stage
+         *     skeleton. ``rows_total`` and ``truncated`` say when only the newest audit records
+         *     were read.
          */
         get: operations["case_stages_api_cases__case_id__stages_get"];
         put?: never;
@@ -2087,9 +2089,9 @@ export interface paths {
          *     the per-case usage/cost ledger. Each audit row becomes ONE span classified by
          *     ``kind`` (invoke_agent | chat | execute_tool | decision) with ``step_index`` /
          *     ``latency`` / ``cost`` / ``tokens`` / ``trusted``. The ``case_manager`` DECISION
-         *     is rendered as a distinct TERMINAL ``decision`` span whose summary shows the exact
-         *     ``(verdict, confidence, risk_score, policy clause)`` the deterministic ``decide()``
-         *     produced, re-derived at read time and mutating nothing (#3 made visible).
+         *     is rendered as a distinct TERMINAL ``decision`` span reporting the decision as it was
+         *     RECORDED (its time, result, decider, rationale and the gate the run recorded, Round
+         *     16 B63), with today's policy beside it; it mutates nothing (#3 made visible).
          *
          *     TRUSTED agent prose (router/investigator/formatter/decision) vs UNTRUSTED tool/log
          *     payloads (es_query / tool output) are separated by the per-span ``trusted`` flag
@@ -2101,6 +2103,14 @@ export interface paths {
          *     grant ``GET /api/usage/summary?case_id=`` needs): for a caller without it the
          *     ledger is not read, every span's ``cost`` and ``tokens`` are ``null`` and so are
          *     ``totals.cost`` and ``totals.tokens``.
+         *
+         *     Round 16 (SPEC §4.5 WP10, [dv] R4 and R14): a span's ``kind`` says who acted
+         *     (``person`` for a person's row, ``chat`` for case chat, ``system`` for a
+         *     deterministic actor, else the agent kinds); ``detail`` carries the bounded audit
+         *     record behind it; ``cost_basis`` is ``exact`` when the span carries its own call's
+         *     cost and latency from the ledger and ``split`` when a role's total is shared evenly
+         *     across its steps. ``rows_total`` and ``truncated`` say when the trace shows only
+         *     the newest records of a long-lived case.
          */
         get: operations["case_timeline_api_cases__case_id__timeline_get"];
         put?: never;
@@ -2151,8 +2161,16 @@ export interface paths {
          *     ``risk`` (the existing deterministic 0-100 score + breakdown), ``severity``
          *     (SOURCE-asserted, NOT risk), ``impact`` (asset criticality), and ``priority``
          *     (ITIL Impact×Urgency). Each carries an ``inputs`` bag for a UI HelpTip. NEVER
-         *     404s — an unknown case returns an empty-but-renderable shell. Pure derivation
+         *     404s: an unknown case returns an empty-but-renderable shell. Pure derivation
          *     (#3: advisory only, never feeds the decision).
+         *
+         *     Round 16 (SPEC §4.5 WP10) read-time additions, built here and never stored on the
+         *     case: ``auto_close_policy`` (the auto-close entry for the case's verdict class, so
+         *     Case detail can state the policy without ``GET /api/settings``), ``sla`` (the
+         *     per-case SLA reading, ``engine/sla_reading.py``, or ``null``) and, for a
+         *     ``settings:read`` holder only, ``asset_cidr`` (the internal network range of
+         *     today's configuration that holds the entity, labelled so). Everything reads the
+         *     active execution preferences, so Demo Mode reads its sandbox.
          */
         get: operations["case_triage_api_cases__case_id__triage_get"];
         put?: never;

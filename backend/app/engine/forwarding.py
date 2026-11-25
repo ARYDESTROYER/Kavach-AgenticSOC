@@ -83,6 +83,14 @@ class ForwardingExplanation:
     source_id: str | None = None
     is_alert: bool = False
     notes: list[str] = field(default_factory=list)
+    # Round 16 ([comp] R3): the available-signal routing score, computed only when the
+    # walk reached the risk-floor gate (``None`` when an earlier gate decided), the
+    # configured floor, and whether the floor decided (an events-role cluster that is
+    # not on the allowlist). The stored case risk, scored after enrichment, is another
+    # number and never decided this (#3).
+    routing_total: float | None = None
+    risk_floor: float | None = None
+    routing_gate_applied: bool = False
 
     def to_dict(self) -> dict:
         return {
@@ -93,6 +101,9 @@ class ForwardingExplanation:
             "source_id": self.source_id,
             "is_alert": self.is_alert,
             "notes": list(self.notes),
+            "routing_total": self.routing_total,
+            "risk_floor": self.risk_floor,
+            "routing_gate_applied": self.routing_gate_applied,
         }
 
 
@@ -210,10 +221,14 @@ def explain_forwarding(cluster: Cluster, prefs: Preferences) -> ForwardingExplan
     if prefs.caps.kill_switch:
         notes.append("kill switch is engaged (all investigations are stopped)")
 
-    def _mk(gate: str, forwarded: bool, dropped: bool, sentence: str) -> ForwardingExplanation:
+    floor = float(prefs.auto_investigate_risk_floor)
+
+    def _mk(gate: str, forwarded: bool, dropped: bool, sentence: str,
+            routing_total: float | None = None, gate_applied: bool = False) -> ForwardingExplanation:
         return ForwardingExplanation(
             gate=gate, forwarded=forwarded, dropped=dropped, sentence=sentence,
             source_id=sid, is_alert=is_alert, notes=notes,
+            routing_total=routing_total, risk_floor=floor, routing_gate_applied=gate_applied,
         )
 
     # 1) IGNORE feed — the only role that DROPS entirely (no case, no candidate).
@@ -259,7 +274,8 @@ def explain_forwarding(cluster: Cluster, prefs: Preferences) -> ForwardingExplan
     # available-signal routing score reaches the configured floor. Reputation is
     # unknown before investigation, exactly as in handle_clusters.
     routing_score = compute_routing_risk(cluster, prefs, reputation=None).total
-    if not _on_allowlist(cluster, prefs) and routing_score < prefs.auto_investigate_risk_floor:
+    floor_applies = not _on_allowlist(cluster, prefs)
+    if floor_applies and routing_score < prefs.auto_investigate_risk_floor:
         return _mk(
             "risk_floor", forwarded=False, dropped=False,
             sentence=(
@@ -267,6 +283,7 @@ def explain_forwarding(cluster: Cluster, prefs: Preferences) -> ForwardingExplan
                 f"allowlist and its available-signal routing score {int(routing_score)} "
                 f"is below the configured floor {prefs.auto_investigate_risk_floor}."
             ),
+            routing_total=routing_score, gate_applied=True,
         )
 
     # 7) All gates passed → auto-forwarded to the investigator.
@@ -283,4 +300,5 @@ def explain_forwarding(cluster: Cluster, prefs: Preferences) -> ForwardingExplan
         "forwarded", forwarded=True, dropped=False,
         sentence=f"Auto-investigated: background scan is on, the cluster is above its "
                  f"severity_floor, Auto-Correlate is on, and {why}.",
+        routing_total=routing_score, gate_applied=floor_applies,
     )

@@ -938,16 +938,21 @@ async def test_the_dynamic_mapping_stand_in_fails_without_the_explicit_mapping()
         await store.save(_inputs_case("case-text", "linux_auth"))
 
 
-def _shipped_client(*, template_exists: bool, index_exists: bool, live: dict | None = None):
-    """The shipped Elasticsearch client over a stand-in management connection. It can
-    read and extend index mappings but has no ``get_index_template``."""
+def _shipped_client(*, template_exists: bool, index_exists: bool, live: dict | None = None,
+                    template: dict | None = None, template_error: Exception | None = None):
+    """The shipped Elasticsearch client over a stand-in management connection. It reads
+    and extends index mappings and, since Round 16 WP10, reads a stored template
+    (``template`` is the stored body; ``template_error`` what the read raises)."""
     from unittest.mock import AsyncMock
 
     from tests.test_factory_storage_primitives import _real_client
 
+    name = f"{CASES_INDEX}-template"
+    answer = {"index_templates": ([{"name": name, "index_template": template}] if template else [])}
     mgmt = SimpleNamespace(indices=SimpleNamespace(
         exists_index_template=AsyncMock(return_value=template_exists),
         put_index_template=AsyncMock(return_value={"acknowledged": True}),
+        get_index_template=AsyncMock(return_value=answer, side_effect=template_error),
         exists=AsyncMock(return_value=index_exists),
         create=AsyncMock(return_value={"acknowledged": True}),
         get_mapping=AsyncMock(return_value=live or {}),
@@ -957,28 +962,60 @@ def _shipped_client(*, template_exists: bool, index_exists: bool, live: dict | N
 
 
 async def test_the_shipped_client_stores_inputs_on_a_fresh_install() -> None:
-    client, _mgmt = _shipped_client(template_exists=False, index_exists=False)
-    assert getattr(client, "get_index_template", None) is None
+    client, mgmt = _shipped_client(template_exists=False, index_exists=False)
     await bootstrap_indices(client)
     assert indices_mod.cases_risk_inputs_storable(client) is True
+    # Both created from this build's mapping: the cases template was never read.
+    assert not any(
+        call.kwargs.get("name") == f"{CASES_INDEX}-template"
+        for call in mgmt.indices.get_index_template.await_args_list
+    )
 
 
-async def test_the_shipped_client_on_an_upgrade_says_what_it_cannot_read(caplog) -> None:
-    """Review fix: the shipped client reads and extends index mappings; what it cannot
-    read is the cases template. The warning says so, and the case store leaves the
-    recorded inputs out (SPEC §3.4)."""
+async def test_the_shipped_client_extends_an_upgraded_cases_mapping() -> None:
+    """Round 16 WP10: with ``get_index_template`` the shipped client proves an upgraded
+    deployment's template and indices hold ``inputs`` safely, so recorded inputs are
+    stored. Purely additive: the template keeps what it held."""
+    old = json.loads(json.dumps(CASES_MAPPING))
+    old["properties"]["risk_breakdown"] = {"type": "object", "enabled": True}
+    del old["properties"]["awaiting_reason"]
+    stored = index_template_body(CASES_INDEX, old)
+    live = {f"{CASES_INDEX}-000001": {"mappings": {"properties": {
+        "risk_breakdown": {"properties": {"total": {"type": "float"}}},
+    }}}}
+    client, mgmt = _shipped_client(template_exists=True, index_exists=True, live=live,
+                                   template=stored)
+    assert await indices_mod.extend_cases_mapping(client) == "added"
+    assert indices_mod.cases_risk_inputs_storable(client) is True
+    put = mgmt.indices.put_index_template.await_args.kwargs
+    props = put["template"]["mappings"]["properties"]
+    assert props["risk_breakdown"]["properties"]["inputs"] == {"type": "object", "enabled": False}
+    assert props["case_id"] == {"type": "keyword"}
+    assert put["template"]["settings"] == stored["template"]["settings"]
+    added = mgmt.indices.put_mapping.await_args.kwargs["properties"]
+    assert added["risk_breakdown"] == {"properties": {"inputs": {"type": "object", "enabled": False}}}
+
+
+async def test_the_shipped_client_on_an_upgrade_it_may_not_read_leaves_inputs_out(caplog) -> None:
+    """A management key that may not read the template (403), or a cluster without it
+    (404), keeps the unsupported fail-open path: the boot goes on, nothing is put, and
+    the case store leaves the recorded inputs out (SPEC §3.4)."""
     import logging
+
+    from tests.test_factory_storage_primitives import _HTTPError
 
     live = {f"{CASES_INDEX}-000001": {"mappings": {"properties": {
         "risk_breakdown": {"properties": {"total": {"type": "float"}}},
     }}}}
-    client, _mgmt = _shipped_client(template_exists=True, index_exists=True, live=live)
-    with caplog.at_level(logging.WARNING, logger="tlsoc.es.indices"):
-        assert await indices_mod.extend_cases_mapping(client) == "unsupported"
-    assert indices_mod.cases_risk_inputs_storable(client) is False
-    text = " ".join(r.getMessage() for r in caplog.records)
-    assert "cannot read the cases index template" in text
-    assert "cannot read or extend index mappings" not in text
+    for status in (403, 404):
+        client, mgmt = _shipped_client(template_exists=True, index_exists=True, live=live,
+                                       template_error=_HTTPError(status))
+        with caplog.at_level(logging.WARNING, logger="tlsoc.es.indices"):
+            assert await indices_mod.extend_cases_mapping(client) == "unsupported"
+        assert indices_mod.cases_risk_inputs_storable(client) is False
+        mgmt.indices.put_index_template.assert_not_awaited()
+        mgmt.indices.put_mapping.assert_not_awaited()
+    assert "Cases mapping not checked" in " ".join(r.getMessage() for r in caplog.records)
 
 
 def test_cluster_helpers_are_shared() -> None:
