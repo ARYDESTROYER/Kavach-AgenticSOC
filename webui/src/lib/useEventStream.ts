@@ -350,7 +350,10 @@ function createMultiplexer(url: string): Multiplexer {
       const wasOpen = conn.open || es.readyState === EventSource.OPEN;
       retire(conn);
       if (!wasOpen) cold += 1;
-      if (!current && !next) backoff();
+      // Retry unless a stream for the page's topic set still serves or is on its way. A
+      // stream for a NEW topic set that fails before it opens leaves the old one serving
+      // the old set: it is retried too, or the new topics would never get a stream.
+      if (!next && !(current && current.key === union())) backoff();
     };
   }
 

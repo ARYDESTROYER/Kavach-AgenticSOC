@@ -227,12 +227,16 @@ describe('the store reducer', () => {
     let answer: (value: InvestigationsActive) => void = () => undefined;
     h.read.mockClear();
     h.read.mockImplementation(() => new Promise<InvestigationsActive>((resolve) => (answer = resolve)));
+    const timers = vi.spyOn(globalThis, 'setTimeout');
     await act(async () => {
       await vi.advanceTimersByTimeAsync(POLL_MS * 6);
     });
-    // One poll went out and waits; no timer fires again and again behind it.
+    // One poll went out and waits; no timer fires again and again behind it (a spinning
+    // poll would set a new timer every millisecond, while the coalesced read call hides it).
     expect(h.read).toHaveBeenCalledTimes(1);
     expect(vi.getTimerCount()).toBeLessThanOrEqual(1);
+    expect(timers.mock.calls.length).toBeLessThan(10);
+    timers.mockRestore();
     await act(async () => {
       answer(body({ items: [view({ queued_at: new Date(T0 - 5_000).toISOString() })] }));
       await vi.advanceTimersByTimeAsync(0);
@@ -378,6 +382,62 @@ describe('the store reducer', () => {
     expect(run.result.current).toBeNull();
     expect(done.result.current?.view.run_id).toBe('inv-7');
     expect(done.result.current?.active).toBe(true);
+  });
+
+  it('keeps a run first seen on a frame while a read was on its way', async () => {
+    const run = renderHook(() => useAiRun('case-1'));
+    await flush();
+    let answer: (value: InvestigationsActive) => void = () => undefined;
+    h.read.mockImplementation(() => new Promise<InvestigationsActive>((resolve) => (answer = resolve)));
+    const sentAt = new Date(Date.now()).toISOString();
+    // The stream opens and sends a read; an automatic run starts while it is on its way.
+    act(() => h.onLive?.(true));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(40);
+    });
+    frame(view({ run_id: 'inv-5' }));
+    // The answer says what the server had when the read arrived: no run yet.
+    await act(async () => {
+      answer(body({ generated_at: sentAt }));
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(HOLD_OFF_MS);
+    });
+    expect(run.result.current?.run_id).toBe('inv-5');
+  });
+
+  it('never turns a running run back to queued on a read sent before its running frame', async () => {
+    const run = renderHook(() => useAiRun('case-1'));
+    await flush();
+    const queued = view({
+      run_id: 'inv-4',
+      state: 'queued',
+      phase: 'queued',
+      queued_at: new Date(T0 - 5000).toISOString(),
+      started_at: null,
+      deadline_at: null,
+    });
+    frame(queued);
+    expect(run.result.current?.state).toBe('queued');
+    let answer: (value: InvestigationsActive) => void = () => undefined;
+    h.read.mockImplementation(() => new Promise<InvestigationsActive>((resolve) => (answer = resolve)));
+    act(() => h.onLive?.(true));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(40);
+    });
+    frame(view({ run_id: 'inv-4', queued_at: queued.queued_at }));
+    expect(run.result.current?.state).toBe('running');
+    await act(async () => {
+      answer(body({ items: [queued], generated_at: new Date(T0).toISOString() }));
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(run.result.current?.state).toBe('running');
+    // A later read is the newer word again.
+    h.read.mockResolvedValue(body({ items: [view({ run_id: 'inv-4', phase: 'evidence', queued_at: queued.queued_at })] }));
+    act(() => h.onEvent?.({ type: 'overflow', data: {}, lastEventId: '' }));
+    await flush();
+    expect(run.result.current?.phase).toBe('evidence');
   });
 
   it('shows at once, as yours, a run whose first frame came before its 202', async () => {

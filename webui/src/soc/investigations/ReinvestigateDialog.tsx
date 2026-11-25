@@ -37,7 +37,7 @@ import { Label } from '@/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/ui/select';
 
 import { capWords } from './AiRunPopover';
-import { noteReinvestigationStarted, useInvestigations } from './store';
+import { noteReinvestigationStarted, reconcileInvestigations, useInvestigations } from './store';
 import { useAiRunFinished } from './useAiRun';
 
 export interface ReinvestigateDialogProps {
@@ -138,6 +138,9 @@ export const ReinvestigateDialog: React.FC<ReinvestigateDialogProps> = ({
     } catch (e) {
       if (refusalCode(e) === 'investigation_running') {
         toast.info(ALREADY_RUNNING_TEXT);
+        // The run may be one this console has not seen (no live stream): read it, so the
+        // header chip shows the run the toast speaks of.
+        void reconcileInvestigations(caseId);
         onOpenChange(false);
       } else {
         toast.error(reinvestigateErrorText(e));

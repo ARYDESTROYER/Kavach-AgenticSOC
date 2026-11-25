@@ -80,6 +80,8 @@ interface Entry {
   local: boolean;
   /** When this console drops the run and reads the route again (browser clock, ms). */
   expiresAt: number;
+  /** When a frame last told this console about the run (browser clock, ms; 0 for none). */
+  frameAt: number;
 }
 
 const runs = new Map<string, Entry>();
@@ -165,9 +167,18 @@ function withViewer(view: InvestigationView, prev: InvestigationView | undefined
   };
 }
 
-function upsert(view: InvestigationView, now: number): void {
+/**
+ * Record a run. `readSentAt` is when the read that lists it was sent (null for a frame):
+ * a frame that came after that read was sent is the newer word, so the read only adds
+ * who started the run (which a frame never says).
+ */
+function upsert(view: InvestigationView, now: number, readSentAt: number | null = null): void {
   if (ended.has(view.run_id)) return;
   const prev = runs.get(view.run_id);
+  if (prev && readSentAt !== null && prev.frameAt > readSentAt) {
+    prev.view = withViewer(prev.view, view);
+    return;
+  }
   // A run is as old as its queueing: one the server began a while ago shows at once.
   const born = Date.parse(view.queued_at || view.started_at || '');
   const showAt = prev
@@ -179,6 +190,7 @@ function upsert(view: InvestigationView, now: number): void {
     showAt,
     local: false,
     expiresAt: expiryOf(view, now),
+    frameAt: readSentAt === null ? now : prev?.frameAt ?? 0,
   });
 }
 
@@ -218,8 +230,11 @@ function setNewRuns(count: unknown, now: number): void {
   newRuns = n;
 }
 
-/** Apply a reconcile read; `caseId` when it was narrowed to one case. */
-function apply(body: InvestigationsActive, caseId: string | null): void {
+/**
+ * Apply a reconcile read; `caseId` when it was narrowed to one case, `sentAt` when it was
+ * sent (browser clock, ms).
+ */
+function apply(body: InvestigationsActive, caseId: string | null, sentAt: number): void {
   const now = Date.now();
   const serverNow = Date.parse(body.generated_at);
   if (Number.isFinite(serverNow)) skew = serverNow - now;
@@ -228,7 +243,7 @@ function apply(body: InvestigationsActive, caseId: string | null): void {
     const view = parseRun(raw);
     if (!view || view.state === 'finished' || !view.case_id) continue;
     present.add(view.run_id);
-    upsert(view, now);
+    upsert(view, now, sentAt);
   }
   for (const raw of body.recent || []) {
     const view = parseRun(raw);
@@ -238,6 +253,8 @@ function apply(body: InvestigationsActive, caseId: string | null): void {
   }
   for (const [runId, entry] of runs) {
     if (present.has(runId) || (caseId && entry.view.case_id !== caseId)) continue;
+    // A run a frame announced after this read was sent: the read could not list it yet.
+    if (entry.frameAt > sentAt) continue;
     // Gone from the server (it ended long ago, or the backend restarted): drop it, unless
     // this console just started it and the server has not registered it yet.
     if (!entry.local || now - entry.seenAt > LOCAL_TTL_MS) runs.delete(runId);
@@ -254,10 +271,11 @@ export function reconcileInvestigations(caseId?: string | null): Promise<void> {
     return reading;
   }
   const gen = generation;
+  const sentAt = Date.now();
   reading = (async () => {
     try {
       const body = await getActiveInvestigations(caseId || null);
-      if (gen === generation && body && typeof body === 'object') apply(body, caseId || null);
+      if (gen === generation && body && typeof body === 'object') apply(body, caseId || null, sentAt);
     } catch (error) {
       const status = (error as { status?: unknown } | null)?.status;
       // Not allowed (or signed out): stop asking until the next reader mounts.
@@ -477,6 +495,8 @@ export function noteReinvestigationStarted(caseId: string, runId: string): void 
     showAt: now,
     local: true,
     expiresAt: now + LOCAL_TTL_MS,
+    // A guess until the server says more: any read may replace it.
+    frameAt: 0,
   });
   refresh();
 }

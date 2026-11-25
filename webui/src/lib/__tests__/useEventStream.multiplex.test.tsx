@@ -173,6 +173,36 @@ describe('one EventSource per page', () => {
     off();
   });
 
+  it('tries again when the stream for a new topic set fails before it opens, while the old one still serves', async () => {
+    const offJobs = subscribeEvents(['jobs']);
+    await waitFor(() => expect(MockEventSource.instances).toHaveLength(1));
+    const first = MockEventSource.instances[0];
+    act(() => first.emitOpen());
+    vi.useFakeTimers();
+    const lives: boolean[] = [];
+    const offRoom = subscribeEvents(['cases:c-3'], { onLive: (live) => lives.push(live) });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(300);
+    });
+    expect(MockEventSource.instances).toHaveLength(2);
+    // The new stream drops before it ever opens; the old one keeps serving `jobs`.
+    act(() => MockEventSource.instances[1].onerror?.({}));
+    expect(first.closed).toBe(false);
+    // It is tried again with backoff (2 s after one failure, plus jitter), so the case room
+    // does not stay without a stream.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3_000);
+    });
+    expect(MockEventSource.instances).toHaveLength(3);
+    const third = MockEventSource.instances[2];
+    expect(third.topics()).toEqual(['cases:c-3', 'jobs']);
+    act(() => third.emitOpen());
+    expect(first.closed).toBe(true);
+    expect(lives[lives.length - 1]).toBe(true);
+    offRoom();
+    offJobs();
+  });
+
   it('delivers a frame both streams carry during the swap once (deduped by id)', async () => {
     const got: StreamEvent[] = [];
     const off = subscribeEvents(['jobs'], { onEvent: (ev) => got.push(ev) });

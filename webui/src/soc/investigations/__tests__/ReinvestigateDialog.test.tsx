@@ -171,6 +171,24 @@ describe('ReinvestigateDialog', () => {
     expect(h.toastError).not.toHaveBeenCalled();
   });
 
+  it('shows the run a 409 names when this console did not know it (no live stream)', async () => {
+    renderDialog();
+    await settle();
+    expect(screen.queryByTestId('ai-run-chip')).toBeNull();
+    // Someone else's run started after the case opened; with no stream, nothing said so.
+    const other = view({ run_id: 'inv-3', trigger: 'automatic', queued_at: new Date(T0 - 5000).toISOString() });
+    h.read.mockImplementation(async () => body({ items: [other] }));
+    h.request.mockRejectedValue(
+      new h.FakeApiError(409, 'An AI investigation is already running on this case.', {
+        detail: { code: 'investigation_running', run: other },
+      }),
+    );
+    reinvestigate();
+    await settle();
+    expect(h.toastInfo).toHaveBeenCalledWith('An AI investigation is already running on this case.');
+    expect(screen.getByTestId('ai-run-chip')).toHaveTextContent('AI working');
+  });
+
   it("says why a closed case cannot be reinvestigated in the server's words (409 open_case_exists)", async () => {
     h.request.mockRejectedValue(
       new h.FakeApiError(409, 'An open case already holds these events. Reinvestigate that case.', {
