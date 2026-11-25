@@ -449,6 +449,8 @@ function TeamView() {
           windowLabel={rangeLabel(range)}
           timezone={data.timezone}
           canViewAudit={can('audit', 'view')}
+          windowStart={data.window.start}
+          windowEnd={data.window.end}
           onCloseAutoFocus={personOpener.onCloseAutoFocus}
           onOpenChange={(open) => {
             if (!open) setOpenKey(null);

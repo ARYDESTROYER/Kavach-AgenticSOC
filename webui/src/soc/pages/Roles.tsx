@@ -24,7 +24,7 @@ import * as React from 'react';
 import { Plus, Copy, Pencil, Trash2, ArrowRight } from 'lucide-react';
 import { toast } from 'sonner';
 import { ApiError } from '@/lib/api';
-import { DASH, humanizeToken } from '@/lib/format';
+import { DASH } from '@/lib/format';
 import { Button } from '@/ui/button';
 import { Badge } from '@/ui/badge';
 import { Label } from '@/ui/label';
@@ -61,6 +61,7 @@ import {
   BUILTIN_ROLES,
   RESOURCE_ORDER,
   RESOURCE_ACTIONS,
+  resourceLabel,
   type RolesMatrixResponse,
   type CustomRole,
   type RolePreviewResponse,
@@ -577,7 +578,7 @@ export function PreviewDiff({ preview }: { preview: RolePreviewResponse }) {
           {diffEntries.map(([resource, diff]) => (
             <div key={resource} className="flex flex-wrap items-center gap-2 text-sm">
               <span className="min-w-[8rem] font-medium text-foreground">
-                {humanizeToken(resource)}
+                {resourceLabel(resource)}
               </span>
               {diff.added.map((a) => (
                 <Badge key={`+${a}`} variant="success">
@@ -673,7 +674,7 @@ function SimulatePanel({
               <SelectContent>
                 {RESOURCE_ORDER.map((r) => (
                   <SelectItem key={r} value={r}>
-                    {humanizeToken(r)}
+                    {resourceLabel(r)}
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -711,8 +712,8 @@ function SimulatePanel({
       {result ? (
         <SettingRow
           variant="status"
-          label={`${roleLabel(result.role)} on ${result.resource}:${result.action}`}
-          help={`Actions on ${result.resource}: ${result.actions.length ? result.actions.join(', ') : 'none'}${
+          label={`${roleLabel(result.role)} on ${resourceLabel(result.resource)}: ${result.action}`}
+          help={`Actions on ${resourceLabel(result.resource)}: ${result.actions.length ? result.actions.join(', ') : 'none'}${
             !result.known_resource ? '. Unknown resource' : ''
           }${!result.role_exists ? '. Role not found' : ''}.`}
           status={

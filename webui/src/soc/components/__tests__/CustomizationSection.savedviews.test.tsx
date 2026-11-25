@@ -155,7 +155,6 @@ describe('CustomizationSection on the Round 14 grammar', () => {
     expect(screen.getByRole('textbox', { name: 'Cases (plural)' })).toBeInTheDocument();
     expect(screen.queryByText(/\(default: /)).toBeNull();
     // "Organization", never the "Org" shorthand.
-    expect(screen.getByRole('combobox', { name: 'Organization default theme' })).toBeInTheDocument();
     expect(screen.getByText(/Views shared with the organization are marked\./)).toBeInTheDocument();
     expect(body.textContent ?? '').not.toMatch(/\bOrg\b|Org-/);
   });

@@ -21,6 +21,7 @@ import type {
 import { Callout, LoadingGlyph, LoadingState, StatusDot, type StatusTone } from '@/design-system';
 import { Button } from '@/ui/button';
 import { RefreshButton } from '@/soc/components/RefreshButton';
+import { useDemo } from '@/soc/demo';
 import { useNavigateOptional } from '@/soc/router';
 import {
   announceJobAccepted,
@@ -28,6 +29,7 @@ import {
   type JobSubmissionIntent,
 } from '@/soc/jobs/jobs';
 
+import { DEMO_JOB_REASON } from './demo-jobs';
 import { NumPref, SettingRow, SettingsGroup, SettingsSection, errMsg } from './primitives';
 
 const DEFAULT_STORAGE_LIFECYCLE: StorageLifecycleConfig = {
@@ -151,6 +153,8 @@ export function StorageLifecycleSection({
   readOnly = false,
 }: StorageLifecycleSectionProps) {
   const navigate = useNavigateOptional();
+  // Durable jobs never run in Demo Mode (B49): Apply says so and stays locked.
+  const { active: demoActive } = useDemo();
   const draft = normalizedConfig(prefs.storage_lifecycle);
   const persisted = normalizedConfig(persistedPrefs.storage_lifecycle);
   const draftDiffers = !samePolicy(draft, persisted);
@@ -216,6 +220,7 @@ export function StorageLifecycleSection({
     status?.policy && samePolicy(draft, normalizedConfig(status.policy)),
   );
   const applyDisabled =
+    demoActive ||
     readOnly ||
     loading ||
     Boolean(error) ||
@@ -256,19 +261,21 @@ export function StorageLifecycleSection({
   const projected = preview ?? status;
   const archiveFrom = draft.hot_days + draft.warm_days;
 
-  const applyStatus = readOnly
-    ? 'Settings are read-only in this deployment; native lifecycle changes cannot be applied.'
-    : loading
-      ? 'Checking the backend capability before Apply becomes available.'
-      : error
-        ? 'Reload storage status before applying the saved policy.'
-        : draftDiffers
-          ? 'Save the desired policy first; Apply always uses the saved settings.'
-          : !statusMatchesDraft
-            ? 'Refreshing the saved policy status; Apply stays locked until the backend confirms the same values.'
-            : !backendCanApply
-              ? `${readableBackend(status?.state_backend ?? '')} reports this policy as advisory or unavailable; no native movement will be claimed.`
-              : 'Ready to apply the saved policy to eligible append-only Agentic SOC ledgers.';
+  const applyStatus = demoActive
+    ? DEMO_JOB_REASON
+    : readOnly
+      ? 'Settings are read-only in this deployment; native lifecycle changes cannot be applied.'
+      : loading
+        ? 'Checking the backend capability before Apply becomes available.'
+        : error
+          ? 'Reload storage status before applying the saved policy.'
+          : draftDiffers
+            ? 'Save the desired policy first; Apply always uses the saved settings.'
+            : !statusMatchesDraft
+              ? 'Refreshing the saved policy status; Apply stays locked until the backend confirms the same values.'
+              : !backendCanApply
+                ? `${readableBackend(status?.state_backend ?? '')} reports this policy as advisory or unavailable; no native movement will be claimed.`
+                : 'Ready to apply the saved policy to eligible append-only Agentic SOC ledgers.';
 
   return (
     <SettingsSection title="Storage & retention">

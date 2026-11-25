@@ -510,7 +510,14 @@ class ThresholdAutomation:
             kind=kind,  # type: ignore[arg-type]
             payload=payload,
             rationale=rationale,
-            confidence=float(payload.get("confidence", 0.5) or 0.5),
+            # Round 16 B36: no model scored an automation checkpoint, so nothing is made
+            # up. Only a real number the rule's payload supplies is kept.
+            confidence=(
+                float(payload["confidence"])
+                if isinstance(payload.get("confidence"), (int, float))
+                and not isinstance(payload.get("confidence"), bool)
+                else 0.0
+            ),
             source_case_ids=[case.case_id],
             created_by="automation",
             expires_at=expires,

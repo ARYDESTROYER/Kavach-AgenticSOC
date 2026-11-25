@@ -4223,6 +4223,28 @@ class Preferences(BaseModel):
             self.rag = self.rag.model_copy(update={"use_runbooks": corpus})
         return self
 
+    @model_validator(mode="after")
+    def _one_org_theme_default(self) -> "Preferences":
+        """Branding ``default_theme`` is the one organization theme default (Round 16,
+        B45). An administrator's earlier choice in the legacy Appearance control
+        (``customization.default_theme``, which used to override Branding for every
+        "System" user) is kept: while Branding is still at its factory default, the
+        legacy value is copied into Branding the way the Branding editor writes it, and
+        the legacy value becomes ``system`` in the same load. So the copy happens once,
+        a second load changes nothing, and a later Branding reset is not undone by the
+        legacy value. Copies are assigned, so a section model the caller passed in is
+        never changed in place."""
+        legacy = self.customization.default_theme
+        if legacy == "system":
+            return self
+        factory = BrandingConfig.model_fields["default_theme"].default
+        if self.branding.default_theme == factory:
+            self.branding = self.branding.model_copy(
+                update={"default_theme": legacy, "theme": legacy, "dark_mode_default": False}
+            )
+        self.customization = self.customization.model_copy(update={"default_theme": "system"})
+        return self
+
     @model_validator(mode="before")
     @classmethod
     def _migrate_fp_auto_close(cls, data: Any) -> Any:
