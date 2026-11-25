@@ -599,10 +599,11 @@ function ProposalRow({
           <p className="whitespace-pre-wrap text-sm leading-relaxed text-foreground">{asText(proposal.payload)}</p>
         )}
 
-        {/* rationale (UNTRUSTED: plain text) */}
+        {/* rationale (UNTRUSTED: plain text). The agent is named only when it drafted the
+            proposal: an automation rule or the tuner wrote the others (B36). */}
         {proposal.rationale ? (
           <div>
-            <FieldLabel>Why the agent drafted this</FieldLabel>
+            <FieldLabel>{proposal.created_by === 'agent' ? 'Why the agent drafted this' : 'Why it was drafted'}</FieldLabel>
             <p className="mt-1 whitespace-pre-wrap text-sm leading-relaxed text-muted-foreground">
               {plainRationale(asText(proposal.rationale), labelFor, cases)}
             </p>

@@ -69,6 +69,8 @@ const SUPPRESSION = {
   id: 'prop-sup',
   kind: 'suppression',
   status: 'pending',
+  // The server always sends who drafted a proposal; an agent drafted this one.
+  created_by: 'agent',
   created_at: '2026-10-28T09:00:00Z',
   rationale: 'Known scanner from the vulnerability team.',
   payload: { field: 'source.ip', value: '10.0.0.9', reason: 'Weekly authorised scan' },

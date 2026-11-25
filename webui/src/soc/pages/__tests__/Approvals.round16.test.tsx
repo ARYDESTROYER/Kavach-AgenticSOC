@@ -96,6 +96,29 @@ describe('B36: confidence only where an agent scored the proposal', () => {
     expect(within(sup).getByText(/82% confidence/)).toBeInTheDocument();
   });
 
+  it('names the agent as the drafter only when an agent drafted the proposal', async () => {
+    listProposalsMock.mockResolvedValue({
+      proposals: [
+        proposal({ id: 'ack', kind: 'automation_ack', created_by: 'automation' }),
+        proposal({ id: 'tune', kind: 'tuning', created_by: 'tuner', payload: { rule_id: 'r1' } }),
+        proposal({
+          id: 'sup',
+          kind: 'suppression',
+          created_by: 'agent',
+          payload: { field: 'event.module', value: 'modsec_sqli' },
+        }),
+      ],
+    });
+    renderPage();
+    for (const label of ['Automation review proposal', 'Tuning change proposal']) {
+      const row = await card(label);
+      expect(within(row).queryByText('Why the agent drafted this')).toBeNull();
+      expect(within(row).getByText('Why it was drafted')).toBeInTheDocument();
+    }
+    const sup = await card('Suppression proposal');
+    expect(within(sup).getByText('Why the agent drafted this')).toBeInTheDocument();
+  });
+
   it('a tuning review item never shows the tuner placeholder as a confidence', async () => {
     listProposalsMock.mockResolvedValue({
       proposals: [proposal({ id: 'tune', kind: 'tuning', confidence: 0.5, created_by: 'tuner', payload: { rule_id: 'r1' } })],
