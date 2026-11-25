@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Any, Callable
 
 from ..audit.changes import redact_text
 from ..config import Preferences
-from ..constants import OPEN_CASE_STATUSES, ActionType, IndexRole, SourceSurface
+from ..constants import OPEN_CASE_STATUSES, ActionType, DecisionBy, IndexRole, SourceSurface
 from ..engine.cost_gate import passes_suppression
 from ..engine.signatures import find_open_case_for_cluster
 from ..models import Cluster, RawEvent
@@ -232,6 +232,18 @@ def _is_ignored_cluster(cluster: Cluster, prefs: Preferences) -> bool:
     return True
 
 
+def is_attach_only(case) -> bool:
+    """Whether new events for this open case are attached without a new run.
+
+    A case that already has a verdict keeps it until a person asks again (P1 verdict
+    stability), and a case a person moved (``decision_by == ANALYST``: acknowledged,
+    escalated, put on hold, reopened) is theirs: the agent never rebuilds, re-runs or
+    re-decides it on its own. A forced run (Investigate, Reinvestigate, the bulk
+    reinvestigate job) still runs. The same rule the analyst-policy path uses
+    (Round 16 SPEC WP15B, B04 and B05). Never reads or changes ``decide()`` (#3)."""
+    return case.verdict is not None or case.decision_by == DecisionBy.ANALYST
+
+
 async def attach_cluster(cases: "CaseStore", existing, cluster: Cluster) -> bool:
     """Merge a cluster's new events into an open case. Idempotent; returns True iff
     something new was attached."""
@@ -345,7 +357,13 @@ async def handle_clusters(
             # still-ineligible/over-cap candidate keeps its events and simply refreshes its
             # honest stage label — nothing is ever dropped (#4). A drained-candidate
             # investigation counts against the per-tick cap exactly like a fresh one.
-            if existing is not None and existing.verdict is not None:
+            #
+            # A candidate a person acted on (escalated, acknowledged, put on hold,
+            # reopened: ``decision_by == ANALYST``) is attach-only too (Round 16 B05):
+            # one more event must never forward it to a run that ``apply()`` would let
+            # close it as the agent. It uses no cap slot and a person can still ask for
+            # the AI (Investigate, Reinvestigate).
+            if existing is not None and is_attach_only(existing):
                 await attach_cluster(cases, existing, cluster)
                 stats["attached"] += 1
                 continue
@@ -520,6 +538,7 @@ async def link_cross_source(
     prefs: Preferences,
     *,
     cases: "CaseStore",
+    pipeline: "InvestigationPipeline | None" = None,
 ) -> int:
     """Run the OPT-IN cross-source correlation pass and apply RELATED links.
 
@@ -534,7 +553,13 @@ async def link_cross_source(
     The cross-source candidate pool is: the OPEN cases behind THIS batch's clusters
     (rich entity sets from member events) PLUS the recent OPEN cases in the store
     (contributing their primary entity), so a cluster from one source links to an
-    already-open case from another source."""
+    already-open case from another source.
+
+    With ``pipeline`` (both built-in call sites pass it), each linked case is read
+    again by id under its signature lock and only the three link fields are written
+    to that fresh copy (Round 16 B09), so a pool copy read earlier can never overwrite
+    a decision or a person's work saved meanwhile. Without it, the pool copy is saved
+    as before."""
     from .correlation import (
         CrossSourceComponentSeed,
         CrossSourceItem,
@@ -662,17 +687,21 @@ async def link_cross_source(
                 other = case_by_id.get(other_id)
                 if other is not None and other.source_id:
                     breakdown[other.source_id] = breakdown.get(other.source_id, 0) + 1
-            changed = False
-            if case.cross_source_cluster_id != grp["cross_source_cluster_id"]:
-                case.cross_source_cluster_id = grp["cross_source_cluster_id"]
-                changed = True
-            if set(case.related_case_ids) != set(related):
-                case.related_case_ids = related
-                changed = True
-            if case.source_breakdown != breakdown:
-                case.source_breakdown = breakdown
-                changed = True
-            if changed:
+            if pipeline is not None:
+                try:
+                    if await _save_links_fresh(
+                        cases, pipeline, case,
+                        component_id=grp["cross_source_cluster_id"],
+                        related=related, breakdown=breakdown,
+                    ):
+                        linked += 1
+                except Exception:  # noqa: BLE001 - never break ingestion
+                    pass
+                continue
+            if _apply_links(
+                case, component_id=grp["cross_source_cluster_id"],
+                related=related, breakdown=breakdown,
+            ):
                 case.updated_at = iso_now()
                 try:
                     await cases.save(case)
@@ -680,6 +709,47 @@ async def link_cross_source(
                 except Exception:  # noqa: BLE001 — never break ingestion
                     pass
     return linked
+
+
+def _apply_links(case, *, component_id: str, related: list[str], breakdown: dict[str, int]) -> bool:
+    """Set the three cross-source link fields on ``case``; True when any changed."""
+    changed = False
+    if case.cross_source_cluster_id != component_id:
+        case.cross_source_cluster_id = component_id
+        changed = True
+    if set(case.related_case_ids) != set(related):
+        case.related_case_ids = related
+        changed = True
+    if case.source_breakdown != breakdown:
+        case.source_breakdown = breakdown
+        changed = True
+    return changed
+
+
+async def _save_links_fresh(
+    cases: "CaseStore",
+    pipeline: "InvestigationPipeline",
+    pooled,
+    *,
+    component_id: str,
+    related: list[str],
+    breakdown: dict[str, int],
+) -> bool:
+    """Write one case's cross-source links onto the case as stored now (Round 16 B09).
+
+    The case is read again by id under its signature lock (the lock every pipeline
+    builder and the attach path hold while they read and save the case), and only the
+    link fields change on that copy. A case that is gone saves nothing. Returns True
+    when the links were saved."""
+    async with _sig_lock(pipeline, pooled.cluster_signature):
+        fresh = await cases.get(pooled.case_id)
+        if fresh is None:
+            return False
+        if not _apply_links(fresh, component_id=component_id, related=related, breakdown=breakdown):
+            return False
+        fresh.updated_at = iso_now()
+        await cases.save(fresh)
+        return True
 
 
 def _case_millis(case) -> int:
@@ -862,9 +932,11 @@ class IngestService:
             correlation_events = events
             batch_role = _push_source_role(src) if src is not None else None
             if source_id and batch_role != "alerts":
-                windows = [prefs.default_correlation.window_seconds]
-                windows.extend(r.window_seconds for r in prefs.correlation_rules.values())
-                widest = max(windows) if windows else prefs.default_correlation.window_seconds
+                # Every configured window, rule-catalog definitions included (Round 16
+                # B07). The look-back reads the in-memory ring of the last
+                # ``_recent_max`` events of this source, so on a busy source a long
+                # window still sees only those events (a known limitation).
+                widest = prefs.widest_correlation_window_seconds()
                 interval = max(1, prefs.poll_interval_seconds)
                 lookback_ms = (max(widest, interval) + 2 * interval) * 1000
                 cutoff = to_millis(now_utc()) - lookback_ms
@@ -908,8 +980,10 @@ class IngestService:
             # No-op (returns 0) when disabled — the default — so single-source is unchanged.
             if prefs.cross_source_correlation.enabled:
                 try:
+                    # ``pipeline``: each link is written to the case as stored now,
+                    # under its signature lock (Round 16 B09).
                     stats["cross_source_linked"] = await link_cross_source(
-                        clusters, prefs, cases=self._cases
+                        clusters, prefs, cases=self._cases, pipeline=self._pipeline
                     )
                 except Exception as exc:  # noqa: BLE001 — never break ingestion
                     logger.warning("cross-source correlation failed: %s", exc)

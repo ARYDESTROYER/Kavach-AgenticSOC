@@ -328,6 +328,24 @@ def window_bounds_proven(
     return (not created_from or lo is not None) and (not created_to or hi is not None)
 
 
+#: The ``awaiting_reason`` prefix of a candidate the per-tick cap deferred; the drain
+#: investigates exactly these (``engine.ingest._candidate_reason``).
+DEFERRED_REASON_PREFIX = "deferred:"
+
+
+def is_deferred_candidate(case: Case, *, older_than: str) -> bool:
+    """Whether ``case`` is a cap-deferred candidate the drain may take now: OPEN, no
+    verdict, ``awaiting_reason`` starting with :data:`DEFERRED_REASON_PREFIX`, and last
+    updated before ``older_than`` (ISO strings compared as the stores store them)."""
+    status = getattr(case.status, "value", case.status)
+    return (
+        str(status) == "open"
+        and case.verdict is None
+        and str(case.awaiting_reason or "").startswith(DEFERRED_REASON_PREFIX)
+        and str(case.updated_at or "") < str(older_than or "")
+    )
+
+
 class CaseRepository(ABC):
     """Persists :class:`Case` documents (Section 7.1).
 
@@ -572,6 +590,41 @@ class CaseRepository(ABC):
         if cursor is None:
             return
         await self.close_export_cursor(cursor)
+
+    async def list_deferred_candidates(self, *, older_than: str, limit: int) -> list[Case]:
+        """The cap-deferred candidates the deferred drain may investigate, oldest
+        created first, at most ``limit`` (Round 16 SPEC WP15B, B11).
+
+        A deferred candidate is an OPEN case with no verdict whose ``awaiting_reason``
+        starts with :data:`DEFERRED_REASON_PREFIX` and whose ``updated_at`` is before
+        ``older_than`` (a candidate deferred in this tick keeps the cap). The bundled
+        Elasticsearch and SQL repositories answer it with one query. This default
+        keeps the paged scan over OPEN cases for third-party repositories: correct,
+        but it reads every OPEN case before the first deferred one."""
+        out: list[Case] = []
+        if limit <= 0:
+            return out
+        offset = 0
+        page_size = max(50, int(limit))
+        while len(out) < limit:
+            page, total = await self.list(
+                status="open",
+                limit=page_size,
+                offset=offset,
+                sort_field="created_at",
+                sort_order="asc",
+            )
+            if not page:
+                break
+            for case in page:
+                if is_deferred_candidate(case, older_than=older_than):
+                    out.append(case)
+                    if len(out) >= limit:
+                        break
+            offset += len(page)
+            if offset >= total:
+                break
+        return out
 
 
 def _status_value(case: Any) -> str:

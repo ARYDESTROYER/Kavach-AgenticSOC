@@ -72,12 +72,14 @@ from ..base import (
     AuditHit,
     AuditRepository,
     AuditSearchPage,
+    DEFERRED_REASON_PREFIX,
     CaseRepository,
     ConfigRepository,
     CursorRepository,
     KVStore,
     UsageRepository,
     build_audit_doc_best_effort,
+    is_deferred_candidate,
     status_group_statuses,
     window_bounds_proven,
 )
@@ -329,6 +331,31 @@ class SqlCaseRepository(CaseRepository):
             total = int((await session.execute(count_stmt)).scalar() or 0)
         cases = [Case.model_validate(r.doc) for r in rows]
         return cases, total
+
+    async def list_deferred_candidates(self, *, older_than: str, limit: int) -> list[Case]:
+        """The cap-deferred candidates, oldest created first, in ONE query (Round 16
+        B11): ``status = 'open'``, no ``verdict`` in the JSON document, its
+        ``awaiting_reason`` starting with ``deferred:`` and ``updated_at`` before
+        ``older_than`` (the materialised column, compared as text as every other
+        window here). The drain no longer reads every OPEN case each tick."""
+        if limit <= 0:
+            return []
+        awaiting = _sql_json_text("awaiting_reason")
+        stmt = (
+            select(CaseRow)
+            .where(CaseRow.status == CaseStatus.OPEN.value)
+            .where(_sql_json_text("verdict").is_(None))
+            .where(awaiting.like(f"{DEFERRED_REASON_PREFIX}%"))
+            .where(CaseRow.updated_at < str(older_than or ""))
+            .order_by(*_case_order_by("created_at", "asc"))
+            .limit(int(limit))
+        )
+        async with self._sm() as session:
+            rows = (await session.execute(stmt)).scalars().all()
+        cases = [Case.model_validate(row.doc) for row in rows]
+        # The JSON predicates are exact on SQLite and PostgreSQL; the shared rule is
+        # checked again so a store quirk can never hand the drain a decided case.
+        return [case for case in cases if is_deferred_candidate(case, older_than=older_than)]
 
     async def list_window(
         self,

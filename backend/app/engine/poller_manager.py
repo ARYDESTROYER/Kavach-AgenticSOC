@@ -470,46 +470,47 @@ class PollerManager:
         """
         if not prefs.background_scan_enabled or prefs.caps.kill_switch or limit <= 0:
             return 0
-        from ..constants import CaseStatus
+        from ..constants import DecisionBy
+        from ..stores.base import is_deferred_candidate
 
+        # Round 16 B11: ask the store for the deferred queue itself (one query on the
+        # bundled stores) instead of paging every OPEN case from offset 0 each tick,
+        # which stopped at the first 10,000 on a real cluster and skipped rows that
+        # shifted while it paged. Twice the allowance (at least 50) is read so a
+        # candidate that cannot be rebuilt, or that a person owns, never blocks the
+        # ones behind it.
+        candidates = await self._state.real_cases.list_deferred_candidates(
+            older_than=older_than, limit=max(50, 2 * limit),
+        )
         drained = 0
-        offset = 0
-        page_size = max(50, limit * 2)
-        while drained < limit:
-            # Deferred candidates are always OPEN (verdict None). Filtering to OPEN skips
-            # the CLOSED/RESOLVED bulk, so a busy tenant's drain no longer pages
-            # oldest-first through tens of thousands of terminal cases (deep-pagination
-            # risk) to reach the handful of open candidates (audit #31).
-            page, total = await self._state.real_cases.list(
-                status=CaseStatus.OPEN.value,
-                limit=page_size,
-                offset=offset,
-                sort_field="created_at",
-                sort_order="asc",
-            )
-            if not page:
+        for case in candidates:
+            if drained >= limit:
                 break
-            for case in page:
-                if drained >= limit:
-                    break
-                if case.verdict is not None or not case.awaiting_reason.startswith("deferred:"):
-                    continue
-                if case.updated_at >= older_than:
-                    continue  # created/deferred in this tick; preserve the cap
+            # The shared rule again, for a third-party store's answer: OPEN, no
+            # verdict, cap-deferred, and not deferred in this tick (preserve the cap).
+            if not is_deferred_candidate(case, older_than=older_than):
+                continue
+            # A candidate a person acted on is theirs (B05): never drained.
+            if case.decision_by == DecisionBy.ANALYST:
+                continue
+            try:
                 cluster = await self._state.cluster_for_case(case)
-                if cluster is None:
-                    continue
-                query_source = self.source_for_id(case.source_id)
-                await self._state.real_pipeline.investigate_cluster(
-                    cluster,
-                    case.source_surface,
-                    prefs,
-                    query_source=query_source,
+            except Exception as exc:  # noqa: BLE001 - skip; never block the rest
+                logger.warning(
+                    "Deferred candidate %s could not be rebuilt; skipped this tick: %s",
+                    case.case_id, exc,
                 )
-                drained += 1
-            offset += len(page)
-            if offset >= total:
-                break
+                continue
+            if cluster is None:
+                continue
+            query_source = self.source_for_id(case.source_id)
+            await self._state.real_pipeline.investigate_cluster(
+                cluster,
+                case.source_surface,
+                prefs,
+                query_source=query_source,
+            )
+            drained += 1
         return drained
 
     # ------------------------------------------------------------------ #

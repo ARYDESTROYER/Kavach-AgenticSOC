@@ -378,17 +378,47 @@ async def test_drain_headroom_uses_one_global_fanout_allowance(app_state: AppSta
 @asyncio
 async def test_drain_scan_filters_to_open_cases(app_state: AppState, monkeypatch):
     # audit #31: the deferred-candidate drain must query only OPEN cases, so it never
-    # deep-paginates oldest-first through the CLOSED/RESOLVED bulk.
+    # deep-paginates oldest-first through the CLOSED/RESOLVED bulk. Round 16 B11: it
+    # asks the store for the deferred queue itself, once per tick (twice the allowance,
+    # at least 50), and never pages the OPEN listing.
     mgr = app_state.poller
-    seen_status: list = []
+    asked: list = []
 
-    async def fake_list(*, status=None, limit=50, offset=0, sort_field="created_at", sort_order="desc"):
-        seen_status.append(status)
-        return [], 0  # empty page → drain returns immediately
+    async def fake_deferred(*, older_than, limit):
+        asked.append((older_than, limit))
+        return []
 
-    monkeypatch.setattr(mgr._state.real_cases, "list", fake_list)
+    async def no_list(**_kwargs):
+        raise AssertionError("the drain must not page every OPEN case")
+
+    monkeypatch.setattr(mgr._state.real_cases, "list_deferred_candidates", fake_deferred)
+    monkeypatch.setattr(mgr._state.real_cases, "list", no_list)
     p = app_state.prefs.model_copy(deep=True)
     p.background_scan_enabled = True
     p.caps.kill_switch = False
     await mgr._drain_deferred(p, older_than="2000-01-01T00:00:00Z", limit=5)
-    assert seen_status and all(s == "open" for s in seen_status)
+    assert asked == [("2000-01-01T00:00:00Z", 50)]
+    await mgr._drain_deferred(p, older_than="2000-01-01T00:00:00Z", limit=40)
+    assert asked[-1] == ("2000-01-01T00:00:00Z", 80)
+
+
+async def test_the_deferred_query_filters_open_undecided_deferred_cases(app_state: AppState):
+    """The Elasticsearch deferred query itself: OPEN, no verdict, the ``deferred:``
+    prefix, updated before the tick, oldest created first."""
+    from app.stores.cases import CaseStore
+
+    seen: list = []
+
+    class _Recorder:
+        async def search(self, index, body):
+            seen.append(body)
+            return {"hits": {"hits": []}}
+
+    await CaseStore(_Recorder()).list_deferred_candidates(older_than="2026-11-01T00:00:00Z", limit=7)
+    (body,) = seen
+    filters = body["query"]["bool"]["filter"]
+    assert {"term": {"status": "open"}} in filters
+    assert {"range": {"updated_at": {"lt": "2026-11-01T00:00:00Z"}}} in filters
+    assert body["query"]["bool"]["must_not"] == [{"exists": {"field": "verdict"}}]
+    assert body["size"] == 7 and body["sort"][0] == {"created_at": {"order": "asc"}}
+    assert "from" not in body
