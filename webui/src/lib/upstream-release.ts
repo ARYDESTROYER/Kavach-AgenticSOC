@@ -10,31 +10,13 @@ import type {
   UpstreamReleasesResponse,
 } from './types';
 import type { ReleaseIdentity } from './release';
+import { compareVersions, semanticVersion } from './semver';
 
 export type UpstreamNoticeKind = 'version' | 'revision';
 
 export interface UpstreamReleaseNotice {
   kind: UpstreamNoticeKind;
   candidate: UpstreamReleaseCandidate;
-}
-
-function semanticVersion(value: string | null | undefined): [number, number, number] | null {
-  if (!value) return null;
-  // The top bar makes an update claim only for the simple release form used by
-  // Agentic SOC. Pre-release/build suffixes remain inspectable in Settings, but
-  // need full SemVer precedence handling before they can be ordered confidently.
-  const match = /^v?(\d+)\.(\d+)\.(\d+)$/.exec(value.trim());
-  if (!match) return null;
-  const parsed = match.slice(1, 4).map(Number);
-  if (parsed.some((part) => !Number.isSafeInteger(part))) return null;
-  return parsed as [number, number, number];
-}
-
-function compareVersions(left: [number, number, number], right: [number, number, number]): number {
-  for (let index = 0; index < 3; index += 1) {
-    if (left[index] !== right[index]) return left[index] - right[index];
-  }
-  return 0;
 }
 
 function commitIdentity(value: string | null | undefined): string | null {

@@ -6,7 +6,7 @@
  * `target`, else its id), so for `overview` it is the child "Cyber Defence Center", not
  * the group row "Overview" (which opens the Dashboards library). Group rows are exempt,
  * and so are the hosts whose own id is also one of their pages: Workspace and Chat,
- * Notifications and Inbox. The top-bar breadcrumb is not part of this test (it keeps
+ * Communication and Inbox. The top-bar breadcrumb is not part of this test (it keeps
  * "Agentic SOC / Overview" on the landing page, E2).
  *
  * Titles live in page sources that other Round 14 packages migrate in parallel, so a page
@@ -51,6 +51,7 @@ const TITLE_SOURCES: Partial<Record<PageId, string[]>> = {
   tuning: ['pages/Tuning.tsx'],
   settings: ['pages/Settings.tsx'],
   docs: ['pages/Docs.tsx'],
+  whats_new: ['pages/WhatsNew.tsx'],
 };
 
 /** Hosts whose own id is also one of their pages (listed by name in the spec). */

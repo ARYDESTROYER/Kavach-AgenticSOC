@@ -129,6 +129,7 @@ jobs:
               "app/llm/model_registry.json",
               "app/threat/mitre_techniques.json",
               "app/threat/SOURCE.md",
+              "app/whats_new_latest.json",
           }
           missing = sorted(required - names)
           assert not missing, f"wheel is missing runtime data: {missing}"
@@ -602,6 +603,10 @@ jobs:
           python scripts/test_docs_theme.py
       - name: Verify the chat app-knowledge corpus is current
         run: python scripts/build_app_knowledge.py --check
+      - name: Verify the What's new release notes are valid and current
+        run: |
+          python scripts/test_build_release_notes.py
+          python scripts/build_release_notes.py --check
       - name: Build and revalidate the versioned Help Center
         env:
           TLSOC_RELEASE_CHANNEL: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')) && 'stable' || 'testing' }}

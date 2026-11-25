@@ -79,6 +79,13 @@ export interface PrefsContextValue {
   themeMode: ThemeMode;
   /** Whether this session's first hydrate has settled (ok or failed); false while signed out. */
   ready: boolean;
+  /**
+   * Whether this session's cascade was actually READ (Round 16, SPEC §4.4 WP07): `ready`
+   * is also true after a failed read that fell back to an empty `misc`, so a consumer that
+   * must tell "no value stored" from "could not read" (the What's new marker) waits for
+   * `loaded`. False while signed out and after a failed read.
+   */
+  loaded: boolean;
 
   /** Set + persist the user's theme mode (applied via ThemeProvider; respects system). */
   setThemeMode: (mode: ThemeMode) => void;
@@ -120,9 +127,11 @@ export interface PrefsContextValue {
    * that mounts later in this session reads it instead of the copy loaded at start, and
    * a later hydrate cannot bring back an older value this session already replaced. The
    * server deep-merges `misc`, so other keys are kept. Best-effort: the local value
-   * applies even if the save fails.
+   * applies even if the save fails. Resolves `true` once the server saved the patch and
+   * `false` when it did not (callers that need to know, such as the What's new marker,
+   * keep a local fallback); it never rejects.
    */
-  patchMisc: (patch: Record<string, unknown>) => void;
+  patchMisc: (patch: Record<string, unknown>) => Promise<boolean>;
 }
 
 const PrefsContext = React.createContext<PrefsContextValue | null>(null);
@@ -131,7 +140,11 @@ export const PrefsProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const { setTheme } = useTheme();
   const sessionKey = useSessionKey();
   const [prefs, setPrefs] = React.useState<EffectivePrefs>(EMPTY_EFFECTIVE);
-  const [ready, setReady] = React.useState(false);
+  // 0: not settled (or signed out); 1: settled without a read (failed, fallen back);
+  // 2: the cascade was read. `ready` is 1 or 2, `loaded` only 2 (Round 16 WP07).
+  const [stage, setStage] = React.useState<0 | 1 | 2>(0);
+  const ready = stage > 0;
+  const loaded = stage === 2;
   /** `misc` keys this session wrote (patchMisc): newer than any fetched copy. */
   const sessionMiscRef = React.useRef<Record<string, unknown>>({});
   /** The read session a reply belongs to: null without a session and after unmount. */
@@ -175,8 +188,9 @@ export const PrefsProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       // Resetting it to EMPTY_EFFECTIVE's 'system' desynced the control from the theme.
       setPrefs((p) => ({ ...EMPTY_EFFECTIVE, theme_mode: p.theme_mode, misc: { ...sessionMiscRef.current } }));
     }
-    // This session's cascade has settled (read or fallen back).
-    setReady(true);
+    // This session's cascade has settled: read, or fallen back (then the copy in hand is
+    // not a read, so `loaded` turns false again even after an earlier good read).
+    setStage(eff ? 2 : 1);
   }, [applyEffective]);
 
   React.useEffect(() => {
@@ -189,7 +203,7 @@ export const PrefsProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       // nothing waiting for `ready` reads this person's copy. The colour mode stays.
       sessionMiscRef.current = {};
       setPrefs((p) => ({ ...EMPTY_EFFECTIVE, theme_mode: p.theme_mode }));
-      setReady(false);
+      setStage(0);
     };
   }, [sessionKey, refresh]);
 
@@ -205,16 +219,17 @@ export const PrefsProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     [setTheme],
   );
 
-  const patchMisc = React.useCallback((patch: Record<string, unknown>) => {
-    if (!patch || typeof patch !== 'object' || !Object.keys(patch).length) return;
+  const patchMisc = React.useCallback(async (patch: Record<string, unknown>): Promise<boolean> => {
+    if (!patch || typeof patch !== 'object' || !Object.keys(patch).length) return false;
     sessionMiscRef.current = { ...sessionMiscRef.current, ...patch };
     setPrefs((p) => ({ ...p, misc: { ...(p.misc ?? {}), ...patch } }));
     try {
-      Promise.resolve(api.prefs.putUser({ misc: patch })).catch(() => {
-        /* best-effort: the local apply already happened */
-      });
+      await api.prefs.putUser({ misc: patch });
+      return true;
     } catch {
-      /* no preferences API (an embedding without it): the local value still applies */
+      // Best-effort: the local apply already happened (also when there is no preferences
+      // API at all, an embedding without it).
+      return false;
     }
   }, []);
 
@@ -308,6 +323,7 @@ export const PrefsProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       terminology: prefs.terminology,
       themeMode: prefs.theme_mode,
       ready,
+      loaded,
       setThemeMode,
       saveView,
       cloneView,
@@ -322,6 +338,7 @@ export const PrefsProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     [
       prefs,
       ready,
+      loaded,
       setThemeMode,
       saveView,
       cloneView,

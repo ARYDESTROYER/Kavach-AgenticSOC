@@ -295,7 +295,9 @@ describe('CommandPalette: a page named exactly by the query comes first (Round 1
 
   // Every one of these also matches a Settings section, a setting or an action by its
   // words; the page itself must still take the default Enter.
-  for (const query of ['Approvals', 'Cases', 'Models', 'Runbooks', 'Sources', 'Chat', 'Cost', 'Notifications', 'Users', 'Roles']) {
+  // Communication is the group row that opens Inbox (Round 16 renamed Notifications);
+  // What's new is its second page.
+  for (const query of ['Approvals', 'Cases', 'Models', 'Runbooks', 'Sources', 'Chat', 'Cost', 'Communication', "What's new", 'Users', 'Roles']) {
     it(`"${query.toLowerCase()}" puts the ${query} page first, above every Settings target`, async () => {
       await renderPalette();
       const input = await screen.findByPlaceholderText(/search cases, sources, settings/i);

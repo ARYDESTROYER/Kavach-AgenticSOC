@@ -129,4 +129,8 @@ export type NavOpts = {
   ip?: string;
   /** Audit log: the record the inspector opens (an opaque store-prefixed id). */
   record?: string;
+  /** What's new (Round 16): the release to show (`0.2.0`). */
+  v?: string;
+  /** What's new (Round 16): the highlight to scroll to and focus (`case-tabs`). */
+  h?: string;
 };

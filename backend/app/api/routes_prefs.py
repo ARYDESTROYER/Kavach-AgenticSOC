@@ -42,6 +42,7 @@ from ..models import (
     DASHBOARDS_HIDDEN_PREF_KEY,
     DISMISSED_INTROS_PREF_KEY,
     MAX_CHAT_PROMPTS,
+    WHATS_NEW_SEEN_PREF_KEY,
     ChatPrompt,
     ColumnState,
     SavedView,
@@ -227,8 +228,12 @@ async def prefs_user_put(
 
 
 #: The personal preference keys whose changes are audited (SPEC §3.5): set by the
-#: Round 14 Dashboards library (Hide, Unhide) and notices (dismissed intros).
-_AUDITED_MISC_KEYS: tuple[str, ...] = (DASHBOARDS_HIDDEN_PREF_KEY, DISMISSED_INTROS_PREF_KEY)
+#: Round 14 Dashboards library (Hide, Unhide) and notices (dismissed intros). Round 16
+#: (SPEC D7): the What's new acknowledgement (``whats_new_seen``) is audited the same
+#: way, one row per person per update; the personal switch ``whats_new_auto`` is not.
+_AUDITED_MISC_KEYS: tuple[str, ...] = (
+    DASHBOARDS_HIDDEN_PREF_KEY, DISMISSED_INTROS_PREF_KEY, WHATS_NEW_SEEN_PREF_KEY,
+)
 
 
 def _audited_misc_changes(stored: Any, misc: dict[str, Any] | None) -> list[Any]:

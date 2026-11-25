@@ -62,7 +62,7 @@ surface into **six top-level nav groups**:
 | **Triage** | Cases (§3), **Case Manager** (§3), Campaigns (§16), Logs (a unified cross-source log browser, §2a), Workspace with **Chat** (§5), **Entity investigation** (§4) and **Reports** as children, Approvals |
 | **Intelligence** | Knowledge corpus (§9), Runbooks (§12), Operator memory (§10), Agent personas |
 | **Analytics** | Metrics, **Agent effectiveness** (§7a), Cost (§8), Models (§22), Baseline (§17), Jobs (§22) |
-| **Notifications** | Inbox (the in-app notification inbox, §23) |
+| **Communication** | Inbox (the in-app notification inbox, §23) and **What's new** (the release tracker: every release this Console ships notes for, with highlights and screenshots; a short welcome shows once after each update, and the personal switch **Show What's new after updates** in Settings, Appearance turns it off) |
 | **Platform** | Sources (§2, standalone, not inside Settings), Audit log (§31), Auto-tuning (§15), Settings (§25, with Users and Roles as children) |
 
 The pinned **Help Center** item at the bottom of the rail opens the
@@ -1950,7 +1950,7 @@ curl -s -b cookies.txt -X POST localhost:8088/api/notifications/channels/resend-
 ### In-app inbox
 
 Every notification also fans into a per-user, self-scoped **in-app inbox**
-(the **Inbox** page under the **Notifications** nav group) — including @mention
+(the **Inbox** page under the **Communication** nav group), including @mention
 fan-out from case threads (§18). Every route reads/writes only the requesting
 user's bucket; there is no admin view of another user's inbox.
 

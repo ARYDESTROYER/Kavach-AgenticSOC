@@ -19,7 +19,7 @@ import { LoadingState } from '@/design-system/loading';
 import { Button } from '@/ui/button';
 import { TooltipProvider } from '@/ui/tooltip';
 import { ThemeProvider } from './theme';
-import { PrefsProvider } from './prefs';
+import { PrefsProvider, usePrefs } from './prefs';
 import { AuthProvider, useAuth, useUnauthorizedRedirect } from './auth';
 import { DemoProvider } from './demo';
 import { RouterProvider, useRoute } from './router';
@@ -34,6 +34,7 @@ import { navLabel } from './nav';
 import Login from './pages/Login';
 import Wizard from './pages/Wizard';
 import { ReauthDialog } from './components/ReauthDialog';
+import { WHATS_NEW_LATEST, WhatsNewGate } from './whats-new/WhatsNewGate';
 import { ConfirmProvider } from './components/ConfirmDialog';
 import { PageSkeleton } from './components/PageSkeleton';
 
@@ -102,6 +103,7 @@ const Boot: React.FC = () => {
   // result with the fail-closed error screen.
   const setupRequestGeneration = React.useRef(0);
   const { page, opts, navigate } = useRoute();
+  const { patchMisc } = usePrefs();
 
   // Whether the gate currently shows the login screen: auth on + (no session OR a
   // forced-password-change that a mid-flow reload / deep-link must not escape). The
@@ -177,6 +179,9 @@ const Boot: React.FC = () => {
     return (
       <Wizard
         onComplete={() => {
+          // Round 16 (SPEC D7): a fresh install's first person starts with What's new
+          // seen (the audited preferences route records it).
+          if (!forceWizard) void patchMisc({ whats_new_seen: WHATS_NEW_LATEST });
           setForceWizard(false);
           setSetupComplete(true);
           navigate('overview');
@@ -207,6 +212,8 @@ const Boot: React.FC = () => {
       </AppShell>
       {/* Step-up re-auth modal: only armed when auth is enabled (back-compat). */}
       <ReauthDialog active={authEnabled} />
+      {/* What's new after an update: only ever once the shell shows (Round 16, D7). */}
+      <WhatsNewGate />
     </>
   );
 };

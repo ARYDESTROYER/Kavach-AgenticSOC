@@ -55,6 +55,7 @@ from ..constants import ActionType, UserRole
 from ..models import AuditChange, AuditTarget
 from ..stored_text import username_problem
 from ..state import AppState
+from ..whats_new import stamp_new_account
 from .deps import get_state
 
 logger = logging.getLogger("tlsoc.api.setup")
@@ -227,6 +228,9 @@ async def setup_account(
         result_summary=f"OOBE first super_admin '{uname}' created",
         tool_input={"method": "first_run_setup"},
     )
+
+    # Round 16 (SPEC D7): a new account starts with What's new marked seen (best effort).
+    await stamp_new_account(state, created.username)
 
     # The demo Admin/Admin@123 hint no longer applies once a real admin is created.
     state._seeded_default_admin = False

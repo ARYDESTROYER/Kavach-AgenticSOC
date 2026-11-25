@@ -51,7 +51,7 @@ import { Button } from '@/ui/button';
 import { badgeVariants } from '@/ui/badge';
 import { Separator } from '@/ui/separator';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/ui/tooltip';
-import { Popover, PopoverContent, PopoverTrigger } from '@/ui/popover';
+import { Popover, PopoverClose, PopoverContent, PopoverTrigger } from '@/ui/popover';
 import {
   Sheet,
   SheetContent,
@@ -601,6 +601,12 @@ export function ReleaseBadge({
               ? 'Explicitly promoted from the protected main release path.'
               : 'Testing is the fail-safe default for source, integration, and preview builds.'}
           </p>
+          {/* Round 16 (SPEC D7): the release tracker for this version; closes the popover. */}
+          <PopoverClose asChild>
+            <a href={pageHash('whats_new', { v: release.version })} className="text-primary underline">
+              {`What's new in v${release.version}`}
+            </a>
+          </PopoverClose>
         </div>
 
         {release.mismatch ? (

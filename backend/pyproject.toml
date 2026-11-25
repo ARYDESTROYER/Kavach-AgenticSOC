@@ -26,6 +26,7 @@ app = [
     "runbooks/library/*.md",
     "threat/*.json",
     "threat/*.md",
+    "whats_new_latest.json",
 ]
 
 [tool.setuptools.dynamic]

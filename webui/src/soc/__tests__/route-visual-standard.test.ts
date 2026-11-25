@@ -35,6 +35,7 @@ const PRIMARY_SURFACES = [
   "soc/pages/Standup.tsx",
   "soc/pages/TeamActivity.tsx",
   "soc/pages/Tuning.tsx",
+  "soc/pages/WhatsNew.tsx",
   "soc/pages/Workspace.tsx",
   "soc/components/UnifiedLogsSheet.tsx",
 ] as const;

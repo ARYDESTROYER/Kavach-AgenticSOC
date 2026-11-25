@@ -28,6 +28,7 @@ import {
 
 import { cn } from '@/lib/cn';
 import { api } from '@/lib/api';
+import { docsArticleUrl, docsVersionLine } from '@/lib/docs-url';
 import {
   CONSOLE_RELEASE_IDENTITY,
   resolveReleasePresentation,
@@ -308,6 +309,12 @@ export const DOC_CATEGORIES: readonly DocsCategory[] = [
         keywords: ['support matrix', 'elastic', 'browser'],
       },
       {
+        title: "What's new",
+        description: 'Read every release with its highlights, newest first.',
+        path: 'releases/whats-new/',
+        keywords: ['release tracker', 'updates', 'new features', 'changelog'],
+      },
+      {
         title: 'Release notes',
         description: 'See what changed in this documentation and application release line.',
         path: 'releases/0.1/',
@@ -323,17 +330,9 @@ export const DOC_CATEGORIES: readonly DocsCategory[] = [
   },
 ] as const;
 
-/** A patch release shares the matching major.minor documentation line. */
-export function docsVersionLine(version: string): string {
-  const match = version.trim().match(/^(\d+)\.(\d+)/);
-  return match ? `${match[1]}.${match[2]}` : 'development';
-}
-
-/** Same-origin immutable article URL for the documentation bundled with this app. */
-export function docsArticleUrl(path: string, version: string): string {
-  const cleanPath = path.replace(/^\/+|\/+$/g, '');
-  return `/docs/${docsVersionLine(version)}/${cleanPath}/`;
-}
+// The two URL helpers live in lib/docs-url.ts (Round 16 WP07) so other pages can link to
+// an article without pulling this page into their chunk; they are re-exported here.
+export { docsArticleUrl, docsVersionLine };
 
 function includesQuery(article: DocsArticle, query: string): boolean {
   if (!query) return true;
