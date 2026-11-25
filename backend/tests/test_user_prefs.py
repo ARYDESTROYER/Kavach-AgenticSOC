@@ -157,10 +157,13 @@ def test_cascade_resolver_precedence() -> None:
     assert "terminology" not in eff["misc"]
 
 
-def test_cascade_theme_defers_to_org_when_system() -> None:
+def test_cascade_theme_system_defers_to_branding_not_the_legacy_org_value() -> None:
+    # Round 16 B45: "system" stays "system" so the Console resolves it against Branding,
+    # the one organization default; the legacy customization value no longer wins.
     org = CustomizationConfig(default_theme="dark")
     eff = resolve_effective_prefs(org, UserPrefs(theme_mode="system"))
-    assert eff["theme_mode"] == "dark"  # user left it on system → org default applies
+    assert eff["theme_mode"] == "system"
+    assert eff["org"]["default_theme"] == "dark"  # still echoed, never applied
 
 
 # --------------------------------------------------------------------------- #

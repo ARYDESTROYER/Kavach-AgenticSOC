@@ -19,7 +19,9 @@ import {
   retainJobSubmissionIntent,
   type JobSubmissionIntent,
 } from '@/soc/jobs/jobs';
+import { useDemo } from '@/soc/demo';
 import { useNavigateOptional } from '@/soc/router';
+import { DEMO_EXPORT_REASON } from './demo-jobs';
 import { SettingRow, SettingsGroup, SettingsSection } from './primitives';
 
 type ExportScope = DataExportScope;
@@ -39,6 +41,8 @@ const SEGMENT_OPTIONS = SEGMENT_SIZES.map((value) => ({ value: String(value), la
 
 export function DataExportSection() {
   const navigate = useNavigateOptional();
+  // Durable jobs never run in Demo Mode (B49): the export says so and sends nothing.
+  const { active: demoActive } = useDemo();
   const [selected, setSelected] = React.useState<ExportScope[]>(SCOPES.map((scope) => scope.id));
   const [mode, setMode] = React.useState<ExportMode>('archive');
   const [segmentSize, setSegmentSize] = React.useState(1000);
@@ -56,7 +60,7 @@ export function DataExportSection() {
     );
 
   const submitExport = async () => {
-    if (!selected.length || submitting) return;
+    if (demoActive || !selected.length || submitting) return;
     const kind = mode === 'archive' ? 'data_export_archive' : 'data_export_segment';
     const params: Record<string, unknown> = {
       scopes: [...selected].sort(),
@@ -172,9 +176,18 @@ export function DataExportSection() {
           <SettingRow
             variant="action"
             label="Build the export"
-            help="Needs the data export permission and a fresh sign-in. Every job is recorded in the audit log."
+            help={
+              demoActive
+                ? DEMO_EXPORT_REASON
+                : 'Needs the data export permission and a fresh sign-in. Every job is recorded in the audit log.'
+            }
             action={
-              <Button onClick={() => void submitExport()} disabled={!selected.length || submitting} aria-busy={submitting || undefined}>
+              <Button
+                onClick={() => void submitExport()}
+                disabled={demoActive || !selected.length || submitting}
+                title={demoActive ? DEMO_EXPORT_REASON : undefined}
+                aria-busy={submitting || undefined}
+              >
                 {submitting ? <LoadingGlyph size="sm" className="size-4" /> : <Archive className="h-4 w-4" aria-hidden />}
                 Build ZIP in background
               </Button>

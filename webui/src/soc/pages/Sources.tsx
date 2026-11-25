@@ -62,7 +62,7 @@ import { RefreshButton } from '@/soc/components/RefreshButton';
 import { ConfirmDialog } from '@/soc/components/ConfirmDialog';
 import { EmptyState } from '@/soc/components/EmptyState';
 import { LoadError } from '@/soc/components/LoadError';
-import { SourceEditor } from '@/soc/components/SourceEditor';
+import { SourceEditor, type SourceSaveNotice } from '@/soc/components/SourceEditor';
 import { SourceLogsSheet } from '@/soc/components/SourceLogsSheet';
 import { headingOf, useReturnFocus } from '@/soc/hooks/useReturnFocus';
 import { categoryMeta } from '@/soc/components/ConnectorPicker';
@@ -342,9 +342,12 @@ function SourcesPage(_props: SourcesProps) {
     void load();
   }, [load]);
 
-  const onSaved = async () => {
+  // The editor says only what the server confirmed (a dropped primary flag, or a real
+  // source saved in Demo Mode that the Demo source list does not show).
+  const onSaved = async (notice: SourceSaveNotice) => {
     setEditor(null);
-    toast.success('Source saved');
+    if (notice.tone === 'warning') toast.warning(notice.text);
+    else toast.success(notice.text);
     await load();
   };
 

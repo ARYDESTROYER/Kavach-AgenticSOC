@@ -495,6 +495,11 @@ export const RouterProvider: React.FC<{ children: React.ReactNode }> = ({ childr
    * typed or pasted link, even one to the same hash) is a traversal ({@link samePageOpts}).
    */
   const echoRef = React.useRef<string | null>(null);
+  /**
+   * The hash this router last accepted (a commit, or a hash change it let through). A
+   * Back, Forward or typed link that a leave guard pauses is put back to it (B44).
+   */
+  const committedHashRef = React.useRef<string>(window.location.hash || '');
 
   const registerNavigationBlocker = React.useCallback<RegisterNavigationBlocker>((options) => {
     const token = Symbol('navigation-blocker');
@@ -536,6 +541,7 @@ export const RouterProvider: React.FC<{ children: React.ReactNode }> = ({ childr
           echoRef.current = window.location.hash;
         }
       }
+      committedHashRef.current = window.location.hash || '';
     },
     [resolveNavigation],
   );
@@ -585,6 +591,37 @@ export const RouterProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       const hash = window.location.hash || '';
       const own = hash === echoRef.current;
       echoRef.current = null;
+      // B44: Back, Forward or a typed link runs the same leave guard as navigate(). The
+      // guarded URL is put back first with pushState (which fires no hashchange), and the
+      // shared ConfirmDialog goes on to the target only on confirm. A same-page change
+      // asks only a guard that opted in with `sameRoute`, and only for a change the
+      // browser made: a page that rewrites its own URL and tells the router with a
+      // synthetic event (Dashboards after a save) is not a person leaving.
+      if (!own && blockersRef.current.size > 0) {
+        const committed = committedHashRef.current;
+        const leaving = next !== pageRef.current;
+        const changing = hash !== committed && event?.isTrusted !== false;
+        const blocker = Array.from(blockersRef.current.values())
+          .filter((b) => leaving || (changing && b.sameRoute === true))
+          .at(-1);
+        if (blocker) {
+          try {
+            window.history.pushState(
+              window.history.state,
+              '',
+              committed || `${window.location.pathname}${window.location.search}`,
+            );
+          } catch {
+            /* a sandboxed frame may refuse; the page and its draft still stay */
+          }
+          if (!pendingRef.current) {
+            pendingRef.current = true;
+            setPendingNavigation({ page: next, opts: route.opts, blocker });
+          }
+          return;
+        }
+      }
+      committedHashRef.current = hash;
       setPage((prev) => {
         if (prev === next) {
           // The echo of this router's own navigate changes nothing. Any other same-page
@@ -632,6 +669,7 @@ export const RouterProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       // carries a query for the same page.
       window.location.hash = '#/' + page;
     }
+    committedHashRef.current = window.location.hash || '';
     return () => window.removeEventListener('hashchange', onHashChange);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -684,12 +722,13 @@ export function useNavigate(): Navigate {
 }
 
 /**
- * Pause in-app route leaves while a mounted editor owns unsaved state. Browser
+ * Pause route leaves while a mounted editor owns unsaved state. Browser
  * reload/tab-close protection remains the responsibility of `useUnsavedChanges`;
- * this hook covers the Console's programmatic hash navigation without `window.confirm`.
- * Browser Back and Forward change the hash directly and cannot be paused here. Pass
- * `sameRoute: true` when the unsaved state belongs to one URL of the page (a dashboard
- * board), so going back to the page's other URLs (the library) asks first too.
+ * this hook covers the Console's own navigation and, since Round 16 (B44), browser
+ * Back, Forward and a typed link too: the router puts the guarded URL back and asks
+ * with the same dialog, without `window.confirm`. Pass `sameRoute: true` when the
+ * unsaved state belongs to one URL of the page (a dashboard board), so going back to
+ * the page's other URLs (the library) asks first too.
  */
 export function useNavigationBlocker(
   enabled: boolean,

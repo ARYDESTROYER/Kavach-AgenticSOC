@@ -1331,7 +1331,12 @@ function SourcesStep({
               connectors={connectors}
               existing={editing || undefined}
               defaultPrimary={listed.length === 0}
-              onSaved={() => void reload()}
+              onSaved={(notice) => {
+                // What the server confirmed; a real source saved in Demo Mode is not listed.
+                if (notice.tone === 'warning') toast.warning(notice.text);
+                else toast.success(notice.text);
+                void reload();
+              }}
               onCancel={() => void reload()}
             />
           </React.Suspense>

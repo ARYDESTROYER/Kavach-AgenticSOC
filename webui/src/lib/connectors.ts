@@ -17,7 +17,7 @@
  * A connector's `auth_fields` mark secrets with `secret: true`.
  */
 import { api } from './api';
-import type { ConnectorManifest, SecretsUpdate, SourceUpsert } from './types';
+import type { ConnectorManifest, SecretsUpdate, SourceInstance, SourceUpsert } from './types';
 
 /** A connector form's value: non-secret config + secret values typed this session. */
 export interface ConnectorFormValue {
@@ -125,7 +125,7 @@ export async function saveSource(
      */
     severityScaleMax?: number | null;
   },
-): Promise<void> {
+): Promise<{ ok: boolean; sources: SourceInstance[] }> {
   const { globalSecrets, sourceSecrets, config } = splitFormValue(manifest, value, {
     isPrimary: opts.isPrimary,
   });
@@ -145,11 +145,14 @@ export async function saveSource(
     // instead of relying on that.
     ...('severityScaleMax' in opts ? { severity_scale_max: opts.severityScaleMax } : {}),
   };
-  await api.upsertSource(upsert);
+  // The upsert's answer is returned so the caller says only what the server confirmed
+  // (the source is in the list; it is primary only when the list says so).
+  const saved = await api.upsertSource(upsert);
   const secretEntries = Object.entries(sourceSecrets).filter(([, v]) => v);
   if (secretEntries.length) {
     await api.setSourceSecrets(opts.id, Object.fromEntries(secretEntries));
   }
+  return saved;
 }
 
 /** A URL-safe slug from a display name (for a default source id). */

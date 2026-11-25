@@ -51,6 +51,8 @@ import {
   DialogDescription,
 } from '@/ui/dialog';
 import { Can } from './Can';
+import { useDemo } from '@/soc/demo';
+import { DEMO_JOB_REASON } from '@/soc/pages/settings/demo-jobs';
 import { useReturnFocus } from '@/soc/hooks/useReturnFocus';
 import { cn } from '@/lib/cn';
 import {
@@ -360,10 +362,13 @@ const DANGER_ZONE_HELP =
 function TierRow({
   tier,
   onReset,
+  disabledReason,
 }: {
   tier: TierCopy;
   /** `opener` is the tier's button: focus returns to it when the dialog closes. */
   onReset: (tier: TierCopy, opener: HTMLElement) => void;
+  /** Set when the reset cannot run now (Demo Mode, B49): the button is disabled. */
+  disabledReason?: string;
 }) {
   const titleId = `reset-${tier.scope}-title`;
   return (
@@ -384,6 +389,8 @@ function TierRow({
           size="sm"
           className={cn('shrink-0 self-start', DANGER_OUTLINE_BUTTON)}
           onClick={(event) => onReset(tier, event.currentTarget)}
+          disabled={Boolean(disabledReason)}
+          title={disabledReason}
         >
           {tier.title}
         </Button>
@@ -410,6 +417,8 @@ export interface DangerZoneProps {
 export function DangerZone({ className }: DangerZoneProps) {
   const [pending, setPending] = React.useState<TierCopy | null>(null);
   const section = React.useContext(SettingsSectionContext);
+  // Resets are durable jobs, which never run in Demo Mode (B49).
+  const { active: demoActive } = useDemo();
   const opener = useReturnFocus();
   const openTier = React.useCallback(
     (tier: TierCopy, button: HTMLElement) => {
@@ -430,10 +439,19 @@ export function DangerZone({ className }: DangerZoneProps) {
         >
           <SettingsGroup
             title="Reset tiers"
-            caption="Each tier clears more than the one before it. Nothing runs until you type its phrase and sign in again."
+            caption={
+              demoActive
+                ? DEMO_JOB_REASON
+                : 'Each tier clears more than the one before it. Nothing runs until you type its phrase and sign in again.'
+            }
           >
             {TIERS.map((tier) => (
-              <TierRow key={tier.scope} tier={tier} onReset={openTier} />
+              <TierRow
+                key={tier.scope}
+                tier={tier}
+                onReset={openTier}
+                disabledReason={demoActive ? DEMO_JOB_REASON : undefined}
+              />
             ))}
           </SettingsGroup>
         </SettingsSection>

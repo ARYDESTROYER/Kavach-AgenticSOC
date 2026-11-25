@@ -40,6 +40,7 @@ import type {
 import { api, ApiError } from '@/lib/api';
 import { useDemoGuard } from '@/soc/demo';
 import { saveSource, slugify } from '@/lib/connectors';
+import { canBePrimary, PRIMARY_PULL_ONLY, primaryConfirmed } from '@/soc/pages/sources-primary';
 import { cn } from '@/lib/cn';
 import { LoadingGlyph, LoadingState } from '@/design-system/loading';
 
@@ -1348,13 +1349,43 @@ const SectionTitle: React.FC<{ children: React.ReactNode }> = ({ children }) => 
 
 /* --------------------------------------------------------------- editor ---- */
 
+/** What to tell the person after a save: only what the server's answer confirmed. */
+export interface SourceSaveNotice {
+  tone: 'success' | 'warning';
+  text: string;
+}
+
+/** A real source added while Demo Mode is on: saved, but listed only after Demo ends. */
+export const SOURCE_SAVED_IN_DEMO = 'Saved. Real sources appear here after Demo Mode is turned off.';
+
+/**
+ * The notice for a save, read from the upsert's returned list (Round 16): the source is
+ * in it, and it is primary only when the list says so. While Demo Mode is on the source
+ * list shows only the Demo sources, so a confirmed add says where it went.
+ */
+export function sourceSaveNotice(
+  response: { sources?: SourceInstance[] } | null | undefined,
+  sourceId: string,
+  { primaryRequested, demo }: { primaryRequested: boolean; demo: boolean },
+): SourceSaveNotice {
+  if (!response?.sources?.some((s) => s.id === sourceId)) {
+    return { tone: 'warning', text: 'The server did not confirm the save. Refresh to check.' };
+  }
+  if (demo) return { tone: 'success', text: SOURCE_SAVED_IN_DEMO };
+  if (!primaryRequested) return { tone: 'success', text: 'Source saved' };
+  return primaryConfirmed(response, sourceId)
+    ? { tone: 'success', text: 'Source saved. It is the primary source.' }
+    : { tone: 'warning', text: `Source saved. ${PRIMARY_PULL_ONLY}` };
+}
+
 export interface SourceEditorProps {
   connectors: ConnectorManifest[];
   /** An existing source to edit (config pre-filled); omit to add a new one. */
   existing?: SourceInstance;
   /** Default to primary on first save (e.g. the wizard's first source). */
   defaultPrimary?: boolean;
-  onSaved: () => void;
+  /** After a save, with what the server's answer confirmed. */
+  onSaved: (notice: SourceSaveNotice) => void;
   onCancel?: () => void;
 }
 
@@ -1376,7 +1407,15 @@ export const SourceEditor: React.FC<SourceEditorProps> = ({
   const [displayName, setDisplayName] = React.useState(existing?.display_name || '');
   const [enabled, setEnabled] = React.useState(existing?.enabled ?? true);
   const [isPrimary, setIsPrimary] = React.useState(existing?.is_primary ?? defaultPrimary ?? false);
-  const canBePrimary = manifest?.ingest_modes?.includes('pull') ?? false;
+  // Primary is offered from the source's own ingest mode, the rule the Sources page and
+  // the wizard use (B46): a new source takes the connector's first mode, as the server
+  // does, so a connector that merely lists pull no longer offers a primary it drops.
+  const primaryAllowed = manifest
+    ? canBePrimary(
+        { ...existing, source_type: manifest.source_type, ingest_mode: existing?.ingest_mode } as SourceInstance,
+        manifest,
+      )
+    : false;
   const [showValidation, setShowValidation] = React.useState(false);
 
   const [patterns, setPatterns] = React.useState<FeedRow[]>(() =>
@@ -1609,15 +1648,16 @@ export const SourceEditor: React.FC<SourceEditorProps> = ({
       const id =
         existing?.id ||
         slugify(displayName || manifest.source_type) + '-' + Date.now().toString(36).slice(-4);
-      await saveSource(manifest, mergedValue, {
+      const primaryRequested = primaryAllowed && isPrimary;
+      const response = await saveSource(manifest, mergedValue, {
         id,
         displayName: displayName || manifest.display_name,
         enabled,
-        isPrimary: canBePrimary && isPrimary,
+        isPrimary: primaryRequested,
         ingestMode: existing?.ingest_mode ?? null,
         severityScaleMax: ceiling,
       });
-      onSaved();
+      onSaved(sourceSaveNotice(response, id, { primaryRequested, demo: demoGuard.active }));
     } catch (e) {
       setError(e instanceof ApiError ? e : new Error(String(e)));
     } finally {
@@ -1696,12 +1736,12 @@ export const SourceEditor: React.FC<SourceEditorProps> = ({
         <div className="flex items-center gap-2.5">
           <Switch
             id="se-primary"
-            checked={canBePrimary && isPrimary}
+            checked={primaryAllowed && isPrimary}
             onCheckedChange={setIsPrimary}
-            disabled={!canBePrimary}
+            disabled={!primaryAllowed}
           />
           <Label htmlFor="se-primary" className="cursor-pointer">
-            {canBePrimary
+            {primaryAllowed
               ? 'Primary (the agent reads from this)'
               : 'Primary query source (pull connectors only)'}
           </Label>

@@ -347,7 +347,14 @@ describe('Team activity', () => {
     await waitFor(() => expect(h.events).toHaveBeenCalledWith('zoe', 'today', null, expect.anything()));
     expect(await within(sheet).findByRole('link', { name: 'CASE-0001' })).toHaveAttribute('href', '#/case_manager?caseId=case-1');
     expect(within(sheet).getByText('False positive')).toBeInTheDocument();
-    expect(within(sheet).getByRole('link', { name: /Open in Audit log/ })).toHaveAttribute('href', '#/audit?actor=zoe');
+    // B56: the Audit log opens on the sheet's own window, as absolute instants. Team's
+    // window is [start, end) and the Audit range end is inclusive, so `to` is end - 1 ms.
+    const href = within(sheet).getByRole('link', { name: /Open in Audit log/ }).getAttribute('href') ?? '';
+    expect(href.startsWith('#/audit?')).toBe(true);
+    const query = new URLSearchParams(href.slice('#/audit?'.length));
+    expect(query.get('actor')).toBe('zoe');
+    expect(query.get('from')).toBe('2026-11-20T00:00:00.000Z');
+    expect(query.get('to')).toBe('2026-11-20T14:59:59.999Z');
   });
 
   it.each(['Escape', 'Close'] as const)('hands focus back to the row action when %s closes the sheet', async (how) => {

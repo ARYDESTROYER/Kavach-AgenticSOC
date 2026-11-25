@@ -66,8 +66,17 @@ vi.mock('sonner', () => ({
 }));
 
 vi.mock('@/soc/components/SourceEditor', () => ({
-  SourceEditor: (props: { existing?: { id: string } }) => (
-    <div data-testid="source-editor-stub">{props.existing ? `editing ${props.existing.id}` : 'new source form'}</div>
+  SourceEditor: (props: {
+    existing?: { id: string };
+    onSaved?: (notice: { tone: 'success' | 'warning'; text: string }) => void;
+  }) => (
+    <div data-testid="source-editor-stub">
+      {props.existing ? `editing ${props.existing.id}` : 'new source form'}
+      {/* The real editor computes the notice from the server's answer; the stub hands one over. */}
+      <button type="button" onClick={() => props.onSaved?.({ tone: 'success', text: 'Saved. Real sources appear here after Demo Mode is turned off.' })}>
+        Stub save in Demo
+      </button>
+    </div>
   ),
 }));
 
@@ -252,5 +261,28 @@ describe('Wizard Data sources step (Round 16 B43, B46)', () => {
     expect(await screen.findByText('Couldn’t update data sources')).toBeInTheDocument();
     expect(toast.success).not.toHaveBeenCalled();
     expect(toast.warning).not.toHaveBeenCalled();
+  });
+});
+
+describe('Wizard Data sources step: a real source saved in Demo Mode (Round 16)', () => {
+  beforeEach(() => {
+    listConnectorsMock.mockReset().mockResolvedValue({ connectors: CONNECTORS });
+    listSourcesMock.mockReset().mockResolvedValue({ sources: DEMO_ROWS });
+    upsertSourceMock.mockReset().mockResolvedValue({ ok: true, sources: [] });
+    demoStatusMock.mockReset().mockResolvedValue({ mode: 'seeded', active: true });
+    authMeMock.mockReset().mockResolvedValue({ auth_enabled: false, authenticated: true, user: null });
+    rolesGetMock
+      .mockReset()
+      .mockResolvedValue({ roles: [], default_role: 'analyst_tier1', rbac_enabled: false, matrix: {} });
+    vi.mocked(toast.success).mockReset();
+    vi.mocked(toast.warning).mockReset();
+  });
+
+  it('says the saved source appears after Demo Mode is turned off', async () => {
+    const { user } = await openDataSources();
+    await screen.findByText('Wazuh Manager (endpoint telemetry)');
+    await user.click(screen.getByRole('button', { name: /Add source/ }));
+    await user.click(await screen.findByRole('button', { name: 'Stub save in Demo' }));
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith('Saved. Real sources appear here after Demo Mode is turned off.'));
   });
 });

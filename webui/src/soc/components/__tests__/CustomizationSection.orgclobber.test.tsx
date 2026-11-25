@@ -1,6 +1,7 @@
 /**
- * Round-6 regression — CustomizationSection "Save default" (org theme) must NOT wipe the
- * other org customization fields.
+ * Round-6 regression: CustomizationSection must NOT wipe the other org customization
+ * fields. (Round 16 B45 removed its "Save default" theme control, so nothing here writes
+ * the org object any more; Branding holds the one organization default theme.)
  *
  * `PUT /api/prefs/org` REPLACES the whole customization object (no server-side merge), so
  * sending a partial `{ default_theme }` used to silently blank the org terminology, shared
@@ -146,21 +147,15 @@ describe('CustomizationSection — org defaults save (Round-6 clobber fix)', () 
     expect(window.localStorage.getItem('soc.theme')).toBe('system');
   });
 
-  it('round-trips the full org object (saved views + dashboards) when saving the default theme', async () => {
+  it('never writes the org customization object (Round 16 B45: no second theme control)', async () => {
     renderSection();
     await waitFor(() => expect(mocks.getOrg).toHaveBeenCalled());
-
-    fireEvent.click(await screen.findByRole('button', { name: /save default/i }));
-
-    await waitFor(() => expect(mocks.putOrg).toHaveBeenCalledTimes(1));
-    const sent = mocks.putOrg.mock.calls[0][0] as Record<string, unknown>;
-    // The fields with no editor on this surface must survive the REPLACE PUT.
-    expect(sent.default_saved_views).toEqual(FULL_ORG.default_saved_views);
-    expect(sent.default_pinned_view_ids).toEqual(FULL_ORG.default_pinned_view_ids);
-    expect(sent.default_dashboards).toEqual(FULL_ORG.default_dashboards);
-    // Terminology is preserved (carried from the loaded org).
-    expect(sent.terminology).toEqual(FULL_ORG.terminology);
-    // The theme is the one field this button owns.
-    expect(sent.default_theme).toBe('system');
+    expect(screen.queryByRole('button', { name: /save default/i })).toBeNull();
+    // Saving terminology goes through its own route and carries only the labels, so the
+    // org saved views, pinned ids and dashboards can never be wiped from here.
+    fireEvent.click(await screen.findByRole('button', { name: /save terminology/i }));
+    await waitFor(() => expect(mocks.terminologyPut).toHaveBeenCalledTimes(1));
+    expect(mocks.terminologyPut).toHaveBeenCalledWith(FULL_ORG.terminology);
+    expect(mocks.putOrg).not.toHaveBeenCalled();
   });
 });

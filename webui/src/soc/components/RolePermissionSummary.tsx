@@ -13,8 +13,7 @@
  * operator-influenceable → rendered as PLAIN text only (#9).
  */
 import { ShieldCheck } from 'lucide-react';
-import { humanizeToken } from '@/lib/format';
-import { RESOURCE_ACTIONS, RESOURCE_ORDER, roleLabel, type GrantMap } from '@/soc/pages/Roles.api';
+import { RESOURCE_ACTIONS, RESOURCE_ORDER, resourceLabel, roleLabel, type GrantMap } from '@/soc/pages/Roles.api';
 
 /** One summarised resource row: the resource plus its concrete granted actions. */
 export interface RoleGrantRow {
@@ -127,7 +126,7 @@ export function RolePermissionSummary({
           {rows.map(({ resource, actions }) => (
             <li key={resource} className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
               <span className="min-w-[7rem] text-xs font-medium text-foreground">
-                {humanizeToken(resource)}
+                {resourceLabel(resource)}
               </span>
               <span className="flex flex-wrap items-center gap-1">
                 {actions.map((a) => (
