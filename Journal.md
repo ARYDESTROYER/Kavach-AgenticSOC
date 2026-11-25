@@ -12414,3 +12414,47 @@
 - Tests: on the merged tree, the 30 changed Console test files with the first-paint, route registry, navigation and console map contracts: 700 passed, 1 skipped; typecheck clean; lint clean; design gates pass; check:types no drift; route coverage, knowledge, records and spine guard backend tests 259 passed; build:app entry 325,135 B.
 - Status: done.
 - Next: the case tab docs package, WP05 part 2, then Wave 1 merges as reviews finish.
+
+### 2026-11-25 15:30Z - WP13 agent - Case records reachable: backend
+- Context: Round 16 SPEC section 4.5 WP13 ([dv] R2, R3, R7 backend, DV-6), built from base 5a4ec90 on r16-wp13.
+- Did:
+  - Added routes_case_events.py: GET /api/cases/{case_id}/events (cases:read and sources:read). It reads fetch_by_ids on the read-only client, keeps only member keys, pages with an offset cursor (limit 1 to 200) and says aged_out, push_source_not_retrievable or source_unavailable. It writes one case.events_viewed audit row per viewer per case per 10 minutes (Demo audit in Demo Mode).
+  - Added routes_case_usage.py: GET /api/cases/{case_id}/usage (cases:read and cost:view). It returns the case's ledger rows, the pipeline, chat and other totals, and reconciles against token_cost.
+  - The gateway now writes the four rates, cache_write_ttl and price_basis on every ledger row, from the same price lookup as the cost. Added pricing.rates_for; cost_for is unchanged.
+  - Threat context IP rows now list providers, method, errors and providers_status from the same enrich_ip call. A cached IP answer keeps its provider results under their own key.
+  - DV-6 comment fixed. Regenerated openapi.json and api-types.gen.ts.
+- Tests: 42 new backend tests pass. Full pytest: 13,489 collected, 7 failed (2 expected router-count, 5 sandbox env). test:strict: 8,895 passed, 4 load timeouts that pass alone. check:types, typecheck, lint, gates and build:app pass; entry chunk 323,479 B.
+- Status: done; commit c687b75.
+- Next:
+  - WP14 builds the Console on these routes.
+  - WP18 moves the router count to 46 after WP08.
+  - WP10 or WP14 should decide whether case.events_viewed rows belong in the investigation trace.
+
+### 2026-11-25 17:00Z - WP13 reviewer - Case records reachable: backend review
+- Context: Independent adversarial review of Round 16 WP13 (SPEC section 4.5; [dv] R2, R3, R7, DV-6), branch r16-wp13 at c687b75, base 5a4ec90.
+- Did:
+  - Checked the events route, the usage route, the ledger rate fields, the threat context provider fields and the DV-6 comment against the SPEC and the non-negotiables. decide() and risk.py are untouched.
+  - Fixed two defects in c42271e:
+    - A self-hosted model registered through the custom-model route gets a $0 overlay row, so its ledger rows said price_basis "overlay". The gateway now reads a $0 overlay on a registered model as "custom".
+    - The events cursor check used str.isdigit, so a superscript digit gave a 500 and a long cursor gave a 422. A cursor is now one to nine ASCII digits, and anything else is 400 case_events_bad_cursor.
+  - Corrected the usage route docstring on the 1e-8 rounding.
+  - Regenerated openapi.json.
+  - Added tests/test_round16_wp13_review.py (13 tests). Without the fixes, 5 of them fail.
+  - Probed seeded Demo Mode: 30 of 47 Demo cases read aged_out (their member events are not in the Demo adapters). No Demo case has ledger rows yet (B48, WP15D).
+- Tests:
+  - Full pytest: 13,502 collected; 13,465 passed, 29 skipped, 8 failed (2 expected router-count, 5 sandbox env, 1 chat starters timeout under load that passes alone).
+  - check:types, typecheck, lint, gates and build:app pass; entry chunk 323,479 B.
+  - test:strict under load: 29 load failures in 20 files, which pass when rerun with a longer timeout.
+  - check_version, check_ci_contract, check_docs and build_app_knowledge --check pass.
+- Status: done; r16-wp13 at c42271e, worktree detached.
+- Next:
+  - WP14: when truncated, read the usage chat and other totals as "at least". Offer next_cursor even when a page says aged_out.
+  - WP15D: seed Demo cases whose events the Demo adapters hold, and seed the B48 ledger rows.
+  - WP18: move the router count to 46 after WP08 merges.
+
+### 2026-11-25 17:00Z - orchestrator - WP13 merged (case records reachable, backend)
+- Context: SPEC §4.8 step 9: GET /api/cases/{id}/events and /usage, the ledger rate fields and price basis, and the threat context provider detail.
+- Did: merged review c42271e into claude/round16 with no conflicts; generated files unchanged. Carried to WP15D: 30 of 47 seeded Demo cases answer aged_out for their events and Demo cases have no ledger rows (B48), so the Demo shows real events and usage before WP17's screenshots.
+- Tests: on the merged tree, the WP13 tests with route coverage, security, spine and decide guards: 169 passed. decide() and engine/risk.py unchanged.
+- Status: done.
+- Next: WP14 (case records Console) starts from this base.
