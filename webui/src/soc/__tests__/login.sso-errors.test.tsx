@@ -63,6 +63,11 @@ function backendSsoErrorCodes(): string[] {
   const next = source.indexOf('\n@router.', start);
   const body = source.slice(start, next === -1 ? undefined : next);
   expect(body).toMatch(/\/login\?sso_error=/);
+  // Every call passes one literal code, so this list is the whole vocabulary: a call
+  // with a computed reason (an exception text, say) would escape it, and fails here.
+  const calls = Array.from(body.matchAll(/(?<!def )_fail\(([^)]*)\)/g), (m) => m[1].trim());
+  expect(calls.length).toBeGreaterThan(0);
+  for (const argument of calls) expect(argument, `_fail(${argument})`).toMatch(/^"[a-z_]+"$/);
   return Array.from(new Set(Array.from(body.matchAll(/_fail\("([a-z_]+)"\)/g), (m) => m[1])));
 }
 

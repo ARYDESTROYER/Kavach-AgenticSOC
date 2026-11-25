@@ -86,6 +86,16 @@ describe('the sign-in page motion contract (theme.css)', () => {
     }
   });
 
+  it('holds the spinners back for 300ms, so a fast load never flashes one', () => {
+    const rule = /\.login-delayed-reveal\s*\{[^}]*animation\s*:\s*([^;]+);/.exec(css);
+    expect(rule, '.login-delayed-reveal has no animation').not.toBeNull();
+    const times = rule![1].trim().split(/\s+/).map(durationMs).filter((ms): ms is number => ms !== null);
+    // Duration first, then the delay: the glyph stays hidden (backwards fill) until 300ms.
+    expect(times).toHaveLength(2);
+    expect(times[1]).toBe(300);
+    expect(rule![1]).toMatch(/\bbackwards\b/);
+  });
+
   it('sets no will-change and keeps the retired identity canvas out', () => {
     const signIn = css.slice(css.indexOf('.login-canvas::before'), noPreference.at(-1)!.end);
     expect(signIn).not.toMatch(/will-change/);

@@ -107,6 +107,28 @@ describe('BrandingEditor: unset accents show the live token defaults (B50)', () 
     expect(document.body.innerHTML.toLowerCase()).not.toContain(OLD_VIOLET);
   });
 
+  it('paints the live preview stripe and the Gradient tile from the token accents', async () => {
+    const { container } = render(
+      <ThemeProvider>
+        <BrandingEditor />
+      </ThemeProvider>,
+    );
+    await screen.findByLabelText('Primary accent');
+    const stripe = container.querySelector<HTMLElement>(
+      '[data-testid="branding-live-preview"] > div:first-child',
+    );
+    const tile = screen.getByText('Gradient').parentElement?.querySelector<HTMLElement>('[aria-hidden]');
+    for (const painted of [stripe, tile]) {
+      expect(painted).not.toBeNull();
+      const background = painted!.style.background.toLowerCase();
+      expect(background).toContain('linear-gradient');
+      expect(background).toContain(`${PRIMARY_HEX} 0%`);
+      expect(background).toContain(`${ACCENT2_HEX} 100%`);
+      expect(background).not.toContain(OLD_VIOLET);
+      expect(background).not.toContain(OLD_TEAL);
+    }
+  });
+
   it('follows a theme switch: the dark tokens once the page is dark', async () => {
     function GoDark() {
       const { setTheme } = useTheme();
