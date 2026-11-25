@@ -27,9 +27,10 @@ paths:
 
 Whichever path ranks, the rows returned are read back and scored with the exact float64
 :func:`~app.tools.vectorstore._cosine`, ordered by that score and then by row id, so the
-three paths return the same chunks with the same scores. The ranking paths read a few
-rows more than ``top_k`` so a float32 rounding at the cut cannot change which rows come
-back.
+three paths return the same chunks with the same scores. The ranking paths score in
+float32, so they read back a few rows more than ``top_k`` and also every row whose
+float32 score lies within the rounding band of the ``top_k`` cut (``_rank_tolerance``):
+a near tie at the cut can then never hide a row whose exact score is higher.
 
 Every chunk is tagged with the embedding ``model`` + ``dim`` (mirroring
 ``ESVectorStore``) so an embedding-space change (model/dim) is DETECTED and the caller
@@ -70,23 +71,40 @@ logger = logging.getLogger("tlsoc.stores.sql.vectorstore")
 MATRIX_CACHE_TTL_SECONDS = 60.0
 #: How many rows beyond ``top_k`` a ranking path reads back before the exact rescoring.
 RERANK_MARGIN = 8
+# The unit roundoff of float32, the precision both ranking paths score in.
+_FLOAT32_UNIT = 2.0 ** -24
+# A matrix holding more stored numbers than this (about 2,600 chunks of 1,536
+# dimensions, a few milliseconds of work) is ranked in a worker thread.
+_RANK_OFFLOAD_VALUES = 4_000_000
 #: The most stored numbers the in-process matrix holds (4 bytes each, about 100 MB:
-#: some 16,000 chunks of 1,536 dimensions). On PostgreSQL with pgvector a larger corpus
-#: is ranked in the database instead.
+#: some 16,000 chunks of 1,536 dimensions; a rebuild also holds the rows as read until
+#: it ends). On PostgreSQL with pgvector a larger corpus is ranked in the database
+#: instead.
 MATRIX_MAX_VALUES = 25_000_000
 # Rows read back per query when rescoring (well under every driver's bind limit).
 _RESCORE_BATCH = 500
 
 # pgvector ranks a zero-norm vector's cosine distance as NaN; ``_cosine`` scores it 0
-# (distance 1), so the database query treats it the same way.
+# (distance 1), so the database query treats it the same way. The query returns the
+# first ``:m`` rows by distance and every further row whose distance is within ``:tol``
+# of the ``:k``-th (pgvector scores in float, so a near tie at the cut can hide a row
+# whose exact score is higher; see ``_rank_tolerance``). ``ranked`` is referenced
+# twice, so PostgreSQL computes each row's distance once.
 _PGVECTOR_RANK_SQL = (
-    "SELECT id FROM ("
-    " SELECT id, CAST(CAST(embedding AS TEXT) AS vector)"
-    " <=> CAST(CAST(:q AS TEXT) AS vector) AS distance"
-    " FROM rag_chunks WHERE dim = :dim"
-    ") ranked "
-    "ORDER BY CASE WHEN distance = CAST('NaN' AS float8) THEN 1.0 ELSE distance END, id "
-    "LIMIT :m"
+    "WITH ranked AS ("
+    " SELECT id, CASE WHEN d = CAST('NaN' AS float8) THEN 1.0 ELSE d END AS distance"
+    " FROM ("
+    "  SELECT id, CAST(CAST(embedding AS TEXT) AS vector)"
+    "  <=> CAST(CAST(:q AS TEXT) AS vector) AS d"
+    "  FROM rag_chunks WHERE dim = :dim"
+    " ) raw"
+    "), numbered AS ("
+    " SELECT id, distance, ROW_NUMBER() OVER (ORDER BY distance, id) AS rn FROM ranked"
+    ") "
+    "SELECT id FROM numbered "
+    "WHERE rn <= :m"
+    " OR distance <= (SELECT distance FROM numbered WHERE rn = :k) + :tol "
+    "ORDER BY rn"
 )
 
 
@@ -107,6 +125,21 @@ def _clock() -> float:
 def _norm_of(vector: list[float]) -> float:
     """``sqrt(sum(x * x))`` summed in order, exactly as ``_cosine`` sums it."""
     return math.sqrt(sum(map(operator.mul, vector, vector)))
+
+
+def _rank_tolerance(dim: int) -> float:
+    """How far apart a float32 ranking score and the exact float64 cosine of the same row
+    can be, doubled (two rows compared), for ``dim``-dimensional embeddings.
+
+    Both ranking paths score in float32: the in-process matrix multiplies unit vectors
+    rounded to float32, and pgvector stores float4 and sums its dot product and both
+    norms in float. A float sum of ``dim`` products is off by at most about ``dim``
+    units in the last place of the sum of their magnitudes, which is at most 1 for a
+    cosine (Cauchy-Schwarz); the norms add as much again, and rounding each element to
+    float32 adds a few units more. So every row whose exact score could still reach the
+    ``top_k`` cut has a ranking score within this distance of the cut, and reading all
+    of them back keeps the exact rescoring identical to the Python path."""
+    return 2.0 * (2.0 * max(1, int(dim)) + 16.0) * _FLOAT32_UNIT
 
 
 def _exact_cosine(query: list[float], query_norm: float, emb: list[float]) -> float:
@@ -138,9 +171,10 @@ class _MatrixCache:
 
 def _build_matrix(np: Any, rows: list[tuple[int, Any]]) -> tuple[Any, Any, frozenset[int]]:
     """``(ids, matrix, dims)`` from ``(id, stored embedding)`` rows. Pure; runs in a
-    worker thread. One row is decoded at a time, so the memory held is the float32
-    matrix plus one decoded row. Raises ``ValueError`` or ``TypeError`` for an embedding
-    that is not a list of numbers."""
+    worker thread. The stored embeddings are decoded one row at a time into float32
+    rows, so while it runs the memory held is the rows as read (their stored text, or
+    the lists a driver decoded) plus the float32 matrix. Raises ``ValueError`` or
+    ``TypeError`` for an embedding that is not a list of numbers."""
     ids: list[int] = []
     vectors: list[Any] = []
     dims: set[int] = set()
@@ -162,6 +196,41 @@ def _build_matrix(np: Any, rows: list[tuple[int, Any]]) -> tuple[Any, Any, froze
     if len(dims) != 1:
         return np.empty(0, dtype=np.int64), np.empty((0, 0), dtype=np.float32), frozenset(dims)
     return np.asarray(ids, dtype=np.int64), np.vstack(vectors), frozenset(dims)
+
+
+def _matrix_scores(np: Any, matrix: Any, query_vector: list[float]) -> Any:
+    """The float32 cosine of every matrix row with ``query_vector`` (zeros for a zero
+    query). numpy's own ``einsum`` loop, not the BLAS product: BLAS starts a thread pool,
+    and on a busy host those threads wait for the CPU (measured on a loaded machine at
+    2,000 by 1,536: a median of 20 ms and a worst of 192 ms, against 1.5 ms and 17 ms).
+    Pure."""
+    query = np.asarray(query_vector, dtype=np.float64)
+    norm = float(np.linalg.norm(query))
+    if not norm > 0:
+        return np.zeros(int(matrix.shape[0]), dtype=np.float32)
+    return np.einsum("ij,j->i", matrix, (query / norm).astype(np.float32))
+
+
+def _rank_rows(
+    np: Any, ids: Any, matrix: Any, query_vector: list[float], top_k: int,
+) -> list[int]:
+    """The row ids to read back and score exactly, best float32 score first: the first
+    ``top_k + RERANK_MARGIN``, and every further row whose float32 score is within the
+    rounding band of the ``top_k`` cut (one of them may hold a higher exact score than a
+    row above it, a near tie). Pure; a large matrix runs it in a worker thread."""
+    scores = _matrix_scores(np, matrix, query_vector)
+    count = int(scores.shape[0])
+    if count == 0:
+        return []
+    # Stable, so equal scores keep row id order (as the Python path does).
+    order = np.argsort(-scores, kind="stable")
+    keep = int(top_k) + RERANK_MARGIN
+    cut = float(scores[order[min(int(top_k), count) - 1]])
+    if math.isfinite(cut):
+        # The band is a prefix of ``order``, which sorts by the same float32 scores.
+        threshold = cut - _rank_tolerance(len(query_vector))
+        keep = max(keep, int(np.count_nonzero(scores.astype(np.float64) >= threshold)))
+    return [int(ids[i]) for i in order[:keep]]
 
 
 class SqlVectorStore(VectorStore):
@@ -334,7 +403,8 @@ class SqlVectorStore(VectorStore):
                 raise EmbeddingSpaceMismatch(f"query dim {dim} != stored dim {int(other)}")
             result = await session.execute(
                 text(_PGVECTOR_RANK_SQL),
-                {"q": literal, "dim": dim, "m": int(top_k) + RERANK_MARGIN},
+                {"q": literal, "dim": dim, "m": int(top_k) + RERANK_MARGIN,
+                 "k": int(top_k), "tol": _rank_tolerance(dim)},
             )
             ids = [int(row[0]) for row in result]
         results, _complete = await self._rescore(ids, query_vector, top_k)
@@ -408,15 +478,13 @@ class SqlVectorStore(VectorStore):
         count = int(cache.ids.shape[0])
         if count == 0:
             return []
-        query = np.asarray(query_vector, dtype=np.float64)
-        norm = float(np.linalg.norm(query))
-        if norm > 0:
-            scores = cache.matrix @ (query / norm).astype(np.float32)
+        if count * dim > _RANK_OFFLOAD_VALUES:
+            # A large matrix is ranked in a worker thread, so the event loop never waits.
+            ids = await asyncio.to_thread(
+                _rank_rows, np, cache.ids, cache.matrix, query_vector, top_k,
+            )
         else:
-            scores = np.zeros(count, dtype=np.float32)
-        # Stable, so equal scores keep row id order (as the Python path does).
-        order = np.argsort(-scores, kind="stable")[: int(top_k) + RERANK_MARGIN]
-        ids = [int(cache.ids[i]) for i in order]
+            ids = _rank_rows(np, cache.ids, cache.matrix, query_vector, top_k)
         results, complete = await self._rescore(ids, query_vector, top_k)
         if complete:
             return results

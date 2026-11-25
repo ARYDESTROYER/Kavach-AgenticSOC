@@ -6,11 +6,12 @@
   time, never with "now".
 * ``stores.auto_close_review``: the ledger is decoded once per (revision, stored text)
   and indexed by case id; the review routes hand the ledger they read to ``_repair``.
-* ``stores.sql.vectorstore``: a cached, normalised float32 matrix ranks on SQLite (and
-  on PostgreSQL without pgvector), invalidated by the store's own writes, a
-  ``count``/``max(id)`` fingerprint and a 60 s expiry; numpy is optional; scores are the
-  exact ``_cosine`` on every path. (The pgvector path is proven in the PostgreSQL lane,
-  ``test_postgres_state_acceptance.py``.)
+* ``stores.sql.vectorstore``: a cached, normalised float32 matrix ranks on SQLite and
+  PostgreSQL (pgvector ranks only a corpus too large for it, or a process without
+  numpy), invalidated by the store's own writes, a ``count``/``max(id)`` fingerprint and
+  a 60 s expiry; numpy is optional; scores are the exact ``_cosine`` on every path, and
+  a float32 near tie at the cut never changes the rows. (The pgvector path is proven in
+  the PostgreSQL lane, ``test_postgres_state_acceptance.py``.)
 * ``api.routes_diagnostics``: the event-loop lag gauge.
 
 Offline: fake Elasticsearch, SQLite, mock model. Nothing here touches ``decide()``.
@@ -252,6 +253,83 @@ async def test_an_invalidation_discards_a_refresh_still_running(clock) -> None:
     store.gate = None
     population = await _fetch(store, None)
     assert population.stale is False and store.scans == 3
+
+
+class WindowCountingStore(GatedStore):
+    """Counts all-time reads (no ``created_from``) apart from windowed ones."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.all_time_scans = 0
+
+    async def scan_page(self, **kw: Any):
+        if kw.get("cursor") is None and kw.get("created_from") is None:
+            self.all_time_scans += 1
+        return await super().scan_page(**kw)
+
+
+async def test_a_windowed_read_never_pushes_the_all_time_population_out(clock, monkeypatch) -> None:
+    """Under the cache budget a windowed population (5 s, cheap to read again) gives
+    way to the all-time one, so the 60 s lifetime holds at the store sizes it is for.
+    Review fix: the oldest entry used to be evicted whatever its kind, so every LIVE
+    tick's windowed read pushed the all-time population out and it was read again."""
+    monkeypatch.setattr(metrics_shared, "POPULATION_CACHE_BUDGET", 16)
+    store = WindowCountingStore()
+    for i in range(8):
+        await store.save(_case(f"old{i}", hours_ago=200 + i))
+    for i in range(6):
+        await store.save(_case(f"new{i}", hours_ago=1 + i))
+    for tick in range(12):  # a minute of 5 s LIVE ticks
+        clock.now = 1000.0 + tick * 5.0
+        everything = await _fetch(store, None)
+        day = await _fetch(store, 24)
+        assert len(everything.cases) == 14 and everything.complete
+        assert sorted(_ids(day)) == [f"new{i}" for i in range(6)] and day.complete
+        retained = sum(len(e.cases) for e in metrics_shared._population_cache.values())
+        assert retained <= 16
+    assert store.all_time_scans == 1
+
+
+async def test_a_request_waiting_on_a_dropped_refresh_reads_again(clock) -> None:
+    """Review fix: an invalidation cancels a background refresh; a request that was
+    waiting for that read used to get its cancellation and fail."""
+    store = GatedStore()
+    await store.save(_case("c1"))
+    await _fetch(store, None)
+    store.gate = asyncio.Event()
+    clock.now = 1061.0
+    await _fetch(store, None)  # stale; the background read waits on the gate
+    await _settle(lambda: store.scans >= 2)
+    clock.now = 1130.0  # past the stale bound: this request joins the background read
+    waiter = asyncio.ensure_future(_fetch(store, None))
+    await _settle()
+    assert not waiter.done()
+    metrics_shared.invalidate_case_population_cache()
+    store.gate.set()
+    population = await waiter
+    assert _ids(population) == ["c1"] and population.stale is False and population.load_ok
+    assert store.scans == 3  # the waiter read again
+
+
+async def test_a_request_cancelled_while_it_waits_stays_cancelled(clock) -> None:
+    store = GatedStore()
+    await store.save(_case("c1"))
+    await _fetch(store, None)
+    store.gate = asyncio.Event()
+    clock.now = 1061.0
+    await _fetch(store, None)
+    await _settle(lambda: store.scans >= 2)
+    clock.now = 1130.0
+    waiter = asyncio.ensure_future(_fetch(store, None))
+    await _settle()
+    waiter.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await waiter
+    assert len(metrics_shared._revalidations) == 1  # the shared read still runs
+    store.gate.set()
+    await _refreshes_done()
+    fresh = await _fetch(store, None)
+    assert fresh.stale is False and store.scans == 2
 
 
 async def test_freshness_names_the_read_time_and_the_age() -> None:
@@ -543,6 +621,98 @@ async def test_the_matrix_path_returns_the_python_path_exactly(monkeypatch, buil
         await engine.dispose()
 
 
+async def test_a_float32_near_tie_never_hides_the_best_chunk(monkeypatch) -> None:
+    """Review fix: more than ``RERANK_MARGIN`` rows that tie with the best row in
+    float32 (but not in float64) used to push it out of the rows read back, so the
+    matrix path dropped the chunk the Python path ranks first."""
+    engine, store = await _sqlite_store()
+    try:
+        near = [_chunk(f"near{i}", [1.0, 1e-4, 0.0, 0.0]) for i in range(20)]
+        await store.add(near + [_chunk("exact", [1.0, 0.0, 0.0, 0.0])])
+        query = [1.0, 0.0, 0.0, 0.0]
+        for top_k in (1, 5, 21):
+            fast = await store.search(query, top_k)
+            with monkeypatch.context() as m:
+                m.setattr(sqlvec, "_numpy", lambda: None)
+                slow = await store.search(query, top_k)
+            assert _shape(fast) == _shape(slow)
+            assert fast[0][0].text == "exact" and fast[0][1] == 1.0
+    finally:
+        await engine.dispose()
+
+
+def test_the_rank_tolerance_bounds_the_float32_error() -> None:
+    """The matrix's float32 score of a row stays within half the rank tolerance of the
+    exact float64 cosine, for spiky and flat embeddings alike."""
+    import numpy as np
+
+    rng = random.Random(21)
+    worst = 0.0
+    for _ in range(120):
+        dim = rng.choice([2, 7, 64, 384, 1536, 3072])
+        scale = [10.0 ** rng.uniform(-6, 6) for _ in range(dim)]
+        query = [rng.uniform(-1.0, 1.0) * s for s in scale]
+        rows = [[rng.uniform(-1.0, 1.0) * s for s in scale] for _ in range(8)]
+        _row_ids, matrix, _dims = sqlvec._build_matrix(np, list(enumerate(rows)))
+        scores = sqlvec._matrix_scores(np, matrix, query)
+        assert scores.dtype == np.float32
+        bound = sqlvec._rank_tolerance(dim) / 2.0
+        for row, score in zip(rows, scores.tolist()):
+            error = abs(score - _cosine(query, row))
+            worst = max(worst, error / bound)
+            assert error <= bound, (dim, error, bound)
+    assert worst < 1.0
+
+
+def test_the_ranking_never_uses_the_blas_product() -> None:
+    """Review fix: the BLAS product starts a thread pool whose threads wait for the CPU
+    on a busy host (a loaded machine measured a 20 ms median and a 192 ms worst at
+    2,000 by 1,536, on the event loop). The ranking uses numpy's own loop."""
+    import numpy as np
+
+    class NoBlas(np.ndarray):
+        def __matmul__(self, other):  # pragma: no cover (the assertion)
+            raise AssertionError("the ranking used the BLAS product")
+
+        def dot(self, *args, **kwargs):  # pragma: no cover (the assertion)
+            raise AssertionError("the ranking used the BLAS product")
+
+    rng = random.Random(23)
+    rows = [_vec(rng, 12) for _ in range(30)]
+    ids, matrix, _dims = sqlvec._build_matrix(np, list(enumerate(rows)))
+    query = _vec(rng, 12)
+    ranked = sqlvec._rank_rows(np, ids, matrix.view(NoBlas), query, 5)
+    expected = sorted(range(30), key=lambda i: _cosine(query, rows[i]), reverse=True)
+    assert ranked[:5] == expected[:5]
+
+
+async def test_a_large_matrix_is_ranked_in_a_worker_thread(monkeypatch) -> None:
+    """Above ``_RANK_OFFLOAD_VALUES`` the ranking runs off the event loop and returns
+    exactly what the inline ranking returns."""
+    import threading
+
+    rng = random.Random(22)
+    engine, store = await _sqlite_store()
+    try:
+        await store.add([_chunk(f"c{i}", _vec(rng, 16)) for i in range(40)])
+        query = _vec(rng, 16)
+        inline = await store.search(query, 6)
+        threads: list[str] = []
+        real = sqlvec._rank_rows
+
+        def recording(*args: Any):
+            threads.append(threading.current_thread().name)
+            return real(*args)
+
+        monkeypatch.setattr(sqlvec, "_rank_rows", recording)
+        monkeypatch.setattr(sqlvec, "_RANK_OFFLOAD_VALUES", 0)
+        offloaded = await store.search(query, 6)
+        assert _shape(offloaded) == _shape(inline)
+        assert threads and threads[0] != threading.main_thread().name
+    finally:
+        await engine.dispose()
+
+
 async def test_the_store_own_writes_rebuild_the_matrix(builds) -> None:
     rng = random.Random(7)
     engine, store = await _sqlite_store()
@@ -673,7 +843,10 @@ async def test_two_thousand_chunks_answer_in_under_50_ms_warm_on_sqlite() -> Non
         query = _vec(rng, dim)
         await store.search(query, 10)  # cold: builds the matrix
         timings = []
-        for _ in range(5):
+        # The best of 15 runs: one quiet run proves the warm path's cost on a busy
+        # machine, where most single runs wait for the CPU (review fix: 5 runs failed
+        # on a loaded shared machine at 65 to 84 ms against about 12 ms quiet).
+        for _ in range(15):
             started = time.perf_counter()
             results = await store.search(query, 10)
             timings.append(time.perf_counter() - started)

@@ -488,6 +488,38 @@ async def test_pgvector_ranking_matches_the_matrix_and_python_paths(pg_engine, m
     assert store._pg_failure_logged is False  # the database path never fell back
 
 
+async def test_a_float_near_tie_never_hides_the_best_chunk_on_any_path(pg_engine, monkeypatch) -> None:
+    """pgvector and the matrix both score in float32: more than ``RERANK_MARGIN`` rows
+    that tie with the best row there (but not in float64) must not push it out of the
+    rows read back (review fix; it used to drop the chunk the Python path ranks first)."""
+    from app.stores.sql import SqlVectorStore
+    from app.stores.sql import vectorstore as sqlvec
+    from app.tools.vectorstore import StoredChunk
+
+    await create_all(pg_engine)
+    store = SqlVectorStore(pg_engine)
+
+    def chunk(text_value: str, emb: list[float]) -> StoredChunk:
+        return StoredChunk(text=text_value, source="mitre", embedding=emb,
+                           embedding_model="m-test", dim=len(emb))
+
+    await store.add([chunk(f"near{i}", [1.0, 1e-4, 0.0, 0.0]) for i in range(20)]
+                    + [chunk("exact", [1.0, 0.0, 0.0, 0.0])])
+    query = [1.0, 0.0, 0.0, 0.0]
+    for top_k in (1, 5, 21):
+        with monkeypatch.context() as m:
+            m.setattr(sqlvec, "MATRIX_MAX_VALUES", 0)  # rank in the database
+            native = await store.search(query, top_k)
+        matrix = await store.search(query, top_k)
+        with monkeypatch.context() as m:
+            m.setattr(sqlvec, "_numpy", lambda: None)
+            m.setattr(store, "_pg_native", False)
+            python = await store.search(query, top_k)
+        assert _vector_shape(native) == _vector_shape(matrix) == _vector_shape(python)
+        assert native[0][0].text == "exact" and native[0][1] == 1.0
+    assert store._pg_failure_logged is False
+
+
 async def test_without_numpy_postgresql_ranks_in_the_database(pg_engine, monkeypatch) -> None:
     from app.stores.sql import SqlVectorStore
     from app.stores.sql import vectorstore as sqlvec

@@ -203,7 +203,8 @@ async def fetch_case_page(store: Any, limit: int, *, fresh: bool = False) -> tup
 # * Loads are serialised per event loop and per kind — all-time loads on one lock,
 #   bounded-window loads on another, so a cheap windowed tile never queues behind an
 #   expensive all-time read — and the cache holds at most ``POPULATION_CACHE_BUDGET``
-#   Case objects across all entries (oldest evicted first).
+#   Case objects across all entries (oldest evicted first; since Round 16 windowed
+#   entries go before the all-time population, which a windowed read never evicts).
 # * The per-row work of a read (window checks, ordering, ``Case`` validation of the
 #   kept rows) runs in a worker thread one page at a time, so a 20,000-case read never
 #   stalls the event loop that also streams chat answers, SSE heartbeats and ingest.
@@ -582,6 +583,20 @@ async def _revalidate(store: Any, limit: int, fut: "asyncio.Future[CasePopulatio
             del _population_inflight[cache_key]
 
 
+def _shared_read_dropped(fut: "asyncio.Future[CasePopulation]") -> bool:
+    """Did the shared read ``fut`` end in a cancellation while the request waiting on it
+    was not itself cancelled? (A request cancelled while it waits sees ``fut`` still
+    running, or has a cancellation of its own pending.)"""
+    if not fut.done():
+        return False
+    task = asyncio.current_task()
+    if task is not None and task.cancelling():
+        return False
+    if fut.cancelled():
+        return True
+    return isinstance(fut.exception(), asyncio.CancelledError)
+
+
 def _covering_entry(store: Any, limit: int, since: Any, now: float) -> CasePopulation | None:
     best: CasePopulation | None = None
     all_time_request = since is None
@@ -651,7 +666,15 @@ async def fetch_case_population(
         and not pending[1].done()
         and pending[1].get_loop() is loop
     ):
-        population = await asyncio.shield(pending[1])
+        try:
+            population = await asyncio.shield(pending[1])
+        except asyncio.CancelledError:
+            if not _shared_read_dropped(pending[1]):
+                raise
+            # The read this request shared was cancelled, not this request: an
+            # invalidation dropped a background refresh, or the request that started
+            # the read went away. Read again rather than fail the request.
+            return await fetch_case_population(store, span_hours=span_hours, limit=limit)
         return await _narrow(population, span, since, until)
     fut: "asyncio.Future[CasePopulation] | None" = (
         loop.create_future() if loop is not None else None
@@ -699,14 +722,32 @@ async def _load_after_lock(store: Any, *, key: int | None, limit: int, since: An
 
 
 def _enforce_budget(*, keep: CasePopulation) -> None:
-    """Evict the oldest entries until the cache holds at most
-    ``POPULATION_CACHE_BUDGET`` Case objects (the entry just stored always stays)."""
+    """Evict entries until the cache holds at most ``POPULATION_CACHE_BUDGET`` Case
+    objects.
+
+    Windowed entries go first, oldest first: they live 5 s and are cheap to read again.
+    The all-time population is the one expensive read its 60 s lifetime exists for
+    (Round 16, WP06), so a windowed entry never pushes it out. When the entry just
+    stored is a windowed one that fits only by evicting the all-time population, that
+    windowed entry is the one left out of the cache (its caller still gets it). The
+    all-time entry just stored always stays."""
     def retained() -> int:
         return sum(len(entry.cases) for entry in _population_cache.values())
 
     while retained() > int(POPULATION_CACHE_BUDGET):
+        windowed = [k for k, v in _population_cache.items()
+                    if v is not keep and not _is_all_time_entry(v)]
+        if windowed:
+            oldest = min(windowed, key=lambda k: _population_cache[k].loaded_at)
+            _population_cache.pop(oldest, None)
+            continue
         victims = [k for k, v in _population_cache.items() if v is not keep]
         if not victims:
+            return
+        if not _is_all_time_entry(keep):
+            # Only all-time entries are left beside it: keep them, drop this one.
+            for key in [k for k, v in _population_cache.items() if v is keep]:
+                _population_cache.pop(key, None)
             return
         oldest = min(victims, key=lambda k: _population_cache[k].loaded_at)
         _population_cache.pop(oldest, None)
