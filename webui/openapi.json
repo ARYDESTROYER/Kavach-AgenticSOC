@@ -7375,6 +7375,221 @@
         "title": "InvestigateRequest",
         "type": "object"
       },
+      "InvestigationSlots": {
+        "description": "The investigation gate's use: ``in_use`` permits held, ``cap`` the configured\n``caps.max_concurrent``.",
+        "properties": {
+          "cap": {
+            "default": 0,
+            "title": "Cap",
+            "type": "integer"
+          },
+          "in_use": {
+            "default": 0,
+            "title": "In Use",
+            "type": "integer"
+          }
+        },
+        "title": "InvestigationSlots",
+        "type": "object"
+      },
+      "InvestigationView": {
+        "description": "One AI investigation run as the Console sees it (SPEC §4.5 WP08, D10).\n\nIds, enums, ISO timestamps and integers only (#7, #9): never a title, entity, rule\nor model text, and never a person's name in a broadcast. ``case_id`` is ``None``\nwhile a run on new events has not attached its case yet. ``deadline_at`` is\n``started_at`` plus ``time_cap_seconds`` (the run's model-call cap).\n\n``requested_by_you`` and ``requested_by`` are filled only by the caller-scoped\nroute: ``requested_by_you`` for everyone, ``requested_by`` (the requester's user\nname) only for a holder of ``users:manage``. The ``case.investigation`` frame drops\nboth (``realtime.publish_case_investigation``).",
+        "properties": {
+          "case_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Case Id"
+          },
+          "deadline_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deadline At"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "enum": [
+                  "decided",
+                  "routed_to_person",
+                  "closed_by_policy",
+                  "unchanged",
+                  "cancelled",
+                  "failed"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outcome"
+          },
+          "phase": {
+            "default": "queued",
+            "enum": [
+              "queued",
+              "triage",
+              "specialist",
+              "evidence",
+              "verdict",
+              "decision"
+            ],
+            "title": "Phase",
+            "type": "string"
+          },
+          "queued_at": {
+            "default": "",
+            "title": "Queued At",
+            "type": "string"
+          },
+          "requested_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Requested By"
+          },
+          "requested_by_you": {
+            "default": false,
+            "title": "Requested By You",
+            "type": "boolean"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "state": {
+            "default": "queued",
+            "enum": [
+              "queued",
+              "running",
+              "finished"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "status_after": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status After"
+          },
+          "time_cap_seconds": {
+            "default": 0,
+            "title": "Time Cap Seconds",
+            "type": "integer"
+          },
+          "trigger": {
+            "default": "automatic",
+            "enum": [
+              "automatic",
+              "manual",
+              "job",
+              "drain",
+              "detection"
+            ],
+            "title": "Trigger",
+            "type": "string"
+          },
+          "verdict_after": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Verdict After"
+          }
+        },
+        "required": [
+          "run_id"
+        ],
+        "title": "InvestigationView",
+        "type": "object"
+      },
+      "InvestigationsActive": {
+        "description": "``GET /api/investigations/active`` (SPEC §4.5 WP08). Memory only: ``items`` are\nthe queued or running runs whose case is known, ``recent`` the runs that finished in\nthe last 120 s, ``new_runs`` the count of runs whose case does not exist yet.\n``process_local`` is always true: another backend replica's runs are not seen.",
+        "properties": {
+          "generated_at": {
+            "title": "Generated At",
+            "type": "string"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/InvestigationView"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "new_runs": {
+            "default": 0,
+            "title": "New Runs",
+            "type": "integer"
+          },
+          "process_local": {
+            "default": true,
+            "title": "Process Local",
+            "type": "boolean"
+          },
+          "recent": {
+            "items": {
+              "$ref": "#/components/schemas/InvestigationView"
+            },
+            "title": "Recent",
+            "type": "array"
+          },
+          "slots": {
+            "$ref": "#/components/schemas/InvestigationSlots"
+          }
+        },
+        "title": "InvestigationsActive",
+        "type": "object"
+      },
       "JobFailure": {
         "properties": {
           "item_ref": {
@@ -9764,7 +9979,7 @@
         "type": "object"
       },
       "ReinvestigateRequest": {
-        "description": "Re-run the investigation on an existing case. Optional ``model`` overrides\nthe investigation-role models (router/investigator/formatter) for THIS run via a\nprefs copy (the per-call model-override technique) — no gateway plumbing change.",
+        "description": "Re-run the investigation on an existing case. Optional ``model`` overrides\nthe investigation-role models (router/investigator/formatter) for THIS run via a\nprefs copy (the per-call model-override technique); no gateway plumbing change.\n\n``wait`` (Round 16 SPEC §4.5 WP08): true (the default) answers when the run ends,\nwith the updated case; false answers ``202 {run_id, case_id, state: \"queued\"}`` at\nonce and the run goes on in the background (its result arrives as a case update,\na ``case.investigation`` frame and an Inbox notice).",
         "properties": {
           "analyst": {
             "default": "analyst",
@@ -9781,6 +9996,11 @@
               }
             ],
             "title": "Model"
+          },
+          "wait": {
+            "default": true,
+            "title": "Wait",
+            "type": "boolean"
           }
         },
         "title": "ReinvestigateRequest",
@@ -22098,7 +22318,7 @@
     },
     "/api/cases/{case_id}/investigate": {
       "post": {
-        "description": "Human-triggered (re-)investigation of a stored case (C3-4).\n\nRebuilds the cluster from the case — preferring an exact id-based re-query,\nfalling back to a config-windowed entity re-query — then re-runs the SAME\nshared pipeline with ``force=True`` so an already-investigated OPEN case is\nre-investigated in place. The case's ORIGINAL provenance (``source_surface`` /\n``origin_surface``) is preserved by the pipeline, so an automated-scan case\nstays in the Automated Scans tab. Returns a NEUTRAL 400 if no events remain\n(the cluster aged out of the configured window).",
+        "description": "Human-triggered (re-)investigation of a stored case (C3-4).\n\nRebuilds the cluster from the case (preferring an exact id-based re-query,\nfalling back to a config-windowed entity re-query), then re-runs the SAME\nshared pipeline with ``force=True`` so an already-investigated OPEN case is\nre-investigated in place. The case's ORIGINAL provenance (``source_surface`` /\n``origin_surface``) is preserved by the pipeline, so an automated-scan case\nstays in the Automated Scans tab. Returns a NEUTRAL 400 if no events remain\n(the cluster aged out of the configured window).\n\nRound 16 (SPEC §4.5 WP08): a closed case is investigated in place unless an open\ncase holds its signature (``409 open_case_exists``), and a second request while a\nrun on the case is queued or running answers ``409 investigation_running``; both\nare checked before the rebuild.",
         "operationId": "case_investigate_api_cases__case_id__investigate_post",
         "parameters": [
           {
@@ -22231,7 +22451,7 @@
     },
     "/api/cases/{case_id}/reinvestigate": {
       "post": {
-        "description": "Manually re-run the SHARED investigation pipeline on a stored case (force).\n\nLoads the case (404 if missing), reconstructs the cluster from the case's stored\nfields (member event ids → exact id re-query, else a config-windowed entity\nre-query — via the same robust ``_cluster_for_case`` helper the legacy\n``/investigate`` route uses), then calls ``investigate_cluster(..., force=True)``\nso it re-runs even on an already-verdicted case. An optional ``{\"model\": \"<id>\"}``\nbody overrides the investigation-role models for this run only via a prefs copy\n(still through the one gateway, #6). The case's ORIGINAL provenance\n(``source_surface``) is preserved by the pipeline. The deterministic\nclose/escalate decision in the Case Manager is untouched (#3). Returns the\nupdated Case. 400 (NEUTRAL) if no events remain to rebuild the cluster.",
+        "description": "Manually re-run the SHARED investigation pipeline on a stored case (force).\n\nLoads the case (404 if missing), reconstructs the cluster from the case's stored\nfields (member event ids → exact id re-query, else a config-windowed entity\nre-query, via the same robust ``_cluster_for_case`` helper the legacy\n``/investigate`` route uses), then calls ``investigate_cluster(..., force=True)``\nso it re-runs even on an already-verdicted case. An optional ``{\"model\": \"<id>\"}``\nbody overrides the investigation-role models for this run only via a prefs copy\n(still through the one gateway, #6). The case's ORIGINAL provenance\n(``source_surface``) is preserved by the pipeline. The deterministic\nclose/escalate decision in the Case Manager is untouched (#3). Returns the\nupdated Case. 400 (NEUTRAL) if no events remain to rebuild the cluster.\n\nRound 16 (SPEC §4.5 WP08, D10), each checked before the audit row and the rebuild:\na closed case is reinvestigated IN PLACE unless an open case holds its signature\n(``409 open_case_exists`` with that case's id); a second request while a run on the\ncase or its signature is queued or running answers ``409 investigation_running``\nwith the run. ``wait=false`` answers ``202 {run_id, case_id, state}`` at once.",
         "operationId": "case_reinvestigate_api_cases__case_id__reinvestigate_post",
         "parameters": [
           {
@@ -22266,8 +22486,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "title": "Response Case Reinvestigate Api Cases  Case Id  Reinvestigate Post",
-                  "type": "object"
+                  "title": "Response Case Reinvestigate Api Cases  Case Id  Reinvestigate Post"
                 }
               }
             },
@@ -25951,6 +26170,57 @@
           }
         },
         "summary": "Investigate"
+      }
+    },
+    "/api/investigations/active": {
+      "get": {
+        "description": "The AI investigations queued or running now, and those that just finished.",
+        "operationId": "investigations_active_api_investigations_active_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "case_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 200,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Case Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvestigationsActive"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Investigations Active",
+        "tags": [
+          "investigations"
+        ]
       }
     },
     "/api/jobs": {

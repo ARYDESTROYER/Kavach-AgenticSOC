@@ -839,8 +839,9 @@ class Poller:
         return stats
 
     async def _attach(self, existing, cluster) -> None:
-        """Merge a cluster's new events into an open case (shared ingest logic)."""
-        await attach_cluster(self._cases, existing, cluster)
+        """Merge a cluster's new events into an open case (shared ingest logic), on the
+        case as stored now (the pipeline's case lock, Round 16 WP08)."""
+        await attach_cluster(self._cases, existing, cluster, pipeline=self._pipeline)
 
     # --- background loop ---
     async def _run(self) -> None:
