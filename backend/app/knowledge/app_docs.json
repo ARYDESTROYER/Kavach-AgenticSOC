@@ -1118,7 +1118,7 @@
    "page": "getting-started/demo.md",
    "anchor": "what-the-demo-exercises",
    "heading": "What the demo exercises",
-   "text": "The simulator creates protocol-compatible synthetic stories for Splunk HEC, QRadar\nLEEF/offenses, Wazuh JSON, RFC syslog, and Microsoft Entra ID / Active Directory.\nThe Entra stream uses Microsoft Graph `auditLogs/signIns` and Identity\nProtection-shaped vocabulary. All five pass through the real parser, OCSF\nnormalization, correlation, investigation, and deterministic decision pipeline.\n\nDemo-generated cases, events, usage, retrieval data, and polling cursors are kept in\nan isolated demo store. The mock model has zero price. The real deterministic case\npolicy is still used inside the sandbox: an uncertain verdict remains open for a\nhuman.",
+   "text": "The simulator creates protocol-compatible synthetic stories for Splunk HEC, QRadar\nLEEF/offenses, Wazuh JSON, RFC syslog, and Microsoft Entra ID / Active Directory.\nThe Entra stream uses Microsoft Graph `auditLogs/signIns` and Identity\nProtection-shaped vocabulary. All five pass through the real parser, OCSF\nnormalization, correlation, investigation, and deterministic decision pipeline.\n\nDemo-generated cases, events, usage, retrieval data, and polling cursors are kept in\nan isolated demo store. Demo spend is simulated: the mock model is never billed, and\neach Demo call is priced at a fixed simulated rate so the cost figures add up. A\nseeded case's cost matches the ledger rows of its investigation. The real\ndeterministic case policy is still used inside the sandbox: an uncertain verdict\nremains open for a human.",
    "console": []
   },
   {
@@ -1126,7 +1126,15 @@
    "page": "getting-started/demo.md",
    "anchor": "suggested-tour",
    "heading": "Suggested tour",
-   "text": "1. Open **Overview** and inspect source coverage, the Human-vs-AI close\n   attribution, and the Noise-Reduction flow.\n2. Open **Case Manager**, compare the Brief, Evidence, AI investigation, Response,\n   Activity and Chat tabs, then try queue selection. The legacy **Cases**\n   table remains available for comparison.\n3. Open **Workspace Chat**: the start screen says what changed in the demo data since\n   your last visit and suggests questions about it, such as your shift brief or a case\n   that needs a person. Pick one and watch each lookup run; add a chart to a report and\n   generate its summary. Demo answers and summaries are deterministic and cost nothing.\n4. Open **Sources** and inspect the five simulated source types and recent activity.\n5. Open **Detection & Rules**, Campaigns, Baseline, and Tuning to see the advisory\n   automation loop.\n6. Open **Cost** and confirm model spend remains `$0`.\n7. Open **Audit** and trace the demo actions.\n\nUse **Generate incident** in the Demo settings for an on-demand, cooldown-aware\nfive-source storyline. A successful request emits exactly eight native records:\nfour source-native alerts from Splunk, QRadar, Wazuh, and Entra plus four syslog\nevents that produce at least one Agentic SOC correlation detection. The response\nattributes records, native alerts, and system detections per source.",
+   "text": "1. Open **Overview** and inspect source coverage, the Human-vs-AI close\n   attribution, and the Noise-Reduction flow.\n2. Open **Case Manager**, compare the Brief, Evidence, AI investigation, Response,\n   Activity and Chat tabs, then try queue selection. The legacy **Cases**\n   table remains available for comparison.\n3. Open **Workspace Chat**: the start screen says what changed in the demo data since\n   your last visit and suggests questions about it, such as your shift brief or a case\n   that needs a person. Pick one and watch each lookup run; add a chart to a report and\n   generate its summary. Demo answers and summaries are deterministic and cost nothing.\n4. Open **Sources** and inspect the five simulated source types and recent activity.\n5. Open **Detection & Rules**, Campaigns, Baseline, and Tuning to see the advisory\n   automation loop.\n6. Open **Cost**. Every Demo figure there is simulated spend, and nothing is billed.\n   A case's investigation cost matches its rows in the cost ledger.\n7. Open **Audit** and trace the demo actions.",
+   "console": []
+  },
+  {
+   "id": "getting-started/demo#suggested-tour:1",
+   "page": "getting-started/demo.md",
+   "anchor": "suggested-tour",
+   "heading": "Suggested tour",
+   "text": "Use **Generate incident** in the Demo settings for an on-demand, cooldown-aware\nfive-source storyline. A successful request emits exactly eight native records:\nfour source-native alerts from Splunk, QRadar, Wazuh, and Entra plus four syslog\nevents that produce at least one Agentic SOC correlation detection. The response\nattributes records, native alerts, and system detections per source.",
    "console": []
   },
   {

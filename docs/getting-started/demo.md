@@ -41,9 +41,11 @@ Protection-shaped vocabulary. All five pass through the real parser, OCSF
 normalization, correlation, investigation, and deterministic decision pipeline.
 
 Demo-generated cases, events, usage, retrieval data, and polling cursors are kept in
-an isolated demo store. The mock model has zero price. The real deterministic case
-policy is still used inside the sandbox: an uncertain verdict remains open for a
-human.
+an isolated demo store. Demo spend is simulated: the mock model is never billed, and
+each Demo call is priced at a fixed simulated rate so the cost figures add up. A
+seeded case's cost matches the ledger rows of its investigation. The real
+deterministic case policy is still used inside the sandbox: an uncertain verdict
+remains open for a human.
 
 ## Suggested tour
 
@@ -59,7 +61,8 @@ human.
 4. Open **Sources** and inspect the five simulated source types and recent activity.
 5. Open **Detection & Rules**, Campaigns, Baseline, and Tuning to see the advisory
    automation loop.
-6. Open **Cost** and confirm model spend remains `$0`.
+6. Open **Cost**. Every Demo figure there is simulated spend, and nothing is billed.
+   A case's investigation cost matches its rows in the cost ledger.
 7. Open **Audit** and trace the demo actions.
 
 Use **Generate incident** in the Demo settings for an on-demand, cooldown-aware

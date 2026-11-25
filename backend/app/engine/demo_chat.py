@@ -6755,6 +6755,14 @@ _RISK_RANK_RE = re.compile(
     r"\b(?:by|on|in order of|sorted by|ranked by|ordered by)\s+(?:their\s+)?risk\b|\briskiest\b|"
     r"\b(?:highest|most|greatest|biggest|top)[- ]risk\b|\b(?:highest|most|greatest|biggest)\s+(?:\w+\s+)?risk\b|"
     r"\brisk(?:iest)?\s+(?:score\s+)?(?:first|order|descending)\b|\b(?:lowest|least)[- ](?:risk|risky)\b")
+#: Round 16 (B41): a question about what to work on first ("which cases need attention
+#: first?", "what should I prioritise?", "which case should I look at first?") asks for
+#: the open cases, riskiest first.
+_ATTENTION_RE = re.compile(
+    r"\bneeds?\s+(?:\w+\s+)?attention\b|\bprioriti[sz]\w*\b|\bmost urgent\b|"
+    r"\b(?:work on|look at|start with|handle|tackle)\b[^.?!]{0,20}\bfirst\b")
+#: ... unless it names its own order ("the newest cases that need attention").
+_NAMED_ORDER_RE = re.compile(r"\b(?:newest|latest|most recent(?:ly)?|recent first|in order)\b")
 
 
 def _cases_filters(ask: Ask, view: PromptView) -> dict[str, Any]:
@@ -6787,6 +6795,13 @@ def _cases_filters(ask: Ask, view: PromptView) -> dict[str, Any]:
     elif _RISK_RANK_RE.search(low):
         lowest = re.search(r"\b(?:lowest|least)[- ](?:risk|risky)\b", low)
         inp.update({"sort_field": "risk_score", "sort_order": "asc" if lowest else "desc"})
+    elif _ATTENTION_RE.search(low):
+        # What needs attention is still-open work (unless the question names a status),
+        # riskiest first (unless it names its own order).
+        if "status" not in inp and "status_group" not in inp:
+            inp["status_group"] = "active"
+        if not _NAMED_ORDER_RE.search(low):
+            inp.update({"sort_field": "risk_score", "sort_order": "desc"})
     inp.update(_windowed(ask, view))
     return inp
 

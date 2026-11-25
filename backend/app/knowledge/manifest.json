@@ -5,11 +5,11 @@
  "docs_version": "0.2",
  "counts": {
   "pages": 64,
-  "chunks": 1000
+  "chunks": 1001
  },
  "sha256": {
   "aliases.json": "39ed30ad48d64589c51a5342d536e602ea24480417579db25b1f95109f8bbe16",
-  "app_docs.json": "ce4a1f942f265874c0741b75ea19c5320c747594268c85e929059dbade739926",
+  "app_docs.json": "61801719574f9446bbe12dbd86e0cd9810718ef48a19a180aa115ee087f134f5",
   "console_map.json": "2b7aaf74a9c06739bcec43c45c0bb3c83c8815136162e50ba0be795d5d096291"
  }
 }
