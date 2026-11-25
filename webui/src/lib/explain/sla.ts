@@ -47,18 +47,26 @@ export interface SlaReadingWire {
   clocks?: { response?: SlaClockWire | null; resolution?: SlaClockWire | null } | null;
   /** `console` when the Console computed the reading from the SLA policy itself. */
   computed_by?: 'server' | 'console';
+  /**
+   * What stopped the shown clock (the clock's `stop_source`), set when the line shows a
+   * clock other than the server's current one. `terminal` on the response clock: the
+   * case closed before any person responded.
+   */
+  stop_source?: string | null;
 }
 
 /**
- * The clock a case's SLA line shows: the server's current clock, unless another clock of
- * the case is breached while the current one is not. Then the breached clock is shown, so
- * a closed case whose response was late reads its late response, not "met", and agrees
- * with the SLA metrics, which count the case as a breach. Null for no reading.
+ * The clock a case's SLA line shows: the server's current clock, unless it has stopped
+ * while another clock of the case is breached. Then the breached clock is shown, so a
+ * closed case whose response was late reads its late response, not "met", and agrees
+ * with the SLA metrics, which count the case as a breach. A clock that still runs stays
+ * the line: it is the time left to act on, and its explanation names the earlier breach
+ * (`explainSla`). Null for no reading.
  */
 export function shownSlaClock(reading: SlaReadingWire | null | undefined): SlaReadingWire | null {
   if (!reading || typeof reading.state !== 'string') return null;
   const state = reading.state.toLowerCase();
-  if (reading.breached !== true || state === 'breached') return reading;
+  if (reading.breached !== true || state === 'breached' || reading.running === true) return reading;
   const clocks = reading.clocks ?? null;
   const current = String(reading.clock).toLowerCase() === 'resolution' ? 'resolution' : 'response';
   const order: Array<'response' | 'resolution'> =
@@ -74,6 +82,7 @@ export function shownSlaClock(reading: SlaReadingWire | null | undefined): SlaRe
       due_at: clock.due_at ?? null,
       elapsed_minutes: typeof clock.elapsed_minutes === 'number' ? clock.elapsed_minutes : null,
       running: typeof clock.running === 'boolean' ? clock.running : null,
+      stop_source: clock.stop_source ?? null,
       state: 'breached',
     };
   }
@@ -112,9 +121,11 @@ const ANCHOR_WORDS: Record<string, string> = {
   status_history: 'a person moving the case into Investigating, Escalated or On hold',
 };
 
-/** Minutes as "1h 34m" or "26m". */
+/** Minutes as "1h 34m", "26m", or "40s" under a minute (never "0m" for time that passed). */
 function minutesWords(minutes: number): string {
-  const whole = Math.max(0, Math.floor(minutes));
+  const safe = Math.max(0, minutes);
+  if (safe < 1) return `${Math.floor(safe * 60)}s`;
+  const whole = Math.floor(safe);
   if (whole < 60) return `${whole}m`;
   const hours = Math.floor(whole / 60);
   const rest = whole % 60;
@@ -138,10 +149,16 @@ export function explainSla(reading: SlaReadingWire | null | undefined): Explanat
       ? !reading.running
       : state === 'met' || (Boolean(reading.responded_at) && kind === 'Response');
   const words = stopped && (state === 'ok' || state === 'met') ? 'met' : STATE_WORDS[state] ?? state;
-  const stoppedBy = kind === 'Response' ? 'answered' : 'resolved';
+  // The response clock also stops when the case closes before any person responded
+  // (`stop_source: terminal`): nobody answered it then, so it never says "answered".
+  const clockName = kind === 'Response' ? 'response' : 'resolution';
+  const stopSource = reading.stop_source ?? reading.clocks?.[clockName]?.stop_source ?? null;
+  const closedUnanswered = stopped && kind === 'Response' && stopSource === 'terminal';
+  const stoppedBy = closedUnanswered ? 'closed with no human response' : kind === 'Response' ? 'answered' : 'resolved';
   const atRiskFrom = target * SLA_AT_RISK_FRACTION;
   const left = target - elapsed;
   const byConsole = reading.computed_by === 'console';
+  const earlier = state === 'breached' ? null : earlierBreach(reading, clockName);
 
   const inputs: ExplanationInput[] = [
     {
@@ -159,8 +176,12 @@ export function explainSla(reading: SlaReadingWire | null | undefined): Explanat
     inputs.push({
       key: 'responded_at',
       label: 'First human response',
-      value: reading.responded_at ?? 'None yet',
-      source: reading.responded_at ? `From ${ANCHOR_WORDS[reading.anchor] ?? reading.anchor}` : 'No person has responded',
+      value: reading.responded_at ?? (closedUnanswered ? 'None' : 'None yet'),
+      source: reading.responded_at
+        ? `From ${ANCHOR_WORDS[reading.anchor] ?? reading.anchor}`
+        : closedUnanswered
+          ? 'The case closed before any person responded'
+          : 'No person has responded',
     });
   }
   if (reading.due_at) inputs.push({ key: 'due_at', label: 'Due', value: reading.due_at, source: 'Start plus target' });
@@ -174,23 +195,58 @@ export function explainSla(reading: SlaReadingWire | null | undefined): Explanat
       : stopped
         ? `${kind} SLA ${priority}: ${stoppedBy} after ${minutesWords(elapsed)} against a ${minutesWords(target)} target, ${words}.`
         : `${kind} SLA ${priority}: ${minutesWords(elapsed)} of ${minutesWords(target)} elapsed, ${words}. At risk from ${minutesWords(atRiskFrom)}.`;
+  const caveats = ['Advisory only: the SLA never closes or escalates a case.'];
+  if (earlier) caveats.unshift(`${earlier} The SLA metrics count this case as breached.`);
 
   return {
     metric: 'sla',
     title: `${kind} SLA`,
     value: state,
     display: `${priority} ${kind.toLowerCase()} ${words}`,
-    summary,
+    summary: earlier ? `${summary} ${earlier}` : summary,
     formula: 'breached when elapsed > target; at risk when the clock runs and elapsed >= 0.8 x target; otherwise on track',
     inputs,
     steps: [
-      { label: 'Elapsed', expression: stopped ? (kind === 'Response' ? 'Start to the first human response' : 'Start to the close') : 'Start to now', result: `${trimmed(elapsed)} minutes` },
+      {
+        label: 'Elapsed',
+        expression: stopped
+          ? kind === 'Response' && !closedUnanswered
+            ? 'Start to the first human response'
+            : 'Start to the close'
+          : 'Start to now',
+        result: `${trimmed(elapsed)} minutes`,
+      },
       { label: 'At risk from', expression: `0.8 x ${trimmed(target)}`, result: `${trimmed(atRiskFrom)} minutes` },
       { label: 'State', expression: `${trimmed(elapsed)} against ${trimmed(target)}`, result: words },
     ],
     rounding: 'Time left is rounded down, so the due line never claims more time than remains.',
     provenance: byConsole ? 'reconstructed_current' : 'server_computed',
     ...(byConsole ? { provenanceNote: 'Computed in the Console from the SLA policy, because the server sent no reading.' } : {}),
-    caveats: ['Advisory only: the SLA never closes or escalates a case.'],
+    caveats,
   };
+}
+
+/**
+ * The sentence for another clock of the case that is breached while the shown one is not
+ * (`breached` on the reading): a case answered late whose resolution clock still runs.
+ * The line shows the running clock; this sentence keeps the breach the SLA metrics count
+ * one hover away. Null when no other clock is breached.
+ */
+function earlierBreach(reading: SlaReadingWire, shown: 'response' | 'resolution'): string | null {
+  if (reading.breached !== true) return null;
+  const otherName = shown === 'response' ? 'resolution' : 'response';
+  const other = reading.clocks?.[otherName];
+  if (!other || String(other.state || '').toLowerCase() !== 'breached') {
+    return 'Another SLA clock of this case is breached.';
+  }
+  const target = typeof other.target_minutes === 'number' ? other.target_minutes : null;
+  const elapsed = typeof other.elapsed_minutes === 'number' ? other.elapsed_minutes : null;
+  const label = otherName === 'response' ? 'The response clock' : 'The resolution clock';
+  if (target === null || elapsed === null) return `${label} is breached.`;
+  if (other.running === false) {
+    const by =
+      otherName === 'response' ? (other.stop_source === 'terminal' ? 'closed with no human response' : 'answered') : 'resolved';
+    return `${label} was breached: ${by} after ${minutesWords(elapsed)} against a ${minutesWords(target)} target.`;
+  }
+  return `${label} is breached: ${minutesWords(elapsed)} elapsed against a ${minutesWords(target)} target.`;
 }

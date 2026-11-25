@@ -305,9 +305,11 @@ const finiteNumber = (value: unknown): number | null =>
  * The SLA phrase from the server's reading (`GET /api/cases/{id}/triage`, field `sla`):
  * "Response due in 1h", "Resolution overdue by 2h", in the same shape as `slaReading`.
  *
- * * It states the clock `shownSlaClock` picks: a breached clock wins over a current one
- *   that is not (`breached`), so a closed case with a late response reads the late
- *   response, as the SLA metrics count it, never "SLA met".
+ * * It states the clock `shownSlaClock` picks: a breached clock wins over a stopped
+ *   current one that is not (`breached`), so a closed case with a late response reads the
+ *   late response, as the SLA metrics count it, never "SLA met". A current clock that
+ *   still runs stays the line (the time left to act on); its explanation names the
+ *   earlier breach.
  * * A stopped clock (`running: false`) that was breached is late by a fixed amount, its
  *   elapsed time over the target; it is never measured to now.
  * * The time left on a "due in" line is rounded down (B32), and a clock the server marks
