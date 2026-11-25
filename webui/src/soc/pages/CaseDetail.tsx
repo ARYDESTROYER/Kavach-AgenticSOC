@@ -3,34 +3,40 @@
  *
  * Opened with a `caseId`, it fetches the full case (`api.getCase`) and presents it in one
  * of two hosts: embedded in the Case Manager split, or a wide right-side Sheet (the
- * Overview dashboard and Investigate open it that way). The same tree renders in both:
+ * Overview dashboard and Investigate open it that way). The same tree renders in both.
+ * Round 16 (SPEC D8, §4.4 WP03): one question per region.
  *
- *   - a sticky header (Round 15, SPEC D8.2): the title on one line, ONE primary
- *     contextual action (`actionPlanForStatus`), the Take action menu holding every other
- *     verb, a "More options" menu (copy link, open in new tab) and, in a narrow pane, the
- *     Details button; under it one meta row (case number, severity, status or outcome,
- *     the AI verdict, the owner, the opened age and the SLA while open);
- *   - five tabs (D8.3): Overview (the AI summary, the "What happened" stage timeline that
- *     was the Timeline tab, key entities), Runbook (Round 14, second, with its progress
- *     chip; lazy), Investigation (the AI assessment, the decision, the Threat context that
- *     was its own tab, the inputs and the trace), Collaboration (the thread, the Files
- *     slot, tasks and the History with the actions taken) and Chat. A link to a retired
- *     tab id opens the tab it became and scrolls to its section;
- *   - the facts rail (D8.4) beside every tab from a 60rem pane, else in a non-blocking
- *     Details sheet;
- *   - the auto-close review (Round 15, D6.12, D8.2): on a pending sample of the agent's
- *     closes, a band under the meta row and Start review as the primary action; on any
- *     other case the agent closed, "Review this auto-close" in Take action in place of Set
+ *   - a compact sticky header, 118px for every case: row 1 (44px) holds the title on one
+ *     line, ONE primary contextual action (`actionPlanForStatus`), the Take action menu
+ *     holding every other verb, Ask AI, a "More options" menu (copy link, open in new
+ *     tab), the inspector toggle (`]`) and, embedded, Back; row 2 is the 24px meta strip
+ *     that never wraps (`CaseHeaderMeta`: case number, severity, status or outcome, the
+ *     Risk chip, the AI verdict with the AI run chip, the owner, the SLA and the review
+ *     chip); then the 36px tabs;
+ *   - six tabs, one lane each (D8): Brief (`overview`: the Next step row, the four lanes
+ *     and the folded story of how the case was built), Evidence (`evidence`: what
+ *     happened, the events, entities, threat context, related cases, baseline), AI
+ *     investigation (`investigation`: the assessment, the inputs, the trace and the
+ *     gradings), Response (`runbook`: the runbook for a viewer who may read it, and the
+ *     tasks for everyone; lazy), Activity (`collab`: discussion, files, history) and Chat,
+ *     on Alt+1 to Alt+6. A link to a retired tab id, or to a section that moved, opens the
+ *     tab it is on now and scrolls to the section;
+ *   - the inspector (the facts rail) beside every tab from a 52rem pane, shown or hidden
+ *     with `]` and kept per viewer; narrower panes open it in a non-blocking side sheet;
+ *   - the auto-close review (Round 15): on a pending sample, the meta strip's review chip,
+ *     the Brief's review note and Start review as the primary action; on any other case
+ *     the agent closed, "Review this auto-close" in Take action in place of Set
  *     disposition. Both open the review card in a non-blocking side sheet;
- *   - the Collaboration tab's Files (D5.12) and the close dialog's "Add screenshots"
- *     (D4.6), both lazy chunks of the screenshots kit;
- *   - the shared confirm-action dialog (every lifecycle action; a close asks the
- *     disposition once, the actions taken and, on a disagreement with the AI, a note,
- *     with the AI rating collapsed, D4.1 to D4.4), Reinvestigate and Notify.
+ *   - the Activity tab's Files and the close dialog's "Add screenshots", both lazy chunks
+ *     of the screenshots kit;
+ *   - the shared confirm-action dialog (every lifecycle action), the Reinvestigate dialog
+ *     (`ReinvestigateDialog`) and Notify.
  *
- * The case's runbook runs are read once here and shared by the Runbook tab, the Overview's
- * Next step card, the facts rail and the close dialog (which asks why when required steps
- * are open).
+ * The case's runbook runs are read once here and shared by the Response tab, the Brief's
+ * Next step row and People lane, and the close dialog (which asks why when required steps
+ * are open). The settings are read only for a holder of `settings:read`; without it, the
+ * auto-close entry for the case's verdict and the SLA reading come from the triage read
+ * (C60), so a person who may read cases never writes an Access denied row by opening one.
  *
  * COUPLING-D SPLIT: the conceptual panels live in `soc/pages/casedetail/*`, the lifecycle
  * action model and small building blocks in `./shared`, and the close-with-disposition
@@ -53,17 +59,19 @@ import * as React from 'react';
 import {
   AlertTriangle,
   BookCheck,
+  Bot,
   ChevronDown,
+  ChevronLeft,
   ClipboardCheck,
   Download,
   ExternalLink,
   FileText,
   Link2,
+  ListChecks,
   LoaderCircle,
   MessageSquare,
   MoreHorizontal,
   PanelRight,
-  Play,
   RefreshCw,
   Send,
   Shield,
@@ -78,6 +86,7 @@ import { toast } from 'sonner';
 import { api, ApiError } from '@/lib/api';
 import { copyText } from '@/lib/clipboard';
 import type {
+  AutoClosePolicy,
   Case,
   CaseActionInput,
   CaseRationale,
@@ -85,9 +94,10 @@ import type {
   SlaPolicy,
   ThreatContextPanel as ThreatContextPanelData,
 } from '@/lib/types';
+import type { SlaReadingWire } from '@/lib/explain/builders';
 import { downloadText } from '@/lib/download';
 import { errorMessage } from '@/lib/errorMessage';
-import { fmtMoney, humanizeToken } from '@/lib/format';
+import { humanizeToken } from '@/lib/format';
 import { cn } from '@/lib/cn';
 import type { StreamEvent } from '@/lib/useEventStream';
 
@@ -157,9 +167,11 @@ import {
 } from '@/soc/pages/CaseDetail.api';
 
 import type { Navigate } from '@/soc/router';
-// The case tabs in order (Alt+1 to Alt+5 select them), shared with the router's
+// The case tabs in order (Alt+1 to Alt+6 select them), shared with the router's
 // `tab` deep-link key so the two lists can never drift.
-import { CASE_TABS, isCaseTab, type CaseTab } from '@/soc/case-tabs';
+import { CASE_SECTION_TABS, CASE_TABS, isCaseTab, type CaseTab } from '@/soc/case-tabs';
+import { useAiRun } from '@/soc/investigations/useAiRun';
+import { ReinvestigateDialog, reinvestigateErrorText } from '@/soc/investigations/ReinvestigateDialog';
 
 import { campaignsApi, type Campaign } from '@/soc/pages/Campaigns.api';
 
@@ -171,13 +183,17 @@ import {
   type WireActionTaken,
   ACTION_PERMISSION,
   CASE_MANAGER_PANEL_PADDING,
+  PanelSection,
   actionPlanForStatus,
   planCloseAction,
+  policyForVerdict,
 } from './casedetail/shared';
 import { OverviewPanel } from './casedetail/OverviewPanel';
+import { EvidencePanel } from './casedetail/EvidencePanel';
 import { TimelinePanel } from './casedetail/TimelinePanel';
 import { InvestigationPanel } from './casedetail/InvestigationPanel';
 import { ThreatContextPanel } from './casedetail/ThreatContextPanel';
+import { triageAutoClosePolicy, triageSla } from './casedetail/triageReads';
 import { CollaborationThreadTab } from './casedetail/CollaborationPanel';
 import { ChatTab } from './casedetail/CaseChatPanel';
 import { ConfirmActionDialog } from './casedetail/ConfirmActionDialog';
@@ -192,7 +208,6 @@ import {
   reviewActionLayout,
 } from './casedetail/review/review-plan';
 import { useCaseReviewState } from './casedetail/review/useCaseReviewState';
-import { ReviewBand } from './casedetail/review/ReviewBand';
 import { ReviewSheet, loadReviewCard } from './casedetail/review/ReviewSheet';
 import { notifyResultToast } from './casedetail/notifyResult';
 import { CaseChatActivityGlyph, useCaseChatRequest } from '@/soc/chat-activity/case-glyph';
@@ -202,10 +217,8 @@ import {
   openRequiredSteps,
   openStepsFromRefusal,
   primaryRun,
-  progressOf,
   type OpenRequiredStep,
 } from '@/soc/runbooks/run/model';
-import { OverviewNextStep } from '@/soc/runbooks/run/NextStepCard';
 import { RunbookTabCount } from '@/soc/runbooks/run/ProgressChip';
 import { OtherTasksLoader } from '@/soc/runbooks/run/OtherTasks';
 import type { RunbookStepsOpen } from '@/lib/types-runbooks';
@@ -268,17 +281,32 @@ function stepsOpenRefusal(error: unknown): RunbookStepsOpen[] | null {
 }
 
 /**
- * The toast for a reinvestigation that did not start. A refusal (403: the grant is
- * missing, or was removed after the case opened) is worded, never the server's raw
- * "permission denied: cases:reinvestigate"; any other failure keeps its message.
+ * The toast for a reinvestigation that did not start (it lives with the Reinvestigate
+ * dialog; re-exported for existing importers).
  */
-export function reinvestigateErrorText(error: unknown): string {
-  if (error instanceof ApiError && error.status === 403) return 'You do not have permission to reinvestigate cases.';
-  return error instanceof Error && error.message ? error.message : 'The reinvestigation could not be started.';
+export { reinvestigateErrorText };
+
+/** Where the inspector's shown or hidden state is kept (a per-viewer convenience). */
+export const INSPECTOR_KEY = 'soc.caseManager.inspector';
+
+function readInspectorOpen(): boolean {
+  try {
+    return window.localStorage.getItem(INSPECTOR_KEY) !== 'closed';
+  } catch {
+    return true;
+  }
+}
+
+function writeInspectorOpen(open: boolean): void {
+  try {
+    window.localStorage.setItem(INSPECTOR_KEY, open ? 'open' : 'closed');
+  } catch {
+    /* private mode or blocked storage: the toggle still works for this page. */
+  }
 }
 
 /**
- * Is `el` laid out right now? The rail column is `hidden` below a 60rem pane by a
+ * Is `el` laid out right now? The inspector column is `hidden` below a 52rem pane by a
  * container query, so connected is not enough. `checkVisibility()` where the browser has
  * it, else no ancestor with display:none.
  */
@@ -307,16 +335,13 @@ function isTerminalVerb(verb: string, status?: string | null): boolean {
 }
 
 /**
- * The sections a link can ask the case to scroll to (Round 15, D8.3): the two retired
- * tabs, now a section of Overview and of Investigation. A closed set, so a value from an
- * address never reaches a selector.
+ * The sections a link can ask the case to scroll to, and their tab (Round 16, D8: all on
+ * Evidence). A closed set, so a value from an address never reaches a selector.
  */
-const CASE_SECTIONS: Readonly<Record<string, CaseTab>> = {
-  'what-happened': 'overview',
-  'threat-context': 'investigation',
-  // The facts rail's "Related cases" opens the Overview's list (D8.4).
-  'related-cases': 'overview',
-};
+const CASE_SECTIONS: Readonly<Record<string, CaseTab>> = CASE_SECTION_TABS;
+
+/** Evidence's "What happened" shows only the ingestion stage of the story (the source lane). */
+const SOURCE_STAGES: readonly string[] = ['input'];
 
 /** How long a requested section is held in place while the content above it loads. */
 const SECTION_HOLD_MS = 2500;
@@ -458,13 +483,14 @@ export interface CaseDetailProps {
    * The tab a link asks for (Case Manager's `tab` deep-link key: the audit log's "Open
    * case trace" asks for `investigation`), by its id; any other value is ignored. It
    * applies when it, or the case, changes; the analyst's own tab choice stands until
-   * then. The Runbook tab applies only for a viewer who has it.
+   * then. Every tab is shown to every viewer (Round 16: Response always lists the tasks).
    */
   requestedTab?: string | null;
   /**
-   * The section of the requested tab a link asks for (Round 15, D8.3: a link to a retired
-   * tab id is rewritten to its new tab with `what-happened` or `threat-context`). The case
-   * scrolls it into view once; any other value is ignored.
+   * The section of the requested tab a link asks for (a link to a retired tab id, or to
+   * a section that moved, is rewritten to the tab it is on now: `what-happened`,
+   * `threat-context` and `related-cases` are on Evidence). The case scrolls it into view
+   * once; any other value is ignored.
    */
   requestedSection?: string | null;
   /**
@@ -534,11 +560,8 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
   // Advisory only (#3/#4): a campaign is a reporting grouping that never closes /
   // escalates / re-clusters the case. Best-effort: campaigns may be disabled.
   const [campaign, setCampaign] = React.useState<Campaign | null>(null);
-  // A requested tab opens on the first paint (no Overview flash); the Runbook tab waits
-  // for the viewer's grants, below.
-  const [tab, setTab] = React.useState<CaseTab>(() =>
-    requestedTab && requestedTab !== 'runbook' ? requestedTab : 'overview',
-  );
+  // A requested tab opens on the first paint (no Brief flash).
+  const [tab, setTab] = React.useState<CaseTab>(() => requestedTab ?? 'overview');
   // Round 12 (SPEC D13): "Open" on a case-chat toast lands on this case's Chat tab.
   useCaseChatRequest(open ? id : null, () => setTab('chat'));
   const panelScrollRef = React.useRef<HTMLDivElement>(null);
@@ -549,12 +572,12 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
     if (panelScrollRef.current) panelScrollRef.current.scrollTop = 0;
   }, [tab, id]);
 
-  // A section of a tab to bring into view (Round 15, D8.3): the Overview's "What happened"
-  // and Investigation's "Threat context", asked for by a rewritten retired-tab link or by
-  // the Overview's attack story. A new tick per request, applied once the tab is on
-  // screen and then forgotten, so it is never replayed.
-  // An in-page request (the attack story) also moves focus to the section's heading; a
-  // link's request only scrolls, so it never takes focus from the queue.
+  // A section of a tab to bring into view: Evidence's "What happened", "Threat context" and
+  // "Related cases", asked for by a rewritten link or from inside the case (the
+  // inspector's related cases, a finding's events). A new tick per request, applied once
+  // the tab is on screen and then forgotten, so it is never replayed.
+  // An in-page request also moves focus to the section's heading; a link's request only
+  // scrolls, so it never takes focus from the queue.
   const [sectionRequest, setSectionRequest] = React.useState<{ section: string; tick: number; focus: boolean } | null>(
     null,
   );
@@ -576,8 +599,10 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
   const [timelineLoading, setTimelineLoading] = React.useState(false);
   const [timelineError, setTimelineError] = React.useState<unknown>(null);
 
-  // Six-stage narrative, lazy on the Overview tab ("What happened", Round 15 D8.3).
+  // The six-stage narrative, lazy: Evidence's "What happened" (its ingestion stage) and the
+  // Brief's folded "How this case was built" (every stage) read it (Round 16, D8).
   const [stages, setStages] = React.useState<TimelineStagesResponse | null>(null);
+  const [storyOpen, setStoryOpen] = React.useState(false);
   const [stagesLoading, setStagesLoading] = React.useState(false);
   const [stagesError, setStagesError] = React.useState<unknown>(null);
 
@@ -587,8 +612,9 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
   const [threadError, setThreadError] = React.useState<unknown>(null);
   const [threadBusyId, setThreadBusyId] = React.useState<string | null>(null);
 
-  // Round 3: activity (#4), lazy on the Collaboration tab alongside the thread. The
-  // free-form tasks moved to the Runbook tab as "Other tasks" (Round 14, D36).
+  // Round 3: activity (#4), lazy on the Activity tab alongside the thread. The free-form
+  // tasks are on the Response tab ("Other tasks", Round 14 D36; for every viewer since
+  // Round 16).
   const [activity, setActivity] = React.useState<CaseActivityItem[] | null>(null);
   const [activityLoading, setActivityLoading] = React.useState(false);
   const [activityError, setActivityError] = React.useState<unknown>(null);
@@ -656,18 +682,28 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
   // GET /api/users needs `users:manage`. Without it the owner field takes a typed name and
   // @mentions are not suggested, and the read is never sent (it could only be refused).
   const canListUsers = hasPermission('users', 'manage');
+  // GET /api/settings needs `settings:read` (C60). Without it the read is never sent (each
+  // refusal would write an Access denied row): the auto-close entry for the verdict and
+  // the SLA reading come from the triage read, and the runbook-preference and
+  // notification-channel facts are left out.
+  const canReadSettings = hasPermission('settings', 'read');
+  // "Open in Approvals" on an automation record needs the Approvals queue (`proposals:read`).
+  const canReadProposals = hasPermission('proposals', 'read');
+  // The AI investigation run on this case, if one is queued or running (WP09's store).
+  const aiRun = useAiRun(open ? id : null);
+  const aiRunning = aiRun !== null && aiRun.state !== 'finished';
   const runbooks = useCaseRunbooks(open ? id : null, { enabled: canReadRunbooks });
   // A deep link's tab, re-applied when the link or its case changes (closing QA integ-06).
-  // The Investigation tab's link is "Open case trace", so it also asks the panel to open
-  // the trace and bring it into view: a new tick per request, kept until the panel
+  // The AI investigation tab's link is "Open case trace", so it also asks the panel to
+  // open the trace and bring it into view: a new tick per request, kept until the panel
   // reports it handled and never replayed. The request names the linked case. The panel
   // sees it only once that case is the one on screen (below), so it never opens the trace
   // of the case being replaced, and a switch to any other case drops it.
-  const requested: CaseTab | null = requestedTab === 'runbook' && !canReadRunbooks ? 'overview' : requestedTab;
+  const requested: CaseTab | null = requestedTab;
   const [traceRequest, setTraceRequest] = React.useState<{ tick: number; caseId: string } | null>(null);
   const traceTickRef = React.useRef(0);
-  // A rewritten retired-tab link names a section of its new tab instead (Round 15, D8.3):
-  // "Threat context" on Investigation, so it does not also open the trace.
+  // A rewritten link names a section of its tab instead (Evidence's "Threat context"), so
+  // it does not also open the trace.
   React.useEffect(() => {
     if (!requested) return;
     setTab(requested);
@@ -817,43 +853,77 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
   const [grading, setGrading] = React.useState<GradingDraft>(emptyGradingDraft());
   const [acting, setActing] = React.useState(false);
 
-  // Reinvestigate.
+  // Reinvestigate (the dialog is `ReinvestigateDialog`, which WP09 makes non-blocking).
   const [reinvestOpen, setReinvestOpen] = React.useState(false);
-  const [reinvestModel, setReinvestModel] = React.useState('');
-  const [reinvesting, setReinvesting] = React.useState(false);
   const [models, setModels] = React.useState<ModelsResponse | null>(null);
 
   // Export.
   const [exporting, setExporting] = React.useState<'json' | 'md' | null>(null);
 
-  // FP auto-close policy (best-effort).
-  const [fpPolicy, setFpPolicy] = React.useState<FpPolicy>(null);
+  // The auto-close policy `decide()` acts on (`prefs.auto_close`, B27), when the settings
+  // were read; the deprecated `prefs.fp_auto_close` is never read.
+  const [autoClosePolicy, setAutoClosePolicy] = React.useState<AutoClosePolicy | null>(null);
+  // From the triage read (C60): the auto-close entry for the case's verdict and the SLA
+  // reading, for a viewer who may not read the settings (and as the SLA's first source).
+  const [triagePolicy, setTriagePolicy] = React.useState<FpPolicy>(null);
+  const [serverSla, setServerSla] = React.useState<SlaReadingWire | null>(null);
   // SLA policy for the header's advisory SLA reading (best-effort, #3-safe).
   const [slaPolicy, setSlaPolicy] = React.useState<SlaPolicy | null>(null);
-  // Header popovers + the narrow-pane Details sheet (keyboard shortcuts open them).
+  // Header popovers + the narrow-pane inspector sheet (keyboard shortcuts open them).
   const [ownerOpen, setOwnerOpen] = React.useState(false);
   const [detailsOpen, setDetailsOpen] = React.useState(false);
   const detailsTriggerRef = React.useRef<HTMLButtonElement | null>(null);
   const detailsTitleRef = React.useRef<HTMLHeadingElement | null>(null);
-  // The tag editor lives in the facts rail (Round 15, D8.2): in the rail column beside the
-  // tabs, or in the Details sheet when the pane is too narrow for the column. T and "Edit
-  // tags" open it where the rail is; with the column hidden, the Details sheet opens first
-  // and the editor once the sheet is up.
+  // The inspector column (Round 16, [cmux] §5.6): beside the tabs from a 52rem pane, shown
+  // or hidden with `]` or the header's toggle, and kept per viewer. `columnFits` follows the
+  // container query (a zero-size probe that the same query shows), so the toggle knows
+  // whether it toggles the column or opens the sheet.
+  const [inspectorOpen, setInspectorOpenState] = React.useState<boolean>(() => readInspectorOpen());
+  const setInspectorOpen = React.useCallback((next: boolean) => {
+    setInspectorOpenState(next);
+    writeInspectorOpen(next);
+  }, []);
+  const [columnFits, setColumnFits] = React.useState(true);
+  const probeRef = React.useRef<HTMLSpanElement | null>(null);
+  const tabsRootRef = React.useRef<HTMLDivElement | null>(null);
+  // The tag editor lives in the inspector (Round 15, D8.2): in the column beside the tabs,
+  // or in the sheet when the pane is too narrow for the column. T and "Edit tags" open it
+  // where the inspector is; a hidden column that fits opens first, and with no room for
+  // the column the sheet opens first and the editor once the sheet is up.
   const [tagsEditor, setTagsEditor] = React.useState<'column' | 'sheet' | null>(null);
   const railColumnRef = React.useRef<HTMLDivElement | null>(null);
   const tagsInSheetRef = React.useRef(false);
+  // The sheet was closed by a link that moves focus itself (the related cases): its close
+  // then leaves focus where that link put it, instead of on the toggle.
+  const sheetLeavesFocusRef = React.useRef(false);
+  const inspectorOpenRef = React.useRef(inspectorOpen);
+  inspectorOpenRef.current = inspectorOpen;
   const openTagsEditor = React.useCallback(() => {
     const column = railColumnRef.current;
     if (column && elementShown(column)) {
       setTagsEditor('column');
       return;
     }
+    const probe = probeRef.current;
+    if (!inspectorOpenRef.current && probe && elementShown(probe)) {
+      setInspectorOpen(true);
+      setTagsEditor('column');
+      return;
+    }
     tagsInSheetRef.current = true;
     setDetailsOpen(true);
-  }, []);
+  }, [setInspectorOpen]);
   // The control that opened a lifecycle / editor dialog, so focus returns to it (CM-3).
   const actionOpenerRef = React.useRef<HTMLElement | null>(null);
   const takeActionTriggerRef = React.useRef<HTMLButtonElement | null>(null);
+  // B28: an editor chosen in Take action opens only once the menu has closed. The menu
+  // gave focus back to its trigger as it closed, and the non-modal owner popover or tag
+  // editor dismissed itself on that focus move.
+  const pendingMenuEditorRef = React.useRef<'owner' | 'tags' | null>(null);
+  // A finding's "Cites N events" narrows Evidence's events to them (cleared by the table).
+  const [eventFilter, setEventFilter] = React.useState<string[] | null>(null);
+  // The Decision lane's "Policy inputs" reads the trace: it loads when they open.
+  const [timelineWanted, setTimelineWanted] = React.useState(false);
   const titleRef = React.useRef<HTMLHeadingElement | null>(null);
   const headerRef = React.useRef<HTMLDivElement | null>(null);
 
@@ -923,23 +993,30 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
     setThreat(null);
     setThreatError(null);
     setThreatLoading(false);
+    setTriagePolicy(null);
+    setServerSla(null);
+    setEventFilter(null);
+    setTimelineWanted(false);
     // A review belongs to the case it was opened on; the Files count is read again.
     setReviewOpen(false);
     setFilesCount(null);
     // The active tab is kept across case switches: an analyst browsing the queue on
-    // Investigation stays on Investigation (Defender's Up/Down behaviour).
+    // AI investigation stays on AI investigation (Defender's Up/Down behaviour).
     void loadCase();
   }, [open, id, loadCase]);
 
-  // Triage chips (#12), eager so the facts rail's Signal section reflects the four honest
+  // Triage chips (#12), eager so the inspector's Signal section reflects the four honest
   // signals as soon as the case opens. Best-effort: a failure leaves the chips null and
-  // the rail falls back to the case's own fields.
+  // the inspector falls back to the case's own fields. The same read carries the
+  // auto-close entry for the verdict and the SLA reading (C60, WP10), read defensively.
   const loadTriage = React.useCallback(async () => {
     if (!id || activeIdRef.current !== id) return;
     try {
       const res = await getTriage(id);
       if (activeIdRef.current !== id) return;
-      setTriage(res.chips || null);
+      setTriage(res?.chips || null);
+      setTriagePolicy(triageAutoClosePolicy(res));
+      setServerSla(triageSla(res));
     } catch {
       if (activeIdRef.current === id) setTriage(null);
     }
@@ -988,7 +1065,7 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
     };
   }, [open, canListUsers]);
 
-  // Typed ReAct timeline (#12): lazy on the Investigation tab.
+  // Typed ReAct timeline (#12): lazy on the AI investigation tab and the Brief's policy inputs.
   const loadTimeline = React.useCallback(async () => {
     if (!id || activeIdRef.current !== id) return;
     setTimelineLoading(true);
@@ -1004,15 +1081,17 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
     }
   }, [id]);
 
-  // Lazy on the Investigation tab. `!timelineError` in the guard stops a failed fetch
-  // from re-firing forever (the loading flag flips back to false on failure, which
-  // would otherwise re-satisfy `timeline === null && !loading` and hammer the backend).
-  // The Retry affordance still works: loadTimeline clears the error before refetching.
+  // Lazy on the AI investigation tab, and once the Brief's "Policy inputs" open.
+  // `!timelineError` in the guard stops a failed fetch from re-firing forever (the loading
+  // flag flips back to false on failure, which would otherwise re-satisfy
+  // `timeline === null && !loading` and hammer the backend). The Retry affordance still
+  // works: loadTimeline clears the error before refetching.
+  const wantsTimeline = tab === 'investigation' || (tab === 'overview' && timelineWanted);
   React.useEffect(() => {
-    if (open && tab === 'investigation' && timeline === null && !timelineLoading && !timelineError) {
+    if (open && wantsTimeline && timeline === null && !timelineLoading && !timelineError) {
       void loadTimeline();
     }
-  }, [open, tab, timeline, timelineLoading, timelineError, loadTimeline]);
+  }, [open, wantsTimeline, timeline, timelineLoading, timelineError, loadTimeline]);
 
   const loadStages = React.useCallback(async () => {
     if (!id || activeIdRef.current !== id) return;
@@ -1029,15 +1108,16 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
     }
   }, [id]);
 
-  // Lazy on the Overview tab, whose "What happened" section it is (Round 15, D8.3; same
-  // error-guard rationale as loadTimeline above).
+  // Lazy on the Evidence tab (its "What happened") and while the Brief's "How this case
+  // was built" is open (same error-guard rationale as loadTimeline above).
+  const wantsStages = tab === 'evidence' || (tab === 'overview' && storyOpen);
   React.useEffect(() => {
-    if (open && tab === 'overview' && stages === null && !stagesLoading && !stagesError) {
+    if (open && wantsStages && stages === null && !stagesLoading && !stagesError) {
       void loadStages();
     }
-  }, [open, tab, stages, stagesLoading, stagesError, loadStages]);
+  }, [open, wantsStages, stages, stagesLoading, stagesError, loadStages]);
 
-  // ---- Collaboration: thread + tasks + activity (#4) -------------------- //
+  // ---- Activity: thread + activity (#4) --------------------------------- //
   const loadThread = React.useCallback(async () => {
     if (!id || activeIdRef.current !== id) return;
     setThreadLoading(true);
@@ -1220,8 +1300,8 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
     }
   }, [id]);
 
-  // The Overview's summary and the Investigation's assessment read the model's reasoning
-  // (Round 15, D8.3), so it loads with either tab (and at once in Case Manager).
+  // The Brief's AI lane and the AI investigation's assessment read the model's reasoning,
+  // so it loads with either tab (and at once in Case Manager).
   React.useEffect(() => {
     const needsRationale = tab === 'investigation' || tab === 'overview' || presentation === 'embedded';
     if (open && needsRationale && rationale === null && !rationaleLoading && !rationaleError) {
@@ -1244,16 +1324,16 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
     }
   }, [id]);
 
-  // Lazy on the Investigation tab, whose "Threat context" section it is (Round 15, D8.3).
+  // Lazy on the Evidence tab, whose "Threat context" section it is (Round 16, D8).
   React.useEffect(() => {
-    if (open && tab === 'investigation' && threat === null && !threatLoading && !threatError) {
+    if (open && tab === 'evidence' && threat === null && !threatLoading && !threatError) {
       void loadThreat();
     }
   }, [open, tab, threat, threatLoading, threatError, loadThreat]);
 
   // Round 14: a case change can attach a runbook (a status move, a reinvestigation, new
   // tags re-evaluate the match, §4.10.4), so the runs are read again when the case on
-  // screen changes, and whenever the Runbook tab opens.
+  // screen changes, and whenever the Response tab opens.
   const { refresh: refreshRunbooks } = runbooks;
   const caseStamp = c && c.case_id === id ? `${c.updated_at ?? ''}|${c.status ?? ''}|${(c.tags ?? []).length}` : '';
   const seenStamp = React.useRef('');
@@ -1284,15 +1364,18 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
     };
   }, [open, canReinvestigate]);
 
-  // FP auto-close policy (best-effort).
+  // The settings the case surfaces read (best-effort), only for a holder of
+  // `settings:read` (C60): the auto-close policy `decide()` acts on (B27), the SLA policy,
+  // the runbook preferences and the notification channels.
   React.useEffect(() => {
-    if (!open) return;
+    if (!open || !canReadSettings) return;
     let cancelled = false;
     void api
       .getSettings()
       .then((res) => {
         if (cancelled) return;
-        setFpPolicy((res?.prefs?.fp_auto_close as FpPolicy) || null);
+        const policy = res?.prefs?.auto_close;
+        setAutoClosePolicy(policy && typeof policy === 'object' ? (policy as AutoClosePolicy) : null);
         setSlaPolicy((res?.prefs?.sla as SlaPolicy | undefined) ?? null);
         setRunbookPrefs(readRunbookPrefs(res?.prefs));
         const notif = res?.prefs?.notifications;
@@ -1309,7 +1392,7 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
     return () => {
       cancelled = true;
     };
-  }, [open]);
+  }, [open, canReadSettings]);
 
   const runNotify = React.useCallback(async () => {
     setNotifying(true);
@@ -1576,25 +1659,22 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
     onCaseChange,
   ]);
 
-  const runReinvestigate = React.useCallback(async () => {
-    setReinvesting(true);
-    setError(null);
-    try {
-      const input = reinvestModel.trim() ? { model: reinvestModel.trim() } : undefined;
-      const next = await api.reinvestigateCase(id, input);
+  // The case a reinvestigation returned (the blocking dialog; WP09 reports through the
+  // investigation store instead). Only the case it was asked for is shown.
+  const onReinvestigated = React.useCallback(
+    (next: Case) => {
+      if (activeIdRef.current !== next.case_id) {
+        onCaseChange?.(next);
+        return;
+      }
       commitCase(next);
-      setTakeActionOpen(false);
-      setReinvestOpen(false);
       setRationale(null);
       setTimeline(null);
       setStages(null);
       void loadTriage();
-    } catch (e) {
-      toast.error(reinvestigateErrorText(e));
-    } finally {
-      setReinvesting(false);
-    }
-  }, [reinvestModel, id, loadTriage, commitCase]);
+    },
+    [commitCase, loadTriage, onCaseChange],
+  );
 
   const runExport = React.useCallback(
     async (fmt: 'json' | 'md') => {
@@ -1619,16 +1699,6 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
     [id],
   );
 
-  const modelOptions = React.useMemo<Array<{ value: string; text: string }>>(() => {
-    const out: Array<{ value: string; text: string }> = [];
-    for (const [provider, list] of Object.entries(models?.providers || {})) {
-      for (const m of list || []) {
-        out.push({ value: m, text: `${m}  ·  ${provider}` });
-      }
-    }
-    return out;
-  }, [models]);
-
   // Open this case in a standalone browser tab. Both the legacy Cases sheet and the
   // embedded Case Manager understand the generic `caseId` hash query, so preserve the
   // current presentation's home instead of unexpectedly bouncing an inline analyst
@@ -1650,18 +1720,19 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
     else toast.error('Could not copy the case link.');
   }, [id, presentation]);
 
-  // ---- keyboard shortcuts (CM-4/CM-3) -------------------------------------- //
+  // ---- keyboard shortcuts (CM-4/CM-3; Round 16 [cmux] §5.10) --------------- //
   // A / C / E / H acknowledge, close, escalate or hold (each OPENS its dialog: every
   // mutation still goes through its dialog), R reinvestigate (always confirmed), M the
-  // owner picker, T the tags editor, Alt+1 to Alt+5 switch tabs. Active only while focus
-  // is NOT in text entry and no menu, popover or dialog of this case is open.
+  // owner picker, T the tags editor, ] the inspector, W the trace while the AI works,
+  // Alt+1 to Alt+6 switch tabs. Active only while focus is NOT in text entry and no menu,
+  // popover or dialog of this case is open.
   const shortcutStateRef = React.useRef({
     blocked: false,
     actions: [] as ActionDef[],
     canAssign: false,
     canTag: false,
     canReinvestigate: false,
-    hasRunbookTab: false,
+    aiRunning: false,
   });
   // The D8.2 table: the lifecycle plan for the status, with the auto-close review's rows
   // (Start review on a pending sample, "Review this auto-close" in place of Set disposition
@@ -1699,12 +1770,45 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
     canAssign: hasPermission('cases', 'assign'),
     canTag: hasPermission('cases', 'write'),
     canReinvestigate,
-    hasRunbookTab: canReadRunbooks,
+    aiRunning,
   };
   const openActionRef = React.useRef(openAction);
   openActionRef.current = openAction;
   const openTagsEditorRef = React.useRef(openTagsEditor);
   openTagsEditorRef.current = openTagsEditor;
+  // `]` and the header's toggle: the column when the pane has room for it, else the sheet.
+  const toggleInspector = React.useCallback(() => {
+    const probe = probeRef.current;
+    if (probe && elementShown(probe)) {
+      setInspectorOpen(!inspectorOpenRef.current);
+      return;
+    }
+    setDetailsOpen(true);
+  }, [setInspectorOpen]);
+  const toggleInspectorRef = React.useRef(toggleInspector);
+  toggleInspectorRef.current = toggleInspector;
+  // W: the live trace, while an AI run is under way.
+  const watchAiRun = React.useCallback(() => {
+    setTab('investigation');
+    traceTickRef.current += 1;
+    setTraceRequest({ tick: traceTickRef.current, caseId: id });
+  }, [id]);
+  const watchAiRunRef = React.useRef(watchAiRun);
+  watchAiRunRef.current = watchAiRun;
+
+  // Whether the inspector column fits the pane (the probe's container query), kept in
+  // step with the pane's width so the toggle's pressed state is true to what it does.
+  React.useLayoutEffect(() => {
+    const root = tabsRootRef.current;
+    const probe = probeRef.current;
+    if (!root || !probe) return undefined;
+    const measure = () => setColumnFits(elementShown(probe));
+    measure();
+    if (typeof ResizeObserver !== 'function') return undefined;
+    const observer = new ResizeObserver(() => measure());
+    observer.observe(root);
+    return () => observer.disconnect();
+  }, [open, caseShown]);
 
   React.useEffect(() => {
     if (!open || typeof document === 'undefined') return undefined;
@@ -1724,13 +1828,16 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
       const state = shortcutStateRef.current;
       if (state.blocked) return;
       if (event.altKey) {
-        const digit = /^Digit([1-5])$/.exec(event.code);
+        const digit = /^Digit([1-6])$/.exec(event.code);
         if (!digit) return;
-        const next = CASE_TABS[Number(digit[1]) - 1];
-        // Alt+2 is the Runbook tab, which a viewer without `runbooks:read` does not have.
-        if (next === 'runbook' && !state.hasRunbookTab) return;
+        // Every tab is shown to every viewer, so Alt+N always means the same tab.
         event.preventDefault();
-        setTab(next);
+        setTab(CASE_TABS[Number(digit[1]) - 1]);
+        return;
+      }
+      if (event.key === ']') {
+        event.preventDefault();
+        toggleInspectorRef.current();
         return;
       }
       if (event.shiftKey) return;
@@ -1752,8 +1859,10 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
       else if (key === 'r' && state.canReinvestigate) {
         event.preventDefault();
         actionOpenerRef.current = takeActionTriggerRef.current;
-        setReinvestModel('');
         setReinvestOpen(true);
+      } else if (key === 'w' && state.aiRunning) {
+        event.preventDefault();
+        watchAiRunRef.current();
       } else if (key === 'm' && state.canAssign) {
         event.preventDefault();
         setOwnerOpen(true);
@@ -1813,7 +1922,9 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
   const runbookData = runbooks.data;
   const runbookProgress = caseProgress(runbookData);
   const shownRun = primaryRun(runbookData);
-  const showRunbookTab = canReadRunbooks;
+  // The auto-close entry for the case's verdict (B27): from the policy `decide()` acts on
+  // when the settings were read, else from the triage read (C60).
+  const verdictPolicy: FpPolicy = (autoClosePolicy ? policyForVerdict(autoClosePolicy, c?.verdict) : null) ?? triagePolicy;
   // The close dialog's open required steps (a terminal action on a case not yet ended).
   const pendingTerminal =
     pending !== null && isTerminalVerb(pending.wireAction ?? pending.key) && !caseIsTerminal(c?.status);
@@ -1822,9 +1933,11 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
     : refusedSteps
       ? openStepsFromRefusal(refusedSteps, runbookData)
       : openRequiredSteps(runbookData);
-  const openRunbookTab = () => setTab('runbook');
   const canTag = canWriteCase && shownIsCurrent;
-  // The rail renders in the column beside the tabs and, in a narrow pane, in the Details
+  // The inspector is a column when the pane has room and the viewer keeps it shown.
+  const columnShown = columnFits && inspectorOpen;
+  const nameOf = (u: string) => pickUsers.find((p) => p.username === u)?.display_name || u;
+  // The inspector renders in the column beside the tabs and, in a narrow pane, in the
   // sheet; the tag editor opens only in the one being looked at.
   const renderRail = (placement: 'column' | 'sheet') =>
     c && outcome ? (
@@ -1833,23 +1946,20 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
         outcome={outcome}
         triage={triage}
         slaPolicy={slaPolicy}
-        fpPolicy={fpPolicy}
+        serverSla={serverSla}
+        policy={verdictPolicy}
         canViewCost={canViewCost}
         onCaseChange={commitCase}
         onSetDisposition={
           setDispositionAction ? () => openFromControl(setDispositionAction, takeActionTriggerRef.current) : undefined
         }
-        onShowRelated={() => openTabSection('overview', 'related-cases')}
-        runbook={
-          showRunbookTab
-            ? {
-                data: runbookData,
-                loading: runbooks.loading,
-                failed: Boolean(runbooks.error) && !runbookData,
-                onOpenPhase: (phase) => (phase ? requestRunbook({ kind: 'phase', phase }) : openRunbookTab()),
-              }
-            : undefined
-        }
+        onShowRelated={() => {
+          if (placement === 'sheet') {
+            sheetLeavesFocusRef.current = true;
+            setDetailsOpen(false);
+          }
+          openTabSection('evidence', 'related-cases');
+        }}
         canTag={canTag}
         tagsOpen={tagsEditor === placement}
         onTagsOpenChange={(next) => setTagsEditor(next ? placement : null)}
@@ -1858,8 +1968,8 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
         review={agentClosed ? { state: reviewState, bandShown: layout.startReview } : undefined}
       />
     ) : null;
-  // The auto-close review sheet (Round 15, D6.6, D6.9): opened from Start review or Take
-  // action; a recorded review re-reads the case (its grade and history) and the state.
+  // The auto-close review sheet (Round 15, D6.6, D6.9): opened from Start review, the
+  // review chip or Take action; a recorded review re-reads the case and the state.
   const openReview = (opener: HTMLElement | null) => {
     reviewOpenerRef.current = opener;
     setTakeActionOpen(false);
@@ -1889,6 +1999,11 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
       target.focus();
     }
   };
+  // A finding's "Cites N events": Evidence, narrowed to the events it cites.
+  const showFindingEvents = (eventIds: string[]) => {
+    setEventFilter(eventIds.length ? eventIds : null);
+    openTabSection('evidence', 'what-happened');
+  };
 
   return (
     <TooltipProvider delayDuration={200}>
@@ -1900,19 +2015,20 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
       >
         <MotionProvider>
           <Tabs
+            ref={tabsRootRef}
             value={tab}
             onValueChange={(v) => setTab(v as typeof tab)}
             className="@container/case flex h-full min-h-0 flex-col"
             data-case-busy={busy ? 'true' : undefined}
           >
-            {/* ------------------------------------------- sticky header (D8.2) */}
+            {/* --------------------------------------- sticky header (118px, Round 16) */}
             <div
               ref={headerRef}
               data-testid="case-detail-header"
               className={cn(
                 materialBar,
-                'relative z-10 shrink-0 px-4 pt-4 sm:px-5 lg:px-6',
-                presentation === 'sheet' && 'pr-14 sm:pr-14 lg:pr-14',
+                'relative z-10 shrink-0 px-4 pt-2 @[48rem]/case:px-5 @[64rem]/case:px-6',
+                presentation === 'sheet' && 'pr-14 @[48rem]/case:pr-14 @[64rem]/case:pr-14',
               )}
             >
               <LoadingBar
@@ -1921,15 +2037,28 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
                 label="Loading case"
                 className="absolute inset-x-0 top-0 rounded-none"
               />
-              {/* Line 1: the title and the actions share ONE row when the whole title fits
-                  beside them; when it does not (a long title in a narrow pane, a phone) the
-                  actions WRAP to their own row and the title takes the full width: it is
-                  never squeezed. The title cell's flex basis is its natural width
-                  (`flex-auto`), which is what the wrap decision is made on. The title is one
-                  line (its full text on hover and in its accessible name). Line 2: the one
-                  meta row, full width. */}
-              <header className="flex flex-wrap items-center gap-x-4 gap-y-2" data-testid="case-title-row">
-                <div className="min-w-0 max-w-full flex-auto" data-testid="case-title-cell">
+              {/* Row 1 (44px): the title keeps every pixel the actions leave and never
+                  wraps (its full text on hover and in its accessible name). Below a 40rem
+                  pane the primary action is an icon with a tooltip and Ask AI folds into
+                  Take action ("Ask about this case"). */}
+              <header className="flex h-11 min-w-0 flex-nowrap items-center gap-2 @[40rem]/case:gap-3" data-testid="case-title-row">
+                {presentation === 'embedded' ? (
+                  /* Below the split (one screen at a time) Back is the first item. The
+                     marker tells Case Manager the header has its own Back, so its separate
+                     back bar steps aside and a phone keeps one back control. */
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-8 w-8 shrink-0 xl:hidden"
+                    aria-label="Back to case queue"
+                    data-testid="case-back"
+                    data-case-header-back=""
+                    onClick={onClose}
+                  >
+                    <ChevronLeft className="h-4 w-4" aria-hidden />
+                  </Button>
+                ) : null}
+                <div className="min-w-0 flex-1" data-testid="case-title-cell">
                   {/* UNTRUSTED title: a plain text node. The SAME heading element is rendered
                       while the case loads (visually hidden, "Loading case"), so the sheet can
                       focus it on open and keep that focus when the case arrives, never an icon
@@ -1947,9 +2076,10 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
                   >
                     {c ? c.title || c.case_id : 'Loading case'}
                   </h2>
+                  {!c ? <Skeleton className="h-4 w-72 max-w-full" /> : null}
                 </div>
 
-                <div className="ml-auto flex max-w-full shrink-0 flex-wrap items-center justify-end gap-2">
+                <div className="flex shrink-0 items-center gap-1.5 @[40rem]/case:gap-2">
                   {/* ONE primary contextual action (the D8.2 table: `actionPlanForStatus`,
                       with Start review on a pending auto-close sample). */}
                   {c && layout.startReview ? (
@@ -1957,13 +2087,14 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
                       <TooltipTrigger asChild>
                         <Button
                           size="sm"
-                          className="h-8"
+                          className="h-8 px-2 @[40rem]/case:px-3"
                           data-testid="case-primary-action"
+                          aria-label={START_REVIEW_LABEL}
                           disabled={busy}
                           onClick={(event) => openReview(event.currentTarget)}
                         >
-                          <ClipboardCheck className="h-4 w-4" />
-                          {START_REVIEW_LABEL}
+                          <ClipboardCheck className="h-4 w-4" aria-hidden />
+                          <span className="hidden @[40rem]/case:inline">{START_REVIEW_LABEL}</span>
                         </Button>
                       </TooltipTrigger>
                       <TooltipContent side="bottom">{START_REVIEW_HELP}</TooltipContent>
@@ -1973,14 +2104,15 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
                       <TooltipTrigger asChild>
                         <Button
                           size="sm"
-                          className="h-8"
+                          className="h-8 px-2 @[40rem]/case:px-3"
                           data-testid="case-primary-action"
+                          aria-label={lifecyclePrimary.label}
                           disabled={busy}
                           aria-keyshortcuts={shortcutFor(lifecyclePrimary.key) ?? undefined}
                           onClick={(event) => openFromControl(lifecyclePrimary, event.currentTarget)}
                         >
                           {React.createElement(lifecyclePrimary.icon, { className: 'h-4 w-4' })}
-                          {lifecyclePrimary.label}
+                          <span className="hidden @[40rem]/case:inline">{lifecyclePrimary.label}</span>
                         </Button>
                       </TooltipTrigger>
                       <TooltipContent side="bottom">{lifecyclePrimary.help}</TooltipContent>
@@ -1994,14 +2126,34 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
                         ref={takeActionTriggerRef}
                         size="sm"
                         variant="outline"
-                        className="h-8"
+                        className="h-8 w-8 px-0 @[40rem]/case:w-auto @[40rem]/case:px-3"
                         disabled={!c}
+                        aria-label="Take action"
                       >
-                        Take action
-                        <ChevronDown className="h-3.5 w-3.5" aria-hidden />
+                        {/* Below a 40rem pane (a phone) the menu is an icon, so the title keeps
+                            the row; its name stays "Take action". */}
+                        <ListChecks className="h-4 w-4 @[40rem]/case:hidden" aria-hidden />
+                        <span className="hidden @[40rem]/case:inline">Take action</span>
+                        <ChevronDown className="hidden h-3.5 w-3.5 @[40rem]/case:inline" aria-hidden />
                       </Button>
                     </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end" sideOffset={8} className="w-72">
+                    <DropdownMenuContent
+                      align="end"
+                      sideOffset={8}
+                      className="w-72"
+                      // B28: an editor chosen here opens once the menu has closed, and the
+                      // menu does not take focus back first (that focus move dismissed the
+                      // non-modal editor). The editor takes focus and returns it to its own
+                      // trigger when it closes.
+                      onCloseAutoFocus={(event) => {
+                        const editor = pendingMenuEditorRef.current;
+                        if (!editor) return;
+                        pendingMenuEditorRef.current = null;
+                        event.preventDefault();
+                        if (editor === 'owner') setOwnerOpen(true);
+                        else openTagsEditor();
+                      }}
+                    >
                       {/* The group's label and separator go with its items: a role that may
                           change nothing about the case (an auditor) gets no empty group. */}
                       {permittedLifecycleActions.length > 0 || layout.reviewInMenu ? (
@@ -2040,12 +2192,11 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
                       <DropdownMenuLabel>Investigation</DropdownMenuLabel>
                       {canReinvestigate ? (
                         <DropdownMenuItem
-                          disabled={reinvesting || busy}
+                          disabled={busy}
                           aria-keyshortcuts="R"
                           onSelect={() => {
                             actionOpenerRef.current = takeActionTriggerRef.current;
                             setTakeActionOpen(false);
-                            setReinvestModel('');
                             setReinvestOpen(true);
                           }}
                         >
@@ -2077,6 +2228,7 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
                         Refresh case
                       </DropdownMenuItem>
                       <DropdownMenuItem
+                        aria-keyshortcuts="Alt+6"
                         onSelect={() => {
                           setTakeActionOpen(false);
                           setTab('chat');
@@ -2084,15 +2236,16 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
                       >
                         <MessageSquare className="h-4 w-4" />
                         <span className="flex-1">Ask about this case</span>
-                        <MenuShortcut>Alt 5</MenuShortcut>
+                        <MenuShortcut>Alt 6</MenuShortcut>
                       </DropdownMenuItem>
                       {hasPermission('cases', 'assign') ? (
                         <DropdownMenuItem
                           disabled={busy}
                           aria-keyshortcuts="M"
                           onSelect={() => {
+                            // B28: opened by the menu's onCloseAutoFocus, once it has closed.
+                            pendingMenuEditorRef.current = 'owner';
                             setTakeActionOpen(false);
-                            setOwnerOpen(true);
                           }}
                         >
                           <UserCheck className="h-4 w-4" />
@@ -2105,8 +2258,9 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
                           disabled={busy}
                           aria-keyshortcuts="T"
                           onSelect={() => {
+                            // B28: opened by the menu's onCloseAutoFocus, once it has closed.
+                            pendingMenuEditorRef.current = 'tags';
                             setTakeActionOpen(false);
-                            openTagsEditor();
                           }}
                         >
                           <TagIcon className="h-4 w-4" />
@@ -2165,6 +2319,26 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
                     </DropdownMenuContent>
                   </DropdownMenu>
 
+                  {/* Ask AI: the case chat (the Chat tab, Alt+6), one engine (#5). */}
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="hidden h-8 px-2 @[40rem]/case:inline-flex"
+                        disabled={!c}
+                        aria-label="Ask AI about this case"
+                        aria-keyshortcuts="Alt+6"
+                        data-testid="case-ask-ai"
+                        onClick={() => setTab('chat')}
+                      >
+                        <Bot className="h-4 w-4" aria-hidden />
+                        <span className="hidden @[56rem]/case:inline">Ask AI</span>
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent side="bottom">Ask AI about this case</TooltipContent>
+                  </Tooltip>
+
                   {/* More options: the case's link (copy it, or open it in a new tab). */}
                   <DropdownMenu>
                     <Tooltip>
@@ -2189,19 +2363,29 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
                     </DropdownMenuContent>
                   </DropdownMenu>
 
-                  {/* The facts rail folds into a side sheet in a narrow pane. */}
-                  <Button
-                    ref={detailsTriggerRef}
-                    variant="ghost"
-                    size="sm"
-                    className="h-8 px-2 @[60rem]/case:hidden"
-                    disabled={!c}
-                    aria-label="Details"
-                    onClick={() => setDetailsOpen(true)}
-                  >
-                    <PanelRight className="h-4 w-4" aria-hidden />
-                    <span className="hidden @[48rem]/case:inline">Details</span>
-                  </Button>
+                  {/* The inspector: a column when the pane has room (pressed while shown),
+                      otherwise the same facts in a non-blocking side sheet. */}
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        ref={detailsTriggerRef}
+                        variant="ghost"
+                        size="icon"
+                        className={cn('h-8 w-8', columnShown && 'bg-accent/70 text-foreground')}
+                        disabled={!c}
+                        aria-label="Case facts"
+                        aria-pressed={columnFits ? inspectorOpen : undefined}
+                        aria-keyshortcuts="]"
+                        data-testid="case-inspector-toggle"
+                        onClick={toggleInspector}
+                      >
+                        <PanelRight className="h-4 w-4" aria-hidden />
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent side="bottom">
+                      {columnFits ? (inspectorOpen ? 'Hide case facts' : 'Show case facts') : 'Case facts'}
+                    </TooltipContent>
+                  </Tooltip>
 
                   {presentation === 'embedded' ? (
                     <Button
@@ -2216,61 +2400,58 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
                   ) : null}
                 </div>
               </header>
-              {c ? (
-                outcome ? (
-                  <CaseHeaderMeta
-                    c={c}
-                    outcome={outcome}
-                    users={pickUsers}
-                    currentUser={currentUser}
-                    canAssign={hasPermission('cases', 'assign') && shownIsCurrent}
-                    slaPolicy={slaPolicy}
-                    onCaseChange={commitCase}
-                    ownerOpen={ownerOpen}
-                    onOwnerOpenChange={setOwnerOpen}
-                  />
-                ) : null
+              {/* Row 2 (24px): the meta strip, one line at every width. */}
+              {c && outcome ? (
+                <CaseHeaderMeta
+                  c={c}
+                  outcome={outcome}
+                  users={pickUsers}
+                  currentUser={currentUser}
+                  canAssign={hasPermission('cases', 'assign') && shownIsCurrent}
+                  slaPolicy={slaPolicy}
+                  serverSla={serverSla}
+                  triage={triage}
+                  onCaseChange={commitCase}
+                  ownerOpen={ownerOpen}
+                  onOwnerOpenChange={setOwnerOpen}
+                  onStartReview={layout.startReview ? (opener) => openReview(opener) : undefined}
+                />
               ) : (
-                <div className="space-y-2 py-1">
-                  <Skeleton className="h-6 w-72 max-w-full" />
-                  <Skeleton className="h-4 w-96 max-w-full" />
+                <div className="flex h-6 items-center">
+                  <Skeleton className="h-3 w-96 max-w-full" />
                 </div>
               )}
 
-              {/* A pending auto-close sample (D6.12): why the case is here; Start review,
-                  the primary action above, is what to do. */}
-              {c && layout.startReview ? <ReviewBand className="mt-3" /> : null}
-
-              {c ? (
-                <TabsList variant="underline" className="mt-3">
-                  <TabsTrigger value="overview" aria-keyshortcuts="Alt+1">
-                    Overview
-                  </TabsTrigger>
-                  {showRunbookTab ? (
-                    <TabsTrigger value="runbook" className="gap-1.5" aria-keyshortcuts="Alt+2" data-tab="runbook">
-                      Runbook
-                      {runbookData ? (
-                        <RunbookTabCount progress={runbookProgress} abandoned={runbookData.runs.length > 0} />
-                      ) : null}
-                    </TabsTrigger>
+              {/* The tabs (36px), one lane each (D8), on Alt+1 to Alt+6. */}
+              <TabsList variant="underline" density="compact" className="mt-1.5" aria-label="Case sections">
+                <TabsTrigger value="overview" aria-keyshortcuts="Alt+1" disabled={!c}>
+                  Brief
+                </TabsTrigger>
+                <TabsTrigger value="evidence" aria-keyshortcuts="Alt+2" disabled={!c}>
+                  Evidence
+                </TabsTrigger>
+                <TabsTrigger value="investigation" className="gap-1.5" aria-keyshortcuts="Alt+3" disabled={!c}>
+                  AI investigation
+                  {traceSteps ? <TabCount label="steps">{traceSteps}</TabCount> : null}
+                </TabsTrigger>
+                <TabsTrigger value="runbook" className="gap-1.5" aria-keyshortcuts="Alt+4" data-tab="runbook" disabled={!c}>
+                  Response
+                  {/* The runbook's progress when one is attached. No "None": the tab also
+                      holds the case's tasks, so it is never empty. */}
+                  {runbookData && canReadRunbooks && (runbookProgress || runbookData.runs.length > 0) ? (
+                    <RunbookTabCount progress={runbookProgress} abandoned={runbookData.runs.length > 0} />
                   ) : null}
-                  <TabsTrigger value="investigation" className="gap-1.5" aria-keyshortcuts="Alt+3">
-                    Investigation
-                    {traceSteps ? <TabCount label="steps">{traceSteps}</TabCount> : null}
-                  </TabsTrigger>
-                  <TabsTrigger value="collab" className="gap-1.5" aria-keyshortcuts="Alt+4">
-                    Collaboration
-                    {messageCount ? <TabCount label="messages">{messageCount}</TabCount> : null}
-                  </TabsTrigger>
-                  <TabsTrigger value="chat" aria-keyshortcuts="Alt+5">
-                    Chat
-                    {/* A case chat answer being written, unread, waiting or failed (SPEC D13). */}
-                    <CaseChatActivityGlyph caseId={c.case_id} className="ml-1.5" />
-                  </TabsTrigger>
-                </TabsList>
-              ) : (
-                <div className="h-3" />
-              )}
+                </TabsTrigger>
+                <TabsTrigger value="collab" className="gap-1.5" aria-keyshortcuts="Alt+5" disabled={!c}>
+                  Activity
+                  {messageCount ? <TabCount label="messages">{messageCount}</TabCount> : null}
+                </TabsTrigger>
+                <TabsTrigger value="chat" aria-keyshortcuts="Alt+6" disabled={!c}>
+                  Chat
+                  {/* A case chat answer being written, unread, waiting or failed (SPEC D13). */}
+                  {c ? <CaseChatActivityGlyph caseId={c.case_id} className="ml-1.5" /> : null}
+                </TabsTrigger>
+              </TabsList>
             </div>
 
             {/* ----------------------------------------------------- body */}
@@ -2316,9 +2497,22 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
                           c={c}
                           rationale={rationale}
                           onNavigate={onNavigate}
-                          whatHappened={
-                            /* The six-stage story that was the Timeline tab (D8.3); its
-                               stages load when the Overview opens. */
+                          onOpenTab={setTab}
+                          reviewPending={layout.startReview}
+                          runbookRun={canReadRunbooks ? shownRun : null}
+                          onOpenRunbook={(stepId) => requestRunbook(stepId ? { kind: 'step', stepId } : { kind: 'card' })}
+                          runbookProgress={canReadRunbooks ? runbookProgress : null}
+                          messageCount={messageCount}
+                          filesCount={filesCount ? filesCount.count : null}
+                          timeline={timeline}
+                          policy={verdictPolicy}
+                          canOpenApprovals={canReadProposals}
+                          onNeedTimeline={() => setTimelineWanted(true)}
+                          buildStoryOpen={storyOpen}
+                          onBuildStoryOpenChange={setStoryOpen}
+                          buildStory={
+                            /* The six-stage story, folded: every stage, the one place the
+                               lanes meet. Its stages load when it opens. */
                             <TimelinePanel
                               stages={stages}
                               stagesLoading={stagesLoading}
@@ -2327,64 +2521,44 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
                               onOpenInvestigation={() => setTab('investigation')}
                             />
                           }
-                          runbookCard={
-                            showRunbookTab && shownRun && runbookData && !caseIsTerminal(c.status) ? (
-                              <OverviewNextStep
-                                run={shownRun}
-                                progress={progressOf(runbookData, shownRun)}
-                                nameOf={(u) => pickUsers.find((p) => p.username === u)?.display_name || u}
-                                onOpenRunbook={(stepId) =>
-                                  requestRunbook(stepId ? { kind: 'step', stepId } : { kind: 'card' })
-                                }
-                              />
-                            ) : null
+                        />
+                      </TabPanelMotion>
+                    </TabsContent>
+                    <TabsContent value="evidence" className="mt-0">
+                      <TabPanelMotion>
+                        {/* The source lane: what happened (fenced), the events, entities, threat
+                            context, related cases and the baseline (Round 16, D8). */}
+                        <EvidencePanel
+                          c={c}
+                          onNavigate={onNavigate}
+                          filterEventIds={eventFilter}
+                          onClearEventFilter={() => setEventFilter(null)}
+                          sourceStory={
+                            <TimelinePanel
+                              stages={stages}
+                              stagesLoading={stagesLoading}
+                              stagesError={stagesError}
+                              onRetryStages={loadStages}
+                              kinds={SOURCE_STAGES}
+                            />
+                          }
+                          threatContext={
+                            <ThreatContextPanel
+                              c={c}
+                              panel={threat}
+                              loading={threatLoading}
+                              error={threatError}
+                              onRetry={loadThreat}
+                              onNavigate={onNavigate}
+                            />
                           }
                         />
                       </TabPanelMotion>
                     </TabsContent>
-                    {showRunbookTab ? (
-                      <TabsContent value="runbook" className="mt-0">
-                        <TabPanelMotion>
-                          <React.Suspense
-                            fallback={
-                              <LoadingState
-                                label="Loading the runbook"
-                                layout="panel"
-                                shape="rows"
-                                shapeRows={4}
-                                className="px-4 py-4"
-                              />
-                            }
-                          >
-                            <RunbookPanel
-                              c={c}
-                              runbooks={runbooks}
-                              canRun={canRunRunbooks && shownIsCurrent}
-                              enabled={runbookPrefs.enabled}
-                              viewer={runbookViewer}
-                              canWriteTasks={canWriteCase && shownIsCurrent}
-                              hasPermission={hasPermission}
-                              currentUser={currentUser}
-                              users={pickUsers}
-                              aiDrafts={runbookPrefs.aiDrafts}
-                              aiSuggest={runbookPrefs.aiSuggest}
-                              focusRequest={runbookRequest}
-                              onFocusRequestHandled={runbookRequestHandled}
-                              onCloseCase={
-                                planClose && canClose
-                                  ? () => openFromControl(planClose, document.activeElement as HTMLElement | null)
-                                  : undefined
-                              }
-                              className={CASE_MANAGER_PANEL_PADDING}
-                            />
-                          </React.Suspense>
-                        </TabPanelMotion>
-                      </TabsContent>
-                    ) : null}
                     <TabsContent value="investigation" className="mt-0">
                       <TabPanelMotion>
-                        {/* The AI assessment, the decision, threat context, the inputs and
-                            the collapsed full trace (Round 15, D8.3). */}
+                        {/* The AI lane: the assessment, the inputs, the trace and earlier
+                            gradings (Round 16, D8). */}
                         <InvestigationPanel
                           c={c}
                           rationale={rationale}
@@ -2397,20 +2571,58 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
                           onRetryTimeline={loadTimeline}
                           traceRequest={shownIsCurrent && traceRequest?.caseId === id ? traceRequest.tick : null}
                           onTraceRequestHandled={traceRequestHandled}
-                          fpPolicy={fpPolicy}
-                          threatContext={
-                            /* "Threat context", which was its own tab (D8.3); it loads when
-                               Investigation opens. */
-                            <ThreatContextPanel
-                              c={c}
-                              panel={threat}
-                              loading={threatLoading}
-                              error={threatError}
-                              onRetry={loadThreat}
-                              onNavigate={onNavigate}
-                            />
-                          }
+                          aiRunning={aiRunning}
+                          onShowEvents={showFindingEvents}
                         />
+                      </TabPanelMotion>
+                    </TabsContent>
+                    <TabsContent value="runbook" className="mt-0">
+                      <TabPanelMotion>
+                        {/* Response: the runbook for a viewer who may read runbooks (lazy), and
+                            the case's tasks for everyone. */}
+                        {canReadRunbooks ? (
+                          <div className={CASE_MANAGER_PANEL_PADDING}>
+                            <div data-testid="case-tab-first">
+                              <React.Suspense
+                                fallback={
+                                  <LoadingState
+                                    label="Loading the runbook"
+                                    layout="panel"
+                                    shape="rows"
+                                    shapeRows={4}
+                                  />
+                                }
+                              >
+                                <RunbookPanel
+                                  c={c}
+                                  runbooks={runbooks}
+                                  canRun={canRunRunbooks && shownIsCurrent}
+                                  enabled={runbookPrefs.enabled}
+                                  viewer={runbookViewer}
+                                  canWriteTasks={canWriteCase && shownIsCurrent}
+                                  hasPermission={hasPermission}
+                                  currentUser={currentUser}
+                                  users={pickUsers}
+                                  aiDrafts={runbookPrefs.aiDrafts}
+                                  aiSuggest={runbookPrefs.aiSuggest}
+                                  focusRequest={runbookRequest}
+                                  onFocusRequestHandled={runbookRequestHandled}
+                                  onCloseCase={
+                                    planClose && canClose
+                                      ? () => openFromControl(planClose, document.activeElement as HTMLElement | null)
+                                      : undefined
+                                  }
+                                />
+                              </React.Suspense>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className={CASE_MANAGER_PANEL_PADDING} data-case-panel="response">
+                            <PanelSection title="Tasks" testId="response-tasks" tabFirst>
+                              <OtherTasksLoader caseId={c.case_id} canWrite={canWriteCase} nameOf={nameOf} />
+                            </PanelSection>
+                          </div>
+                        )}
                       </TabPanelMotion>
                     </TabsContent>
                     <TabsContent value="collab" className="mt-0">
@@ -2434,16 +2646,6 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
                           onEdit={(msgId, text) => void editMessage(msgId, text)}
                           onDelete={(msgId) => void removeMessage(msgId)}
                           onReact={(msgId, emoji, remove) => void reactMessage(msgId, emoji, remove)}
-                          onOpenTasks={showRunbookTab ? () => requestRunbook({ kind: 'tasks' }) : undefined}
-                          tasksSection={
-                            showRunbookTab ? undefined : (
-                              <OtherTasksLoader
-                                caseId={c.case_id}
-                                canWrite={canWriteCase}
-                                nameOf={(u) => pickUsers.find((p) => p.username === u)?.display_name || u}
-                              />
-                            )
-                          }
                           // The Files section (D5.12): the lazy screenshots gallery, with this
                           // tab as its paste scope and its count beside the heading.
                           renderFiles={(pasteScope) => (
@@ -2485,13 +2687,21 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
                 )}
               </div>
 
-              {/* The facts rail: every tab, from a 60rem pane (CM-6, D8.4). */}
-              {c && outcome ? (
+              {/* The probe the inspector's container query shows from a 52rem pane: it tells
+                  the toggle whether the column fits. Zero size, never announced. */}
+              <span
+                ref={probeRef}
+                aria-hidden
+                data-testid="case-inspector-probe"
+                className="pointer-events-none hidden h-0 w-0 @[52rem]/case:block"
+              />
+              {/* The inspector: every tab, from a 52rem pane, while the viewer keeps it shown. */}
+              {c && outcome && inspectorOpen ? (
                 <div
                   ref={railColumnRef}
                   data-testid="case-facts-column"
                   className={cn(
-                    'hidden w-[19rem] shrink-0 overflow-y-auto border-l border-border/70 px-5 py-5 @[60rem]/case:block',
+                    'hidden w-[17rem] shrink-0 overflow-y-auto border-l border-border/70 px-4 py-4 @[52rem]/case:block @[72rem]/case:w-[19rem]',
                     !shownIsCurrent && 'opacity-60',
                   )}
                 >
@@ -2521,7 +2731,7 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
           className="overflow-y-auto p-5"
           aria-describedby={undefined}
           // Open on the sheet's heading, never its first help tip (whose explainer would
-          // then pop open by itself); close back to the Details button, not <body>: the
+          // then pop open by itself); close back to the inspector toggle, not <body>: the
           // sheet is opened from state and non-modal, so Radix has no trigger to return to.
           // Opened by T or "Edit tags", it opens the tag editor instead, which takes focus.
           onOpenAutoFocus={(event) => {
@@ -2534,6 +2744,12 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
             detailsTitleRef.current?.focus();
           }}
           onCloseAutoFocus={(event) => {
+            // Closed by the related-cases link: the section's heading already has focus.
+            if (sheetLeavesFocusRef.current) {
+              sheetLeavesFocusRef.current = false;
+              event.preventDefault();
+              return;
+            }
             const trigger = detailsTriggerRef.current;
             if (trigger && trigger.isConnected) {
               event.preventDefault();
@@ -2552,70 +2768,21 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
         </SheetContent>
       </Sheet>
 
-      {/* Editors launched from the Take action menu. Detached dialogs (not nested
-          popovers), so Select focus/keyboard behaviour stays reliable after the menu
-          closes; focus returns to the control that opened them. */}
-      <Dialog open={reinvestOpen} onOpenChange={setReinvestOpen}>
-        <DialogContent className="sm:max-w-md" onCloseAutoFocus={restoreTo(actionOpenerRef)}>
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <Zap className="h-4 w-4 text-primary" />
-              Re-run the investigation
-            </DialogTitle>
-            <DialogDescription>
-              Force a fresh AI investigation. This runs the LLM pipeline and may take a few
-              seconds.
-            </DialogDescription>
-          </DialogHeader>
-          <Alert variant="warning">
-            <AlertTriangle className="h-4 w-4" />
-            <AlertTitle>Costs tokens and overwrites the verdict</AlertTitle>
-            <AlertDescription>
-              {canViewCost && c?.token_cost != null
-                ? `Investigation cost to date ${fmtMoney(c.token_cost)}. `
-                : null}
-              Re-running spends more tokens and replaces the current verdict, confidence, and
-              rationale.
-            </AlertDescription>
-          </Alert>
-          <div className="space-y-1.5">
-            <Label className="text-xs">Model</Label>
-            <Select
-              value={reinvestModel || '__configured__'}
-              onValueChange={(value) => setReinvestModel(value === '__configured__' ? '' : value)}
-              disabled={reinvesting}
-            >
-              <SelectTrigger aria-label="Model">
-                <SelectValue placeholder="Use configured model" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="__configured__">Use configured model</SelectItem>
-                {modelOptions.map((model) => (
-                  <SelectItem key={model.value} value={model.value}>
-                    {model.text}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-          <DialogFooter>
-            <Button variant="ghost" onClick={() => setReinvestOpen(false)} disabled={reinvesting}>
-              Cancel
-            </Button>
-            <Button onClick={() => void runReinvestigate()} disabled={reinvesting}>
-              {reinvesting ? (
-                <LoaderCircle className="h-4 w-4 motion-safe:animate-spin" aria-hidden />
-              ) : (
-                <Play className="h-4 w-4" aria-hidden />
-              )}
-              Reinvestigate
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      {/* Reinvestigate: a detached dialog (not a nested popover), so its Select keeps its
+          focus and keyboard behaviour after the menu closes; focus returns to the control
+          that opened it. WP09 makes it non-blocking. */}
+      <ReinvestigateDialog
+        caseRecord={c && shownIsCurrent ? c : null}
+        open={reinvestOpen}
+        onOpenChange={setReinvestOpen}
+        models={models}
+        onReinvestigated={onReinvestigated}
+        onCloseAutoFocus={restoreTo(actionOpenerRef)}
+      />
 
       {/* --------------------------------------- confirm / close-with-disposition */}
       <ConfirmActionDialog
+        caseIds={c && shownIsCurrent ? [c.case_id] : undefined}
         pending={pending}
         acting={acting}
         onClose={closeAction}

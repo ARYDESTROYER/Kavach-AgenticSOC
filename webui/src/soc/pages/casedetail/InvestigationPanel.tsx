@@ -1,55 +1,49 @@
 /**
- * InvestigationPanel: the Investigation tab (Round 15, SPEC D8.3).
+ * InvestigationPanel: the AI investigation tab, id `investigation` (Round 16, SPEC D8,
+ * §4.4 WP03; the Investigation tab before it). The AI lane, and only it.
  *
- * The investigation proper, in flat sections divided by hairlines:
+ * One muted line first: the model is advisory and the code decides (the Decision is the
+ * Brief's lane). Then, in flat sections divided by hairlines:
  *
  *   1. AI ASSESSMENT: the model's reading only (G17: it never falls back to the code's
- *      `decision_rationale`), the findings it recorded and the query to reproduce them,
- *      with the full assessment evidence (<WhyPanel>) one disclosure away.
- *   2. DECISION: what settled the case (the deterministic `decide()` output, or the
- *      analyst or analyst policy that closed it), its authority sentence ONCE, the
- *      auto-close reading, the policy inputs (<DecisionCard>) one disclosure away, and the
- *      automation applied after it (#3).
- *   3. THREAT CONTEXT: the section that was its own tab (the caller passes it in, loaded
- *      when this tab opens); a link to the retired Threat context tab lands here
- *      (`data-section="threat-context"`).
- *   4. INPUTS: the knowledge and procedures the investigator consulted.
- *   5. TRACE: the ReAct <TraceTimeline>, collapsed with its step and tool counts, an
- *      actor filter and "Jump to decision".
- *   6. PREVIOUS GRADINGS, when any.
+ *      `decision_rationale`), the findings it recorded (`FindingsList`, whose "Cites N
+ *      events" opens the Evidence tab narrowed to those events) and the query to
+ *      reproduce them, with the full assessment evidence (<WhyPanel>) one disclosure away.
+ *   2. INPUTS: the knowledge and procedures the investigator consulted.
+ *   3. TRACE: the ReAct <TraceTimeline>, with its step and tool counts, an actor filter
+ *      and "Jump to decision"; collapsed, and open while an AI run is under way.
+ *   4. PREVIOUS GRADINGS, when any.
  *
- * The verdict, confidence and risk are the header's and the facts rail's (D8.4): this tab
- * does not repeat them.
+ * Moved out (Round 16): the Decision and the automation applied (the Brief's Decision
+ * lane), and Threat context (the Evidence tab). Nothing on this tab is the code's or the
+ * source's, so no `code` provenance tag renders here. The verdict, confidence and risk are
+ * the header's.
  *
  * SECURITY (#9): this panel only composes read-only sub-panels; each renders its own
  * model/log-derived text as plain text or inside an escaped CodeBlock. Nothing here
  * decides or mutates a case.
  */
 import * as React from 'react';
-import { ArrowDown, ChevronDown, Lock } from 'lucide-react';
+import { ArrowDown, ChevronDown } from 'lucide-react';
 
 import type { Case, CaseRationale } from '@/lib/types';
 import type { TimelineResponse } from '@/soc/pages/CaseDetail.api';
 import { cn } from '@/lib/cn';
 
-import { Badge } from '@/ui/badge';
 import { Button } from '@/ui/button';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/ui/collapsible';
 import { Skeleton } from '@/ui/skeleton';
 
 import { WhyPanel } from './WhyPanel';
 import { InvestigationInputs } from './InvestigationInputs';
-import { DecisionCard } from './DecisionCard';
-import { AutomationApplied } from './AutomationApplied';
 import { GradingHistory } from './grading';
+import { FindingsList } from './records/FindingsList';
 import { TraceTimeline } from '@/soc/components/TraceTimeline';
-import { CodeBlock, InlineCode } from '@/soc/components/CodeBlock';
+import { CodeBlock } from '@/soc/components/CodeBlock';
 import { ProvenanceTag } from '@/soc/components/ProvenanceTag';
 import { SegmentedControl } from '@/soc/components/SegmentedControl';
-import { isAutoClosedByAI } from '@/soc/components/badges';
-import { caseOutcome, isHumanClosed } from '@/soc/components/outcome';
 import { aiAssessed, aiAssessmentText } from './caseFacts';
-import { CASE_MANAGER_PANEL_PADDING, PanelSection, type FpPolicy } from './shared';
+import { CASE_MANAGER_PANEL_PADDING, PanelSection } from './shared';
 
 /* --------------------------------------------------------- the Investigation tab -- */
 
@@ -72,60 +66,18 @@ const DisclosureTrigger: React.FC<{
   </CollapsibleTrigger>
 );
 
-/** A machine decision record (`verdict=… status=… risk=…`), not a sentence. */
-const DECISION_RECORD = /^[a-z_]+=\S+(\s+[a-z_]+=\S+)+/i;
-
-/** A finding the agent recorded as clean (a ruled-out check), not a positive finding. */
-const RULED_OUT_RE =
-  /\b(no\s+(match|evidence|sign|indicat|hit|result)|not\s+(malicious|found|present|observed)|ruled\s+out|clean|benign|negative|nothing\s+(found|suspicious)|false\s+positive|cleared)\b/i;
-
-/** The first sentence of a longer text. */
-function firstSentence(text?: string): string {
-  const trimmed = (text || '').trim();
-  if (!trimmed) return '';
-  const m = trimmed.match(/^.*?[.!?](\s|$)/);
-  return (m ? m[0] : trimmed).trim();
-}
-
 // Re-exported for the G17 test and existing importers.
 export { aiAssessmentText };
 
-/**
- * The FP auto-close reading of an undecided or code-decided case (one line), or null when
- * no FP policy is configured or a person closed the case. Our own copy (#9).
- */
-function autoCloseLine(policy: FpPolicy | undefined, c: Case): string | null {
-  if (!policy || typeof policy.min_confidence !== 'number') return null;
-  if (isHumanClosed(c)) return null;
-  const v = (c.verdict || '').toLowerCase();
-  const isFp = v.includes('false') || v === 'fp' || v.includes('benign');
-  if (!policy.enabled) {
-    // Only a case assessed as false positive and still needing a person: never a true
-    // positive or Needs human verdict, and never a recorded AI close.
-    if (!isFp || isAutoClosedByAI(c.status, c.decision_by)) return null;
-    return 'False-positive auto-close is disabled.';
-  }
-  if (!isFp) {
-    return 'Needs human review and true-positive verdicts never auto-close. The auto-close bar applies to false positives only.';
-  }
-  const conf = typeof c.confidence === 'number' ? c.confidence : null;
-  const risk = typeof c.risk_score === 'number' ? c.risk_score : null;
-  const confOk = conf !== null && conf >= policy.min_confidence;
-  const riskOk = typeof policy.max_risk_score !== 'number' || (risk !== null && risk <= policy.max_risk_score);
-  const bar = policy.min_confidence.toFixed(2);
-  if (confOk && riskOk) {
-    return `Eligible for auto-close: confidence is at or above the ${bar} bar and risk is within the policy ceiling.`;
-  }
-  if (!confOk) return `Below the ${bar} auto-close confidence bar, so it is held for a human.`;
-  return 'Above the confidence bar, but risk exceeds the auto-close ceiling, so it is held for a human.';
-}
+/** The tab's first line: the model is advisory, and the code decides. */
+export const AI_ADVISORY_LINE = 'Advisory. The case route is decided by code; see the Decision on the Brief.';
 
 /**
- * The Investigation tab (see the module note): the AI assessment, the decision, threat
- * context, the inputs, the collapsed trace and earlier gradings. Every datum of the
- * earlier layout is kept or has one home elsewhere: the reasoning, the findings, the
- * reproduce query, the decision line and record, the policy inputs, the automation, the
- * full assessment evidence, every trace step and the grading history.
+ * The AI investigation tab (see the module note): the AI assessment, the inputs, the
+ * trace and earlier gradings. Every datum of the earlier layout is kept or has one home
+ * elsewhere: the reasoning, the findings, the reproduce query, the full assessment
+ * evidence, every trace step and the grading history here; the decision line and record,
+ * the policy inputs and the automation on the Brief; threat context on Evidence.
  */
 export const InvestigationPanel: React.FC<InvestigationPanelProps> = ({
   c,
@@ -139,21 +91,16 @@ export const InvestigationPanel: React.FC<InvestigationPanelProps> = ({
   onRetryTimeline,
   traceRequest,
   onTraceRequestHandled,
-  fpPolicy,
-  threatContext,
+  aiRunning = false,
+  onShowEvents,
 }) => {
   const [traceOpen, setTraceOpen] = React.useState(false);
   const [evidenceOpen, setEvidenceOpen] = React.useState(false);
-  const [decisionOpen, setDecisionOpen] = React.useState(false);
   const [actor, setActor] = React.useState<TraceActor>('all');
   const traceRef = React.useRef<HTMLDivElement | null>(null);
   const traceSectionRef = React.useRef<HTMLElement | null>(null);
 
-  const outcome = caseOutcome(c);
-  const humanClosed = isHumanClosed(c);
   const assessment = aiAssessmentText(c, rationale);
-  const decisionSummary = rationale?.decision_rationale?.trim() || '';
-  const autoClose = autoCloseLine(fpPolicy, c);
   const findings = (c.evidence || []).filter((e) => e && (e.summary || e.query));
   const reproduce = (c.reproduce_query || '').trim();
 
@@ -174,6 +121,13 @@ export const InvestigationPanel: React.FC<InvestigationPanelProps> = ({
     [timeline, timelineLoading, timelineError, onRetryTimeline],
   );
   useTraceRequest(traceRequest, onTraceRequestHandled, traceOpen, setTraceOpen, handleTraceToggle, traceSectionRef);
+  // While an AI run is under way the trace opens (and loads), once per run; the analyst can
+  // still fold it.
+  const wasRunning = React.useRef(false);
+  React.useEffect(() => {
+    if (aiRunning && !wasRunning.current) handleTraceToggle(true);
+    wasRunning.current = aiRunning;
+  }, [aiRunning, handleTraceToggle]);
 
   const jumpToDecision = React.useCallback(() => {
     setActor('all');
@@ -187,35 +141,24 @@ export const InvestigationPanel: React.FC<InvestigationPanelProps> = ({
     }, 60);
   }, []);
 
-  // An operator's declared-benign policy is neither a person's case work nor the
-  // model's: it gets its own title (checked first, it is also "human closed").
-  const policyClosed = outcome.source === 'analyst_policy';
-  const decisionTitle = policyClosed ? 'Analyst policy' : humanClosed ? 'Analyst resolved' : 'Decision';
-  const decisionLine =
-    humanClosed || policyClosed
-      ? `${outcome.headline}${outcome.by ? ` by ${outcome.by}` : ''}.`
-      : decisionSummary || 'The server-side case policy recorded the outcome shown for this case.';
-  const resolvedByHuman = String(c.status || '').toLowerCase() === 'resolved';
-  // The authority sentence, ONCE on the case (D8.3).
-  const authority = policyClosed
-    ? 'Closed by an operator rule that declared this detection benign. No model was asked.'
-    : humanClosed
-      ? `${resolvedByHuman ? 'Resolved' : 'Closed'} by an analyst (a human lifecycle action). The deterministic policy did not ${resolvedByHuman ? 'resolve' : 'close'} this case.`
-      : 'The close or escalate decision is made by deterministic code against the operator policy, never by the model.';
-
   return (
     <div
       className={cn('@container/investigation space-y-6', CASE_MANAGER_PANEL_PADDING)}
       data-case-panel="investigation"
       data-presentation="case-manager"
     >
+      <p className="text-xs leading-relaxed text-muted-foreground" data-testid="case-tab-first">
+        {AI_ADVISORY_LINE}
+      </p>
+
       {/* 1. AI ASSESSMENT: the model's reading only (G17), advisory. */}
       <PanelSection
         title="AI assessment"
         headingId="case-manager-assessment-title"
         adornment={<ProvenanceTag kind="ai" />}
-        description="The model's reading of the evidence. Advisory only."
         testId="investigation-assessment"
+        // The advisory line above introduces it: no hairline between the two.
+        className="border-t-0 pt-0"
       >
         <div className="max-w-3xl space-y-4">
           {rationaleLoading && !assessment ? (
@@ -236,33 +179,7 @@ export const InvestigationPanel: React.FC<InvestigationPanelProps> = ({
             </p>
           )}
 
-          {findings.length ? (
-            <div className="space-y-2" data-testid="investigation-findings">
-              <h3 className="text-xs font-medium text-muted-foreground">Findings</h3>
-              <ul className="divide-y divide-border/60">
-                {findings.map((finding, index) => {
-                  const clear = RULED_OUT_RE.test(finding.summary || '');
-                  return (
-                    <li key={`${finding.summary}-${index}`} className="flex items-start gap-3 py-2 first:pt-0 last:pb-0">
-                      <Badge variant={clear ? 'success' : 'high'} className="mt-0.5 shrink-0">
-                        {clear ? 'Clear' : 'Found'}
-                      </Badge>
-                      <div className="min-w-0 flex-1 space-y-1">
-                        {/* UNTRUSTED summary: plain text. */}
-                        <p className="text-sm text-foreground/90">
-                          {finding.summary ? firstSentence(finding.summary) : `Finding ${index + 1}`}
-                        </p>
-                        {finding.query ? (
-                          /* UNTRUSTED query: inside an InlineCode fence. */
-                          <InlineCode className="block w-fit max-w-full break-all text-xs">{finding.query}</InlineCode>
-                        ) : null}
-                      </div>
-                    </li>
-                  );
-                })}
-              </ul>
-            </div>
-          ) : null}
+          <FindingsList findings={findings} onShowEvents={onShowEvents} />
 
           {reproduce ? (
             <div className="space-y-1.5">
@@ -293,56 +210,7 @@ export const InvestigationPanel: React.FC<InvestigationPanelProps> = ({
         </div>
       </PanelSection>
 
-      {/* 2. DECISION: what settled the case (#3: code or a person, never the model). */}
-      <PanelSection
-        title={decisionTitle}
-        headingId="case-manager-decision-title"
-        adornment={<ProvenanceTag kind={humanClosed && !policyClosed ? 'analyst' : 'code'} />}
-        testId="investigation-decision"
-        data-decided-by={policyClosed ? 'analyst_policy' : humanClosed ? 'analyst' : 'code'}
-      >
-        <div className="max-w-3xl space-y-2">
-          {/* The server's decision record is a `key=value` audit line: show it as the
-              record it is (mono, wrapping) rather than as a prose sentence. */}
-          <p
-            data-testid="investigation-decision-line"
-            className={cn(
-              'leading-relaxed text-foreground/90',
-              DECISION_RECORD.test(decisionLine) ? 'font-mono text-xs [overflow-wrap:anywhere]' : 'text-sm',
-            )}
-          >
-            {decisionLine}
-          </p>
-          {humanClosed && !policyClosed && decisionSummary ? (
-            <p className="text-xs leading-relaxed text-muted-foreground">Before the analyst: {decisionSummary}</p>
-          ) : null}
-          <p data-testid="investigation-authority" className="flex items-start gap-1.5 text-xs leading-relaxed text-muted-foreground">
-            <Lock className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />
-            <span>{authority}</span>
-          </p>
-          {autoClose ? (
-            <p data-testid="investigation-auto-close" className="text-xs leading-relaxed text-muted-foreground">
-              {autoClose}
-            </p>
-          ) : null}
-        </div>
-        <Collapsible open={decisionOpen} onOpenChange={setDecisionOpen}>
-          <DisclosureTrigger open={decisionOpen} showLabel="Show policy inputs" hideLabel="Hide policy inputs" />
-          <CollapsibleContent className="mt-3 max-w-3xl">
-            <DecisionCard c={c} rationale={rationale} timeline={timeline} />
-          </CollapsibleContent>
-        </Collapsible>
-        <AutomationApplied c={c} className="max-w-3xl pt-2" />
-      </PanelSection>
-
-      {/* 3. THREAT CONTEXT: the retired Threat context tab, loaded when this tab opens. */}
-      {threatContext ? (
-        <PanelSection title="Threat context" section="threat-context" testId="investigation-threat-context">
-          {threatContext}
-        </PanelSection>
-      ) : null}
-
-      {/* 4. The inputs the latest run selected and actually consulted. */}
+      {/* 2. The inputs the latest run selected and actually consulted. */}
       <InvestigationInputs
         rationale={rationale}
         loading={rationaleLoading}
@@ -352,7 +220,7 @@ export const InvestigationPanel: React.FC<InvestigationPanelProps> = ({
         showSelectionStatus
       />
 
-      {/* 5. TRACE: collapsed by default; every step is one click away. */}
+      {/* 3. TRACE: collapsed by default and open while an AI run is under way. */}
       <section
         ref={traceSectionRef}
         aria-labelledby="case-manager-trace-title"
@@ -424,7 +292,7 @@ export const InvestigationPanel: React.FC<InvestigationPanelProps> = ({
         </Collapsible>
       </section>
 
-      {/* 6. Earlier gradings of the AI on this case. */}
+      {/* 4. Earlier gradings of the AI on this case. */}
       {c.feedback && c.feedback.length ? (
         <PanelSection title="Previous gradings" testId="investigation-gradings">
           <GradingHistory feedback={c.feedback} className="max-w-3xl" />
@@ -445,7 +313,7 @@ export interface InvestigationPanelProps {
   rationaleError: unknown;
   onRetryRationale: () => void;
 
-  /** DECISION lane + the collapsible full trace: the typed ReAct spans. */
+  /** The collapsible full trace: the typed ReAct spans. */
   timeline: TimelineResponse | null;
   timelineLoading: boolean;
   timelineError: unknown;
@@ -460,13 +328,13 @@ export interface InvestigationPanelProps {
   traceRequest?: number | null;
   onTraceRequestHandled?: (tick: number) => void;
 
-  /** The FP auto-close policy, for the Decision's auto-close reading (best-effort). */
-  fpPolicy?: FpPolicy;
   /**
-   * Round 15 (D8.3): the Threat context section's body (the retired Threat context tab),
-   * which the caller loads when this tab opens. Omitted: no Threat context section.
+   * An AI investigation run is queued or running on this case (`useAiRun`): the trace
+   * opens, so the analyst can watch it.
    */
-  threatContext?: React.ReactNode;
+  aiRunning?: boolean;
+  /** A finding's "Cites N events": open the Evidence tab narrowed to those events. */
+  onShowEvents?: (eventIds: string[]) => void;
 }
 
 /**

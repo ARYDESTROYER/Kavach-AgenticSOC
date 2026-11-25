@@ -165,8 +165,10 @@ describe('CaseDetail header: one primary action, Take action and More options', 
       .filter((text) => /^(Escalate|Acknowledge|Mark resolved|Put on hold)/.test(text))
       .map((text) => text.replace(/[A-Z]$/, ''));
     expect(verbs).toEqual(['Escalate', 'Acknowledge & investigate', 'Mark resolved', 'Put on hold']);
-    // "Ask about this case" names the Chat tab's new shortcut (five tabs: Alt+5).
-    expect(within(menu).getByRole('menuitem', { name: /Ask about this case/ })).toHaveTextContent('Alt 5');
+    // "Ask about this case" names the Chat tab's shortcut (six tabs since Round 16: Alt+6).
+    const ask = within(menu).getByRole('menuitem', { name: /Ask about this case/ });
+    expect(ask).toHaveTextContent('Alt 6');
+    expect(ask).toHaveAttribute('aria-keyshortcuts', 'Alt+6');
   });
 
   it('C opens the close dialog with no secondary button on screen', async () => {

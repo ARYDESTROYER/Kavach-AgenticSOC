@@ -1,18 +1,31 @@
 /**
- * InvestigationPanel: the "Investigation" tab (Round 15, D8.3).
+ * InvestigationPanel: the "AI investigation" tab (Round 16, SPEC D8; Round 15 D8.3).
  *
- * The investigation proper, in its one layout: the AI assessment (the model's reading
- * only, G17), the decision with its authority sentence once, the Threat context section
- * (the retired tab), the inputs and the collapsed trace, which opening lazy-loads when the
- * parent hasn't fetched it yet. A request to open the trace (the audit log's "Open case
- * trace", closing QA integ-06) opens it and brings it into view once, and lands focus that
- * had dropped on the trace heading.
+ * The AI lane, in its one layout: one muted advisory line, the AI assessment (the model's
+ * reading only, G17, with its findings), the inputs and the collapsed trace, which opening
+ * lazy-loads when the parent hasn't fetched it yet, and which opens while an AI run is
+ * under way. The decision moved to the Brief's Decision lane (DecisionLane.test.tsx) and
+ * threat context to Evidence: no `code` provenance tag renders here. A request to open the
+ * trace (the audit log's "Open case trace", closing QA integ-06) opens it and brings it
+ * into view once, and lands focus that had dropped on the trace heading.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { act, render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { axe, toHaveNoViolations } from 'jest-axe';
 
-import { InvestigationPanel, type InvestigationPanelProps } from '../InvestigationPanel';
+// The findings list is WP14's: record what the panel passes it.
+const findingsProps = vi.hoisted(() => ({ last: null as null | Record<string, unknown> }));
+vi.mock('../records/FindingsList', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../records/FindingsList')>();
+  return {
+    FindingsList: (props: Parameters<typeof actual.FindingsList>[0]) => {
+      findingsProps.last = props as unknown as Record<string, unknown>;
+      return actual.FindingsList(props);
+    },
+  };
+});
+
+import { AI_ADVISORY_LINE, InvestigationPanel, type InvestigationPanelProps } from '../InvestigationPanel';
 import type { Case, CaseRationale } from '@/lib/types';
 import type { TimelineResponse, TraceSpan } from '@/soc/pages/CaseDetail.api';
 
@@ -72,7 +85,7 @@ function props(over: Partial<InvestigationPanelProps> = {}): InvestigationPanelP
   };
 }
 
-describe('InvestigationPanel: the decision-first layout (Round 12, CM-6)', () => {
+describe('InvestigationPanel: the AI lane (Round 16, D8)', () => {
   const toolSpan: TraceSpan = {
     step_index: 2,
     kind: 'execute_tool',
@@ -99,35 +112,23 @@ describe('InvestigationPanel: the decision-first layout (Round 12, CM-6)', () =>
     );
   }
 
-  it('shows a machine decision record as a mono record line, prose as prose', () => {
-    const record = 'verdict=TRUE_POSITIVE status=escalated decision_by=system risk=7.41';
-    const { unmount } = renderCm({
-      rationale: { decision_rationale: record } as unknown as InvestigationPanelProps['rationale'],
-    });
-    expect(screen.getByTestId('investigation-decision-line')).toHaveTextContent(record);
-    expect(screen.getByTestId('investigation-decision-line')).toHaveClass('font-mono');
-    unmount();
-    renderCm({
-      rationale: { decision_rationale: 'Escalated for a person to review.' } as unknown as InvestigationPanelProps['rationale'],
-    });
-    expect(screen.getByTestId('investigation-decision-line')).not.toHaveClass('font-mono');
-  });
-
-  it('reads AI assessment, decision, threat context, inputs, then the collapsed, counted trace', () => {
-    const { container } = renderCm({ threatContext: <p>Threat context body</p> });
+  it('reads the advisory line, the AI assessment, the inputs, then the collapsed, counted trace', () => {
+    const { container } = renderCm();
+    const advisory = screen.getByText(AI_ADVISORY_LINE);
     const assessment = screen.getByTestId('investigation-assessment');
-    const decision = screen.getByTestId('investigation-decision');
-    const threat = screen.getByTestId('investigation-threat-context');
     const trace = screen.getByTestId('investigation-trace');
     const follows = (a: Element, b: Element) => Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
-    expect(follows(assessment, decision)).toBe(true);
-    expect(follows(decision, threat)).toBe(true);
-    expect(follows(threat, trace)).toBe(true);
-    expect(within(decision).getByRole('heading', { name: 'Decision' })).toBeInTheDocument();
-    // The retired Threat context tab is a section a link can scroll to.
-    expect(threat).toHaveAttribute('data-section', 'threat-context');
-    expect(within(threat).getByRole('heading', { name: 'Threat context' })).toHaveAttribute('data-section-title');
-    expect(within(threat).getByText('Threat context body')).toBeInTheDocument();
+    expect(follows(advisory, assessment)).toBe(true);
+    expect(follows(assessment, trace)).toBe(true);
+    // The advisory line is the tab's first block, where the case geometry is measured.
+    expect(advisory).toHaveAttribute('data-testid', 'case-tab-first');
+    // The decision and threat context are the Brief's and Evidence's now.
+    expect(screen.queryByTestId('investigation-decision')).toBeNull();
+    expect(screen.queryByTestId('investigation-threat-context')).toBeNull();
+    expect(screen.queryByRole('heading', { name: 'Decision' })).toBeNull();
+    // Nothing on this tab is the code's: no code provenance tag (the segregation guard).
+    expect(container.querySelector('[data-provenance="code"]')).toBeNull();
+    expect(container.querySelector('[data-provenance="ai"]')).not.toBeNull();
 
     // Sentence case, never tracked capitals.
     expect(screen.getByRole('heading', { name: 'AI assessment' })).toBeInTheDocument();
@@ -156,8 +157,8 @@ describe('InvestigationPanel: the decision-first layout (Round 12, CM-6)', () =>
     expect(screen.getByTestId('investigation-assessment-text')).toHaveTextContent(
       'No assessment text was recorded for this investigation.',
     );
-    // The code's text is still on the page, as the Decision's line.
-    expect(screen.getByTestId('investigation-decision-line')).toHaveTextContent(code);
+    // The code's text is the Brief's Decision lane's line, never this tab's.
+    expect(screen.queryByText(code)).toBeNull();
     unmount();
 
     // With the investigation's own summary, that is what the assessment shows.
@@ -200,19 +201,7 @@ describe('InvestigationPanel: the decision-first layout (Round 12, CM-6)', () =>
     expect(assessment).not.toHaveTextContent(/risk score/i);
     expect(assessment).not.toHaveTextContent('90%');
     expect(screen.queryByTestId('investigation-risk')).toBeNull();
-    expect(within(screen.getByTestId('investigation-decision')).queryByText('Escalated')).toBeNull();
-  });
-
-  it('says the authority sentence once, with the auto-close reading', () => {
-    renderCm({
-      c: { ...CASE, verdict: 'false_positive', status: 'needs_human', decision_by: 'system', confidence: 0.6 } as Case,
-      fpPolicy: { enabled: true, min_confidence: 0.85, max_risk_score: 30 },
-    });
-    expect(screen.getByTestId('investigation-authority')).toHaveTextContent(
-      /close or escalate decision is made by deterministic code/i,
-    );
-    expect(screen.getAllByText(/made by deterministic code against the operator policy/i)).toHaveLength(1);
-    expect(screen.getByTestId('investigation-auto-close')).toHaveTextContent('Below the 0.85 auto-close confidence bar');
+    expect(screen.queryByText('Escalated')).toBeNull();
   });
 
   it('shows the findings and the reproduce query in the AI assessment', () => {
@@ -234,57 +223,39 @@ describe('InvestigationPanel: the decision-first layout (Round 12, CM-6)', () =>
     expect(screen.getByText('source.ip:203.0.113.9')).toBeInTheDocument();
   });
 
-  it('lists the automation applied under the decision, never as a status change', () => {
+  it('hands the findings their "Cites N events" path to the Evidence tab', () => {
+    const onShowEvents = vi.fn();
     renderCm({
-      c: {
-        ...CASE,
-        automation_actions: [{ action: 'tag', detail: 'tag=vpn', rule_id: 'r1', at: '2026-10-28T13:00:00Z' }],
-      } as unknown as Case,
+      c: { ...CASE, evidence: [{ summary: 'Three failed logons.', query: 'q' }] } as unknown as Case,
+      onShowEvents,
     });
-    const decision = screen.getByTestId('investigation-decision');
-    expect(within(decision).getByTestId('automation-applied')).toHaveTextContent('Tagged');
-    expect(within(decision).getByText(/never changes the lifecycle status/i)).toBeInTheDocument();
+    expect(findingsProps.last).toMatchObject({ onShowEvents });
+    expect((findingsProps.last?.findings as unknown[]).length).toBe(1);
   });
 
-  it('a human close reads "Analyst resolved" and demotes the AI recommendation', () => {
-    renderCm({
-      c: {
-        ...CASE,
-        verdict: 'NEEDS_HUMAN',
-        confidence: 0.75,
-        status: 'closed',
-        decision_by: 'analyst',
-        disposition: 'false_positive',
-        recommended_action: 'Benign baseline activity; no action required.',
-        history: [
-          { event: 'analyst_action', action: 'close', analyst: 'aryan', ts: '2026-10-09T10:00:00Z', classified_disposition: 'false_positive' },
-        ],
-      } as unknown as Case,
-    });
-    const decision = screen.getByTestId('investigation-decision');
-    expect(within(decision).getByRole('heading', { name: 'Analyst resolved' })).toBeInTheDocument();
-    expect(decision).toHaveTextContent('Closed as false positive by aryan.');
-    expect(screen.getByTestId('investigation-authority')).toHaveTextContent(/closed by an analyst/i);
-    // The recommendation and the AI verdict are the Overview's and the header's (D8.4).
-    expect(screen.queryByText('Recommended action')).toBeNull();
+  it('opens the trace while an AI run is under way, once per run', () => {
+    const onRetryTimeline = vi.fn();
+    const { rerender } = render(<InvestigationPanel {...props({ timeline: null, onRetryTimeline })} />);
+    expect(screen.getByRole('button', { name: 'Show trace' })).toBeInTheDocument();
+    rerender(<InvestigationPanel {...props({ timeline: null, onRetryTimeline })} aiRunning />);
+    expect(screen.getByRole('button', { name: 'Hide trace' })).toBeInTheDocument();
+    expect(onRetryTimeline).toHaveBeenCalledTimes(1);
+    // Folded by hand while the run goes on: it stays folded.
+    fireEvent.click(screen.getByRole('button', { name: 'Hide trace' }));
+    rerender(<InvestigationPanel {...props({ timeline: null, onRetryTimeline })} aiRunning />);
+    expect(screen.getByRole('button', { name: 'Show trace' })).toBeInTheDocument();
   });
 
-  it('keeps every earlier datum one disclosure away (evidence, policy inputs, grading)', () => {
+  it('keeps the full assessment evidence one disclosure away', () => {
     renderCm();
     fireEvent.click(screen.getByRole('button', { name: /show full assessment evidence/i }));
     expect(screen.getByText('Agent reasoning')).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: /show policy inputs/i }));
-    expect(screen.getByText('Policy clause evaluated')).toBeInTheDocument();
   });
 
-  it('no longer renders the "what happened" stage narrative (it is a section of the Overview)', () => {
+  it('renders no stage narrative and no threat context (they are on Evidence)', () => {
     renderCm();
     expect(screen.queryByText('What happened')).toBeNull();
-  });
-
-  it('renders no Threat context section when the caller passes none', () => {
-    renderCm();
-    expect(screen.queryByTestId('investigation-threat-context')).toBeNull();
+    expect(screen.queryByText('Threat context')).toBeNull();
   });
 
   it('lazy-loads the trace when it opens and none is loaded yet, and never re-reads a loaded one', () => {

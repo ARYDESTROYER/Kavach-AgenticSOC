@@ -121,17 +121,22 @@ describe('CaseDetail: single panel-dismiss control (BUG-3)', () => {
 
     expect(screen.getByRole('region', { name: 'Case detail' })).toBeInTheDocument();
     expect(screen.queryByRole('dialog', { name: 'Case detail' })).not.toBeInTheDocument();
-    // Round 15 (D8.3): five tabs, Runbook still second (Round 14 SPEC §4.10.11).
-    expect(screen.getAllByRole('tab')).toHaveLength(5);
-    for (const label of ['Overview', 'Runbook', 'Investigation', 'Collaboration', 'Chat']) {
+    // Round 16 (D8): six tabs, one lane each, Chat last.
+    expect(screen.getAllByRole('tab')).toHaveLength(6);
+    for (const label of ['Brief', 'Evidence', 'AI investigation', 'Response', 'Activity', 'Chat']) {
       expect(screen.getByRole('tab', { name: label })).toBeInTheDocument();
     }
-    for (const gone of ['Timeline', 'Threat context']) {
+    for (const gone of ['Overview', 'Runbook', 'Investigation', 'Collaboration', 'Timeline', 'Threat context']) {
       expect(screen.queryByRole('tab', { name: gone })).not.toBeInTheDocument();
     }
     expect(screen.getByRole('button', { name: 'More options' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Take action' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Back to case queue' })).toBeInTheDocument();
+    // Back: the first item below the split (one screen at a time), the last beside the
+    // queue; one of the two shows at a time (a viewport breakpoint jsdom does not apply).
+    const back = screen.getAllByRole('button', { name: 'Back to case queue' });
+    expect(back).toHaveLength(2);
+    expect(back[0]).toHaveClass('xl:hidden');
+    expect(back[1]).toHaveClass('hidden', 'xl:inline-flex');
     expect(screen.getByText('High severity')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Share' })).not.toBeInTheDocument();
     // Round 15 (D8.2): ONE primary action (Close case on an open case), then Take action.
@@ -199,11 +204,13 @@ describe('CaseDetail: single panel-dismiss control (BUG-3)', () => {
     expect(title).not.toHaveClass('text-muted-foreground');
 
     // The machine id is a secondary mono line AFTER the title: quiet, small, untruncated
-    // (Round 12: it leads the sticky meta row, which sets the small muted type).
+    // (it leads the meta strip, which sets the small muted type and never wraps; the id
+    // never shrinks, Round 16).
     const id = screen.getByTestId('case-detail-id');
     expect(id).toHaveTextContent(/^TLSOC-001$/);
-    expect(id).toHaveClass('font-mono', 'break-all');
-    expect(screen.getByTestId('case-detail-meta')).toHaveClass('text-xs', 'text-muted-foreground');
+    expect(id).toHaveClass('font-mono');
+    expect(id.parentElement).toHaveClass('shrink-0');
+    expect(screen.getByTestId('case-detail-meta')).toHaveClass('text-xs', 'text-muted-foreground', 'flex-nowrap', 'whitespace-nowrap');
     expect(id).not.toHaveClass('truncate');
     expect(id).not.toHaveClass('uppercase');
     expect(title.compareDocumentPosition(id) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();

@@ -1,10 +1,11 @@
 /**
- * The runbook outside the Runbook tab (Round 14, SPEC §4.10.11): the Next step card on
- * the Overview, the facts rail "Runbook" section, the tab count and the queue chip, the
- * Other tasks list with its "Added by" provenance, and the labels of stored data from
- * before Round 14.
+ * The runbook outside the Runbook tab (Round 14, SPEC §4.10.11): the Next step card (on
+ * the Brief as one row since Round 16), the inspector's Record, the tab count and the
+ * queue chip, the Other tasks list with its "Added by" provenance, and the labels of
+ * stored data from before Round 14. The inspector has no Runbook section since Round 16:
+ * the run is the Response tab's.
  */
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
@@ -38,6 +39,11 @@ import { OtherTasks, OtherTasksLoader, taskAuthors } from '../OtherTasks';
 import { RunbookProgressChip, RunbookTabCount } from '../ProgressChip';
 import { RunbookRail } from '../RunbookRail';
 import { completedRun, makeData, makeRun, progress } from './fixtures';
+
+// The inspector keeps each section's open state per viewer: start every test afresh.
+afterEach(() => {
+  window.localStorage.clear();
+});
 
 const CASE = {
   case_id: 'case-1',
@@ -103,17 +109,19 @@ describe('Overview Next step card', () => {
     expect(screen.getByText('This runbook was abandoned.')).toBeInTheDocument();
   });
 
-  it('sits first on the Overview when the case passes one', () => {
+  it('sits first on the Brief, as one row, when the case has a run', () => {
+    const onOpenRunbook = vi.fn();
     const { container } = render(
       <TooltipProvider>
-        <OverviewPanel
-          c={CASE}
-          runbookCard={<OverviewNextStep run={makeRun()} progress={progress()} onOpenRunbook={vi.fn()} />}
-        />
+        <OverviewPanel c={CASE} runbookRun={makeRun()} onOpenRunbook={onOpenRunbook} />
       </TooltipProvider>,
     );
     const panel = container.querySelector('[data-case-panel="overview"]') as HTMLElement;
-    expect(panel.firstElementChild).toHaveAttribute('data-overview-runbook');
+    const first = panel.firstElementChild as HTMLElement;
+    expect(first).toHaveAttribute('data-testid', 'case-tab-first');
+    expect(first.firstElementChild).toHaveAttribute('data-overview-runbook');
+    fireEvent.click(within(first.firstElementChild as HTMLElement).getByRole('button', { name: 'Open' }));
+    expect(onOpenRunbook).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -133,31 +141,30 @@ describe('Automation and facts rail labels', () => {
       </TooltipProvider>,
     );
     expect(screen.getByText('Runbook automation (before Round 14)')).toBeInTheDocument();
-    // The investigator's stored runbook id is a fact of the record (Round 15, D8.4).
+    // The investigator's stored runbook id is a fact of the record (Round 15, D8.4), in
+    // the Record section, which starts closed (Round 16).
+    fireEvent.click(screen.getByRole('button', { name: 'Record' }));
     expect(screen.getByTestId('facts-record')).toHaveTextContent('Runbook (before Round 14)pb-ssh');
     expect(document.body.textContent).not.toMatch(/Queued playbook|Playbook pb-ssh/);
   });
 
-  it('adds a Runbook section to the facts rail whose phases open the tab there', () => {
-    const onOpenPhase = vi.fn();
+  it('keeps the run out of the inspector, and names the investigator runbook in Record', () => {
     render(
       <TooltipProvider>
-        <FactsRail
-          c={CASE}
-          outcome={caseOutcome(CASE)}
-          triage={null}
-          canViewCost={false}
-          onCaseChange={vi.fn()}
-          runbook={{ data: makeData(), loading: false, failed: false, onOpenPhase }}
-        />
+        <FactsRail c={CASE} outcome={caseOutcome(CASE)} triage={null} canViewCost={false} onCaseChange={vi.fn()} />
       </TooltipProvider>,
     );
-    const section = screen.getByTestId('facts-runbook');
-    expect(section).toHaveTextContent('Brute force and password spray · v4');
-    expect(section).toHaveTextContent('2 of 6 done');
-    fireEvent.click(within(section).getByRole('button', { name: 'Contain, 0 of 2 done. Open the Runbook tab on this phase' }));
-    expect(onOpenPhase).toHaveBeenCalledWith('contain');
+    // Round 16: the run, its phases and counts are the Response tab's.
+    expect(screen.queryByTestId('facts-runbook')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Record' }));
     expect(screen.getByTestId('facts-record')).toHaveTextContent('Investigator runbookbrute-force v4');
+  });
+
+  it('RunbookRail: a phase opens the runbook on that phase', () => {
+    const onOpenPhase = vi.fn();
+    render(<RunbookRail data={makeData()} onOpenPhase={onOpenPhase} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Contain, 0 of 2 done. Open the Runbook tab on this phase' }));
+    expect(onOpenPhase).toHaveBeenCalledWith('contain');
   });
 
   it('leaves the facts rail Runbook section out for a viewer with no Runbook tab', () => {

@@ -151,19 +151,25 @@ beforeEach(() => {
 });
 
 describe('a pending sample of the agent closes', () => {
-  it('shows the band and Start review as the one primary action, with Reopen in Take action', async () => {
+  it('shows the review chip, the Brief note and Start review as the one primary action, with Reopen in Take action', async () => {
     await renderCase();
-    const band = await screen.findByTestId('case-review-band');
-    expect(band).toHaveTextContent(
+    // Round 16 (WP03): the band left the header (118px for every case); its sentence is
+    // the Brief's first block and the review chip's hover.
+    const note = await screen.findByTestId('brief-review-note');
+    expect(note).toHaveTextContent(
       'Picked at random for auto-close review. Classify it yourself, then compare with the AI.',
     );
+    expect(screen.queryByTestId('case-review-band')).toBeNull();
+    const chip = screen.getByTestId('case-review-chip');
+    expect(chip).toHaveTextContent('Review waiting');
+    expect(within(screen.getByTestId('case-detail-meta')).getByTestId('case-review-chip')).toBe(chip);
     expect(screen.getByTestId('case-primary-action')).toHaveTextContent('Start review');
     expect(screen.queryByRole('button', { name: /^Reopen/ })).toBeNull();
     const items = await takeActionItems();
     expect(items).toContain('Reopen');
     expect(items).not.toContain('Set disposition');
     expect(items).not.toContain('Review this auto-close');
-    // The band is the pending fact's one home: the rail does not repeat it.
+    // The note and the chip say the pending fact: the inspector does not repeat it.
     expect(screen.queryByText('Picked at random for auto-close review. Waiting for a person.')).toBeNull();
   });
 
@@ -195,7 +201,8 @@ describe('a case the agent closed with no pending review', () => {
     env.review = reviewState({ state: 'none', review_id: null, sampled_at: null, expires_at: null });
     await renderCase();
     await waitFor(() => expect(getCaseReviewState).toHaveBeenCalled());
-    expect(screen.queryByTestId('case-review-band')).toBeNull();
+    expect(screen.queryByTestId('brief-review-note')).toBeNull();
+    expect(screen.queryByTestId('case-review-chip')).toBeNull();
     expect(screen.getByTestId('case-primary-action')).toHaveTextContent('Reopen');
     const items = await takeActionItems();
     expect(items[0]).toBe('Review this auto-close');
@@ -235,7 +242,8 @@ describe('no review where none can be recorded', () => {
     env.case = { ...(AGENT_CLOSED as object), status: 'open' };
     await renderCase();
     expect(screen.getByTestId('case-primary-action')).toHaveTextContent('Close case');
-    expect(screen.queryByTestId('case-review-band')).toBeNull();
+    expect(screen.queryByTestId('brief-review-note')).toBeNull();
+    expect(screen.queryByTestId('case-review-chip')).toBeNull();
     const items = await takeActionItems();
     expect(items).not.toContain('Review this auto-close');
     expect(getCaseReviewState).not.toHaveBeenCalled();
@@ -245,7 +253,8 @@ describe('no review where none can be recorded', () => {
     env.grants = new Set(READER);
     await renderCase();
     await waitFor(() => expect(getCaseReviewState).toHaveBeenCalled());
-    expect(screen.queryByTestId('case-review-band')).toBeNull();
+    expect(screen.queryByTestId('brief-review-note')).toBeNull();
+    expect(screen.queryByTestId('case-review-chip')).toBeNull();
     expect(screen.queryByRole('button', { name: 'Start review' })).toBeNull();
     const lines = await screen.findAllByTestId('facts-review');
     expect(lines[0]).toHaveTextContent('Picked at random for auto-close review. Waiting for a person.');

@@ -11,6 +11,10 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 
 const src = readFileSync(path.resolve(__dirname, '..', 'CaseDetail.tsx'), 'utf8');
+const reinvestigateSrc = readFileSync(
+  path.resolve(__dirname, '..', '..', 'investigations', 'ReinvestigateDialog.tsx'),
+  'utf8',
+);
 
 /** Slice from the first occurrence of `needle` to the next `end` (exclusive). */
 function slice(text: string, needle: string, end: string): string {
@@ -52,7 +56,9 @@ describe('CaseDetail — stale-response guard (#10)', () => {
 describe('CaseDetail — action/reinvestigate/export error routing (#9)', () => {
   it('mutations use a toast, so the case-load banner is not mislabelled', () => {
     expect(src).toContain('The action could not be completed.');
-    expect(src).toContain('The reinvestigation could not be started.');
+    // The reinvestigation's own failures are the Reinvestigate dialog's (Round 16, WP01).
+    expect(reinvestigateSrc).toContain('The reinvestigation could not be started.');
+    expect(src).toContain('<ReinvestigateDialog');
     expect(src).toContain('The export could not be generated.');
     // `setError(e)` is now ONLY the case-load failure surface (loadCase); the banner
     // title "Could not load case" is therefore always accurate.

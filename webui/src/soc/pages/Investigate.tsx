@@ -408,8 +408,13 @@ export default function Investigate({ onNavigate, embedded = false }: Investigat
     }
   }, [recent]);
 
-  // Seed the lookback from prefs.investigate_lookback once (best-effort).
+  // Seed the lookback from prefs.investigate_lookback once (best-effort), and only for a
+  // viewer who may read the settings: a refusal writes an Access denied audit row each
+  // time (Round 16). A render with no auth provider reads like auth off.
+  const pageAuth = useOptionalAuth();
+  const canReadSettings = pageAuth ? pageAuth.hasPermission('settings', 'read') : true;
   React.useEffect(() => {
+    if (!canReadSettings) return undefined;
     let cancelled = false;
     void api
       .getSettings()
@@ -426,7 +431,7 @@ export default function Investigate({ onNavigate, embedded = false }: Investigat
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [canReadSettings]);
 
   const selected = React.useMemo(
     () => ENTITY_OPTIONS.find((o) => o.id === entityType) ?? ENTITY_OPTIONS[0],

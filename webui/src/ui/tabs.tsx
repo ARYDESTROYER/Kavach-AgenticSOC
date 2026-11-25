@@ -26,7 +26,17 @@ const Tabs = TabsPrimitive.Root;
  */
 export type TabsListVariant = 'boxed' | 'underline';
 
-const TabsVariantContext = React.createContext<TabsListVariant>('boxed');
+/**
+ * Round 16 (SPEC §4.4 WP03): `compact` sets an underline trigger to 36px (`h-9`) instead
+ * of 40px, for the case header, whose total height is budgeted. The labels, the rule and
+ * the focus room do not change. A boxed list ignores it.
+ */
+export type TabsListDensity = 'default' | 'compact';
+
+const TabsVariantContext = React.createContext<{ variant: TabsListVariant; density: TabsListDensity }>({
+  variant: 'boxed',
+  density: 'default',
+});
 
 /**
  * The selected state in forced colours (Windows contrast themes), where backgrounds become
@@ -40,12 +50,13 @@ const FORCED_ACTIVE_BOX =
 
 const TabsList = React.forwardRef<
   React.ElementRef<typeof TabsPrimitive.List>,
-  React.ComponentPropsWithoutRef<typeof TabsPrimitive.List> & { variant?: TabsListVariant }
->(({ className, variant = 'boxed', ...props }, ref) => (
-  <TabsVariantContext.Provider value={variant}>
+  React.ComponentPropsWithoutRef<typeof TabsPrimitive.List> & { variant?: TabsListVariant; density?: TabsListDensity }
+>(({ className, variant = 'boxed', density = 'default', ...props }, ref) => (
+  <TabsVariantContext.Provider value={React.useMemo(() => ({ variant, density }), [variant, density])}>
     <TabsPrimitive.List
       ref={ref}
       data-variant={variant}
+      data-density={density === 'compact' ? density : undefined}
       className={cn(
         variant === 'underline'
           ? '-mx-1.5 flex w-[calc(100%+0.75rem)] items-end justify-start gap-2 overflow-x-auto border-b border-border/70 text-muted-foreground'
@@ -62,7 +73,7 @@ const TabsTrigger = React.forwardRef<
   React.ElementRef<typeof TabsPrimitive.Trigger>,
   React.ComponentPropsWithoutRef<typeof TabsPrimitive.Trigger>
 >(({ className, ...props }, ref) => {
-  const variant = React.useContext(TabsVariantContext);
+  const { variant, density } = React.useContext(TabsVariantContext);
   return (
     <TabsPrimitive.Trigger
       ref={ref}
@@ -73,7 +84,8 @@ const TabsTrigger = React.forwardRef<
               // did not). 6px of inner room on each side, so the inset focus ring (inset:
               // the list scrolls and clips anything outside it) frames the label instead of
               // touching its first and last glyph.
-              'relative inline-flex h-10 shrink-0 items-center justify-center whitespace-nowrap rounded-sm px-1.5 text-sm font-medium transition-colors [&>svg]:hidden',
+              'relative inline-flex shrink-0 items-center justify-center whitespace-nowrap rounded-sm px-1.5 text-sm font-medium transition-colors [&>svg]:hidden',
+              density === 'compact' ? 'h-9' : 'h-10',
               'hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
               'disabled:pointer-events-none disabled:opacity-50',
               // The 2px rule spans the label (not the focus room), sits inside the trigger
