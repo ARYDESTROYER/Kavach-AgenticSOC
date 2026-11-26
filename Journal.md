@@ -12812,3 +12812,59 @@
 - Tests: on the merged tree, the WP16B tests with route coverage, spine and decide guards, the investigation registry and WP10 tests: 181 passed; fatal ruff clean; typecheck clean.
 - Status: done.
 - Next: WP15F and WP16C after their reviews, then the entry trim and the cross-cutting review.
+
+### 2026-11-26 00:55Z - WP15F (sub-agent) - Accessibility fixes B71 to B81
+- Context: Round 16 SPEC 4.5 WP15F, on base 3a47a55 (claude/round16 with every feature package merged). Fixes for the 11 confirmed keyboard, focus, naming and reflow bugs.
+- Did:
+  - Skip links (shell and setup wizard) move focus in code through the new `webui/src/soc/skip-link.ts`; the hash never changes (B71).
+  - The phone navigation sheet returns focus to "Open navigation", or to `#socMain` after a destination (B73).
+  - Audit table layout follows the measured list width (816 and 992 px); rows cannot widen the page; phone times wrap at the space (B72, B79). `useElementWidth` moved to `soc/hooks`, is re-exported from the composer, and accepts an element.
+  - DataTable sticky first column sets `scroll-padding-inline-start` to its measured edge (B74).
+  - 17 unnamed popovers named; new guard `popover-names.guard.test.ts` (B75).
+  - cmdk separator is `aria-hidden` (B76).
+  - Runbooks focus the editor heading or the row just left on a view switch (B77).
+  - CodeBlock is a focusable named region only while it overflows, and its caption wraps; `Table` `scrollLabel` used by AutoCloseReviewModule and PersonSheet (one scroller) (B78, B80).
+  - Coarse-pointer 16 px text fields in theme.css `@layer base` (B81).
+- Tests:
+  - Each bug's regression test failed before its fix.
+  - Backend: 13716 passed, 29 skipped, 5 sandbox-only failures.
+  - Webui: 9492 passed, 1 skipped / 742 files. The one-time full run hit an act() stderr warning in a new test; I fixed the test and reran only that file (3 clean runs), not the full suite.
+  - lint, gates, check:types, build and docs:check clean.
+  - Entry chunk 330,052 B against base 329,722 B (+330 B, 52 B under the 330,104 B budget).
+  - Seeded Demo axe sweep, 30 routes at 1440 and 390 in light and dark: zero serious or critical.
+- Status: done; committed 1e87ff3 on r16-wp15f, worktree detached.
+- Next:
+  - WP16: watch the 52 B entry headroom.
+  - Add the sticky-column 2.4.11 line to ui-standard.md.
+  - Fix ConfirmProvider focus after Cancel in ConfirmDialog.tsx.
+  - B81 still needs the maintainer's iOS device check (M6).
+
+### 2026-11-26 02:58Z - WP15F reviewer (sub-agent) - Accessibility package review and two B77 fixes
+- Context: Round 16 SPEC 4.5 WP15F, an independent adversarial review of r16-wp15f (1e87ff3 on base 3a47a55).
+- Did:
+  - Checked B71 to B81 against the SPEC and the bug hunt. All eleven contracts are met, and the edits stay inside the owned files and the allowed hunks.
+  - Proved the regressions by restoring the base sources: the B71/B73 tests had 4 failures and the rest had 27, all from the package's own tests.
+  - Seeded Demo live checks (light and dark, 1440 and 390) for every bug, plus the empty and error states. The axe sweep over 34 routes and the overlays found 0 serious or critical.
+  - Fixed B77 on phones: going back from a runbook now focuses the runbook's row again. The phone list rows have no id attribute, so the row link is found by its address.
+  - Fixed B77 when the library could not be read: going back now focuses the library heading, not the page body.
+  - Made the CodeBlock scroll-region test honest about axe in jsdom.
+  - Commit e761b80 on r16-wp15f; the worktree is detached.
+- Tests:
+  - Both new regression tests fail without their fix.
+  - test:strict: 742 files, 9494 passed, 1 skipped, no stderr.
+  - Backend: 13716 passed, 29 skipped, 5 sandbox-only failures.
+  - Lint, gates, check:types, build, docs:check and the version, CI and docs checks are clean.
+  - Entry chunk 330,052 B (52 B under budget); the fixes add nothing to it.
+- Status: done.
+- Next:
+  - WP16: only 52 B of entry headroom is left after WP16C merges.
+  - ConfirmProvider: restore focus after Cancel (ConfirmDialog.tsx is not WP15F's).
+  - ui-standard.md: add the C43 sticky-column line.
+  - B81 still needs the maintainer's iOS check (M6).
+
+### 2026-11-26 02:50Z - orchestrator - WP15F merged (accessibility fixes)
+- Context: SPEC §4.8 step 12: B71 to B81 (skip links that move focus in code, the phone navigation focus return, the Audit table layout from its measured width, sticky first column scroll padding, a name on every popover with a source guard, the cmdk separator, runbook view focus, CodeBlock and table scroll regions, wrapping captions, 16 px text fields on coarse pointers).
+- Did: merged review e761b80 into claude/round16 with no conflicts; generated files unchanged. The seeded Demo axe sweep over 34 routes, both themes, 1440 and 390, found no serious or critical results. Carried: the ConfirmProvider focus return after Cancel and the sticky-column line in ui-standard (cross-cutting fix stage); B81's iOS device check (maintainer, SPEC M6).
+- Tests: on the merged tree, the WP15F test files with the first-paint check 142 passed, 1 skipped; typecheck, lint and design gates clean; build:app entry 330,052 B (52 B inside the 330,104 B budget).
+- Status: done.
+- Next: WP16C after its review, then the entry trim and the cross-cutting review.
