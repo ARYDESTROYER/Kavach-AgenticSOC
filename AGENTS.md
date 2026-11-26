@@ -1540,8 +1540,9 @@ a retelling — do not re-derive round detail from here.
   client, #1) and `/usage` (every model call with its rates; ledger rows now record their rates
   and `price_basis`), View all fields, trace Details, history reasons. **What's new and
   Communication**: the Notifications navigation group is now Communication (Inbox and What's
-  new; the group id stays `notifications`), a once-per-update welcome stamped on new accounts
-  (`backend/app/whats_new.py`), a release tracker page and a generated Help Center page from
+  new; the group id stays `notifications`), a once-per-update welcome that new accounts start
+  with marked seen (`backend/app/whats_new.py`), a release tracker page and a generated Help
+  Center page from
   `docs/releases/notes/`. **The bug hunt**: 81 confirmed ids, 75 fixes and 6 merged duplicates,
   among them the read gates on 18 GET routes with a CI coverage rule, the server-enforced forced
   password change, the MFA lock, Super-admin-only single sign-on, the SLA clock on agent-closed

@@ -52,10 +52,11 @@ fixture to private mode only after verifier exit, then removed it, and completed
 entire signed/public publication. Canonical v0.1.1 bootstrap then failed closed
 before application mutation because matching absent legacy state-schema labels were
 normalized asymmetrically. It is also immutable, bootstrap-blocked, and unsupported.
-Version 0.1.13 corrects only that legacy identity comparison. It changes no
-schema, protocol, identity, privilege, trust predicate, or frozen-base bytes and
-remains a candidate until every publication and canonical runtime acceptance gate
-passes. Branch
+Version 0.1.13 corrected only that legacy identity comparison, changing no schema,
+protocol, identity, privilege, trust predicate, or frozen-base bytes. It was never
+tagged; the correction ships in 0.2.0, which is installable only after every
+publication and canonical runtime acceptance gate passes (see the current candidate
+above). Branch
 protections, required checks, Pages source selection, and `github-pages` environment
 policy remain repository-administration controls and must be verified independently;
 source files cannot attest to those settings. The current console adds the polished

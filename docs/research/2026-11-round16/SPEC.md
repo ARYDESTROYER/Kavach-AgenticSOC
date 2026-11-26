@@ -2559,7 +2559,7 @@ taken.
 - **What's new entry growth.** WP07 added 807 B to the entry against the 700 B package figure
   of §3.1 (the gate alone is 359 B, inside its 450 B). Accepted: the overrun is Vite preload
   bookkeeping for the two lazy chunks the design needs (the What's new page and the shared
-  docs-url chunk), and WP04 had freed about 5.6 KB. The round budget is judged on the merged
+  docs-url chunk), and WP04 had freed 5,544 B. The round budget is judged on the merged
   tree, not per package.
 - **Merge order.** WP02 and WP03 merged before WP10, not after it (§4.8 step 10). WP03 reads the
   triage fields through WP01's types and degrades when they are absent, and WP09, WP14, WP15E

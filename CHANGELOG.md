@@ -21,8 +21,9 @@ Communication page that tracks every release, every confirmed bug from an applic
 hunt (81 ids, 75 fixes, 6 merged duplicates), version 0.2.0 under the
 `ARYDESTROYER/Kavach-AgenticSOC` identity, and the Apache-2.0 license. `decide()` and
 `engine/risk.py` are byte-identical, there is no new model call, no new index, table, KV
-namespace or SQL migration (the new fields are additive and defaulted, and three Elasticsearch
-mappings grow additively), and no new runtime dependency. Bug ids refer to
+namespace or SQL migration (the new fields are additive and defaulted; on Elasticsearch the
+cases mapping gains two properties additively, and the shipped client now applies the earlier
+additive audit mapping upgrade too), and no new runtime dependency. Bug ids refer to
 `docs/research/2026-11-round16/review/bug-hunt.md`.
 
 #### Added
@@ -100,8 +101,9 @@ mappings grow additively), and no new runtime dependency. Bug ids refer to
 - **What's new and Communication.** A release tracker under the new Communication navigation
   group (Inbox and What's new), with highlights grouped by update, an area filter, search,
   links to one highlight, "New to you" marks and the earlier release records. A short welcome
-  appears once after each update, and once for a new account, after sign-in and never over
-  another dialog or an open record. **Show What's new after updates**, on the page or in
+  appears once after each update, after sign-in and never over another dialog or an open
+  record. A new account starts with it marked seen, so it is not welcomed to changes made
+  before it existed. **Show What's new after updates**, on the page or in
   Settings, Appearance, turns it off. Acknowledging it is audited as a preferences change. The
   release badge links to What's new for the running version, and the Help Center has a What's
   new page generated from the same notes, which chat's product help reads.

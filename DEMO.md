@@ -246,12 +246,12 @@ cursors. It is **fully reversible in one click**.
   simply doesn't appear (and the rail auto-jumps off a hidden active section).
   When auth is off, everything shows.
 - This is a *Settings*-only regroup — it's separate from the app's top-level
-  left-nav, which has its own **six groups**: **Overview** (Dashboard, Dashboards,
-  Standup), **Triage** (Cases, Campaigns, Logs, Workspace → Chat/Investigate,
-  Automated scans, Approvals), **Intelligence** (Knowledge, Memory, Playbooks),
-  **Analytics** (Metrics, Cost, Models, Baseline, Batch jobs), **Communication**
-  (Inbox and What's new, since 0.2.0), and **Platform** (Sources, Audit log, Auto-tuning,
-  Settings). Point out
+  left-nav, which has its own **six groups**: **Overview** (Cyber Defence Center,
+  Dashboards, Standup), **Triage** (Cases, Case Manager, Campaigns, Logs, Workspace →
+  Chat/Entity investigation/Reports, Approvals), **Intelligence** (Knowledge corpus,
+  Runbooks, Operator memory, Agent personas), **Analytics** (Metrics, Team activity, Agent
+  effectiveness, Cost, Models, Baseline, Jobs), **Communication** (Inbox and What's new,
+  since 0.2.0), and **Platform** (Sources, Audit log, Auto-tuning, Settings). Point out
   Sources and Audit log are standalone **Platform** pages now, not buried in
   Settings.
 

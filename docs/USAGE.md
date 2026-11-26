@@ -2090,21 +2090,6 @@ user's bucket; there is no admin view of another user's inbox. The top-bar bell 
 name **Notifications**. Since version 0.2 the Inbox also receives the AI run notices: the end
 of a manual run for the person who started it, and a close an AI run replaced.
 
-### What's new
-
-The **What's new** page under **Communication** is the release tracker: every release this
-Console ships notes for, newest first, with highlights grouped by update, an area filter,
-search, links to one highlight, "New to you" marks and screenshots. A short welcome opens once
-after each update, after sign-in and never over another dialog or an open record; a new
-account starts with it marked seen. Closing it writes `misc.whats_new_seen` (the newest
-update id) through `PUT /api/prefs/user`, which audits it as a preferences change. **Show
-What's new after updates** (on the page, or Settings, Appearance; `misc.whats_new_auto`,
-absent means on) turns the welcome off. The top-bar release badge links to What's new for
-the running version, and the Help Center has a What's new page generated from the same
-notes. With sign-in off every caller shares the `default` preferences bucket, so the welcome
-shows once per installation. The notes live in `docs/releases/notes/<version>.json` and
-`scripts/build_release_notes.py` generates the Console, backend and Help Center copies.
-
 | Action | Endpoint |
 |---|---|
 | List my inbox (optionally unread-only) | `GET /api/notifications/inbox?unread_only=` |
@@ -2126,6 +2111,21 @@ generation-bound effective-`models:read` audience (maximum 200). They intentiona
 have no Cancel, Download, or terminal toast. Legacy rows and later users/grants remain
 Jobs-list-only; permission/generation loss hides and removes a stale note. The Jobs list
 remains the authoritative shared record for every non-recipient.
+
+### What's new
+
+The **What's new** page under **Communication** is the release tracker: every release this
+Console ships notes for, newest first, with highlights grouped by update, an area filter,
+search, links to one highlight, "New to you" marks and screenshots. A short welcome opens once
+after each update, after sign-in and never over another dialog or an open record; a new
+account starts with it marked seen. Closing it writes `misc.whats_new_seen` (the newest
+update id) through `PUT /api/prefs/user`, which audits it as a preferences change. **Show
+What's new after updates** (on the page, or Settings, Appearance; `misc.whats_new_auto`,
+absent means on) turns the welcome off. The top-bar release badge links to What's new for
+the running version, and the Help Center has a What's new page generated from the same
+notes. With sign-in off every caller shares the `default` preferences bucket, so the welcome
+shows once per installation. The notes live in `docs/releases/notes/<version>.json` and
+`scripts/build_release_notes.py` generates the Console, backend and Help Center copies.
 
 ---
 
