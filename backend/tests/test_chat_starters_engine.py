@@ -138,10 +138,14 @@ async def test_needs_human_is_absent_without_a_flagged_case(app_state, as_alice)
 
 async def test_my_cases_counts_open_cases_assigned_to_the_caller(app_state, as_alice) -> None:
     now = datetime.now(UTC)
+    # Both open cases project to P3, a 120-minute response target. The rule that holds is
+    # the shared per-case SLA reading (``metrics.sla_case_reading``, Round 16 XFNUM): a
+    # case is past its target only when its elapsed time is over the target, so m2 is
+    # opened 125 minutes ago (a case exactly at 120 minutes is at risk, not past it).
     await _seed(
         app_state,
         _case("m1", created=now - timedelta(hours=30), assignee=" Alice ", number="CASE-1"),
-        _case("m2", created=now - timedelta(hours=2), assignee="alice", number="CASE-2"),
+        _case("m2", created=now - timedelta(hours=2, minutes=5), assignee="alice", number="CASE-2"),
         _case("m3", created=now - timedelta(hours=2), assignee="alice", status=CaseStatus.CLOSED),
         _case("o1", created=now - timedelta(hours=2), assignee="bob"),
     )
@@ -149,6 +153,35 @@ async def test_my_cases_counts_open_cases_assigned_to_the_caller(app_state, as_a
     assert card is not None and card.template == "my_cases" and card.ref is None
     assert card.prompt == "Which of my 2 open cases should I work on first?"
     assert card.reason == "2 past their response target" and card.urgency == "attention"
+    # The case page agrees: GET /api/cases/{id}/triage reads both response clocks breached.
+    from app.api.routes_triage import case_triage
+
+    for cid in ("m1", "m2"):
+        reading = (await case_triage(cid, app_state))["sla"]
+        assert reading["clock"] == "response" and reading["state"] == "breached", (cid, reading)
+
+
+async def test_my_cases_counts_a_case_exactly_at_its_target_as_not_past_it(app_state, as_alice) -> None:
+    """The shared rule (``metrics.sla_case_reading``) breaches only past the target: an
+    open case exactly 120 minutes into its P3 response target is at risk, not past it,
+    so the card counts one case past its target, not two."""
+    now = datetime.now(UTC)
+    await _seed(
+        app_state,
+        _case("m1", created=now - timedelta(hours=30), assignee="alice", number="CASE-1"),
+        _case("m2", created=now - timedelta(hours=2), assignee="alice", number="CASE-2"),
+    )
+    card = _card(await _build(app_state, now=now), "my_cases")
+    assert card is not None and card.template == "my_cases"
+    assert card.reason == "1 past its response target" and card.urgency == "attention"
+    # The case page's reading (the one GET /api/cases/{id}/triage serves) at the same
+    # instant agrees: m1 is breached, m2 is at risk.
+    from app.engine.sla_reading import case_sla_reading
+
+    for cid, state in (("m1", "breached"), ("m2", "at_risk")):
+        case = await app_state.cases.get(cid)
+        assert case is not None
+        assert case_sla_reading(case, app_state.prefs, now=now)["state"] == state, cid
 
 
 async def test_one_assigned_case_is_named(app_state, as_alice) -> None:

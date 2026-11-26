@@ -166,13 +166,27 @@ def test_the_model_is_told_how_to_ask_for_my_cases() -> None:
 # --------------------------------------------------------------------------- #
 # 2. Cases close to their response target
 # --------------------------------------------------------------------------- #
+#: Open cases close to their target (``n-*``) and two that are not close yet (``y-*``).
+_NEAR_AGES = (97, 100, 103, 106, 109, 112, 115)
+_NOT_YET_AGES = (91, 94)
+
+
 async def _near_target(state: Any) -> None:
-    """Seven open cases 91 to 110 minutes old (the default target of a case without
-    a priority is 120 minutes, and three quarters of it is "close"), one past it."""
-    ages = (91, 95, 98, 101, 104, 107, 110)
-    for i, minutes in enumerate(ages):
+    """Seven open cases 97 to 115 minutes old, close to their response target, and two
+    younger ones that are not close yet.
+
+    No case stores a priority, so each is scored at the level it projects to (Round 16
+    B60): risk 50 on an unmapped asset is P3, a 120-minute response target. The rule that
+    now holds is the shared per-case SLA reading (``metrics.sla_case_reading``, Round 16
+    XFNUM): a running response clock is at risk from ``metrics.SLA_AT_RISK_FRACTION`` of
+    its target (80 percent, 96 minutes here) and breached only past the target. The old
+    Standup rule counted from three quarters (90 minutes), so the 91 and 94 minute cases
+    were counted then and are not now."""
+    for i, minutes in enumerate(_NEAR_AGES):
         await state.cases.save(_case(f"n-{i}", age=timedelta(minutes=minutes),
                                      assignee=("dana" if i % 2 else ""), number=f"CASE-{100 + i}"))
+    for i, minutes in enumerate(_NOT_YET_AGES):
+        await state.cases.save(_case(f"y-{i}", age=timedelta(minutes=minutes), number=f"CASE-{200 + i}"))
 
 
 async def test_shift_report_lists_the_nearest_close_cases_with_who_has_them(app_state) -> None:
@@ -191,6 +205,17 @@ async def test_shift_report_lists_the_nearest_close_cases_with_who_has_them(app_
     assert rows[0]["case_number"] == "CASE-106" and rows[0]["target_minutes"] == 120
     assert_observation_whitelisted(out)
     assert_artifacts_render(out)
+    # The case page reads the same clock: GET /api/cases/{id}/triage says at risk for
+    # every counted case and not for the two that are not close yet.
+    from app.api.routes_triage import case_triage
+
+    for i in range(len(_NEAR_AGES)):
+        reading = (await case_triage(f"n-{i}", app_state))["sla"]
+        assert reading["clock"] == "response" and reading["state"] == "at_risk", (i, reading)
+        assert reading["priority"] == "P3" and reading["target_minutes"] == 120
+    for i in range(len(_NOT_YET_AGES)):
+        reading = (await case_triage(f"y-{i}", app_state))["sla"]
+        assert reading["state"] == "ok" and reading["breached"] is False, (i, reading)
 
 
 async def test_the_sla_close_card_and_the_tool_agree_on_the_count(app_state, monkeypatch) -> None:

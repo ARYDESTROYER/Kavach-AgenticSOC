@@ -1101,8 +1101,12 @@ OUT_OF_SCOPE = [
     # for the bot activity is a case, not code. A change answer quotes only a passage and a
     # console page about the change, or none: never one that merely shares a word with it.
     # (Its console pointer and passage are not "unrelated" here, unlike a refused request.)
+    # Round 16 XFINT: the analyst guide's Analytics page gained a Jobs section that says how
+    # to stop a running job, so the passage quoted is that section, not the Background jobs
+    # list of job kinds it quoted before.
     G("Kill the export job", kind="product_help", tools=("app_help",), max_lookups=1,
-      contains=(_CANT_CHANGE, "**Analytics › Jobs**", "**Background jobs › Work that uses the job system**"),
+      contains=(_CANT_CHANGE, "**Analytics › Jobs**", "**Analytics and standup › Jobs**",
+                "To stop a job that is still running, choose **Cancel** on its row."),
       absent=_UNRELATED_HELP),
     G("Create a case for the bot activity", kind="product_help", tools=("app_help",), max_lookups=1,
       contains=(_CANT_CHANGE,), absent=_UNRELATED_HELP),
