@@ -12771,3 +12771,44 @@
 - Tests: on the merged tree, the rollback lane unit tests 31 passed, 12 skipped (with the backend requirements installed, as the CI lane does); check_docs (89 pages) passes.
 - Status: done.
 - Next: WP16B, WP15F and WP16C after their reviews; then the cross-cutting review of the integrated tree.
+
+### 2026-11-26 00:55Z - WP16B (backend integration) - Round 16 WP16 backend items
+- Context: SPEC 4.6 WP16, backend half; 15 items from build/wp16-backend.md, on branch r16-wp16b from 3a47a55.
+- Did:
+  - Reset and chat: the cases reset clears the shared metric caches (engine/reset.py). The all-time chat noise funnel stamps population.generated_at.
+  - SSO: role values must be built-in roles, so a custom role answers 422.
+  - Investigate page: POST /api/investigate is a manual run with requested_by.
+  - Case write lock: the auto-close review, precedent ratification, analyst-policy close and candidate rebuild re-read the case under the case lock, inside the signature lock.
+  - Investigation gate: new would_wait read; a background job run waiting for the headroom announces itself as queued.
+  - Additive fields: /rationale gains rows_total and truncated; the /forwarding fallback gains its routing keys.
+  - Cost text: cost figures in audit text are hidden without cost:view (new api/cost_text.py).
+  - PUT /api/prefs/org validates the full Preferences (B45).
+  - Small fixes: the cases template log names the template, the audit context docstring is reworded, the TraceSpan.kind comment is complete, the host.docker.internal hint is used.
+  - Item 14: a deadline drop under load is by design; the 20,000-case starters test now raises the deadline and keeps its speed bound.
+  - Item 15 skipped: it moves 20 of 42 seeded risk scores and trims 2 cases.
+  - Regenerated openapi.json and api-types.gen.ts.
+- Tests: backend 13,738 passed, 29 skipped, 5 sandbox-only failures, which pass with the proxy and AWS variables unset. The new file has 22 tests, each proved failing by reverting its source file. Ruff fatal clean; webui typecheck and check:types clean; check_version, check_ci_contract, check_docs and build_app_knowledge --check pass.
+- Status: done; commit abe1f65 on r16-wp16b (worktree detached).
+- Next: WP16C may show the rationale truncated flag. WP18 records the SSO restriction, the cost-text rule and the item 15 skip.
+
+### 2026-11-26 02:25Z - WP16B reviewer - Round 16 WP16 backend items reviewed
+- Context: independent review of r16-wp16b (abe1f65) against SPEC 4.6 WP16 and the 15 backend items.
+- Did: checked all 15 items. All 22 builder tests fail when their source files are put back to 3a47a55. decide() and risk.py are unchanged. Fixed three defects in the cost-text rule (item 11):
+  - Tool output and other rows' text are no longer rewritten. Before, log evidence such as `$1` or `$5000` read "(amount hidden)" for a viewer without cost:view. New helper `withhold_row_cost_text` in api/cost_text.py, used by the timeline and the trace.
+  - The case activity feed (routes_cases_collab) follows cost:view.
+  - Chat's case rationale (chat_tools/cases.py) follows cost:view.
+  - Added a lock test for the precedent ratification save, regenerated openapi.json and api-types.gen.ts, and replaced an em dash in the activity docstring.
+  - Commits 167dcb6, 15e4add and 234f559 on r16-wp16b; worktree detached.
+- Tests: backend 13,744 passed, 29 skipped, 5 sandbox-only failures, which pass 55 of 55 with the proxy and AWS variables unset. The WP16B test file has 28 tests; each new one fails before its fix.
+  - webui typecheck, lint, gates, check:types and build: clean.
+  - test:strict: 9,433 passed, 0 failed, but the gate exited 1 on stderr from AgentEffectiveness.fold.test.tsx. That warning is already on 3a47a55; this branch changes no Console source.
+  - check_version, check_ci_contract, check_docs, build_app_knowledge --check, ruff fatal: pass.
+- Status: done.
+- Next: a Console package fixes the AgentEffectiveness.fold.test.tsx act() warning before the integrated test:strict. WP18 records the SSO built-in-roles rule and the narrower cost-text rule. Case.error and GET /api/audit still show spend text without cost:view; that is a follow-up.
+
+### 2026-11-26 02:11Z - orchestrator - WP16B merged (integration backend items)
+- Context: the backend part of SPEC §4.6 WP16: fifteen carried items (reset cache invalidation, the noise funnel stamp, SSO role values restricted to built-in roles for 0.2.0, a manual Investigate run, the per-case lock for four more writers, would_wait for queued frames, rationale and forwarding totals, the template log line, the TraceSpan comment, cost text withheld from viewers without cost:view, the org prefs validator, the base URL hint, a timing test made reliable; the Demo asset map skipped because it moves 20 of 42 seeded risk scores).
+- Did: merged review 234f559 into claude/round16 with no conflicts; generated files unchanged. The review narrowed the cost-text rule to the spend rows only (evidence is never rewritten) and extended it to the activity feed and chat's case rationale. Carried to the cross-cutting fix stage: the AgentEffectiveness.fold act() stderr that fails test:strict, the budget refusal figure in Case.error, a deleted case brought back by the precedent candidate save, and the audit log's cost text for an auditor without cost:view.
+- Tests: on the merged tree, the WP16B tests with route coverage, spine and decide guards, the investigation registry and WP10 tests: 181 passed; fatal ruff clean; typecheck clean.
+- Status: done.
+- Next: WP15F and WP16C after their reviews, then the entry trim and the cross-cutting review.
