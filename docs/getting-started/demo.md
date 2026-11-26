@@ -57,6 +57,10 @@ storyline when you reinvestigate it: the Demo model reads the storyline only fro
 case's own events, never from a precedent, a memory or a runbook that names another
 one.
 
+Known limitation: in Demo Mode, a change to the auto-close policy in **Settings** changes
+the sentence in a case's Decision lane, but the Demo keeps deciding with its own policy, so
+the two disagree until you undo the change.
+
 ## Suggested tour
 
 1. Open **Overview** and inspect source coverage, the Human-vs-AI close
