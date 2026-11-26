@@ -49,9 +49,10 @@
           "kind": "new",
           "area": "cases",
           "title": "Case Manager",
-          "summary": "A split-pane queue and case workspace, with collaboration, traces, campaigns, baselines, tuning, rules and custom dashboards.",
+          "summary": "A split-pane queue beside the case workspace, with traces, rationale, collaboration and feedback.",
           "details": [
-            "Bulk work is checked against each person's permissions."
+            "Bulk work is checked against each person's permissions.",
+            "The 0.1 line also brought campaigns, entity baselines, threshold tuning, detection rules and custom dashboards."
           ],
           "requires": "cases:read",
           "open": {"page": "case_manager"},

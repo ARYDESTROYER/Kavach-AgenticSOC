@@ -39,10 +39,9 @@ Visible AI work, explainable numbers and a clearer Case Manager.
     - Press **]** to show or hide the case facts. In a narrow pane they open in a side sheet.
     - Press **[** to fold the queue into a narrow strip. J and K still move through the cases.
     - The Brief opens with the case's next step and four lanes: Evidence, AI, Decision and People.
-- **Case tabs in a new order** (Improved, Cases). Six tabs: Brief, Evidence, AI investigation, Response, Activity and Chat. Alt+2, Alt+4 and Alt+5 open new tabs, and Chat moves to Alt+6. [Read more](../analyst/case-manager.md#the-six-tabs).
+- **Case tabs in a new order** (Improved, Cases). Six tabs: Brief, Evidence, AI investigation, Response, Activity and Chat. Alt+2, Alt+4 and Alt+5 now open Evidence, Response and Activity, and Chat moves to Alt+6. [Read more](../analyst/case-manager.md#the-six-tabs).
     - Alt+1 to Alt+6 open the tabs in that order.
-    - Alt+2 now opens Evidence, Alt+4 opens Response and Alt+5 opens Activity.
-    - Chat moves from Alt+5 to Alt+6.
+    - Before, Alt+2 opened Runbook, Alt+4 opened Collaboration and Alt+5 opened Chat.
     - A link to the retired Timeline or Threat context tab opens Evidence at the matching section.
 - **Every number shows its math** (New, Cases). Hover a risk score, a decision or a dashboard figure for its formula with the real numbers. Press it for the inputs, the steps and the rounding. [Read more](../analyst/kpi-glossary.md#risk-score).
     - On a case: the risk score, the close or escalate decision, the priority, the SLA and the AI cost.
@@ -310,8 +309,9 @@ What the 0.1 line provides.
 - **Decisions made by code** (New, Automation). Code closes or escalates a case against the policy you set. Neither the model nor procedure text can override it. [Read more](../concepts/deterministic-decisions.md).
     - A case that needs a human never closes automatically, and closing a true positive automatically is off by default.
     - A daily AI budget of 10 US dollars blocks further calls by default. A blocked call sends the case to a person.
-- **Case Manager** (New, Cases). A split-pane queue and case workspace, with collaboration, traces, campaigns, baselines, tuning, rules and custom dashboards. [Read more](../analyst/case-manager.md).
+- **Case Manager** (New, Cases). A split-pane queue beside the case workspace, with traces, rationale, collaboration and feedback. [Read more](../analyst/case-manager.md).
     - Bulk work is checked against each person's permissions.
+    - The 0.1 line also brought campaigns, entity baselines, threshold tuning, detection rules and custom dashboards.
 - **Security Command Center** (New, Dashboards). The landing dashboard showed case KPIs, active risk, noise reduction and response timing, with a live refresh. [Read more](../analyst/overview.md).
 - **Workspace Chat** (New, Chat). A personal chat with saved, searchable conversations. Case Manager chat uses the same read-only engine for one case. [Read more](../analyst/chat.md).
 - **Sign-in, roles and single sign-on** (New, Security). Local sign-in, sessions, role-based access with custom roles, authenticator codes and single sign-on with OpenID Connect. [Read more](../administration/authentication.md).

@@ -57,11 +57,10 @@
               "kind": "improved",
               "area": "cases",
               "title": "Case tabs in a new order",
-              "summary": "Six tabs: Brief, Evidence, AI investigation, Response, Activity and Chat. Alt+2, Alt+4 and Alt+5 open new tabs, and Chat moves to Alt+6.",
+              "summary": "Six tabs: Brief, Evidence, AI investigation, Response, Activity and Chat. Alt+2, Alt+4 and Alt+5 now open Evidence, Response and Activity, and Chat moves to Alt+6.",
               "details": [
                 "Alt+1 to Alt+6 open the tabs in that order.",
-                "Alt+2 now opens Evidence, Alt+4 opens Response and Alt+5 opens Activity.",
-                "Chat moves from Alt+5 to Alt+6.",
+                "Before, Alt+2 opened Runbook, Alt+4 opened Collaboration and Alt+5 opened Chat.",
                 "A link to the retired Timeline or Threat context tab opens Evidence at the matching section."
               ],
               "featured": false,
@@ -1278,9 +1277,10 @@
               "kind": "new",
               "area": "cases",
               "title": "Case Manager",
-              "summary": "A split-pane queue and case workspace, with collaboration, traces, campaigns, baselines, tuning, rules and custom dashboards.",
+              "summary": "A split-pane queue beside the case workspace, with traces, rationale, collaboration and feedback.",
               "details": [
-                "Bulk work is checked against each person's permissions."
+                "Bulk work is checked against each person's permissions.",
+                "The 0.1 line also brought campaigns, entity baselines, threshold tuning, detection rules and custom dashboards."
               ],
               "featured": false,
               "requires": "cases:read",
