@@ -9054,17 +9054,16 @@ async def case_trace(
     Read-only on the management-scoped audit index. NEVER 404s: an unknown or
     not-yet-investigated case simply returns empty ``steps``. ``prompt_excerpt`` is
     omitted when ``prefs.trace.include_prompts`` is false. For a caller without
-    ``cost:view`` the cost figures a writer put into a row's text are replaced
-    (Round 16, WP16: ``api.cost_text``)."""
+    ``cost:view`` the cost figures a spend writer put into a row's ``result_summary``
+    are replaced (Round 16, WP16: ``api.cost_text``); tool output is never changed."""
     rows = await state.audit.records_for_case(case_id)
     include_prompts = state.prefs.trace.include_prompts
     steps = [_trace_step(row, include_prompts) for row in rows]
     if not await _case_spend_visible(request):
-        from .cost_text import withhold_cost_text
+        from .cost_text import withhold_row_cost_text
 
         steps = [step.model_copy(update={
-            "result_summary": withhold_cost_text(step.result_summary),
-            "tool_output_summary": withhold_cost_text(step.tool_output_summary),
+            "result_summary": withhold_row_cost_text(step.action_type, step.result_summary),
         }) for step in steps]
     return {
         "case_id": case_id,

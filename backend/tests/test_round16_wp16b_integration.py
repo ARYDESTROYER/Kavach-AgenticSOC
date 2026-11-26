@@ -516,11 +516,107 @@ def test_cost_figures_in_audit_text_stay_with_cost_view() -> None:
 
 
 def test_the_cost_text_helper_leaves_other_text_alone() -> None:
-    from app.api.cost_text import withhold_cost_text
+    from app.api.cost_text import withhold_cost_text, withhold_row_cost_text
 
     assert withhold_cost_text(None) is None
     assert withhold_cost_text("risk=40 confidence=0.9") == "risk=40 confidence=0.9"
     assert withhold_cost_text("cost=1e-05 and $3") == "cost=hidden and (amount hidden)"
+    # Only a spend writer's row is changed; a tool or verdict row is evidence.
+    assert withhold_row_cost_text(ActionType.ERROR, "partial cost=0.5") == "partial cost=hidden"
+    assert withhold_row_cost_text("tool_call", "awk '{print $1}'") == "awk '{print $1}'"
+    assert withhold_row_cost_text(ActionType.VERDICT, "paid $5") == "paid $5"
+
+
+# Review (WP16B): evidence that holds a ``$`` or ``cost=`` must read as it was recorded.
+_EVIDENCE_TOOL_OUTPUT = "process.command_line=awk '{print $1}' /etc/passwd; wire amount=$5000 cost=3"
+_EVIDENCE_REASONING = "verdict=TRUE_POSITIVE reasoning=the attacker ran awk '{print $2}' twice"
+
+
+def _seed_evidence_rows(client: TestClient) -> None:
+    state = client.app.state.tlsoc
+    for row in (
+        AuditDoc(case_id="case-spend-1", actor="investigator", action_type=ActionType.TOOL_CALL,
+                 tool_name="es_query", tool_output_summary=_EVIDENCE_TOOL_OUTPUT),
+        AuditDoc(case_id="case-spend-1", actor="investigator", action_type=ActionType.VERDICT,
+                 result_summary=_EVIDENCE_REASONING),
+    ):
+        client.portal.call(state.audit.write, row)
+
+
+def test_tool_output_and_verdict_text_are_never_rewritten_without_cost_view() -> None:
+    from tests.test_spend_gates import T1, _client, _sign_in_as
+
+    with _client(denies={"cost": ["view"]}) as client:
+        _sign_in_as(client, T1)
+        _seed_cost_rows(client)
+        _seed_evidence_rows(client)
+        timeline = client.get("/api/cases/case-spend-1/timeline").json()["spans"]
+        outputs = [(s.get("detail") or {}).get("tool_output_summary") for s in timeline]
+        assert _EVIDENCE_TOOL_OUTPUT in outputs
+        texts = [s.get("summary") for s in timeline]
+        texts += [(s.get("detail") or {}).get("result_summary") for s in timeline]
+        assert _EVIDENCE_REASONING in texts
+        steps = client.get("/api/cases/case-spend-1/trace").json()["steps"]
+        assert _EVIDENCE_TOOL_OUTPUT in [s.get("tool_output_summary") for s in steps]
+        assert _EVIDENCE_REASONING in [s.get("result_summary") for s in steps]
+        # The spend rows are still withheld.
+        joined = " | ".join(str(t) for t in texts if t)
+        assert "partial cost=hidden" in joined and "0.0213" not in joined
+
+
+def _client_with_activity(**kwargs: Any) -> TestClient:
+    from fastapi import Depends
+
+    from app.api.deps import require_auth
+    from app.api.routes_cases_collab import router as collab_router
+    from tests.test_spend_gates import _client
+
+    client = _client(**kwargs)
+    client.app.include_router(collab_router, dependencies=[Depends(require_auth)])
+    return client
+
+
+@pytest.mark.parametrize("denied", [True, False])
+def test_the_case_activity_feed_follows_cost_view(denied: bool) -> None:
+    from tests.test_spend_gates import T1, _sign_in_as
+
+    with _client_with_activity(denies={"cost": ["view"]} if denied else None) as client:
+        _sign_in_as(client, T1)
+        _seed_cost_rows(client)
+        _seed_evidence_rows(client)
+        r = client.get("/api/cases/case-spend-1/activity")
+        assert r.status_code == 200, r.text
+        summaries = [item.get("summary") or "" for item in r.json()["activity"]]
+        joined = " | ".join(summaries)
+        assert _EVIDENCE_TOOL_OUTPUT in summaries and _EVIDENCE_REASONING in summaries
+        if denied:
+            assert "partial cost=hidden" in joined and "(amount hidden)" in joined
+            for figure in ("0.0213", "0.004000", "$1.2345", "$10.00"):
+                assert figure not in joined, figure
+        else:
+            for figure in ("partial cost=0.0213", "cost=0.004000", "$1.2345"):
+                assert figure in joined, figure
+
+
+@pytest.mark.parametrize("cost_view", [True, False])
+async def test_chat_case_rationale_follows_cost_view(app_state, cost_view: bool) -> None:
+    from app.agents.chat_tools.cases import GetCaseTool
+    from app.agents.chat_tools.registry import catalogue_grant_pairs
+    from tests.test_chat_tools_support import RecordingAudit, make_ctx
+
+    await app_state.cases.save(_case(verdict=Verdict.TRUE_POSITIVE, confidence=0.9,
+                                     status=CaseStatus.NEEDS_HUMAN))
+    rows = [{"case_id": CASE_ID, "ts": iso_now(), "actor": "case_manager",
+             "action_type": ActionType.DECISION.value,
+             "result_summary": "verdict=TRUE_POSITIVE status=needs_human risk=30.0 cost=0.0213"}]
+    grants = catalogue_grant_pairs()
+    if not cost_view:
+        grants = frozenset(g for g in grants if g != ("cost", "view"))
+    ctx = make_ctx(cases=app_state.cases, audit=RecordingAudit(rows), grants=grants)
+    out = await GetCaseTool().run(ctx, case_id=CASE_ID, include=["rationale"])
+    text = out.observation["rationale"]["decision_rationale"]
+    assert ("cost=0.0213" in text) is cost_view
+    assert ("cost=hidden" in text) is (not cost_view)
 
 
 # --------------------------------------------------------------------------- #

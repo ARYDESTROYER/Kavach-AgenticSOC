@@ -22138,7 +22138,7 @@
     },
     "/api/cases/{case_id}/activity": {
       "get": {
-        "description": "The case ACTIVITY timeline — the authoritative audit rows for the case UNIONed\nwith the friendly ``CaseActivityStore`` feed, NEWEST first. The audit trail stays\nthe source of truth (#2); the friendly feed adds human-readable collaboration\nevents. All text is returned plain (#9).",
+        "description": "The case ACTIVITY timeline — the authoritative audit rows for the case UNIONed\nwith the friendly ``CaseActivityStore`` feed, NEWEST first. The audit trail stays\nthe source of truth (#2); the friendly feed adds human-readable collaboration\nevents. All text is returned plain (#9). For a caller without ``cost:view`` the\ncost figures a spend writer put into a row's ``result_summary`` are replaced, as\non the trace (Round 16, WP16: ``api.cost_text``).",
         "operationId": "get_case_activity_api_cases__case_id__activity_get",
         "parameters": [
           {
@@ -24388,7 +24388,7 @@
     },
     "/api/cases/{case_id}/trace": {
       "get": {
-        "description": "Ordered agent-pipeline trace for a case (C3-3).\n\nProjects the already-recorded ``tlsoc-agent-audit`` rows (router → investigator\n→ tool calls → verdict → formatter → case-manager decision) into a timeline.\nRead-only on the management-scoped audit index. NEVER 404s: an unknown or\nnot-yet-investigated case simply returns empty ``steps``. ``prompt_excerpt`` is\nomitted when ``prefs.trace.include_prompts`` is false. For a caller without\n``cost:view`` the cost figures a writer put into a row's text are replaced\n(Round 16, WP16: ``api.cost_text``).",
+        "description": "Ordered agent-pipeline trace for a case (C3-3).\n\nProjects the already-recorded ``tlsoc-agent-audit`` rows (router → investigator\n→ tool calls → verdict → formatter → case-manager decision) into a timeline.\nRead-only on the management-scoped audit index. NEVER 404s: an unknown or\nnot-yet-investigated case simply returns empty ``steps``. ``prompt_excerpt`` is\nomitted when ``prefs.trace.include_prompts`` is false. For a caller without\n``cost:view`` the cost figures a spend writer put into a row's ``result_summary``\nare replaced (Round 16, WP16: ``api.cost_text``); tool output is never changed.",
         "operationId": "case_trace_api_cases__case_id__trace_get",
         "parameters": [
           {

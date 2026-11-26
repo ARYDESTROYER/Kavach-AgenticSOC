@@ -1250,7 +1250,9 @@ export interface paths {
          * @description The case ACTIVITY timeline — the authoritative audit rows for the case UNIONed
          *     with the friendly ``CaseActivityStore`` feed, NEWEST first. The audit trail stays
          *     the source of truth (#2); the friendly feed adds human-readable collaboration
-         *     events. All text is returned plain (#9).
+         *     events. All text is returned plain (#9). For a caller without ``cost:view`` the
+         *     cost figures a spend writer put into a row's ``result_summary`` are replaced, as
+         *     on the trace (Round 16, WP16: ``api.cost_text``).
          */
         get: operations["get_case_activity_api_cases__case_id__activity_get"];
         put?: never;
@@ -2164,8 +2166,8 @@ export interface paths {
          *     Read-only on the management-scoped audit index. NEVER 404s: an unknown or
          *     not-yet-investigated case simply returns empty ``steps``. ``prompt_excerpt`` is
          *     omitted when ``prefs.trace.include_prompts`` is false. For a caller without
-         *     ``cost:view`` the cost figures a writer put into a row's text are replaced
-         *     (Round 16, WP16: ``api.cost_text``).
+         *     ``cost:view`` the cost figures a spend writer put into a row's ``result_summary``
+         *     are replaced (Round 16, WP16: ``api.cost_text``); tool output is never changed.
          */
         get: operations["case_trace_api_cases__case_id__trace_get"];
         put?: never;

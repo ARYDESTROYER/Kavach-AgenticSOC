@@ -63,7 +63,7 @@ from ..models import (
     TraceSpanDetail,
 )
 from ..utils import round_half_up
-from .cost_text import withhold_cost_text
+from .cost_text import withhold_row_cost_text
 from .deps import get_state, has_permission, require_permission
 
 router = APIRouter(prefix="/api")
@@ -605,8 +605,10 @@ def _row_to_span(
     bounded record behind it is the span's ``detail``.
 
     ``show_cost`` false (a caller without ``cost:view``, Round 16 WP16) replaces every
-    cost figure a writer put into the row's text (``partial cost=``, ``cost=``, a ``$``
-    amount) in the summary and the detail (:func:`withhold_cost_text`)."""
+    cost figure a spend writer put into the row's ``result_summary`` (``partial
+    cost=``, ``cost=``, a ``$`` amount), in the summary and the detail
+    (:func:`withhold_row_cost_text`). Tool output and the text of any other row are
+    evidence and are never changed."""
     actor = str(_get(row, "actor", "") or "")
     at = str(_get(row, "action_type", "") or "")
     kind, actor_type = _span_kind(row)
@@ -616,6 +618,8 @@ def _row_to_span(
     tool_name = _get(row, "tool_name") or ""
     query_text = _get(row, "query_text") or ""
     result_summary = str(_get(row, "result_summary") or "")
+    if not show_cost:
+        result_summary = withhold_row_cost_text(at, result_summary)
     tool_out = str(_get(row, "tool_output_summary") or "")
     if untrusted:
         # UNTRUSTED: do NOT inline the log/tool output as if it were trusted prose;
@@ -661,10 +665,8 @@ def _row_to_span(
 
     detail = _span_detail(row, include_prompts)
     if not show_cost:
-        summary = withhold_cost_text(summary)
         detail = detail.model_copy(update={
-            "result_summary": withhold_cost_text(detail.result_summary),
-            "tool_output_summary": withhold_cost_text(detail.tool_output_summary),
+            "result_summary": withhold_row_cost_text(at, detail.result_summary),
         })
     return TraceSpan(
         case_id=case_id,

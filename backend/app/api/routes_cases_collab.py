@@ -414,25 +414,35 @@ async def get_case_activity(
     state: AppState = Depends(get_state),
     limit: int = 200,
     _=Depends(require_permission("cases", "read")),
+    request: Request = None,  # type: ignore[assignment]
 ) -> dict[str, Any]:
     """The case ACTIVITY timeline — the authoritative audit rows for the case UNIONed
     with the friendly ``CaseActivityStore`` feed, NEWEST first. The audit trail stays
     the source of truth (#2); the friendly feed adds human-readable collaboration
-    events. All text is returned plain (#9)."""
+    events. All text is returned plain (#9). For a caller without ``cost:view`` the
+    cost figures a spend writer put into a row's ``result_summary`` are replaced, as
+    on the trace (Round 16, WP16: ``api.cost_text``)."""
+    from .cost_text import withhold_row_cost_text
+
     await _require_case(state, case_id)
     limit = max(1, min(int(limit or 200), 1000))
     items: list[dict[str, Any]] = []
+    # ``None`` is a direct in-process call, which has no caller to withhold from.
+    show_cost = request is None or await has_permission(request, "cost", "view")
 
     audit = getattr(state, "audit", None)
     if audit is not None:
         try:
             for row in await audit.records_for_case(case_id, limit=limit):
+                result_summary = row.get("result_summary")
+                if result_summary and not show_cost:
+                    result_summary = withhold_row_cost_text(row.get("action_type"), result_summary)
                 items.append({
                     "source": "audit",
                     "ts": row.get("ts") or row.get("@timestamp") or "",
                     "kind": row.get("action_type") or "",
                     "actor": row.get("actor") or "",
-                    "summary": row.get("result_summary")
+                    "summary": result_summary
                     or row.get("tool_output_summary")
                     or row.get("prompt_excerpt") or "",
                     "ref": {k: row.get(k) for k in ("tool_name", "model", "query_text")
