@@ -238,6 +238,12 @@ This is the part of the round no prototype showed as one piece. Every rule below
 | D19 | 5 | Do not triple the client's 5-minute wait for a free chat slot. |
 | D20 | 5 | Cap the report AI summary wait below the Web UI proxy's 300 s now. |
 | D21 | 6 | The rule sheet opens from every place a rule appears, through one `RuleLink`. |
+
+Amendment (2026-11-26, Round 16 SPEC D6 and §6.4): D3 is reversed for the sign-in row. The
+Remember me row shows only "Remember me", with no duration line and no accessible description.
+The warning dialog that opens the first time a person ticks it is now the disclosure: it states
+how long the session lasts and the inactivity limit. A row that is unavailable (turned off by an
+administrator, or on an insecure connection) keeps its one-line reason.
 | D22 | 6 | Both the log-events and the cases severity breakdowns get the fix. |
 | D23 | 7 | Show `High (8)` for sources whose scale is not 0 to 100, as the Logs page does. |
 | D24 | 8 | Hover never expands the rail. |

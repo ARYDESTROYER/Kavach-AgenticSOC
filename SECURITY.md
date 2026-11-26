@@ -550,8 +550,15 @@ issues a token.
   otherwise the domain is the verified email's, and an unverified email has none.
   Every change to the single sign-on settings, and every provider client secret, needs
   a stored Super admin with a fresh sign-in (anyone else gets `403 super_admin_only`,
-  "Only a Super admin can change single sign-on."), and role values must name a
-  built-in or custom role. A group map never changes a Super admin's role.
+  "Only a Super admin can change single sign-on."), and in 0.2.0 role values
+  (`default_role` and the group map) must name a built-in role: any other value, a
+  custom role name included, is refused with a 422 that names the field (mapping a group to
+  a custom role is backlog; a provider saved earlier with such a value stays stored until it
+  is next changed). A group map never changes a Super admin's role.
+- **Cost figures in audit text.** The spend figure a few audit rows carry in their text (the
+  investigation timeout, the decision, the runbook AI prompt and a budget refusal) is hidden
+  from a viewer without `cost:view` in the case timeline, trace, rationale, activity feed
+  and chat's case rationale. Tool output and every other row are shown as recorded.
 
 ### Demo Mode isolation guarantees
 

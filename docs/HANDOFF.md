@@ -6,13 +6,57 @@
 > source of truth for *where we are*, *how to run it*, *what's done*, and *what's next*.
 > Everything in here is verified against the repo as of the date below — not from memory.
 
-- **Repo:** `ARYDESTROYER/Agentic-Kibana`  ·  **Integration target:** `Testing`  ·  **Date:** 2026-11-24
-- **Round 16 (newest, 2026-11):** in progress on `claude/round16`, heading to `Testing` and then
-  the 0.2.0 release: the AI agent's work shown live on a case, a cleaner and segregated Case
-  Manager, a quiet sign-in page, every number explainable on hover or click, every stored record
-  reachable, a What's new screen and a Communication page, the 81 confirmed bug-hunt fixes,
-  version 0.2.0 under the `ARYDESTROYER/Kavach-AgenticSOC` identity and the Apache-2.0 license.
-  See `docs/research/2026-11-round16/SPEC.md`.
+- **Repo:** `ARYDESTROYER/Kavach-AgenticSOC`  ·  **Integration target:** `Testing`  ·  **Date:** 2026-11-26
+- **Round 16 (newest, 2026-11):** ten operator asks on `claude/round16` (from `3cfd5c0`),
+  heading to `Testing` through a pull request and then to the 0.2.0 release. It is built as
+  the SPEC's work packages, each in its own worktree and independently reviewed; the
+  integration, the cross-cutting review, the screenshots and the frozen release preparation
+  follow. What it changes:
+  - **The AI agent's work is visible.** The server tracks queued and running AI runs in a
+    process-local registry (`GET /api/investigations/active`, `case.investigation` frames on
+    a new `investigations` topic). The case header shows "AI working · m:ss" or "AI queued"
+    with a popover of the five steps and who started the run; queue rows, the Case Manager
+    navigation item and the queue band show it too. Close and bulk dialogs warn that the
+    run's result will replace a close made now (the run's result stays authoritative), and
+    Inbox notices follow when a manual run ends or replaces a close. Reinvestigate no longer
+    waits (`wait=false` answers `202`), a second request answers `409
+    investigation_running`, and a closed case is reinvestigated in place (or `409
+    open_case_exists`). A per-case write lock keeps a person's change and an AI run from
+    erasing each other. One EventSource per page carries every live update.
+  - **A segregated Case Manager.** No page header; `[` folds the queue; a counted empty pane;
+    six case tabs, one lane each (Brief, Evidence, AI investigation, Response, Activity and
+    Chat on Alt+1 to Alt+6; Alt+2, Alt+4 and Alt+5 changed meaning); a 118 px header with one
+    meta strip; and the case facts inspector (`]`) in place of the facts rail.
+  - **A quiet sign-in page** on Console tokens, one short entrance, and "Remember me" with no
+    duration; the login accents gate was retired as subject removal.
+  - **Every number explainable.** The Explain kit (`@/design-system/explain`) gives every
+    score, verdict, SLA, cost and dashboard figure a hover line with the real numbers and a
+    click panel with inputs, steps, rounding, provenance and Copy calculation. New risk
+    scores record their inputs and the weights in force (`engine/risk_explain.py`,
+    `RiskBreakdown.inputs`), the decision records the gate it compared, the triage read
+    serves the case's SLA reading, and `GET /api/metrics/explain` returns the cases behind
+    the dashboard figures.
+  - **Every stored record reachable.** `GET /api/cases/{id}/events` re-reads a case's own raw
+    events on the read-only client and `GET /api/cases/{id}/usage` lists every model call with
+    its rates; View all fields, trace Details and history reasons fill the rest.
+  - **What's new and Communication.** The Notifications navigation group is Communication
+    (Inbox and What's new); a welcome shows once per update and new accounts start with it
+    marked seen; the notes live in `docs/releases/notes/` and `scripts/build_release_notes.py`
+    generates the Console, backend and Help Center outputs. Every update that reaches users
+    adds a What's new entry with screenshots, enforced by `scripts/check_version.py`.
+  - **The bug hunt.** 81 confirmed ids, 75 fixes and 6 merged duplicates
+    (`docs/research/2026-11-round16/review/bug-hunt.md`, Appendix A of the SPEC), among them
+    the read gates with a CI coverage rule for every `/api` GET, the server-enforced forced
+    password change, the MFA lock, Super-admin-only single sign-on, the SLA clock on
+    agent-closed cases and eleven accessibility fixes.
+  - **Release 0.2.0.** Version 0.2.0 and documentation line 0.2 (with `/docs/0.1/` redirect
+    stubs), the `ARYDESTROYER/Kavach-AgenticSOC` repository identity (set
+    `AGENTIC_SOC_UPDATE_REPOSITORY` in `.env` before bootstrapping), and the Apache-2.0
+    license.
+  `decide()` and `engine/risk.py` are byte-identical, there is no new model call, storage
+  stays KV only (the cases index joins audit and config as an additive Elasticsearch bootstrap
+  exception), and there is no new dependency. See `docs/research/2026-11-round16/SPEC.md`,
+  whose §8 "As built" records what shipped and the known limitations.
 - **Round 15 (2026-11):** six operator asks on `claude/round15`: a Console switch for
   role-based access, honest setup-wizard copy, a Team activity page for managers, screenshots on
   cases, a random review of automatically closed cases, and a cleaner Case Manager. Each package
@@ -60,13 +104,15 @@
   (2026-07-14/15)** fixed **47 verified findings** (0 crit / 10 high / 24 med / 13 low)
   from a 24-auditor + adversarial-verify Workflow — **one atomic commit per finding, no
   co-author**, on `Testing` (`c5516e5`→`abd0385`).
-  The current source version is **`0.1.13`**. It is a Stable patch candidate on
-  `Testing` and a Stable release only when the exact accepted `main` commit has the
-  immutable `v0.1.13` tag and matching artifacts. `Testing` is the permanent integration and
-  acceptance branch; accepted changes are promoted through a pull request to the Stable
-  `main` branch and re-verified there. The remote now uses `main` as its default, retains
-  `Testing` for integration. The immutable `v0.1.13` tag is created only from the
-  fully verified promoted commit. The immutable `v0.1.4` attempt passed exact-tag CI,
+  The current source version is **`0.2.0`** (documentation line 0.2); the never-tagged
+  0.1.13 candidate folds into it. It is a Stable candidate on `Testing` and a Stable
+  release only when the exact accepted `main` commit has the immutable `v0.2.0` tag and
+  matching artifacts. `Testing` is the permanent integration and acceptance branch;
+  accepted changes are promoted through a pull request to the Stable `main` branch and
+  re-verified there. GitHub reports `Testing` as the default branch today; the maintainer
+  sets it back to `main` after the promotion merge and before the tag (SPEC §4.11 M1). The
+  immutable `v0.2.0` tag is created only from the fully verified promoted commit. The
+  history below describes the 0.1 line. The immutable `v0.1.4` attempt passed exact-tag CI,
   Help Center assembly, and Pages publication but stopped before every release
   artifact; it has no GitHub Release, signed plan, signature, digest, or GHCR release
   image and is not installable. The immutable `v0.1.5` attempt built and signed
@@ -99,7 +145,8 @@
   Stable-tag, and documentation gate. Canonical v0.1.1 acceptance then failed closed
   before application mutation because both legacy images omit the state-schema label
   and its supervisor compared one normalized absence with one raw absence. It is
-  immutable, bootstrap-blocked, and superseded. Version 0.1.13 retains the writable
+  immutable, bootstrap-blocked, and superseded. The 0.1.13 correction, carried into
+  0.2.0, retains the writable
   updater-state trust cache and least-privilege verification assets, and moves only
   the Python documentation and Node application builder stages to BuildKit's native
   build platform; the final nginx runtime remains target-platform-specific. Its
@@ -107,9 +154,12 @@
   the constrained verifier exits, then removes it. It symmetrically normalizes
   matching absent legacy schema labels while mixed labels and unmanaged later
   releases remain blocked. It changes
-  no schema, updater protocol 1, publisher identity, process privilege, trust predicate,
-  or frozen-base bytes. Version 0.1.13 is not installable until every signed-publication
-  and canonical runtime acceptance gate passes. See
+  no schema, updater protocol 1, process privilege, trust predicate, or frozen-base
+  bytes. Version 0.2.0 moves the publisher identity to `ARYDESTROYER/Kavach-AgenticSOC`
+  (the bootstrap refuses an `.env` without `AGENTIC_SOC_UPDATE_REPOSITORY` naming it
+  exactly, and never edits `.env`; v0.1.12 and earlier artifacts stay valid under the
+  former identity) and is not installable until every signed-publication and canonical
+  runtime acceptance gate passes. See
   `docs/releases/channels.md`. Repository administrators remain responsible for enforcing
   the documented branch and environment protections.
 - **Current CI contract:** every candidate exposes twenty independent quality lanes
@@ -123,7 +173,7 @@
   Require **CI passed** on `Testing` and
   `main`; do not merge, tag, publish, skip, or soften a red/pending/cancelled lane.
 - **Release identity and supervised updates:** the top-right badge always reads
-  `v0.1.13 · Testing|Stable`; its popover reconciles build-time Console and public backend
+  `v0.2.0 · Testing|Stable`; its popover reconciles build-time Console and public backend
   build-info. Any known version/channel/SHA mismatch downgrades to Testing. Local demo auto-
   derives Stable only on literal `main`; Docker release builds must stamp channel/SHA/date.
   The reference standalone PostgreSQL Compose deployment can install a compatible,
@@ -140,7 +190,7 @@
   fails closed. The browser and
   ordinary backend never receive the Docker socket, host commands, arbitrary artifact
   coordinates, or registry credentials. The supported canonical `v0.1.1` deployment
-  requires one manual updater bootstrap to install the strictly newer signed 0.1.13
+  requires one manual updater bootstrap to install the strictly newer signed 0.2.0
   release after its canonical Release, signature, and public images verify. A
   Testing/source-built 0.1.3 deployment, either non-installable 0.1.4/0.1.5
   publication attempt, or the published-but-
@@ -148,9 +198,9 @@
   0.1.9/0.1.10/0.1.11 records must instead be reconciled
   according to their actual installed state; none can be relabelled Stable. An
   earlier failed bootstrap that left an inspectable idle older supervisor on an unchanged
-  v0.1.1 application is repaired by the v0.1.13 bootstrap, which replaces the
+  v0.1.1 application is repaired by the v0.2.0 bootstrap, which replaces the
   version-mismatched supervisor before signature verification. An already-running
-  0.1.13 deployment cannot bootstrap itself from the same-version plan. Bootstrap
+  0.2.0 deployment cannot bootstrap itself from the same-version plan. Bootstrap
   safely reuses or replaces only inspectable idle supervisor state; an active/unreadable
   state fails closed. Bootstrap transfers
   lifecycle ownership before job submission and reuses a private per-release start key
@@ -271,20 +321,23 @@
   Fail-soft last-known-good/partial context may still be consulted without qualifying as
   a measured observation. Base metrics expose case-level reference coverage only—not
   quality or per-run hit rate—and keep incomplete-lifetime or truncated cohorts `null`.
-  This is additive under `0.1.13`, needs no SQL migration, and does not auto-remap
-  existing Elasticsearch templates or indices.
+  This arrived with the never-tagged 0.1.13 candidate and ships additively in 0.2.0: no
+  SQL migration, and no auto-remap of existing Elasticsearch templates or indices beyond
+  the three additive bootstrap extensions (audit, config and, since 0.2.0, cases).
 - **Current feature integration:** Cases is still the table-oriented list, but an
   opened row hands the exact case to the canonical Case Manager detail workspace;
-  its desktop split is accessible and persisted. Case Manager Overview now
-  conditionally summarizes the latest investigation run's actual inputs—operator
+  its desktop split is accessible and persisted. The case's AI investigation tab
+  conditionally summarizes the latest investigation run's actual inputs (operator
   memory consulted, RAG knowledge and runbook references retrieved, the runbook that
-  guided the run (a playbook on cases investigated before Round 14), and an immutable deterministic platform threshold-tuning
-  snapshot—with details in Investigation. It never infers provenance from current
+  guided the run, or a playbook on cases investigated before Round 14, and an immutable
+  deterministic platform threshold-tuning snapshot) under Investigation inputs, with
+  Review inputs for the detail. It never infers provenance from current
   feature settings, never calls threshold tuning model fine-tuning, and leaves final
   close/escalate routing to deterministic case policy. Overview defaults to
   visibility-aware LIVE refresh and has an expanded Noise Reduction view with a lazy,
   bounded redacted alert→cluster→case→outcome drill-down beneath the aggregate flow.
-  Threat Context exposes a redacted persisted cluster-formation explanation. Demo
+  The Threat context section of a case's Evidence tab exposes a redacted persisted
+  cluster-formation explanation. Demo
   Mode has five sources including Entra ID. The API also provides audited,
   permission-gated portable analysis export with actor/scope/snapshot-bound signed
   continuations; its Intelligence scope carries exact catalog counts, the runbook library
@@ -587,12 +640,17 @@ webui/src/
                    canonical detail workspace; operator contract in
                    `docs/analyst/case-manager.md`),
                    CaseDetail (Round-5 split from a 4210-line god-file into ~1529 LOC +
-                   sub-components; **5 tabs since Round 15**: overview | runbook |
-                   investigation | collab | chat, where Overview absorbed the Timeline,
-                   Investigation absorbed Threat context, and `tab=timeline` and
-                   `tab=threat` links open those sections; casedetail/files/** holds the
-                   screenshot kit and casedetail/review/ReviewCard.tsx the auto-close
-                   review card. Before that: 6 tabs, overview | timeline | investigation
+                   sub-components; **6 tabs since Round 16**, one lane each: overview
+                   (Brief) | evidence (Evidence) | investigation (AI investigation) |
+                   runbook (Response) | collab (Activity) | chat (Chat) on Alt+1 to
+                   Alt+6, where Evidence holds What happened, Threat context and related
+                   cases, and `tab=timeline` and `tab=threat` links open those sections;
+                   the case facts inspector (`]`, six sections) replaces the facts rail;
+                   casedetail/explain/** and casedetail/records/** hold the Round 16
+                   explainers and record views, casedetail/files/** the screenshot kit
+                   and casedetail/review/ReviewCard.tsx the auto-close review card. Round
+                   15 had 5 tabs (overview | runbook | investigation | collab | chat).
+                   Before that: 6 tabs, overview | timeline | investigation
                    | threat | collab | chat; Round 9/9b split the old Investigation tab into a
                    "Timeline" [ONLY the what-happened narrative: input → correlate → Risk
                    Assigned → triage → investigate → Decision; current-weight reconstruction

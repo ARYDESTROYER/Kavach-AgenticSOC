@@ -24,7 +24,7 @@ suite's management state, so self-hosting needs no Elasticsearch at all.
 | `STATE_BACKEND` | Versions | What it needs | Pip deps | Notes |
 |---|---|---|---|---|
 | `elasticsearch` (default) | Elasticsearch **8.x** (tested against 8.12.x client / 8.19.12 stack) | a management API key scoped to `tlsoc-agent-*` (`ES_MGMT_API_KEY`) | `elasticsearch[async]` (already a base dep) | Today's path: own-state in `tlsoc-agent-*` indices. Falls back to an in-memory store if ES is unreachable so the spine still runs. |
-| `postgres` | PostgreSQL **15 / 16** with the **pgvector** extension | `STATE_DB_URL` (`postgresql+asyncpg://…`); a reachable Postgres + pgvector (compose ships `pgvector/pgvector:pg16`) | `sqlalchemy`, `asyncpg`, `pgvector` (asyncpg/pgvector imported **lazily**, only when selected) | Production self-hosted path; RAG vectors stored via pgvector. |
+| `postgres` | PostgreSQL **15 / 16** with the **pgvector** extension | `STATE_DB_URL` (`postgresql+asyncpg://…`); a reachable Postgres + pgvector (compose ships `pgvector/pgvector:pg16`) | `sqlalchemy`, `asyncpg`, `pgvector` (asyncpg/pgvector imported **lazily**, only when selected) | Production self-hosted path. RAG vectors are stored as JSON and, since 0.2.0, ranked in the backend process with an in-memory matrix; pgvector ranks only a very large corpus. |
 | `sqlite` | bundled (file DB) | `STATE_DB_URL` defaults to `./tlsoc.db` if unset | `sqlalchemy`, `aiosqlite` | Zero-service dev/test path; the SQL state store is exercised **offline on SQLite** by the test suite (no Postgres needed). |
 
 The SQL backends share one SQLAlchemy-async implementation

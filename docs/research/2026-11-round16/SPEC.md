@@ -2544,26 +2544,307 @@ logic.
 
 ## 8. As built
 
-Placeholder. WP18 records here, from the package reports, their reviews, the Journal and the code
-as built: the contract resolutions, per-package notes, the [dv] §3 field checklist (WP14), the
-entry ratchet (WP16), known limitations, and the verification record (counts, gates, receipts).
-Where this section and §1 to §7 disagree, this section wins.
+Recorded by WP18 from the package reports, their independent reviews, the Journal and the code
+as built on `claude/round16` at `9a94df2` (WP16C merged). WP16P (the entry trim and the
+post-integration items), the cross-cutting review, WP17 and WP19 land after this was written and
+add to it where the placeholders below say so. Where this section and §1 to §7 disagree, this
+section wins.
 
 ### 8.1 Contract resolutions
 
-To be written.
+Decisions taken during the build, each recorded by the orchestrator in the Journal when it was
+taken.
+
+- **Entry bundle.** Recorded by WP16P.
+- **What's new entry growth.** WP07 added 807 B to the entry against the 700 B package figure
+  of §3.1 (the gate alone is 359 B, inside its 450 B). Accepted: the overrun is Vite preload
+  bookkeeping for the two lazy chunks the design needs (the What's new page and the shared
+  docs-url chunk), and WP04 had freed about 5.6 KB. The round budget is judged on the merged
+  tree, not per package.
+- **Merge order.** WP02 and WP03 merged before WP10, not after it (§4.8 step 10). WP03 reads the
+  triage fields through WP01's types and degrades when they are absent, and WP09, WP14, WP15E
+  part 2 and WP15F needed the new Case Manager in their base. The WP10 shapes and the WP11
+  leftovers on the WP03 case page then went into one small integration package, WP11I.
+- **WP05 split.** The WP05 part 1 builder also built the identity, license, Dependabot and
+  guard work of part 2, so part 2 was only the release-notes guard in `check_version.py`, the
+  `exclude_docs: releases/notes/` line with its bundle check, and the Release notes card on the
+  0.2 line.
+- **RealESClient reads index templates** (option one of the WP15B review): WP10 added a
+  read-only `get_index_template` to `es/client.py`, so an upgraded Elasticsearch deployment
+  extends the cases mapping and stores `risk_breakdown.inputs`. It also turns on the Round 14
+  audit template upgrade on the shipped client, which WP10 checked is additive only, and the
+  Round 15 pin `test_the_audit_upgrade_path_stays_as_it_was_on_the_real_client` now states the
+  new truth. A template read that answers 403 or 404 still fails open ("unsupported"), and the
+  case store then leaves `inputs` out.
+- **Single sign-on role values are built-in roles for 0.2.0.** `User.role` is a `UserRole`, so a
+  `default_role` or `group_role_map` value naming a custom role could never provision. WP16B
+  refuses such a value with a 422 naming the field. Mapping a group to a custom role is backlog.
+- **The MFA step after a spent pending token** returns to the password step, as the enrolment
+  path's `expireEnrollLogin` does (WP16C).
+- **The B05 guard** (an un-investigated candidate a person moved stays attach-only) applies to
+  automated-scan runs only; a person's own request from the Investigate page, which is not
+  forced, still runs (WP15B review).
+- **Case events viewed rows** appear in `GET /api/cases/{id}/timeline` as spans labelled
+  `person` and are left out of the investigation trace (WP10).
+- **Whole-document case writers.** The case lock (WP08) covers the pipeline, the case action
+  path and the collaboration writers; WP16B extended it to the auto-close review save, the
+  precedent ratification, the analyst-policy close and the candidate rebuild.
+- **POST /api/investigate** passes `trigger="manual"` and `requested_by`, so the popover names
+  the person and they get the finish notice (WP16B).
+- **A background job run waiting for headroom** announces itself as queued through a new
+  `would_wait` read on `engine/investigation_gate.py` (WP16B).
+- **Cost text in audit rows.** A viewer without `cost:view` sees "(amount hidden)" for the
+  spend figure of the timeout, decision, runbook AI and budget refusal rows, in the timeline,
+  the trace, the rationale, the case activity feed and chat's case rationale. The WP16B review
+  narrowed the rule to those rows: tool output and every other row's text are never rewritten,
+  so log evidence such as `$5000` stays as recorded (`api/cost_text.py`).
+- **The Demo asset map** (WP16B item 15) was not built. A probe gave seeded host and user
+  entities criticality 90; verdicts, statuses and the `decide()` agreement did not move, but 20
+  of 42 historical seeded risk scores rose by about 9 points and two agent-closed cases lost
+  member events to stay under the auto-close bar. It needs new Demo pins and screenshots, so it
+  is backlog.
+- **The chat starters timing test.** A deadline drop under heavy load is by design; WP16B raised
+  the 20,000-case fixture's deadline and kept its speed bound.
+- **"Older runbook".** The pre-existing labels "Runbook (before Round 14)" and "Runbook
+  automation (before Round 14)" put the word Round in Console copy. WP16C replaced them in the
+  Console, the audit table, `backend/app/audit/event_categories.json` and the docs. Stored data
+  is shown verbatim.
+- **Case Manager geometry.** `measure-case-manager.mjs` reads frame top 72, band 92, header 119
+  and first content 207 (CSS pixels, the WP16C review on the seeded Demo), with one Back on a
+  phone, inside the 210 px of A2 and the header's 120 px.
+- **The forced password change in the tests.** WP15A's `tests/_auth_helpers.ready_user` (sign
+  in, change the temporary password to the same value, sign out) serves 48 test files, not the
+  43 §4.9 counted; no assertion was weakened and no application bypass was added.
+- **Router count.** The orchestrator moved `AGENTS.md` and `HANDOFF.md` to 46 feature routers at
+  the WP18A merge, once WP08 and WP13 were in.
+- **WP18 split.** WP18A wrote the case workspace docs early (six tabs, the header, the case
+  facts, the queue fold) so `test_docs_round15_records.py` turned green; WP18B writes the
+  repository records and WP18C the Help Center pages.
+- **The cut line (D14) was not used.** Every item it names shipped.
+- **Version heading.** `CHANGELOG.md` carries `## [0.2.0] - 2026-11-25`, the date of the version
+  move, with the Testing-candidate paragraph; WP19 re-dates it to the tag date.
+- **A container restart** stopped every running build and review once (2026-11-25). Each
+  interrupted package's uncommitted work was saved as a work-in-progress commit on its own
+  branch and the builders and reviewers resumed from it; the resumed reviewers re-proved the
+  earlier fixes by reverting them.
 
 ### 8.2 Per package
 
-To be written.
+What each package shipped, the fixes its independent review made, and its deviations. Every
+bug fix has a regression test that failed before the fix; each review re-proved them by
+reverting.
+
+- **WP15A, security and access** (`7308595`, review `303f0e8`). B01 with B70 (18 read routes
+  gated, the GET coverage rule with its reviewed allowlist and "gated in body" list), B15, B16,
+  B17, B18, B19, B20, B21, B22, B23, B24, B51 and B55, the standup and Models navigation
+  `perm`s and a best-effort roles read on Users. Review fixes: Users keeps an account's custom
+  roles when the roles read is refused; Sessions says when the activity read failed; a refused
+  single sign-on change says "Only a Super admin can change single sign-on."; a Google account
+  without `hd` takes its domain only from a verified email; turning MFA off for an account
+  clears its lock. Deviation: the B21 docs line went into `authentication.md` and `SECURITY.md`
+  (WP15A did not own `users-rbac.md`).
+- **WP05, release** (part 1 `9561830`, review `a52b2b9`; part 2 `4b79c83`, review `1a203ec`).
+  Version 0.2.0 and the 0.2 docs line, the fragment-keeping `/docs/0.1/` redirect stubs, the
+  plan range below 0.3.0, the `ARYDESTROYER/Kavach-AgenticSOC` identity with the bootstrap
+  refusals and the config repair, Apache-2.0 (the verbatim text and its copies, the package
+  declarations, the image label and text), the license and release-ref guards, the Dependabot
+  forward-port, B52 and B54; then the release-notes guard, the Help Center exclusion of
+  `docs/releases/notes/` and the Release notes card. Review fixes: 118 doc lines that still
+  named 0.1 as the running line, release-guard tests that no longer depend on the live
+  `[Unreleased]`, focus return from the System update panel, and the release-preparation step
+  that dates only the undated updates.
+- **WP01, contracts** (`a441480`, review `8414d80`). `RiskInputs` on `RiskBreakdown`, the
+  investigation registry, `EventBus.publish_many` and the `case.investigation` frame, the
+  `UsageDoc` rate fields, the case events and usage pages, `Citation.case_number`, the What's
+  new preference keys, `records_for_case`, `count_for_case`, `round_half_up`, the spine and
+  import guards, and every Console stub with its final props. Review fix: a NaN or infinite
+  asset criticality is recorded clamped, as `compute_risk` scores it.
+- **WP02, Case Manager queue and frame** (`1abda6a`, review `f65c615`). No page header, the
+  band's first row, the 40 px glyph and checkbox slot, a neutral risk number, `AiRunMark` in the
+  status node, the `[` fold, the 340 to 520 px default width, the counted empty pane, a
+  truthful shortcuts sheet and `measure-case-manager.mjs`. Review fixes: Previous and Next use
+  `aria-disabled`, closing a case while folded lands on Show queue, the empty pane waits for
+  the first load, and an empty AI notice adds no height.
+- **WP03, case detail** (`454bea1`, review `aec5a60`). Six tabs on Alt+1 to Alt+6 with the
+  legacy rewrites, the 118 px header and meta strip, the inspector, the Brief's lanes, the
+  Evidence panel, the stub mounts, B27, B28 and C60. Review fixes: T and Edit tags with the
+  section folded, the tag editor off screen, the `data-case-header-back` marker (247 px to
+  207 px on a phone), and focus after the related-cases link. Not built: the I key and
+  condense-on-scroll (backlog).
+- **WP04, sign-in** (`f10b75f`, review `4dfa5ef`). The page on Console tokens, the CSS-only
+  entrance, the label-only Remember me, the 300 ms spinner delay, one branding request on a
+  cold load, B25 and B50, and the D9 subject removal with new contrast pairs. The entry fell by
+  5,544 B (the SPEC expected about 7 KB). Review fix: focus returns to the field after a wrong
+  recovery code, a refused change or a refused first-administrator setup.
+- **WP06, performance** (`9961c6d`, review `727601c`). The 60 s all-time population with
+  stale-while-revalidate, the decode-once review ledger, the in-process vector ranking with the
+  pgvector path for very large corpora, and the `event_loop` and `case_population` health
+  fields. Review fixes: a windowed population never evicts the all-time one, a cancelled shared
+  read is retried, both float32 paths re-read near ties, the matrix uses single-threaded
+  `einsum`.
+- **WP07, What's new and Communication** (`3a5e036`, review `dc63ab1`). The schema 1 notes, the
+  stdlib generator with `--check`, the three generated outputs, the Communication group, the
+  page and the once-per-update welcome, the audited marker, the creation stamps on three
+  account paths, the personal switch, the badge link and the docs lane step. Review fixes: "See
+  all changes" under StrictMode, focus return from the reopened welcome and the lightbox, and a
+  colon in prose read as a URL scheme. Deviation: the entry growth (§8.1).
+- **WP15B, spine fixes** (`492705e`, review `ffcff82`). B04 to B12, B14 and B33, the cases
+  mapping (`risk_breakdown.inputs` stored and never indexed, `awaiting_reason`) and
+  `extend_cases_mapping`. Review fixes: the B05 guard on scan runs only (§8.1), the deferred
+  query leaves out candidates a person acted on, and the mapping warning names the template.
+  Residual risk: the drain reads one page of `max(50, 2 x limit)` candidates (§8.3).
+- **WP15C, metrics and SLA** (`a21b584`, review `805257f`). B02, B03, B26 with B58, B39, B59, B60
+  and B68, and the pure `metrics.sla_case_reading` that WP10 builds on. Review fixes: two 500s
+  the package introduced (a due time past the datetime range and an instant overflow), both
+  now clamped.
+- **WP15E, setup, settings and administration** (part 1 `fa852d0`, review `3d8eb5e`; part 2
+  `959ab90`, review `b414d60`). B43 and B46, then B36, B37, B44, B45, B49, B53, B56 and B57, with
+  three orchestrator additions: read-only single sign-on for anyone who is not a stored Super
+  admin, the source editor's Primary switch through `canBePrimary`, and the Demo note after a
+  real-source add. Review fixes: the wizard's reload message after a successful Make primary,
+  and "Why it was drafted" for proposals the agent did not draft.
+- **WP08, AI run tracking** (`482c455`, review `03a2638`). The registry on the app state and the
+  Demo stack, `GET /api/investigations/active`, the `investigations` topic, the Reinvestigate
+  `202`, `409 investigation_running` and `409 open_case_exists`, the drain skip, the finish
+  notices and `case.close_replaced`, the per-case lock, `seed_users` off the event loop.
+  Review fixes: a cancelled `wait=false` run frees its reservation, and the frame sent when a
+  run takes its slot says triage.
+- **WP09, AI run Console** (`d700fa3`, review `8b19ca5`). The investigation store (out of the
+  entry behind an entry-safe count), the chip and popover, the queue mark, the band line, the
+  navigation count, the non-blocking Reinvestigate dialog, the close and bulk-close notes, the
+  "Investigation finished" heading and the `useEventStream` multiplexer (one EventSource per
+  page). Review fixes include a retried stream switch and frames kept when newer than a read.
+- **WP10, case numbers explained, backend** (`7881dc7`, review `2d50b31` and `3d4daf4`).
+  `explain_risk` at the three `compute_risk` sites (B13), the recorded decision and its gate
+  paired by `run_id` (B63), the triage additions, the trace kinds and bounded detail, one
+  unrounded Wilson interval in `engine/stats.py`, `engine/sla_reading.py`, the forwarding totals
+  and `RealESClient.get_index_template`. Review fix: exact per-call cost pairs a call with its
+  own row in one direction per role.
+- **WP11, the Explain kit** (`e87c2ac`, reviews `d80d438`, `b660962`, `cf2ef63`, `4a85bcc`,
+  `c6b86e9`) and **WP11I**, its integration on the case page (`55573b2`, review `e2f3954`). The
+  `ExplainTrigger` and `ExplainPanel`, the builders that print the contract vectors, the risk,
+  decision and fact explainers, the Decision card's recorded decision, B13's Console part, B32,
+  the Tuning, Cost and review explanations; then the server SLA reading, "No priority" when the
+  matrix is off (D9), both auto-close conditions (D8) and the meta strip and inspector triggers.
+  Review fixes include the Cost panel's provenance line, a running SLA clock kept as the line,
+  and stopped clocks worded truly.
+- **WP12, metrics explained** (`cbaa793`, review `d17b0cb`). `GET /api/metrics/explain`,
+  `mttr_by_decider`, `mttr_lifecycle`, the agreement population, `generated_at` and
+  `case_population` on all-time payloads, the KPI hover and drill-down calculation, the timing
+  panels and samples sheet, the 30 s LIVE cadence, B29, B64, B66 and B67. Review fixes: true
+  rank lines past 200 cases, a reachable drill-down list, singular nouns, the all-time window and
+  the server read time on Analytics. Deviation: no explain slot in `KpiStrip.tsx` (the optional
+  hunk was not needed).
+- **WP13, case records, backend** (`c687b75`, review `c42271e`). `GET /api/cases/{id}/events`
+  and `/usage`, the six ledger rate fields and `price_basis`, and the per-provider IP threat
+  context. Review fixes: a registered self-hosted model reads `custom`, and an events cursor is
+  one to nine ASCII digits (else `400 case_events_bad_cursor`).
+- **WP14, case records, Console** (`db4a8a8`, review `2bc834d`). The events table and sheet, the
+  usage popover, View all fields (`JsonTree` moved to `soc/components`), findings, the waiting
+  and hold reasons, notifications, trace Details, history reasons, gradings, the threat context
+  providers, B30 and B31. Review fixes include focus return to the row, the Flex tier label, the
+  exact call cost and the Logs link. The [dv] §3 field checklist, each field marked Never or
+  Partly there and where it can be seen now:
+
+  | Field | Where it is visible now |
+  |---|---|
+  | `member_event_ids` and keys | the Evidence events table |
+  | `evidence[].summary` | More on a finding |
+  | `evidence[].event_ids` | Cites N events |
+  | `status_reason` | the inspector's hold fact and History |
+  | `status_history[].reason` | History |
+  | history attach and resolution entries | History (precedent entries stay out on purpose; the Audit log and View all fields have them) |
+  | feedback scores, graded verdict and origin | a grading's full record |
+  | `awaiting_reason` | the waiting line and its popover |
+  | `token_cost` | the usage popover, with the case chat line |
+  | retrieval markers | the Why panel |
+  | `notifications_sent` | `NotificationsSent` in the case facts (mounted by WP16C) |
+  | `first_seen_millis` and the lifetime `knowledge_used` | View all fields |
+  | `risk_breakdown.inputs` and `precedent_signal` | the risk and decision explainers, and View all fields |
+  | per-call usage | `CaseUsageButton` |
+  | `tool_input` and `prompt_excerpt` | trace Details |
+  | per-provider enrichment | the Providers popover |
+
+- **WP15D, Demo Mode** (`ec612e8`, review `1f9002b`). B34, B35 with B47 and B65, B41, B48 with
+  B69, B61 and the B62 hunk, the seeded automation call with `fetch=`, and every seeded case
+  keeping its own Demo rows. Review fix: the disagreeing seeded review never lands on a case an
+  analyst confirmed.
+- **WP15F, accessibility** (`1e87ff3`, review `e761b80`). B71 to B81, with the popover name guard.
+  Review fixes: B77 on phones and when the library cannot be read. B81's device check is
+  maintainer action M6.
+- **WP15G, chat and local models** (`20e911b`, reviews `c9f846f` and `7ed7aba`). B38, B40, B42 and
+  [oss] B1 and B3. Review fixes: the Models hint names the Docker host and a Compose override and
+  is the field's accessible description; a streamed chat call reaches one `/v1`.
+- **WP16, integration.** WP16R (`c8ab2f8`, review `4f1ba4f`): the §3.7 rollback lane plants, the
+  `ui-standard.md` consolidation and the `api.md` path count (307). WP16B (`abe1f65`, reviews
+  `167dcb6`, `15e4add`, `234f559`): fifteen backend items (§8.1), the Demo asset map skipped.
+  WP16C (`fe60b2c`, review `122822f`): twenty-four Console items, among them the `]` and W
+  shortcut rows, Reinvestigate unavailable during a run, the dimmed verdict, the run chip that
+  fits the strip, the bulk Acknowledge note, one Back on a phone, the trace kit in the AI lane,
+  `NotificationsSent`, the signal count link, "Older runbook", the Active risk index and SLA
+  attainment explanations, and the Help Center banner and version selector. WP16P (the entry
+  trim, the ratchet and the post-integration items) is recorded with the closing gates.
+- **WP18A, case workspace docs** (`8adb164`, review `8b59c0f`): the six-tab docs and their
+  records tests, ahead of the rest of WP18.
+
+WP17, WP18 and WP19 are recorded with the closing gates.
 
 ### 8.3 Known limitations
 
-To be written.
+- **One backend process.** The investigation registry, the investigation gate, the pending
+  sign-in token map (capped at 10,000 entries) and the realtime bus are process local, and the
+  route says `process_local: true`. On several replicas only the per-account second-factor lock
+  is shared; a spent token evicted from the map could be tried again within its 5-minute life,
+  and the per-account counter stays the durable bound.
+- **Push sources.** Correlation on a push source looks back over the last 500 events that
+  source delivered, held in memory and lost on restart, so a rule with a long window on a busy
+  push source sees at most those events. A push-source case's events answer
+  `push_source_not_retrievable` even while that ring still holds them; an evidence snapshot is
+  backlog ([dv] R12).
+- **Recorded inputs and decisions start now.** A case scored before 0.2.0 reads "not recorded"
+  and its calculation uses today's weights; a case decided before 0.2.0 shows a decision
+  re-derived with today's policy. On Elasticsearch, a template read that answers 403 or 404
+  leaves the inputs out.
+- **Rolling back.** The previous release drops the new fields when it rewrites a document:
+  recorded risk inputs (the case then reads "not recorded") and MFA lockout counters are lost;
+  ledger rates and What's new markers are kept (proved by the rollback lane). The route gating
+  and the server-side forced password change revert; the lane runs with sign-in off, so these
+  two are documented, not proved.
+- **Chat is the sixth case tab** until it moves into the inspector (§7 rank 9).
+- **Single sign-on.** A provider saved before 0.2.0 with a custom role value stays stored; the
+  guard checks only providers that are added or changed.
+- **The deferred drain** reads one page of `max(50, 2 x limit)` candidates; when more than that
+  many at the front fail to rebuild on every tick (a pull source that keeps erroring), the ones
+  behind them wait. Candidates a person owns never count toward it.
+- **Demo Mode.** Without a Demo asset map, honest seeded risk tops out near 50 for IP cases and
+  near 30 for user and host cases, and severity comes from each case's own events, so the queue
+  shows pairs such as "Critical, Risk 17". Bulk actions are off in Demo, so the bulk-close AI
+  note cannot be shown there.
+- **What's new with sign-in off** is per installation: every caller shares the `default`
+  preferences bucket. The welcome can open over the What's new page itself after the badge
+  link; that is harmless.
+- **No run state on the case document.** `GET /api/cases/{id}` carries no investigation key; the
+  Console reads run state from `GET /api/investigations/active` and the frames.
+- **Not built:** the I key and condense-on-scroll on the case page, the audit `run_id` filter and
+  deep link ([ai] R13), stopping one run and a global pause ([ai] R15, §7 rank 15).
+- **Latent:** `llm/batch.py` joins `/v1/...` onto its base URL the same way the chat client did
+  before [oss] B1; it cannot fail today, because the Batch provider only gets the default host.
+- **B81** is verified in Chromium with a coarse-pointer touch context; an iOS device check is
+  maintainer action M6.
+- Open when this was written and taken by the post-integration package (WP16P): the
+  ConfirmProvider focus return after Cancel, the verdict casing in the close notice, cost text in
+  `GET /api/audit` and a budget refusal's figure in `Case.error` for a viewer without
+  `cost:view`, a deleted case revived by the precedent candidate save, the rationale truncation
+  in the Console, the header status words beside a long verdict or owner name, and the two
+  load-sensitive Console tests. The closing record says which closed.
 
 ### 8.4 Verification record
 
-To be written.
+Written after the closing gates.
+
+### 8.5 Cross-cutting review
+
+Written after the cross-cutting review.
 
 ---
 

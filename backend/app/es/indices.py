@@ -6,10 +6,16 @@ credential. The same mapping definitions are exported to ``deploy/mappings`` so 
 cold deploy can pre-create them if desired.
 
 Bootstrap creates what is missing and never remaps, reindexes or rolls an existing
-index. The one exception is additive and limited to the audit contract (Round 14,
-:func:`extend_audit_mapping`): audit-first writes (SPEC §3.6) cannot succeed while the
-live audit index would date-detect a free string, so on a deployment whose audit
-template or index predates this build, the stored audit template gains the properties
+index. There are three exceptions, each additive and limited to one contract: audit
+(Round 14), config (Round 15) and cases (Round 16), described below. A property that
+already exists is never changed. The shipped client (``es/client.py``) can read a
+template, read a mapping and add to one since Round 16; a template read that answers
+403 or 404 counts as a client that cannot.
+
+The audit exception (Round 14, :func:`extend_audit_mapping`): audit-first writes
+(SPEC §3.6) cannot succeed while the live audit index would date-detect a free string,
+so on a deployment whose audit template or index predates this build, the stored audit
+template gains the properties
 it lacks and every existing audit index gains the properties it lacks plus
 ``date_detection: false``. A property that already exists is never changed, whatever
 its mapping. This needs an Elasticsearch client that can read a template, read a
@@ -17,7 +23,7 @@ mapping and add to one (``get_index_template``, ``get_index_mapping``,
 ``put_index_mapping``); through a client that cannot, bootstrap changes nothing and
 logs a warning naming the operator step (:data:`AUDIT_UPGRADE_STEP`).
 
-Round 15 (SPEC D5.7) adds one more additive mapping, on the config index: the
+The config exception (Round 15, SPEC D5.7) is one more additive mapping: the
 screenshot content field ``case_file_data`` (base64, ``stores.case_files``) is mapped
 ``binary``, stored but never indexed. A fresh install creates the config index with it
 (:data:`CONFIG_MAPPING`); an upgraded one gains it at bootstrap, before the first
@@ -25,8 +31,9 @@ screenshot is written (:func:`extend_config_mapping`). If that cannot be done, o
 field was already mapped dynamically as text, writes still work and each screenshot's
 base64 is indexed as text (the cost is stated in ``docs/operations/health-backup.md``).
 
-Round 16 (SPEC §3.4) adds two properties to the cases contract, additively in the same
-way (:func:`extend_cases_mapping`): ``risk_breakdown.inputs`` is stored and never
+The cases exception (Round 16, SPEC §3.4) adds two properties to the cases contract,
+additively in the same way (:func:`extend_cases_mapping`): ``risk_breakdown.inputs`` is
+stored and never
 indexed (it holds source-controlled rule values, and the cases index date-detects, so a
 value such as ``2026-01-01`` would otherwise map a field as a date and fail every later
 case save), and ``awaiting_reason`` is mapped explicitly as text with a ``keyword``

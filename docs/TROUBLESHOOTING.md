@@ -66,15 +66,22 @@ client — see the callout above; it does not confirm Postgres).
 ### A2. pgvector extension missing
 
 **Symptom.** Backend logs `Could not ensure pgvector extension (...); RAG uses
-JSON cosine`; RAG works but native kNN does not.
+JSON cosine`. Knowledge search still works.
 
 **Likely cause.** The Postgres image lacks the `vector` extension or the role
 can't `CREATE EXTENSION`.
 
+**What it means since 0.2.0.** The store ranks knowledge chunks in the backend process
+with a cached in-memory matrix (single-threaded numpy, then an exact re-score), on SQLite
+and PostgreSQL alike, so most corpora never use pgvector. pgvector ranks only a corpus too
+large for that matrix, or a process without numpy. Without it, such a corpus is ranked in
+Python: slower, with the same results.
+
 **Fix.** Use the **`pgvector/pgvector:pg16`** image (the agnostic compose already
-does) or install the extension package and grant create privilege. The suite is
-**fail-safe**: without pgvector it degrades to JSON + Python cosine, so this is a
-performance/quality note, not an outage.
+does) or install the extension package and grant create privilege. This is a performance
+note for very large corpora, not an outage. `GET /api/diagnostics/health` shows
+`event_loop` (the worst and 99th-percentile loop lag over the last minute) if you suspect
+slow searches.
 
 **How to confirm.** Backend logs `pgvector extension ensured`;
 `docker exec tlsoc-postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "\\dx"'` lists `vector`.

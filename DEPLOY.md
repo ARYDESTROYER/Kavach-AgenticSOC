@@ -678,6 +678,31 @@ Before rolling back, ask users with more than 50 conversations to export the ext
 conversations they want to keep (history row menu → **Export**) and delete them, so
 the older build has nothing to evict.
 
+**Round 16 (0.2.0).** No database migration, index, table or key-value namespace is added;
+the new fields are additive and defaulted. The full list is in `docs/operations/upgrades.md`
+and the `CHANGELOG.md` Round 16 section.
+
+- **Repository identity first.** Set
+  `AGENTIC_SOC_UPDATE_REPOSITORY=ARYDESTROYER/Kavach-AgenticSOC` in `.env` before you
+  bootstrap the updater. The bootstrap refuses a missing line, the former name in any letter
+  case and the new name in the wrong case, and it never edits `.env`.
+- **Elasticsearch cases index.** The shipped Elasticsearch client now reads index templates,
+  so at start the backend adds `risk_breakdown.inputs` (stored, never indexed) and an
+  explicit `awaiting_reason` to the cases template and to each live cases index that lacks
+  them, and applies the Round 14 audit mapping upgrade itself (both only add mappings). If
+  the management key cannot read or write templates, it logs a warning, cases still land,
+  and their recorded risk inputs are left out (the risk explanation reads "not recorded").
+- **Security changes people notice.** A custom role or deny without a read grant gets 403
+  from the case, settings, standup, models, feeds and roles reads it used to get; accounts an
+  administrator created or reset must change their password before any other call; second
+  factor checks lock for 5 minutes after 10 wrong codes; a password change signs out other
+  sessions; only a stored Super admin with a fresh sign-in can change single sign-on, and
+  single sign-on role values must be built-in roles.
+- **Rollback.** The previous release drops the new fields when it rewrites a document:
+  recorded risk inputs (the case then reads "not recorded") and MFA lockout counters are
+  lost, the route gating and the server-side forced password change revert, and ledger rate
+  fields and What's new markers are kept. See `docs/releases/known-limitations.md`.
+
 **Round 15 (in 0.2.0).** Built during the 0.1.13 candidate, which 0.2.0 replaces; no
 database migration, index or table is added. The new state (case screenshots, the auto-close review ledger) lives in
 two new key-value namespaces, `case_files` and `auto_close_review`. The full list is in
@@ -715,9 +740,12 @@ or table is added. The full list is in `docs/operations/upgrades.md` ("Round 14 
   as the index template `tlsoc-agent-audit-template`
   (`PUT _index_template/tlsoc-agent-audit-template`), then roll the audit write index
   (`POST tlsoc-agent-audit/_rollover`); the commands are in
-  `docs/operations/upgrades.md`. The shipped Elasticsearch client cannot read or extend
-  index mappings, so bootstrap changes nothing here (it never remaps an existing index)
-  and logs a warning naming the step on every start. The warning keeps appearing after
+  `docs/operations/upgrades.md`. Since 0.2.0 the shipped Elasticsearch client can read
+  templates and extend mappings, so bootstrap applies this additive upgrade itself; the
+  rest of this bullet applies to a build before 0.2.0, or to a management key that cannot
+  read templates. Before 0.2.0 the shipped client could not read or extend
+  index mappings, so bootstrap changed nothing here (it never remaps an existing index)
+  and logged a warning naming the step on every start. The warning keeps appearing after
   the step is done, and on deployments first created by Round 14 from their second start
   on, because the backend cannot read the mapping to check. To confirm the step, check
   that `GET _index_template/tlsoc-agent-audit-template` shows `date_detection: false`

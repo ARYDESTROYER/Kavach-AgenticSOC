@@ -11,10 +11,21 @@ Vitest clean, **#3 `decide()` byte-identical**, and
 docs + Journal updated. Commit or publish only after the user or maintainer
 intentionally authorizes that repository mutation.
 
-**Current baseline (Version `0.1.13`; `Testing` integration and default `main`
-Stable source):** the canonical branches exist; 0.1.13 is a Stable release only when
-the exact accepted commit has the immutable `v0.1.13` tag and matching signed/public
-artifacts. The immutable `v0.1.4` and `v0.1.5` tags are historical and
+**Current candidate (Version `0.2.0`, documentation line 0.2; Round 16):** the
+never-tagged 0.1.13 candidate folds into 0.2.0, released under the
+`ARYDESTROYER/Kavach-AgenticSOC` identity with the Apache-2.0 license. 0.2.0 is a Stable
+release only when the exact accepted `main` commit has the immutable `v0.2.0` tag, its
+signed plan, public images and GitHub Release verify, and a canonical v0.1.1 bootstrap on
+PostgreSQL Compose (with `AGENTIC_SOC_UPDATE_REPOSITORY` set first) passes; the maintainer
+actions it depends on are SPEC §4.11 M1 to M7. Round 16 makes the AI agent's work visible,
+segregates the Case Manager into six tabs and an inspector, quiets the sign-in page,
+explains every number, reaches every stored case record, adds What's new and the
+Communication group, and fixes the 81 bug-hunt ids (75 fixes and 6 merged duplicates); see
+`docs/research/2026-11-round16/SPEC.md` (§7 for the ranked backlog below, §8 "As built").
+
+**0.1 line baseline (history; `Testing` integration and default `main` Stable source):**
+the canonical branches exist; 0.1.13 was a Stable candidate that was never tagged (it
+folds into 0.2.0). The immutable `v0.1.4` and `v0.1.5` tags are historical and
 non-installable because neither completed a canonical signed GitHub Release. The
 immutable `v0.1.6` tag is a published and signed artifact record whose canonical
 macOS Bash 3.2 bootstrap acceptance failed before supervisor installation; it is
@@ -418,8 +429,9 @@ engineering sequence is ordered by data safety and measurable outcomes, not scre
 - ☐ **Dashboard follow-ups**: a `zoom` switch on the chat chart kit so board charts drop the
   "Drag across the chart to zoom" hint; hourly buckets on a 24-hour board chart; a busy state
   on the board refresh control; a `tz` field on the breakdown so captions name the zone; a
-  `badge` slot on `PageHeader` so a board's badge sits right after its name; a history guard so
-  unsaved board edits survive browser Back and Forward (reload and close already ask first).
+  `badge` slot on `PageHeader` so a board's badge sits right after its name. (Closed: the
+  history guard, so unsaved board edits survive browser Back and Forward, shipped in Round 16
+  as the B44 fix; Back, Forward or a typed address now asks first, as in-app navigation does.)
 - ☐ **Runbook follow-ups**: show a version's editors before Publish (separation of duties);
   a reader-facing last public change that includes retire and restore; keep deferred real-case
   attachments across a restart while Demo Mode is on, and defer a real case's `run_playbook`
@@ -433,10 +445,14 @@ engineering sequence is ordered by data safety and measurable outcomes, not scre
   the Draft text.
 - ☐ **Grant blocks keep their version stamp on a downgrade save**, so the once-only
   `runbooks:publish` grant rule never runs twice on a block an older build saved without it.
-- ◐ **Re-investigation keeps person-made case state**: Round 15 (SPEC D6.10) carries the
+- ☑ **Re-investigation keeps person-made case state**: Round 15 (SPEC D6.10) carries the
   owner, comments, grades, status history, acknowledgement, status reason, sent
   notifications and a standing analyst disposition, from the stored case read again just
-  before the rebuild. Campaign and related cases still need a deliberate contract.
+  before the rebuild. Round 16 (B09) also carries the link fields (`related_case_ids`,
+  `cross_source_cluster_id`, `source_breakdown`) and `automation_actions`, and
+  `link_cross_source` re-reads each case under its signature lock before it saves them. The
+  campaign note is closed: campaigns are stored as `Campaign` objects and nothing writes a
+  `campaign_id` on the case, so there is nothing to carry.
 - ☐ **Console follow-ups**: the Low severity hue separated from the link blue (with
   `chat/report/export/report-tokens.ts`, which mirrors it); a dot for the notification bell's
   health mark and a neutral Demo mode pill (§4.8.1); Inbox result actions as links; a browser
@@ -488,7 +504,8 @@ known limitations):**
   zone.
 - ☐ **A full blind review**: hide the AI verdict across the whole case page while an
   auto-close review is pending; today only the review card holds it back.
-- ☐ **Reinvestigating a closed case updates it in place**: today it creates a second case.
+- ☑ **Reinvestigating a closed case updates it in place** (Round 16 WP08): when an open case
+  already holds its events, Reinvestigate answers `409 open_case_exists` with that case's id.
 - ☐ **Lifecycle notifications honour `triggers.on_closed` and the risk floors.**
 - ☐ **`first_response_at` written on the first human response.**
 - ☐ **`case_activity` and `case_tasks` as opaque rows on Elasticsearch**, like the case
@@ -505,8 +522,10 @@ known limitations):**
   2,000 whole cases per request before it filters and pages them.
 - ☐ **A pick on a case reopened outside the review**: it stays pending and listed until the
   case is closed again; decide whether to settle or hide it.
-- ☐ **A case a person closes while its investigation runs**: it is rebuilt from the stored
-  copy, never dropped; decide whether it needs a dedicated skip path with an audit row.
+- ☑ **A case a person closes while its investigation runs** (Round 16 D10): the run's result
+  stays authoritative, the close dialogs say so before a person acts, a replaced close is
+  recorded as a `case.close_replaced` audit row with an Inbox notice, and an automatic drain
+  skips a candidate a person closed before its run started.
 - ☐ **The in-app channel-list mute flaw in `notifications/dispatch.py::_inapp_route`**: a
   category's `channels` list names only the extra channels (the Inbox preferences never
   write `in_app`), so a person who adds email to a category loses its Inbox items. The
@@ -546,6 +565,70 @@ known limitations):**
   composite productivity score on Team activity; a review that changes a case by itself; a
   screenshot, caption or team count in a prompt.
 
+**K. Round-16 backlog (see `docs/research/2026-11-round16/SPEC.md` §7, ranked by value for a
+free agentic SOC, and §8.3 for the known limitations):**
+
+- ☐ **1. A free local-model path from install to the first verdict** (high, M).
+- ☐ **2. One-command install**, `doctor`, measured resource figures, a lite SQLite profile, a
+  container demo and a devcontainer (high, M).
+- ☐ **3. Source presets for the free stacks** (Elastic Security alerts, Security Onion,
+  OpenSearch Security Analytics, Graylog, Wazuh push, Suricata EVE, Zeek, osquery), the Wazuh
+  Integrator push script, an inverted severity ladder, and a "free SOC stack in an afternoon"
+  guide (high, M).
+- ☐ **4. Restart-safe per-source secrets**: document and forward `CONNECTOR_SECRETS` with a
+  missing-secret banner, then opt-in sealed KV persistence after a security review (high, S then
+  M).
+- ☐ **5. No-loss push**: answer HTTP push before investigating, then a durable push receipt with
+  a dead-letter ring (high, M then L).
+- ☐ **6. Teach the agent from a close**: pending, scoped, expiring memory with origin case and
+  usage counts, plus per-step and per-summary feedback (high, M).
+- ☐ **7. Offline threat intel**: MISP warninglists, public MISP feeds, TAXII 2.1 and OpenCTI, and
+  a MISP server, into a bounded KV IOC store (high, M to L).
+- ☐ **8. Hand-off to DFIR-IRIS (and TheHive)**, plus a STIX 2.1 case export (high, M).
+- ☐ **9. Ask AI beside the evidence**: case chat in the inspector, which brings the case tabs
+  back to five (medium to high, M to L).
+- ☐ **10. Sigma**: metadata import with DRL attribution, then a matcher, with a precompiled rule
+  catalog first (medium to high, M then L).
+- ☐ **11. Approval-gated response actions and a per-case Resolution Center**, with a separate
+  write credential and never model-driven (high, L).
+- ☐ **12. A read-only MCP server and scoped, revocable API keys** (resolve the C versus G
+  contradiction in this file first) (medium to high, L).
+- ☐ **13. New pull connectors**: Splunk, then Microsoft Graph `alerts_v2`, then CrowdStrike (high
+  for adoption, M each).
+- ☐ **14. SQL queue projection and filter push-down** (0.65 to 2.5 s per filtered view at 20,000
+  cases today) (medium to high, M).
+- ☐ **15. A global pause and resume of AI investigations**; autonomy per rule with an optional
+  settle delay; stopping one run (medium, S to M).
+- ☐ **16. Field anonymization before the model**, with a reversible per-investigation map (high
+  for regulated users, M to L).
+- ☐ **17. A push-source evidence snapshot in KV**, bounded and with a retention setting, so a
+  push-source case's events stay readable (medium, L).
+- ☐ **18. Observability export** (Prometheus text, JSON logs, optional OTEL) and a one-command
+  backup and restore (medium to high, S to M each).
+- ☐ **19. An attack storyline on campaigns**; CVE context (CISA KEV, EPSS); a model leaderboard
+  from replay; scheduled digests and ticketing; a PDF case report (medium, M each, PDF S).
+- ☐ **20. Community runbook packs**, a Cortex bridge provider, passkeys, administrator
+  announcements in Communication (medium, M to L).
+- ☐ **21. Platform depth**: versioned SQL migrations, a multi-replica leader lease (including the
+  investigation registry), cross-process signature claims, SBOM attestation (medium now, high at
+  scale, M to L).
+- ☐ **22. Install history and server eligibility for What's new** (`release_history` KV), only if
+  the creation stamp proves insufficient (low, S to M).
+- ☐ **23. Member event ids in the clustering diagram for `sources:read` holders**: decide whether
+  to reverse the earlier #9 decision (low, S).
+- ☐ **24. Explainability follow-ups**: Standup urgency terms, campaign entity links, the anomaly
+  detection signal on anomaly-born cases (low to medium, M).
+- ☐ **25. Stretch items not taken**: HTTP push answered before investigating, the audit `run_id`
+  filter and deep link, condense on scroll (medium, S to M).
+- ☐ **Round 16 leftovers**: a Demo asset map so seeded user and host cases carry asset impact
+  (it moves 20 of 42 seeded risk scores, so it needs new Demo pins and screenshots); mapping a
+  single sign-on group to a custom role (0.2.0 accepts built-in roles only); the I key on the
+  case page; the OpenAI Batch provider's `/v1` join (latent, the provider only gets the default
+  host today).
+- **Never** (product decisions, not backlog): model-written lessons placed in trusted context;
+  autonomous response by default; browser recording of analysts; vendor-style headline accuracy
+  figures; per-alert pricing logic.
+
 Each item ends with: `pytest -q` green (keep the count current), full docs+app
 `npm run build` + `npm run test:strict` clean, **#3 `decide()` byte-identical**, additive + zero new runtime deps
 where possible, and docs + Journal updated. Commit or publish only after intentional,
@@ -557,6 +640,19 @@ explicit authorization.
 - ☑ AGENTS.md (with CLAUDE.md forwarder), Journal.md, docs/ENVIRONMENT.md, this ROADMAP.
 
 ## Progress (this cycle, newest first)
+- ◐ **Round 16: visible AI work, a segregated Case Manager, a quiet sign-in, explainable
+  numbers, reachable records, What's new and release 0.2.0** (branch `claude/round16`, PR to
+  `Testing`). The AI run registry, `GET /api/investigations/active` and the header chip, queue
+  mark, navigation count and close warnings (the run's result stays authoritative); a
+  non-blocking Reinvestigate that updates a closed case in place; one EventSource per page; the
+  Case Manager without a page header, with the `[` fold, six tabs one lane each and the case
+  facts inspector; the sign-in page on Console tokens with a label-only Remember me; the
+  Explain kit with recorded risk inputs, the recorded decision gate, the server SLA reading and
+  `GET /api/metrics/explain`; `GET /api/cases/{id}/events` and `/usage`, View all fields and
+  trace Details; the Communication group with What's new and its notes guard; 75 bug fixes
+  covering all 81 bug-hunt ids; version 0.2.0, the `ARYDESTROYER/Kavach-AgenticSOC` identity
+  and Apache-2.0. `decide()` and `engine/risk.py` untouched; KV only; no new dependency. See
+  `docs/research/2026-11-round16/SPEC.md` and backlog K above.
 - ◐ **Round 15: an RBAC switch, honest setup copy, Team activity, screenshots, auto-close
   review and a calmer Case Manager** (branch `claude/round15`, PR to `Testing`). The
   Role-based access switch on Roles & permissions and `PUT /api/rbac` (`PUT /api/settings`
@@ -1017,8 +1113,10 @@ explicit authorization.
     — **$0, isolated, one-flip reversible**; FP runs the REAL `decide()` against a
     SANDBOXED policy copy, NEEDS_HUMAN stays open. Endpoints `POST /api/demo/{enable,
     incident,reset,disable}`, `GET /api/demo/status` (`demo:manage` for mutations);
-    DemoBanner + `SAMPLE` badges + "(simulated)" cost. The version 0.1 live-demo upgrade
-    adds bounded Splunk/QRadar/Wazuh/syslog adapters and a guaranteed first incident.
+    DemoBanner + `SAMPLE` badges + "(simulated)" cost. The live-demo upgrade of the 0.1 line
+    (still in 0.2) adds bounded Splunk/QRadar/Wazuh/syslog adapters and a guaranteed first
+    incident; since 0.2.0 every seeded case keeps its own events and its simulated cost has
+    ledger rows.
   - ☑ **W6 Source multi-feed** — `IndexPattern`→richer per-feed model (wire key kept) +
     new `ignore` role + per-feed query/field-mapping/`message_field`/`severity_floor`/
     schedule; overloaded `auto_correlate` split into `correlate`+`auto_investigate`
