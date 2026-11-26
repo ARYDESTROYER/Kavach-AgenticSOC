@@ -103,7 +103,7 @@ const REPORT: StandupReport = {
   ],
   sla_aging: {
     enabled: true,
-    warn_fraction: 0.75,
+    warn_fraction: 0.8,
     by_priority: {},
     totals: { open: 5, breached: 1, about_to_breach: 2 },
     breached: [

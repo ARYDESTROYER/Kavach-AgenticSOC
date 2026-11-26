@@ -173,6 +173,24 @@ additive audit mapping upgrade too), and no new runtime dependency. Bug ids refe
 - **Case facts are an inspector** beside the tabs from a 52rem pane, or a side sheet below
   that, shown or hidden with `]`, with six sections that open and close (each viewer's
   choices are kept; Record starts closed). It replaces the facts rail.
+- **AI run signals in Case Manager.**
+  - While the AI investigates a case, its queue row always says "AI working" or "AI
+    queued", at every queue width. In a narrow queue the status words, the outcome badge and
+    the severity word step aside for it. The row's accessible name, the leading glyph and
+    the case header keep all of them.
+  - The case header's AI run chip keeps its words ("AI working · 0:42", "AI queued", then
+    "AI finished") on any strip 30rem wide or wider, and shows the ring alone on a phone.
+    While it shows, the AI verdict's label, the owner's name and the SLA make room first,
+    and the status words always stay on the line.
+  - The AI investigation tab's count is the AI's own steps, the same number as the trace's
+    "N AI steps". While a run is under way the open trace updates every few seconds, and
+    when the run ends it no longer blanks.
+  - Inbox notices about an AI investigation name the needs-human verdict "Needs human
+    review", as the case does.
+- **The Brief's Decision lane** says in plain words who settled the case and how
+  ("Escalated by the system."). The raw decision record is in Policy inputs. On a case a
+  person closed, the lane shows what the policy recorded before them and no longer repeats
+  the person or the outcome.
 - **A quiet sign-in page.** One column on the Console's own colours with a soft wash in the
   organization accent and one short entrance; nothing moves after the page settles. The
   heading names the organization ("Sign in to Acme SOC"); "Welcome back" appears only on a
@@ -289,7 +307,8 @@ additive audit mapping upgrade too), and no new runtime dependency. Bug ids refe
     two hours and an acknowledged case is no longer breached; chat suggestions agree [B60].
     They also count breaches with the case page and Posture rule: a case is breached only
     after its target, at risk from 80 percent of it, and a case whose priority has no
-    target is not counted. There is no assumed 120-minute target.
+    target is not counted. There is no assumed 120-minute target. The Standup page uses the
+    same 80 percent share when a report has no SLA block, instead of 75.
   - Urgency and the derived severity read the risk score as shown, rounded half up, so a
     risk from 47.5 up to 48, or from 21.5 up to 22, can move up one band, and with it the
     advisory priority and SLA target. The automatic close decision and the risk score are
@@ -325,6 +344,10 @@ additive audit mapping upgrade too), and no new runtime dependency. Bug ids refe
   - The AI investigation tab says when its rationale was built from the newest records
     only.
   - The AI run note in the close dialog writes the new verdict in lower case.
+  - In Cases, a case whose close a later AI investigation replaced no longer says "no
+    analyst has classified this case yet". Its Outcome note reads "Classified by an analyst
+    before a later AI investigation set the status".
+  - A status word cut short in a Case Manager queue row shows its whole value on hover.
   - Focus returns to the control that opened a confirmation, or to the menu button when it
     came from a menu.
 - **Dashboards.** The KPI drill-down Source column, filter and CSV show the log source a case
@@ -411,9 +434,13 @@ additive audit mapping upgrade too), and no new runtime dependency. Bug ids refe
   message or a proxy error page. Setting a first admin or a new password still shows the
   password rule the server names. While Branding sets a light or dark default theme, the
   first appearance button is named "Use the organization default theme", and the pressed
-  button always matches the theme on screen.
+  button always matches the theme on screen. Setting up two-factor, at sign-in or in
+  Settings, and turning it off show a fixed sentence too, such as "That code did not work.
+  Enter the current code from your app.", never the server's own text.
 - **What's new.** After See all changes the tracker marks the changes that were new to you,
   and closing the reopened welcome or an enlarged screenshot returns focus to what opened it.
+  The Help Center's What's new page says the welcome is turned off in Settings → Account →
+  Appearance, where the switch is.
 - **Accessibility.**
   - "Skip to main content", and the setup wizard's skip link, move focus to the page content
     without changing the address, so an open case is no longer lost to Overview [B71].
@@ -499,11 +526,18 @@ additive audit mapping upgrade too), and no new runtime dependency. Bug ids refe
   Data scope pages show the same checks inline [B51]. `PUT /api/prefs/org` checks the whole
   settings too.
 - Sessions and activity name each event the way the Audit log does [B55].
-- Cost figures written into audit text (the timeout row, the decision row, the runbook AI row
-  and a budget refusal) are hidden from a viewer without `cost:view` in the timeline, the
-  trace, the rationale, the case activity feed, chat's case rationale and the Audit log list
-  and record, and a budget refusal's reason shown on a case reads "(amount hidden)". Tool
-  output and the text of other rows are shown as recorded.
+- Cost figures written into audit text (the timeout row, the decision row, the runbook AI
+  row, a budget refusal and a replay experiment's spend row) are hidden from a viewer
+  without `cost:view` in the timeline, the trace, the rationale, the case activity feed,
+  chat's case rationale and the Audit log list and record, and a budget refusal's reason
+  shown on a case reads "(amount hidden)". Tool output and the text of other rows are shown
+  as recorded.
+- An audit log export (CSV or JSON Lines) hides the same cost figures from an exporter
+  without `cost:view` when it runs, as the Audit log page does: those rows read
+  `cost=hidden`, `spend_usd=hidden`, `bound_usd=hidden` or `(amount hidden)`. Tool output
+  and the text of other rows are written as recorded, and the full application export
+  keeps every row as stored. For such a person the Export menu and dialog say the file
+  hides AI spend, and no longer say a JSON Lines record is written unchanged.
 - The standup summary no longer shows its AI cost to people who may not see AI spend.
 - Recorded risk inputs are stored without being indexed, so a source-controlled rule value
   that looks like a date can never block later case saves on Elasticsearch.

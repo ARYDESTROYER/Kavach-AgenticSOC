@@ -53,7 +53,10 @@ The **Outcome** column shows each case's outcome of record:
 - otherwise the case's current disposition, which no analyst has classified yet. Its
   tooltip says where that value came from: "Mapped from the AI verdict", "Recorded on
   the case", "No outcome recorded yet", or "Not yet assessed by the AI" (the badge then
-  reads Undetermined), each followed by "no analyst has classified this case yet".
+  reads Undetermined), each followed by "no analyst has classified this case yet". There
+  is one exception. When an analyst classified the case and a later AI investigation then
+  set its status, for example a close that the run replaced, the tooltip reads
+  "Classified by an analyst before a later AI investigation set the status".
 
 The cell uses the Status column's badge size, and a screen reader hears the tooltip's
 words too. Once a person has classified, resolved or closed a case, or a rule policy or

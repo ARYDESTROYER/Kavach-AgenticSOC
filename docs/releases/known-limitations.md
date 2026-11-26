@@ -577,16 +577,23 @@ the backlog. A provider saved before 0.2.0 with a custom role value is kept as s
 until it is next changed. Give an SSO user custom-role grants on their account after
 their first sign-in.
 
-### Cost figures follow cost:view in case text, not everywhere
+### Cost figures in recorded text follow cost:view, but search still matches them
 
 Without `cost:view`, the cost figures in the text of a case's timeout, decision, runbook
-AI and budget rows read "hidden", and amounts "(amount hidden)": in the trace, the
-timeline, the activity feed, the case rationale and chat answers about the case. Tool
-output and log evidence are shown as they were recorded and are never rewritten. Two
-places still show cost text: the Audit log shows each row's summary as recorded to
-anyone with `audit:view` (every built-in role that holds it also holds `cost:view`), and
-a budget refusal's spend figure is stored in the case's error text, which every
-`cases:read` holder sees.
+AI and budget rows, and in a replay experiment's spend row, read "hidden", and amounts
+"(amount hidden)": in the trace, the timeline, the activity feed, the case rationale,
+chat answers about the case, the Audit log list and record, and an audit log export. A
+budget refusal's reason shown on a case reads "(amount hidden)" too. Tool output and log
+evidence are shown as they were recorded and are never rewritten. Three limits remain:
+
+- Search reads the stored text. A person without `cost:view` can still search the Audit
+  log, or filter an audit log export, by free text such as a cost figure, and a row that
+  matches shows that the hidden figure is there.
+- The full application export (`data_export:export`) keeps every audit row, and a budget
+  refusal's figure in the case's error text, as stored: it is an administrator backup.
+- A replay experiment's own job record shows its spend to the person who ran it: its
+  cancel reason ("replay spend bound $... reached") and its report. That person set the
+  bound and needs `models:manage`; the reason is written to no audit row.
 
 ### Demo user and host cases score low
 

@@ -1,12 +1,15 @@
 /**
  * CaseDetail: the Threat context section (Coupling-D split).
  *
- * Since Round 15 (SPEC D8.3) this is the "Threat context" section of the Investigation
- * tab (it was its own tab), which owns its heading and the content rail. It holds the
- * threat summary, MITRE ATT&CK techniques (with canonical links), IOC reputation, the
- * clustering story and the asset context, as flat divider-led sub-sections. Fail-open:
- * renders empty/disabled states when the panel is off or bare. Related cases and the AI
- * verdict and risk are NOT repeated here: they live in the Overview and the facts rail.
+ * Since Round 16 (D8) this is the "Threat context" section of the Evidence tab, which
+ * owns its heading and the content rail (Round 15 had it on the Investigation tab). It
+ * holds the threat summary, MITRE ATT&CK techniques (with canonical links), IOC
+ * reputation, the clustering story and the asset context, as flat divider-led
+ * sub-sections. Fail-open: renders empty/disabled states when the panel is off or bare.
+ * The Related cases list and the AI verdict and risk are NOT repeated here: the list is
+ * the Evidence tab's own section, and the verdict and risk are the case header's and the
+ * inspector's. The clustering story names each related case by its number, as a link
+ * that opens it in Case Manager (`ClusterFormationDiagram`).
  *
  * Round 16 (SPEC §4.5 WP14, research data-visibility R7): each indicator opens its
  * providers, one line each (score, the provider's own call, confidence, an error, from
@@ -305,9 +308,10 @@ export const ThreatContextPanel: React.FC<{
   error: unknown;
   onRetry: () => void;
   /**
-   * Accepted for API stability with the CaseDetail shell, but no longer used: the
-   * only case-to-case navigation on this panel was the Related-cases list, which now
-   * lives on the Overview tab (Round-7 dedup). Kept optional so callers can pass it.
+   * Accepted for API stability with the CaseDetail shell, and not used. The only cases
+   * this panel opens are the related cases in the clustering story, and those are links
+   * that go through the router themselves (`ClusterFormationDiagram`, Round 16), so the
+   * panel needs no navigation callback. Kept optional so callers can pass it.
    */
   onNavigate?: Navigate;
 }> = ({ c, panel, loading, error, onRetry }) => {
@@ -367,8 +371,8 @@ export const ThreatContextPanel: React.FC<{
       ? asset.networks.filter((value) => ['string', 'number', 'boolean'].includes(typeof value))
       : [];
   const clustering = (panel.clustering || null) as ClusterExplanation | null;
-  // Related cases + evidence are shown on the Overview tab, not repeated here
-  // (Round-7 dedup), so they no longer participate in the "any section" gate.
+  // The Related cases list and the evidence are the Evidence tab's own sections, not
+  // repeated here, so they do not take part in the "any section" gate.
   const anySection =
     !!panel.summary || iocs.length > 0 || techniques.length > 0 || !!asset || !!clustering?.available;
 
@@ -394,7 +398,7 @@ export const ThreatContextPanel: React.FC<{
           indicator's value/type/verdict/score/source/country, the clustering story and
           the asset context. Log-derived values stay plain text nodes (#9). */}
       {/* The summary leads without a heading of its own: the section is "Threat context".
-          The AI verdict and the risk are the header's and the facts rail's (D8.4). */}
+          The AI verdict and the risk are the header's and the inspector's (D8). */}
       <section aria-label="Threat summary">
         {panel.summary ? (
           <p className="whitespace-pre-wrap text-sm leading-relaxed text-foreground/90">{panel.summary}</p>

@@ -110,10 +110,19 @@ export interface StandupReport {
   degraded: boolean;
 }
 
+/**
+ * The share of its SLA target after which an open case counts as about to breach. The
+ * server's Standup takes it from the one per-case SLA reading
+ * (`backend/app/engine/metrics.py` `SLA_AT_RISK_FRACTION`) and sends it as
+ * `sla_aging.warn_fraction`; this copy is only what an empty block shows, and a test
+ * keeps it equal to the server's.
+ */
+export const SLA_AT_RISK_FRACTION = 0.8;
+
 /** A safe empty SLA-aging block, for the disabled/degraded shapes that omit it. */
 export const EMPTY_SLA_AGING: SlaAging = {
   enabled: false,
-  warn_fraction: 0.75,
+  warn_fraction: SLA_AT_RISK_FRACTION,
   by_priority: {},
   totals: { open: 0, breached: 0, about_to_breach: 0 },
   breached: [],
