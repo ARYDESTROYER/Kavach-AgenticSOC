@@ -13667,3 +13667,58 @@
 - Tests: on the merged tree, the WP17D, WP17C, release notes content, What's new and Help Center records modules pass; the release notes script tests pass.
 - Status: done.
 - Next: FXF after its review; then XFREC records and the A11Y closing sweep; then the closing gates.
+
+
+### 2026-11-26 18:10Z - FXF builder - Entry bundle back under budget and the fix-package leftovers
+- Context: Round 16 package FXF from 39335e5: the stamped entry bundle was 89 B over budget, plus leftovers from the FX package reviews.
+- Did:
+  - Entry bundle: Login.tsx loads MfaSetupCard through retryingLoader when an enrollment starts, with a plain line if the chunk fails. Stamped entry went from 331,181 B to 318,008 B. The baseline stays at 330,068 B.
+  - Trace: runbook AI help is a `runbook_ai` span with its own ledger cost (routes_triage `_cost_key`, `_key_runbook_ai_spend`). The Console shows it as a Runbook actor with a Runbook filter.
+  - Brief People row: says when an AI run replaced a person's close.
+  - decisionWords: one routing sentence, "Sent to an analyst by the case policy."
+  - BrandingEditor: the preview logo uses the sign-in page's classes.
+  - Awaiting reason: stores the routing score with two decimals (ingest `_score_text`); AwaitingReason parses decimals.
+  - Window words: `case_cluster.window_words` gives "in the last 24 hours" in a manual trigger sentence and the no-events refusal.
+  - Additive fields: wilson_z on /api/tuning/recommendations, and numerator and denominator for both windows on the posture rate compare blocks.
+  - Explain panels: Agent effectiveness comparisons, a person's median time to acknowledge, Standup action items and sign-off. Panel gained a `countExplain` slot.
+  - rankLineOverRun uses interpolationOperands. A whole-percent share panel ends on the shown figure.
+  - Docs: ui-standard "Case tab bodies"; the USAGE Remember me sentence.
+  - Live Demo check: found and fixed the Standup action item count claiming done items stay in the list.
+- Tests:
+  - New: test_round16_fxf.py (7 tests); Console tests login.mfa-chunk, TraceTimeline.fxf, BrandingEditor.logo and fxf.explain.
+  - Every new test fails on the base.
+  - Vitest over the tests related to the changed files: all green after the fixes.
+  - Typecheck, lint (0/0), gates, check:types, check_docs, build_app_knowledge --check, check_version and check_ci_contract all pass.
+  - Bundle first-paint test with REQUIRE_DIST_BUILD=1: 30 passed.
+- Status: done. Committed b6d223f on r16-fxf, then detached.
+- Next:
+  - The records package may ratchet PRE_REVAMP_ENTRY_BYTES to the measured entry, and records the FXF CHANGELOG and SPEC 8.2 lines.
+  - The models.py TraceSpan.kind comment should list `runbook_ai`.
+
+### 2026-11-26 19:20Z - FXF reviewer - Independent review of the entry trim and the fix-package leftovers
+- Context: Adversarial review of package FXF (b6d223f on r16-fxf from 39335e5), per the FXF brief and Round 16 SPEC 3.1, 4.1 and 8.1.
+- Did:
+  - Verified the entry trim. Built stamped as CI builds it, the entry is 318,008 B, inside the 331,092 B budget. The baseline was correctly left at 330,068 B, since the ratchet belongs to the records.
+  - Proved every FXF regression test fails on the base (8 backend, 19 Console).
+  - Confirmed decide() and risk.py are byte-identical.
+  - Ran the live seeded Demo (ports 9088 and 6088) in both themes at 1440x900 and 390x844.
+  - Fixed four problems on r16-fxf (eb068ea), each with a test that fails without its fix:
+    - The seven trace filters overflowed a phone pane and scrolled the panel sideways. They now wrap inside the rail (InvestigationPanel).
+    - The Standup sign-off explanation printed the raw window key. It now names the shift in words.
+    - The Brief People row now also notes a replaced close when the person resolved the case through set_status.
+    - Added a mount test for the Agent effectiveness comparison explanations.
+- Tests:
+  - npm run test:strict: 782 files, 9,961 passed, 1 skipped.
+  - Full backend suite: 13,978 passed, 29 skipped, 5 known sandbox-only failures. Those four files pass 55 of 55 with the proxy and AWS variables unset.
+  - typecheck, lint (0/0), gates, check:types, stamped build plus bundle first-paint (30 passed), check_docs, build_app_knowledge --check, check_version and check_ci_contract all pass.
+- Status: done. Committed eb068ea on r16-fxf, then detached.
+- Next:
+  - The records package ratchets PRE_REVAMP_ENTRY_BYTES to the measured entry and records the FXF lines.
+  - The TraceSpan.kind comment in models.py should list runbook_ai.
+
+### 2026-11-26 19:25Z - orchestrator - FXF merged; every code package is in
+- Context: FXF, the last code package (entry bundle headroom and the fix-package reviews' leftovers), reviewed independently.
+- Did: merged r16-fxf (build b6d223f, review eb068ea) cleanly. The knowledge corpus (1,099 chunks), the release notes and the OpenAPI types are current.
+- Tests: built stamped the way CI builds it, the entry chunk is 318,008 B (13,084 B inside the 331,092 B budget); bundle-first-paint with the built dist: 30 passed. The FXF, trace, case detail, sign-in, Standup and Agent effectiveness Console tests: 801 passed; tsc clean. The FXF, engine extraction and app knowledge backend modules: 273 passed.
+- Status: done.
+- Next: XFREC (the records for every package after XFR) and A11Y (the closing accessibility and phone sweep) together; then the closing gates, SPEC 8.4 and the pull request into Testing.
