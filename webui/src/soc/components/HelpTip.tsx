@@ -105,7 +105,7 @@ export function HelpTip({
       <PopoverTrigger asChild>
         <TriggerButton label={label} className={className} />
       </PopoverTrigger>
-      <PopoverContent className="w-80 space-y-2 text-xs leading-relaxed" align="start">
+      <PopoverContent aria-label={label} className="w-80 space-y-2 text-xs leading-relaxed" align="start">
         <p className="text-muted-foreground">{text}</p>
         {code ? (
           <pre className="overflow-x-auto rounded-md border border-border bg-muted/40 p-2 font-mono text-[11px] text-foreground">

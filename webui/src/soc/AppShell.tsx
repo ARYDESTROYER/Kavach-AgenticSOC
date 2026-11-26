@@ -127,6 +127,7 @@ import { useChatActivity } from './chat-activity/store';
 import type { ActivityEffectsProps } from './chat-activity/ActivityEffects';
 import { navItem, navLabel, type PageId } from './nav';
 import { pageHash, type Navigate } from './router';
+import { skipToTarget } from './skip-link';
 
 /**
  * The breadcrumb trail API for pages (Round 14, SPEC §2.2 item 6): a page adds segments
@@ -593,7 +594,7 @@ export function ReleaseBadge({
           <span className="hidden min-[360px]:inline">{release.channelLabel}</span>
         </button>
       </PopoverTrigger>
-      <PopoverContent align="end" className="w-[min(22rem,calc(100vw-2rem))] space-y-3 text-xs">
+      <PopoverContent align="end" aria-label={release.contextLabel} className="w-[min(22rem,calc(100vw-2rem))] space-y-3 text-xs">
         <div>
           <p className="font-semibold text-foreground">{release.contextLabel}</p>
           <p className="mt-0.5 text-muted-foreground">
@@ -787,7 +788,7 @@ export function UpstreamSourceNoticeButton({
         </TooltipTrigger>
         <TooltipContent>{accessibleLabel}</TooltipContent>
       </Tooltip>
-      <PopoverContent align="end" className="w-[min(22rem,calc(100vw-2rem))] space-y-3 text-xs">
+      <PopoverContent align="end" aria-label={accessibleLabel} className="w-[min(22rem,calc(100vw-2rem))] space-y-3 text-xs">
         <div>
           <p className="font-semibold text-foreground">
             {kind === 'version' ? `${versionLabel} is available upstream` : 'Source revision differs'}
@@ -1083,6 +1084,9 @@ export const AppShell: React.FC<AppShellProps> = ({
   const [compactControlsOpen, setCompactControlsOpen] = React.useState(false);
   const paletteReturnFocusRef = React.useRef<HTMLElement | null>(null);
   const mobileNavRef = React.useRef<HTMLDivElement>(null);
+  // The phone navigation opens from a plain button (its Sheet sits apart from the top bar), so
+  // Radix has no trigger to return focus to: the sheet hands it back itself (B73).
+  const mobileNavOpenerRef = React.useRef<HTMLButtonElement>(null);
   // The top bar folds chip labels by what is actually in it (see top-bar-fold.ts).
   const topBarRef = React.useRef<HTMLDivElement>(null);
   const topBarSearchRef = React.useRef<HTMLButtonElement>(null);
@@ -1189,18 +1193,6 @@ export const AppShell: React.FC<AppShellProps> = ({
   const trail = useNavState((s) => s.trail);
 
 
-  // A desktop rail permanently consumes 240px when expanded, which left a 390px
-  // viewport with only ~150px of routed content and forced document-wide horizontal
-  // scrolling. Below `md`, navigation is a true modal Sheet instead: zero layout
-  // footprint while closed, full labelled destinations while open.
-  const navigateFromMobile = React.useCallback(
-    (id: PageId) => {
-      setMobileNavOpen(false);
-      onNavigate(id);
-    },
-    [onNavigate],
-  );
-
   const navigateFromCompactControls = React.useCallback(
     (id: PageId) => {
       setCompactControlsOpen(false);
@@ -1220,6 +1212,18 @@ export const AppShell: React.FC<AppShellProps> = ({
       });
     },
     [onNavigate],
+  );
+  // A desktop rail permanently consumes 240px when expanded, which left a 390px
+  // viewport with only ~150px of routed content and forced document-wide horizontal
+  // scrolling. Below `md`, navigation is a true modal Sheet instead: zero layout
+  // footprint while closed, full labelled destinations while open. Picking a destination
+  // closes it and hands focus to the main landmark, as the docked rail does (B73).
+  const navigateFromMobile = React.useCallback(
+    (id: PageId) => {
+      setMobileNavOpen(false);
+      navigateFromDesktop(id);
+    },
+    [navigateFromDesktop],
   );
   React.useEffect(() => {
     if (!isMobile) {
@@ -1426,14 +1430,12 @@ export const AppShell: React.FC<AppShellProps> = ({
       <div className="flex min-h-dvh overflow-x-clip bg-canvas text-foreground">
         {/* Skip-to-main link (#1 — WCAG 2.4.1). Visually hidden until it receives
           keyboard focus, then it pins to the top-left so a keyboard/SR user can jump
-          straight past the nav to the routed content (#socMain). */}
+          straight past the nav to the routed content (#socMain). It moves focus in code:
+          the hash router would read `#socMain` as an unknown page (B71). */}
       <a
         href="#socMain"
-        className={cn(
-          'sr-only z-[100] rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground shadow-elev2',
-          'focus:not-sr-only focus:fixed focus:left-3 focus:top-3',
-          'focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-canvas',
-        )}
+        onClick={skipToTarget}
+        className="sr-only z-[100] rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground shadow-elev2 focus:not-sr-only focus:fixed focus:left-3 focus:top-3 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-canvas"
       >
         Skip to main content
       </a>
@@ -1455,12 +1457,21 @@ export const AppShell: React.FC<AppShellProps> = ({
               // Radix otherwise focuses the first destination (Overview), which can
               // make it look active even when the semantic current page is elsewhere.
               // Start keyboard users on the one canonical current-route marker.
+              const sheet = mobileNavRef.current;
               const current =
-                mobileNavRef.current?.querySelector<HTMLElement>('[aria-current="page"]') ??
-                mobileNavRef.current?.querySelector<HTMLElement>('[data-active-trail="true"]');
+                sheet &&
+                (sheet.querySelector<HTMLElement>('[aria-current="page"]') ??
+                  sheet.querySelector<HTMLElement>('[data-active-trail="true"]'));
               if (!current) return;
               event.preventDefault();
               current.focus();
+            }}
+            onCloseAutoFocus={() => {
+              // Closed without a navigation (Escape, the overlay): focus went with the sheet,
+              // so it returns to the menu button. After a navigation the main landmark holds
+              // it already. Radix's own handler then has no trigger to focus.
+              const opener = mobileNavOpenerRef.current;
+              if (opener && document.activeElement === document.body) opener.focus();
             }}
           >
             <SheetTitle className="sr-only">Primary navigation</SheetTitle>
@@ -1512,6 +1523,7 @@ export const AppShell: React.FC<AppShellProps> = ({
         >
           {isMobile ? (
             <Button
+              ref={mobileNavOpenerRef}
               variant="ghost"
               size="icon"
               className="relative h-8 w-8 shrink-0"
@@ -1798,6 +1810,7 @@ export const AppShell: React.FC<AppShellProps> = ({
                 </Tooltip>
                 <PopoverContent
                   align="end"
+                  aria-label={hv.title}
                   className="w-[min(20rem,calc(100vw-2rem))] space-y-1.5 text-xs leading-relaxed"
                 >
                   <p className="flex items-center gap-1.5 font-semibold text-foreground">

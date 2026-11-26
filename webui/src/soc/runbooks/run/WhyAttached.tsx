@@ -197,6 +197,7 @@ export function WhyAttachedButton({
         )}
       </PopoverTrigger>
       <PopoverContent
+        aria-label="Why attached"
         align={iconOnly ? 'end' : 'start'}
         sideOffset={6}
         // The phone layout's 16px side gutter holds for the popover too.

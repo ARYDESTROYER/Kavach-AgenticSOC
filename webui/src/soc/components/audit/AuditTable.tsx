@@ -283,7 +283,13 @@ export function AuditTable({
     const time = formatRowTime(record.ts, zone, nowMs);
     return (
       <>
-        <TableCell density="compact" numeric className={cn('relative truncate text-muted-foreground', timePad, selected && SELECTED_BAR)}>
+        {/* A phone Time column has 104 px of content: the time wraps at its space into a date
+            line and a clock line rather than losing its seconds (B79). */}
+        <TableCell
+          density="compact"
+          numeric
+          className={cn('relative text-muted-foreground', phone ? 'whitespace-normal' : 'truncate', timePad, selected && SELECTED_BAR)}
+        >
           <time dateTime={record.ts} title={record.ts}>
             {time}
           </time>
@@ -342,7 +348,9 @@ export function AuditTable({
   };
 
   return (
-    <div className={cn('min-w-0', className)} data-audit-list="">
+    // `relative` keeps the rows' visually hidden spans inside the clipped panel, so they
+    // never widen the page (B72).
+    <div className={cn('relative min-w-0', className)} data-audit-list="">
       <Table
         unwrapped
         layout="fixed"

@@ -158,6 +158,12 @@ export interface RunbookEditorProps {
   recentRules?: string[];
   onOpenRunbook: (id: string, detail?: RunbookDetail, edits?: RunbookCarriedEdits) => void;
   onBackToLibrary: () => void;
+  /**
+   * This view replaced another view of the Runbooks page (an open from the library, Back or
+   * Forward): the link that was used went with it, so focus lands on the heading once it
+   * shows, unless focus is already on a control. A first view moves nothing.
+   */
+  landOnHeading?: boolean;
 }
 
 const DEMO_READ_ONLY = 'Runbooks cannot be edited in Demo Mode.';
@@ -182,11 +188,17 @@ function softDisabled(off: boolean, className?: string): { 'aria-disabled'?: tru
 }
 
 /** The editor's page heading, focusable from code so a hand-over can land on it. */
-function focusHeading(root: HTMLElement | null): void {
+function focusHeading(root: ParentNode | null): void {
   const h1 = root?.querySelector('h1');
   if (!h1) return;
   if (!h1.hasAttribute('tabindex')) h1.setAttribute('tabindex', '-1');
   (h1 as HTMLElement).focus();
+}
+
+/** True when keyboard focus fell to the page (its control went with the view it lived in). */
+function focusDropped(): boolean {
+  const active = document.activeElement;
+  return !active || active === document.body || !active.isConnected;
 }
 
 /** The outline item of a step (or the details item), for focus after a removal or a sheet. */
@@ -271,6 +283,7 @@ export function RunbookEditor({
   recentRules = [],
   onOpenRunbook,
   onBackToLibrary,
+  landOnHeading = false,
 }: RunbookEditorProps) {
   const isNew = runbookId === 'new';
   const username = useOptionalAuth()?.username ?? null;
@@ -703,12 +716,19 @@ export function RunbookEditor({
     if (!active || active === document.body || !active.isConnected) focusHeading(rootRef.current);
   });
 
-  // A create, a copy or an import hands a new runbook to this page: land on its heading.
+  // Land on the heading once, the first time the page shows one (B77): a create, a copy or
+  // an import that handed a runbook to this page always does; an open from the library, Back
+  // or Forward does when focus fell to the page. Loading shows no heading of its own yet. The
+  // mount-time `landOnHeading` decides, as `initialDetail` does: the page that rendered this
+  // editor forgets the switch once it has happened.
+  const landing = React.useRef<'always' | 'if-dropped' | null>(initialDetail ? 'always' : landOnHeading ? 'if-dropped' : null);
+  const headingShown = !(loadState === 'loading' || (!isNew && loadState === 'ready' && !detail));
   React.useEffect(() => {
-    if (initialDetail) focusHeading(rootRef.current);
-    // Only on mount, for the hand-over that mounted this editor.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    const mode = landing.current;
+    if (!mode || !headingShown) return;
+    landing.current = null;
+    if (mode === 'always' || focusDropped()) focusHeading(rootRef.current ?? document.querySelector('[data-runbook-editor]'));
+  }, [headingShown]);
 
   // ---- editing ------------------------------------------------------------------------ //
   const change = (next: RunbookDefinition) => {

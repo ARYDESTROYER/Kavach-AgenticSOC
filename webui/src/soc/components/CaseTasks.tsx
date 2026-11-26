@@ -188,7 +188,7 @@ const TaskRow: React.FC<TaskRowProps> = ({ task, canWrite, busy, onStatus, onLog
                   <MessageSquarePlus className="h-3.5 w-3.5" />
                 </Button>
               </PopoverTrigger>
-              <PopoverContent align="end" className="w-72 space-y-2">
+              <PopoverContent align="end" aria-label="Task log" className="w-72 space-y-2">
                 <p className="text-xs font-semibold text-foreground">Task log</p>
                 {logs.length ? (
                   <ul className="max-h-40 space-y-1.5 overflow-y-auto">

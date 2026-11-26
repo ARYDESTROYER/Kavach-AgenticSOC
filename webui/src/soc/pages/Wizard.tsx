@@ -60,6 +60,7 @@ import { useAuth } from '@/soc/auth';
 import { isDemoActive, useDemo } from '@/soc/demo';
 import { headingOf, useReturnFocus } from '@/soc/hooks/useReturnFocus';
 import { prefetchChunks, retryingLoader } from '@/soc/lazy-retry';
+import { skipToTarget } from '@/soc/skip-link';
 
 import { canBePrimary, DEMO_MANAGED_REASON, PRIMARY_PULL_ONLY, primaryConfirmed } from './sources-primary';
 import type { RuntimeReviewStageProps } from './wizard/RuntimeReviewSteps';
@@ -504,6 +505,7 @@ export default function Wizard({ onComplete, onExit }: WizardProps) {
     <div className="flex h-dvh flex-col overflow-hidden bg-canvas text-foreground">
       <a
         href="#setup-main"
+        onClick={skipToTarget}
         className="sr-only z-50 rounded-md bg-canvas px-3 py-2 text-sm font-medium text-foreground focus:not-sr-only focus:fixed focus:left-3 focus:top-3 focus:ring-2 focus:ring-ring"
       >
         Skip to setup content

@@ -401,6 +401,18 @@
       transition: none;
     }
   }
+
+  /* Text fields on a touch screen are at least 16px: iOS Safari zooms the page when a
+     smaller field takes focus and leaves the layout scaled. The primitives use text-sm, and
+     a utility class outranks an element selector, hence !important. Desktop density is
+     unchanged and pinch zoom stays enabled (the viewport sets no maximum-scale). */
+  @media (hover: none) and (pointer: coarse) {
+    input:not([type='checkbox']):not([type='radio']):not([type='range']):not([type='file']),
+    textarea,
+    select {
+      font-size: max(1rem, 16px) !important;
+    }
+  }
 }
 
 @layer components {
