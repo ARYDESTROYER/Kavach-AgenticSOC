@@ -84,11 +84,18 @@ fresh load of each page. Each reading was taken 3.5 s after arriving.
 | Fresh Inbox | 1 | 2, 1 | 1 | 2, 1 |
 
 Exactly one stream was open at every reading. A new stream opens when a page's topic set
-changes, and the old one closes once the new one is open: the most seen at once was 2, and in
-the recorded handovers the two overlapped for 16 ms at 1440 and 12 ms at 390. The case page's
-topic set was `cases`, `cases:<id>`, `chat`, `inbox`, `investigations`, `jobs`,
-`notifications` and `runbooks` at 1440, and the same without `inbox` and `notifications` on
-the phone, where the bell is not mounted.
+changes, and the old one closes once the new one is open (`useEventStream.ts` hands over this
+way on purpose, so no frame falls in a gap; frames are deduped by event id). The most seen at
+once was 2. How long the two overlap depends on how soon the new one opens: 16 ms at 1440 and
+12 ms at 390 in the handovers recorded here; the review rerun below saw 9 to 46 ms, and once
+924 ms, when the case page's Chat tab first loaded its code. The case page's topic set was
+`cases`, `cases:<id>`, `chat`, `inbox`, `investigations`, `jobs`, `notifications` and
+`runbooks` at 1440, and the same without `inbox` and `notifications` on the phone, where the
+bell is not mounted.
+
+At the network level each stream is two requests to `/api/events`: a status probe (a `fetch`
+aborted once its headers arrive, so a `204` can turn realtime off) and then the EventSource. A
+count of network requests is therefore twice the count of streams.
 
 ## 3. The sign-in page after it settles
 
@@ -230,6 +237,25 @@ word ("Analyst") is cut without an ellipsis; at 768 px the same badge is 175.5 p
 (CASE-000045, "New") is not affected. Screenshot:
 `observation-meta-strip-outcome-clipped-390-system.png`. The item is in
 `webui/src/soc/pages/casedetail/CaseHeaderMeta.tsx` (`data-meta-item="outcome"`).
+
+## Independent review rerun
+
+The package review reran every check on the same tree in a fresh seeded Demo (backend 9074,
+Vite 6074), with its own probes, and got the same results:
+
+| # | What the review ran | Result |
+|---|---|---|
+| 1 | `measure-case-manager.mjs --review-case demo-00000539-0007` (CASE-000034, review state pending), after What's new was dismissed | 72, 92, 119, 207 in all four rows; with the navigation collapsed the case facts column is 272 px at x 1,152, top 191 |
+| 2 | Overview, Case Manager, a case on Activity, then Chat, Inbox, Overview, at 1440 and 390, counted at the constructor and on the network | 1 open at every reading at both levels; at most 2 during a handover (see check 2) |
+| 3 | Identity and password steps, 1440 light and 390 dark, 6 s after settling | 0 timeout, interval and animation-frame callbacks, 0 animations; the row reads "Remember me", enabled, no description; axe 0 at any impact |
+| 4 | The seeded Admin (no marker), Got it, reload; the older marker `0.2.0.2026-11-13`, Escape, reload; a record deep link then Overview; a new account through its forced password change at 390 dark | The welcome once; "2 updates since you last looked."; marker `0.2.0.2026-12` after either close; deferred on the deep link; the new account has the marker at creation and never sees the dialog |
+| 5 | Reinvestigate on CASE-000043 at 1440 dark | "AI working · 0:00" at 0.5 s, ticking to "0:07"; queue mark "AI working" and navigation count 1; "AI finished" at 8.5 s, gone 6 s later; the popover and close warning with the same words; one Inbox item, "AI investigation finished on case CASE-000043" |
+| 6 | The stored inputs of CASE-000041, CASE-000040 and CASE-000045, recomputed from the `engine/risk.py` formulas without importing it; the hover and panel text of the first two | 49.1783, 12.1477 and 29.0986, stored as 49.18, 12.15 and 29.1, shown 49, 12 and 29; the Console text matches the quotes above (Inter draws the `x` between numbers as a multiplication sign) |
+| 7 | All 90 stubs with a hash, the four entry URLs, the chat anchor | 90 of 90; all four land on `/docs/0.2/`; the heading at 102 px |
+| 8, 9 | Case Manager, the six case tabs, the What's new page and dialog, light and dark, 1440 and 390 (36 rows), axe at every impact | 34 rows clean at every impact; the same one serious node on the Response tab in light at both widths (4.22:1); no overflow; 0 console errors and 0 failed API calls |
+
+Review screenshots are in `round16/shots/WP16X-review/` of the build scratchpad, not in the
+repository.
 
 ## Screenshots
 
