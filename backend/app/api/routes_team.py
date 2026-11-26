@@ -155,6 +155,18 @@ class TeamTotals(BaseModel):
             "(partial). It is omitted unless measured."
         ),
     )
+    ack_sample_seconds: list[float] = Field(
+        default_factory=list,
+        description=(
+            "The sorted times to acknowledge, in seconds, around the median: at most 200, "
+            "always the one or two middle times the median is taken from. Empty unless "
+            "measured."
+        ),
+    )
+    ack_sample_offset: int = Field(
+        default=0,
+        description="The 0-based rank of the first listed time among all ack_samples sorted times.",
+    )
     reviews: TeamReviews
 
 

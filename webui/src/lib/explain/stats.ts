@@ -78,6 +78,32 @@ export function explainShare(
   };
 }
 
+/** Round half up to `digits` decimals, after clearing float noise (2.0349999 is 2.035). */
+function halfUp(value: number, digits: number): number {
+  const factor = 10 ** digits;
+  const clean = Math.round(value * 1e9) / 1e9;
+  return Math.floor(clean * factor + 0.5 + 1e-9) / factor;
+}
+
+/**
+ * The operands of one interpolation step, `lo + f x (hi - lo)`, printed with just enough
+ * decimals that the printed expression, worked by hand and rounded half up to two
+ * decimals, gives the printed result. 1.05 + 0.5 x (3.0167 - 1.05) is 2.03335, shown as
+ * 2.03; printed as "3.02" it would work out to 2.035, which a reader rounds to 2.04, so
+ * the step prints 3.017 instead. Exported for the other rank lines.
+ */
+export function interpolationOperands(lo: number, hi: number, fraction: number, result: number): { lo: string; hi: string; fraction: string } {
+  const target = halfUp(result, 2);
+  const num = (text: string) => Number(text.replace(/,/g, ''));
+  let printed = { lo: trimmed(lo), hi: trimmed(hi), fraction: trimmed(fraction) };
+  for (let digits = 2; digits <= 8; digits += 1) {
+    printed = { lo: trimmed(lo, digits), hi: trimmed(hi, digits), fraction: trimmed(fraction, digits) };
+    const worked = num(printed.lo) + num(printed.fraction) * (num(printed.hi) - num(printed.lo));
+    if (halfUp(worked, 2) === target) break;
+  }
+  return printed;
+}
+
 function rankSteps(name: string, values: readonly number[], q: number, unit: string): ExplanationStep | null {
   const sorted = values.filter((v) => Number.isFinite(v)).slice().sort((a, b) => a - b);
   if (!sorted.length) return null;
@@ -85,11 +111,15 @@ function rankSteps(name: string, values: readonly number[], q: number, unit: str
   const lower = Math.floor(rank);
   const upper = Math.ceil(rank);
   const result = percentile(sorted, q) ?? 0;
-  const expression =
-    lower === upper
-      ? `rank ${trimmed(q, 2)} x (${sorted.length} - 1) = ${trimmed(rank)}, the value at that rank`
-      : `rank ${trimmed(q, 2)} x (${sorted.length} - 1) = ${trimmed(rank)}; ${trimmed(sorted[lower])} + ${trimmed(rank - lower)} x (${trimmed(sorted[upper])} - ${trimmed(sorted[lower])})`;
-  return { label: name, expression, result: `${trimmed(result)}${unit}` };
+  let expression: string;
+  if (lower === upper) {
+    expression = `rank ${trimmed(q, 2)} x (${sorted.length} - 1) = ${trimmed(rank)}, the value at that rank`;
+  } else {
+    const op = interpolationOperands(sorted[lower], sorted[upper], rank - lower, result);
+    expression = `rank ${trimmed(q, 2)} x (${sorted.length} - 1) = ${trimmed(rank)}; ${op.lo} + ${op.fraction} x (${op.hi} - ${op.lo})`;
+  }
+  // The result rounded half up, the rule a reader applies to the printed expression.
+  return { label: name, expression, result: `${trimmed(halfUp(result, 2))}${unit}` };
 }
 
 /** A median or other percentile of a distribution, with its samples when given. */

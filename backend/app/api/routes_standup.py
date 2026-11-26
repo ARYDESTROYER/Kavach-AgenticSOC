@@ -136,8 +136,10 @@ async def standup_report(
         # whose verdict is Needs human, the same figure chat's shift report shows; the
         # legacy ``needs_human`` STATUS count is the "Awaiting analyst" tile (Round 13
         # close). The standup's model aggregate (``generate()``) is unchanged.
+        # ``explain`` (Round 16 FXD2): the rows carry the inputs the page's
+        # explanations print (risk breakdown, age anchor, SLA clock elapsed).
         snapshot = await state.standup_service.shift_snapshot(
-            prefs, window_hours=window, now=now, needs_human_verdict=True
+            prefs, window_hours=window, now=now, needs_human_verdict=True, explain=True
         )
     except Exception as exc:  # noqa: BLE001 — the handoff page must never 500
         logger.warning("shift report failed (%s); degrading", exc)

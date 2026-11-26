@@ -16634,6 +16634,20 @@
       },
       "TeamTotals": {
         "properties": {
+          "ack_sample_offset": {
+            "default": 0,
+            "description": "The 0-based rank of the first listed time among all ack_samples sorted times.",
+            "title": "Ack Sample Offset",
+            "type": "integer"
+          },
+          "ack_sample_seconds": {
+            "description": "The sorted times to acknowledge, in seconds, around the median: at most 200, always the one or two middle times the median is taken from. Empty unless measured.",
+            "items": {
+              "type": "number"
+            },
+            "title": "Ack Sample Seconds",
+            "type": "array"
+          },
           "ack_samples": {
             "default": 0,
             "title": "Ack Samples",

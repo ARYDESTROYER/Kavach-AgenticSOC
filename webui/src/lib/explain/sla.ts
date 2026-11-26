@@ -10,8 +10,43 @@
  *
  * Pure: plain data only. Advisory: never feeds `decide()` (#3).
  */
-import { trimmed } from './rounding';
-import type { Explanation, ExplanationInput } from './types';
+import { plain, trimmed } from './rounding';
+import { minutesText } from './times';
+import type { Explanation, ExplanationInput, ExplanationStep } from './types';
+
+/**
+ * How a "due in" line prints the time left: rounded DOWN, so it never claims more time
+ * than remains (B32). The same rule as the case page's `timeLeft`: under a minute is
+ * "under 1m", then whole minutes, hours below 48, days.
+ */
+export function dueInWords(minutes: number): string {
+  const safe = Math.max(0, minutes);
+  if (safe < 1) return 'under 1m';
+  const whole = Math.floor(safe);
+  if (whole < 60) return `${whole}m`;
+  const hours = Math.floor(safe / 60);
+  if (hours < 48) return `${hours}h`;
+  return `${Math.floor(safe / 1440)}d`;
+}
+
+/**
+ * How an "overdue by" line prints the time past the target: rounded to the nearest unit,
+ * the same rule as the case page's `shortDuration`: minutes (at least 1), hours below 48,
+ * days.
+ */
+export function overdueWords(minutes: number): string {
+  const safe = Math.max(0, minutes);
+  const whole = Math.round(safe);
+  if (whole < 60) return `${Math.max(1, whole)}m`;
+  const hours = Math.round(safe / 60);
+  if (hours < 48) return `${hours}h`;
+  return `${Math.round(safe / 1440)}d`;
+}
+
+/** A difference of two printed minute values, worked from the printed operands. */
+function printedDifference(a: number, b: number): number {
+  return Math.round((Number(plain(a)) - Number(plain(b))) * 100) / 100;
+}
 
 /** One clock of the server's reading (`sla.clocks.response` or `sla.clocks.resolution`). */
 export interface SlaClockWire {
@@ -167,7 +202,7 @@ export function explainSla(reading: SlaReadingWire | null | undefined): Explanat
       value: priority,
       source: reading.priority_source ? `From ${reading.priority_source.replace(/_/g, ' ')}` : 'The case',
     },
-    { key: 'target', label: `${kind} target`, value: `${trimmed(target)} minutes`, source: 'SLA policy' },
+    { key: 'target', label: `${kind} target`, value: minutesText(target), source: 'SLA policy' },
   ];
   if (reading.start_at) {
     inputs.push({ key: 'start_at', label: 'Clock started', value: reading.start_at, source: 'Detected or opened' });
@@ -198,6 +233,38 @@ export function explainSla(reading: SlaReadingWire | null | undefined): Explanat
   const caveats = ['Advisory only: the SLA never closes or escalates a case.'];
   if (earlier) caveats.unshift(`${earlier} The SLA metrics count this case as breached.`);
 
+  const steps: ExplanationStep[] = [
+    {
+      label: 'Elapsed',
+      expression: stopped
+        ? kind === 'Response' && !closedUnanswered
+          ? 'Start to the first human response'
+          : 'Start to the close'
+        : 'Start to now',
+      result: minutesText(elapsed),
+    },
+    { label: 'At risk from', expression: `0.8 x ${trimmed(target)}`, result: minutesText(atRiskFrom) },
+    { label: 'State', expression: `${trimmed(elapsed)} against ${trimmed(target)}`, result: words },
+  ];
+  if (state === 'breached') {
+    // How far past the target, from the printed numbers, and how the line rounds it.
+    const over = printedDifference(elapsed, target);
+    steps.push({ label: 'Over by', expression: `${trimmed(elapsed)} - ${trimmed(target)}`, result: minutesText(over) });
+    steps.push({
+      label: 'Shown',
+      expression: `${minutesText(over)}, rounded to the nearest unit`,
+      result: `overdue by ${overdueWords(over)}`,
+    });
+  } else if (!stopped && reading.due_at) {
+    // The time left on a running clock (B32): the line rounds it down.
+    const leftPrinted = printedDifference(target, elapsed);
+    steps.push({
+      label: 'Time left',
+      expression: `${trimmed(target)} - ${trimmed(elapsed)}`,
+      result: `${minutesText(leftPrinted)}, shown as ${dueInWords(leftPrinted)} (rounded down)`,
+    });
+  }
+
   return {
     metric: 'sla',
     title: `${kind} SLA`,
@@ -206,19 +273,7 @@ export function explainSla(reading: SlaReadingWire | null | undefined): Explanat
     summary: earlier ? `${summary} ${earlier}` : summary,
     formula: 'breached when elapsed > target; at risk when the clock runs and elapsed >= 0.8 x target; otherwise on track',
     inputs,
-    steps: [
-      {
-        label: 'Elapsed',
-        expression: stopped
-          ? kind === 'Response' && !closedUnanswered
-            ? 'Start to the first human response'
-            : 'Start to the close'
-          : 'Start to now',
-        result: `${trimmed(elapsed)} minutes`,
-      },
-      { label: 'At risk from', expression: `0.8 x ${trimmed(target)}`, result: `${trimmed(atRiskFrom)} minutes` },
-      { label: 'State', expression: `${trimmed(elapsed)} against ${trimmed(target)}`, result: words },
-    ],
+    steps,
     rounding: 'Time left is rounded down, so the due line never claims more time than remains.',
     provenance: byConsole ? 'reconstructed_current' : 'server_computed',
     ...(byConsole ? { provenanceNote: 'Computed in the Console from the SLA policy, because the server sent no reading.' } : {}),

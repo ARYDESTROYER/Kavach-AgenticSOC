@@ -15610,6 +15610,17 @@ export interface components {
         /** TeamTotals */
         TeamTotals: {
             /**
+             * Ack Sample Offset
+             * @description The 0-based rank of the first listed time among all ack_samples sorted times.
+             * @default 0
+             */
+            ack_sample_offset: number;
+            /**
+             * Ack Sample Seconds
+             * @description The sorted times to acknowledge, in seconds, around the median: at most 200, always the one or two middle times the median is taken from. Empty unless measured.
+             */
+            ack_sample_seconds?: number[];
+            /**
              * Ack Samples
              * @default 0
              */

@@ -189,6 +189,25 @@ def _band_provenance(case: Case, prefs: Any) -> str:
         return "derived"
 
 
+def _explain_inputs(case: Case) -> dict[str, Any]:
+    """The inputs a Standup row's explanations print (Round 16 FXD2): the case's risk
+    breakdown, and the instant :func:`case_age_minutes` counts the age from. Never
+    raises; an unreadable value is ``None``."""
+    breakdown = getattr(case, "risk_breakdown", None)
+    try:
+        risk = breakdown.model_dump(mode="json") if breakdown is not None else None
+    except Exception:  # noqa: BLE001 - display only; a malformed breakdown reads as none
+        risk = None
+    # The same anchor as case_age_minutes: detected_at when set, else created_at.
+    detected = getattr(case, "detected_at", None)
+    anchor = parse_es_timestamp(detected or getattr(case, "created_at", None))
+    return {
+        "risk_breakdown": risk,
+        "age_from": ("detected_at" if detected else "created_at") if anchor is not None else None,
+        "age_from_at": anchor.isoformat() if anchor is not None else None,
+    }
+
+
 def attention_queue(
     cases: Iterable[Case],
     *,
@@ -197,6 +216,7 @@ def attention_queue(
     limit: int = 25,
     prefs: Any = None,
     with_created_at: bool = True,
+    explain: bool = False,
 ) -> list[dict[str, Any]]:
     """Rank the open attention-worthy cases by :func:`urgency_score`, newest-pressure
     first. Returns a COMPACT row per case (ids + the ranking inputs + a deep-link
@@ -205,6 +225,11 @@ def attention_queue(
     Each row carries the case's ``created_at`` (Round 16 B39) unless
     ``with_created_at`` is false: :func:`build_shift_report` leaves it out of the
     standup model's aggregate, which must stay inside the fence's size bound.
+
+    With ``explain`` (Round 16 FXD2, the Standup page only) a row also carries what its
+    explanations print: the case's ``risk_breakdown`` (the factors and the recorded
+    inputs behind the risk chip) and the instant its age counts from (``age_from``,
+    ``detected_at`` or ``created_at``, and ``age_from_at``). Display only (#3).
 
     Every row now carries a ``severity_band``, so it must also carry the band's
     PROVENANCE (``severity_source``). ``Case.severity_band`` is never persisted by a
@@ -246,6 +271,8 @@ def attention_queue(
             # The case's creation time (Round 16 B39), as every other case list
             # carries it, so the shift brief and its exports can show an age.
             rows[-1]["created_at"] = getattr(case, "created_at", None) or None
+        if explain:
+            rows[-1].update(_explain_inputs(case))
     rows.sort(key=lambda r: (r["urgency"], r["risk_score"], r["age_minutes"]), reverse=True)
     if limit and limit > 0:
         rows = rows[:limit]
@@ -299,8 +326,15 @@ def sla_aging(
     now: Any = None,
     warn_fraction: float = _metrics.SLA_AT_RISK_FRACTION,
     prefs: Any = None,
+    explain: bool = False,
 ) -> dict[str, Any]:
     """Roll OPEN cases up against their per-priority RESPONSE-SLA target.
+
+    With ``explain`` (Round 16 FXD2, the Standup page only) a breached or at-risk row
+    also carries what its explanation prints: the clock's ``elapsed_minutes`` (two
+    decimals; ``overdue_minutes`` is that minus the target, to one decimal), whether it
+    still ``running``, its ``start_at`` and ``due_at``, and when and by what it stopped
+    (``stopped_at``, ``stop_source``).
 
     Returns ``{enabled, warn_fraction, by_priority: {P1: {...}}, totals, breached[],
     about_to_breach[]}``. When the SLA policy is disabled (or absent) the rollup is
@@ -363,6 +397,15 @@ def sla_aging(
             # Who has it (Round 13 polish): the "close to their target" question asks.
             "assignee": str(getattr(case, "assignee", "") or ""),
         }
+        if explain:
+            row.update({
+                "elapsed_minutes": round(clock.elapsed_minutes, 2),
+                "running": bool(clock.running),
+                "start_at": clock.start.isoformat(),
+                "due_at": clock.due_at.isoformat(),
+                "stopped_at": clock.stop.isoformat() if clock.stop is not None else None,
+                "stop_source": clock.stop_source if not clock.running else None,
+            })
         if clock.state == "breached":
             bucket["breached"] += 1
             breached.append(row)
@@ -504,8 +547,14 @@ def build_shift_report(
     attention_limit: int = 25,
     prefs: Any = None,
     needs_human_verdict: bool = False,
+    explain: bool = False,
 ) -> dict[str, Any]:
     """Assemble the full forward-looking shift snapshot from a case list.
+
+    ``explain`` (Round 16 FXD2) adds the inputs the Standup page's explanations print
+    to the attention and SLA rows (:func:`attention_queue`, :func:`sla_aging`). Only
+    ``GET /api/standup/report`` asks for them; chat's shift report and the standup
+    model's aggregate leave them out.
 
     Pure + deterministic — the SINGLE place the attention_queue / sla_aging / workload /
     deltas are composed (so both the engine standup-fold AND the /report route agree).
@@ -532,9 +581,9 @@ def build_shift_report(
     return {
         "attention_queue": attention_queue(
             snapshot, sla=sla, now=ref, limit=attention_limit, prefs=prefs,
-            with_created_at=needs_human_verdict,
+            with_created_at=needs_human_verdict, explain=explain,
         ),
-        "sla_aging": sla_aging(snapshot, sla, now=ref, prefs=prefs),
+        "sla_aging": sla_aging(snapshot, sla, now=ref, prefs=prefs, explain=explain),
         "workload": analyst_workload(snapshot),
         "headline_counts": current_counts,
         "deltas": period_deltas(current_counts, prior_counts),

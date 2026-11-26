@@ -12,6 +12,7 @@
  * types below describe the SHAPE only.
  */
 import { api } from '@/lib/api';
+import type { RiskBreakdown } from '@/lib/types';
 
 /** One urgency-ranked attention-queue row (a COMPACT case projection, not the body). */
 export interface AttentionRow {
@@ -36,6 +37,15 @@ export interface AttentionRow {
   entity: string;
   age_minutes: number;
   urgency: number;
+  /**
+   * Round 16 (FXD2), what the row's explanations print; absent from an older backend.
+   * The case's risk breakdown (the factors and the recorded inputs behind the score).
+   */
+  risk_breakdown?: RiskBreakdown | null;
+  /** Which instant the age counts from: `detected_at` when set, else `created_at`. */
+  age_from?: 'detected_at' | 'created_at' | null;
+  /** That instant, as the server parsed it (the age is `generated_at` minus it). */
+  age_from_at?: string | null;
 }
 
 export interface SlaAgingRow {
@@ -45,6 +55,19 @@ export interface SlaAgingRow {
   age_minutes: number;
   target_minutes: number;
   overdue_minutes: number;
+  /**
+   * Round 16 (FXD2), what the row's explanation prints; absent from an older backend.
+   * The response clock's elapsed minutes (2 decimals); `overdue_minutes` is that minus
+   * the target, to 1 decimal.
+   */
+  elapsed_minutes?: number;
+  /** Whether the response clock still runs (false: a person answered, late). */
+  running?: boolean;
+  start_at?: string;
+  due_at?: string;
+  stopped_at?: string | null;
+  /** What stopped the clock (`first_response_at`, `acknowledged_at`, `status_history`). */
+  stop_source?: string | null;
 }
 
 export interface SlaAgingTotals {

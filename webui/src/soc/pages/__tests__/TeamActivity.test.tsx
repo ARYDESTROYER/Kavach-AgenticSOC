@@ -193,6 +193,30 @@ describe('Team activity', () => {
     expect(panel).toHaveTextContent('the time at rank 2 of 3 sorted times');
   });
 
+  it('lists the times the median is taken from, and says who People active counted', async () => {
+    const user = userEvent.setup();
+    const base = data();
+    h.activity.mockResolvedValue(data({ team: { ...base.team, ack_sample_seconds: [120, 420, 720], ack_sample_offset: 0 } as TeamActivity['team'] }));
+    renderPage();
+    const strip = await screen.findByTestId('team-kpis');
+    await user.click(within(strip).getByRole('button', { name: /^7m\s*, explain$/ }));
+    const median = await screen.findByRole('dialog');
+    expect(median).toHaveTextContent('The times, in order');
+    expect(median).toHaveTextContent('2m (120 s), 7m (420 s), 12m (720 s)');
+    expect(median).toHaveTextContent('the time at rank 2 of 3: 420 seconds');
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await user.click(within(strip).getByRole('button', { name: /^2\s*, explain$/ }));
+    const people = await screen.findByRole('dialog');
+    expect(people).toHaveTextContent('People active');
+    expect(people).toHaveTextContent('asha.iyer');
+    expect(people).toHaveTextContent('Zoe Adams');
+    expect(people).toHaveTextContent('5 counted actions');
+    expect(people).toHaveTextContent('1 counted action');
+    // Not attributed's 4 assignments name no person, so they are not a person counted.
+    expect(people).not.toHaveTextContent('4 counted actions');
+  });
+
   it('sorts by a column without ever moving Not attributed off the end', () => {
     const people = data().people;
     const byClosed = sortPeople(people, { id: 'closed', dir: 'desc' });

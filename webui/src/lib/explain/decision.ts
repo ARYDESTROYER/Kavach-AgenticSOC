@@ -65,10 +65,25 @@ export interface DecisionReading {
   gateSource: 'recorded' | 'rederived_current_policy' | null;
   /** True when the newest run failed, so code routed the case without any policy check. */
   runFailed: boolean;
+  /** The run whose verdict the decision compared (`run_id`), or null when not recorded. */
+  runId: string | null;
 }
 
 /** The sentence for a run that failed after, or before, the last recorded decision. */
 export const FAILED_RUN_SENTENCE = 'The investigation failed, so code routed the case to a person.';
+
+/** Where an AI confidence comes from: the model's own estimate, given with its verdict. */
+export const CONFIDENCE_SOURCE = 'Reported by the AI with its verdict';
+
+/**
+ * The confidence's source line. With a recorded gate it also names the run whose verdict
+ * the decision compared ("Reported by the AI with its verdict in run 3f2a9c; recorded at
+ * decision"); the run id is the server's opaque id, shown as text.
+ */
+function confidenceSource(reading: DecisionReading | null): string {
+  if (!reading) return CONFIDENCE_SOURCE;
+  return reading.runId ? `${CONFIDENCE_SOURCE} in run ${reading.runId}; recorded at decision` : `${CONFIDENCE_SOURCE}; recorded at decision`;
+}
 
 function record(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
@@ -126,6 +141,7 @@ export function readDecision(payload: DecisionPayload | Record<string, unknown> 
     ts: str(p.ts),
     gateSource: runFailed ? null : gateSource,
     runFailed,
+    runId: str(p.run_id),
   };
 }
 
@@ -347,7 +363,7 @@ export function explainDecision(caseRecord: Case, decision?: DecisionPayload | n
       ? comparisonPair(confidence, policy.min_confidence, Boolean(comparison.confidenceMet), 0, percentDigits)
       : [confidence !== null ? pct(confidence) : '', policy?.min_confidence != null ? pct(policy.min_confidence) : ''];
   if (confidence !== null) {
-    inputs.push({ key: 'confidence', label: 'AI confidence', value: confidenceText, source: gate ? 'Recorded at decision' : 'The case' });
+    inputs.push({ key: 'confidence', label: 'AI confidence', value: confidenceText, source: confidenceSource(gate ? reading : null) });
   }
   if (risk !== null) {
     inputs.push({ key: 'risk_score', label: 'Risk score', value: trimmed(risk), source: gate ? 'Recorded at decision' : 'The case' });
@@ -471,7 +487,7 @@ export function explainPolicyToday(
   const inputs: ExplanationInput[] = [
     { key: 'verdict', label: 'AI verdict', value: verdictLabel(verdict), source: 'The case' },
   ];
-  if (confidence !== null) inputs.push({ key: 'confidence', label: 'AI confidence', value: confidenceText, source: 'The case' });
+  if (confidence !== null) inputs.push({ key: 'confidence', label: 'AI confidence', value: confidenceText, source: CONFIDENCE_SOURCE });
   if (risk !== null) inputs.push({ key: 'risk_score', label: 'Risk score', value: trimmed(risk), source: 'The case' });
   inputs.push({
     key: 'class_enabled',
