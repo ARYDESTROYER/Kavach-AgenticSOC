@@ -200,7 +200,7 @@ def test_the_spec_records_every_package_after_xfr_and_the_acceptance_pass() -> N
         assert fact in acceptance, fact
     for package in ("FXB", "FXA1", "FXA2", "FXC", "FXD1", "FXD2", "FXE", "WP17D"):
         assert package in acceptance, package
-    assert _section(spec, "8.4 Verification record").strip() == "Written after the closing gates."
+    assert "Written after the closing gates." not in _section(spec, "8.4 Verification record")
 
 
 def test_the_acceptance_record_counts_match_the_checkers() -> None:
@@ -355,3 +355,23 @@ def test_the_a11y_records_count_findings_and_name_what_they_changed() -> None:
     standard = _flat(_read(UI_STANDARD_MD))
     assert ("On a material the semantic tints (`--<axis>-text`) resolve to the grouped panel's "
             "stronger inks (`--panel-<axis>-text`) in `theme.css`") in standard
+
+
+def test_the_closing_baselines_agree_with_the_verification_record():
+    """SPEC 8.4 holds the closing gate figures; AGENTS.md and testing.md repeat them, and the
+    entry figures follow the baseline in bundle-first-paint.test.ts."""
+    record = _flat(_section(_read(SPEC), "8.4 Verification record"))
+    for fact in ("14,038", "14,009 passed, 29 skipped and 0 failed", "27 PostgreSQL-only",
+                 "786 files, 9,955 passed, 19 skipped", "3,622 modules", "318,008 B",
+                 "317,962 + 1,024 B", "0 errors, 0 warnings", "byte-identical to `3cfd5c0`"):
+        assert fact in record, fact
+    bundle = _read(WEBUI / "soc" / "__tests__" / "bundle-first-paint.test.ts")
+    assert "const PRE_REVAMP_ENTRY_BYTES = 317_962;" in bundle
+    agents = _flat(_read(AGENTS))
+    assert "Current baseline (2026-11-26, Round 16 closing gates, Round 16 SPEC §8.4)" in agents
+    for fact in ("14,009 pytest", "9,955 Vitest", "786 files", "317,962 B"):
+        assert fact in agents, fact
+    testing = _flat(_read(DOCS / "development" / "testing.md"))
+    assert "14,009 backend tests" in testing and "9,955 Console tests" in testing
+    assert "recorded after its closing gates" not in testing
+    assert "recorded after its closing gates" not in agents

@@ -951,9 +951,9 @@ See `docs/ENVIRONMENT.md` for the full detail. Summary:
 ## 7. Build / run / test cheatsheet
 
 ```bash
-# Backend tests (offline; MUST stay green). Latest recorded full run: 13,172 tests (see Journal for the exact current count)
+# Backend tests (offline; MUST stay green). Latest recorded full run: 14,038 tests (see Journal for the exact current count)
 cd backend && python3 -m venv .venv && . .venv/bin/activate && pip install -r requirements-dev.txt
-python -m pytest -q                         # -> latest recorded full run: 13,143 passed, 24 skipped, 5 sandbox-only env failures (see Journal)
+python -m pytest -q                         # -> latest recorded full run: 14,009 passed, 29 skipped, 0 failed with proxy/AWS vars unset (see Journal)
 
 # Backend run locally (in-memory store, mock LLM if no keys)
 uvicorn app.main:app --port 8088
@@ -961,7 +961,7 @@ uvicorn app.main:app --port 8088
 # Web UI + installed Help Center build, tests, and lint (Node 22)
 cd webui && npm install && npm run build   # MkDocs bundle + tsc --noEmit + Vite -> webui/dist/
 npm run docs:check                         # validate app 0.2.0 against bundled docs 0.2
-npm run test:strict                        # -> latest recorded full run: 8,864 passed, 16 skipped / 679 files; zero stderr/console output
+npm run test:strict                        # -> latest recorded full run: 9,955 passed, 19 skipped / 786 files; zero stderr/console output
 npm run lint                               # 0 errors, 0 warnings; jsx-a11y at error
 
 # Shipping backend acceptance also runs `python -m pip check` inside the final
@@ -1025,8 +1025,8 @@ cp .env.example .env   # set TLSOC_PG_PASSWORD + at least one LLM key
   `/api` proxy forwards arbitrary JSON). Keep `webui/src/lib/types.ts` in sync with
   `models.py`.
 - **Secrets:** env only; UI shows booleans (`configured ✓`) never values.
-- **Tests:** add/keep offline tests; `pytest -q` green (latest recorded full run: 13,143 passed, 24 skipped; 5 sandbox-only env failures) +
-  `npm run build` clean + `npm run test:strict` (latest recorded full run: 8,864 passed, 16 skipped / 679 files) +
+- **Tests:** add/keep offline tests; `pytest -q` green (latest recorded full run: 14,009 passed, 29 skipped; 0 failed with the sandbox's proxy and AWS variables unset) +
+  `npm run build` clean + `npm run test:strict` (latest recorded full run: 9,955 passed, 19 skipped / 786 files) +
   `npm run lint` (0 errors, jsx-a11y at error) before
   every commit. (Counts rise each round — see `Journal.md` for the exact current totals.)
 - **Git:** active branch `Testing`. Commit focused changes; push when asked. The
@@ -1254,21 +1254,21 @@ raw hex, chart ramps colour-vision separable, 364 login accent composites); `che
 drift (293 paths); `docs:check`, `check_version`, `check_ci_contract` (3 workflows, 3 shipping
 Dockerfiles), `check_docs` (84 pages) and `build_app_knowledge --check` (877 chunks) pass.
 
-**Current baseline (2026-11-24, Round 15 closing gates, Round 15 SPEC §8.4):** backend **13,143 pytest**
-passed, 24 skipped (the PostgreSQL-only modules skip offline and run in the PostgreSQL lane; 5
-sandbox-only environment failures, which pass with the sandbox's proxy and AWS variables unset);
-webui **8,864 Vitest** specs passed, 16 skipped (the cases that need `dist/`, run without a build as
-CI does) / 679 files with zero stderr or captured console output, full docs+app build clean (3,553
-modules; entry chunk 329,093 B with the build SHA and date stamped, inside the +1,024 B budget over
-the `PRE_REVAMP_ENTRY_BYTES` baseline 329,080 B that Round 15 ratcheted down, and under the
+**Current baseline (2026-11-26, Round 16 closing gates, Round 16 SPEC §8.4):** backend **14,009 pytest**
+passed, 29 skipped and 0 failed (27 PostgreSQL-only tests skip offline and run in the PostgreSQL
+lane, and 2 audit tests need Elasticsearch point-in-time snapshots), with the sandbox's proxy and
+AWS variables unset as CI runs (with them set, the 5 sandbox-only environment tests fail);
+webui **9,955 Vitest** specs passed, 19 skipped (the cases that need `dist/`, run without a build as
+CI does) / 786 files with zero stderr or captured console output, full docs+app build clean (3,622
+modules; entry chunk 318,008 B with the build SHA and date stamped, inside the +1,024 B budget over
+the `PRE_REVAMP_ENTRY_BYTES` baseline 317,962 B that Round 16 ratcheted down, and under the
 400,000 B ceiling; motion remains lazy and off the entry path); eslint **0 errors, 0 warnings**; **zero new webui runtime
 deps except the deliberate lazy `motion`** (12.42.2). The 0.x line (0.1 and 0.2) adds only
 the explicitly pinned connector/SQL packaging dependencies required by its advertised
 `full` image; the `core` image remains available. Round 16 lowered the
 `PRE_REVAMP_ENTRY_BYTES` baseline to 317,962 B, the final tree measured with `npm run
 build:app` (318,008 B stamped as CI builds it), 11,118 B below the Round 15 baseline
-(Round 16 SPEC §8.1 "Entry bundle"); its other figures are recorded after its
-closing gates. `engine/case_manager.py` `decide()` stays **byte-identical** to
+(Round 16 SPEC §8.1 "Entry bundle"). `engine/case_manager.py` `decide()` stays **byte-identical** to
 the pre-Round-5 baseline `27f0983`; `engine/risk.py` / `engine/signatures.py`
 **untouched** by Round 10 (the new risk gate is routing-only, #3); every round's
 router/Settings decomposition kept all API paths byte-identical. The 12

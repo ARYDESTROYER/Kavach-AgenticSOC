@@ -253,7 +253,8 @@ def test_the_spec_records_the_cross_cutting_review_and_its_fix_packages():
         assert f"**{package}" in review, package
     for dimension in ("spine", "security", "numbers", "UI", "tests", "flows", "docs"):
         assert dimension in review, dimension
-    assert _section(spec, "8.4 Verification record").strip() == "Written after the closing gates."
+    # The closing records wrote the verification record after the closing gates.
+    assert "Written after the closing gates." not in _section(spec, "8.4 Verification record")
     limits = _flat(_section(spec, "8.3 Known limitations"))
     assert "taken by the post-integration package" not in limits
     resolutions = _flat(_section(spec, "8.1 Contract resolutions"))

@@ -3348,7 +3348,36 @@ WP19 is recorded with the release preparation.
 
 ### 8.4 Verification record
 
-Written after the closing gates.
+The closing gate figures are recorded after every package, the acceptance pass and its fix
+packages, A11Y and the closing records of §8.1 and §8.2 were merged; the per-package figures are
+in §8.2.
+
+- Closing gates on the integrated tree `6f8a7d2` (A11Y merged, the A11Y lines and the second
+  entry ratchet written), run once and in CI's order. The later closing record commits change
+  docs and record tests only; their records, docs and knowledge modules were run again.
+  - Backend `pytest -q`, with the sandbox's proxy and AWS variables unset as CI runs: 14,038
+    tests, 14,009 passed, 29 skipped and 0 failed. The 29 are 27 PostgreSQL-only tests, which
+    run in the PostgreSQL lane, and 2 audit tests of point-in-time snapshots, which exist on
+    Elasticsearch only. With those variables set, the 5 sandbox-only environment tests fail as
+    in Round 15 (the A11Y review's full run: 13,986 passed, 29 skipped, 5 failed).
+  - Fatal ruff (`E9,F63,F7,F82` over `backend/app`, `backend/tests`, `updater` and `scripts`):
+    clean.
+  - Webui `npm run test:strict` without a build, as CI runs it: 786 files, 9,955 passed, 19
+    skipped (the cases that need `dist/`), zero stderr.
+  - `npm run lint -- --max-warnings=0`: 0 errors, 0 warnings. `npm run typecheck`: clean.
+    `npm run gates`: pass. `npm run check:types`: no drift.
+  - `npm run build` (Help Center and app) with the release channel, a 40-character SHA and the
+    date stamped, as CI builds it: clean, 3,622 modules. Entry chunk 318,008 B (317,962 B with
+    `build:app`), inside the 317,962 + 1,024 B budget and under the 400,000 B ceiling;
+    `bundle-first-paint.test.ts` with `REQUIRE_DIST_BUILD=1`: 30 passed.
+  - `npm run docs:check`, `scripts/check_docs.py` (90 public pages),
+    `scripts/build_app_knowledge.py --check` (1,105 chunks, 1,106 after the A11Y limitations
+    were added to the Help Center), `scripts/build_release_notes.py --check` (2 releases, newest
+    update `0.2.0.2026-12`), `scripts/check_version.py` (app 0.2.0, docs 0.2) and
+    `scripts/check_ci_contract.py` (3 workflows, 3 shipping Dockerfiles): pass.
+  - `decide()` in `backend/app/engine/case_manager.py` is byte-identical to `3cfd5c0`, the Round
+    15 merge, and matches the digest that `test_round16_spine_guards.py` pins; `engine/risk.py`
+    and `engine/signatures.py` are byte-identical to `3cfd5c0`.
 
 ### 8.5 Cross-cutting review
 
