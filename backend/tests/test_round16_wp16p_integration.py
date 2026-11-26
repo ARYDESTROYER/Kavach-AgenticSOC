@@ -6,7 +6,8 @@
 2. A budget refusal's reason kept in ``Case.error`` (the fail-to-human path) reads
    ``(amount hidden)`` on every case read for a viewer without ``cost:view``.
 3. A precedent candidate whose case was deleted after the candidate list was read is
-   never saved back from the candidate copy, and nothing is projected for it.
+   never saved back from the candidate copy, at the ratification or at the projection
+   acknowledgement; deleted before its ratification, nothing is projected for it.
 
 ``decide()`` and ``engine/risk.py`` are untouched (``test_round16_spine_guards.py``); no
 model call is added. Offline: fake Elasticsearch, mock model.
@@ -178,3 +179,42 @@ async def test_a_precedent_candidate_never_saves_back_a_deleted_case(app_state, 
         pytest.fail("a deleted case was ratified")
     assert saves == []
     assert projected == []
+
+
+async def test_a_case_deleted_after_its_ratification_is_not_saved_back_by_the_acknowledgement(
+    app_state, monkeypatch
+) -> None:
+    """The second history append (the projection acknowledgement) re-reads the case too:
+    a case deleted after its ratification was saved fails the candidate there, and the
+    candidate copy is never saved back over the deletion."""
+    from app.api.routes_rag import perform_precedent_candidate
+
+    await app_state.cases.save(_closed_case())
+    candidate = await app_state.cases.get("case-wp16p")  # the candidate list's copy
+    store = app_state._real_cases
+    real_get = store.get
+    deleted = False
+    saves: list[list[str]] = []
+
+    async def get(case_id, *a, **k):
+        if case_id == "case-wp16p" and deleted:
+            return None
+        return await real_get(case_id, *a, **k)
+
+    async def save(case, *a, **k):
+        saves.append([str(entry.get("event")) for entry in case.history if isinstance(entry, dict)])
+
+    async def index(items, **_k):
+        nonlocal deleted
+        deleted = True  # the case is deleted while its precedent is projected
+        return len(items)
+
+    monkeypatch.setattr(store, "get", get)
+    monkeypatch.setattr(store, "save", save)
+    monkeypatch.setattr(app_state.rag_service, "index_precedent_items", index)
+    with pytest.raises(LookupError, match="deleted"):
+        await perform_precedent_candidate(candidate, {"metadata": {"outcome": "benign"}},
+                                          app_state, actor="ops", batch_id="b-gone-later")
+    # One save: the ratification. No acknowledgement save brings the deleted case back.
+    assert len(saves) == 1, saves
+    assert "precedent_projection_ack" not in saves[0]

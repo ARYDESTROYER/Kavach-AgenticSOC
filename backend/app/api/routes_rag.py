@@ -360,7 +360,7 @@ class PrecedentCaseGone(LookupError):
     """The candidate's case was deleted after the candidate list was read."""
 
     def __init__(self, case_id: str) -> None:
-        super().__init__(f"case {case_id} was deleted, so it was not ratified")
+        super().__init__(f"case {case_id} was deleted")
         self.case_id = case_id
 
 
@@ -383,8 +383,10 @@ async def perform_precedent_candidate(
     the case's write lock, so a person's tag, comment or close saved since the candidate
     list was read is kept (the candidate copy is then updated to what was saved). The
     projection itself runs outside the lock. A case deleted since the list was read is
-    never saved back from the candidate copy: the candidate fails with
-    :class:`PrecedentCaseGone` and nothing is projected for it.
+    never saved back from the candidate copy, at either append: the candidate fails with
+    :class:`PrecedentCaseGone`. Deleted before its ratification, nothing is projected for
+    it; deleted while its precedent was being projected, that projection may already be
+    written, and the candidate still fails.
     """
     async def _append_history(make_entry: Any) -> bool:
         """Append ``make_entry(stored)`` (``None`` = nothing to add) to the stored case
