@@ -39,7 +39,6 @@ import { DataTable, TruncatedText, type DataTableColumn, type SortState } from '
 import { EmptyState } from '@/soc/components/EmptyState';
 import { KpiStrip } from '@/soc/components/KpiStrip';
 import { KpiTile } from '@/soc/components/KpiTile';
-import { explainTeamAckMedian } from '@/soc/components/metrics-explain/builders';
 import { LoadError } from '@/soc/components/LoadError';
 import { PageContainer } from '@/soc/components/PageContainer';
 import { PageHeader } from '@/soc/components/PageHeader';
@@ -51,6 +50,7 @@ import { safeRouteHref, useRouteLinkClick } from '@/soc/route-link';
 import { PageAccess, usePermission } from './PageAccess';
 import { UpdatedStamp } from './analytics-shared';
 import { PersonSheet } from './team/PersonSheet';
+import { explainPeopleActive, explainTeamMedian, type TeamTotalsWithTimes } from './team/team-explain';
 import { TeamDailyChart } from './team/TeamDailyChart';
 import { TeamRangeControl } from './team/TeamRangeControl';
 import {
@@ -280,14 +280,24 @@ function bulkContext(count: number, bulk: number, range: TeamRange): string {
   return bulk ? `${fmtNumber(bulk)} in bulk actions` : 'one at a time';
 }
 
-/** The median's explanation on hover and click (numbers review); none when not measured. */
-function ackExplainSlot(
-  medianSeconds: number | null,
-  samples: number,
+/**
+ * The median's explanation on hover and click, with the sorted times it is taken from
+ * (FXD2); none when not measured.
+ */
+function ackExplainSlot(team: TeamTotalsWithTimes, window: string): ((numeral: React.ReactNode) => React.ReactNode) | undefined {
+  const shown = fmtSeconds(team.median_ack_seconds);
+  const explanation = shown ? explainTeamMedian(team, shown, window) : null;
+  if (!explanation) return undefined;
+  return (numeral) => <ExplainTrigger explanation={explanation}>{numeral}</ExplainTrigger>;
+}
+
+/** People active explained: who was counted and what they did (FXD2). */
+function peopleExplainSlot(
+  people: readonly PersonActivity[],
+  total: number,
   window: string,
 ): ((numeral: React.ReactNode) => React.ReactNode) | undefined {
-  const shown = fmtSeconds(medianSeconds);
-  const explanation = shown ? explainTeamAckMedian({ medianSeconds, samples, shown, window }) : null;
+  const explanation = explainPeopleActive(people, total, window);
   if (!explanation) return undefined;
   return (numeral) => <ExplainTrigger explanation={explanation}>{numeral}</ExplainTrigger>;
 }
@@ -401,7 +411,12 @@ function TeamView() {
           </p>
         ) : null}
         <KpiStrip label="Team summary" data-testid="team-kpis">
-          <KpiTile label="People active" value={fmtNumber(team.people_active)} context={rangeCaption(range)} />
+          <KpiTile
+            label="People active"
+            value={fmtNumber(team.people_active)}
+            context={rangeCaption(range)}
+            explain={peopleExplainSlot(data.people, team.people_active, rangeCaption(range))}
+          />
           <KpiTile label="Cases closed by people" value={fmtNumber(team.counts.closed)} context={bulkContext(team.counts.closed, team.bulk.closed, range)} />
           <KpiTile label="Acknowledged" value={fmtNumber(team.counts.acknowledged)} context={bulkContext(team.counts.acknowledged, team.bulk.acknowledged, range)} />
           <KpiTile label="Reviews completed" value={fmtNumber(team.reviews.completed)} context={team.reviews.completed ? reviewsText(team.reviews) : 'auto-close reviews'} />
@@ -409,7 +424,7 @@ function TeamView() {
             label="Median time to acknowledge"
             value={team.median_ack_seconds === null ? 'Not measured' : (fmtSeconds(team.median_ack_seconds) ?? 'Not measured')}
             context={ackContext(data)}
-            explain={ackExplainSlot(team.median_ack_seconds, team.ack_samples, rangeCaption(range))}
+            explain={ackExplainSlot(team, rangeCaption(range))}
           />
         </KpiStrip>
         <ChartCard title="Work per day" caption={`${rangeCaption(range)}, days in ${data.timezone}`}>

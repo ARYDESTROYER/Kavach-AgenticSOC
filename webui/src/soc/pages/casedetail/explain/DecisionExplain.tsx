@@ -23,6 +23,8 @@ import { explainDecision } from '@/lib/explain/decision';
 import type { Case } from '@/lib/types';
 import { getTimeline, type DecisionPayload } from '@/soc/pages/CaseDetail.api';
 
+import { TODAY_SETTINGS, routingScoreLine, type RoutingReading } from './routing';
+
 export interface DecisionExplainProps {
   caseRecord: Case;
   children: React.ReactNode;
@@ -33,8 +35,11 @@ export interface DecisionExplainProps {
   note?: string | null;
 }
 
-/** `GET /api/cases/{id}/forwarding`: which deterministic gate sent the case to the AI. */
-interface ForwardingReading {
+/**
+ * `GET /api/cases/{id}/forwarding`: which deterministic gate sent the case to the AI,
+ * walked again with today's settings, and the routing score with its terms.
+ */
+interface ForwardingReading extends RoutingReading {
   gate?: string;
   forwarded?: boolean;
   sentence?: string;
@@ -108,10 +113,17 @@ export const DecisionExplain: React.FC<DecisionExplainProps> = ({ caseRecord, ch
   );
 
   const sentence = typeof forwarding?.sentence === 'string' ? forwarding.sentence.trim() : '';
+  const routing = routingScoreLine(forwarding);
   const detail = sentence ? (
     <div className="space-y-1 text-xs" data-testid="decision-why-investigated">
       <p className="font-medium text-muted-foreground">Why was this investigated?</p>
       <p className="leading-relaxed text-foreground/90">{sentence}</p>
+      {routing ? (
+        <p className="break-words font-mono text-foreground/90" data-testid="decision-routing-score">
+          {routing}
+        </p>
+      ) : null}
+      <p className="leading-relaxed text-muted-foreground">{TODAY_SETTINGS}</p>
     </div>
   ) : null;
 

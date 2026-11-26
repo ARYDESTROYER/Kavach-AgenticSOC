@@ -214,6 +214,7 @@ class StandupService:
     async def shift_snapshot(
         self, prefs: Preferences, *, window_hours: int | None = None, now: Any = None,
         needs_human_verdict: bool = False,
+        explain: bool = False,
     ) -> dict[str, Any]:
         """The forward-looking "what needs attention this shift" block.
 
@@ -224,7 +225,10 @@ class StandupService:
         so the route + standup degrade gracefully. Reused by both ``generate()`` (folded
         into the compact aggregate) and ``GET /api/standup/report``. Chat's shift
         report asks for ``needs_human_verdict`` too (the open cases whose verdict is
-        Needs human); the standup's own payload and model aggregate leave it out."""
+        Needs human); the standup's own payload and model aggregate leave it out.
+        ``explain`` (Round 16 FXD2) adds the inputs the Standup page's explanations
+        print; only ``GET /api/standup/report`` asks for it, so the model's aggregate
+        never carries them (#7)."""
         ref = now or now_utc()
         window = int(window_hours or prefs.standup.window_hours)
         sla = getattr(prefs, "sla", None)
@@ -237,7 +241,8 @@ class StandupService:
         # severity band (it is a read-time field no production path persists) instead
         # of reading an always-None attribute and scoring every case's severity at 0.
         report = shift_report.build_shift_report(
-            current, prior, sla=sla, now=ref, prefs=prefs, needs_human_verdict=needs_human_verdict
+            current, prior, sla=sla, now=ref, prefs=prefs, needs_human_verdict=needs_human_verdict,
+            explain=explain,
         )
         report["action_items"] = await self._action_items()
         return report

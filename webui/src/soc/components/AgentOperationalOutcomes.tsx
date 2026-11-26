@@ -36,8 +36,17 @@ import type {
 } from '@/lib/types';
 import { cn } from '@/lib/cn';
 import { DASH } from '@/lib/format';
+import type { Explanation } from '@/lib/explain/types';
 import { Badge } from '@/ui/badge';
+import { ExplainTrigger } from '@/design-system/explain';
 import { Panel, PANEL_PADDING_X } from '@/design-system/panel';
+import {
+  explainCostOutcome,
+  explainPositiveOutcome,
+  explainTimingOutcome,
+  explainVolumeOutcome,
+  type OutcomeShown,
+} from './AgentOutcomesExplain';
 import { MetricDefinition, type MetricDefinitionDetails } from './ComparisonMetric';
 import { KpiStripContext, KpiTile, KpiTileGrid, type KpiDelta, type KpiGoodDirection } from './KpiTile';
 import { SegmentedControl } from './SegmentedControl';
@@ -289,6 +298,8 @@ interface OutcomeTileProps {
   sampleLabel: string;
   definition: MetricDefinitionDetails;
   testId: string;
+  /** The figure's calculation (FXD2): both windows from their counts, and the change. */
+  explanation?: Explanation | null;
 }
 
 /**
@@ -321,6 +332,11 @@ function OutcomeTile(props: OutcomeTileProps) {
         context={props.context}
         testId={`${props.testId}-metric`}
         className="h-auto min-h-0"
+        explain={
+          measured && props.explanation
+            ? (numeral) => <ExplainTrigger explanation={props.explanation ?? null}>{numeral}</ExplainTrigger>
+            : undefined
+        }
       />
       {/* One row order in every tile (evidence state, prior, sample, reason), top aligned,
           so the same fact sits on the same line across the strip. */}
@@ -350,11 +366,33 @@ function OutcomeTile(props: OutcomeTileProps) {
 /** The compact strip density every tile below inherits (the Analytics strip grammar). */
 const STRIP_CONTEXT = { density: 'compact' as const };
 
-function OutcomeStrip({ outcomes }: { outcomes: AgentOperationalOutcomesContract }) {
+type OutcomeWindow = { start: string; end_exclusive: string; days?: number };
+
+function OutcomeStrip({
+  outcomes,
+  currentWindow,
+  priorWindow,
+}: {
+  outcomes: AgentOperationalOutcomesContract;
+  currentWindow: OutcomeWindow;
+  priorWindow: OutcomeWindow;
+}) {
   const positive = outcomes.confirmed_positive_case_rate;
   const timing = outcomes.observed_time_saved;
   const volume = outcomes.alert_volume;
   const cost = outcomes.recorded_case_cost;
+  // What each tile shows, so its explanation ends on the same text (FXD2).
+  const windows = { currentWindow: utcDayRange(currentWindow), priorWindow: utcDayRange(priorWindow) };
+  const shown = (value: string, prior: string, delta: KpiDelta | undefined): OutcomeShown => ({
+    value,
+    prior,
+    delta: delta?.label,
+    ...windows,
+  });
+  const positiveDelta = pointsDelta(positive.delta.percentage_points);
+  const timingDelta = minutesDelta(timing.delta.minutes_per_case);
+  const volumeDelta = relativeDelta(volume.delta.after_clustering_per_day_relative);
+  const costDelta = relativeDelta(cost.delta.cost_per_costed_case_relative);
   return (
     <KpiStripContext.Provider value={STRIP_CONTEXT}>
       {/* One tile a row while the strip is narrower than 28rem (a phone): each tile carries
@@ -370,7 +408,11 @@ function OutcomeStrip({ outcomes }: { outcomes: AgentOperationalOutcomesContract
           label="Confirmed-positive case share"
           value={formatRatio(positive.current.value)}
           prior={formatRatio(positive.baseline.value)}
-          delta={pointsDelta(positive.delta.percentage_points)}
+          delta={positiveDelta}
+          explanation={explainPositiveOutcome(
+            positive,
+            shown(formatRatio(positive.current.value), formatRatio(positive.baseline.value), positiveDelta),
+          )}
           goodDirection="none"
           context="Case-level observed outcome mix"
           status={positive.status}
@@ -384,7 +426,15 @@ function OutcomeStrip({ outcomes }: { outcomes: AgentOperationalOutcomesContract
           label="Observed elapsed-time difference"
           value={formatElapsedDifference(timing.current.observed_difference_minutes_per_case)}
           prior={formatElapsedDifference(timing.baseline.observed_difference_minutes_per_case)}
-          delta={minutesDelta(timing.delta.minutes_per_case)}
+          delta={timingDelta}
+          explanation={explainTimingOutcome(
+            timing,
+            shown(
+              formatElapsedDifference(timing.current.observed_difference_minutes_per_case),
+              formatElapsedDifference(timing.baseline.observed_difference_minutes_per_case),
+              timingDelta,
+            ),
+          )}
           goodDirection="up"
           context="Unmatched closure cohorts; not labor time"
           status={timing.status}
@@ -398,7 +448,16 @@ function OutcomeStrip({ outcomes }: { outcomes: AgentOperationalOutcomesContract
           label="Alerts after clustering / day"
           value={formatCount(volume.current.after_clustering_per_day, ' / day')}
           prior={formatCount(volume.baseline.after_clustering_per_day, ' / day')}
-          delta={relativeDelta(volume.delta.after_clustering_per_day_relative)}
+          delta={volumeDelta}
+          explanation={explainVolumeOutcome(
+            volume,
+            shown(
+              formatCount(volume.current.after_clustering_per_day, ' / day'),
+              formatCount(volume.baseline.after_clustering_per_day, ' / day'),
+              volumeDelta,
+            ),
+            { current: windowDays(currentWindow), prior: windowDays(priorWindow) },
+          )}
           goodDirection="none"
           context="Downstream clustering only"
           status={volume.status}
@@ -412,7 +471,11 @@ function OutcomeStrip({ outcomes }: { outcomes: AgentOperationalOutcomesContract
           label="AI processing cost / case"
           value={formatCurrency(cost.current.cost_per_costed_case)}
           prior={formatCurrency(cost.baseline.cost_per_costed_case)}
-          delta={relativeDelta(cost.delta.cost_per_costed_case_relative)}
+          delta={costDelta}
+          explanation={explainCostOutcome(
+            cost,
+            shown(formatCurrency(cost.current.cost_per_costed_case), formatCurrency(cost.baseline.cost_per_costed_case), costDelta),
+          )}
           goodDirection="none"
           context="Recorded case-associated model spend"
           status={cost.status}
@@ -883,7 +946,7 @@ export function AgentOperationalOutcomes({
         </p>
       </div>
 
-      <OutcomeStrip outcomes={outcomes} />
+      <OutcomeStrip outcomes={outcomes} currentWindow={currentWindow} priorWindow={priorWindow} />
 
       {/* Always in the DOM so a disclosure can name it; no display utility, so `hidden`
           keeps it out of the layout and the accessibility tree while folded. */}

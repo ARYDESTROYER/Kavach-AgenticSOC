@@ -980,7 +980,7 @@ def _recorded_case_cost(
         "direction": direction,
         "cost_per_day_direction": cost_per_day_direction,
         "definition": {
-            "formula": "sum of recorded UsageDoc cost for calls carrying a case_id",
+            "formula": "sum of the recorded cost of model calls tied to a case",
             "numerator": "Gateway-recorded case-associated model cost in USD.",
             "denominator": "Complete UTC days or distinct costed cases, as labelled.",
             "eligibility": "Usage rows with a valid timestamp, case association, and reporting-window membership.",
@@ -1047,7 +1047,7 @@ def _confirmed_positive_case_rate(
         ),
         "definition": {
             "formula": "confirmed-positive graded cases / outcome-evaluable graded cases",
-            "numerator": "Latest-valid grades marked true_positive or false_negative.",
+            "numerator": "Latest valid grades marked true positive or false negative.",
             "denominator": "Latest-valid grades with an allow-listed actual outcome.",
             "eligibility": "One latest valid analyst grade per case in the reporting window.",
             "caveats": (
@@ -1885,7 +1885,7 @@ def agent_improvement_metrics(
                     "numerator": "Explicit disagreements or allow-listed AI-verdict/outcome conflicts.",
                     "denominator": "The same comparable, identically weighted cohort as agreement.",
                     "eligibility": "Partial feedback is reported separately and is not automatically a correction.",
-                    "caveats": "NEEDS_HUMAN has no inferred outcome conflict; only explicit disagreement counts.",
+                    "caveats": "A needs-human verdict has no inferred outcome conflict; only explicit disagreement counts.",
                 },
             },
             "human_review_turnaround": {
@@ -1981,8 +1981,8 @@ def agent_improvement_metrics(
                 "breached": false_negative_breach,
                 "definition": (
                     "Missed confirmed positives / confirmed positives. A miss is an "
-                    "explicit false_negative outcome or an AI FALSE_POSITIVE later "
-                    "confirmed true positive."
+                    "explicit false negative outcome or an AI false positive verdict "
+                    "later confirmed true positive."
                 ),
             },
             "reopen_after_agent_close_rate": {

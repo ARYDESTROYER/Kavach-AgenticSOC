@@ -293,7 +293,13 @@ Neither proves the upstream alert generator itself is getting better.
 Open **Analytics → Agent effectiveness** for the detailed operator surface. The
 **Operational outcomes** panel shows its four headline comparisons as one strip, with
 **Week over week** or **Rolling 28 days** in the panel's title row; its caption names
-the window ("last 7 complete UTC days against the 7 before"). While the headline is
+the window ("last 7 complete UTC days against the 7 before"). Point at a comparison's
+figure, or select it, for its calculation: both windows worked from their counts (the
+recorded cost over the costed cases, the two closure medians, the alerts over the days,
+the confirmed cases over the graded ones) and the change between them. The server rounds
+each figure before it compares them, so a change worked from the tile's shorter figures
+can differ a little; the panel prints the figures the server compared, and its change
+ends on the tile's chip. **How** beside each figure gives the definition in words. While the headline is
 still collecting evidence, an **Evidence details** panel sits above the strip with a
 **Show details** button. The comparisons, the rows behind the operational outcomes
 (**What supports these movements**, **Evidence by system layer** and the **Trend
@@ -399,6 +405,23 @@ counts the open cases whose AI verdict is Needs human. **Awaiting analyst** coun
 cases still in the status the console shows as **Open · awaiting analyst**, the cases the
 automation routed to a person that no one has picked up; the workload list shows that
 count per assignee as "N awaiting".
+
+Every number on the Standup can be explained. Point at it for a one-line formula, or
+select it for the full calculation:
+
+- a strip count states the count now, the "was" figure and the change ("15 - 10 =
+  +5"). The "was" figure is not a count taken when the window began: it is the same
+  count over the cases open now that were created before the window, so a case that has
+  closed since is in neither count;
+- a case's risk chip shows the weighted sum it was scored with, as in the Case Manager
+  queue;
+- a case's age is the snapshot time minus when the case was detected, or created, shown
+  as its two largest units ("12d 4h");
+- the SLA pressure counts add up per priority ("P3 5 + P4 5 = 10"), and each "over" line
+  is the response clock's elapsed minutes minus the target ("18,677.93 - 480 =
+  18,197.93 minutes"), shown as its two largest units ("12d 15h over");
+- an analyst's open count is their escalated, awaiting-analyst and other open cases
+  added up.
 
 Writing action items or acknowledgements requires `cases:write`.
 

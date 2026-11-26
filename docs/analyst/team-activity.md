@@ -99,6 +99,14 @@ time a person moved it to Investigating, Escalated or On hold (an Escalate or a 
 hold, for example). It is measured from up to 5,000 cases; with more, the page says the
 median was not measured rather than guessing.
 
+Point at a figure on the strip, or select it, to see how it was counted. The median's
+explanation lists the times it is taken from, shortest first, and works the median from
+them: with two times of 2m and 12m it reads "(120 + 720) / 2 = 420 seconds, shown as
+7m". With many cases it lists the times around the middle, with their ranks. **People
+active** names each person it counted and what they did. A sign-in counts as activity,
+so a person who only signed in is active even though the people table's case work
+columns show nothing for them.
+
 **Reviews** always read "N of M agreed" on the strip, the person sheet and a reviews
 count's hover title, where M counts the reviews that agreed or disagreed (an unsure review is not an answer). An agreement rate is added only from 30
 answered reviews, because fewer would say more than the reviews can. A case that was not
