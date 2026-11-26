@@ -919,6 +919,28 @@ describe('CaseManager', () => {
     expect(otherWords.className).not.toMatch(/\bhidden\b/);
   });
 
+  it('lets the severity word and its dot give way below a 30rem queue while a run shows, so "AI working" fits beside the owner (XFCM review)', async () => {
+    // At the 340px default queue a row with an owner leaves the status node about 63px;
+    // the ring and "AI working" need 77px, so without this the words ran under the monogram.
+    mocks.aiRuns = { [OPEN_HIGH.case_id]: { run_id: 'inv-1', state: 'running' } };
+    render(<CaseManager />);
+    await screen.findByText('Multiple failed logins');
+    const row = document.querySelector(`[data-case-id="${OPEN_HIGH.case_id}"]`) as HTMLElement;
+    const severity = within(row).getByTestId('case-queue-severity');
+    expect(severity).toHaveClass('hidden', '@[30rem]/queue:inline-flex');
+    // The dot right after the severity word goes with it.
+    expect(severity.nextElementSibling).toHaveTextContent('·');
+    expect(severity.nextElementSibling).toHaveClass('hidden', '@[30rem]/queue:inline');
+    // The row's accessible name keeps the severity.
+    expect(within(row).getByRole('button', { name: /Multiple failed logins/ }).getAttribute('aria-label')).toMatch(/high severity/i);
+
+    // Without a run the severity word and its dot always show.
+    const other = document.querySelector(`[data-case-id="${OPEN_CRITICAL.case_id}"]`) as HTMLElement;
+    const otherSeverity = within(other).getByTestId('case-queue-severity');
+    expect(otherSeverity.className).not.toMatch(/\bhidden\b/);
+    expect((otherSeverity.nextElementSibling as HTMLElement).className).not.toMatch(/\bhidden\b/);
+  });
+
   it('lets the outcome badge of an ended case give way to a run mark below a 30rem queue (XFCM)', async () => {
     const closed: Case = {
       ...RESOLVED_LOW,

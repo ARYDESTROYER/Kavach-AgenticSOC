@@ -396,7 +396,14 @@ const MetaDot = ({ className }: { className?: string }) => (
  * case header still shows the status.
  */
 export const RUN_MARK_WORDS = 'hidden @[30rem]/queue:inline';
-/** The compact outcome badge beside a run's mark: it gives way below a 30rem queue. */
+/**
+ * The compact outcome badge beside a run's mark, and the severity word at the start of
+ * line two: both give way below a 30rem queue while a run shows. At the 340px default
+ * queue a row with an owner leaves the status node about 63px, and the ring with "AI
+ * working" needs 77px, so the words would run under the owner monogram. The severity
+ * word frees that room; the leading glyph, the rail, the row's accessible name and the
+ * case header keep the severity.
+ */
 export const RUN_MARK_OUTCOME = 'hidden @[30rem]/queue:inline-flex';
 
 interface RowJobState {
@@ -666,20 +673,22 @@ const QueueRow: React.FC<{
               data-testid="case-queue-meta"
               className="mt-1.5 flex h-5 min-w-0 items-center gap-1 text-xs text-muted-foreground"
             >
+              {/* While a run shows, the severity word and its dot give way below a 30rem
+                  queue, so "AI working" keeps its room (RUN_MARK_OUTCOME). */}
               <span
                 data-testid="case-queue-severity"
-                className={cn('inline-flex shrink-0 items-center', SEVERITY_WORD[severity])}
+                className={cn('inline-flex shrink-0 items-center', SEVERITY_WORD[severity], run && RUN_MARK_OUTCOME)}
                 title={sourceAsserted ? 'Severity reported by the source' : 'Severity derived from the risk score'}
               >
                 {humanizeToken(severity)}
               </span>
+              <MetaDot className={run ? RUN_MARK_WORDS : undefined} />
               {riskNode ? (
                 <>
-                  <MetaDot />
                   {riskNode}
+                  <MetaDot />
                 </>
               ) : null}
-              <MetaDot />
               {/* The case number names the row, so it never gives way: middleEllipsis
                   bounds it at 14 characters, and the status beside it truncates first. */}
               <span data-testid="case-queue-id" className="shrink-0 whitespace-nowrap font-mono" title={displayId}>

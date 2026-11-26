@@ -17,8 +17,11 @@ import type { StreamEvent } from '@/lib/useEventStream';
 
 const h = vi.hoisted(() => ({
   run: null as InvestigationView | null,
+  finished: null as { view: InvestigationView; at: number; active: boolean; shown: boolean } | null,
   timelines: [] as Array<unknown>,
   timelineCalls: 0,
+  timelineDelayMs: 0,
+  caseReads: 0,
   onEvent: null as ((ev: StreamEvent) => void) | null,
   topics: [] as string[],
 }));
@@ -57,12 +60,16 @@ function trace(kinds: string[]) {
 
 vi.mock('@/lib/api', () => {
   const target: Record<string, unknown> = {
-    getCase: vi.fn(() => Promise.resolve(CASE)),
+    getCase: vi.fn(() => {
+      h.caseReads += 1;
+      return Promise.resolve(CASE);
+    }),
     get: vi.fn((path: string) => {
       if (path.endsWith('/timeline')) {
         h.timelineCalls += 1;
         const next = h.timelines.length > 1 ? h.timelines.shift() : h.timelines[0];
-        return next instanceof Error ? Promise.reject(next) : Promise.resolve(next);
+        const settle = () => (next instanceof Error ? Promise.reject(next) : Promise.resolve(next));
+        return h.timelineDelayMs ? new Promise((r) => setTimeout(r, h.timelineDelayMs)).then(settle) : settle();
       }
       return Promise.resolve({});
     }),
@@ -89,7 +96,8 @@ vi.mock('@/soc/auth', () => ({
 
 vi.mock('@/soc/investigations/useAiRun', () => ({
   useAiRun: (caseId: string | null | undefined) => (caseId && h.run?.case_id === caseId ? h.run : null),
-  useAiRunFinished: () => null,
+  useAiRunFinished: (caseId: string | null | undefined) =>
+    caseId && h.finished?.view.case_id === caseId ? h.finished : null,
   useAiRunCount: () => 0,
 }));
 
@@ -108,7 +116,7 @@ vi.mock('@/lib/useEventStream', async (importOriginal) => {
   };
 });
 
-import { CaseDetail, TRACE_REFRESH_MS } from '@/soc/pages/CaseDetail';
+import { CaseDetail, TRACE_POLL_MS, TRACE_REFRESH_MS } from '@/soc/pages/CaseDetail';
 
 function running(): InvestigationView {
   const now = Date.now();
@@ -153,8 +161,11 @@ async function wait(ms: number) {
 beforeEach(() => {
   window.localStorage.clear();
   h.run = null;
+  h.finished = null;
   h.timelines = [];
   h.timelineCalls = 0;
+  h.timelineDelayMs = 0;
+  h.caseReads = 0;
   h.onEvent = null;
   h.topics = [];
 });
@@ -209,6 +220,31 @@ describe('the AI investigation tab follows a run (XFCM)', () => {
     await waitFor(() => expect(screen.getByTestId('investigation-trace-counts')).toHaveTextContent('2 AI steps'));
   });
 
+  it('keeps the trace on screen when the run decides the case, with no skeleton (XFCM review)', async () => {
+    // The Reinvestigate dialog reads the case again after a run that decided it and hands
+    // it back: the trace the analyst watched stays and is read again quietly.
+    h.run = running();
+    h.timelines = [trace(['invoke_agent']), trace(['invoke_agent', 'invoke_agent', 'decision'])];
+    const { rerender } = await renderOnAiTab();
+    const readsBefore = h.caseReads;
+    h.timelineDelayMs = 120;
+    const ended = { ...running(), state: 'finished', outcome: 'decided', finished_at: new Date().toISOString() } as InvestigationView;
+    h.run = null;
+    h.finished = { view: ended, at: Date.now() + 1, active: true, shown: true };
+    rerender(view());
+    // Sample the trace while the re-reads are in flight: it never blanks to a skeleton.
+    let blanked = false;
+    for (let i = 0; i < 16; i += 1) {
+      await wait(25);
+      const panel = screen.queryByTestId('investigation-trace');
+      if (!panel || within(panel).queryByText('Loading…') || !screen.queryByTestId('investigation-trace-counts')) blanked = true;
+    }
+    // The dialog did read the case again and hand it back.
+    await waitFor(() => expect(h.caseReads).toBeGreaterThan(readsBefore));
+    await waitFor(() => expect(screen.getByTestId('investigation-trace-counts')).toHaveTextContent('2 AI steps'));
+    expect(blanked).toBe(false);
+  });
+
   it('keeps the shown trace when a quiet re-read fails', async () => {
     h.run = running();
     h.timelines = [trace(['invoke_agent', 'execute_tool']), new Error('down')];
@@ -221,6 +257,19 @@ describe('the AI investigation tab follows a run (XFCM)', () => {
     expect(counts).toHaveTextContent('2 AI steps · 1 tool');
     expect(screen.queryByText(/Could not load/i)).toBeNull();
   });
+
+  it('reads the trace every TRACE_POLL_MS while a run is under way, even with the stream live and no frame (XFCM review)', async () => {
+    // The pipeline sends its agent.step frames when a run starts and when it decides, none
+    // while the investigator works: frames alone left the trace still for most of a run.
+    h.run = running();
+    h.timelines = [trace(['invoke_agent']), trace(['invoke_agent', 'invoke_agent', 'execute_tool'])];
+    await renderOnAiTab();
+    expect(h.timelineCalls).toBe(1);
+    await wait(TRACE_POLL_MS + 300);
+    expect(h.timelineCalls).toBeGreaterThanOrEqual(2);
+    await waitFor(() => expect(screen.getByTestId('investigation-trace-counts')).toHaveTextContent('3 AI steps · 1 tool'));
+    expect(within(screen.getByTestId('investigation-trace')).queryByText('Loading…')).toBeNull();
+  }, 15_000);
 
   it('opens no case room while no run is under way', async () => {
     h.timelines = [trace(['invoke_agent'])];

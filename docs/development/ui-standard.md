@@ -812,8 +812,10 @@ a viewer who may manage users sees it.
 - **Queue row mark.** The ring and "AI working" or "AI queued" in the row's status node
   (see the queue above). The words always show. In a queue narrower than 30rem the status
   words give way to the run's words while it runs (the outcome badge of a case that ended
-  does the same); the row's accessible name keeps both, and the case header still shows
-  the status. It is decorative for assistive technology: the row's accessible
+  does the same), and so does the severity word at the start of line two, so the words
+  never run under the owner monogram; the row's accessible name keeps all three, the
+  leading glyph and the rail keep the severity, and the case header still shows the
+  status. It is decorative for assistive technology: the row's accessible
   name ends with "AI investigation running, started 40 seconds ago" or "AI investigation
   waiting, queued 12 seconds ago".
 - **Band line.** Runs on new events that have no case yet are the control band's third
