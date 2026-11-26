@@ -409,9 +409,9 @@ recompute every call; see [Explainable numbers](explainable-numbers.md#cost).
 Open **Analytics → Jobs** to follow the background jobs you started, such as a data
 export, an audit log export, a bulk change from Case Manager or a reset. To stop a job
 that is still running, choose **Cancel** on its row. There is no force kill: the button
-reads **Stopping…** until the job reaches its next safe checkpoint, and work the job
-already finished is kept. Each row shows the job's progress and result, and an export
-offers **Download** once its file is ready.
+reads **Stopping…** until the job reaches its next safe checkpoint. Work the job already
+finished is not undone, but a cancelled export leaves no file to download. Each row shows
+the job's progress and result, and an export offers **Download** once its file is ready.
 
 See [Analyst overview](overview.md), [Cases](cases.md), and
 [Background jobs](../operations/background-jobs.md).

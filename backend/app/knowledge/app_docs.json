@@ -3458,7 +3458,7 @@
    "page": "analyst/analytics.md",
    "anchor": "jobs",
    "heading": "Jobs",
-   "text": "Open **Analytics → Jobs** to follow the background jobs you started, such as a data\nexport, an audit log export, a bulk change from Case Manager or a reset. To stop a job\nthat is still running, choose **Cancel** on its row. There is no force kill: the button\nreads **Stopping…** until the job reaches its next safe checkpoint, and work the job\nalready finished is kept. Each row shows the job's progress and result, and an export\noffers **Download** once its file is ready.\n\nSee Analyst overview, Cases, and\nBackground jobs.",
+   "text": "Open **Analytics → Jobs** to follow the background jobs you started, such as a data\nexport, an audit log export, a bulk change from Case Manager or a reset. To stop a job\nthat is still running, choose **Cancel** on its row. There is no force kill: the button\nreads **Stopping…** until the job reaches its next safe checkpoint. Work the job already\nfinished is not undone, but a cancelled export leaves no file to download. Each row shows\nthe job's progress and result, and an export offers **Download** once its file is ready.\n\nSee Analyst overview, Cases, and\nBackground jobs.",
    "console": [
     "page:batchjobs"
    ]

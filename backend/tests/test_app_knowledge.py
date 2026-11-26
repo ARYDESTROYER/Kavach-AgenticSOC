@@ -1487,20 +1487,36 @@ async def test_app_help_tool_destinations_come_from_the_best_sections_page(quest
 
 
 async def test_app_help_tool_keeps_a_destination_the_console_labels_confirm():
-    """Another page's section adds its destination only when the console labels and
-    keywords name it too: "Kill the export job" keeps Analytics › Jobs (the Data export
-    section and the 'jobs' keywords both name it), never the Data export section alone.
+    """"Kill the export job" links Analytics › Jobs, where a job is cancelled, and never
+    Settings › Organization › Data export, where an export is started.
 
-    Round 16 XFINT: the best section is now the analyst guide's Analytics › Jobs section,
-    which says how to stop a running job and names only Analytics › Jobs. Before it, three
-    sections tied within 1 percent for this question and the Data export section could win
-    the tie, which lent its page's Data export destination to a question about the Jobs
-    page. The assertions are unchanged; the cross-page rule itself stays covered by the
-    destinations test above ("Where are runbooks?", "How do I export a chart as CSV?")."""
+    Round 16 XFINT: the best section is the analyst guide's Analytics › Jobs section, which
+    says how to stop a running job and names only Analytics › Jobs, so the best section's
+    page alone gives the destination. Before it, three sections tied within 1 percent for
+    this question and the Data export section could win the tie, which lent its page's
+    Data export destination to a question about the Jobs page. The assertions are
+    unchanged. The cross-page rule (another page's section adds its destination only when
+    the console labels and keywords name it too) stays covered by the destinations test
+    above ("Where are runbooks?", "How do I export a chart as CSV?")."""
     outcome = await AppHelpTool().run(_ctx(_role_grants("super_admin")), query="Kill the export job")
     assert outcome.ok
     assert "page:batchjobs" in outcome.console_links, outcome.console_links
     assert "settings:data_export" not in outcome.console_links, outcome.console_links
+
+
+def test_the_jobs_section_never_promises_a_partial_export_after_cancel():
+    """The Jobs section answers "Kill the export job". It must not read as if a cancelled
+    export keeps the part it wrote: Settings › Data export says a cancelled or incomplete
+    export exposes no artifact. Work a job already committed stays, so the section says
+    both (XFINT review)."""
+    chunks = get_app_knowledge().chunks_by_id
+    jobs = " ".join(chunks["analyst/analytics#jobs:0"].text.split())
+    assert "is not undone, but a cancelled export leaves no file to download." in jobs, jobs
+    assert "work the job already finished is kept" not in jobs, jobs
+    # The rule the sentence states is the export contract the Data export section gives.
+    export = " ".join(" ".join(c.text.split()) for key, c in chunks.items()
+                      if key.startswith("administration/settings#export-portable-application-state:"))
+    assert "A cancelled or otherwise incomplete export exposes no artifact." in export
 
 
 async def test_app_help_tool_keeps_the_standup_for_a_shift_brief():
