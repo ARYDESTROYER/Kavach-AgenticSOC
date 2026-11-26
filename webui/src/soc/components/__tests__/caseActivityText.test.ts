@@ -8,7 +8,15 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { activityActorLabel, activityKindLabel, activityText, decisionRecordSentence, notifyDelivery } from '../caseActivityText';
+import {
+  activityActorLabel,
+  activityKindLabel,
+  activityText,
+  decisionRecordSentence,
+  decisionWords,
+  notifyDelivery,
+  triggerSentenceText,
+} from '../caseActivityText';
 
 const row = (summary: string, kind = 'decision', actor = 'case_manager') => ({ summary, kind, actor });
 
@@ -539,5 +547,69 @@ describe('decisionRecordSentence (XFCM: the Brief decision line)', () => {
     expect(
       decisionRecordSentence('verdict=X status=constructor decision_by=toString risk=1 cost=0 confidence=0.1'),
     ).toBe('Constructor.');
+  });
+});
+
+describe('decisionWords (FXA1: the Decision lane and the History share one mapping)', () => {
+  // The fixed templates decide() writes (backend/app/engine/case_manager.py), verbatim.
+  const AUTO = 'FALSE_POSITIVE auto-closed: confidence 0.87 >= 0.85 and risk 13.6 <= 30.0; objection window 1440m.';
+  const TP_OFF = 'True positive routed to human: tp auto-close disabled.';
+  const FP_OFF = 'False positive routed to human: fp auto-close disabled.';
+  const FAIL_SAFE = 'No confident close decision; routing to human (fail-safe).';
+  const bar = (conf: string, risk: string) =>
+    `FALSE_POSITIVE routed to human: did not clear the auto-close bar (confidence ${conf} vs 0.85, risk ${risk} vs 30.0).`;
+
+  it('words every engine template, never the raw record', () => {
+    expect(decisionWords(AUTO)).toEqual({
+      route: 'Closed automatically by the case policy.',
+      why: 'It met the auto-close bar.',
+    });
+    for (const off of [TP_OFF, FP_OFF]) {
+      expect(decisionWords(off)).toEqual({
+        route: 'Sent to an analyst by the case policy.',
+        why: 'Auto-close is off for this verdict.',
+      });
+    }
+    expect(decisionWords(FAIL_SAFE)?.why).toBe('This verdict never closes automatically.');
+    expect(decisionWords(bar('0.60', '12.0'))?.why).toBe('Confidence was below the auto-close bar.');
+    expect(decisionWords(bar('0.90', '55.0'))?.why).toBe('Risk was above the auto-close bar.');
+    expect(decisionWords(bar('0.60', '55.0'))?.why).toBe('Confidence was below and risk above the auto-close bar.');
+    for (const raw of [AUTO, TP_OFF, FP_OFF, FAIL_SAFE, bar('0.60', '12.0')]) {
+      const { route, why } = decisionWords(raw)!;
+      expect(`${route} ${why}`).not.toMatch(/FALSE_POSITIVE|>=|<=|tp auto-close|fp auto-close|fail-safe|1440m/);
+    }
+  });
+
+  it('reads the case manager record with its gate, as the record sentence does', () => {
+    expect(
+      decisionWords(
+        'verdict=TRUE_POSITIVE status=escalated decision_by=system risk=7.41 cost=0.02 confidence=0.9 auto_close_gate=class_disabled',
+      ),
+    ).toEqual({ route: 'Escalated by the system.', why: 'Auto-close is off for this verdict.' });
+    expect(
+      decisionWords('verdict=TRUE_POSITIVE status=escalated decision_by=system risk=7.41 cost=hidden confidence=0.9'),
+    ).toEqual({ route: 'Escalated by the system.', why: '' });
+  });
+
+  it('returns null for any other text, so the caller never shows it as it is', () => {
+    expect(decisionWords('Escalated for a person to review.')).toBeNull();
+    expect(decisionWords('gate=open route=human')).toBeNull();
+    expect(decisionWords('')).toBeNull();
+    expect(decisionWords(null)).toBeNull();
+  });
+});
+
+describe('triggerSentenceText (FXA1: a severity range with equal ends)', () => {
+  const lead = "'web_access' event from user vpatel (rule configured to investigate every occurrence)";
+
+  it('reads equal ends as one value', () => {
+    expect(triggerSentenceText(`${lead}; severity 30\u201330`)).toBe(`${lead}; severity 30`);
+    expect(triggerSentenceText(`${lead}; severity 7.5\u20137.5`)).toBe(`${lead}; severity 7.5`);
+  });
+
+  it('keeps a real range and any other sentence as stored', () => {
+    expect(triggerSentenceText(`${lead}; severity 30\u201375`)).toBe(`${lead}; severity 30\u201375`);
+    expect(triggerSentenceText(lead)).toBe(lead);
+    expect(triggerSentenceText('  ')).toBe('');
   });
 });

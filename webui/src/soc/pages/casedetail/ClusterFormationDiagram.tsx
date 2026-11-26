@@ -10,6 +10,7 @@ import type { LucideIcon } from 'lucide-react';
 
 import { cn } from '@/lib/cn';
 import { middleEllipsis } from './caseFacts';
+import { triggerSentenceText } from '@/soc/components/caseActivityText';
 import { DASH, caseLabel, humanizeToken } from '@/lib/format';
 import { isSafeCaseId } from '@/soc/case-result-route';
 import { safeRouteHref, useRouteLinkClick } from '@/soc/route-link';
@@ -173,7 +174,9 @@ export function ClusterFormationDiagram({ data }: { data: ClusterExplanation | n
   // Middle-ellipsis keeps the distinguishing tail of a long id visible (CM-8); the full
   // id stays in the hover detail.
   const caseLabel = caseFullLabel ? middleEllipsis(caseFullLabel, 12, 6) : 'Opened case';
-  const correlationSummary = correlation.reason || [
+  // The stored trigger sentence, as the Brief and Evidence show it (equal severity ends
+  // read as one value).
+  const correlationSummary = triggerSentenceText(correlation.reason) || [
     correlation.group_by ? `Grouped by ${humanizeToken(correlation.group_by)}` : '',
     correlation.window_seconds ? secondsLabel(correlation.window_seconds) : '',
   ].filter(Boolean).join(' · ') || 'Persisted correlation details are limited for this older case.';

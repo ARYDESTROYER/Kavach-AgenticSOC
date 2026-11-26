@@ -122,7 +122,8 @@ def test_the_quickstart_and_readme_give_the_ai_and_decision_order():
     """Round 16 moved the Decision into the Brief's lanes, after the AI lane, and left
     the AI investigation tab with nothing the code made (no Code tag)."""
     brief = _text(CASEDETAIL / "OverviewPanel.tsx")
-    assert brief.index('name="AI"') < brief.index("name={decisionTitle(c)}")
+    # FXA1: the AI lane is named "Assessment" (its tag already says AI).
+    assert brief.index('name="Assessment"') < brief.index("name={decisionTitle(c)}")
     panel = _text(CASEDETAIL / "InvestigationPanel.tsx")
     assert 'title="AI assessment"' in panel
     assert 'kind="code"' not in panel and "decisionTitle" not in panel
@@ -132,8 +133,8 @@ def test_the_quickstart_and_readme_give_the_ai_and_decision_order():
         assert "advisory AI assessment below gives" not in text, page.name
     quickstart = _flat(QUICKSTART)
     assert (
-        "a case's Brief tab shows the **AI** lane, labelled **AI**, and then the **Decision** "
-        "lane, labelled **Code**." in quickstart
+        "a case's Brief tab shows the **Assessment** lane, labelled **AI**, and then the "
+        "**Decision** lane, labelled **Code**." in quickstart
     )
     assert "a case's Investigation tab shows" not in quickstart
     # Until the Case Manager screenshot is captured again, its alt text describes the
@@ -219,7 +220,7 @@ def test_first_case_describes_the_brief_lanes():
     """Round 15: the Overview led with the AI's summary. Round 16: the Brief keeps the
     source, the AI, the code and the people apart in four tagged lanes."""
     brief = _text(CASEDETAIL / "OverviewPanel.tsx")
-    for lane in ('name="Evidence"', 'name="AI"', "name={decisionTitle(c)}", 'name="People"'):
+    for lane in ('name="Evidence"', 'name="Assessment"', "name={decisionTitle(c)}", 'name="People"'):
         assert lane in brief, lane
     assert "How this case was built" in brief
     assert "SOURCE SAYS" not in brief and "DECISION SUMMARY" not in brief
@@ -452,7 +453,7 @@ def test_the_case_docs_match_the_brief_and_the_case_facts_code():
     assert "the deterministic DecisionCard folded under Policy inputs" in _prose(USAGE)
 
     lanes = _brief_lanes()
-    assert lanes == {"Evidence": True, "AI": True, "Decision": False, "People": True}
+    assert lanes == {"Evidence": True, "Assessment": True, "Decision": False, "People": True}
     linked = [name for name, links in lanes.items() if links]
     manager = _prose(CASE_MANAGER_MD)
     assert "linking to its tab" not in manager

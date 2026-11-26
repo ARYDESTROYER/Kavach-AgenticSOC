@@ -428,7 +428,10 @@ export const FactsRail: React.FC<FactsRailProps> = ({
     <section ref={railRef} aria-label="Case facts" data-testid="case-facts-rail" className={cn('text-sm', className)}>
       <RailSection {...section('outcome')} testId="facts-outcome">
         <p data-testid="facts-outcome-headline" className="font-medium text-foreground">
-          {outcome.headline}
+          {/* Nobody settled it yet: the AI-led headline would only say the verdict line
+              below again, so the outcome reads as not classified (one home per fact). A
+              classification a later AI run kept keeps its own reading. */}
+          {outcome.source === 'pending' && !entry ? 'Not classified yet' : outcome.headline}
         </p>
         {outcome.source === 'analyst' && (entry?.by || entry?.at) ? (
           <p className="text-xs text-muted-foreground">

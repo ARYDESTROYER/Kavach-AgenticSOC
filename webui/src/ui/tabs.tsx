@@ -48,25 +48,103 @@ const FORCED_ACTIVE_RULE = 'forced-colors:data-[state=active]:after:border-[High
 const FORCED_ACTIVE_BOX =
   'forced-colors:data-[state=active]:outline forced-colors:data-[state=active]:outline-2 forced-colors:data-[state=active]:-outline-offset-2 forced-colors:data-[state=active]:outline-[Highlight]';
 
+/** The width of the fade at an edge of an underline list that scrolls. */
+const EDGE_FADE_PX = 24;
+
+/**
+ * An underline list scrolls sideways when its tabs do not fit (a phone-width case
+ * header). Two things keep the selected tab findable there: whenever the selection or the
+ * list's size changes, the list's own `scrollLeft` moves just enough to bring the
+ * selected trigger, clear of the fade, inside it (never `scrollIntoView`, which would also
+ * scroll the page and any framed board around it); and each edge that has more tabs past
+ * it fades out (a mask, so it works on any surface), marked `data-overflow` (`start`,
+ * `end` or `both`). A list that fits is left exactly as it was.
+ */
+function useUnderlineOverflow(list: HTMLElement | null, enabled: boolean): void {
+  React.useLayoutEffect(() => {
+    if (!list || !enabled) return undefined;
+    const paint = () => {
+      const room = list.scrollWidth - list.clientWidth;
+      const start = room > 1 && list.scrollLeft > 1;
+      const end = room > 1 && list.scrollLeft < room - 1;
+      const mark = start && end ? 'both' : start ? 'start' : end ? 'end' : '';
+      if (mark) list.setAttribute('data-overflow', mark);
+      else list.removeAttribute('data-overflow');
+      const mask = mark
+        ? `linear-gradient(to right, transparent, black ${start ? EDGE_FADE_PX : 0}px, black calc(100% - ${end ? EDGE_FADE_PX : 0}px), transparent)`
+        : '';
+      list.style.setProperty('mask-image', mask);
+      list.style.setProperty('-webkit-mask-image', mask);
+    };
+    const reveal = () => {
+      const active = list.querySelector<HTMLElement>('[role="tab"][data-state="active"]');
+      if (active && list.scrollWidth - list.clientWidth > 1) {
+        const box = list.getBoundingClientRect();
+        const tab = active.getBoundingClientRect();
+        const left = tab.left - box.left;
+        const right = tab.right - box.left;
+        if (left < EDGE_FADE_PX) list.scrollLeft = Math.max(0, list.scrollLeft + left - EDGE_FADE_PX);
+        else if (right > list.clientWidth - EDGE_FADE_PX) {
+          list.scrollLeft += right - list.clientWidth + EDGE_FADE_PX;
+        }
+      }
+      paint();
+    };
+    reveal();
+    list.addEventListener('scroll', paint, { passive: true });
+    // A new selection, or a tab whose label or count changed width.
+    const selection = new MutationObserver(reveal);
+    selection.observe(list, {
+      subtree: true,
+      childList: true,
+      characterData: true,
+      attributes: true,
+      attributeFilter: ['data-state'],
+    });
+    const size = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(reveal);
+    size?.observe(list);
+    return () => {
+      list.removeEventListener('scroll', paint);
+      selection.disconnect();
+      size?.disconnect();
+      list.removeAttribute('data-overflow');
+      list.style.removeProperty('mask-image');
+      list.style.removeProperty('-webkit-mask-image');
+    };
+  }, [list, enabled]);
+}
+
 const TabsList = React.forwardRef<
   React.ElementRef<typeof TabsPrimitive.List>,
   React.ComponentPropsWithoutRef<typeof TabsPrimitive.List> & { variant?: TabsListVariant; density?: TabsListDensity }
->(({ className, variant = 'boxed', density = 'default', ...props }, ref) => (
-  <TabsVariantContext.Provider value={React.useMemo(() => ({ variant, density }), [variant, density])}>
-    <TabsPrimitive.List
-      ref={ref}
-      data-variant={variant}
-      data-density={density === 'compact' ? density : undefined}
-      className={cn(
-        variant === 'underline'
-          ? '-mx-1.5 flex w-[calc(100%+0.75rem)] items-end justify-start gap-2 overflow-x-auto border-b border-border/70 text-muted-foreground'
-          : 'inline-flex h-9 items-center justify-center gap-0.5 rounded-md border border-border/80 bg-transparent p-0.5 text-muted-foreground',
-        className,
-      )}
-      {...props}
-    />
-  </TabsVariantContext.Provider>
-));
+>(({ className, variant = 'boxed', density = 'default', ...props }, ref) => {
+  const [list, setList] = React.useState<HTMLDivElement | null>(null);
+  const setRef = React.useCallback(
+    (node: HTMLDivElement | null) => {
+      setList(node);
+      if (typeof ref === 'function') ref(node);
+      else if (ref) ref.current = node;
+    },
+    [ref],
+  );
+  useUnderlineOverflow(list, variant === 'underline');
+  return (
+    <TabsVariantContext.Provider value={React.useMemo(() => ({ variant, density }), [variant, density])}>
+      <TabsPrimitive.List
+        ref={setRef}
+        data-variant={variant}
+        data-density={density === 'compact' ? density : undefined}
+        className={cn(
+          variant === 'underline'
+            ? '-mx-1.5 flex w-[calc(100%+0.75rem)] items-end justify-start gap-2 overflow-x-auto border-b border-border/70 text-muted-foreground'
+            : 'inline-flex h-9 items-center justify-center gap-0.5 rounded-md border border-border/80 bg-transparent p-0.5 text-muted-foreground',
+          className,
+        )}
+        {...props}
+      />
+    </TabsVariantContext.Provider>
+  );
+});
 TabsList.displayName = TabsPrimitive.List.displayName;
 
 const TabsTrigger = React.forwardRef<

@@ -34,6 +34,7 @@ import { cn } from '@/lib/cn';
 
 import { Badge } from '@/ui/badge';
 
+import { triggerSentenceText } from '@/soc/components/caseActivityText';
 import { InlineCode } from '@/soc/components/CodeBlock';
 import { BaselineSignatureCard } from '@/soc/components/BaselineGauge';
 import { baselineApi, type BaselineSignature } from '@/soc/Baseline.api';
@@ -61,10 +62,14 @@ function entityTypeLabel(type: string): string {
 
 const FIELD_LABEL = 'text-xs font-medium text-muted-foreground';
 
-/** The trigger sentence a detection recorded ("why it fired"), or empty. Plain data (#9). */
+/**
+ * The trigger sentence a detection recorded ("why it fired"), or empty, as the Console
+ * shows it (`triggerSentenceText`: a severity range with equal ends reads as one value;
+ * the stored sentence is unchanged). Plain data (#9).
+ */
 export function triggerSentence(c: Case): string {
   const trigger = c.trigger_reason as { sentence?: unknown } | undefined;
-  return typeof trigger?.sentence === 'string' ? trigger.sentence.trim() : '';
+  return typeof trigger?.sentence === 'string' ? triggerSentenceText(trigger.sentence) : '';
 }
 
 /** A dependency-free "copy this value" chip (#9-safe: copies a plain string). */

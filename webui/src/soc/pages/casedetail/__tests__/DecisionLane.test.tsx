@@ -10,7 +10,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent, within } from '@testing-library/react';
 import { axe, toHaveNoViolations } from 'jest-axe';
 
-import { DecisionLane, autoCloseLine, type DecisionLaneProps } from '../DecisionLane';
+import { DecisionLane, autoCloseLine, decisionTitle, type DecisionLaneProps } from '../DecisionLane';
 import type { Case, CaseRationale } from '@/lib/types';
 import type { TimelineResponse, TraceSpan } from '@/soc/pages/CaseDetail.api';
 
@@ -57,12 +57,13 @@ function renderLane(over: Partial<DecisionLaneProps> = {}) {
 }
 
 describe('DecisionLane', () => {
-  it('writes the decision record as a sentence, and keeps prose as prose (XFCM)', () => {
+  it('writes the decision record as a sentence, and never shows other text as it is (XFCM, FXA1)', () => {
     const record =
       'verdict=TRUE_POSITIVE status=escalated decision_by=system risk=7.41 cost=0.02 confidence=0.9 auto_close_gate=class_disabled';
     const { unmount } = renderLane({ rationale: { decision_rationale: record } as unknown as CaseRationale });
     const line = screen.getByTestId('decision-line');
-    expect(line).toHaveTextContent(/^Escalated by the system\.$/);
+    // No auto-close reading here (the policy is not known), so the recorded reason follows.
+    expect(line).toHaveTextContent(/^Escalated by the system\. Auto-close is off for this verdict\.$/);
     expect(line).not.toHaveClass('font-mono');
     expect(line).toHaveClass('text-base');
     // The header's facts and the cost are not repeated here.
@@ -71,9 +72,38 @@ describe('DecisionLane', () => {
       expect(lane.textContent).not.toContain(token);
     }
     unmount();
+    // Text that is neither the record nor an engine template reads as the neutral line.
     renderLane();
     expect(screen.getByTestId('decision-line')).not.toHaveClass('font-mono');
-    expect(screen.getByTestId('decision-line')).toHaveTextContent('Escalated for a person to review.');
+    expect(screen.getByTestId('decision-line')).toHaveTextContent(
+      /^The server-side case policy recorded the outcome shown for this case\.$/,
+    );
+  });
+
+  it('words the rationale decide() wrote, never the raw engine string (FXA1)', () => {
+    const auto = 'FALSE_POSITIVE auto-closed: confidence 0.87 >= 0.85 and risk 13.6 <= 30.0; objection window 1440m.';
+    const { unmount } = renderLane({
+      c: { ...CASE, verdict: 'FALSE_POSITIVE', status: 'closed', decision_by: 'agent', confidence: 0.87, risk_score: 13.6 } as Case,
+      rationale: { decision_rationale: auto } as unknown as CaseRationale,
+      policy: { enabled: true, min_confidence: 0.85, max_risk_score: 30 },
+    });
+    // The auto-close reading says why, so the line is the route alone: said once.
+    expect(screen.getByTestId('decision-line')).toHaveTextContent(/^Closed automatically by the case policy\.$/);
+    expect(screen.getByTestId('decision-auto-close')).toHaveTextContent(/^Eligible for auto-close/);
+    const lane = screen.getByTestId('brief-decision');
+    for (const raw of ['FALSE_POSITIVE', '>=', '<=', '1440m', 'auto-closed:']) expect(lane.textContent).not.toContain(raw);
+    // Policy inputs keeps the record word for word.
+    fireEvent.click(screen.getByRole('button', { name: /Policy inputs/ }));
+    expect(screen.getByText(auto)).toBeInTheDocument();
+    unmount();
+
+    renderLane({
+      c: { ...CASE, verdict: 'NEEDS_HUMAN', status: 'needs_human', decision_by: 'system' } as Case,
+      rationale: { decision_rationale: 'No confident close decision; routing to human (fail-safe).' } as unknown as CaseRationale,
+      policy: { enabled: true, min_confidence: 0.85, max_risk_score: 30 },
+    });
+    expect(screen.getByTestId('decision-line')).toHaveTextContent(/^Sent to an analyst by the case policy\.$/);
+    expect(screen.getByTestId('brief-decision')).not.toHaveTextContent(/fail-safe|routing to human/);
   });
 
   it('leaves an unknown key=value record to Policy inputs and says the plain line instead (XFCM)', () => {
@@ -104,8 +134,11 @@ describe('DecisionLane', () => {
     expect(screen.getByTestId('decision-auto-close')).toHaveTextContent('Below the 0.85 auto-close confidence bar');
   });
 
-  it('reads a human close as "Analyst resolved" and the authority as the analyst\'s', () => {
+  it('reads a human close as the analyst\'s, in its authority and its record', () => {
     renderLane({
+      rationale: {
+        decision_rationale: 'No confident close decision; routing to human (fail-safe).',
+      } as unknown as CaseRationale,
       c: {
         ...CASE,
         verdict: 'NEEDS_HUMAN',
@@ -124,8 +157,10 @@ describe('DecisionLane', () => {
     // inspector's and the People lane's, never this lane's.
     expect(lane).not.toHaveTextContent('Closed as false positive by aryan');
     expect(lane).not.toHaveTextContent('aryan');
-    // The line is what the policy recorded before the analyst.
-    expect(screen.getByTestId('decision-line')).toHaveTextContent(/^Before the analyst: Escalated for a person to review\.$/);
+    // The line is what the policy recorded before the analyst, in words, with its reason.
+    expect(screen.getByTestId('decision-line')).toHaveTextContent(
+      /^Before the analyst: Sent to an analyst by the case policy\. This verdict never closes automatically\.$/,
+    );
     expect(screen.getByTestId('decision-authority')).toHaveTextContent(/closed by an analyst/i);
     // A person settled it: no auto-close reading.
     expect(screen.queryByTestId('decision-auto-close')).toBeNull();
@@ -147,8 +182,24 @@ describe('DecisionLane', () => {
           'verdict=TRUE_POSITIVE status=escalated decision_by=system risk=7.41 cost=hidden confidence=0.9 auto_close_gate=class_disabled',
       } as unknown as CaseRationale,
     });
-    expect(screen.getByTestId('decision-line')).toHaveTextContent(/^Before the analyst: Escalated by the system\.$/);
+    expect(screen.getByTestId('decision-line')).toHaveTextContent(
+      /^Before the analyst: Escalated by the system\. Auto-close is off for this verdict\.$/,
+    );
     expect(screen.getByTestId('brief-decision')).not.toHaveTextContent('aryan');
+  });
+
+  it('names the lane "Decision" when a person settled it, never a status or the tag again (FXA1)', () => {
+    const closedBy = (status: string) =>
+      ({
+        ...CASE,
+        status,
+        decision_by: 'analyst',
+        history: [{ event: 'analyst_action', action: 'close', analyst: 'aryan', ts: '2026-10-09T10:00:00Z' }],
+      }) as unknown as Case;
+    // The lane's Analyst tag says who; the name says what ("Analyst Decision").
+    expect(decisionTitle(closedBy('closed'))).toBe('Decision');
+    expect(decisionTitle(closedBy('resolved'))).toBe('Decision');
+    expect(decisionTitle(CASE)).toBe('Decision');
   });
 
   it("shows the authority sentence alone on a person's close with no policy record (XFCM)", () => {

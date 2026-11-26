@@ -244,8 +244,8 @@ its type, status, enabled switch, last event, and protocol.
 <figcaption>Sources in the demo: five connected sources, all ready.</figcaption>
 </figure>
 
-In **Case Manager**, a case's Brief tab shows the **AI** lane, labelled **AI**, and then
-the **Decision** lane, labelled **Code**. The AI investigation tab holds the advisory
+In **Case Manager**, a case's Brief tab shows the **Assessment** lane, labelled **AI**, and
+then the **Decision** lane, labelled **Code**. The AI investigation tab holds the advisory
 **AI assessment** and the trace; the decision's policy inputs are one click away in the
 Decision lane. The close or escalate decision is made by deterministic code against the
 operator policy, never by the model. Point at the case's risk score to see its formula

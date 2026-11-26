@@ -561,6 +561,17 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
     [onCaseChange],
   );
 
+  // The close confirmation on screen, with its Reopen: it leaves as soon as the case it
+  // names is shown not closed (an AI run that replaced the close, D10, or a reopen made
+  // elsewhere), so a stale Reopen is never offered.
+  const closeToastRef = React.useRef<{ caseId: string; toastId: string | number } | null>(null);
+  React.useEffect(() => {
+    const shown = closeToastRef.current;
+    if (!shown || !c || c.case_id !== shown.caseId || caseIsTerminal(c.status)) return;
+    closeToastRef.current = null;
+    toast.dismiss(shown.toastId);
+  }, [c]);
+
   // Campaign membership (#51): the cross-case campaign this case belongs to, if any.
   // Advisory only (#3/#4): a campaign is a reporting grouping that never closes /
   // escalates / re-clusters the case. Best-effort: campaigns may be disabled.
@@ -1602,7 +1613,12 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
         } else {
           const closedId = id;
           const canReopen = hasPermission(ACTION_PERMISSION.reopen.resource, ACTION_PERMISSION.reopen.action);
-          toast.success(`${verb} as ${humanizeToken(actionDisposition).toLowerCase()}.`, {
+          // Sync the queue always; the detail only if it still shows this case.
+          const syncCase = (fresh: Case) => {
+            if (activeIdRef.current === closedId) commitCase(fresh);
+            else onCaseChange?.(fresh);
+          };
+          const toastId = toast.success(`${verb} as ${humanizeToken(actionDisposition).toLowerCase()}.`, {
             duration: 8000,
             ...(canReopen
               ? {
@@ -1611,16 +1627,27 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
                   action: {
                     label: 'Reopen',
                     onClick: () => {
+                      // The case may have moved since this close: an AI run that was under
+                      // way replaces a close made during it (D10). Read it first, and reopen
+                      // only a case that is still closed, so the reopen never writes a
+                      // reason that is not true.
                       void api
-                        .caseActionExec(closedId, {
-                          action: 'reopen',
-                          note: 'Reopened from the close confirmation right after it was closed.',
-                        })
-                        .then((reopened) => {
-                          // Sync the queue always; the detail only if it still shows this case.
-                          if (activeIdRef.current === closedId) commitCase(reopened);
-                          else onCaseChange?.(reopened);
-                          toast.success('Reopened. The recorded outcome stays until you close it again.');
+                        .getCase(closedId)
+                        .then((current) => {
+                          if (!caseIsTerminal(current.status)) {
+                            syncCase(current);
+                            toast.message('The AI investigation already reopened this case.');
+                            return undefined;
+                          }
+                          return api
+                            .caseActionExec(closedId, {
+                              action: 'reopen',
+                              note: 'Reopened from the close confirmation right after it was closed.',
+                            })
+                            .then((reopened) => {
+                              syncCase(reopened);
+                              toast.success('Reopened. The recorded outcome stays until you close it again.');
+                            });
                         })
                         .catch((err: unknown) => {
                           toast.error(errorMessage(err, 'The case could not be reopened.'));
@@ -1630,6 +1657,9 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
                 }
               : {}),
           });
+          // The confirmation leaves once the case is no longer closed (an AI run replaced
+          // the close, or it was reopened elsewhere), so its Reopen is never stale.
+          closeToastRef.current = toastId === undefined ? null : { caseId: closedId, toastId };
         }
       }
       if (andNext && onAdvance) onAdvance();
@@ -2616,6 +2646,7 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
                           runbookRun={canReadRunbooks ? shownRun : null}
                           onOpenRunbook={(stepId) => requestRunbook(stepId ? { kind: 'step', stepId } : { kind: 'card' })}
                           runbookProgress={canReadRunbooks ? runbookProgress : null}
+                          runbookRuns={canReadRunbooks ? (runbookData?.runs ?? null) : null}
                           messageCount={messageCount}
                           filesCount={filesCount ? filesCount.count : null}
                           timeline={timeline}

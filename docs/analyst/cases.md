@@ -127,10 +127,10 @@ with **]**; a narrower pane opens them in a side sheet.
 
 - **Brief**: the case at a glance. When a runbook is attached to an open case, its
   **Next step** row sits at the top. Then four lanes, each tagged with where it comes
-  from: Evidence (why the detection fired), AI (the AI's summary in two or three
-  sentences and its recommendation), Decision (what the code decided, with the policy
-  inputs and any automation applied) and People (runbook progress, discussion, files and
-  the last human action). **How this case was built** folds the input → correlate → risk
+  from: Evidence (why the detection fired), Assessment (the AI's summary in two or three
+  sentences and its recommendation), Decision (what the code decided, in plain words,
+  with the policy inputs and any automation applied) and People (runbook progress,
+  discussion, files and the last status change or runbook step a person made). **How this case was built** folds the input → correlate → risk
   assigned → triage → investigate → decision story. Expanding Risk Assigned shows the
   scoring run's arithmetic (with today's weights, said so, for older cases); the final
   stage marker pulses.
@@ -150,7 +150,7 @@ with **]**; a narrower pane opens them in a side sheet.
   `runbooks:read` the tab shows the tasks alone. See
   [Case Manager](case-manager.md#work-the-runbook).
 - **Activity**: discussion with reactions, files, and the history with who, when, why
-  and the actions taken.
+  and the actions taken; an automatic decision shows the reason it recorded.
 - **Chat**: case-scoped questions using the shared chat engine.
 
 In Case Manager, the header offers one primary action for the case's state, and **Take

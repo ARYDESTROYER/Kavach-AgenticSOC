@@ -11,17 +11,18 @@
  *                    the full card is on the Response tab.
  *   3. THE LANES     one list, each lane tagged with its provenance and linking to its tab:
  *                    Evidence (`source`): why it fired and one line of counts and times;
- *                    AI (`ai`): the model's summary lead and its recommendation;
+ *                    Assessment (`ai`): the model's summary lead and its recommendation;
  *                    Decision (`code`, or the person who settled it): the decision line,
  *                    the auto-close reading, the authority sentence, Policy inputs and
  *                    Automation applied (`DecisionLane`);
  *                    People (`analyst`): runbook progress, discussion and files, and the
- *                    last human action.
+ *                    last human action (a lifecycle move or a runbook step a person did).
  *   4. HOW THIS CASE WAS BUILT  the six-stage story, folded: the one place the lanes meet.
  *
  * One home per fact: the lanes never repeat the header's verdict, confidence, risk,
- * status or owner. The AI lane is the model's own reasoning (G17); the decision text is
- * the code's and appears only in the Decision lane. A case the AI did not assess says so.
+ * status or owner. The Assessment lane is the model's own reasoning (G17); the decision
+ * text is the code's and appears only in the Decision lane. A case the AI did not assess
+ * says so.
  *
  * SECURITY (#9): every case-derived value (summary, recommendation, trigger sentence,
  * entity, source name, names) is UNTRUSTED, rendered as plain text, never as markup or a
@@ -113,9 +114,38 @@ export function evidenceFacts(c: Case): string[] {
   return parts;
 }
 
-/** The People lane's last human action ("Acknowledged by lee, 12m ago"), or null. */
-export function lastHumanAction(c: Case): string | null {
+/** The newest runbook step a person finished (done or not applicable), or null. */
+function lastPersonStep(
+  runs: readonly RunbookRun[] | null | undefined,
+): { words: string; who: string; at: string; ms: number } | null {
+  let best: { words: string; who: string; at: string; ms: number } | null = null;
+  for (const run of runs ?? []) {
+    for (const state of Object.values(run.steps ?? {})) {
+      if (!state || (state.status !== 'done' && state.status !== 'not_applicable')) continue;
+      const who = typeof state.completed_by === 'string' ? state.completed_by.trim() : '';
+      const at = typeof state.completed_at === 'string' ? state.completed_at : '';
+      const ms = Date.parse(at);
+      if (!who || Number.isNaN(ms) || (best && best.ms >= ms)) continue;
+      best = { words: state.status === 'done' ? 'Runbook step done' : 'Runbook step marked not applicable', who, at, ms };
+    }
+  }
+  return best;
+}
+
+/**
+ * The People lane's last human action ("Acknowledged by lee, 12m ago"): the newest of
+ * the person's lifecycle actions in the history and the runbook steps a person finished
+ * ("Runbook step done by asha.iyer, 12m ago"), or null when there is neither. Names are
+ * UNTRUSTED data for a text node (#9).
+ */
+export function lastHumanAction(c: Case, runs?: readonly RunbookRun[] | null): string | null {
   const item = caseHistoryItems(c).find((entry) => entry.actor === 'person');
+  const step = lastPersonStep(runs);
+  const itemMs = item?.ts ? Date.parse(item.ts) : Number.NaN;
+  // A history entry without a readable time keeps its place: it cannot be compared.
+  if (step && (!item || (!Number.isNaN(itemMs) && step.ms > itemMs))) {
+    return `${step.words} by ${step.who}, ${humanizeAge(step.at)}`;
+  }
   if (!item) return null;
   const when = item.ts ? `, ${humanizeAge(item.ts)}` : '';
   return `${item.title}${item.who ? ` by ${item.who}` : ''}${when}`;
@@ -206,7 +236,7 @@ const LaneLink: React.FC<{ onClick?: () => void; shortcut: string; children: Rea
 
 export interface OverviewPanelProps {
   c: Case;
-  /** The latest run's rationale: the AI lane leads with the model's reasoning. */
+  /** The latest run's rationale: the Assessment lane leads with the model's reasoning. */
   rationale?: CaseRationale | null;
   onNavigate?: Navigate;
   /** Open another tab of the case (a lane's link). */
@@ -219,6 +249,8 @@ export interface OverviewPanelProps {
   onOpenRunbook?: (stepId: string | null) => void;
   /** The runbook progress over every run, for the People lane; null when none. */
   runbookProgress?: RunbookProgress | null;
+  /** Every runbook run on the case, so the People lane names the last step a person did. */
+  runbookRuns?: readonly RunbookRun[] | null;
   /** The visible discussion messages and the files, when they are known. */
   messageCount?: number | null;
   filesCount?: number | null;
@@ -244,6 +276,7 @@ export const OverviewPanel: React.FC<OverviewPanelProps> = ({
   runbookRun = null,
   onOpenRunbook,
   runbookProgress = null,
+  runbookRuns = null,
   messageCount = null,
   filesCount = null,
   timeline = null,
@@ -271,7 +304,7 @@ export const OverviewPanel: React.FC<OverviewPanelProps> = ({
 
   // A person settled it: the lane is theirs; an operator's analyst policy and the code are code.
   const decisionKind = isHumanClosed(c) && caseOutcome(c).source !== 'analyst_policy' ? 'analyst' : 'code';
-  const lastAction = lastHumanAction(c);
+  const lastAction = lastHumanAction(c, runbookRuns);
   const people: string[] = [];
   if (runbookProgress && runbookProgress.total > 0) {
     const done = runbookProgress.done + runbookProgress.not_applicable;
@@ -287,6 +320,11 @@ export const OverviewPanel: React.FC<OverviewPanelProps> = ({
   if (typeof filesCount === 'number') {
     people.push(`${filesCount.toLocaleString()} screenshot${filesCount === 1 ? '' : 's'}`);
   }
+  // Work a person did that left no status change or named step: never "no one worked".
+  const worked =
+    (runbookProgress ? runbookProgress.done + runbookProgress.not_applicable > 0 : false) ||
+    (messageCount ?? 0) > 0 ||
+    (filesCount ?? 0) > 0;
 
   const open = (tab: CaseTab) => (onOpenTab ? () => onOpenTab(tab) : undefined);
 
@@ -342,7 +380,7 @@ export const OverviewPanel: React.FC<OverviewPanelProps> = ({
 
           <Lane
             kind="ai"
-            name="AI"
+            name="Assessment"
             testId="brief-lane-ai"
             links={<LaneLink onClick={open('investigation')} shortcut="Alt+3">Open AI investigation</LaneLink>}
           >
@@ -421,7 +459,7 @@ export const OverviewPanel: React.FC<OverviewPanelProps> = ({
           >
             <p className="text-sm text-foreground/90" data-testid="brief-last-action">
               {/* UNTRUSTED name: plain text. */}
-              {lastAction ?? 'No one has worked on this case yet.'}
+              {lastAction ?? (worked ? 'No status change by a person yet.' : 'No one has worked on this case yet.')}
             </p>
             {people.length ? <p className="text-xs text-muted-foreground">{people.join(' · ')}</p> : null}
           </Lane>
