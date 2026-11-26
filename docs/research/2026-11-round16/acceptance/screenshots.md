@@ -1,8 +1,8 @@
 # Release screenshots for 0.2.0 (WP17B)
 
 Every screenshot SPEC §5.3 asks for, in light and dark, and the eight highlights of the newest
-What's new update (`0.2.0.2026-12`) that now carry images. The 16 images the notes use are in
-`docs/assets/releases/0.2.0/`. The other 60 are review captures: WP17C moved them to
+What's new update (`0.2.0.2026-12`) that now carry images. Of these 76 files, the 16 the notes
+use are in `docs/assets/releases/0.2.0/`. The other 60 are review captures: WP17C moved them to
 `docs/research/2026-11-round16/acceptance/screenshots/` (written `screenshots/...` in the table
 below), which the Help Center bundle leaves out.
 
