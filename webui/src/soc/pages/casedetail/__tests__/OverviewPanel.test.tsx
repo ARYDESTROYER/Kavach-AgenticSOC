@@ -106,7 +106,8 @@ describe('OverviewPanel: the Brief (Round 16, D8)', () => {
     expect(names).toEqual(['source', 'ai', 'code', 'analyst']);
     for (const [testId, kind, name] of [
       ['brief-lane-evidence', 'source', 'Evidence'],
-      ['brief-lane-ai', 'ai', 'AI'],
+      // FXA1: "Assessment", so the lane does not read "AI AI" after its AI tag.
+      ['brief-lane-ai', 'ai', 'Assessment'],
       ['brief-lane-decision', 'code', 'Decision'],
       ['brief-lane-people', 'analyst', 'People'],
     ] as const) {
@@ -186,7 +187,8 @@ describe('OverviewPanel: the Brief (Round 16, D8)', () => {
       { policy: { enabled: false, min_confidence: 0.99 } },
     );
     const decision = screen.getByTestId('brief-decision');
-    expect(within(decision).getByTestId('decision-line')).toHaveTextContent('No confident close decision; routing to human (fail-safe).');
+    // The engine's rationale in words (FXA1); the auto-close reading below says why.
+    expect(within(decision).getByTestId('decision-line')).toHaveTextContent(/^Sent to an analyst by the case policy\.$/);
     expect(within(decision).getByTestId('decision-auto-close')).toHaveTextContent('True-positive auto-close is off, so a person decides.');
     expect(screen.getAllByText('Made by code against the auto-close policy, never by the model.')).toHaveLength(1);
     expect(within(decision).getByRole('button', { name: /Policy inputs/ })).toBeInTheDocument();
@@ -229,9 +231,9 @@ describe('OverviewPanel: the Brief (Round 16, D8)', () => {
     const decision = screen.getByTestId('brief-decision');
     expect(decision).not.toHaveTextContent('Closed as false positive');
     expect(decision).not.toHaveTextContent('aryan');
-    // The line is the policy's own record from before the analyst.
+    // The line is the policy's own record from before the analyst, in words (FXA1).
     expect(within(decision).getByTestId('decision-line')).toHaveTextContent(
-      'Before the analyst: No confident close decision; routing to human (fail-safe).',
+      /^Before the analyst: Sent to an analyst by the case policy\. This verdict never closes automatically\.$/,
     );
     expect(screen.getByTestId('brief-last-action')).toHaveTextContent(/^Closed as false positive by aryan, /);
   });
@@ -311,6 +313,45 @@ describe('the Brief facts helpers', () => {
         last_seen_millis: Date.parse('2026-11-04T00:01:00Z'),
       } as unknown as Case),
     ).toEqual(['first 2026-11-03 23:59 UTC', 'last 2026-11-04 00:01 UTC']);
+  });
+
+  it('names the runbook step a person did when no person changed the status (FXA1)', () => {
+    const ago = (minutes: number) => new Date(Date.now() - minutes * 60_000).toISOString();
+    const run = (steps: Record<string, unknown>) => ({ ...RUN, steps }) as unknown as RunbookRun;
+    const worked = run({
+      s1: { status: 'done', completed_by: 'asha.iyer', completed_at: ago(12) },
+      s2: { status: 'todo', completed_by: null, completed_at: null },
+    });
+    const c = { ...CASE, history: [{ event: 'decision', status: 'needs_human', decision_by: 'system' }] } as unknown as Case;
+    expect(lastHumanAction(c, [worked])).toBe('Runbook step done by asha.iyer, 12m ago');
+    renderBrief(c, {
+      runbookRuns: [worked],
+      runbookProgress: { done: 1, not_applicable: 0, total: 9, required_open: 8, blocked: 0, waiting: 0 },
+    });
+    expect(screen.getByTestId('brief-last-action')).toHaveTextContent(/^Runbook step done by asha\.iyer, 12m ago$/);
+    expect(screen.getByTestId('brief-lane-people')).not.toHaveTextContent('No one has worked on this case yet.');
+  });
+
+  it('keeps the newer of a status change and a runbook step (FXA1)', () => {
+    const ago = (minutes: number) => new Date(Date.now() - minutes * 60_000).toISOString();
+    const runs = [{ ...RUN, steps: { s1: { status: 'not_applicable', completed_by: 'lee', completed_at: ago(5) } } }] as unknown as RunbookRun[];
+    const acked = (minutes: number) =>
+      ({ ...CASE, history: [{ event: 'analyst_action', action: 'acknowledge', analyst: 'mira', ts: ago(minutes) }] }) as unknown as Case;
+    expect(lastHumanAction(acked(30), runs)).toBe('Runbook step marked not applicable by lee, 5m ago');
+    expect(lastHumanAction(acked(2), runs)).toBe('Acknowledged by mira, 2m ago');
+  });
+
+  it('says no status change yet, never "no one worked", when people left messages or files (FXA1)', () => {
+    renderBrief({ ...CASE, history: [] } as unknown as Case, { messageCount: 2, filesCount: 0 });
+    expect(screen.getByTestId('brief-last-action')).toHaveTextContent(/^No status change by a person yet\.$/);
+  });
+
+  it('reads a severity range with equal ends as one value (FXA1)', () => {
+    renderBrief({
+      ...CASE,
+      trigger_reason: { sentence: "'web_access' event from user vpatel; severity 30\u201330" },
+    } as unknown as Case);
+    expect(screen.getByTestId('brief-trigger')).toHaveTextContent(/^'web_access' event from user vpatel; severity 30$/);
   });
 
   it('lastHumanAction reads the newest person entry, never the agent or the code', () => {

@@ -30,6 +30,7 @@ import { formatTimestamp, humanizeAge, humanizeToken } from '@/lib/format';
 
 import { Button } from '@/ui/button';
 
+import { decisionWords } from '@/soc/components/caseActivityText';
 import { dispositionWords } from '@/soc/components/outcome';
 
 import { actionTakenWords } from './shared';
@@ -107,6 +108,9 @@ function decisionItem(entry: Record<string, unknown>, key: string): CaseHistoryI
     details: [],
     actionsTaken: [],
     note: '',
+    // The reason `decide()` recorded, in the Decision lane's words (one mapping); any
+    // other text stays in the record (View all fields), never shown here as it is.
+    reason: decisionWords(text(entry.rationale))?.why ?? '',
   };
 }
 
@@ -223,6 +227,52 @@ export function caseHistoryItems(c: Pick<Case, 'history'> | Case): CaseHistoryIt
   return out.reverse();
 }
 
+/**
+ * A note the person wrote, clamped to three lines with "Show more" when it is longer, so
+ * the whole note is one press away for touch and keyboard users too (a hover title is
+ * not). The toggle shows only when the clamp actually cuts the note, measured as the
+ * pane resizes. UNTRUSTED: a plain text node (#9).
+ */
+const HistoryNote: React.FC<{ note: string }> = ({ note }) => {
+  const [open, setOpen] = React.useState(false);
+  const [cut, setCut] = React.useState(false);
+  const ref = React.useRef<HTMLParagraphElement | null>(null);
+  const id = React.useId();
+  React.useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el || open) return undefined;
+    const measure = () => setCut(el.scrollHeight > el.clientHeight + 1);
+    measure();
+    if (typeof ResizeObserver === 'undefined') return undefined;
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [note, open]);
+  return (
+    <>
+      <p
+        ref={ref}
+        id={id}
+        data-testid="case-history-note"
+        className={cn('mt-0.5 whitespace-pre-wrap break-words text-xs text-foreground/80', !open && 'line-clamp-3')}
+      >
+        {note}
+      </p>
+      {cut || open ? (
+        <button
+          type="button"
+          aria-expanded={open}
+          aria-controls={id}
+          onClick={() => setOpen((value) => !value)}
+          className="mt-0.5 rounded-sm text-xs font-medium text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          {open ? 'Show less' : 'Show more'}
+        </button>
+      ) : null}
+    </>
+  );
+};
+
 /** How many entries show before "Show all". */
 const HISTORY_PREVIEW = 8;
 
@@ -285,12 +335,7 @@ export const CaseHistory: React.FC<{ c: Case; className?: string }> = ({ c, clas
                 <span className="text-foreground/80">{item.resolution}</span>
               </p>
             ) : null}
-            {item.note ? (
-              /* UNTRUSTED note: plain text, clamped (its full text is in the hover title). */
-              <p className="mt-0.5 line-clamp-3 whitespace-pre-wrap break-words text-xs text-foreground/80" title={item.note}>
-                {item.note}
-              </p>
-            ) : null}
+            {item.note ? <HistoryNote note={item.note} /> : null}
           </li>
         ))}
       </ol>

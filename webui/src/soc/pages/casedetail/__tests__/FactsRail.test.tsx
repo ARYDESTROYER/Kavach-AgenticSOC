@@ -410,6 +410,21 @@ describe('FactsRail', () => {
   });
 });
 
+describe('FactsRail: an outcome nobody has settled (FXA1)', () => {
+  it('reads "Not classified yet" over the AI verdict line, never the verdict twice', () => {
+    renderRail({ ...FULL, status: 'needs_human', decision_by: 'system', disposition: 'undetermined', history: [] } as unknown as Case);
+    const outcome = screen.getByTestId('facts-outcome');
+    expect(within(outcome).getByTestId('facts-outcome-headline')).toHaveTextContent(/^Not classified yet$/);
+    expect(within(outcome).getByTestId('facts-ai-line')).toHaveTextContent('AI verdict: Needs human review (75%)');
+    expect(within(outcome).getAllByText(/Needs human review/)).toHaveLength(1);
+  });
+
+  it('keeps the reading of a classification a later AI run kept', () => {
+    renderRail({ ...FULL, status: 'needs_human', decision_by: 'system' } as unknown as Case);
+    expect(screen.getByTestId('facts-outcome-headline')).not.toHaveTextContent('Not classified yet');
+  });
+});
+
 describe('FactsRail: the auto-close review in Outcome (Round 15, D8.4; WP7)', () => {
   const AGENT = {
     ...FULL,

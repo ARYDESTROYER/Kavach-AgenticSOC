@@ -267,10 +267,95 @@ export function decisionRecordSentence(raw: string): string | null {
   const m = DECISION_RECORD_ROW.exec(raw.trim());
   if (!m) return null;
   const [, status, by] = m;
-  const own = (table: Readonly<Record<string, string>>, key: string): string | undefined =>
-    Object.prototype.hasOwnProperty.call(table, key) ? table[key] : undefined;
-  const decider = own(DECIDERS, by);
-  return `${own(DECISION_STATUS, status) ?? humanizeToken(status)}${decider ? ` ${decider}` : ''}.`;
+  const decider = ownWord(DECIDERS, by);
+  return `${ownWord(DECISION_STATUS, status) ?? humanizeToken(status)}${decider ? ` ${decider}` : ''}.`;
+}
+
+/** A table's own entry for `key` (never an inherited one such as `constructor`). */
+function ownWord(table: Readonly<Record<string, string>>, key: string): string | undefined {
+  return Object.prototype.hasOwnProperty.call(table, key) ? table[key] : undefined;
+}
+
+/** A number the engine wrote into a rationale template. */
+const NUM = '(-?\\d+(?:\\.\\d+)?)';
+const VERDICT_TOKEN = '(?:TRUE_POSITIVE|FALSE_POSITIVE|NEEDS_HUMAN|\\?)';
+
+/**
+ * The fixed rationale templates `decide()` writes (`backend/app/engine/case_manager.py`),
+ * the same set chat words in `agents/chat_tools/common.py` `status_reason_text`. Each
+ * reads as the gate it records, so the words come from {@link GATE}.
+ */
+const RATIONALE_AUTO_CLOSED = new RegExp(
+  `^${VERDICT_TOKEN} auto-closed: confidence ${NUM} >= ${NUM} and risk ${NUM} <= ${NUM}; objection window \\d+m\\.?$`,
+);
+const RATIONALE_BELOW_BAR = new RegExp(
+  `^${VERDICT_TOKEN} routed to human: did not clear the auto-close bar \\(confidence ${NUM} vs ${NUM}, risk ${NUM} vs ${NUM}\\)\\.?$`,
+);
+const RATIONALE_CLASS_OFF = /^(?:True|False) positive routed to human: (?:tp|fp) auto-close disabled\.?$/;
+const RATIONALE_FAIL_SAFE = /^No confident close decision; routing to human \(fail-safe\)\.?$/;
+
+/** The case manager's decision, in words: how it routed the case, and why. */
+export interface DecisionWords {
+  /** Who settled it and how: "Sent to an analyst by the case policy.", "Escalated by the system.". */
+  route: string;
+  /** The gate it recorded, as a sentence ("Auto-close is off for this verdict."), or empty. */
+  why: string;
+}
+
+/**
+ * The deterministic decision a case recorded, in plain words: the case manager's DECISION
+ * audit record (`verdict=… status=… decision_by=…`) or the rationale `decide()` wrote into
+ * the case history ("True positive routed to human: tp auto-close disabled."). Null for
+ * any other text, which the caller never shows as it is: the record stays word for word
+ * in Policy inputs. The Brief's Decision lane and the History share this one mapping.
+ * Our own words from the engine's fixed templates and enum tokens only (#9). Nothing here
+ * decides (#3).
+ */
+export function decisionWords(raw: string | null | undefined): DecisionWords | null {
+  const text = String(raw ?? '').replace(/\s+/g, ' ').trim();
+  if (!text) return null;
+  const record = /^verdict=\S+ status=(\S+) decision_by=(\S+) risk=\S+ cost=\S+ confidence=\S+(?: auto_close_gate=(\S+))?$/.exec(
+    text,
+  );
+  if (record) {
+    const gate = record[3] ? ownWord(GATE, record[3]) : undefined;
+    return { route: decisionRecordSentence(text) ?? '', why: gate ? `${gate}.` : '' };
+  }
+  if (RATIONALE_AUTO_CLOSED.test(text)) {
+    return { route: 'Closed automatically by the case policy.', why: `${GATE.cleared}.` };
+  }
+  const bar = RATIONALE_BELOW_BAR.exec(text);
+  if (bar) {
+    const [conf, minConf, risk, maxRisk] = bar.slice(1).map(Number);
+    const low = conf < minConf;
+    const high = risk > maxRisk;
+    const gate = low && high ? 'blocked_confidence_and_risk' : high ? 'blocked_risk' : 'blocked_confidence';
+    return { route: 'Sent to an analyst by the case policy.', why: `${GATE[gate]}.` };
+  }
+  if (RATIONALE_CLASS_OFF.test(text)) {
+    return { route: 'Sent to an analyst by the case policy.', why: `${GATE.class_disabled}.` };
+  }
+  if (RATIONALE_FAIL_SAFE.test(text)) {
+    return { route: 'Sent to an analyst by the case policy.', why: `${GATE.not_closable}.` };
+  }
+  return null;
+}
+
+/** The severity range a stored trigger sentence ends with; its ends compare as numbers. */
+const SEVERITY_RANGE = /; severity (-?\d+(?:\.\d+)?)[\u2013-](-?\d+(?:\.\d+)?)$/;
+
+/**
+ * A stored trigger sentence as the Console shows it. Correlation writes the severity as
+ * a range even when both ends are the same ("; severity 75" then an en dash and "75"),
+ * so a range with equal ends reads as one value ("; severity 75"). Any other sentence,
+ * and a real range, is returned as stored. Presentation only: the stored sentence is
+ * never rewritten, and it is UNTRUSTED text the caller renders as a text node (#9).
+ */
+export function triggerSentenceText(raw: string | null | undefined): string {
+  const text = String(raw ?? '').trim();
+  const m = SEVERITY_RANGE.exec(text);
+  if (!m || Number(m[1]) !== Number(m[2])) return text;
+  return `${text.slice(0, m.index)}; severity ${m[1]}`;
 }
 
 const TRIAGE: Readonly<Record<string, string>> = {

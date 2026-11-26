@@ -4,7 +4,7 @@
  * activity endpoint is unchanged, [ru] M8). Newest first in append order; untrusted
  * names and notes are plain text (#9).
  */
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { fireEvent, render, screen, within } from '@testing-library/react';
 
 import type { Case } from '@/lib/types';
@@ -76,6 +76,31 @@ describe('caseHistoryItems', () => {
     expect(items[0].actionsTaken).toEqual(['future_value']);
   });
 
+  it('gives an automatic decision its recorded reason in plain words, never the engine string (FXA1)', () => {
+    const items = caseHistoryItems({
+      history: [
+        {
+          event: 'decision',
+          ts: at(0),
+          status: 'escalated',
+          decision_by: 'system',
+          escalate: true,
+          rationale: 'True positive routed to human: tp auto-close disabled.',
+        },
+        {
+          event: 'decision',
+          ts: at(1),
+          status: 'closed',
+          decision_by: 'agent',
+          rationale: 'FALSE_POSITIVE auto-closed: confidence 0.87 >= 0.85 and risk 13.6 <= 30.0; objection window 1440m.',
+        },
+        { event: 'decision', ts: at(2), status: 'needs_human', decision_by: 'system', rationale: 'something else' },
+      ],
+    } as unknown as Case);
+    // Newest first; text that is not an engine template stays in the record only.
+    expect(items.map((item) => item.reason)).toEqual(['', 'It met the auto-close bar.', 'Auto-close is off for this verdict.']);
+  });
+
   it('is empty without a history', () => {
     expect(caseHistoryItems({ case_id: 'c1' } as Case)).toEqual([]);
   });
@@ -100,6 +125,94 @@ describe('CaseHistory', () => {
 
     rerender(<CaseHistory c={{ case_id: 'c1', history: [] } as unknown as Case} />);
     expect(screen.getByText('No lifecycle changes yet.')).toBeInTheDocument();
+  });
+
+  it('shows the reason an automatic decision recorded (FXA1)', () => {
+    render(
+      <CaseHistory
+        c={{
+          case_id: 'c1',
+          history: [
+            {
+              event: 'decision',
+              ts: at(0),
+              status: 'escalated',
+              decision_by: 'system',
+              escalate: true,
+              rationale: 'True positive routed to human: tp auto-close disabled.',
+            },
+          ],
+        } as unknown as Case}
+      />,
+    );
+    const item = screen.getByTestId('case-history-item');
+    expect(within(item).getByText('Escalated automatically')).toBeInTheDocument();
+    expect(within(item).getByTestId('case-history-reason')).toHaveTextContent('Reason: Auto-close is off for this verdict.');
+    expect(item).not.toHaveTextContent(/tp auto-close disabled|routed to human/);
+  });
+
+  describe('a long note (FXA1)', () => {
+    const NOTE = 'Waiting on the identity team to confirm the travel. '.repeat(8).trim();
+    // jsdom has no layout: the clamped note reports a taller scroll height, as a browser
+    // does when line-clamp cuts it.
+    const scroll = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollHeight');
+    const client = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'clientHeight');
+    const fake = (clamped: boolean) => {
+      Object.defineProperty(HTMLElement.prototype, 'scrollHeight', {
+        configurable: true,
+        get(this: HTMLElement) {
+          return this.dataset.testid === 'case-history-note' ? (clamped ? 128 : 48) : 0;
+        },
+      });
+      Object.defineProperty(HTMLElement.prototype, 'clientHeight', {
+        configurable: true,
+        get(this: HTMLElement) {
+          return this.dataset.testid === 'case-history-note' ? 48 : 0;
+        },
+      });
+    };
+    // jsdom defines both on Element, not HTMLElement: an absent own descriptor is deleted.
+    const restore = (name: 'scrollHeight' | 'clientHeight', descriptor: PropertyDescriptor | undefined) => {
+      if (descriptor) Object.defineProperty(HTMLElement.prototype, name, descriptor);
+      else delete (HTMLElement.prototype as unknown as Record<string, unknown>)[name];
+    };
+    afterEach(() => {
+      restore('scrollHeight', scroll);
+      restore('clientHeight', client);
+    });
+    const renderNote = (note: string) =>
+      render(
+        <CaseHistory
+          c={{
+            case_id: 'c1',
+            history: [{ event: 'analyst_action', ts: at(0), action: 'hold', analyst: 'mira', note }],
+          } as unknown as Case}
+        />,
+      );
+
+    it('is clamped with a Show more toggle that reveals all of it', () => {
+      fake(true);
+      renderNote(NOTE);
+      const note = screen.getByTestId('case-history-note');
+      expect(note).toHaveClass('line-clamp-3');
+      const more = screen.getByRole('button', { name: 'Show more' });
+      expect(more).toHaveAttribute('aria-expanded', 'false');
+      expect(more).toHaveAttribute('aria-controls', note.id);
+      fireEvent.click(more);
+      expect(note).not.toHaveClass('line-clamp-3');
+      expect(note).toHaveTextContent(NOTE);
+      const less = screen.getByRole('button', { name: 'Show less' });
+      expect(less).toHaveAttribute('aria-expanded', 'true');
+      fireEvent.click(less);
+      expect(note).toHaveClass('line-clamp-3');
+    });
+
+    it('offers no toggle when the note fits', () => {
+      fake(false);
+      renderNote('Contained.');
+      expect(screen.getByTestId('case-history-note')).toHaveTextContent('Contained.');
+      expect(screen.queryByRole('button', { name: 'Show more' })).toBeNull();
+    });
   });
 
   it('shows the latest eight, with the earlier ones one click away', () => {

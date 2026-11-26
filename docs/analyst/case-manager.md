@@ -274,7 +274,10 @@ the later items hide first and the owner always stays; a hidden SLA is still in 
 facts' **Signal** section. On a short line the owner's name is shortened first, then the
 AI verdict's words, then the start of a long case number; the status words stay whole
 until the others have given way. A long case number keeps its last six characters and
-shows the whole number when you point at it. The tabs sit under it.
+shows the whole number when you point at it. The tabs sit under it. When they do not
+all fit (on a phone), the tab row scrolls sideways, fades at an edge that has more tabs
+past it, and moves to show the tab you open, whether you select it, use its Alt key or
+follow a lane's link.
 
 Point at the risk, the AI verdict, the severity, the priority or the SLA to see a
 one-line formula with the real numbers, and select it for the whole calculation with
@@ -290,7 +293,7 @@ opens the same facts in a side sheet that leaves the case usable. They come in s
 folding open or closed and remembered in this browser:
 
 - **Outcome**: the outcome of record (the analyst's classification, with who classified
-  it and when), the AI verdict and confidence (read against the auto-close bar for its
+  it and when, or **Not classified yet** while nobody has), the AI verdict and confidence (read against the auto-close bar for its
   verdict while the case is open; once it ended, the Brief's Decision lane names the bar
   it was decided against), how they relate,
   who decided, the objection window and, on a case the AI agent closed, its auto-close
@@ -316,11 +319,11 @@ offer **Ask AI**, which opens a Workspace chat about that value (see
 
 | Tab | Key | Purpose |
 | --- | --- | --- |
-| Brief | Alt+1 | The case at a glance, top to bottom: the review note on a case waiting for its auto-close review; the runbook's **Next step** row on an open case with a runbook; then four lanes, each tagged with where it comes from; Evidence, AI and People link to the tabs that hold their detail. **Evidence** (SIEM) says why the detection fired, with one line of counts and times. **AI** gives the model's summary and its recommended action (on a case that ended, the recommendation it made at triage, folded). **Decision** (Code; named **Analyst resolved** and tagged Analyst when a person settled the case, or **Analyst policy** when an operator's declared-benign policy closed it) gives the decision line (who settled the case and how, for example "Escalated by the system."; on a case a person settled, what the policy recorded before them), the auto-close reading, the authority sentence, **Policy inputs** and **Automation applied**. **People** (Analyst) gives the runbook progress, the discussion and files, and the last human action. Last, **How this case was built** folds the six-stage input-to-decision story (Risk Assigned shows the arithmetic with the weights and event count of the scoring run, or with today's weights, said so, for a case scored before 0.2; Decision shows the decision recorded at the time; only the final marker pulses) |
+| Brief | Alt+1 | The case at a glance, top to bottom: the review note on a case waiting for its auto-close review; the runbook's **Next step** row on an open case with a runbook; then four lanes, each tagged with where it comes from; Evidence, Assessment and People link to the tabs that hold their detail. **Evidence** (SIEM) says why the detection fired, with one line of counts and times. **Assessment** (AI) gives the model's summary and its recommended action (on a case that ended, the recommendation it made at triage, folded). **Decision** (Code, or tagged Analyst when a person settled the case; named **Analyst policy** when an operator's declared-benign policy closed it) gives the decision line (who settled the case and how in plain words, for example "Escalated by the system." or "Sent to an analyst by the case policy.", with the recorded reason when the auto-close reading does not give it; on a case a person settled, what the policy recorded before them), the auto-close reading, the authority sentence, **Policy inputs** (the decision record word for word) and **Automation applied**. **People** (Analyst) gives the runbook progress, the discussion and files, and the last human action: the newest status change or runbook step a person made ("Runbook step done by asha.iyer, 12m ago"), or "No status change by a person yet." when people have only worked steps, written or added screenshots. Last, **How this case was built** folds the six-stage input-to-decision story (Risk Assigned shows the arithmetic with the weights and event count of the scoring run, or with today's weights, said so, for a case scored before 0.2; Decision shows the decision recorded at the time; only the final marker pulses) |
 | Evidence | Alt+2 | What the sources said: **What happened** (why the detection fired and the source evidence, shown as untrusted data), **Entities** (the primary entity with its scope, type and enrichment, to copy or ask about), **Threat context** (IOC reputation, MITRE ATT&CK mapping, and the redacted persisted alert → correlation cluster → opened case explanation), then the related cases (grouped across sources, never merged), the signature's anomaly baseline when it has one, and the case's raw events (see [Every record of a case](#every-record-of-a-case)) |
 | AI investigation | Alt+3 | The AI's work only, under one advisory line: **AI assessment** (the model's reasoning, what it found and ruled out, the reproduction query, and the full assessment evidence one click away), the detailed **Investigation inputs**, the **Investigation trace** (folded; **Show trace**, a filter by All, Agent, Tool, Code, People or Chat, and **Jump to decision**; each step's **Details** show what it recorded), and earlier gradings of the AI. The number on the tab counts the AI's own steps, the same number as the trace's "N AI steps" |
 | Response | Alt+4 | For people who can read runbooks, the runbook on the case: its strip, progress, Next step card and phases (see [Work the runbook](#work-the-runbook)), then **Other tasks**, the case's free-form tasks. Everyone else sees the tasks alone, under **Tasks** |
-| Activity | Alt+5 | **Discussion**, the case thread with reactions; **Files**, the screenshots on the case; and **History**, every lifecycle change with who made it, when, why and the actions taken, with the full activity feed behind **Show all activity**. While the AI works on the case, its live steps read "Investigation in progress", then "Investigation finished". The owner is changed in the case header, not here |
+| Activity | Alt+5 | **Discussion**, the case thread with reactions; **Files**, the screenshots on the case; and **History**, every lifecycle change with who made it, when, why and the actions taken (an automatic decision shows the reason it recorded, in plain words, and a long note shows three lines with **Show more**), with the full activity feed behind **Show all activity**. While the AI works on the case, its live steps read "Investigation in progress", then "Investigation finished". The owner is changed in the case header, not here |
 | Chat | Alt+6 | Case-scoped use of the shared AI Analyst chat engine; its transcript stays when you switch tabs. Asked about the runbook, it names the same next step as the Next step card, by the same rule |
 
 In **Files**, add screenshots by dropping them, pasting while the Activity tab has
@@ -337,8 +340,9 @@ Every record a case keeps can be reached from the case:
 - **Events.** The Evidence tab lists the raw events behind the case, read again from
   their source, 50 at a time; **Load more events** reads the next 50. Select a time to
   open one event, with a **Table** view of every field and a **JSON** view you can
-  search, copy or download. **Download these events (NDJSON)** saves the loaded rows,
-  and **Open in Logs** searches the same window in Logs. When the events cannot be shown, the table says why: the case came
+  search, copy or download. The message column keeps its room: Severity, Source IP,
+  then User and Host join only as the pane gets wider. **Download these events
+  (NDJSON)** saves the loaded rows, and **Open in Logs** searches the same window in Logs. When the events cannot be shown, the table says why: the case came
   from a push source, which keeps no copy that can be read back; the source no longer
   holds the events (older events age out first, so later pages may still have some); or
   the source was removed, turned off, or did not answer. You need `cases:read` and
@@ -374,8 +378,8 @@ How this case was built) are explanatory, not a second scoring engine. They rend
 score, confidence, and factors already recorded on the case. If a factor was
 not persisted, the UI does not manufacture a contribution to make the chart look full.
 
-The Brief's AI lane is always the model's own reasoning, tagged as AI. It is never the
-deterministic decision's text: that sentence belongs to the code and is shown, as the
+The Brief's Assessment lane is always the model's own reasoning, tagged as AI. It is never
+the deterministic decision's text: that sentence belongs to the code and is shown, as the
 code's, in the Decision lane. A case the AI did not assess says "The AI did not assess
 this case." and shows its system summary under it.
 
@@ -535,7 +539,11 @@ run's result replaces a close you make now (see
 - After a close or resolve, a notice confirms the recorded outcome ("Closed as false
   positive.") with **Reopen** for eight seconds. Reopening keeps the outcome you
   recorded on file until you close the case again with a new one, so to correct a
-  misclick, reopen and close it again with the right disposition.
+  misclick, reopen and close it again with the right disposition. If an AI
+  investigation that was running when you closed the case has since replaced your close,
+  the notice goes away, and **Reopen** changes nothing: it says "The AI investigation
+  already reopened this case." If someone else reopened it first, it says "This case was
+  already reopened."
 
 ## Select cases and run bulk work
 

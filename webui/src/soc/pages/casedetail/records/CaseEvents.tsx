@@ -298,7 +298,10 @@ export const CaseEvents: React.FC<CaseEventsProps> = ({ caseId, filterEventIds =
         <>
           {/* Fixed layout: declared widths hold and a long value truncates in its cell, so
               the table never runs past the pane. Narrow panes keep the time and the
-              message; the rule moves into the message cell. */}
+              message; the rule moves into the message cell. Each column joins only where
+              the message keeps at least 12rem beside the fixed widths (the default
+              1440 layout leaves it about 16rem), so the message is never the column that
+              gives way. */}
           <Table
             layout="fixed"
             containerClassName="rounded-md border border-border"
@@ -313,16 +316,16 @@ export const CaseEvents: React.FC<CaseEventsProps> = ({ caseId, filterEventIds =
                 <TableHead density="compact" className="hidden w-[30%] @[36rem]/events:table-cell">
                   Rule
                 </TableHead>
-                <TableHead density="compact" className="hidden w-[5.5rem] @[40rem]/events:table-cell">
+                <TableHead density="compact" className="hidden w-[5.5rem] @[44rem]/events:table-cell">
                   Severity
                 </TableHead>
-                <TableHead density="compact" className="hidden w-[8.5rem] @[48rem]/events:table-cell">
+                <TableHead density="compact" className="hidden w-[8.5rem] @[56rem]/events:table-cell">
                   Source IP
                 </TableHead>
-                <TableHead density="compact" className="hidden w-[8rem] @[56rem]/events:table-cell">
+                <TableHead density="compact" className="hidden w-[8rem] @[80rem]/events:table-cell">
                   User
                 </TableHead>
-                <TableHead density="compact" className="hidden w-[8rem] @[56rem]/events:table-cell">
+                <TableHead density="compact" className="hidden w-[8rem] @[80rem]/events:table-cell">
                   Host
                 </TableHead>
                 <TableHead density="compact">Message</TableHead>
@@ -368,18 +371,18 @@ export const CaseEvents: React.FC<CaseEventsProps> = ({ caseId, filterEventIds =
                       </span>
                       {citedBadge}
                     </TableCell>
-                    <TableCell density="compact" className="hidden truncate align-top text-xs @[40rem]/events:table-cell">
+                    <TableCell density="compact" className="hidden truncate align-top text-xs @[44rem]/events:table-cell">
                       {cell(row.severity)}
                     </TableCell>
-                    <TableCell density="compact" className="hidden truncate align-top font-mono text-xs @[48rem]/events:table-cell">
+                    <TableCell density="compact" className="hidden truncate align-top font-mono text-xs @[56rem]/events:table-cell">
                       {cell(row.source_ip)}
                     </TableCell>
-                    <TableCell density="compact" className="hidden align-top text-xs @[56rem]/events:table-cell">
+                    <TableCell density="compact" className="hidden align-top text-xs @[80rem]/events:table-cell">
                       <span className="block truncate" title={cell(row.user)}>
                         {cell(row.user)}
                       </span>
                     </TableCell>
-                    <TableCell density="compact" className="hidden align-top text-xs @[56rem]/events:table-cell">
+                    <TableCell density="compact" className="hidden align-top text-xs @[80rem]/events:table-cell">
                       <span className="block truncate" title={cell(row.host)}>
                         {cell(row.host)}
                       </span>

@@ -234,7 +234,9 @@ describe('CaseDetail: the six-tab shell (Round 16, D8)', () => {
     // The AI's own steps, the trace's "N AI steps" (XFCM), never every span.
     expect(tabsList).toContain("<TabCount label={traceAiSteps === 1 ? 'AI step' : 'AI steps'}>");
     expect(tabsList).not.toContain('<TabCount label="steps">');
-    expect(tabsList).toContain('<TabCount label="messages">');
+    // One message reads "1 message" to a screen reader, never "1 messages" (FXA1 review).
+    expect(tabsList).toContain("<TabCount label={messageCount === 1 ? 'message' : 'messages'}>");
+    expect(tabsList).not.toContain('<TabCount label="messages">');
     expect(tabsList).toContain('<RunbookTabCount progress={runbookProgress} abandoned={runbookData.runs.length > 0} />');
     expect(tabsList).not.toContain('<TabCount label="MITRE techniques">');
   });

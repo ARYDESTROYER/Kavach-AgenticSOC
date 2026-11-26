@@ -10,16 +10,17 @@
  * (N)" (what threshold automation did after it).
  *
  * The decision line is a sentence about who settled the case and how: the case manager's
- * `key=value` record reads "Escalated by the system." (`decisionRecordSentence`). On a
- * person's close it is what the policy recorded before them ("Before the analyst: …"),
- * or nothing: the outcome, the person and the time are the header's, the inspector's and
- * the People lane's. The verdict, confidence, risk, status and owner are the header's
- * too: this lane does not repeat them (the ui-standard one-home rule). The model's
- * reading is the AI lane's (G17).
+ * `key=value` record reads "Escalated by the system." and the rationale `decide()` wrote
+ * reads "Sent to an analyst by the case policy." (`decisionWords`, the History's mapping
+ * too), with the recorded reason when the auto-close reading does not give it. Any other
+ * text reads as a neutral sentence. On a person's close it is what the policy recorded
+ * before them ("Before the analyst: …"), or nothing: the outcome, the person and the
+ * time are the header's, the inspector's and the People lane's. The verdict, confidence,
+ * risk, status and owner are the header's too: this lane does not repeat them (the
+ * ui-standard one-home rule). The model's reading is the Assessment lane's (G17).
  *
- * SECURITY (#9): the decision line is our own words or server-written prose rendered as
- * a text node; automation details are plain text. Read only: nothing here decides or
- * changes the case.
+ * SECURITY (#9): the decision line is our own words, rendered as a text node; automation
+ * details are plain text. Read only: nothing here decides or changes the case.
  */
 import * as React from 'react';
 import { ChevronDown, Lock } from 'lucide-react';
@@ -31,7 +32,7 @@ import { cn } from '@/lib/cn';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/ui/collapsible';
 
 import { isAutoClosedByAI } from '@/soc/components/badges';
-import { decisionRecordSentence } from '@/soc/components/caseActivityText';
+import { decisionWords } from '@/soc/components/caseActivityText';
 import { caseOutcome, isHumanClosed } from '@/soc/components/outcome';
 import type { Navigate } from '@/soc/router';
 
@@ -40,9 +41,6 @@ import { DecisionCard } from './DecisionCard';
 import { DecisionExplain } from './explain/DecisionExplain';
 import { aiAssessed } from './caseFacts';
 import { autoCloseClass, type FpPolicy } from './shared';
-
-/** A machine decision record (`verdict=… status=… risk=…`), not a sentence. */
-const DECISION_RECORD = /^[a-z_]+=\S+(\s+[a-z_]+=\S+)+/i;
 
 /**
  * The auto-close reading of a case the code decided or has yet to decide (one line), or
@@ -88,11 +86,14 @@ export interface DecisionLaneProps {
   onNeedTimeline?: () => void;
 }
 
-/** The decision lane's title: who settled the case. */
+/**
+ * The decision lane's name. Who settled the case is its provenance tag (Code, or Analyst
+ * when a person did), so the name never repeats the tag ("Analyst Analyst") and never
+ * names a status ("Resolved" is one of its own): "Decision", or "Analyst policy" for an
+ * operator's declared-benign close, which the Code tag alone would not say.
+ */
 export function decisionTitle(c: Case): string {
-  const outcome = caseOutcome(c);
-  if (outcome.source === 'analyst_policy') return 'Analyst policy';
-  return isHumanClosed(c) ? 'Analyst resolved' : 'Decision';
+  return caseOutcome(c).source === 'analyst_policy' ? 'Analyst policy' : 'Decision';
 }
 
 export const DecisionLane: React.FC<DecisionLaneProps> = ({
@@ -110,13 +111,13 @@ export const DecisionLane: React.FC<DecisionLaneProps> = ({
   const humanClosed = isHumanClosed(c);
   // An operator's declared-benign policy is neither a person's case work nor the model's.
   const policyClosed = outcome.source === 'analyst_policy';
-  const decisionSummary = rationale?.decision_rationale?.trim() || '';
-  // The code's record in words: the case manager's `key=value` row becomes a sentence,
-  // prose from older history passes through, and any other `key=value` record is left to
-  // Policy inputs, which shows it word for word.
-  const codeLine = decisionSummary
-    ? (decisionRecordSentence(decisionSummary) ?? (DECISION_RECORD.test(decisionSummary) ? '' : decisionSummary))
-    : '';
+  const autoClose = autoCloseLine(policy, c);
+  // The code's record in words (`decisionWords`, shared with the History): the case
+  // manager's `key=value` row and the rationale templates `decide()` writes become a
+  // sentence; the reason it gives follows unless the auto-close reading below already
+  // says why. Any other text is never shown as it is: Policy inputs keeps it word for word.
+  const words = decisionWords(rationale?.decision_rationale);
+  const codeLine = words ? [words.route, autoClose ? '' : words.why].filter(Boolean).join(' ') : '';
   // Undecided: the AI has not assessed the case and nobody settled it (a candidate).
   const undecided = !humanClosed && !policyClosed && !aiAssessed(c) && !String(c.decision_by ?? '').trim();
   // A person's close: the line is what the policy recorded before them, or nothing (the
@@ -137,7 +138,6 @@ export const DecisionLane: React.FC<DecisionLaneProps> = ({
     : humanClosed
       ? `${resolvedByHuman ? 'Resolved' : 'Closed'} by an analyst (a human lifecycle action). The deterministic policy did not ${resolvedByHuman ? 'resolve' : 'close'} this case.`
       : 'Made by code against the auto-close policy, never by the model.';
-  const autoClose = autoCloseLine(policy, c);
   const automationCount = Array.isArray(c.automation_actions) ? c.automation_actions.length : 0;
 
   if (undecided) {
