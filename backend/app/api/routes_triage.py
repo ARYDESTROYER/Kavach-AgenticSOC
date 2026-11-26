@@ -44,7 +44,7 @@ from pydantic import BaseModel, Field
 
 from ..audit.events import derive_actor_type
 from ..config import AutoClosePolicy
-from ..constants import ActionType, CaseStatus, DecisionBy, Verdict
+from ..constants import ActionType, CaseStatus, DecisionBy, Role, Verdict
 from ..engine.case_manager import decide
 from ..engine.case_rationale import LEGACY_SELECTOR_ACTOR, is_selection_row
 from ..engine.priority import advisory_bands, band_of_case, derive_triage
@@ -350,10 +350,11 @@ async def case_timeline(
         if actor == "case_manager" and at == ActionType.DECISION.value:
             continue
         call = None
-        if at in _LLM_ROW_ACTIONS and actor in exact_calls:
-            index = seen_by_role.get(actor, 0)
-            seen_by_role[actor] = index + 1
-            call = exact_calls[actor][index]
+        key = _cost_key(row)
+        if at in _LLM_ROW_ACTIONS and key in exact_calls:
+            index = seen_by_role.get(key, 0)
+            seen_by_role[key] = index + 1
+            call = exact_calls[key][index]
         span = _row_to_span(case_id, row, step, include_prompts,
                             usage.cost_by_role, usage.tokens_by_role, audit_llm_rows_by_role,
                             call=call, show_cost=show_usage)
@@ -441,12 +442,35 @@ _LLM_ROW_ACTIONS: frozenset[str] = frozenset({
 })
 
 
+#: Runbook AI help (``engine.runbook_runs.CASE_RUNBOOK_SURFACE``): a model call a person
+#: asked for on a runbook step, never a step of the investigation. Its PROMPT row names the
+#: person who asked; its ledger row uses the chat role on this surface.
+RUNBOOK_AI_SURFACE = "runbook"
+#: The span kind of runbook AI help.
+RUNBOOK_AI_KIND = "runbook_ai"
+#: The cost key of runbook AI help: its spend is keyed by surface, not by the chat role it
+#: shares with case chat (never a ledger role or an actor name).
+RUNBOOK_AI_KEY = "surface:runbook"
+
+
+def _is_runbook_ai_row(row: Any) -> bool:
+    """Whether an audit row is the PROMPT row of a runbook AI help call."""
+    return (str(_get(row, "surface", "") or "") == RUNBOOK_AI_SURFACE
+            and str(_get(row, "action_type", "") or "") == ActionType.PROMPT.value)
+
+
+def _cost_key(row: Any) -> str:
+    """The key a row's cost is found under: the actor's role, or the runbook AI key."""
+    return RUNBOOK_AI_KEY if _is_runbook_ai_row(row) else str(_get(row, "actor", "") or "")
+
+
 def _count_llm_rows_by_role(rows: Any) -> dict[str, int]:
     """Count the LLM-producing audit rows (PROMPT/VERDICT) per actor role.
 
     This is the EXACT divisor for cost/token attribution: the role's ledger total is
     split across precisely the spans that receive a slice. The case_manager DECISION row
     is excluded (it is rendered as the deterministic terminal span, never an LLM step).
+    Runbook AI help rows count under :data:`RUNBOOK_AI_KEY` (:func:`_cost_key`).
     Defensive: tolerates dict OR pydantic rows; never raises."""
     by_role: dict[str, int] = {}
     for row in rows:
@@ -455,7 +479,8 @@ def _count_llm_rows_by_role(rows: Any) -> dict[str, int]:
         if actor == "case_manager" and at == ActionType.DECISION.value:
             continue
         if at in _LLM_ROW_ACTIONS:
-            by_role[actor] = by_role.get(actor, 0) + 1
+            key = _cost_key(row)
+            by_role[key] = by_role.get(key, 0) + 1
     return by_role
 
 
@@ -470,7 +495,7 @@ def _llm_row_times_by_role(rows: Any) -> dict[str, list[datetime | None]]:
         if actor == "case_manager" and at == ActionType.DECISION.value:
             continue
         if at in _LLM_ROW_ACTIONS:
-            by_role.setdefault(actor, []).append(_parse_ts(_get(row, "ts")))
+            by_role.setdefault(_cost_key(row), []).append(_parse_ts(_get(row, "ts")))
     return by_role
 
 
@@ -505,7 +530,9 @@ def _span_kind(row: Any) -> tuple[str, str | None]:
 
     A person's row (``actor_type`` ``human``, recorded or derived for a legacy row from
     the one actor table, ``audit/event_categories.json``) is ``person``, so the trace
-    never credits a person's work to the AI; a case-chat row (actor ``chat`` or surface
+    never credits a person's work to the AI; the model call of runbook AI help (a PROMPT
+    row on the ``runbook`` surface, which names the person who asked) is ``runbook_ai``,
+    never a step of the investigation; a case-chat row (actor ``chat`` or surface
     ``chat``) is ``chat``; a tool or query row is ``execute_tool``; another row of a
     deterministic actor (``system`` or ``service``) is ``system``; everything else is
     ``invoke_agent``. The case_manager decision is the separate ``decision`` span."""
@@ -518,6 +545,8 @@ def _span_kind(row: Any) -> tuple[str, str | None]:
     at = str(doc.get("action_type") or "")
     if actor_type == "human":
         return "person", actor_type
+    if _is_runbook_ai_row(doc):
+        return RUNBOOK_AI_KIND, actor_type
     if actor == "chat" or str(doc.get("surface") or "") == "chat":
         return "chat", actor_type
     kind = _KIND_BY_ACTION.get(at, "invoke_agent")
@@ -658,10 +687,11 @@ def _row_to_span(
         latency = call.get("latency_ms")
         latency_ms = int(latency) if isinstance(latency, (int, float)) else None
         cost_basis = "exact"
-    elif is_llm_row and actor in cost_by_role:
-        n = max(1, llm_rows_by_role.get(actor, 1))
-        cost = round(cost_by_role.get(actor, 0.0) / n, 6)
-        tokens = int(tokens_by_role.get(actor, 0) / n)
+    elif is_llm_row and _cost_key(row) in cost_by_role:
+        key = _cost_key(row)
+        n = max(1, llm_rows_by_role.get(key, 1))
+        cost = round(cost_by_role.get(key, 0.0) / n, 6)
+        tokens = int(tokens_by_role.get(key, 0) / n)
         cost_basis = "split"
 
     detail = _span_detail(row, include_prompts)
@@ -1028,6 +1058,7 @@ async def _usage_attribution(state: Any, case_id: str) -> _UsageAttribution:
             continue
         usage.cost_by_role[key] = float(entry.get("cost", 0.0) or 0.0)
         usage.tokens_by_role[key] = int(entry.get("tokens", 0) or 0)
+    _key_runbook_ai_spend(usage, summary)
     try:
         calls = await state.usage_store.records_for_case(case_id, limit=USAGE_ROW_CAP)
     except Exception:  # noqa: BLE001 (a store without per-case reads keeps the split)
@@ -1036,8 +1067,37 @@ async def _usage_attribution(state: Any, case_id: str) -> _UsageAttribution:
     usage.calls_complete = len(calls) < USAGE_ROW_CAP
     calls.sort(key=lambda c: (_parse_ts(c.get("ts")) or datetime.min.replace(tzinfo=timezone.utc)))
     for call in calls:
-        usage.calls_by_role.setdefault(str(call.get("role") or ""), []).append(call)
+        key = RUNBOOK_AI_KEY if str(call.get("surface") or "") == RUNBOOK_AI_SURFACE else str(call.get("role") or "")
+        usage.calls_by_role.setdefault(key, []).append(call)
     return usage
+
+
+def _key_runbook_ai_spend(usage: _UsageAttribution, summary: dict[str, Any]) -> None:
+    """Key runbook AI help's spend by its surface (:data:`RUNBOOK_AI_KEY`) and take it out
+    of the chat role it shares with case chat, so neither one's steps carry the other's
+    cost. Runbook AI help is the one writer on that surface and always uses the chat role
+    (``engine.runbook_runs._ai_call``)."""
+    def _entry(key: str, rows: Any) -> dict[str, Any] | None:
+        return next((e for e in (rows or []) if isinstance(e, dict) and str(e.get("key", "")) == key), None)
+
+    runbook = _entry(RUNBOOK_AI_SURFACE, summary.get("by_surface"))
+    if runbook is None:
+        return
+    cost = float(runbook.get("cost", 0.0) or 0.0)
+    tokens = int(runbook.get("tokens", 0) or 0)
+    usage.cost_by_role[RUNBOOK_AI_KEY] = cost
+    usage.tokens_by_role[RUNBOOK_AI_KEY] = tokens
+    chat = Role.CHAT.value
+    if chat not in usage.cost_by_role:
+        return
+    chat_calls = int((_entry(chat, summary.get("by_role")) or {}).get("calls", 0) or 0)
+    if chat_calls and chat_calls <= int(runbook.get("calls", 0) or 0):
+        # Every chat role call was runbook AI help: case chat recorded no spend.
+        del usage.cost_by_role[chat]
+        usage.tokens_by_role.pop(chat, None)
+        return
+    usage.cost_by_role[chat] = max(0.0, round(usage.cost_by_role[chat] - cost, 8))
+    usage.tokens_by_role[chat] = max(0, usage.tokens_by_role.get(chat, 0) - tokens)
 
 
 # --------------------------------------------------------------------------- #

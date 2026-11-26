@@ -166,6 +166,11 @@ interface ComparisonMetricBaseProps {
   statusReason?: string;
   definition?: MetricDefinitionDetails;
   definitionTriggerText?: string;
+  /**
+   * The figure's explanation slot, as `KpiTile` takes it: given the rendered numeral, it
+   * returns the numeral wrapped in an explain trigger. Ignored while the figure is a dash.
+   */
+  explain?: (numeral: React.ReactNode) => React.ReactNode;
   /** `integrated` drops its own frame so a parent telemetry band owns dividers. */
   variant?: 'standalone' | 'integrated';
   testId?: string;
@@ -255,6 +260,7 @@ export function ComparisonMetric(props: ComparisonMetricProps) {
     sample,
     definition,
     definitionTriggerText,
+    explain,
     variant = 'standalone',
     testId,
     className,
@@ -285,6 +291,7 @@ export function ComparisonMetric(props: ComparisonMetricProps) {
         accent={accent}
         delta={suppressDelta ? undefined : delta}
         goodDirection={goodDirection}
+        explain={suppressMeasurement ? undefined : explain}
         variant="strip"
         density={integrated ? 'compact' : 'default'}
         testId={testId ? `${testId}-metric` : undefined}

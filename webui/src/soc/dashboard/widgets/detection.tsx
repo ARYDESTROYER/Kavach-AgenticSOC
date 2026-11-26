@@ -291,11 +291,13 @@ export function noisyRuleRows(t: TuningRecommendationsResponse, limit = 6): Nois
 }
 
 /**
- * A noisy rule's FP rate explained (FXD1): the tuner stores the Wilson 95% lower bound of
- * the analyst-graded false positives, so "89%" beside 30 of 30 is the lower end of the
- * range, not a ratio. Null when the graded counts are missing.
+ * A noisy rule's FP rate explained (FXD1): the tuner stores the Wilson lower bound of the
+ * analyst-graded false positives (95% at the default z of 1.96), so "89%" beside 30 of 30
+ * is the lower end of the range, not a ratio. `z` is the one the tuner used, as the
+ * recommendations read returns it (FXF); an older server sends none and means 1.96. Null
+ * when the graded counts are missing.
  */
-export function noisyRuleExplanation(n: RuleNoise): Explanation | null {
+export function noisyRuleExplanation(n: RuleNoise, z?: number): Explanation | null {
   const graded = n.analyst_samples ?? n.total;
   if (!(graded > 0) || !Number.isFinite(n.fp)) return null;
   return explainWilsonLowerBound({
@@ -307,6 +309,7 @@ export function noisyRuleExplanation(n: RuleNoise): Explanation | null {
     shown: shareText(n.fp_rate),
     successLabel: 'false positives',
     totalLabel: 'graded cases',
+    z: typeof z === 'number' && Number.isFinite(z) && z > 0 ? z : undefined,
     caveats: ['Only analyst-graded cases count; the AI verdict never does.'],
   });
 }
@@ -348,7 +351,7 @@ export function NoisyRulesWidget(props: WidgetProps) {
   // The rate is the Wilson lower bound of the graded false positives (FXD1): hover names
   // the counts and the bound, click prints the interval arithmetic.
   const fp = (n: RuleNoise) => (
-    <ExplainTrigger explanation={noisyRuleExplanation(n)} className="justify-end">
+    <ExplainTrigger explanation={noisyRuleExplanation(n, t?.wilson_z)} className="justify-end">
       {shareText(n.fp_rate)}
     </ExplainTrigger>
   );

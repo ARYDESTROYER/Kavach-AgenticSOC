@@ -16,6 +16,7 @@ cluster is pinned to the case's stored ``cluster_signature``.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -25,6 +26,7 @@ from ..es.querybuilder import entity_query, ids_query, scope_filters, scope_must
 from ..models import Case, Cluster, RawEvent, TriggerReason
 from ..utils import relative_to_millis
 from .correlation import cluster_from_events
+from .time_windows import resolve_window
 
 __all__ = [
     "WIDEN_LADDER",
@@ -33,6 +35,7 @@ __all__ = [
     "entity_events_widening",
     "entity_field",
     "manual_trigger_reason",
+    "window_words",
     "reconstruct_cluster_from_case",
     "scoped_entity_body",
     "widen_windows",
@@ -352,17 +355,35 @@ def reconstruct_cluster_from_case(case: Case) -> Cluster | None:
     return cluster
 
 
+def window_words(window: str) -> str:
+    """A lookback window in a sentence, in plain words, read with the shared window
+    grammar (:func:`app.engine.time_windows.resolve_window`): "now-24h" is "in the last
+    24 hours", "this_week" is "in this week" and "all" is "at any time". A window the
+    grammar does not read is named as configured."""
+    try:
+        label = resolve_window(window, default="").label
+    except (TypeError, ValueError):
+        return f"in the last {window}"
+    if label.startswith("last "):
+        # "last 1 hour" reads "last hour", as models.humanise_relative_window says it.
+        return f"in the {re.sub(r'^last 1 ', 'last ', label)}"
+    if label.startswith("all time"):
+        return "at any time"
+    return f"in {label}"
+
+
 def manual_trigger_reason(cluster: Cluster, window: str) -> TriggerReason:
     """Synthesize a MANUAL TriggerReason so "Why this fired" renders for manually
     investigated cases (Feature 3 / IMPROVEMENT). Mode is ``manual``; structured
-    fields are filled from the resolved cluster."""
+    fields are filled from the resolved cluster. The sentence names the window in plain
+    words (:func:`window_words`); a sentence already stored keeps its own wording."""
     entity_type = cluster.entity.type.value
     entity_value = cluster.entity.value
     n = cluster.count
     rules = ", ".join(cluster.rule_values) or "no specific rule"
     sentence = (
         f"Manually investigated: {n} event{'s' if n != 1 else ''} for "
-        f"{entity_type} {entity_value} in the last {window} across rules [{rules}]"
+        f"{entity_type} {entity_value} {window_words(window)} across rules [{rules}]"
     )
     return TriggerReason(
         rule_value=(cluster.rule_values[0] if cluster.rule_values else ""),

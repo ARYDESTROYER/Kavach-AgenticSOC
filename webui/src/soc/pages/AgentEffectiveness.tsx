@@ -62,6 +62,13 @@ import { PageHeader } from '@/soc/components/PageHeader';
 import { RefreshButton } from '@/soc/components/RefreshButton';
 import type { Navigate } from '@/soc/router';
 import { humanizeMinutes } from './posture.format';
+import { ExplainTrigger } from '@/design-system/explain';
+import type { Explanation } from '@/lib/explain/types';
+import {
+  agreementComparisonExplanation,
+  correctionComparisonExplanation,
+  turnaroundComparisonExplanation,
+} from './effectiveness/comparisonExplain';
 import { AnalyticsWindowPicker, StripPanel, UpdatedStamp, useAnalyticsWindow } from './analytics-shared';
 import { PageAccess } from './PageAccess';
 
@@ -154,6 +161,19 @@ function evidenceStatus(metric: AgentComparisonMetric): ComparisonMetricStatus {
 function metricValue(metric: AgentComparisonMetric, which: 'current' | 'baseline'): string {
   const value = metric[which].value;
   return metric.unit === 'ratio' ? ratio(value) : humanizeMinutes(value);
+}
+
+/**
+ * A comparison figure's explain slot (FXF): the figure as shown, wrapped in its
+ * explanation, or no slot when the explanation has nothing to print.
+ */
+function comparisonExplain(
+  metric: AgentComparisonMetric,
+  build: (metric: AgentComparisonMetric, shown: string) => Explanation | null,
+): ((numeral: React.ReactNode) => React.ReactNode) | undefined {
+  const explanation = build(metric, metricValue(metric, 'current'));
+  if (!explanation) return undefined;
+  return (numeral) => <ExplainTrigger explanation={explanation}>{numeral}</ExplainTrigger>;
 }
 
 function metricDelta(metric: AgentComparisonMetric) {
@@ -371,6 +391,7 @@ export function AgentEffectivenessSummary({
               status={evidenceStatus(metrics.analyst_reported_verdict_agreement)}
               sample={{ count: qualitySample, label: 'comparable grades' }}
               definition={metrics.analyst_reported_verdict_agreement.definition}
+              explain={comparisonExplain(metrics.analyst_reported_verdict_agreement, agreementComparisonExplanation)}
               definitionTriggerText="How"
               variant="integrated"
               testId="tuning-agent-agreement"
@@ -394,6 +415,7 @@ export function AgentEffectivenessSummary({
                 label: 'comparable grades',
               }}
               definition={metrics.material_analyst_correction_rate.definition}
+              explain={comparisonExplain(metrics.material_analyst_correction_rate, correctionComparisonExplanation)}
               definitionTriggerText="How"
               variant="integrated"
               testId="tuning-agent-correction"
@@ -414,6 +436,7 @@ export function AgentEffectivenessSummary({
               status={evidenceStatus(metrics.human_review_turnaround)}
               sample={{ count: turnaroundSample, label: 'human-reviewed cases' }}
               definition={metrics.human_review_turnaround.definition}
+              explain={comparisonExplain(metrics.human_review_turnaround, turnaroundComparisonExplanation)}
               definitionTriggerText="How"
               variant="integrated"
               testId="tuning-agent-turnaround"
@@ -746,6 +769,7 @@ function OutcomeComparisons({ data }: { data: AgentImprovementEvidence }) {
           status={evidenceStatus(metrics.analyst_reported_verdict_agreement)}
           sample={{ count: qualitySample, label: 'comparable grades' }}
           definition={metrics.analyst_reported_verdict_agreement.definition}
+          explain={comparisonExplain(metrics.analyst_reported_verdict_agreement, agreementComparisonExplanation)}
           testId="agent-agreement"
         />
         <ComparisonMetric
@@ -761,6 +785,7 @@ function OutcomeComparisons({ data }: { data: AgentImprovementEvidence }) {
           status={evidenceStatus(metrics.material_analyst_correction_rate)}
           sample={{ count: metrics.material_analyst_correction_rate.current.sample_count, label: 'comparable grades' }}
           definition={metrics.material_analyst_correction_rate.definition}
+          explain={comparisonExplain(metrics.material_analyst_correction_rate, correctionComparisonExplanation)}
           testId="agent-correction"
         />
         <ComparisonMetric
@@ -776,6 +801,7 @@ function OutcomeComparisons({ data }: { data: AgentImprovementEvidence }) {
           status={evidenceStatus(metrics.human_review_turnaround)}
           sample={{ count: turnaroundSample, label: 'human-reviewed cases' }}
           definition={metrics.human_review_turnaround.definition}
+          explain={comparisonExplain(metrics.human_review_turnaround, turnaroundComparisonExplanation)}
           testId="agent-turnaround"
         />
       </div>

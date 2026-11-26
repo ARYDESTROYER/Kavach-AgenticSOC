@@ -592,16 +592,28 @@ function explainSlot(explanation: Explanation | null | undefined): ((numeral: Re
 }
 
 /**
+ * A rate's counts in words ("39 of 56 verdicted cases"), or undefined when the server
+ * sent none for that window.
+ */
+function rateCounts(numerator: unknown, denominator: unknown, of: string | undefined): string | undefined {
+  if (!of || typeof numerator !== 'number' || typeof denominator !== 'number') return undefined;
+  if (!Number.isFinite(numerator) || !Number.isFinite(denominator)) return undefined;
+  return `${fmtNumber(numerator)} of ${fmtNumber(denominator)} ${of}`;
+}
+
+/**
  * A Performance change chip explained (FXD1): both values of the posture comparison, the
  * window of each, and the relative change the server rounded, so "+108.9%" beside a rate
- * reads as relative to the earlier rate, never as percentage points. Null when the chip
- * is not shown or a value is missing.
+ * reads as relative to the earlier rate, never as percentage points. A rate also prints
+ * the counts it divides in both windows (FXF, `of` names the denominator's cases). Null
+ * when the chip is not shown or a value is missing.
  */
 export function compareChipExplanation(
   block: CompareBlock | undefined,
   title: string,
   kind: 'rate' | 'minutes',
   hours: number,
+  of?: string,
 ): Explanation | null {
   const view = deltaView(block);
   if (!block || !view.show) return null;
@@ -622,6 +634,8 @@ export function compareChipExplanation(
     term: rate ? (n) => plain(n * 100, 2) : (n) => plain(n, 2),
     window: `in the ${caption}`,
     beforeWindow: `in the ${caption.replace(/^last /, '')} before`,
+    nowCounts: rate ? rateCounts(block.numerator, block.denominator, of) : undefined,
+    beforeCounts: rate ? rateCounts(block.prev_numerator, block.prev_denominator, of) : undefined,
     ofPercent: rate,
     rounding: 'The server divides the two values as shown and rounds the change to one decimal.',
     source: 'Server comparison',
@@ -1421,7 +1435,7 @@ function PerformanceTab({
           value={ratioPct(quality.false_positive_rate)}
           context={`${fmtNumber(quality.false_positive_cases)} of ${fmtNumber(quality.verdicted_cases)} verdicted`}
           delta={deltaView(compare?.false_positive_rate)}
-          deltaExplanation={compareChipExplanation(compare?.false_positive_rate, 'FP rate', 'rate', hours)}
+          deltaExplanation={compareChipExplanation(compare?.false_positive_rate, 'FP rate', 'rate', hours, 'verdicted cases')}
           goodDirection="down"
           explanation={explainKpiShare({
             metric: 'fp_rate',
@@ -1444,7 +1458,7 @@ function PerformanceTab({
           value={ratioPct(quality.alert_to_incident_ratio)}
           context={`${fmtNumber(quality.true_positive_cases)} true positives`}
           delta={deltaView(compare?.alert_to_incident_ratio)}
-          deltaExplanation={compareChipExplanation(compare?.alert_to_incident_ratio, 'Incident yield', 'rate', hours)}
+          deltaExplanation={compareChipExplanation(compare?.alert_to_incident_ratio, 'Incident yield', 'rate', hours, 'cases')}
           goodDirection="none"
           explanation={explainKpiShare({
             metric: 'incident_yield',
@@ -1465,7 +1479,7 @@ function PerformanceTab({
           value={ratioPct(quality.escalation_rate)}
           context={`${fmtNumber(quality.escalated_cases)} escalated`}
           delta={deltaView(compare?.escalation_rate)}
-          deltaExplanation={compareChipExplanation(compare?.escalation_rate, 'Escalation rate', 'rate', hours)}
+          deltaExplanation={compareChipExplanation(compare?.escalation_rate, 'Escalation rate', 'rate', hours, 'cases')}
           goodDirection="down"
           explanation={explainKpiShare({
             metric: 'escalation_rate',
@@ -1504,7 +1518,7 @@ function PerformanceTab({
           value={ratioPct(quality.automation_rate)}
           context={`${fmtNumber(quality.auto_closed_cases)} closed by the agent`}
           delta={deltaView(compare?.automation_rate)}
-          deltaExplanation={compareChipExplanation(compare?.automation_rate, 'Automation rate', 'rate', hours)}
+          deltaExplanation={compareChipExplanation(compare?.automation_rate, 'Automation rate', 'rate', hours, 'closed cases')}
           explanation={explainKpiShare({
             metric: 'automation_rate',
             title: 'Automation rate',

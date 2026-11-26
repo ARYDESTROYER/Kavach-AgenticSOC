@@ -202,7 +202,7 @@ describe('InvestigationPanel: the AI lane (Round 16, D8)', () => {
     expect(screen.getByTestId('investigation-trace-counts')).toHaveTextContent('2 AI steps · 1 tool · 1 by people');
     fireEvent.click(screen.getByRole('button', { name: 'Show trace' }));
     const filter = screen.getByRole('radiogroup', { name: 'Show trace steps by' });
-    expect(within(filter).getAllByRole('radio').map((r) => r.textContent)).toEqual(['All', 'Agent', 'Tool', 'Code', 'People', 'Chat']);
+    expect(within(filter).getAllByRole('radio').map((r) => r.textContent)).toEqual(['All', 'Agent', 'Tool', 'Code', 'People', 'Chat', 'Runbook']);
     // Agent keeps the agent's own step only: no person, no chat turn.
     fireEvent.click(within(filter).getByRole('radio', { name: 'Agent' }));
     expect(screen.getByText('Thinking')).toBeInTheDocument();

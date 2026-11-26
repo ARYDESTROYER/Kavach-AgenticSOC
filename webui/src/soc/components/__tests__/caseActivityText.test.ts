@@ -197,7 +197,7 @@ describe('activityText', () => {
           'verdict=NEEDS_HUMAN status=needs_human decision_by=None risk=40 cost=0 confidence=0.5 auto_close_gate=unrecorded',
         ),
       ).text,
-    ).toBe('Left for an analyst: needs human review at 50% confidence, risk 40.');
+    ).toBe('Sent to an analyst: needs human review at 50% confidence, risk 40.');
   });
 
   it('reads the investigator verdict and keeps its reasoning on its own line', () => {
@@ -527,7 +527,7 @@ describe('decisionRecordSentence (XFCM: the Brief decision line)', () => {
     ).toBe('Escalated by the system.');
     expect(
       decisionRecordSentence('verdict=NEEDS_HUMAN status=needs_human decision_by=None risk=40 cost=0.02 confidence=0.5 auto_close_gate=not_closable'),
-    ).toBe('Left for an analyst.');
+    ).toBe('Sent to an analyst.');
   });
 
   it('never names the verdict, confidence, risk, cost or gate', () => {
@@ -589,6 +589,17 @@ describe('decisionWords (FXA1: the Decision lane and the History share one mappi
     expect(
       decisionWords('verdict=TRUE_POSITIVE status=escalated decision_by=system risk=7.41 cost=hidden confidence=0.9'),
     ).toEqual({ route: 'Escalated by the system.', why: '' });
+  });
+
+  it('words a routing to a person one way, from the record or the rationale (FXF)', () => {
+    // The case manager's record and the history rationale of one decision.
+    const record = decisionWords(
+      'verdict=NEEDS_HUMAN status=needs_human decision_by=system risk=40 cost=0.02 confidence=0.5 auto_close_gate=not_closable',
+    );
+    expect(record).toEqual({ route: 'Sent to an analyst by the case policy.', why: 'This verdict never closes automatically.' });
+    expect(decisionWords(FAIL_SAFE)?.route).toBe(record?.route);
+    expect(decisionWords(bar('0.60', '12.0'))?.route).toBe(record?.route);
+    expect(`${record?.route}`).not.toMatch(/Left for an analyst|by the system/);
   });
 
   it('returns null for any other text, so the caller never shows it as it is', () => {

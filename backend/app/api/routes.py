@@ -72,6 +72,7 @@ from ..engine.case_cluster import WIDEN_LADDER as _WIDEN_LADDER  # noqa: F401
 from ..engine.case_cluster import cluster_for_case, entity_events_widening
 from ..engine.case_cluster import entity_field as _entity_field  # noqa: F401
 from ..engine.case_cluster import manual_trigger_reason as _manual_trigger_reason
+from ..engine.case_cluster import window_words as _window_phrase
 from ..engine.case_cluster import (  # noqa: F401
     reconstruct_cluster_from_case as _reconstruct_cluster_from_case,
 )
@@ -8830,7 +8831,7 @@ async def case_investigate(
                 status_code=400,
                 detail=(
                     f"No events remain for {case.entity.type.value} {case.entity.value} "
-                    f"in the last {state.prefs.investigate_lookback}; the activity may have "
+                    f"in {_window_words(state.prefs.investigate_lookback)}; the activity may have "
                     "aged out of the retained log window."
                 ),
             )
@@ -9499,15 +9500,14 @@ def _push_ring_cluster(state: AppState, req: InvestigateRequest) -> tuple[Cluste
 
 def _window_words(window: str) -> str:
     """A trailing window in words: ``now-365d`` reads "the last 365 days", never the raw
-    token (FXE). Anything else is returned as it is."""
+    token (FXE). Read with the shared window grammar (``engine.time_windows``, through
+    ``case_cluster.window_words``, FXF), so a sentence here and a manual case's trigger
+    sentence word a window alike. Anything else is returned as it is."""
     import re
 
-    from ..models import humanise_relative_window
-
-    match = re.fullmatch(r"now-(\d+)([mhdw])", str(window or "").strip())
-    if match is None:
+    if re.fullmatch(r"now-\d+[mhdw]", str(window or "").strip()) is None:
         return str(window)
-    return f"the {humanise_relative_window(int(match.group(1)), match.group(2))}"
+    return _window_phrase(window).removeprefix("in ")
 
 
 async def _cluster_for_case(

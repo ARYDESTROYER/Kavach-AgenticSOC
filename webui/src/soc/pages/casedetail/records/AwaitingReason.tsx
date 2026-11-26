@@ -34,6 +34,11 @@ export function awaitingReasonOf(c: Case): string {
   return typeof value === 'string' ? value.trim() : '';
 }
 
+/** A routing score or floor as the server prints it: up to two decimals, never rounded to a pass. */
+function score(value: number): string {
+  return value.toLocaleString('en-US', { maximumFractionDigits: 2 });
+}
+
 /** The reason the ingest pipeline recorded, in plain words. */
 export function awaitingWords(reason: string): string {
   const text = reason.trim();
@@ -44,9 +49,10 @@ export function awaitingWords(reason: string): string {
   if (text === 'automated background investigation is disabled') return 'Automatic investigation is turned off.';
   if (text === "every event is below its feed's severity floor") return "Every event is below its feed's severity floor.";
   if (text === 'auto-correlate is off for this source or feed') return 'Auto-correlate is off for this source or feed.';
-  const floor = /^available-signal routing score (\d+) is below the auto-investigate floor (\d+)$/.exec(text);
+  // The score is stored with up to two decimals (an older case stored a whole number).
+  const floor = /^available-signal routing score (\d+(?:\.\d+)?) is below the auto-investigate floor (\d+(?:\.\d+)?)$/.exec(text);
   if (floor) {
-    return `Its routing score, ${Number(floor[1]).toLocaleString('en-US')}, is below the floor of ${Number(floor[2]).toLocaleString('en-US')} for an automatic investigation.`;
+    return `Its routing score, ${score(Number(floor[1]))}, is below the floor of ${score(Number(floor[2]))} for an automatic investigation.`;
   }
   return text.charAt(0).toUpperCase() + text.slice(1) + (/[.!?]$/.test(text) ? '' : '.');
 }
@@ -63,9 +69,6 @@ export const GATE_WORDS: Record<string, string> = {
   unknown: 'The events of this case can no longer be read, so the gates cannot be walked again.',
 };
 
-function score(value: number): string {
-  return value.toLocaleString('en-US', { maximumFractionDigits: 1 });
-}
 
 export const ForwardingDetails: React.FC<{ data: CaseForwarding }> = ({ data }) => (
   <div className="space-y-2 text-xs" data-testid="awaiting-forwarding">

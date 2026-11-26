@@ -75,6 +75,8 @@ import {
   type StandupReport,
 } from './Standup.report.api';
 import {
+  explainActionItems,
+  explainHandoffAcks,
   explainQueueAge,
   explainSlaOverage,
   explainSlaTotal,
@@ -938,7 +940,13 @@ function ActionItemsPanel({ items, onChanged }: { items: ActionItem[]; onChanged
   };
 
   return (
-    <Panel title="Action items" count={items.length} caption="across shifts" data-testid="standup-actions">
+    <Panel
+      title="Action items"
+      count={items.length}
+      countExplain={explainSlot(explainActionItems(items))}
+      caption="across shifts"
+      data-testid="standup-actions"
+    >
       <div className="space-y-4">
         <Can resource="cases" action="write">
           <form
@@ -1069,7 +1077,13 @@ function AcknowledgePanel({
   };
 
   return (
-    <Panel title="Handoff sign-off" caption="this shift" data-testid="standup-signoff">
+    <Panel
+      title="Handoff sign-off"
+      count={acks.length || undefined}
+      countExplain={acks.length ? explainSlot(explainHandoffAcks(acks, windowKey)) : undefined}
+      caption="this shift"
+      data-testid="standup-signoff"
+    >
       <div className="space-y-4">
         {myAck ? (
           <p className="flex items-center gap-2 text-sm text-success-text">

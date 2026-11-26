@@ -22,11 +22,13 @@ import { Button } from '@/ui/button';
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from '@/ui/sheet';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/ui/table';
 import { LoadingState } from '@/design-system';
+import { ExplainTrigger } from '@/design-system/explain';
 import { EmptyState } from '@/soc/components/EmptyState';
 import { LoadError } from '@/soc/components/LoadError';
 import { pageHash } from '@/soc/router';
 import { safeRouteHref, useRouteLinkClick } from '@/soc/route-link';
 
+import { explainPersonMedian } from './team-explain';
 import {
   CLOSE_ORDER,
   CLOSE_WORDS,
@@ -166,6 +168,19 @@ function auditRange(start?: string | null, end?: string | null): { from?: string
   return { from: new Date(from).toISOString(), to: new Date(to - 1).toISOString() };
 }
 
+/**
+ * The person's median time to acknowledge, with its explanation on hover and click
+ * (Round 16 FXF); plain words when it was not measured.
+ */
+function PersonMedian({ person, windowLabel }: { person: PersonActivity; windowLabel: string }) {
+  const shown = fmtSeconds(person.median_ack_seconds);
+  // "Last 7 days" reads "last 7 days" in a sentence; a date ("12 Nov") keeps its capital.
+  const caption = /^(Last |Today$|Yesterday$)/.test(windowLabel) ? windowLabel.toLowerCase() : windowLabel;
+  const explanation = shown ? explainPersonMedian(person, shown, caption) : null;
+  if (!shown) return <>not measured</>;
+  return explanation ? <ExplainTrigger explanation={explanation}>{shown}</ExplainTrigger> : <>{shown}</>;
+}
+
 export interface PersonSheetProps {
   person: PersonActivity | null;
   /** The server window token the page reads. */
@@ -281,8 +296,7 @@ export function PersonSheet({
                 </p>
               ) : null}
               <p className={NOTE}>
-                Median time to acknowledge:{' '}
-                {fmtSeconds(person.median_ack_seconds) ?? 'not measured'}
+                Median time to acknowledge: <PersonMedian person={person} windowLabel={windowLabel} />
                 {person.ack_samples ? ` (${fmtNumber(person.ack_samples)} ${person.ack_samples === 1 ? 'case' : 'cases'})` : ''}.
               </p>
             </section>

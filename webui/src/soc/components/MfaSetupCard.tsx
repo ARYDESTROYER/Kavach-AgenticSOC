@@ -93,9 +93,10 @@ function QrChunkUnavailable({ onError }: { onError?: () => void }) {
 }
 
 /**
- * The QR encoder (~6 kB) loads only when an enrollment actually shows a code: this card
- * is on the eager login path, and nearly every sign-in never enrolls. The secret and URI
- * are always shown as text, so scanning is never the only path while it loads.
+ * The QR encoder (~6 kB) loads only when an enrollment actually shows a code: nearly
+ * every sign-in never enrolls (the sign-in page loads this card itself only for an
+ * enrollment step). The secret and URI are always shown as text, so scanning is never
+ * the only path while it loads.
  *
  * The import fails soft. Login renders outside every error boundary, so a rejected chunk
  * (a stale hashed file after a redeploy or supervised update, a proxy, going offline)

@@ -551,8 +551,12 @@ def _candidate_reason(
         return "every event is below its feed's severity floor"
     if not _auto_correlate_allowed(cluster, prefs):
         return "auto-correlate is off for this source or feed"
+    # The score as the forwarding explainer prints it (two decimals, trailing zeros
+    # dropped), never cut to an integer: 69.5 is not "69", which reads as a pass of 70.
+    from .forwarding import _score_text
+
     return (
-        f"available-signal routing score {int(routing_score)} is below the "
+        f"available-signal routing score {_score_text(routing_score)} is below the "
         f"auto-investigate floor {floor}"
     )
 
