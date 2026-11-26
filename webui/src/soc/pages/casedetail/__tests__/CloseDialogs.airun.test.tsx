@@ -171,9 +171,29 @@ describe('the close dialog during an AI run', () => {
     );
     expect(screen.queryByTestId('ai-run-close-notice')).toBeNull();
     expect(screen.getByTestId('ai-run-close-finished')).toHaveTextContent(
-      'The AI investigation finished. The verdict is now Needs human review. Check it before you close.',
+      'The AI investigation finished. The verdict is now needs human review. Check it before you close.',
     );
     expect(within(screen.getByTestId('confirm-action-footer')).getByRole('button', { name: 'Close case' })).toBeEnabled();
+  });
+
+  it('writes the new verdict in lower case mid-sentence', async () => {
+    serve([view()]);
+    render(<Confirm action={ALL_ACTIONS.close_disposition} />);
+    await settle();
+    act(() =>
+      h.onEvent?.({
+        type: 'case.investigation',
+        data: {
+          ...view({ state: 'finished', phase: 'decision', outcome: 'decided', status_after: 'open', verdict_after: 'FALSE_POSITIVE' }),
+          active: 0,
+          new_runs: 0,
+        },
+        lastEventId: '6',
+      }),
+    );
+    expect(screen.getByTestId('ai-run-close-finished')).toHaveTextContent(
+      'The AI investigation finished. The verdict is now false positive. Check it before you close.',
+    );
   });
 });
 

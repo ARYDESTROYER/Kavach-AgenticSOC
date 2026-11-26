@@ -6819,9 +6819,18 @@ async def _case_spend_visible(request: Request | None) -> bool:
 def _withhold_case_spend(view: dict[str, Any]) -> dict[str, Any]:
     """Leave a case's own AI spend out of one serialised case: the ``token_cost`` key
     stays and its value is ``null``, the shape the timeline totals and the budget
-    windows use for a caller without ``cost:view``. Display only (#3)."""
+    windows use for a caller without ``cost:view``. Display only (#3).
+
+    Round 16 (WP16): a budget refusal that sent the case to a person keeps its reason in
+    ``error`` (``daily spend $1.2345 + est $0.0100 would exceed the $10.00 daily
+    ceiling``); its figures read ``(amount hidden)`` (``api.cost_text``), so the reason
+    still reads and the spend is not shown."""
     if "token_cost" in view:
         view["token_cost"] = None
+    if isinstance(view.get("error"), str):
+        from .cost_text import withhold_cost_text
+
+        view["error"] = withhold_cost_text(view["error"])
     return view
 
 

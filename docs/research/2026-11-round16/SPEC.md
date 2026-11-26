@@ -2551,7 +2551,25 @@ Where this section and §1 to §7 disagree, this section wins.
 
 ### 8.1 Contract resolutions
 
-To be written.
+- **Entry bundle.** The first-paint baseline is now `PRE_REVAMP_ENTRY_BYTES = 330_068`
+  (330,068 B) in `webui/src/soc/__tests__/bundle-first-paint.test.ts`, with the unchanged
+  +1,024 B budget over it and the unchanged 400,000 B ceiling; this item is the one record of
+  the current value. The integrated tree `9a94df2` measured 330,279 B with `npm run build:app`,
+  175 B over the Round 15 budget of 330,104 B: +1,199 B over 329,080 B. Per file, through the
+  source map: useEventStream.ts +2,346 (WP09's one stream per page), Login.tsx +1,404 with
+  LoginAuthBackdrop.tsx -5,380, ThemeModePill.tsx -1,350 and ShineButton.tsx -436 (WP04),
+  NavSidebar.tsx +958 (the AI count), router.tsx +651, investigations/count.ts +370,
+  WhatsNewGate.tsx +359, Wizard.tsx +355, sources-primary.ts +311, AppShell.tsx +289, semver.ts
+  +262 with upstream-release.ts -263, registry.tsx +234, theme.tsx +202, SystemUpdateControl.tsx
+  +161, case-tabs.ts +93, skip-link.ts +86, main.tsx +72, App.tsx +69, +372 unmapped and +34 of
+  small drift. WP16P then moved the case page's agent-step narration (`agentStepFromFrame`,
+  `appendAgentStep`, `useAgentSteps`) out of the shell's event stream module into
+  `lib/agentSteps.ts`, which only the lazy case activity feed imports (useEventStream.ts -461),
+  and the confirm provider gained its focus return (ConfirmDialog.tsx +259, main.tsx -9). The
+  result, **330,068 B**, is 36 B inside the Round 15 budget, so the baseline was set to it: 988 B
+  above the Round 15 baseline, the round's measured growth. `motion`, the Explain kit, the
+  What's new page and dialog, the notes JSON and the agent-step narration stay off the entry
+  path (`bundle-first-paint.test.ts`). A CI build stamps the SHA and date, about +46 B.
 
 ### 8.2 Per package
 

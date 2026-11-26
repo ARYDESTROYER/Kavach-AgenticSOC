@@ -171,6 +171,13 @@ Shift+Tab, in-page links, `scrollIntoView` and find-in-page all stop with the ta
 full view below the band. Do not add a `scroll-margin-top` for the band on the page's
 own elements as well: margin and padding add up and push the target too low.
 
+A pinned leading table column follows the same rule sideways (WCAG 2.4.11, technique C43).
+While a `DataTable` has `stickyFirstColumn`, it sets its horizontal scroller's
+`scroll-padding-inline-start` to the pinned cells' right edge, the selection column
+included, and clears it when the table unmounts. Tab, Shift+Tab and `scrollIntoView` then
+stop with a cell in full view beside the pinned column, never under it. Do not add a
+`scroll-margin-inline-start` to the cells as well.
+
 Sticky chrome needs a scroller that actually scrolls. The shell clips horizontal
 overflow with `overflow-x-clip`, never `overflow-x-hidden`: a lone hidden axis turns
 the element into a vertical scroll container that never scrolls, and every sticky
@@ -681,7 +688,10 @@ run chip after it, the owner (its one editable home, opened with M), the SLA whi
 and the review chip while an auto-close review waits. As the pane narrows, items give way
 by container query, never the viewport: the Risk chip below 30rem, the verdict and the
 long severity label below 36rem, the owner's name and the review chip below 44rem, the SLA
-below 52rem. The owner's monogram never hides, and the status truncates instead. A review
+below 52rem. The owner's monogram never hides. On a short line the owner's name truncates
+first, then the verdict's words (its label and confidence keep their width), and the status
+words or the outcome give way last, only once both are at their minimum: on a phone-width
+strip, where the owner's name and the verdict are already hidden, the status truncates. A review
 sample has no band in the header: its sentence is the review chip's hover and the Brief's
 first block. Tags, the campaign, the factor reading of the risk, Ask AI about the case
 and the Sample mark live in the inspector. The primary action follows the status: Acknowledge when new; Close case while open,

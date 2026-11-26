@@ -268,6 +268,26 @@ describe('InvestigationPanel: the AI lane (Round 16, D8)', () => {
     expect(screen.getByRole('button', { name: 'Show trace' })).toBeInTheDocument();
   });
 
+  it('says when the rationale was built from only the newest records, as the trace does (WP16)', () => {
+    const cut = { ...RATIONALE, returned: 500, rows_total: 1240, rows_total_relation: 'eq', truncated: true } as unknown as CaseRationale;
+    const { unmount } = renderCm({ rationale: cut });
+    expect(screen.getByTestId('rationale-cut')).toHaveTextContent(
+      'Built from the newest 500 of 1,240 records. The audit log has the rest.',
+    );
+    unmount();
+    renderCm({ rationale: { ...cut, rows_total: 10_000, rows_total_relation: 'gte' } as unknown as CaseRationale });
+    expect(screen.getByTestId('rationale-cut')).toHaveTextContent('the newest 500 of at least 10,000 records');
+  });
+
+  it('says nothing about a cut for a rationale that read every record or an older server', () => {
+    const whole = { ...RATIONALE, returned: 12, rows_total: 12, rows_total_relation: 'eq', truncated: false } as unknown as CaseRationale;
+    const { unmount } = renderCm({ rationale: whole });
+    expect(screen.queryByTestId('rationale-cut')).toBeNull();
+    unmount();
+    renderCm();
+    expect(screen.queryByTestId('rationale-cut')).toBeNull();
+  });
+
   it('keeps the full assessment evidence one disclosure away', () => {
     renderCm();
     fireEvent.click(screen.getByRole('button', { name: /show full assessment evidence/i }));

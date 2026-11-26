@@ -54,6 +54,25 @@ import { CASE_MANAGER_PANEL_PADDING, PanelSection } from './shared';
 /* --------------------------------------------------------- the Investigation tab -- */
 
 /**
+ * Whether the rationale was built from only the newest audit records of a long-lived case
+ * (`GET /cases/{id}/rationale`: `returned`, `rows_total`, `rows_total_relation` and
+ * `truncated`, additive since Round 16), said the way the trace says it (`traceCutText`).
+ * Null when the rationale read every record, or came from a server without the fields.
+ */
+export function rationaleCutText(rationale: CaseRationale | null | undefined): string | null {
+  if (!rationale || rationale.truncated !== true) return null;
+  const count = (value: unknown): number | null =>
+    typeof value === 'number' && Number.isFinite(value) ? value : null;
+  const returned = count(rationale.returned);
+  const total = count(rationale.rows_total);
+  if (returned === null || total === null) {
+    return 'Built from the newest records only. Older records are not used here.';
+  }
+  const atLeast = rationale.rows_total_relation === 'gte' ? 'at least ' : '';
+  return `Built from the newest ${returned.toLocaleString('en-US')} of ${atLeast}${total.toLocaleString('en-US')} records. The audit log has the rest.`;
+}
+
+/**
  * The trace filter: the one actor model of `TraceTimeline` (`spanActor`), so Agent never
  * counts a person's step or a chat turn, and People and Chat have their own choices.
  */
@@ -105,6 +124,7 @@ export const InvestigationPanel: React.FC<InvestigationPanelProps> = ({
   const traceSectionRef = React.useRef<HTMLElement | null>(null);
 
   const assessment = aiAssessmentText(c, rationale);
+  const rationaleCut = rationaleCutText(rationale);
   const findings = (c.evidence || []).filter((e) => e && (e.summary || e.query));
   const reproduce = (c.reproduce_query || '').trim();
 
@@ -180,6 +200,12 @@ export const InvestigationPanel: React.FC<InvestigationPanelProps> = ({
                 : 'The AI has not assessed this case.'}
             </p>
           )}
+
+          {rationaleCut ? (
+            <p className="text-xs text-muted-foreground" data-testid="rationale-cut">
+              {rationaleCut}
+            </p>
+          ) : null}
 
           <FindingsList findings={findings} onShowEvents={onShowEvents} />
 
