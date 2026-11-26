@@ -1385,6 +1385,7 @@ function PerformanceTab({
             window: hours > 0 ? `the ${caption}` : 'all time',
             dividedBy: 'server',
             tileRounding: 'The tile shows a whole percent.',
+            tileWholePercent: true,
             caveats: ['Cases an analyst rule policy closed are left out: no model ran on them.'],
           })}
         />
@@ -1406,6 +1407,7 @@ function PerformanceTab({
             window: hours > 0 ? `the ${caption}` : 'all time',
             dividedBy: 'server',
             tileRounding: 'The tile shows a whole percent.',
+            tileWholePercent: true,
             caveats: ['Cases an analyst rule policy closed are left out: no model ran on them.'],
           })}
         />
@@ -1425,6 +1427,7 @@ function PerformanceTab({
             window: hours > 0 ? `the ${caption}` : 'all time',
             dividedBy: 'server',
             tileRounding: 'The tile shows a whole percent.',
+            tileWholePercent: true,
             caveats: ['Cases an analyst rule policy closed are left out: no model ran on them.', 'A case counts once if it was ever escalated.'],
           })}
         />
@@ -1442,6 +1445,7 @@ function PerformanceTab({
             window: hours > 0 ? `the ${caption}` : 'all time',
             dividedBy: 'server',
             tileRounding: 'The tile shows a whole percent.',
+            tileWholePercent: true,
             caveats: ['Cases an analyst rule policy closed are left out: no model ran on them.'],
           })}
         />
@@ -1460,6 +1464,7 @@ function PerformanceTab({
             window: hours > 0 ? `the ${caption}` : 'all time',
             dividedBy: 'server',
             tileRounding: 'The tile shows a whole percent.',
+            tileWholePercent: true,
             caveats: ['Who closed a case is the last decider it records.'],
           })}
         />

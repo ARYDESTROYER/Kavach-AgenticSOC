@@ -128,6 +128,15 @@ def test_the_warn_fraction_key_reports_the_shared_fraction() -> None:
     assert aging["warn_fraction"] == M.SLA_AT_RISK_FRACTION == CONTRACT["sla"]["at_risk_fraction"]
 
 
+def test_a_warn_fraction_passed_in_is_not_echoed_as_the_rule() -> None:
+    # The rule is the shared 0.8; a payload that echoed a caller's 0.5 would state a cut
+    # that no case was classified by (review of XFNUM).
+    case = _case(created=NOW - timedelta(minutes=9))  # 60% of the P1 15m target
+    aging = shift_report.sla_aging([case], SlaPolicy(), now=NOW, warn_fraction=0.5)
+    assert aging["warn_fraction"] == M.SLA_AT_RISK_FRACTION
+    assert aging["totals"]["about_to_breach"] == 0
+
+
 def test_a_late_breach_row_carries_the_target_and_the_overdue_time() -> None:
     case = _case(created=NOW - timedelta(minutes=40))
     (row,) = shift_report.sla_aging([case], SlaPolicy(), now=NOW)["breached"]
@@ -245,6 +254,31 @@ def test_dwell_counts_a_person_response_only_and_says_so() -> None:
     assert out["sample_count"] == 1
     assert "person" in out["population"]
     assert "Automatic" in out["population"]
+
+
+def test_dwell_not_measured_says_no_person_responded() -> None:
+    # Only automatic closes: the agent closed the case, so no person responded. The
+    # reason must not say no case got a response at all (review of XFNUM).
+    created = NOW - timedelta(hours=5)
+    agent = _case("agent-only", created=created, status=CaseStatus.CLOSED, decision_by=DecisionBy.AGENT,
+                  history=[("closed", "agent", created + timedelta(minutes=1))])
+    block = M.lifecycle_intervals([agent])["dwell_minutes"]
+    assert block["available"] is False
+    assert "person" in block["reason"]
+
+
+def test_dwell_can_be_shorter_than_time_to_acknowledge_without_a_close() -> None:
+    # A person escalates first and acknowledges later: dwell stops at the escalation,
+    # time to acknowledge at the acknowledgement. No close is involved, so the Console
+    # must not claim dwell equals time to acknowledge unless a person closes the case.
+    created = NOW - timedelta(hours=5)
+    case = _case("esc-then-ack", created=created, status=CaseStatus.INVESTIGATING,
+                 history=[("escalated", "alice", created + timedelta(minutes=5)),
+                          ("investigating", "bob", created + timedelta(minutes=30))])
+    case.acknowledged_at = created + timedelta(minutes=30)
+    samples = M.lifecycle_samples([case])
+    assert samples["dwell"] == [pytest.approx(5.0)]
+    assert samples["mtta"] == [pytest.approx(30.0)]
 
 
 # --------------------------------------------------------------------------- #

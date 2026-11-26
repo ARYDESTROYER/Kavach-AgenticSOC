@@ -3879,6 +3879,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
             window: windowWords,
             dividedBy: 'server',
             tileRounding: 'The tile shows a whole percent.',
+            tileWholePercent: true,
             caveats: [
               'Cases an analyst rule policy closed are left out: no model ran on them.',
               ...(typeof analystFp === 'number'

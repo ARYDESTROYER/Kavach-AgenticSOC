@@ -323,8 +323,9 @@ def sla_aging(
       ``metrics.SLA_AT_RISK_FRACTION`` (0.8) of the target has passed, the posture
       "at risk" rule.
 
-    ``warn_fraction`` is kept as a payload key for older readers; it reports the
-    shared fraction and no longer changes the rule."""
+    ``warn_fraction`` is kept as a parameter and a payload key for older readers. The
+    payload always reports the shared fraction the rule used; a value passed in no
+    longer changes the rule, so it is not echoed."""
     enabled = bool(sla is not None and getattr(sla, "enabled", False))
     ref = now or now_utc()
     by_priority: dict[str, dict[str, int]] = {}
@@ -373,7 +374,8 @@ def sla_aging(
     about_to.sort(key=lambda r: r["age_minutes"], reverse=True)
     return {
         "enabled": enabled,
-        "warn_fraction": warn_fraction,
+        # The fraction the rule used, never a caller's value it ignored.
+        "warn_fraction": _metrics.SLA_AT_RISK_FRACTION,
         "by_priority": by_priority,
         "totals": {
             "open": total_open,

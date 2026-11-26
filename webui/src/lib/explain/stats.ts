@@ -69,7 +69,9 @@ export function explainShare(
     summary: `${count(numerator)} of ${count(denominator)} ${label} = ${percentOf(ratio)}.`,
     steps: [
       { label: 'Ratio', expression: `${count(numerator)} / ${count(denominator)}`, result: trimmed(ratio, 4) },
-      { label: 'Percent', expression: `${trimmed(ratio, 4)} x 100`, result: percentOf(ratio) },
+      // From the counts, not the rounded ratio: 129 / 167 prints as 0.7725, and 0.7725 x
+      // 100 is 77.25%, which does not give the 77.2% that 129 / 167 x 100 does.
+      { label: 'Percent', expression: `${count(numerator)} / ${count(denominator)} x 100`, result: percentOf(ratio) },
     ],
     rounding: 'The percentage is shown with at most one decimal.',
     caveats: [],

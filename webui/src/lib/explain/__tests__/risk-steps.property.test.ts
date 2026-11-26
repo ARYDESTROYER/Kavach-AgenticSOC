@@ -15,6 +15,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { explainRiskScore } from '../risk';
+import { explanationText } from '../text';
 import type { Explanation } from '../types';
 import type { RiskBreakdown } from '@/lib/types';
 
@@ -245,6 +246,14 @@ describe('the risk explanation reproduces its own arithmetic', () => {
       'Risk 20.81, from the unrounded factors. The stored factors give (0.25 x 35.26 + 0.20 x 45 + 0.30 x 0 + 0.15 x 20 + 0.10 x 0) / 1.00 = 20.82. Click for inputs.',
     );
     checkExplanation(exp!, 'twenty-point-81');
+    // Copy calculation: the sentence step is not written as an equation, so the copied
+    // text never reads "20.82. = 20.81" (review of XFNUM).
+    const copied = explanationText(exp!);
+    expect(copied).toContain(
+      '- Total: Recorded at scoring from the unrounded factors. The stored factors give 20.82. Result: 20.81',
+    );
+    expect(copied).not.toMatch(/20\.82\.\s*=/);
+    expect(copied).toContain('- Weighted sum: 0.25 x 35.26 + 0.20 x 45 + 0.30 x 0 + 0.15 x 20 + 0.10 x 0 = 20.82');
   });
 
   it('keeps the worked example as a division (81.11 / 1.00)', () => {

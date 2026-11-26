@@ -384,6 +384,8 @@ export function stripCellExplanation(view: StripCellView, read: DashboardReader,
         typeof ingested === 'number' ? ingested : null,
         typeof cases === 'number' ? cases : null,
         window,
+        // The tile shows a whole percent: the explanation ends on that figure.
+        result.text,
       );
     }
     case 'events_per_minute':
@@ -410,7 +412,13 @@ export function stripCellExplanation(view: StripCellView, read: DashboardReader,
         noun: CELL_NOUN[binding.cell] ?? 'cases',
         window,
         windowSource,
-        provenanceNote: stock ? 'Counted by the server for this reading.' : undefined,
+        // "Over the cases in the window" only for a count of cases: sources and alerts
+        // are not cases.
+        provenanceNote: stock
+          ? 'Counted by the server for this reading.'
+          : binding.caseDerived
+            ? undefined
+            : 'Counted by the server for this window.',
         summary: `${result.text} ${CELL_NOUN[binding.cell] ?? 'cases'}, ${window}. ${binding.definition}`,
         formula: binding.definition,
         caveats: [...(CELL_CAVEATS[binding.cell] ?? [])],

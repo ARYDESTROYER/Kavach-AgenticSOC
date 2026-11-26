@@ -87,8 +87,28 @@ export interface ShareExplainInput {
   dividedBy: 'server' | 'console';
   /** How the tile rounds the share it shows. */
   tileRounding?: string;
+  /**
+   * Set when the tile shows the share as a whole percent: a "Shown" step then gives the
+   * tile's figure from the share, so 66.5% beside a "66%" tile still reproduces.
+   */
+  tileWholePercent?: boolean;
   caveats?: string[];
   link?: ExplanationLink;
+}
+
+/**
+ * The tile's whole percent as a step that holds: `floor(p + 0.5)` with `p` printed with
+ * just enough decimals that the step gives the tile's figure. 66.467% prints as 66.47,
+ * never 66.5, whose rounding half up (67) is not the 66% the tile shows.
+ */
+export function wholePercentStep(percent: number): ExplanationStep {
+  const shown = Math.floor(percent + 0.5);
+  let text = trimmed(percent, 1).replace(/,/g, '');
+  for (let digits = 1; digits <= 6; digits += 1) {
+    text = trimmed(percent, digits).replace(/,/g, '');
+    if (Math.floor(Number(text) + 0.5) === shown) break;
+  }
+  return { label: 'Shown', expression: `floor(${text} + 0.5)`, result: `${shown}%` };
 }
 
 /**
@@ -113,6 +133,10 @@ export function explainKpiShare(input: ShareExplainInput): Explanation | null {
       { key: 'denominator', label: capitalise(input.denominatorLabel), value: count(denominator), source: 'Server count' },
       { key: 'window', label: 'Window', value: input.window, source: 'The time range above' },
     ],
+    steps:
+      input.tileWholePercent && base.value !== null
+        ? [...base.steps, wholePercentStep(100 * (base.value as number))]
+        : base.steps,
     rounding: input.tileRounding ?? base.rounding,
     provenance: 'server_computed',
     provenanceNote: input.dividedBy === 'console' ? CONSOLE_DIVIDED : 'Computed by the server over the cases in the window.',
@@ -133,15 +157,37 @@ export function nounFor(n: number, plural: string): string {
   return plural.replace(/\b(cases|verdicts|closes)\b/, (word) => SINGULAR[word] ?? word);
 }
 
-/** Alert reduction: one minus cases opened over alerts ingested (research R11). */
+/**
+ * Alert reduction: one minus cases opened over alerts ingested (research R11).
+ *
+ * `tileText` is the figure a tile shows beside the explanation (`alertReduction`'s
+ * whole percent, or "<1%" and ">99%"). With it, the explanation ends on that figure: a
+ * "Shown" step for a whole percent, or a note for the two bounded texts. Without it the
+ * explanation stands alone at one decimal.
+ */
 export function explainAlertReduction(
   ingested: number | null | undefined,
   cases: number | null | undefined,
   window: string,
+  tileText?: string,
 ): Explanation | null {
   if (typeof ingested !== 'number' || typeof cases !== 'number' || !(ingested > 0) || cases > ingested) return null;
   const ratio = cases / ingested;
   const reduction = 1 - ratio;
+  const tileSteps: ExplanationStep[] = [];
+  const tileCaveats: string[] = [];
+  let rounding = 'The percentage is shown with at most one decimal.';
+  if (tileText) {
+    const whole = wholePercentStep(100 * reduction);
+    if (tileText === whole.result) {
+      tileSteps.push(whole);
+      rounding = 'The tile shows a whole percent, rounded half up.';
+    } else if (tileText === '<1%') {
+      tileCaveats.push('The tile shows <1%: a real reduction under half a percent never reads as 0%.');
+    } else if (tileText === '>99%') {
+      tileCaveats.push('The tile shows >99%: a reduction short of the whole never reads as 100%.');
+    }
+  }
   return {
     metric: 'alert_reduction',
     title: 'Alert reduction',
@@ -156,12 +202,15 @@ export function explainAlertReduction(
     ],
     steps: [
       { label: 'Ratio', expression: `${count(cases)} / ${count(ingested)}`, result: trimmed(ratio, 4) },
-      { label: 'Reduction', expression: `1 - ${trimmed(ratio, 4)}`, result: percentOf(reduction) },
+      // From the counts, not the rounded ratio: 1 - 0.2275 is 77.25%, which does not
+      // give the 77.2% that 1 - 38 / 167 does.
+      { label: 'Reduction', expression: `100 x (1 - ${count(cases)} / ${count(ingested)})`, result: percentOf(reduction) },
+      ...tileSteps,
     ],
-    rounding: 'The percentage is shown with at most one decimal.',
+    rounding,
     provenance: 'server_computed',
     provenanceNote: CONSOLE_DIVIDED,
-    caveats: [],
+    caveats: tileCaveats,
   };
 }
 
@@ -236,7 +285,8 @@ export function explainAverageRisk(input: {
   if (typeof mean !== 'number' || !Number.isFinite(mean)) return null;
   const n = typeof input.scoredCases === 'number' && Number.isFinite(input.scoredCases) ? input.scoredCases : null;
   const shown = Math.floor(mean + 0.5);
-  const where = input.population === 'all time' ? 'every case, all time' : `the ${input.population}`;
+  // Only the scored cases are in the mean, so never "every case".
+  const where = input.population === 'all time' ? 'all time' : `the ${input.population}`;
   return {
     metric: 'avg_risk_score',
     title: 'Average risk',
@@ -549,7 +599,7 @@ export const TIMING_DEFINITIONS: Record<TimingExplainInput['metric'], string> = 
   mtta: 'From case creation (or detection when recorded) to the first human acknowledgement, or a human move to investigating, escalated or on hold. Assigning a case alone does not stop it.',
   mttr: 'From case creation (or detection when recorded) to the first time the case was resolved or closed, for cases that are resolved or closed now.',
   dwell:
-    'From case creation (or detection when recorded) to the first response by a person: investigating, escalated, on hold, resolved or closed. Automatic closes are not counted, so dwell equals time to acknowledge unless a person closes a case without acknowledging it first.',
+    'From case creation (or detection when recorded) to the first response by a person: investigating, escalated, on hold, resolved or closed. Automatic closes are not counted. Any of these moves stops it, so dwell can be shorter than time to acknowledge.',
 };
 
 /** The agreement rate and its own population (D10). */

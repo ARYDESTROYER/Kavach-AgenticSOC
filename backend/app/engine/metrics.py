@@ -632,7 +632,8 @@ def lifecycle_intervals(
 LIFECYCLE_MISSING: dict[str, str] = {
     "mtta": "no case has been acknowledged yet",
     "mttr": "no case has been resolved/closed yet",
-    "dwell": "no case has received a first response yet",
+    # Dwell counts a person's response only: an automatic close is not one.
+    "dwell": "no case has received a first response from a person yet",
     "mttd": "detection latency not available yet",
 }
 

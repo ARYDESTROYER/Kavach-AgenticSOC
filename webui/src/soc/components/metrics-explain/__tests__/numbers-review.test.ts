@@ -10,11 +10,15 @@
  */
 import { describe, expect, it } from 'vitest';
 
+import { explainShare } from '@/lib/explain/builders';
 import { LIFECYCLE_METRICS } from '@/soc/pages/posture.format';
 
 import {
+  explainAlertReduction,
   explainAverageRisk,
   explainCount,
+  explainKpiShare,
+  wholePercentStep,
   explainNeverReachedPerson,
   explainSlaAtRisk,
   explainTeamAckMedian,
@@ -52,6 +56,12 @@ describe('dwell is a person\'s first response', () => {
   it('says so in the explanation and the help', () => {
     expect(TIMING_DEFINITIONS.dwell).toContain('first response by a person');
     expect(TIMING_DEFINITIONS.dwell).toContain('Automatic closes are not counted');
+    // A person who escalates first and acknowledges later stops dwell at the escalation
+    // and time to acknowledge at the acknowledgement, with no close involved (backend
+    // test_dwell_can_be_shorter_than_time_to_acknowledge_without_a_close), so no
+    // equality with time to acknowledge is claimed.
+    expect(TIMING_DEFINITIONS.dwell).not.toMatch(/equals time to acknowledge/);
+    expect(TIMING_DEFINITIONS.dwell).toContain('dwell can be shorter than time to acknowledge');
     expect(LIFECYCLE_METRICS.dwell.help).toContain('first response by a person');
     expect(LIFECYCLE_METRICS.dwell.help).toContain('Automatic closes are not counted');
     expect(LIFECYCLE_METRICS.dwell.help).not.toContain('first active response');
@@ -85,11 +95,75 @@ describe('the Detailed noise reduction headline', () => {
   });
 });
 
+/** A printed percent or number, and the same value worked out and rounded half up the way it is printed. */
+function roundsTo(value: number, printed: string): boolean {
+  const clean = printed.replace(/[,%]/g, '');
+  const decimals = clean.includes('.') ? clean.split('.')[1].length : 0;
+  const factor = 10 ** decimals;
+  return Math.floor(value * factor + 0.5 + 1e-9) / factor === Number(clean);
+}
+
+describe('Alert reduction', () => {
+  it('writes its reduction step from the counts, so the printed step gives its printed result', () => {
+    // The seeded Demo's counts: 38 / 167 prints as 0.2275, and 1 - 0.2275 is 77.25%, which
+    // rounds half up to 77.3%, not the 77.2% that 1 - 38 / 167 gives (review of XFNUM).
+    const exp = explainAlertReduction(167, 38, 'the last 24 hours')!;
+    const step = exp.steps.find((s) => s.label === 'Reduction')!;
+    expect(step.expression).toBe('100 x (1 - 38 / 167)');
+    expect(step.result).toBe('77.2%');
+    expect(roundsTo(100 * (1 - 38 / 167), step.result)).toBe(true);
+    expect(roundsTo(100 * (1 - 0.2275), step.result)).toBe(false);
+    expect(exp.steps.find((s) => s.label === 'Ratio')).toEqual({ label: 'Ratio', expression: '38 / 167', result: '0.2275' });
+  });
+
+  it('ends on the whole percent the tile shows, with a step that gives it', () => {
+    // 1 - 56 / 167 is 66.467%: one decimal prints 66.5%, whose rounding half up is 67,
+    // while the tile shows 66% (the seeded Demo's 7-day Detection board).
+    const exp = explainAlertReduction(167, 56, 'the last 7 days', '66%')!;
+    const shown = exp.steps.find((s) => s.label === 'Shown')!;
+    expect(shown).toEqual({ label: 'Shown', expression: 'floor(66.47 + 0.5)', result: '66%' });
+    expect(Math.floor(66.47 + 0.5)).toBe(66);
+    expect(exp.rounding).toBe('The tile shows a whole percent, rounded half up.');
+    expect(exp.rounding).not.toContain('at most one decimal');
+    // A whole percent that one decimal already gives keeps one decimal.
+    expect(explainAlertReduction(167, 38, 'w', '77%')!.steps.at(-1)).toEqual({ label: 'Shown', expression: 'floor(77.2 + 0.5)', result: '77%' });
+    // The bounded texts get a note, not a false step.
+    const tiny = explainAlertReduction(1000, 998, 'w', '<1%')!;
+    expect(tiny.steps.some((s) => s.label === 'Shown')).toBe(false);
+    expect(tiny.caveats.join(' ')).toContain('<1%');
+    // Without a tile the explanation stands alone.
+    expect(explainAlertReduction(167, 56, 'w')!.steps.some((s) => s.label === 'Shown')).toBe(false);
+  });
+});
+
+describe('a share and its tile', () => {
+  it('writes the percent step from the counts (129 / 167 is 77.2%, while 0.7725 x 100 rounds to 77.3%)', () => {
+    const exp = explainShare(129, 167)!;
+    const percent = exp.steps.find((s) => s.label === 'Percent')!;
+    expect(percent).toEqual({ label: 'Percent', expression: '129 / 167 x 100', result: '77.2%' });
+    expect(roundsTo((129 / 167) * 100, percent.result)).toBe(true);
+    expect(roundsTo(0.7725 * 100, percent.result)).toBe(false);
+  });
+
+  it('a tile that shows a whole percent gets a Shown step that gives it', () => {
+    const exp = explainKpiShare({
+      metric: 'containment_rate', title: 'Containment', numerator: 111, denominator: 167,
+      numeratorLabel: 'resolved or closed cases', denominatorLabel: 'cases', window: 'the last 7 days',
+      dividedBy: 'server', tileRounding: 'The tile shows a whole percent.', tileWholePercent: true,
+    })!;
+    expect(exp.display).toBe('66.5%');
+    expect(exp.steps.at(-1)).toEqual({ label: 'Shown', expression: 'floor(66.47 + 0.5)', result: '66%' });
+    expect(wholePercentStep(12.5)).toEqual({ label: 'Shown', expression: 'floor(12.5 + 0.5)', result: '13%' });
+  });
+});
+
 describe('Average risk', () => {
   it('names the scored cases it divides by and the rounding the tile shows', () => {
     const exp = explainAverageRisk({ mean: 23.6, scoredCases: 77, population: 'all time' })!;
     expect(exp.display).toBe('24');
-    expect(exp.summary).toBe('Mean risk 23.6 over 77 scored cases: the sum of their risk scores / 77, every case, all time.');
+    // Only scored cases are in the mean, so never "every case" (review of XFNUM).
+    expect(exp.summary).toBe('Mean risk 23.6 over 77 scored cases: the sum of their risk scores / 77, all time.');
+    expect(exp.summary).not.toContain('every case');
     expect(exp.steps).toEqual([{ label: 'Shown', expression: 'floor(23.6 + 0.5)', result: '24' }]);
     expect(exp.inputs.find((i) => i.key === 'scored')?.value).toBe('77');
   });

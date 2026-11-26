@@ -56,6 +56,17 @@ describe('strip cell explanations', () => {
     expect(sources?.inputs[0]).toMatchObject({ label: 'Counted sources', value: '5' });
   });
 
+  it('a count of sources or alerts never says it was counted over cases (review of XFNUM)', () => {
+    for (const id of ['sources_reporting', 'alerts_ingested']) {
+      const exp = stripCellExplanation(view(cell('detection', id), measured(5, '5')), read, 'last 24 hours');
+      expect(exp?.provenanceNote, id).toBe('Counted by the server for this window.');
+      expect(exp?.provenanceNote, id).not.toContain('cases');
+    }
+    // A count of cases keeps the case wording.
+    const cases = stripCellExplanation(view(cell('executive', 'cases'), measured(38, '38')), read, 'last 7 days');
+    expect(cases?.provenanceNote).toBe('Counted by the server over the cases in the window.');
+  });
+
   it('a stock measured now is not limited by the time range', () => {
     const exp = stripCellExplanation(view(cell('detection', 'silent_sources'), measured(1, '1')), read, 'last 24 hours');
     expect(exp?.inputs.find((i) => i.key === 'window')).toMatchObject({ value: 'right now', source: 'Not limited by the time range above' });
