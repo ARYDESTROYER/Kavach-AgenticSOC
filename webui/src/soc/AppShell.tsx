@@ -348,7 +348,7 @@ export interface AppShellProps {
   onNavigate: Navigate;
   /** When auth is enabled + authenticated, the signed-in username. */
   username?: string | null;
-  /** Called when the user clicks "Log out" (only rendered when `username` set). */
+  /** Called when the user clicks "Sign out" (only rendered when `username` set). */
   onLogout?: () => void;
   /** The routed page content. */
   children: React.ReactNode;
@@ -1006,12 +1006,11 @@ const UserMenu: React.FC<{
         {onLogout ? (
           <>
             <DropdownMenuSeparator />
-            <DropdownMenuItem
-              onSelect={onLogout}
-              className="text-critical focus:text-critical [&>svg]:text-critical"
-            >
+            {/* "Sign out", as the sign-in page and Sessions say it, in the neutral
+                menu colour: signing out loses nothing, so it is not a destructive action. */}
+            <DropdownMenuItem onSelect={onLogout}>
               <LogOut aria-hidden />
-              Log out
+              Sign out
             </DropdownMenuItem>
           </>
         ) : null}
@@ -2057,14 +2056,14 @@ export const AppShell: React.FC<AppShellProps> = ({
                           <Button
                             type="button"
                             variant="ghost"
-                            className="h-11 justify-start gap-2 px-3 font-normal text-critical hover:text-critical"
+                            className="h-11 justify-start gap-2 px-3 font-normal"
                             onClick={() => {
                               setCompactControlsOpen(false);
                               onLogout();
                             }}
                           >
                             <LogOut className="h-4 w-4" aria-hidden />
-                            Log out
+                            Sign out
                           </Button>
                         ) : null}
                       </div>

@@ -238,8 +238,10 @@ export const PasswordInput = React.forwardRef<HTMLInputElement, PasswordInputPro
         disabled={disabled}
         aria-label={reveal ? 'Hide password' : 'Show password'}
         aria-pressed={reveal}
+        // 44px on phones (the field's full height, its ring drawn inside), 36px from the
+        // small breakpoint up.
         className={cn(
-          'absolute right-1 top-1/2 flex h-9 w-9 -translate-y-1/2 items-center justify-center rounded-sm text-muted-foreground',
+          'absolute right-0 top-1/2 flex h-11 w-11 -translate-y-1/2 items-center justify-center rounded-md text-muted-foreground focus-visible:ring-inset sm:right-1 sm:h-9 sm:w-9 sm:rounded-sm',
           'transition-colors hover:bg-muted hover:text-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-ring',
           'disabled:pointer-events-none disabled:opacity-50',
         )}

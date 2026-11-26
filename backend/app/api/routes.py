@@ -5819,7 +5819,9 @@ async def sso_providers(state: AppState = Depends(get_state)) -> dict[str, Any]:
     sso = getattr(state.prefs, "sso", None)
     out = []
     for p in (sso.enabled_providers() if sso else []):
-        out.append({"id": p.id, "type": p.type, "display_name": p.display_name or p.id})
+        # The stored name, empty when none is set: the sign-in page names an unnamed
+        # Google or Microsoft provider by its type, never by its internal id.
+        out.append({"id": p.id, "type": p.type, "display_name": (p.display_name or "").strip()})
     return {"providers": out}
 
 

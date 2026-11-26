@@ -2,10 +2,12 @@ import * as React from 'react';
 import { cva, type VariantProps } from 'class-variance-authority';
 import { cn } from '@/lib/cn';
 
+// The 16px icon sits 13px from the top, so its centre (21px) meets the centre of a
+// 14px line of text (12px padding + half its 20px line box, less the font's taller
+// ascent) without nudging the text. A title (`leading-none`) lands within 2px of it.
 const alertVariants = cva(
   'relative w-full rounded-lg border px-4 py-3 text-sm ' +
-    '[&>svg]:absolute [&>svg]:left-4 [&>svg]:top-4 [&>svg]:size-4 ' +
-    '[&>svg~*]:pl-7 [&>svg+div]:translate-y-[-2px]',
+    '[&>svg]:absolute [&>svg]:left-4 [&>svg]:top-[0.8125rem] [&>svg]:size-4 [&>svg~*]:pl-7',
   {
     variants: {
       variant: {

@@ -170,13 +170,6 @@ export function formatRememberDuration(seconds: number | null | undefined): stri
   return `${m} ${m === 1 ? 'minute' : 'minutes'}`;
 }
 
-/** "the next hour" or "the next 24 hours": the window phrase for the warning. */
-export function formatRememberWindow(seconds: number | null | undefined): string {
-  const s = Math.max(0, Math.round(Number(seconds) || 0));
-  if (s === 3600) return 'the next hour';
-  return `the next ${formatRememberDuration(s)}`;
-}
-
 /** The neutral notice: a time limit, or a reason this console does not know yet. */
 export const SIGNED_OUT_NOTICE = 'For your security, you were signed out. Sign in to continue.';
 

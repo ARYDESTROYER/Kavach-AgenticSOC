@@ -426,3 +426,28 @@ def test_sso_providers_public_lists_enabled(sso_state):
     assert resp.status_code == 200
     provs = resp.json()["providers"]
     assert provs == [{"id": "corp", "type": "generic", "display_name": "Corp IdP"}]
+
+
+@pytest.mark.asyncio
+async def test_sso_providers_public_never_names_a_provider_by_its_id(sso_state):
+    # FXC sso-label-raw-id: an unnamed provider used to come back named by its id
+    # ("google", "entra"), so the sign-in button read "Sign in with entra". The public
+    # route returns the stored name, empty when none is set, and the sign-in page names
+    # an unnamed Google or Microsoft provider by its type.
+    base = sso_state.prefs.sso.providers[0]
+    unnamed = [
+        base.model_copy(update={"id": "google", "type": "google", "display_name": ""}),
+        base.model_copy(update={"id": "entra", "type": "microsoft", "display_name": "  "}),
+        base.model_copy(update={"id": "okta", "type": "generic", "display_name": " Northwind Okta "}),
+    ]
+    prefs = sso_state.prefs.model_copy(
+        update={"sso": sso_state.prefs.sso.model_copy(update={"providers": unnamed})}
+    )
+    await sso_state.update_prefs(prefs)
+    resp = _client_for(sso_state).get("/api/auth/sso/providers")
+    assert resp.status_code == 200
+    assert resp.json()["providers"] == [
+        {"id": "google", "type": "google", "display_name": ""},
+        {"id": "entra", "type": "microsoft", "display_name": ""},
+        {"id": "okta", "type": "generic", "display_name": "Northwind Okta"},
+    ]

@@ -209,7 +209,8 @@ describe('Login — four-mode render', () => {
     const googleSso = await screen.findByRole('button', { name: 'Sign in with Google' });
     const microsoftSso = screen.getByRole('button', { name: 'Sign in with Microsoft' });
     for (const sso of [googleSso, microsoftSso]) {
-      expect(sso).toHaveClass('h-11', 'w-full');
+      // At least 44px: a long provider name wraps onto a taller button (FXC).
+      expect(sso).toHaveClass('min-h-11', 'w-full');
       expect(sso).not.toHaveAttribute('aria-label');
     }
     expect(googleSso).toHaveTextContent('Sign in with Google');
@@ -405,10 +406,12 @@ describe('Login — four-mode render', () => {
     renderLogin();
     const heading = await screen.findByRole('heading', { level: 1 });
     // Tailwind 3 `outline-none` is a permanent 2px transparent outline, which
-    // forced-colours mode paints as a box over the subtitle; `outline-0` removes it.
+    // forced-colours mode paints as a box over the subtitle. `outline-0` only sets the
+    // width, so Chromium still drew its `auto` focus box when the heading took focus
+    // (FXC). `[outline:none]` sets the style: no box when focused, none at rest.
     expect(heading).toHaveAttribute('tabindex', '-1');
-    expect(heading.className).not.toMatch(/\boutline-none\b/);
-    expect(heading).toHaveClass('outline-0');
+    expect(heading.className).not.toMatch(/\boutline-none\b|\boutline-0\b/);
+    expect(heading).toHaveClass('[outline:none]');
   });
 
   it('keeps the username and returns focus to an announced invalid password after failure', async () => {
