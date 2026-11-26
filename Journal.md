@@ -13780,3 +13780,14 @@
 - Tests: the review ran the whole backend suite (13,986 passed, 29 skipped, the 5 sandbox-only environment failures) and npm run test:strict (9,972 passed). Entry 318,008 B stamped, unchanged.
 - Status: done. Every Round 16 code and records package is merged.
 - Next: the closing records (the A11Y lines, the entry ratchet), the closing gates once on the final tree, SPEC 8.4 and the baselines, an independent review of the closing records, and the pull request into Testing.
+
+### 2026-11-27 00:30Z - orchestrator - Round 16 closing gates and records
+- Context: every Round 16 package was merged (A11Y last). The closing records and the closing gates, run once on the final tree.
+- Did:
+  - Closing records, part 1: the A11Y lines in SPEC 8.2 and 8.6 and the CHANGELOG, the material's semantic inks in ui-standard.md, and the second entry ratchet: PRE_REVAMP_ENTRY_BYTES 330,068 B to 317,962 B, the final tree measured with build:app (318,008 B stamped), 11,118 B below the Round 15 baseline, recorded in SPEC 8.1 and AGENTS.md.
+  - An independent review of part 1 fixed five wording defects (A11Y counted findings, not runs; the A11Y line's deviations; the AI calls popover; the theme.css re-point named in ui-standard; one comment tense) and added a records test.
+  - The three A11Y leftovers (empty-table-header, heading-order, region) are now in SPEC 8.3 and the Help Center known limitations page.
+  - Part 2: SPEC 8.4, the Round 16 baselines in AGENTS.md and docs/development/testing.md, and a records test that holds them together.
+- Tests (closing gates on 6f8a7d2, in CI's order): ruff fatal clean; check_version, check_ci_contract (3 workflows, 3 Dockerfiles), check_docs (90 pages), build_app_knowledge --check (1,105 chunks) and build_release_notes --check pass; lint 0 errors and 0 warnings; typecheck, gates and check:types pass; npm run test:strict without a build 786 files, 9,955 passed, 19 skipped, zero stderr; stamped npm run build clean (3,622 modules), entry 318,008 B; bundle-first-paint with REQUIRE_DIST_BUILD=1 30 passed; docs:check passes; backend pytest with the proxy and AWS variables unset 14,009 passed, 29 skipped (27 PostgreSQL-only, 2 Elasticsearch-only), 0 failed. decide() is byte-identical to 3cfd5c0 and matches the spine guard digest; risk.py and signatures.py are unchanged. After the later records commits: the docs, records, knowledge and version selection 1,115 passed, 1 skipped; app knowledge and golden set 812 passed; the corpus is 1,106 chunks.
+- Status: done.
+- Next: the pull request from claude/round16 into Testing, CI green on it, then WP19 (the frozen release preparation for 0.2.0).
