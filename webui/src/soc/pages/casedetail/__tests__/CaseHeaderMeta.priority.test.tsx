@@ -274,6 +274,28 @@ describe('the outcome of an ended case gives way cleanly (XFUI2)', () => {
     expect(document.querySelector('[data-meta-item="outcome"] [data-provenance]')).toBeNull();
   });
 
+  it('drops the Analyst tag whole on any short line, not only in a narrow pane', () => {
+    // A long case number (an operator's template, "CASE-crowdstrike-2026-000041") leaves
+    // the item short on a 36rem pane or wider, where the tag shows. Live, the badge's
+    // words shrank to an ellipsis beside a whole tag, and at the item's floor the tag was
+    // cut by the item. The item is one clipped 20px line that wraps, so the tag, after the
+    // badge and beside it on that line, moves to the hidden second line first.
+    renderMeta({ ...CLASSIFIED, case_number: 'CASE-crowdstrike-2026-000041' });
+    const item = document.querySelector('[data-meta-item="outcome"]');
+    expect(item).not.toBeNull();
+    expect(classesOf(item)).toEqual(expect.arrayContaining(['h-5', 'flex-wrap', 'content-start', 'overflow-hidden']));
+    // No row gap: the second line starts where the clip ends.
+    expect(classesOf(item).some((c) => c === 'gap-1' || c.startsWith('gap-y-'))).toBe(false);
+    const flexChildren = Array.from(item!.children).filter((el) => !classesOf(el).includes('sr-only'));
+    const tag = item!.querySelector('[data-provenance="analyst"]');
+    // The badge and the tag are the line's two items, the badge first.
+    expect(flexChildren).toHaveLength(2);
+    expect(flexChildren[0]).toHaveAttribute('data-testid', 'case-outcome');
+    expect(flexChildren[1]).toBe(tag);
+    // The tag never shrinks, so it wraps whole; the badge keeps the line and truncates.
+    expect(classesOf(tag)).toContain('shrink-0');
+  });
+
   it('keeps the XFCM priority: the outcome keeps the status floor and shrinks last', () => {
     renderMeta(CLASSIFIED);
     const item = document.querySelector('[data-meta-item="outcome"]');

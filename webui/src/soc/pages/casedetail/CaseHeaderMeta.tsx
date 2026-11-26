@@ -128,13 +128,18 @@ export const META_SHRINK = {
  * technology; then the badge's words truncate with an ellipsis, last, as the status words
  * do (`META_SHRINK.status` on the item). The item's hover title holds the whole outcome.
  *
+ * The pane width is not the only limit: a long case number (an operator's template) leaves
+ * the item short on a wide pane too. So the item is one 20px line that wraps: when the tag
+ * does not fit beside the badge it moves to a second line, which the item clips, and the
+ * badge keeps the line. The tag drops whole, never cut, and its word is still read.
+ *
  * `badge` styles a badge that is the outcome's root (an automatic close, its review, an
  * outcome not recorded); `wrapped` the root that holds a classified outcome's badge (its
  * one child). The badge is a block, so its words can end in an ellipsis, at the strip's
  * 20px chip height; its glyph keeps its place before the words.
  */
 export const META_OUTCOME = {
-  item: 'gap-1',
+  item: 'h-5 flex-wrap content-start gap-x-1',
   badge:
     'block h-5 min-w-0 max-w-full truncate py-px leading-4 [&>svg]:mr-1 [&>svg]:inline-block [&>svg]:align-[-2px]',
   wrapped:
@@ -304,7 +309,7 @@ export const CaseHeaderMeta: React.FC<CaseHeaderMetaProps> = ({
   // A person's classification carries the `Analyst` tag beside its badge.
   const classified = outcome.source === 'analyst' || outcome.source === 'analyst_policy';
   const outcomeFit = classified ? META_OUTCOME.wrapped : META_OUTCOME.badge;
-  const sla =outcome.terminal ? null : caseSlaReading(c, slaPolicy, serverSla);
+  const sla = outcome.terminal ? null : caseSlaReading(c, slaPolicy, serverSla);
   // The SLA's priority is the matrix lookup the triage read explains only when the two
   // name the same level (a case can carry a stored level of its own).
   const priorityExplanation = explainPriority(triage);

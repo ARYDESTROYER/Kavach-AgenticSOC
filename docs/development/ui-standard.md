@@ -693,8 +693,10 @@ below 52rem. The owner's monogram never hides. On a short line the owner's name 
 first, then the verdict's words (its label and confidence keep their width), and the status
 words or the outcome give way last, only once both are at their minimum: on a phone-width
 strip, where the owner's name and the verdict are already hidden, the status truncates. The
-outcome badge is never cut: its words end in an ellipsis inside its whole border, and the
-whole outcome is its hover title. A review
+outcome badge is never cut: when the outcome gives way, the `Analyst` tag drops whole first
+at any pane width (a long case number leaves the line short on a wide pane too), then the
+badge's words end in an ellipsis inside its whole border, and the whole outcome is its hover
+title. A review
 sample has no band in the header: its sentence is the review chip's hover and the Brief's
 first block. Tags, the campaign, the factor reading of the risk, Ask AI about the case
 and the Sample mark live in the inspector. The primary action follows the status: Acknowledge when new; Close case while open,
