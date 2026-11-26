@@ -13568,3 +13568,42 @@
 - Tests: on the merged tree, the Cases, What's new and entity investigation Console tests: 85 passed; tsc and check:types clean. The knowledge, golden set, What's new and FXE backend modules: 863 passed.
 - Status: done.
 - Next: FXD1 after its review; then FXF (entry headroom and leftovers), WP17D (release tracker screenshots), the accessibility sweep, the records and the closing gates.
+
+
+### 2026-11-26 14:30Z - FXD1 builder (subagent) - Explainable numbers on the dashboards
+- Context: Round 16 acceptance fix package FXD1. Nine gaps: noisy-rules-wilson-unexplained, detection-trend-57-vs-56, human-vs-ai-shares, delta-chips-unexplained, cost-totals-unexplained, overview-donut-hover, board-figures-unexplained, overview-kpi-stale-window and socops-sla-widget-contradiction. All were confirmed in code and in the seeded Demo.
+- Did: added dashboard builders to webui/src/lib/explain/builders.ts (change, partition share, close share, row sum, quotient, Wilson lower bound). Added deltaExplain and pending slots to KpiTile and an explainFigure slot to HumanVsAiCard. Explained change chips on Metrics, the dashboard strips and Cost. Explained the Human vs AI shares, the noisy rule FP rate, the auto-close rate, the spend per investigated case, the strip lower bounds, the Cost totals and the donut hover. On a range change the Overview strip now shows old figures muted under "Loading 7 days". The SLA panel's empty state names its population and links to the open breaches. /api/metrics/trends now clips its first bucket to the window (cases and alert hours), so the 7-day total is 56, matching the other panels instead of 57. Updated docs/analyst/explainable-numbers.md (new Dashboard figures section), overview.md and dashboards.md, and regenerated the knowledge corpus and the OpenAPI types.
+- Tests: new backend trends window test, plus new webui builder, board, page and KpiTile suites. Each failed before its fix (reverted once). Touched suites are green when run alone. Typecheck, lint, design gates, check:types, build:app (entry 330,948 B, inside 331,092 B), check_docs, build_app_knowledge --check, check_version and check_ci_contract all pass. Live Demo checks were done in both themes at 1440x900 and 390x844, with every explained figure recomputed from the API.
+- Status: done, committed on r16-fxd1 (dd3c81f), detached.
+- Next: the orchestrator appends the CHANGELOG and SPEC 8.2 lines and runs the full suites. A few Overview and dashboard Vitest cases are timing-sensitive under parallel load; dashboard-provider-requests "row-level scope on (D16)" fails on the base too.
+
+### 2026-11-26 16:40Z - FXD1 reviewer - explainable numbers on the dashboards reviewed and fixed
+- Context: independent adversarial review of FXD1 (builder dd3c81f on r16-fxd1 from 39743bd) against the FXD1 brief and the Round 16 SPEC.
+- Did:
+  - Confirmed the nine dashboard explain gaps live in the seeded Demo, with every figure recomputed from the API: trends clip, noisy Wilson bound, auto-close, per investigated case, Human vs AI, SLA empty state, change chips, strip lower bounds, Cost sums.
+  - Fixed in e95ed6d, each with a regression test:
+    - After a window change, the Overview figures below the strip read muted under "Loading <window>" with no explanation.
+    - Drill-down switcher shows Loading; the flow open-case count is withheld.
+    - Cost row sums are kept across server rounding residue, and a total the 10 listed models do not reach says the list is capped.
+    - Today names the UTC calendar day.
+    - The noisy-rule stored bound is labelled as stored when the counts do not reproduce it.
+    - Duration change wording names both forms; the strip lower-bound caveat no longer repeats its reason; Metrics chip ids carry no doubled underscore.
+  - Updated docs/analyst/overview.md and docs/analyst/explainable-numbers.md; regenerated the knowledge corpus (1,089 chunks).
+- Tests:
+  - Backend pytest: 13,933 passed, 29 skipped, 5 sandbox-only env failures.
+  - webui test:strict: 9,807 passed, 1 skipped / 762 files.
+  - typecheck, lint, design gates, check:types, check_version, check_ci_contract, check_docs (90 pages) and knowledge --check all pass. Entry 330,948 B against a budget of 331,092 B.
+- Status: done; r16-fxd1 at e95ed6d, worktree detached, no demo, Vite or browser processes left.
+- Next:
+  - The orchestrator merges r16-fxd1.
+  - Optional follow-ups outside FXD1's files:
+    - Return wilson_z from /tuning/recommendations.
+    - Return the prior-window counts behind the posture rate chips.
+    - Let explainKpiShare end on the shown figure.
+
+### 2026-11-26 16:45Z - orchestrator - FXD1 merged; every acceptance fix package is in
+- Context: the acceptance fix package for explainable numbers on the dashboards (FXD1), reviewed independently. It is the last of the seven acceptance fix packages (FXA1, FXA2, FXB, FXC, FXD1, FXD2, FXE).
+- Did: merged r16-fxd1 (build dd3c81f, review e95ed6d). Took the incoming knowledge manifest and regenerated the corpus (1,098 chunks); regenerated the OpenAPI types after the auto-merge (no drift).
+- Tests: on the merged tree, the dashboard, Overview, Metrics, Cost, explain library and KPI tile Console tests: 650 passed; tsc clean. The knowledge, golden set, trends and FXD1 backend modules: 839 passed. The stamped entry chunk, built the way CI builds it, is measured for FXF.
+- Status: done.
+- Next: FXF (entry headroom and the reviews' leftovers) and WP17D (release tracker screenshots); then the accessibility sweep, the records and the closing gates.
