@@ -13087,3 +13087,51 @@
 - Tests: before these merges, the whole backend suite on the integrated tree (proxy and AWS variables unset, as CI runs) gave 13,859 passed, 29 skipped, 5 failed: two Round 13 shift report tests and one chat starter test pinned the old Standup SLA rules XFNUM replaced with the shared reading, one Help Center tool test is affected by the new docs, and one investigation registry test is timing-dependent under load (passes alone 3 of 3). Package XFINT fixes the five. npm run test:strict on the same tree: 9,670 passed, 1 failed (the dwell wording, fixed here), 1 skipped, 752 files. After the merges, the 13 changed test files pass (364 tests).
 - Status: in progress.
 - Next: merge XFD and XFINT; rerun both suites and every gate on the integrated tree; the final records pass; WP17B screenshots; WP19.
+
+
+### 2026-11-26 07:58Z - XFD builder - docs and records follow-up after the cross-cutting review
+- Context: Round 16 package XFD on base 5f00529. Part 1 is the 11 confirmed docs findings of the cross-cutting review. Part 2 is the records of WP16P, WP17A, WP18C, XFB, XFDEMO, XFNUM and XFSIGN.
+- Did:
+  - Checked the 11 docs findings. WP18B/WP18C had already fixed risk-assigned-weights and the keyboard table, and part of six more.
+  - Fixed the rest: the glossary velocity floor; /docs/0.2/ captions; neutral case-manager and help-center alt text (images left to WP17B); the read-gate sentences in permissions and authentication; the automatic audit mapping upgrade in upgrades, DEPLOY and both troubleshooting pages; the DEMO Communication inbox heading; USAGE Branding theme default; the AGENTS Response tab; the investigate route's 409 codes in api.md.
+  - CHANGELOG Round 16 and the Help Center pages (demo, first-run, explainable-numbers, kpi-glossary, case-manager, investigation, audit-log, permissions) for the post-WP18B packages.
+  - ui-standard sign-in and hover notes, a Round 13 SPEC-chat 0.8 amendment, and the AGENTS entry baseline (330,068 B).
+  - SPEC: dated amendments (B09 in section 2, 4.4 and C10; WP08 case lock and _reenter_detections; the analyst-policy builder; WP04 Appearance); 8.1 second-restart bullet; 8.2 lines; 8.3 pruned and extended; 8.5 written (50 findings, 46 judged, 40 confirmed, 6 refuted).
+  - Corpus regenerated (1084 chunks). New test_round16_xfd_records.py has 18 checks that all fail on the base docs.
+- Tests: xfd 18 passed. The docs, records, knowledge, version and changelog selection gave 1031 passed, 1 skipped and 1 pre-existing failure (help tool data_export link, also on 5f00529, owned by XFINT). check_docs, build_app_knowledge --check, build_release_notes --check, check_version and docs:check all pass. The docs Vitest files gave 39 passed.
+- Status: done, commit fe3a803 on r16-xfd, detached.
+- Next:
+  - XFINT: fix the help-tool ranking and regenerate the corpus after merging.
+  - WP17B: recapture help-center, case-manager and install-02 images, then drop the '0.1.13' sentences in README:170, INSTALL:5, first-run:12 and quickstart:254.
+  - WP17B: repoint explain-numbers.help to analyst/explainable-numbers/.
+  - Code owners: MfaSetupCard raw err.message, Standup.report.api.ts warn_fraction 0.75, types.ts avg_risk_case_count and StandupResponse.cost, the stale ThreatContextPanel onNavigate comment, and the audit_export spend text (XFB2).
+  - Add the XFCM records after its merge.
+
+### 2026-11-26 08:25Z - XFD reviewer - docs and records follow-up review
+- Context: Independent review of Round 16 package XFD (fe3a803 on 5f00529). XFD is the docs and records follow-up after the cross-cutting review.
+- Did:
+  - Checked the diff against the brief, the 11 docs findings, the fix-package reports and the SPEC.
+  - Verified against the code and the verdict files: the SPEC amendments, the 8.1 to 8.3 edits, the 8.5 counts (50/46/40/6 and per dimension) and the refuted reasons. Re-ran the copied risk calculation through the Console builder.
+  - Fixed four defects on r16-xfd (d9eb718):
+    - The Demo page and the CHANGELOG named an "Investigate page". They now name Reinvestigate, and Run investigation on Entity investigation. SPEC 8.3 matches.
+    - The cost:view paragraph in permissions.md now names the Standup summary's AI cost.
+    - The audit fallback warning lists now include "Audit index mappings could not be read" (upgrades, DEPLOY, both troubleshooting pages).
+    - The ui-standard sign-in errors bullet now names the setup and forced-change sentences.
+  - Recorded the fixes in the XFD line of SPEC 8.2, added four code-first checks to test_round16_xfd_records.py and regenerated the corpus (1084 chunks).
+- Tests:
+  - XFD records: 22 passed. All 18 of the builder's checks fail on the base docs, and the 4 new ones fail on fe3a803's docs.
+  - The docs, records, knowledge, version and changelog selection: 1035 passed, 1 skipped, 1 failed. The failure (test_app_help_tool_keeps_a_destination_the_console_labels_confirm) is pre-existing and owned by XFINT.
+  - check_docs, build_app_knowledge --check, build_release_notes --check, check_version and docs:check all pass. The docs Vitest files: 39 passed.
+- Status: done; r16-xfd at d9eb718, worktree detached.
+- Next:
+  - XFINT: fix the help-tool ranking and regenerate the corpus after the merges.
+  - WP17B: recapture the help-center, case-manager and install-02 images, remove the "from 0.1.13" sentences, and repoint explain-numbers.help to the explainable-numbers page.
+  - XFB2: the audit_export spend text.
+  - XFCM records after its merge.
+
+### 2026-11-26 09:20Z - orchestrator - XFD merged into the Round 16 branch
+- Context: the docs and records follow-up after the cross-cutting review (11 docs findings; records for the packages merged after WP18B; SPEC section 8.5).
+- Did: merged r16-xfd (fe3a803, d9eb718) cleanly. Queued the review leftovers for one final package: the XFCM records, the audit export dialog sentence, the replay job rows whose spend text is not withheld, the Console type and wording gaps, the release notes generator's settings path, and the README, INSTALL, first-run and quickstart 0.1.13 sentences with the docs screenshots.
+- Tests: on the merged tree, build_app_knowledge --check (1,084 chunks), check_docs (90 pages) and build_release_notes --check pass; the records, docs and Help Center tests 487 passed, 1 skipped.
+- Status: done.
+- Next: merge XFINT; the final package; WP17B, WP16X and the docs screenshot refresh; the full gates; WP19.
