@@ -13497,3 +13497,30 @@
 - Tests: on the merged tree, the sign-in, auth, two-factor card, ui primitives and shell Console tests: 251 passed; tsc clean; bundle-first-paint passes with dist present.
 - Status: done.
 - Next: FXA2, FXD1, FXD2 and FXE; then WP17D captures; the records pass; the closing gates.
+
+
+### 2026-11-26 12:00Z - FXA2 build agent - Trace, usage and step records
+- Context: Round 16 acceptance fix package FXA2: ten gaps in the AI investigation trace, the case usage sheet, runbook step records and the seeded Demo records.
+- Did: routes_triage `_decision_span` now has cost_basis None, and the timeline docstring says code made the decision. routes_case_usage adds an additive `runbook` total (surface runbook, never chat), with `CaseUsageTotals.runbook` in models.py and types.ts. demo_generator adds `demo_investigation_audit_rows` and `seed_demo_investigation_audit` (investigator PROMPT, one read-only es_query TOOL_CALL and the VERDICT per seeded ledger row, on one run id), hooked into state.py in 3 lines. The notification seed now writes `type`. TraceTimeline leaves out case.events_viewed, uses the shared actor labels, shows "No model call. Code made this decision." on the decision step and takes a countsText prop. InvestigationPanel filters the viewed rows and shows "N of M steps" while filtered. The usage sheet shows Runbook AI help, a build line, the price source and a runbook footer line. StepParts shows the confirmed AI draft line and a Show the AI draft toggle. Updated three Help Center pages and regenerated the knowledge corpus (1087 chunks) and the OpenAPI types.
+- Tests: new backend file 5 passed (5 fail on base); related backend 949 passed, 2 skipped; Console 19 new specs pass (16 fail on base); related Console 2,500 passed / 214 files; typecheck, lint, gates, check:types, build:app (entry 330,859 B, delta 0), check_docs, knowledge check, check_version, check_ci_contract all pass.
+- Status: done, committed faafdd6 on r16-fxa2, HEAD detached.
+- Next: the trace still lists the PROMPT row of a runbook AI help call as an Agent step, named after the person who asked, with no cost; fixing it needs a `_span_kind`/`_row_to_span` change outside FXA2. Seeded cases without a ledger row keep 0 AI steps.
+
+### 2026-11-26 15:10Z - FXA2 review agent - Trace, usage and step records review
+- Context: Independent adversarial review of FXA2 (faafdd6 on 39743bd): ten trace, usage, runbook step and seeded Demo record gaps.
+- Did: Checked every gap against the code and the seeded Demo, in both themes at 1440 and 390, with keyboard, loading, error and empty states. Proved the builder's tests fail on base. Fixed four defects:
+  - The price words lost their closing period, so a cached call no longer reads "price., cache kept for 5m".
+  - The decision step always offers Details, so the "No model call" line shows on decisions with no recorded gate (all seeded ones).
+  - A failed trace no longer reads "Loads when opened" beside its error.
+  - The Demo investigation seed names the audit outcome at the write. This fixes the audit outcome guard test that FXA2 broke.
+  Commits 5e405fc and 45b4829 on r16-fxa2; HEAD detached at 45b4829.
+- Tests: full backend 13,970 collected, 6 failed: 5 known sandbox env failures plus the guard test, which is fixed and now green. test:strict 9,784 passed, 1 skipped, 762 files. typecheck, lint, gates, check:types and build:app pass (entry 330,859 B, delta 0). check_version, check_ci_contract, check_docs, the knowledge check and ruff pass.
+- Status: done.
+- Next: The trace still lists a runbook AI help PROMPT row as an Agent step named after the person who asked, with no cost. Fixing it needs routes_triage _span_kind/_row_to_span or engine/runbook_runs.py, outside FXA2.
+
+### 2026-11-26 15:05Z - orchestrator - FXA2 merged
+- Context: the acceptance fix package for the trace, the usage sheet and runbook step records (FXA2), reviewed independently.
+- Did: merged r16-fxa2 (build faafdd6, review 45b4829). Took the incoming knowledge corpus and regenerated it (1,092 chunks).
+- Tests: on the merged tree, the trace, case detail, runbook and case page Console tests: 1,200 passed; tsc and check:types clean. The knowledge, golden set, audit writer outcome, Demo mode and FXA2 backend modules: 935 passed.
+- Status: done.
+- Next: FXD1, FXD2 and FXE; the runbook AI help prompt row in the trace goes to a follow-up.
