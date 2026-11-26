@@ -13614,3 +13614,56 @@
 - Tests: backend 13,976 passed, 29 skipped, 0 failed. Vitest 9,919 passed, 18 skipped / 778 files; the strict gate then passes on the two-factor, sign-in and auth test files (14 files, 180 passed, no stderr).
 - Status: done.
 - Next: FXF (the entry chunk measures 331,181 B stamped, 89 B over the 331,092 B budget) and WP17D; then XFREC records, the accessibility sweep and the closing gates.
+
+
+### 2026-11-26 17:45Z - WP17D (Round 16) - release tracker screenshots
+- Context: Communication, What's new showed 66 highlights for 0.2.0 but only 18 had a figure. The acceptance fix packages had also changed the case page, sign-in and explanations under the existing images (brief wp17d.md, SPEC 4.7 WP17 and 5.3).
+- Did: captured from the seeded Demo at 39335e5, in Chromium at 1440 by 900 and DPR 2.
+  - 26 highlights gained light and dark figures, including all fourteen named by the acceptance pass.
+  - ai-working, case-workspace, case-tabs, explain-numbers, case-records, sign-in and whats-new were captured again under the same names and sizes, with updated alt text.
+  - docs/assets/screenshots/case-manager.webp was captured again, and its alt text in README.md and quickstart.md now names the Assessment lane.
+  - Wired the screenshot blocks into docs/releases/notes/0.2.0.json. Regenerated release-notes.gen.json, whats-new.md and the knowledge corpus.
+  - Added a WP17D section to acceptance/screenshots.md: every file with its bytes and size, the 22 text-only highlights with reasons, the checks and the limitations.
+  - Added backend/tests/test_round16_wp17d_records.py.
+  - Kept FXF's spots out of every image: the Brief captures show an auto-closed case, and no reopened case, Branding preview or FXF explain panel appears.
+- Tests:
+  - WP17D, release notes, whats_new and WP17C records: 39 passed. All 6 WP17D tests fail on the base files.
+  - test_app_knowledge plus the records group was green; chat golden set 590 passed; other docs and records tests 178 passed.
+  - test_build_release_notes 17 OK. build_release_notes --check, check_version, check_docs (90 pages), build_app_knowledge --check (1099 chunks) and npm run docs:check all pass.
+  - What's new Vitest: 73 passed.
+  - Help Center bundle: 18,063,795 B (281 files) before, 22,068,113 B (333 files) after.
+- Status: done, committed 2c147cc on r16-wp17d, worktree detached.
+- Next:
+  - FXF may later change the Decision lane routing sentence or the People row after a reopen. No WP17D image shows either.
+  - The highlight text of cyber-defence-center and agent-health-bell is unchanged. Agent health in the bell shows only when the agent is degraded, so it stays text only.
+
+### 2026-11-26 18:55Z - WP17D review (Round 16) - release tracker screenshots
+- Context: an independent review of WP17D (2c147cc on 39335e5) against SPEC 4.7 WP17, 5.3 and the brief.
+- Did:
+  - Checked every new and replaced image by eye and by luminance, size, bytes and chunks. Read each alt text and caption against its image, and checked privacy and FXF's spots.
+  - Revert-checked the records test: it fails 6 of 6 on the base files.
+  - Live seeded Demo in both themes at 1440 by 900 and 390 by 844. The welcome works, and the page shows 44 figures, all loaded, with no sideways scroll and no console errors.
+  - Fixed three defects in 0707b0a:
+    - chat-titles was cut through the first question and a list line. Recaptured in light and dark at 2742 by 376.
+    - case-manager.webp showed a queue of one row filtered by a search. Recaptured with the All scope and no search.
+    - The data-export alt text said a disabled button "is off". It now says the button is unavailable.
+  - Regenerated the release notes outputs and updated screenshots.md: new sizes, a bundle of 22,128,003 B in 333 files, and a Review subsection.
+  - Added two regression tests to test_round16_wp17d_records.py.
+- Tests:
+  - Backend suite: 13,979 passed, 29 skipped, and the 5 sandbox-only environment failures, which pass 55 of 55 without the proxy and AWS variables.
+  - Records and release notes group: 263 passed.
+  - test:strict: 9,919 passed and 18 skipped across 778 files.
+  - typecheck, lint, gates, check:types and build are clean.
+  - The entry is 331,135 B, the same as on the base, where it is already over budget; FXF owns that fix.
+  - build_release_notes --check, check_version, check_ci_contract, check_docs (90 pages), build_app_knowledge --check (1,099 chunks) and docs:check all pass.
+- Status: done. Committed 0707b0a on r16-wp17d; the worktree is detached.
+- Next:
+  - FXF owns the entry budget fix.
+  - Settings, Sessions & activity still shows raw audit detail text such as "session_create sid=... new session (unknown /)". This is a Console wording item for a later package.
+
+### 2026-11-26 19:05Z - orchestrator - WP17D merged
+- Context: the release tracker screenshots package (WP17D), so every visible 0.2.0 change on Communication, What's new has a figure; reviewed independently.
+- Did: merged r16-wp17d (build 2c147cc, review 0707b0a) cleanly. Release notes and the knowledge corpus (1,099 chunks) are current.
+- Tests: on the merged tree, the WP17D, WP17C, release notes content, What's new and Help Center records modules pass; the release notes script tests pass.
+- Status: done.
+- Next: FXF after its review; then XFREC records and the A11Y closing sweep; then the closing gates.
