@@ -13460,3 +13460,40 @@
 - Tests: on the merged tree, the case detail, case page, ui, components and investigations Console tests: 3,558 passed; tsc clean. The knowledge, golden set, XFUI3, XFD and XFR records and Help Center modules: 860 passed.
 - Status: done.
 - Next: FXC, FXA2, FXD1, FXD2 and FXE as their reviews finish; the ui-standard Case tab bodies lines and the case-manager screenshot go to the records pass and WP17D.
+
+
+### 2026-11-26 12:55Z - FXC (sign-in polish) - acceptance gaps fixed
+- Context: Round 16 acceptance fix package FXC. Fix the 13 sign-in gaps from the operator acceptance pass, plus the D6 dialog wording and the "Log out" wording, on base 39743bd.
+- Did: confirmed every gap on base and in the seeded Demo.
+  - Login.tsx: column top aligned from sm (max(4rem,18dvh)); forced-change errors under the fields; heading [outline:none]; wide logo kept at 40px tall; forced change trims and maps a 400 to fixed sentences; Verify and Set password stay enabled with empty-submit sentences; 44px phone targets; -mr-2 on Back and Use; 16px rhythm; SSO labels wrap. "Forgot password?" and the recovery disclosure now use LINK_BUTTON, which saves entry bytes.
+  - MfaSetupCard pendingToken mode: QR stacked and centred, secret wraps, LoginTextInput code field, full-width 44px button.
+  - RememberMeControls: dialog "Stay signed in on this device?" with no duration (D6 as amended); full focus ring on the box; dead duration helpers removed.
+  - ui/alert.tsx: icon top 13px, no text shift.
+  - loginParts.tsx: 44px reveal toggle on phones.
+  - AppShell: "Sign out" in the neutral colour.
+  - routes.py sso_providers: returns the stored display name.
+  - Docs: ui-standard sign-in lines, first-run.md, authentication.md; knowledge corpus regenerated.
+- Tests: new login.fxc.test.tsx (15), appshell.sign-out.test.tsx (2), an alert icon test, Remember me ring and no-duration tests, and a backend SSO name test. All were proven to fail before the fix. Updated tests that pinned the old dialog text, the outline-0 heading, raw forced-change text and h-11 SSO buttons. Touched Vitest and pytest files, lint, gates, check:types, build:app (entry 330,928 B of 331,092 B), check_docs and knowledge --check all pass.
+- Status: done; commit c83cc6f on r16-fxc, worktree detached.
+- Next: orchestrator to apply the BrandingEditor preview logo change, fix the stale docs/USAGE.md Remember me sentence, and add the D6 amendment and the column change to the SPEC.
+
+### 2026-11-26 14:35Z - FXC review - sign-in polish reviewed, two defects fixed
+- Context: independent review of Round 16 package FXC (13 sign-in gaps from the acceptance pass, the D6 dialog item, "Sign out") on r16-fxc, built from 39743bd.
+- Did:
+  - Checked the diff against the brief, SPEC WP04, D6 and ui-standard; decide() and risk.py are unchanged.
+  - Proved the builder's regression tests by reverting the fixes: 24 Vitest tests and the SSO backend test fail without them.
+  - Checked every gap live in the seeded Demo in light, dark and system at 1440x900 and 390x844: the second factor, forced change, mandated setup (completed end to end), the SSO error and buttons, wide and square logos, focus rings, the loading shell and Sign out. Shots are in shots/FXC-review.
+  - Fixed two defects in d7aa6d4:
+    - A refused code in the mandated two-factor setup showed in the card's alert above the QR code, off screen on a phone, and pushed the field down. It now shows under the code field as the page's field error. FieldError is shared from loginParts.tsx.
+    - The setup now uses the page's 16px rhythm instead of the Settings card's 20px.
+  - Updated the ui-standard mandated-setup line.
+- Tests: 2 new regression tests fail before the fix. Touched Vitest files and the 14 targeted backend files pass. Entry 331,046 B of 331,092 B. lint, gates, check:types, check_version, check_ci_contract, check_docs and build_app_knowledge --check pass. test:strict: 13 failures in 8 Overview, Case Manager, Runbooks, dashboards and chat files while the shared machine was overloaded; all 8 pass when rerun at normal load. The whole backend suite was stopped at 3% (0 failures so far) because of machine load.
+- Status: done; r16-fxc at d7aa6d4, worktree detached.
+- Next: orchestrator merges FXC, applies the builder's left-undone items (BrandingEditor preview logo, docs/USAGE.md Remember me sentence, SPEC D6 and column amendments), and runs the whole backend suite and test:strict on the integrated tree.
+
+### 2026-11-26 14:50Z - orchestrator - FXC merged
+- Context: the acceptance fix package for the sign-in page (FXC), reviewed independently. It also carries the orchestrator decision that the Remember me warning dialog states no duration (amends SPEC D6), and Sign out in the account menu.
+- Did: merged r16-fxc (build c83cc6f, review d7aa6d4). Took the incoming knowledge manifest and regenerated the corpus (1,091 chunks).
+- Tests: on the merged tree, the sign-in, auth, two-factor card, ui primitives and shell Console tests: 251 passed; tsc clean; bundle-first-paint passes with dist present.
+- Status: done.
+- Next: FXA2, FXD1, FXD2 and FXE; then WP17D captures; the records pass; the closing gates.
