@@ -13235,3 +13235,34 @@
 - Tests: the whole backend suite on the integrated tree at 7fb4d1c (every backend change of the round; proxy and AWS variables unset, as CI runs): 13,901 passed, 29 skipped, 0 failed, in 30 min 49 s. After the WP17B merge: test_app_knowledge, test_chat_golden_set and the release notes and What's new tests 829 passed; build_app_knowledge --check and build_release_notes --check pass.
 - Status: in progress.
 - Next: the docs screenshot refresh (and the 60 review-only captures moved out of the Help Center bundle), XFR, XFUI3; then test:strict and every gate once more; SPEC section 8.4; the pull request into Testing.
+
+
+### 2026-11-26 09:40Z - XFR builder - Round 16 final follow-ups and records
+- Context: package XFR on f309c9c. Seven code items from the XFD and XFB2 review leftovers, plus the XFCM, XFB2 and XFR records.
+- Did: The audit export menu and dialog say the file hides AI spend for a viewer without cost:view. The replay experiment's spend row (spend_usd, bound_usd) joins the narrow rule in api/cost_text.py for GET /api/audit, the record read and the export; docstrings in routes_audit and audit_export are updated. The two-factor card shows a fixed sentence per status. The Standup empty SLA block uses 0.8, pinned to metrics.py. types.ts declares avg_risk_case_count and StandupResponse.cost, and Metrics.tsx drops its local cast. ThreatContextPanel comments are fixed. The What's new generator intro names Settings, Account, Appearance, and whats-new.md is regenerated. Records: CHANGELOG (XFCM, XFB2, XFR); case-manager.md, cases.md, audit-log.md, permissions.md, known-limitations.md; SPEC 6.4, 8 intro, 8.2, 8.3 and 8.5; corpus regenerated.
+- Tests: test_round16_xfr 13 passed. The audit, replay, spine, standup and MFA modules are green. The docs and records modules ran 907 passed and 1 failed; the failure (test_app_knowledge, owned by XFINT) also fails on the base corpus. Vitest: 55 files, 786 passed; each fix was reverted once to prove its test fails. typecheck, lint, gates and check:types are clean. build:app entry is 330,781 B (+659 B), inside 331,092 B. check_version, check_ci_contract, check_docs, build_app_knowledge --check and build_release_notes --check pass. Live check in the seeded Demo, both themes, desktop and phone.
+- Status: done, committed 50e15ea on r16-xfr, HEAD detached.
+- Next: the replay cancel message is in no audit row, so it was left in the job record (deviation in SPEC 8.2). WP17B: the notes highlight already says Settings, Account, Appearance, so no notes change is needed. XFINT still owns the app_knowledge failure. Merge, then run the closing gates.
+
+### 2026-11-26 10:45Z - XFR reviewer - adversarial review of the Round 16 final follow-ups
+- Context: independent review of XFR (50e15ea on f309c9c), the last follow-up package before the release screenshots and the closing gates.
+- Did:
+  - Checked the seven code items and the XFCM, XFB2 and XFR records against the brief and the SPEC.
+  - Reverted each fix once, and each regression test failed.
+  - Confirmed decide() and risk.py are untouched, and that the replay cancel message reaches no audit row.
+  - Ran the seeded Demo in both themes at desktop and phone size: the two-factor fixed sentences, the export menu, and the export dialog with Demo Mode off, both with and without cost:view.
+  - Fixed three defects in f078539, each with a regression test that failed before the fix:
+    - MfaSetupCard now says "Two-factor is already off for this account." when the account's two-factor was turned off elsewhere. It used to say the code was wrong.
+    - CHANGELOG and USAGE.md now name Settings, Account, Appearance for the What's new switch.
+    - The CHANGELOG says the AI run signals once, in the Added entry.
+  - SPEC 8.2's XFR line records the review fixes.
+- Tests: full backend suite run once: 13,905 passed, 29 skipped, 9 failed, all known (4 owned by XFINT, 5 sandbox-only environment tests). test:strict run once: 755 files, 9,734 passed, 1 skipped. Gates passed: typecheck, lint, gates, check:types, build:app (entry 330,859 B against a 331,092 B budget), check_version, check_ci_contract, check_docs, build_app_knowledge --check and build_release_notes --check.
+- Status: done, f078539 on r16-xfr, HEAD detached.
+- Next: merge r16-xfr. XFINT still owns the app_knowledge, chat starters and pb1 SLA failures. Then run the closing gates.
+
+### 2026-11-26 10:45Z - orchestrator - XFR merged
+- Context: the last follow-up package before the closing gates (XFR, reviewed independently).
+- Did: merged r16-xfr (build 50e15ea, review f078539). Took the incoming knowledge manifest, regenerated the corpus (1,085 chunks) and the release notes outputs, and checked both with --check.
+- Tests: on the merged tree, the XFR, records, docs, knowledge, golden set, What's new, release notes, audit export and read, and the Round 13 SLA and chat starter modules: 1,437 passed, 2 skipped, 0 failed. The XFR Console tests (8 files, 133 passed) and tsc pass.
+- Status: done.
+- Next: XFUI3 and WP17C after their reviews, then the closing gates.
