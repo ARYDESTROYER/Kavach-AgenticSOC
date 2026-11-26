@@ -85,6 +85,9 @@ export interface ChangeExplainInput {
   /** The window of `now` ("in the last 7 days") and of `before` ("in the 7 days before"). */
   window: string;
   beforeWindow: string;
+  /** The counts behind each value, when they are known ("39 of 56 verdicted cases"). */
+  nowCounts?: string;
+  beforeCounts?: string;
   /** True when the two values are percentages: the change is then not in points. */
   ofPercent?: boolean;
   /** How the chip's figure was rounded. */
@@ -103,8 +106,9 @@ export interface ChangeExplainInput {
 export function explainChange(input: ChangeExplainInput): Explanation | null {
   const { now, before, term } = input;
   if (!Number.isFinite(now) || !Number.isFinite(before)) return null;
-  const nowWords = input.words(now);
-  const beforeWords = input.words(before);
+  // A rate names the counts it divides beside its value, so both windows' counts print.
+  const nowWords = input.nowCounts ? `${input.words(now)} (${input.nowCounts})` : input.words(now);
+  const beforeWords = input.beforeCounts ? `${input.words(before)} (${input.beforeCounts})` : input.words(before);
   const base = {
     metric: input.metric,
     title: `${input.title}, change`,

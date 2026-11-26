@@ -44,7 +44,8 @@
  * password form and, in Chromium, `PasswordCredential`). A session that ended on its
  * own is explained with a calm notice. The controls live in a LAZY chunk
  * (`RememberMeControls`) loaded in parallel with the startup probes, so this
- * first-paint page stays lean.
+ * first-paint page stays lean. The two-factor setup card is a lazy chunk as well,
+ * loaded only when a sign-in or the first admin reaches an enrollment step.
  */
 import * as React from 'react';
 import {
@@ -83,8 +84,8 @@ import {
   SsoBrandIcon,
 } from '@/soc/components/auth/loginParts';
 import { setupAccount, type LoginBranding } from '@/soc/components/auth/login.api';
-import { MfaSetupCard } from '@/soc/components/MfaSetupCard';
 import { LoadingGlyph } from '@/design-system/loading';
+import { retryingLoader } from '@/soc/lazy-retry';
 
 // Remember me (Round 12): one lazy chunk for the controls and the device helpers.
 const loadRememberControls = () => import('@/soc/components/auth/RememberMeControls');
@@ -96,6 +97,11 @@ const loadRememberDevice = () => import('@/soc/components/auth/rememberMe');
 const loadSsoErrors = () => import('@/soc/components/auth/ssoErrors');
 const SSO_ERROR_FALLBACK = 'Single sign-on failed. Try again.';
 type RememberUi = Awaited<ReturnType<typeof loadRememberControls>>;
+// Two-factor setup: its own chunk, since nearly every sign-in never enrolls. A step that
+// enrolls loads it while its button shows busy, so the card never pops in; a chunk that
+// cannot load leaves a reload line in its place.
+const loadMfaSetup = retryingLoader(() => import('@/soc/components/MfaSetupCard'));
+type MfaSetupUi = Awaited<ReturnType<typeof loadMfaSetup>>;
 /**
  * The quiet text-link buttons under a form ("Back to sign in", recovery codes), 44px tall
  * on phones like every other target on the page.
@@ -261,6 +267,9 @@ export default function Login({ onAuthenticated }: LoginProps) {
   const rememberRequestedRef = React.useRef(false);
   // The lazy Remember-me chunk: undefined while loading, null if it failed to load.
   const [rememberUi, setRememberUi] = React.useState<RememberUi | null>();
+  // The two-factor setup chunk, loaded before an enrollment step shows (null: it failed).
+  const [mfaUi, setMfaUi] = React.useState<MfaSetupUi | null>();
+  const loadMfaUi = async () => setMfaUi(await loadMfaSetup().catch(() => null));
   const endedSession = useOptionalAuth()?.sessionEnded ?? null;
   const [displayName, setDisplayName] = React.useState('');
   const [password, setPassword] = React.useState('');
@@ -460,6 +469,12 @@ export default function Login({ onAuthenticated }: LoginProps) {
   // after going back), so its chip offers to forget the device.
   const rememberedChip = rememberedUser?.toLowerCase() === userKey;
   const RememberMeControl = rememberUi?.RememberMeControl;
+  const MfaSetupCard = mfaUi?.MfaSetupCard;
+  const mfaUnavailable = (
+    <p role="alert" className="text-sm text-muted-foreground">
+      Two-factor setup could not load. Reload the page to try again.
+    </p>
+  );
   const SessionEndNotice = rememberUi?.SessionEndNotice;
   // The focused sign-in field is described by the sign-out notice while it shows.
   const noticeId = noticeShown ? rememberUi?.SESSION_END_NOTICE_ID : undefined;
@@ -574,6 +589,7 @@ export default function Login({ onAuthenticated }: LoginProps) {
       await api.auth.login(uname, password);
       if (res.mfa_prompt) {
         // Offer (prompted-optional) two-factor enrollment before entering the console.
+        await loadMfaUi();
         setMode('mfa-enroll');
         setStepMotion('forward');
         setBusy(false);
@@ -614,6 +630,7 @@ export default function Login({ onAuthenticated }: LoginProps) {
       // challenge is impossible. Walk the user through enrollment IN the login,
       // gated by the same short-lived pending token (still no session).
       if (res.requires_mfa && res.mfa_enrollment_required && res.pending_token) {
+        await loadMfaUi();
         setPendingToken(res.pending_token);
         setMfaCode('');
         setMode('mfa-enroll-required');
@@ -1067,7 +1084,7 @@ export default function Login({ onAuthenticated }: LoginProps) {
                     heading. Reserve the QR area's height so the second grow (when the
                     enrollment QR resolves after mount) is absorbed, not a jump. */}
                 <div className="min-h-[24rem]">
-                  <MfaSetupCard enabled={false} frameless onChanged={handOff} />
+                  {MfaSetupCard ? <MfaSetupCard enabled={false} frameless onChanged={handOff} /> : mfaUnavailable}
                 </div>
                 <Button type="button" variant="ghost" className="w-full" onClick={handOff}>
                   Skip for now &amp; continue
@@ -1085,13 +1102,17 @@ export default function Login({ onAuthenticated }: LoginProps) {
                     are finishing enrollment or going back to sign-in. The min-h
                     reserve absorbs the QR growth (same as the optional step). */}
                 <div className="min-h-[24rem]">
-                  <MfaSetupCard
-                    enabled={false}
-                    frameless
-                    pendingToken={pendingToken}
-                    onComplete={completeEnrollLogin}
-                    onPendingExpired={expireEnrollLogin}
-                  />
+                  {MfaSetupCard ? (
+                    <MfaSetupCard
+                      enabled={false}
+                      frameless
+                      pendingToken={pendingToken}
+                      onComplete={completeEnrollLogin}
+                      onPendingExpired={expireEnrollLogin}
+                    />
+                  ) : (
+                    mfaUnavailable
+                  )}
                 </div>
                 <Button type="button" variant="link" className={LINK_BUTTON} onClick={backToSignIn}>
                   Back to sign in

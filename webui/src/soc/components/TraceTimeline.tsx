@@ -18,6 +18,7 @@
 import * as React from 'react';
 import {
   AlertTriangle,
+  BookOpen,
   Bot,
   CheckCircle2,
   ChevronDown,
@@ -86,11 +87,13 @@ function AuditTrailLink({
 /**
  * Who did a step (Round 16 SPEC §4.5 WP14, research data-visibility R4): the AI agent,
  * one of its tools, our own code (the deterministic decision and other system steps), a
- * person (Acknowledge, a tag, a comment) or case chat. Since Round 16 the server
- * classifies a span by who acted first (`person`, `chat`, `system`), so a person's work
- * is never counted as the AI's; an older server's kinds read the same way.
+ * person (Acknowledge, a tag, a comment), case chat, or runbook AI help (a model call a
+ * person asked for on a runbook step, `runbook_ai`). Since Round 16 the server
+ * classifies a span by who acted first (`person`, `runbook_ai`, `chat`, `system`), so
+ * neither a person's work nor the help they asked for is counted as the investigation's
+ * AI steps; an older server's kinds read the same way.
  */
-export type TraceActor = 'agent' | 'tool' | 'code' | 'person' | 'chat';
+export type TraceActor = 'agent' | 'tool' | 'code' | 'person' | 'chat' | 'runbook';
 
 export function spanActor(span: Pick<TraceSpan, 'kind'>): TraceActor {
   switch (span.kind) {
@@ -103,6 +106,8 @@ export function spanActor(span: Pick<TraceSpan, 'kind'>): TraceActor {
       return 'person';
     case 'chat':
       return 'chat';
+    case 'runbook_ai':
+      return 'runbook';
     default:
       return 'agent';
   }
@@ -114,9 +119,9 @@ export function isAiStep(span: Pick<TraceSpan, 'kind'>): boolean {
   return actor === 'agent' || actor === 'tool';
 }
 
-/** The trace's counts: AI steps (agent and tool), tools, people, chat and code steps. */
+/** The trace's counts: AI steps (agent and tool), tools, people, chat, runbook AI help and code steps. */
 export function traceStepCounts(spans: readonly Pick<TraceSpan, 'kind'>[]): Record<TraceActor | 'ai', number> {
-  const counts = { ai: 0, agent: 0, tool: 0, code: 0, person: 0, chat: 0 };
+  const counts = { ai: 0, agent: 0, tool: 0, code: 0, person: 0, chat: 0, runbook: 0 };
   for (const span of spans) {
     const actor = spanActor(span);
     counts[actor] += 1;
@@ -125,11 +130,12 @@ export function traceStepCounts(spans: readonly Pick<TraceSpan, 'kind'>[]): Reco
   return counts;
 }
 
-/** "5 AI steps · 2 tools", plus the people's steps when there are any. */
+/** "5 AI steps · 2 tools", plus the people's steps and runbook AI help when there are any. */
 export function traceCountsText(spans: readonly Pick<TraceSpan, 'kind'>[]): string {
   const c = traceStepCounts(spans);
   const parts = [`${c.ai.toLocaleString('en-US')} AI step${c.ai === 1 ? '' : 's'}`, `${c.tool.toLocaleString('en-US')} tool${c.tool === 1 ? '' : 's'}`];
   if (c.person) parts.push(`${c.person.toLocaleString('en-US')} by people`);
+  if (c.runbook) parts.push(`${c.runbook.toLocaleString('en-US')} runbook AI help`);
   return parts.join(' · ');
 }
 
@@ -156,6 +162,7 @@ export const TRACE_FILTERS: ReadonlyArray<{ value: TraceActor | 'all'; label: st
   { value: 'code', label: 'Code' },
   { value: 'person', label: 'People' },
   { value: 'chat', label: 'Chat' },
+  { value: 'runbook', label: 'Runbook' },
 ];
 
 /** The spans one filter choice keeps. */
@@ -337,15 +344,20 @@ const KIND_META: Record<string, KindMeta> = {
   decision: { label: 'Decision', icon: ShieldCheck, tone: 'low' },
   person: { label: 'Person', icon: User, tone: 'info' },
   system: { label: 'System', icon: Cog, tone: 'low' },
+  runbook_ai: { label: 'Runbook AI help', icon: BookOpen, tone: 'info' },
 };
 
 /**
- * A span's name as shown: a person's name exactly as recorded; a pipeline actor by the
- * name the activity feed gives it (`agentic_soc` is "Agentic SOC"); any other token in
- * words.
+ * A span's name as shown: a person's name exactly as recorded; runbook AI help as the
+ * person who asked (its kind label says what ran); a pipeline actor by the name the activity feed gives it
+ * (`agentic_soc` is "Agentic SOC"); any other token in words.
  */
 export function spanName(span: Pick<TraceSpan, 'kind' | 'name'>): string {
   if (span.kind === 'person') return span.name;
+  if (span.kind === 'runbook_ai') {
+    const asker = String(span.name ?? '').trim();
+    return asker ? `Asked by ${asker}` : 'Runbook AI help';
+  }
   const label = activityActorLabel(span.name);
   return label === String(span.name ?? '').trim() ? humanizeToken(span.name) : label;
 }
@@ -617,6 +629,7 @@ const TERMINAL_LABEL: Record<string, { label: string; tone: string }> = {
   decision: { label: 'DECISION', tone: 'text-critical-text' },
   person: { label: 'PERSON', tone: 'text-foreground' },
   system: { label: 'SYSTEM', tone: 'text-muted-foreground' },
+  runbook_ai: { label: 'RUNBOOK AI', tone: 'text-primary' },
 };
 
 /** Compact terminal treatment used only by the Case Manager Investigation tab. */

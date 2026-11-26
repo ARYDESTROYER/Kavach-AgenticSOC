@@ -116,7 +116,7 @@ describe('who did a step', () => {
     expect(filterSpans(SPANS, 'person').map((s) => s.step_index)).toEqual([2]);
     expect(filterSpans(SPANS, 'chat').map((s) => s.step_index)).toEqual([3]);
     expect(filterSpans(SPANS, 'all')).toHaveLength(SPANS.length);
-    expect(TRACE_FILTERS.map((f) => f.label)).toEqual(['All', 'Agent', 'Tool', 'Code', 'People', 'Chat']);
+    expect(TRACE_FILTERS.map((f) => f.label)).toEqual(['All', 'Agent', 'Tool', 'Code', 'People', 'Chat', 'Runbook']);
   });
 });
 

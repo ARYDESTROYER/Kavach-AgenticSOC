@@ -534,7 +534,7 @@ function LoginPreviewCard({ hero }: { hero: PreviewHero }) {
     <div data-login-preview-content className="w-[400px]">
       <div className="mb-8 flex h-10 items-center">
         {hero.logoUrl ? (
-          <img src={hero.logoUrl} alt="" className="h-10 w-10 object-contain" />
+          <img src={hero.logoUrl} alt="" className="h-10 w-auto max-w-48 object-contain object-left" />
         ) : (
           <Shield className="h-7 w-7 text-primary" aria-hidden />
         )}

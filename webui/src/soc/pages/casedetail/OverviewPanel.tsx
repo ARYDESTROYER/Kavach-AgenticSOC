@@ -148,7 +148,56 @@ export function lastHumanAction(c: Case, runs?: readonly RunbookRun[] | null): s
   }
   if (!item) return null;
   const when = item.ts ? `, ${humanizeAge(item.ts)}` : '';
-  return `${item.title}${item.who ? ` by ${item.who}` : ''}${when}`;
+  const line = `${item.title}${item.who ? ` by ${item.who}` : ''}${when}`;
+  // A run that was queued or running when the person closed the case replaced that close
+  // (D10): say so, in the words of the replaced-close notice, never a close under an open
+  // status.
+  return closeReplaced(c) ? `${line}. The AI investigation then replaced the close.` : line;
+}
+
+/** The analyst verbs that end a case (`routes._ACTION_STATUS`: closed or resolved). */
+const CLOSING_ACTIONS = new Set(['close', 'confirm_fp', 'resolve']);
+
+/** The terminal statuses a person's close moves a case into. */
+const TERMINAL = new Set(['closed', 'resolved']);
+
+/**
+ * Whether a person's lifecycle action ended the case: a closing verb, or a status change
+ * (`set_status`, the status menu and the bulk form) whose move on the status timeline,
+ * made at the same time (`case.updated_at`), went to closed or resolved.
+ */
+function closedByAction(c: Case, entry: Record<string, unknown>): boolean {
+  const action = String(entry.action ?? '');
+  if (CLOSING_ACTIONS.has(action)) return true;
+  if (action !== 'set_status') return false;
+  const ts = String(entry.ts ?? '');
+  const moves = Array.isArray(c.status_history) ? c.status_history : [];
+  return Boolean(ts) && moves.some((m) => m?.at === ts && TERMINAL.has(String(m?.to_status ?? '').toLowerCase()));
+}
+
+/**
+ * Whether the person's newest lifecycle action closed the case and a later decision of an
+ * AI run left it open: walking the history back from its newest entry, events that
+ * arrived (`attach`) are skipped, a `decision` is noted, and the first entry by a person
+ * settles it.
+ */
+function closeReplaced(c: Case): boolean {
+  const status = String(c.status ?? '').toLowerCase();
+  if (TERMINAL.has(status)) return false;
+  const history = Array.isArray(c.history) ? c.history : [];
+  let decided = false;
+  for (let i = history.length - 1; i >= 0; i -= 1) {
+    const entry = history[i] as Record<string, unknown> | null;
+    if (!entry || typeof entry !== 'object') continue;
+    const event = String(entry.event ?? '');
+    if (event === 'attach') continue;
+    if (event === 'decision') {
+      decided = true;
+      continue;
+    }
+    return decided && event === 'analyst_action' && closedByAction(c, entry);
+  }
+  return false;
 }
 
 /* ------------------------------------------------------------ next step row -- */

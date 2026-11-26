@@ -157,7 +157,7 @@ describe('board figures (board-figures-unexplained, noisy-rules-wilson-unexplain
   it('the auto-close rate is the closed share of the decided cases', async () => {
     board([w('kpi.auto_close_health')]);
     const text = await openExplain(cell('kpi.auto_close_health'), /^82%, explain$/);
-    expect(text).toContain('31 closed by the AI agent on its first decision of 38 cases decided = 81.6%, the last 24 hours.');
+    expect(text).toContain('31 closed by the AI agent on its first decision of 38 cases decided = 81.6%, shown as 82%, the last 24 hours.');
     expect(text).toContain('floor(81.6 + 0.5)');
   });
 

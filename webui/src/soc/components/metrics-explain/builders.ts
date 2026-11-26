@@ -12,6 +12,7 @@
  * never by an entry module.
  */
 import { explainPercentile, explainShare } from '@/lib/explain/builders';
+import { interpolationOperands } from '@/lib/explain/stats';
 import { count, percentOf, trimmed } from '@/lib/explain/rounding';
 import type { Explanation, ExplanationLink, ExplanationStep } from '@/lib/explain/types';
 import type { MetricExplainSample, MttrByDecider, MttrDecider } from '@/lib/types-metrics-explain';
@@ -89,7 +90,8 @@ export interface ShareExplainInput {
   tileRounding?: string;
   /**
    * Set when the tile shows the share as a whole percent: a "Shown" step then gives the
-   * tile's figure from the share, so 66.5% beside a "66%" tile still reproduces.
+   * tile's figure from the share, so 66.5% beside a "66%" tile still reproduces, and the
+   * result line and the summary end on that figure (the Explain kit's rounding rule).
    */
   tileWholePercent?: boolean;
   caveats?: string[];
@@ -102,13 +104,19 @@ export interface ShareExplainInput {
  * never 66.5, whose rounding half up (67) is not the 66% the tile shows.
  */
 export function wholePercentStep(percent: number): ExplanationStep {
+  const { text, shown } = wholePercentParts(percent);
+  return { label: 'Shown', expression: `floor(${text} + 0.5)`, result: shown };
+}
+
+/** The percent printed with just enough decimals to give its whole percent, and that whole percent. */
+function wholePercentParts(percent: number): { text: string; shown: string } {
   const shown = Math.floor(percent + 0.5);
   let text = trimmed(percent, 1).replace(/,/g, '');
   for (let digits = 1; digits <= 6; digits += 1) {
     text = trimmed(percent, digits).replace(/,/g, '');
     if (Math.floor(Number(text) + 0.5) === shown) break;
   }
-  return { label: 'Shown', expression: `floor(${text} + 0.5)`, result: `${shown}%` };
+  return { text, shown: `${shown}%` };
 }
 
 /**
@@ -120,10 +128,22 @@ export function explainKpiShare(input: ShareExplainInput): Explanation | null {
   if (typeof numerator !== 'number' || typeof denominator !== 'number') return null;
   const base = explainShare(numerator, denominator, { metric: input.metric, label: input.denominatorLabel });
   if (!base) return null;
-  const share = base.value === null ? null : percentOf(base.value as number);
+  // A tile that shows a whole percent: the result line and the summary end on that figure
+  // (FXF), never on the one-decimal share beside a "68%" tile. A share that is already
+  // whole ("20%") is not repeated as "shown as 20%".
+  const whole = input.tileWholePercent && base.value !== null ? wholePercentParts(100 * (base.value as number)) : null;
+  const share =
+    base.value === null
+      ? null
+      : whole
+        ? `${whole.text}%` === whole.shown
+          ? whole.shown
+          : `${whole.text}%, shown as ${whole.shown}`
+        : percentOf(base.value as number);
   return {
     ...base,
     title: input.title,
+    display: whole ? whole.shown : base.display,
     summary:
       share === null
         ? `No ${input.denominatorLabel} in ${input.window}, so there is no share.`
@@ -514,10 +534,13 @@ export function rankLineOverRun(
   const hi = listed[upper - offset];
   if (lower < offset || upper - offset >= listed.length || lo === undefined || hi === undefined) return null;
   const result = lo + (rank - lower) * (hi - lo);
+  // The operands carry just enough decimals that the printed step, worked by hand, gives
+  // the printed result (FXF, as the stats steps do since FXD2).
+  const op = interpolationOperands(lo, hi, rank - lower, result);
   const expression =
     lower === upper
       ? `rank ${trimmed(q, 2)} x (${count(total)} - 1) = ${trimmed(rank)}, the value at that rank`
-      : `rank ${trimmed(q, 2)} x (${count(total)} - 1) = ${trimmed(rank)}; ${trimmed(lo)} + ${trimmed(rank - lower)} x (${trimmed(hi)} - ${trimmed(lo)})`;
+      : `rank ${trimmed(q, 2)} x (${count(total)} - 1) = ${trimmed(rank)}; ${op.lo} + ${op.fraction} x (${op.hi} - ${op.lo})`;
   return { label: name, expression, result: `${trimmed(result)} minutes` };
 }
 

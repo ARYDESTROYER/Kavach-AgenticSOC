@@ -742,32 +742,62 @@ tab never repeats the verdict, confidence, risk, status or owner the header and 
 already show. The **Brief** opens with the review sentence on a review sample and, on an
 open case, the runbook's next step as one 48px row, then four lanes, each tagged with who
 wrote it: Evidence (source: the trigger sentence and one quiet line of events, entity,
-times and source), AI (ai: the model's own reasoning, its first two or three sentences,
-and the recommendation while the case is open), Decision (code, or analyst when a person
-settled it: the decision line, the authority sentence once, the auto-close reading
-against the policy entry for the case's verdict, with Policy inputs and Automation
-applied one disclosure away each; the decision line is a sentence about who settled the
-case and how, "Escalated by the system.", never the `key=value` record, which Policy
-inputs keeps word for word. On a person's close the decision line is what the policy
-recorded before them; the outcome, the person and the time are in the header, the
-inspector and the People lane) and People (analyst: the last action and the counts of
-tasks, messages and screenshots). Each lane links to its tab. The AI lane never falls
-back to the deterministic decision's text, which belongs to the code and is shown,
-attributed to the code, only under the Brief's Decision lane (G17). A case the AI did not
-assess shows its system summary, untagged. "How this case was built" (the six-stage
-story) is folded at the end. **Evidence** is what the sources said, and nothing the AI or
-the code made of it: What happened (the trigger, the source stage and the case's events,
-filtered when a finding's "Cites N events" opened the tab), Entities, Threat context,
-Related cases and the baseline. **AI investigation** is what the model said and did: one
-muted line saying it is advisory and that code decides the route, the AI assessment
-(reasoning, the findings, found and ruled out, the reproduce query, the full evidence
-one click away), the investigation inputs, the trace (open while an AI run is under way)
-and earlier gradings; no code provenance tag shows on it. **Response** is the runbook run
+times and source), Assessment (ai: the model's own reasoning, its first two or three
+sentences, and the recommendation while the case is open; once the case ended, the
+recommendation at triage is folded under it), Decision (code, or analyst when a person
+settled it, named "Analyst policy" when an operator's declared-benign rule closed it: the
+decision line, the auto-close reading against the policy entry for the case's verdict,
+the authority sentence once, with Policy inputs and Automation applied one disclosure
+away each) and People (analyst: the last thing a person did, then the runbook's progress
+and the counts of messages and screenshots). The decision line is a sentence about who
+settled the case and how, never the `key=value` record, which Policy inputs keeps word
+for word: "Escalated by the system." or "Closed by the AI agent." from the case
+manager's record, and "Sent to an analyst by the case policy." for every routing to a
+person, whether the lane reads the record or the rationale `decide()` wrote. The reason
+the code recorded ("Confidence was below the auto-close bar.") follows it only when there
+is no auto-close reading to say why. On a person's close the decision line is what the
+policy recorded before them ("Before the analyst: ..."), or nothing; the outcome, the
+person and the time are in the header, the inspector and the People lane. The People
+lane's last action is the newer of a person's last History entry (a status change, an
+owner change or a review) and the last runbook step a person finished, with when it
+happened. When a run decided after a person's close and the case is open again, it adds
+"The AI investigation then replaced the close." Work without either (messages,
+screenshots, steps with no name) reads "No status change by a person yet.", and a case
+nobody touched reads "No one has worked on this case yet." The Evidence, Assessment and
+People lanes link to their tabs. The Assessment lane never falls back to the
+deterministic decision's text, which belongs to the code and is shown, attributed to the
+code, only under the Brief's Decision lane (G17). A case the AI did not assess shows its
+system summary, untagged. While nobody has settled a case, the inspector's Outcome reads
+"Not classified yet" rather than repeat the AI verdict the header shows. "How this case
+was built" (the six-stage story) is folded at the end. **Evidence** is what the sources
+said, and nothing the AI or the code made of it: What happened (the trigger, the source
+stage and the case's events, filtered when a finding's "Cites N events" opened the tab),
+Entities, Threat context, Related cases and the baseline. The events table is fixed
+layout and joins its columns by container query as the pane widens, so the message
+always keeps at least 12rem: below 36rem it shows the time (the date over the time) and
+the message, with the rule above the message; the Rule column joins from 36rem, Severity
+from 44rem, Source IP from 56rem, and User and Host from 80rem. **AI investigation** is
+what the model said and did: one muted line saying it is advisory and that code decides
+the route, the AI assessment (reasoning, the findings, found and ruled out, the
+reproduce query, the full evidence one click away), the investigation inputs, the trace
+(open while an AI run is under way; runbook AI help a person asked for is its own actor,
+Runbook, named after the person who asked and with its own call's cost) and earlier
+gradings; no code provenance tag shows on it. **Response** is the runbook run
 for a viewer who may read runbooks and the case's tasks for everyone. **Activity** is
 Discussion and Files in the main column with History in a side column from a 52rem pane
 (a container query, never the viewport); it has no owner control and no tasks. History is the case's own lifecycle,
-newest first, with who, when and the actions taken; the full activity feed is one
-disclosure away and names a load failure while closed. The title row never wraps: the
+newest first, with who, when and the actions taken. A decision entry gives the reason
+the code recorded, in the Decision lane's words; a status move gives the reason its
+dialog collected (Hold, De-escalate) when it differs from the note, and the resolution
+it recorded. A note longer than three lines is clamped with "Show more", so the whole
+note is one press away, and the list shows eight entries with "Show N earlier" below
+them. The full activity feed is one disclosure away and names a load failure while
+closed. The tab row, like every underline tab list, scrolls sideways when its tabs do
+not fit: a new selection or a resize moves the list (never the page) just enough to
+bring the selected tab into view clear of the edge, and an edge with more tabs past it
+fades out. A label or count that changes width (the live AI step count) keeps the
+selected tab in view only while the person has not scrolled the list since, so a list
+they swiped stays where they left it. The title row never wraps: the
 title takes the room the actions leave and truncates, and the actions keep their place.
 Lifecycle dialogs keep their actions in a footer that never scrolls
 away, open with focus on the field the analyst must fill (the disposition), and return

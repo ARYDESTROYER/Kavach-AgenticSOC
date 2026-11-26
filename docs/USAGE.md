@@ -2152,9 +2152,11 @@ The sign-in page (version 0.2) is one column on the Console's own colours with o
 entrance and nothing moving afterwards. Its heading names the organization ("Sign in to
 Acme SOC"); Continue is always shown and errors sit under their field; single sign-on
 buttons are labelled by provider; a single sign-on error shows a fixed sentence, never text
-from the link. **Remember me** shows only its label: the confirmation the first time you
-tick it states how long you stay signed in, and when an administrator turned it off or the
-connection is insecure the row stays visible, disabled, with its reason. Ten wrong
+from the link. **Remember me** shows only its label. The confirmation the first time you
+tick it says who can use this browser as you and what still ends the session (the schedule
+your administrator set, an administrator, signing out); it states no duration. When an
+administrator turned it off or the connection is insecure, the row stays visible, disabled,
+with its reason. Ten wrong
 second-factor codes in a row lock the second-factor checks for 5 minutes, doubling up to an
 hour (`429`); after five wrong codes on one sign-in the page returns to the password step.
 

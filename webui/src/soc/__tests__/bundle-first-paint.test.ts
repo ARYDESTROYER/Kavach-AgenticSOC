@@ -198,6 +198,18 @@ const HINT = 'no dist/ build present — run `vite build` first (CI/integrator d
  * 330,068 B, 36 B inside the old budget. The baseline is set to it: 988 B above the Round 15
  * baseline, the round's measured growth, so nothing more can be spent unseen. The +1,024 B
  * budget and the 400,000 B ceiling are unchanged.
+ *
+ * Round 16 package FXF. The fix packages merged on 39335e5 brought the entry, built stamped
+ * as CI builds it (TLSOC_RELEASE_CHANNEL, TLSOC_BUILD_SHA and TLSOC_BUILD_DATE set, then
+ * `vite build`), to 331,181 B: 89 B over the 331,092 B budget. The sign-in page imported the
+ * two-factor setup card eagerly, so first paint carried the card, its QR encoder, the card
+ * and checkbox primitives and the clipboard helper for a step few sign-ins reach. FXF loads
+ * the card through retryingLoader when an enrollment starts, before the step shows, with a
+ * plain line if the chunk cannot load. Measured the same way: 318,008 B (-13,173 B), per
+ * file MfaSetupCard.tsx -10,094, ui/card.tsx -1,589, lib/clipboard.ts -1,146,
+ * ui/checkbox.tsx -902, Login.tsx +349, registry.tsx +131 and under 10 B of drift elsewhere.
+ * The baseline stays at 330,068 B: the round's records hold that figure, and the ratchet
+ * belongs to the round's records package, not to a fix package.
  */
 const PRE_REVAMP_ENTRY_BYTES = 330_068;
 const REVAMP_ENTRY_BUDGET_BYTES = 1_024;
@@ -280,6 +292,18 @@ describe.skipIf(!HAS_DIST && !REQUIRE_DIST)('first-paint bundle graph', () => {
     expect(kit, 'the Explain kit must be emitted in some lazy chunk').toBeDefined();
     expect(entryStaticImports()).not.toContain(kit);
     expect(readHtml()).not.toMatch(new RegExp(`modulepreload[^>]*${kit}`));
+  });
+
+  it('the two-factor setup card stays off first paint (Round 16, package FXF)', () => {
+    // Its acknowledgment line is a string literal only the card carries. The sign-in page
+    // loads the card for an enrollment step; nearly every sign-in never enrolls.
+    const marker = 'I have saved my recovery codes';
+    expect(readEntry()).not.toContain(marker);
+    const card = fs.readdirSync(path.join(DIST, 'assets')).find((f) => /^MfaSetupCard-[^/]+\.js$/.test(f));
+    expect(card, 'the card is its own lazy chunk').toBeDefined();
+    expect(fs.readFileSync(path.join(DIST, 'assets', card as string), 'utf8')).toContain(marker);
+    expect(entryStaticImports()).not.toContain(card);
+    expect(readHtml()).not.toMatch(new RegExp(`modulepreload[^>]*${card}`));
   });
 
   it('entry chunk is well under the pre-Coupling-A 537 kB (page bodies are lazy)', () => {
@@ -527,6 +551,9 @@ describe('first-paint shell keeps the palette and Settings metadata lazy (source
       ['ui', 'command.tsx'],
       ['soc', 'pages', 'settings', 'settings-sections-meta.ts'],
       ['soc', 'pages', 'settings-dirty.ts'],
+      // Round 16 FXF: the sign-in page loads the two-factor setup card for an enrollment
+      // step only.
+      ['soc', 'components', 'MfaSetupCard.tsx'],
     ].map((seg) => path.join(WEBUI_ROOT, 'src', ...seg));
     const reached = lazyOnly
       .filter((file) => files.has(file))

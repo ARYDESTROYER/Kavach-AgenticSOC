@@ -218,7 +218,7 @@ const DECISION_STATUS: Readonly<Record<string, string>> = {
   closed: 'Closed',
   resolved: 'Resolved',
   escalated: 'Escalated',
-  needs_human: 'Left for an analyst',
+  needs_human: 'Sent to an analyst',
   investigating: 'Kept under investigation',
   open: 'Kept open',
 };
@@ -258,7 +258,7 @@ const DECISION_RECORD_ROW =
 /**
  * Who settled a case and how, in words, from the case manager's DECISION record
  * (`verdict=… status=… decision_by=… risk=… cost=… confidence=… auto_close_gate=…`):
- * "Escalated by the system.", "Closed by the AI agent.", "Left for an analyst.". Null when
+ * "Escalated by the system.", "Closed by the AI agent.", "Sent to an analyst.". Null when
  * `raw` is not that record. It leaves out the verdict, confidence, risk and cost (the
  * header has them, and Policy inputs keeps the record word for word) and the gate (the
  * auto-close line explains it). Our own words from the enum tokens only (#9).
@@ -294,6 +294,9 @@ const RATIONALE_BELOW_BAR = new RegExp(
 const RATIONALE_CLASS_OFF = /^(?:True|False) positive routed to human: (?:tp|fp) auto-close disabled\.?$/;
 const RATIONALE_FAIL_SAFE = /^No confident close decision; routing to human \(fail-safe\)\.?$/;
 
+/** The case policy routing a case to a person, the one phrasing of that fact. */
+const SENT_TO_ANALYST = 'Sent to an analyst by the case policy.';
+
 /** The case manager's decision, in words: how it routed the case, and why. */
 export interface DecisionWords {
   /** Who settled it and how: "Sent to an analyst by the case policy.", "Escalated by the system.". */
@@ -319,7 +322,10 @@ export function decisionWords(raw: string | null | undefined): DecisionWords | n
   );
   if (record) {
     const gate = record[3] ? ownWord(GATE, record[3]) : undefined;
-    return { route: decisionRecordSentence(text) ?? '', why: gate ? `${gate}.` : '' };
+    // A routing to a person is the case policy's, in the words the rationale templates
+    // below get (FXF): one phrasing for one fact, whichever record the lane reads.
+    const route = record[1] === 'needs_human' ? SENT_TO_ANALYST : (decisionRecordSentence(text) ?? '');
+    return { route, why: gate ? `${gate}.` : '' };
   }
   if (RATIONALE_AUTO_CLOSED.test(text)) {
     return { route: 'Closed automatically by the case policy.', why: `${GATE.cleared}.` };
@@ -330,13 +336,13 @@ export function decisionWords(raw: string | null | undefined): DecisionWords | n
     const low = conf < minConf;
     const high = risk > maxRisk;
     const gate = low && high ? 'blocked_confidence_and_risk' : high ? 'blocked_risk' : 'blocked_confidence';
-    return { route: 'Sent to an analyst by the case policy.', why: `${GATE[gate]}.` };
+    return { route: SENT_TO_ANALYST, why: `${GATE[gate]}.` };
   }
   if (RATIONALE_CLASS_OFF.test(text)) {
-    return { route: 'Sent to an analyst by the case policy.', why: `${GATE.class_disabled}.` };
+    return { route: SENT_TO_ANALYST, why: `${GATE.class_disabled}.` };
   }
   if (RATIONALE_FAIL_SAFE.test(text)) {
-    return { route: 'Sent to an analyst by the case policy.', why: `${GATE.not_closable}.` };
+    return { route: SENT_TO_ANALYST, why: `${GATE.not_closable}.` };
   }
   return null;
 }

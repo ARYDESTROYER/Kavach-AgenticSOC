@@ -1370,6 +1370,21 @@ def _compare_block(curr: Any, prev: Any) -> dict[str, Any]:
     return {"value": curr, "prev": prev, "delta_pct": _delta_pct(curr, prev)}
 
 
+def _rate_compare_block(
+    quality: dict[str, Any], prev_quality: dict[str, Any], rate: str, numerator: str, denominator: str,
+) -> dict[str, Any]:
+    """A rate's :func:`_compare_block` with the counts behind both windows (additive,
+    Round 16 FXF), so a change chip can print "39 of 56" and "10 of 30" beside the two
+    rates it divides."""
+    return {
+        **_compare_block(quality[rate], prev_quality[rate]),
+        "numerator": int(quality[numerator]),
+        "denominator": int(quality[denominator]),
+        "prev_numerator": int(prev_quality[numerator]),
+        "prev_denominator": int(prev_quality[denominator]),
+    }
+
+
 def truncation_marker(
     fetched_count: int, store_total: int | None = None
 ) -> dict[str, Any]:
@@ -1717,20 +1732,20 @@ def posture_metrics(
         rollup["compare"] = {
             "mode": "prev",
             "case_count": _compare_block(len(current), len(prev_window)),
-            "alert_to_incident_ratio": _compare_block(
-                quality["alert_to_incident_ratio"], prev_quality["alert_to_incident_ratio"]
+            "alert_to_incident_ratio": _rate_compare_block(
+                quality, prev_quality, "alert_to_incident_ratio", "true_positive_cases", "total_cases",
             ),
-            "false_positive_rate": _compare_block(
-                quality["false_positive_rate"], prev_quality["false_positive_rate"]
+            "false_positive_rate": _rate_compare_block(
+                quality, prev_quality, "false_positive_rate", "false_positive_cases", "verdicted_cases",
             ),
             "analyst_confirmed_fp": _compare_block(
                 quality["analyst_confirmed_fp"], prev_quality["analyst_confirmed_fp"]
             ),
-            "escalation_rate": _compare_block(
-                quality["escalation_rate"], prev_quality["escalation_rate"]
+            "escalation_rate": _rate_compare_block(
+                quality, prev_quality, "escalation_rate", "escalated_cases", "total_cases",
             ),
-            "automation_rate": _compare_block(
-                quality["automation_rate"], prev_quality["automation_rate"]
+            "automation_rate": _rate_compare_block(
+                quality, prev_quality, "automation_rate", "auto_closed_cases", "terminal_cases",
             ),
             "mttr_p50": _compare_block(
                 lifecycle["mttr_minutes"]["p50"], prev_life["mttr_minutes"]["p50"]

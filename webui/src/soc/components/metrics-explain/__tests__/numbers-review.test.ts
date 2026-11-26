@@ -151,7 +151,9 @@ describe('a share and its tile', () => {
       numeratorLabel: 'resolved or closed cases', denominatorLabel: 'cases', window: 'the last 7 days',
       dividedBy: 'server', tileRounding: 'The tile shows a whole percent.', tileWholePercent: true,
     })!;
-    expect(exp.display).toBe('66.5%');
+    // The result line and the summary end on the tile's figure (FXF), never on 66.5%.
+    expect(exp.display).toBe('66%');
+    expect(exp.summary).toBe('111 resolved or closed cases of 167 cases = 66.47%, shown as 66%, the last 7 days.');
     expect(exp.steps.at(-1)).toEqual({ label: 'Shown', expression: 'floor(66.47 + 0.5)', result: '66%' });
     expect(wholePercentStep(12.5)).toEqual({ label: 'Shown', expression: 'floor(12.5 + 0.5)', result: '13%' });
   });

@@ -17,7 +17,7 @@ import { minutesText } from '@/lib/explain/times';
 import type { Explanation, ExplanationInput, ExplanationStep } from '@/lib/explain/types';
 import { fmtDuration, fmtOverage } from '@/lib/format';
 
-import type { AttentionRow, DeltaCell, SlaAging, SlaAgingRow, WorkloadRow } from './Standup.report.api';
+import type { ActionItem, AttentionRow, DeltaCell, ShiftAck, SlaAging, SlaAgingRow, WorkloadRow } from './Standup.report.api';
 
 /** What each strip count counts. */
 export const STRIP_COUNTS: Record<string, string> = {
@@ -214,6 +214,71 @@ export function explainSlaOverage(row: SlaAgingRow, label: string): Explanation 
 function ownerWords(analyst: string): string {
   const name = (analyst ?? '').trim();
   return !name || name === '(unassigned)' ? 'Unassigned' : name;
+}
+
+/** The action item statuses, in the order the panel's menu lists them. */
+const ACTION_STATUSES: ReadonlyArray<readonly [string, string]> = [
+  ['open', 'open'],
+  ['in_progress', 'in progress'],
+  ['done', 'done'],
+];
+
+/**
+ * The action item count (Round 16 FXF): the items in the panel, split by status, so "2"
+ * beside the panel title reads "1 open + 1 in progress". The shift report sends the items
+ * not marked done (`agents/standup.py` reads them with `open_only`), so a done item
+ * leaves the list and the count; one still on screen before the reload is counted as
+ * done, never hidden in the sum.
+ */
+export function explainActionItems(items: readonly ActionItem[]): Explanation {
+  const known = new Set(ACTION_STATUSES.map(([key]) => key));
+  const parts = ACTION_STATUSES.map(([key, words]) => ({ key, words, n: items.filter((i) => i.status === key).length }))
+    .filter((p) => p.key !== 'done' || p.n > 0);
+  const other = items.filter((i) => !known.has(i.status)).length;
+  if (other) parts.push({ key: 'other', words: 'another status', n: other });
+  const sum = parts.map((p) => `${count(p.n)} ${p.words}`).join(' + ');
+  return {
+    metric: 'standup_action_items',
+    title: 'Action items',
+    value: items.length,
+    display: count(items.length),
+    summary: `${count(items.length)} action ${items.length === 1 ? 'item' : 'items'} across shifts: ${sum}.`,
+    formula: 'count of the action items in the list',
+    inputs: [
+      ...parts.map((p) => ({ key: p.words, label: p.words.charAt(0).toUpperCase() + p.words.slice(1), value: count(p.n), source: 'Action items' })),
+      { key: 'total', label: 'Action items', value: count(items.length), source: 'Action items' },
+    ],
+    steps: [{ label: 'Action items', expression: parts.map((p) => count(p.n)).join(' + '), result: count(items.length) }],
+    provenance: 'server_computed',
+    provenanceNote: 'Read from the shared action item list, which every shift sees.',
+    caveats: ['An item marked done leaves the list and the count.'],
+  };
+}
+
+/**
+ * The handoff acknowledgements (Round 16 FXF): one per person who signed off this
+ * shift's handoff, newest first. `shift` is the shift in words ("Swing shift, 2026-10-29,
+ * 14:00 to 22:00 UTC"), never the raw window key; empty leaves the Shift input out.
+ */
+export function explainHandoffAcks(acks: readonly ShiftAck[], shift: string): Explanation {
+  const people = new Set(acks.map((a) => a.user || 'operator')).size;
+  return {
+    metric: 'standup_handoff_acks',
+    title: 'Handoff sign-off',
+    value: acks.length,
+    display: count(acks.length),
+    summary: `${count(acks.length)} ${acks.length === 1 ? 'acknowledgement' : 'acknowledgements'} of this shift's handoff, by ${count(people)} ${people === 1 ? 'person' : 'people'}.`,
+    formula: "count of the acknowledgements recorded for this shift's handoff",
+    inputs: [
+      { key: 'acks', label: 'Acknowledgements', value: count(acks.length), source: 'Handoff sign-off' },
+      { key: 'people', label: 'People', value: count(people), source: 'Handoff sign-off' },
+      ...(shift ? [{ key: 'window', label: 'Shift', value: shift, source: 'The shift on screen' }] : []),
+    ],
+    steps: [],
+    provenance: 'server_computed',
+    provenanceNote: 'Recorded when each person acknowledged the handoff.',
+    caveats: ['Only this shift counts; an acknowledgement of an earlier shift is not in it.'],
+  };
 }
 
 /** An analyst's open work: "2 escalated + 0 awaiting analyst + 1 other open = 3". */

@@ -78,6 +78,27 @@ export function explainTeamMedian(team: TeamTotalsWithTimes, shown: string, wind
   };
 }
 
+/**
+ * One person's median time to acknowledge, from the person sheet (Round 16 FXF): the
+ * shared rule over the cases this person first acknowledged in the window. The sheet has
+ * no list of the person's times, so it names the rank rule and the count.
+ */
+export function explainPersonMedian(person: PersonActivity, shown: string, window: string): Explanation | null {
+  const base = explainTeamAckMedian({ medianSeconds: person.median_ack_seconds, samples: person.ack_samples, shown, window });
+  if (!base) return null;
+  const name = personName(person);
+  const n = person.ack_samples;
+  return {
+    ...base,
+    metric: 'person_median_ack',
+    title: `${name}: median time to acknowledge`,
+    summary: `Median ${shown} over ${count(n)} ${n === 1 ? 'case' : 'cases'} ${name} was the first person to acknowledge, ${window}.`,
+    inputs: base.inputs.map((input) =>
+      input.key === 'samples' ? { ...input, label: `Cases ${name} acknowledged first` } : input,
+    ),
+  };
+}
+
 /** A person's counted actions in words: "1 acknowledged, 1 commented, 3 sign-ins". */
 function actionsInWords(counts: Record<TeamKind, number>): string {
   return KIND_ORDER.filter((k) => (counts[k] ?? 0) > 0)

@@ -527,7 +527,7 @@ describe('AwaitingReason', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Why is this waiting?' }));
     const panel = await screen.findByTestId('awaiting-forwarding');
     expect(panel).toHaveTextContent('The routing score is below the floor for an automatic investigation.');
-    expect(within(panel).getByTestId('awaiting-routing')).toHaveTextContent('Routing score 45.3 against a floor of 70.');
+    expect(within(panel).getByTestId('awaiting-routing')).toHaveTextContent('Routing score 45.25 against a floor of 70.');
   });
 
   it('states the hold reason while the case is on hold, as text', () => {
