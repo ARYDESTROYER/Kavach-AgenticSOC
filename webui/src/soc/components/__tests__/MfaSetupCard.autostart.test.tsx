@@ -110,7 +110,12 @@ describe('MfaSetupCard autoStart (host-started)', () => {
     expect(document.activeElement).toBe(preparing);
     expect(screen.queryByRole('button', { name: /turn on two-factor/i })).toBeNull();
 
-    resolve({ ...SETUP_PAYLOAD });
+    // The enrollment arrives and the lazily loaded QR code finishes loading inside act, so
+    // React sees both updates (the first test of the file is the one that loads the chunk).
+    await act(async () => {
+      resolve({ ...SETUP_PAYLOAD });
+      await import('../QRCode');
+    });
     expect(await screen.findByText('HOSTSECRET23456789')).toBeInTheDocument();
     // The first step takes focus as the enrollment arrives (never the code field at the
     // bottom, which would skip the QR code, the secret and the one-time recovery codes).
