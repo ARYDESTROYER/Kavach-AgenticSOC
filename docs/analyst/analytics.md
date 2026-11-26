@@ -1,6 +1,6 @@
 ---
 title: Analytics and standup
-description: Interpret v0.1 posture, timing, noise reduction, ATT&CK coverage, cost, and shift handoff metrics.
+description: Interpret posture, timing, noise reduction, ATT&CK coverage, cost, and shift handoff metrics, and read how each figure was calculated.
 ---
 
 # Analytics and standup
@@ -13,7 +13,18 @@ navigation label: **Metrics** (`#/metrics`), **Agent effectiveness**
 action queue. Analytics are advisory: they describe stored cases and ingest counters but
 never feed the case decision policy.
 
-Posture and ATT&CK endpoints require `metrics:view` when RBAC is enabled.
+Posture and ATT&CK endpoints require `metrics:view` when RBAC is enabled, and so does
+the Standup.
+
+Many figures on these pages explain themselves. Point at one for a one-line formula with
+the real numbers; select it, or press Enter or Space while it has focus, for the inputs, the
+steps, the rounding and who computed it, with **Copy calculation**. MTTA, MTTR and dwell
+also read the cases behind the median: the panel shows the rank arithmetic of the median
+and p90, and **Show all** opens the cases in a side sheet, shortest first, with the
+median case or cases marked and each one linked to Case Manager. MTTR also says how many
+cases the AI agent closed and how many a person closed, with each group's median. A case
+you may not read, or one outside your data scope, is not listed but still counts in the
+figure. See [Explainable numbers](explainable-numbers.md).
 
 ## How the Analytics pages are laid out
 
@@ -108,7 +119,7 @@ retrieval projection. An unreadable corpus reports "Unknown", never zero.
 
 Agentic SOC reports distributions, including p50 and p90 where available:
 
-| Metric | v0.1 definition |
+| Metric | Definition |
 |---|---|
 | MTTD | First member-event time to case creation |
 | MTTA | Case creation to the first human acknowledgement |
@@ -117,7 +128,9 @@ Agentic SOC reports distributions, including p50 and p90 where available:
 
 MTTA uses a human acknowledgement; an automatic close is not counted as a human
 response. Missing eligible samples remain missing rather than being displayed as
-zero.
+zero. The **MTTR** tile on the Operational tab is the median (p50) of the same clock,
+from case creation, or detection when recorded, to the first time the case was resolved
+or closed, over the cases that are resolved or closed now. Later edits do not change it.
 
 ## Posture and quality
 
@@ -387,7 +400,9 @@ zero; the change on **Total cost** compares the second half of the range with th
 itself, so a 7-day range reads per day over 7 days, not over the 8 calendar days it
 touches.
 Every model call must pass through this ledger. A price is an estimate based on the active catalog or operator override; it
-does not replace the provider invoice.
+does not replace the provider invoice. Each call made by version 0.2 or later also
+records the rates it was charged and where they came from, so a case's AI usage list can
+recompute every call; see [Explainable numbers](explainable-numbers.md#cost).
 
 See [Analyst overview](overview.md), [Cases](cases.md), and
 [Background jobs](../operations/background-jobs.md).

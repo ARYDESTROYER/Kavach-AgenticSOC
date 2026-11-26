@@ -56,23 +56,27 @@ Creating, editing, and logging tasks requires `cases:write`.
 
 ## History and audit
 
-**History** lists each lifecycle change with who made it, when, and the actions taken.
+**History** lists each lifecycle change with who made it, when, the reason given (for
+example why the case was put on hold) and the actions taken.
 **Show all activity** opens the full case activity stream below it, which brings
 collaboration events into one chronological view, newest first. Each row reads as one
 plain sentence, with the system's internal names shown as names ("Case manager") rather
 than codes; the text exactly as the audit log
 recorded it is one click away under **Details**. **Show activity by** filters the stream
 to **All**, **Human**, **AI** or **System**. While an investigation is running, its
-steps appear above the stream as they happen; they are a live narration, not part of the
-record. Lifecycle changes also remain in the case's append-only status history. The platform
+steps appear above the stream as they happen, under **Investigation in progress**, and
+the heading reads **Investigation finished** when it is done. They are a live narration,
+not part of the record. Without `cost:view`, spend figures in a step's text read
+"hidden". Lifecycle changes also remain in the case's append-only status history. The platform
 audit log is the authority for privileged or state-changing actions; the discussion
 thread is not a substitute for it.
 
 ## Shift handoff
 
 Use **Overview → Standup** to review the urgency-ranked attention queue, SLA pressure,
-workload by assignee, and action items. Analysts with `cases:write` can create and
-update handoff actions and acknowledge the report.
+workload by assignee, and action items. Reading the Standup needs `metrics:view`, which
+every built-in role holds. Analysts with `cases:write` can create and update handoff
+actions and acknowledge the report.
 
 See [Cases](cases.md) for lifecycle work and [Analytics](analytics.md) for timing and
 workload definitions.

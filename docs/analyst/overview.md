@@ -1,6 +1,6 @@
 ---
 title: Analyst overview
-description: Start a shift from the v0.1 Cyber Defence Center and move from posture to action.
+description: Start a shift from the Cyber Defence Center, read how each figure was calculated, and move from posture to action.
 ---
 
 # Analyst overview
@@ -52,6 +52,12 @@ and recent outcomes without changing any case or detection policy.
    full sentence is announced to screen readers; where a value is **withheld** because
    the window was not fully covered, the dash shown in its place carries that
    explanation instead.
+   Every numeral shows how it was calculated: point at it for a one-line formula with
+   the real numbers. In the drill-down, the formula sits under the sentence that says which
+   cases it counts, and **Show the calculation** opens the inputs, steps and rounding with
+   **Copy calculation**. The response times in the **Response time** card (MTTD and
+   Respond) also read the cases behind the median: select one for the rank arithmetic
+   and **Show all**. See [Explainable numbers](explainable-numbers.md).
    Hover or keyboard-focus a metric to reveal
    its recent trendline for the same window: the card names the exact series it
    draws, states the bucketing (for example `last 24 hours · 1h buckets`), and shows

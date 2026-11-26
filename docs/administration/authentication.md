@@ -34,7 +34,8 @@ supply controlled bootstrap credentials, then rotate them immediately.
 Access tokens carry a session identifier and token version. The session store applies
 idle, absolute and revocation checks. No sign-in issues a refresh token: a session
 lasts until its access token expires, within the idle and absolute limits, and then
-the person signs in again. Users can inspect and revoke their sessions;
+the person signs in again. `POST /api/auth/refresh` stays for older clients and is
+marked deprecated: every call answers `401` with code `session_invalid`. Users can inspect and revoke their sessions;
 administrators can inspect the organization session registry and revoke sessions for
 another user.
 
@@ -76,7 +77,9 @@ notice once on this device. The server still reports the limit (`lifetime_second
 
 ## Remember me
 
-The sign-in page offers **Remember me**. Checking it shows a warning first ("Keep this
+The sign-in page offers **Remember me**. The row shows only its label, with no duration.
+When Remember me is turned off, or the connection is insecure, the row stays visible and
+disabled with its one-line reason. Checking it shows a warning first ("Keep this
 device signed in?", with **Cancel** focused): anyone who can open this browser can use
 the console as that user, without a password, until the remembered time runs out. After
 **Keep me signed in**:
@@ -129,16 +132,29 @@ provider.
 
 The callback validates browser-bound state. Email-based linking requires a verified
 email and does not attach an SSO identity to a local-credential account merely because
-the email strings match. Test sign-in and account-linking behavior with a non-admin
-identity before rollout.
+the email strings match. A verified email links only to an account of the same provider
+that has no subject yet; an account of another provider, or one already bound to a
+different subject, is refused, so an existing subject is never re-bound by email.
+**Allowed domains** checks the hosted domain of a Google identity, and for every other
+identity the domain of its verified email; an unverified email gives no domain. A group
+mapping never changes the role of a stored Super admin. Test sign-in and account-linking
+behavior with a non-admin identity before rollout.
+
+Only a stored Super admin who signed in recently can change single sign-on: adding,
+removing or editing a provider, turning SSO on or off, or setting a provider's client
+secret. Anyone else sees the settings read-only, with "Only a Super admin can change
+single sign-on." The default role and each group mapping must be one of the built-in
+roles; a custom role name is refused when you save. To give an SSO user custom-role
+grants, add the custom role to their account after they first sign in.
 
 Runtime SSO secrets entered through the UI are memory-only. Supply them through the
 deployment environment when restart persistence is required.
 
 ## Public routes and middleware
 
-The setup status, login, refresh, SSO initiation/callback, liveness, readiness, and
-branding bootstrap surfaces have narrowly scoped public behavior. The `/api` router
+The setup status, login, the deprecated refresh route, SSO initiation/callback,
+liveness, readiness, and branding bootstrap surfaces have narrowly scoped public
+behavior. The `/api` router
 otherwise applies authentication centrally, and state-changing routes add permission
 checks.
 

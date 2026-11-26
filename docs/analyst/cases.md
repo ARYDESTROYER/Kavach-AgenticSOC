@@ -1,6 +1,6 @@
 ---
 title: Cases
-description: Find, assess, assign, progress, and close v0.1 cases without crossing the deterministic decision boundary.
+description: Find, assess, assign, progress, and close cases without crossing the deterministic decision boundary.
 ---
 
 # Cases
@@ -128,14 +128,14 @@ with **]**; a narrower pane opens them in a side sheet.
   sentences and its recommendation), Decision (what the code decided, with the policy
   inputs and any automation applied) and People (runbook progress, discussion, files and
   the last human action). **How this case was built** folds the input → correlate → risk
-  assigned → triage → investigate → decision story. Expanding Risk Assigned reconstructs
-  current-weight arithmetic from persisted factors and flags any historical-weight
-  mismatch; the final stage marker pulses.
+  assigned → triage → investigate → decision story. Expanding Risk Assigned shows the
+  scoring run's arithmetic (with today's weights, said so, for older cases); the final
+  stage marker pulses.
 - **Evidence**: what the sources said. **What happened**, the entities, then **Threat
   context**: indicator reputation, ATT&CK context, and the persisted redacted Input
   alerts → Correlation cluster → Opened case explanation. Focus or hover its nodes for
   source counts, grouping, threshold/window, status, and verdict; raw identifiers and
-  payloads are excluded. Related cases and any baseline follow.
+  payloads are excluded. Related cases, any baseline and the raw events follow.
 - **AI investigation**: the AI assessment, the investigation inputs, the full
   tool/reasoning trace, and earlier gradings of the AI.
 - **Response**: the runbook attached to the case with its pinned version and progress,
@@ -146,8 +146,8 @@ with **]**; a narrower pane opens them in a side sheet.
   every run while runbooks are turned off in Settings, is read only. Without
   `runbooks:read` the tab shows the tasks alone. See
   [Case Manager](case-manager.md#work-the-runbook).
-- **Activity**: discussion with reactions, files, and the history with who, when and the
-  actions taken.
+- **Activity**: discussion with reactions, files, and the history with who, when, why
+  and the actions taken.
 - **Chat**: case-scoped questions using the shared chat engine.
 
 In Case Manager, the header offers one primary action for the case's state, and **Take
@@ -156,6 +156,15 @@ lifecycle actions, disposition, re-investigation, **Start runbook**, refresh, ca
 JSON/Markdown export, and notification as permissions allow. The tabs are intentionally
 not repeated as menu actions. **More options** holds the case link. Exports are
 available as JSON or a Markdown handoff report.
+
+## While the AI works on a case
+
+While an AI investigation runs on a case, its header shows **AI working** and the queue
+row shows the same mark. The run's result decides the status when it finishes, even if a
+person closed the case meanwhile; people's notes, dispositions and files are kept. See
+[Case Manager](case-manager.md#when-the-ai-is-working-on-a-case). Point at the **AI
+verdict** chip to see how the code decided, with the thresholds recorded at the time; see
+[Explainable numbers](explainable-numbers.md#the-decision).
 
 ## Lifecycle actions and permissions
 

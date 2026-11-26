@@ -44,6 +44,18 @@ append-build identity instead. Older cases remain `null`; no provenance is backf
 Re-investigation spends model tokens and creates usage-ledger entries. Confirm the
 model and scope before applying it to many cases.
 
+**Reinvestigate** does not make you wait. Its dialog names the investigation time cap and
+the cost to date, starts a fresh run and closes at once; the case header then shows
+**AI working** until the run finishes, and the person who started it gets an Inbox item
+with the result. While a run on the case is queued or running, a second request is
+refused with "An AI investigation is already running on this case." and no second run
+starts. A closed case is reinvestigated in place, unless new events already opened
+another case for the same activity: then you are pointed to that open case instead. If
+you close the case while the run works, the run's result replaces your close when it
+finishes, and you get an Inbox notice that says so; your note, disposition, actions
+taken, comments and screenshots are kept. See
+[Case Manager](case-manager.md#when-the-ai-is-working-on-a-case).
+
 ## Read the result in layers
 
 In a case:
@@ -61,10 +73,17 @@ In a case:
 2. **How this case was built**, folded at the foot of the Brief (the former Timeline
    tab), shows when the six pipeline stages occurred. The visible labels are Input,
    Correlate, Risk Assigned, Triage, Investigate, and Decision. Expanding **Risk
-   Assigned** reconstructs the arithmetic from persisted factor values and current
-   configured weights. When historical weights differ, it preserves the recorded score
-   and explicitly says exact historical attribution is unavailable. The terminal marker
-   alone pulses to identify the current end of the story.
+   Assigned** shows the arithmetic with the weights in force when the case was scored and
+   the event count of its scoring run; a case that later gained events keeps the count it
+   was scored on. A case scored before 0.2 did not record its inputs: it says so, uses
+   today's weights, and keeps the recorded score when they disagree. **Decision** shows
+   the decision recorded when the case was decided: when it was made, what code decided
+   and why, and the confidence and risk thresholds it compared. When today's auto-close
+   policy would decide the same inputs differently, the stage says so. A case decided
+   before 0.2 has no recorded decision, so the stage re-derives one with today's policy,
+   says so and shows no time. If a later investigation run failed, the stage says the
+   case was routed to a person. The terminal marker alone pulses to identify the current
+   end of the story. See [Explainable numbers](explainable-numbers.md).
 3. **Evidence** holds what the sources said: **What happened** (why the detection fired
    and the source evidence), the primary entity under **Entities**, **Threat context**
    (below), **Related cases**, and the signature's anomaly baseline when it has one.
@@ -124,6 +143,14 @@ from successful groups may still ground the prompt. In either case the latest ru
 does not advance `retrieval_observation_status` or enter the case-level coverage measure
 as a completed observation. Only completion of every configured query group makes the
 run `measured`; a completed zero-hit result is then an honest measured empty result.
+
+The trace marks people's steps, case chat and automatic code steps apart from the AI's
+steps, and its filter offers All, Agent, Tool, Code, People and Chat. Each step's
+**Details** show what it recorded: the model, latency, tokens, cost and how the cost was
+found, and the tool input, query and output, with log values marked untrusted. A call
+shows its own cost and latency when the ledger names it, otherwise an even split, and
+the trace says when it shows only the newest records. Without `cost:view`, cost figures
+in step text read "hidden" and amounts "(amount hidden)".
 
 The trace is diagnostic evidence, not a second decision system. Tool calls available
 to the investigator are read-only log search, cached enrichment, and knowledge

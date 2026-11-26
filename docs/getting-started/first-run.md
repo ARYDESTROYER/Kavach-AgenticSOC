@@ -108,10 +108,26 @@ each provider follows Continue.
 </figure>
 
 Then enter the **Password** (badge 1). **Remember me** (badge 2) keeps this browser
-signed in for a server-bounded time, up to 24 hours, and asks you to confirm first;
-leave it clear on a shared computer. Select **Sign in** (badge 3). **Back** returns to
+signed in for a limited time set by your administrator, up to 24 hours. The row shows
+only its label. The first time you tick it, a dialog states how long you stay signed in
+and asks you to confirm with **Keep me signed in**; leave it clear on a shared computer.
+When your administrator turned Remember me off, the row stays visible, greyed out, with
+"Turned off by your administrator". Select **Sign in** (badge 3). **Back** returns to
 the username step. **Forgot password?** explains that an administrator resets passwords;
 there is no self-service reset. A wrong password shows its message under the field.
+
+With two-factor sign-in, type or paste the six-digit code; it is checked as soon as the
+last digit is in. Ten wrong codes in a row lock second-factor checks for the account for
+a while (see [Authentication](../administration/authentication.md#sessions)). If single
+sign-on fails, the page says in one short sentence what went wrong. An account that an
+administrator created or reset asks you to **Set a new password** before anything else.
+The three buttons in the top right corner set the sign-in page to your system theme,
+light or dark.
+
+After you sign in following an update, a short **What's new** welcome shows the
+release's highlights once. Close it to go on; it never blocks the Console. You can open
+it again from **Communication → What's new**, and **Show What's new after updates** in
+**Settings → Account → Appearance** turns it off.
 
 <figure markdown="span">
 [![Sign-in password step for soc-admin with a masked password field, a Remember me checkbox and the Sign in button.](../assets/screenshots/install-02-sign-in.webp) ](../assets/screenshots/install-02-sign-in.webp)
@@ -270,8 +286,11 @@ source. Then:
 
 The stage now lists the saved source (badge 1) with its **Primary** badge, its connector
 and mode (`Elasticsearch · Pull`), and **Edit** and **Remove**. Another pull source can
-be made primary with **Make primary**. The footer button reads **Skip for now** until a
-source is enabled, and **Continue** (badge 2) afterwards.
+be made primary with **Make primary**. Make primary appears only on a pull source. While
+Demo Mode is on, the list shows the Demo sources marked **Managed by Demo Mode**, with no
+actions. You can still add a real source: it is saved, and it appears in the list once
+Demo Mode is turned off. The footer button reads **Skip for now** until a source is
+enabled, and **Continue** (badge 2) afterwards.
 
 <figure markdown="span">
 [![Setup wizard data sources list showing one enabled source, Production SIEM, marked Primary, and the Continue button.](../assets/screenshots/install-04d-source-saved.webp) ](../assets/screenshots/install-04d-source-saved.webp)

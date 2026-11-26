@@ -37,11 +37,23 @@ behavior independently.
 3. For a self-hosted or LiteLLM-style OpenAI-compatible endpoint, open
    **Analytics → Models**, select **Add local model** on the **Catalog** tab, and enter
    the endpoint and model name. Local models are priced at $0 unless you set a price
-   override. Adding one requires the `models:manage` permission.
+   override. Adding one requires the `models:manage` permission. See
+   [Local model endpoints](#local-model-endpoints) for the address to enter.
 4. Test connectivity, then watch the first calls in **Analytics → Cost**.
 
 A model change applies to new calls only; the usage ledger keeps the model each
 earlier call used.
+
+### Local model endpoints
+
+Enter the endpoint the way your server documents it; a trailing `/v1` is fine. In the
+Compose stack, `localhost` is the backend container itself. For a server on the Docker
+host, use `http://host.docker.internal:4000/v1` (LiteLLM) or
+`http://host.docker.internal:11434/v1` (Ollama). On Linux, first map
+`host.docker.internal` to `host-gateway` under `extra_hosts` for the backend. Put this in
+a Compose override file, not in the base Compose file, which supervised updates check. A
+server in the same Compose project uses its service name, for example
+`http://ollama:11434/v1`.
 
 ## Cost accounting
 

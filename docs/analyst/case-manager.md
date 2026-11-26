@@ -1,6 +1,6 @@
 ---
 title: Case Manager
-description: Work the case queue, read a case's outcome and facts at a glance, work its runbook, close with a disposition, and run permission-gated bulk actions in Agentic SOC 0.2.
+description: Work the case queue, see when the AI is working on a case, read a case's outcome, facts and records, work its runbook, close with a disposition, and run permission-gated bulk actions in Agentic SOC 0.2.
 ---
 
 # Case Manager
@@ -119,14 +119,17 @@ your role can use:
 |---|---|
 | ↑ ↓ or K J | Move through the queue and open the case |
 | [ | Hide or show the queue (desktop width) |
+| ] | Show or hide the case details |
 | Home, End | First or last loaded case |
 | X or Space | Select or clear the focused case |
 | Shift+↑ ↓ or Shift+X | Extend the selection |
 | Enter | Move focus into the open case |
 | Esc | Clear the selection |
 | / | Search the queue |
+| ? | Show these shortcuts |
 | A, C, E, H | Acknowledge, close, escalate, or hold the open case |
 | R | Reinvestigate the open case |
+| W | Watch the AI run, while one is under way |
 | M, T | Change the owner or edit tags |
 | Alt+1 to Alt+6 | Switch case tabs |
 
@@ -134,7 +137,8 @@ Alt+1 to Alt+6 open the case tabs in order: Brief, Evidence, AI investigation, R
 Activity and Chat. Three keys changed meaning in version 0.2: Alt+2 opens Evidence (it
 opened Runbook), Alt+4 opens Response (it opened Collaboration) and Alt+5 opens Activity
 (it opened Chat). Chat moved to Alt+6. In the open case, **]** shows or hides the case
-facts.
+facts. **W** opens the AI run's details while an AI investigation is working on the
+case, and **R** does nothing while one is.
 
 Shortcuts never fire while you type in a field, and an action you lack the permission for
 does nothing. After a dialog closes, focus returns to the control or row that opened it.
@@ -155,9 +159,61 @@ start of the case header returns to it instead of exposing a resize handle.
 In **Triage → Case Manager** at desktop width, press **[** (or choose **Hide queue** in
 the queue's view menu) to fold the queue into a narrow strip, so the case gets the width.
 The strip keeps **Show
-queue**, **Previous case** and **Next case**, and J and K still move through the cases.
-Press **[** again, or select **Show queue**, to bring the queue back. The choice is
-stored in this browser.
+queue**, **Previous case** and **Next case**, and shows where the open case sits in the
+loaded list. J and K still move through the cases, and **/** shows the queue and puts you
+in its search. At the first or last case, Previous case or Next case is dimmed and does
+nothing. If you close the open case while the queue is hidden, you land on **Show
+queue**. Press **[** again, or select **Show queue**, to bring the queue back. The choice
+is stored in this browser, and **Hide queue** is offered only where the queue and the
+case sit side by side.
+
+## When the AI is working on a case
+
+You can see when an AI investigation is running on a case, and you can keep working
+while it runs.
+
+- In the case header, a chip shows **AI working** with the time since the run started,
+  or **AI queued** while it waits for a free investigation slot. Select the chip, or
+  press **W**, to see:
+  - the step the run is on;
+  - who or what started it. This is one of "You started it", "Started by" and the
+    person's name (shown only to people who manage accounts), "Started by a person",
+    "Started automatically", "Started by a background job", "Started when an
+    investigation slot came free" or "Started by event detection";
+  - the time cap;
+  - what happens if you act now;
+  - a link to its steps in the audit log.
+- While the run works, the AI verdict chip is dimmed: it is the previous verdict, and
+  the running investigation replaces it. **Reinvestigate** in **Take action** is
+  unavailable, with the reason "An AI investigation is already running."
+- In the queue, the row shows **AI working** or **AI queued** beside its status, and the
+  **Case Manager** item in the navigation shows how many cases the AI is investigating.
+- Above the queue, a line says how many new alerts the AI is investigating, for example
+  "AI is investigating 3 new alerts. They join the queue when the investigation
+  finishes."
+- When the run finishes, the chip reads **AI finished** for 6 seconds and a screen
+  reader hears "AI investigation finished:" with the new status.
+
+The run's result decides the status. If you close a case or change its status while a
+run is in progress, the result sets the status again when it finishes. Your
+disposition, note, actions taken, comments and screenshots are kept. The close dialog
+says this before you submit ("An AI investigation is running on this case. When it
+finishes, its result replaces a close you make now."), and never stops you. A bulk close
+or status change says how many of the selected cases have a run in progress. When the AI's
+result replaces your close, you get an Inbox notice that says so.
+
+**Reinvestigate** starts a fresh run and its dialog closes at once, so you can keep
+working. When the run finishes, the case shows the result, a short message appears, and
+the person who started it gets an Inbox item. Runs started by a background job or
+automatically send no Inbox item. If a run is already in progress on the case,
+Reinvestigate says "An AI investigation is already running on this case." and the header
+shows that run; no second run starts. Reinvestigating a closed case updates that same
+case. If new events already opened another case for the same activity, you are pointed
+to that open case instead.
+
+The server tracks the queued and running investigations in memory on the backend that
+runs them. A restart forgets them, and another backend replica cannot see them (see
+[Known limitations](../releases/known-limitations.md)).
 
 ## Read the workspace
 
@@ -199,6 +255,10 @@ open, and the review chip on a case waiting for its auto-close review. In a narr
 the later items hide first and the owner always stays; a hidden SLA is still in the case
 facts' **Signal** section. The tabs sit under it.
 
+Point at the risk, the AI verdict, the severity, the priority or the SLA to see a
+one-line formula with the real numbers, and select it for the whole calculation with
+**Copy calculation**. See [Explainable numbers](explainable-numbers.md).
+
 ### Case facts
 
 The **case facts** list what is known about the case in one place, beside every tab.
@@ -223,8 +283,9 @@ folding open or closed and remembered in this browser:
 - **Tags and campaign**: the case's tags (**Edit tags**, or **T**) and the campaign it
   belongs to;
 - **Record**, folded at first: the case number (with **Ask AI**), the Sample mark for
-  demo data, cost, build, profile, the investigator runbook, the classification and AI
-  verdict history, and the notifications sent.
+  demo data, the investigation cost (select it to see every AI call on the case), build,
+  profile, the investigator runbook, the classification and AI verdict history, the
+  notifications sent (**Show all (N)** when there are many), and **View all fields**.
 
 **T** and **Edit tags** open the case facts first when they are hidden. Entity values
 offer **Ask AI**, which opens a Workspace chat about that value (see
@@ -234,11 +295,11 @@ offer **Ask AI**, which opens a Workspace chat about that value (see
 
 | Tab | Key | Purpose |
 | --- | --- | --- |
-| Brief | Alt+1 | The case at a glance, top to bottom: the review note on a case waiting for its auto-close review; the runbook's **Next step** row on an open case with a runbook; then four lanes, each tagged with where it comes from; Evidence, AI and People link to the tabs that hold their detail. **Evidence** (SIEM) says why the detection fired, with one line of counts and times. **AI** gives the model's summary and its recommended action (on a case that ended, the recommendation it made at triage, folded). **Decision** (Code; named **Analyst resolved** and tagged Analyst when a person settled the case, or **Analyst policy** when an operator's declared-benign policy closed it) gives the decision line, the auto-close reading, the authority sentence, **Policy inputs** and **Automation applied**. **People** (Analyst) gives the runbook progress, the discussion and files, and the last human action. Last, **How this case was built** folds the six-stage input-to-decision story (Risk Assigned reconstructs the arithmetic from persisted factor values and current weights, flags a historical-weight mismatch honestly, and pulses only the final marker) |
-| Evidence | Alt+2 | What the sources said: **What happened** (why the detection fired and the source evidence, shown as untrusted data), **Entities** (the primary entity with its scope, type and enrichment, to copy or ask about), **Threat context** (IOC reputation, MITRE ATT&CK mapping, and the redacted persisted alert → correlation cluster → opened case explanation), then the related cases (grouped across sources, never merged) and the signature's anomaly baseline when it has one |
-| AI investigation | Alt+3 | The AI's work only, under one advisory line: **AI assessment** (the model's reasoning, what it found and ruled out, the reproduction query, and the full assessment evidence one click away), the detailed **Investigation inputs**, the **Investigation trace** (folded; **Show trace**, a filter by Agent, Tool or Code, and **Jump to decision**), and earlier gradings of the AI |
+| Brief | Alt+1 | The case at a glance, top to bottom: the review note on a case waiting for its auto-close review; the runbook's **Next step** row on an open case with a runbook; then four lanes, each tagged with where it comes from; Evidence, AI and People link to the tabs that hold their detail. **Evidence** (SIEM) says why the detection fired, with one line of counts and times. **AI** gives the model's summary and its recommended action (on a case that ended, the recommendation it made at triage, folded). **Decision** (Code; named **Analyst resolved** and tagged Analyst when a person settled the case, or **Analyst policy** when an operator's declared-benign policy closed it) gives the decision line, the auto-close reading, the authority sentence, **Policy inputs** and **Automation applied**. **People** (Analyst) gives the runbook progress, the discussion and files, and the last human action. Last, **How this case was built** folds the six-stage input-to-decision story (Risk Assigned shows the arithmetic with the weights and event count of the scoring run, or with today's weights, said so, for a case scored before 0.2; Decision shows the decision recorded at the time; only the final marker pulses) |
+| Evidence | Alt+2 | What the sources said: **What happened** (why the detection fired and the source evidence, shown as untrusted data), **Entities** (the primary entity with its scope, type and enrichment, to copy or ask about), **Threat context** (IOC reputation, MITRE ATT&CK mapping, and the redacted persisted alert → correlation cluster → opened case explanation), then the related cases (grouped across sources, never merged), the signature's anomaly baseline when it has one, and the case's raw events (see [Every record of a case](#every-record-of-a-case)) |
+| AI investigation | Alt+3 | The AI's work only, under one advisory line: **AI assessment** (the model's reasoning, what it found and ruled out, the reproduction query, and the full assessment evidence one click away), the detailed **Investigation inputs**, the **Investigation trace** (folded; **Show trace**, a filter by All, Agent, Tool, Code, People or Chat, and **Jump to decision**; each step's **Details** show what it recorded), and earlier gradings of the AI |
 | Response | Alt+4 | For people who can read runbooks, the runbook on the case: its strip, progress, Next step card and phases (see [Work the runbook](#work-the-runbook)), then **Other tasks**, the case's free-form tasks. Everyone else sees the tasks alone, under **Tasks** |
-| Activity | Alt+5 | **Discussion**, the case thread with reactions; **Files**, the screenshots on the case; and **History**, every lifecycle change with who made it, when, and the actions taken, with the full activity feed behind **Show all activity**. The owner is changed in the case header, not here |
+| Activity | Alt+5 | **Discussion**, the case thread with reactions; **Files**, the screenshots on the case; and **History**, every lifecycle change with who made it, when, why and the actions taken, with the full activity feed behind **Show all activity**. While the AI works on the case, its live steps read "Investigation in progress", then "Investigation finished". The owner is changed in the case header, not here |
 | Chat | Alt+6 | Case-scoped use of the shared AI Analyst chat engine; its transcript stays when you switch tabs. Asked about the runbook, it names the same next step as the Next step card, by the same rule |
 
 In **Files**, add screenshots by dropping them, pasting while the Activity tab has
@@ -246,6 +307,42 @@ focus, or choosing them (PNG, JPEG or WebP; each is resized to fit 2 MB). Anyone
 comment on cases can add them; the person who added one, or anyone who can close cases,
 can delete it. Select a screenshot to see it full size, step through the others, or
 download it. The list updates when a teammate adds or deletes one.
+
+
+### Every record of a case
+
+Every record a case keeps can be reached from the case:
+
+- **Events.** The Evidence tab lists the raw events behind the case, read again from
+  their source, 50 at a time; **Load more events** reads the next 50. Select a time to
+  open one event, with a **Table** view of every field and a **JSON** view you can
+  search, copy or download. **Download these events (NDJSON)** saves the loaded rows,
+  and **Open in Logs** searches the same window in Logs. When the events cannot be shown, the table says why: the case came
+  from a push source, which keeps no copy that can be read back; the source no longer
+  holds the events (older events age out first, so later pages may still have some); or
+  the source was removed, turned off, or did not answer. You need `cases:read` and
+  `sources:read`. The audit log records each read, at most once per person and case
+  every ten minutes.
+- **AI usage.** In the case facts' **Record** section, select the investigation cost to
+  see every AI call on the case, newest first: its tier (Standard, Flex or Batch), the
+  model, tokens, latency, cost, and the cost formula with its own rates. If a call's
+  recorded cost differs from what its rates give, the call says so. Case chat spend is
+  shown on its own line and is not part of the investigation cost. You need
+  `cases:read` and `cost:view`; without `cost:view`, cost figures in step text read
+  "hidden".
+- **All fields.** **View all fields** in the Record section shows every stored field of
+  the case. Search by field or value, copy the record as JSON, or download it.
+- **Findings.** **More** shows a finding's full text. **Cites N events** opens the
+  event table filtered to those events.
+- **Waiting and on hold.** A case still waiting for an investigation says why, and
+  **Why is this waiting?** lists the gates that decided it, using today's settings. A
+  case on hold shows the reason given when it was put on hold.
+- **Trace details.** On the AI investigation tab, open a trace step's **Details** to see
+  the model, latency, tokens, cost and how the cost was found, plus the tool input,
+  query and output. Values that come from logs are marked untrusted.
+- **Gradings and reputation.** **Full record** on a grading shows its three scores, the
+  AI verdict it graded and whether it came from the auto-close review. On an indicator,
+  **Providers** lists each provider's answer and how the scores were combined.
 
 Each fact has one home, so a figure shown in the header or the case facts is not
 repeated in a tab: the Brief's lanes never repeat the verdict, confidence, risk, status
@@ -352,7 +449,8 @@ lists the best match with why it matched, then other matches, the fallback, and 
 Published runbook, with a preview of the selected one's phases and an optional note. On
 a phone the dialog takes the full height and the selected runbook shows its phases under
 its own entry. A case with no runbook says "No runbook is attached to this case.", and
-rules with no runbook are listed on the Runbooks page. The Response tab shows no count
+rules with no runbook are listed on the Runbooks page, where runbooks are written and
+published. The Response tab shows no count
 then, and **Abandoned** when the only runs on the case were abandoned.
 
 Without `runbooks:run` the steps are read only, and the tab says "You can view this runbook but not
@@ -401,7 +499,9 @@ screen the classification is on the left and what you did is on the right:
   separate step after the close: a failed grading never undoes the close.
 
 Tags are edited in the case facts, not in this dialog. Its buttons stay in view however
-long the form is.
+long the form is. While an AI investigation runs on the case, the dialog says that the
+run's result replaces a close you make now (see
+[When the AI is working on a case](#when-the-ai-is-working-on-a-case)).
 
 - **Close & next** (or **Resolve & next**) records the outcome and opens the next case
   in the queue.

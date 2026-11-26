@@ -106,8 +106,9 @@ When a scope has no events in the time range, the page says so in that scope's w
 ("No agent activity in the last 7 days.") and offers a longer range and **Show all
 scopes**, so an empty scope is never mistaken for an empty log.
 
-On a phone the list shows Time, Outcome and Event, and the filters fold into **Filters**
-(its count leaves out the search, which stays on the page). Below 1,280 pixels the Target
+On a phone, and whenever the list is narrow, it shows Time, Outcome and Event, and the
+time wraps onto two lines; open a row to see the actor and the summary. On a phone the
+filters fold into **Filters** (its count leaves out the search, which stays on the page). Below 1,280 pixels the Target
 column folds away; every value is still in the record.
 
 In **Agent activity**, the steps of one investigation fold into one row that names the

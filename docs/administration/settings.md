@@ -93,8 +93,11 @@ draft does not hide it until you save. The same goes for the **Posture** rows on
 
 Theme selection is a compact **System / Light / Dark** control under
 **Settings → Account → Appearance**. Personal theme changes apply immediately and follow
-the signed-in user; System follows the organization default when one is configured,
-otherwise the device preference.
+the signed-in user. System follows the organization default theme, which is set in one
+place: **Default theme** in **Settings → Organization → Branding**. Appearance shows that
+default as a read-only line, and administrators get a link to Branding. Appearance also
+holds **Show What's new after updates**, a personal switch that is on unless you turn it
+off.
 
 ### Saving
 
@@ -111,6 +114,22 @@ bar, for example the Enrichment providers, your Profile, and the jobs started fr
 Storage & retention and Data export; they report their own result, and none of them is
 a second path for saving preferences or credentials. The note that secret
 values stay write-only appears only under sections that hold preferences or secrets.
+
+Browser **Back**, **Forward** or a typed address that would leave a page with unsaved
+changes asks first, with the same dialog as the navigation rail. Choose **Keep editing**
+to stay on the page with your changes. Reload and closing the tab still use the
+browser's own warning.
+
+**Single sign-on** can be changed only by a stored Super admin. Anyone else sees the
+settings read-only, with "Only a Super admin can change single sign-on." See
+[Authentication](authentication.md#oidc-sso).
+
+In Demo Mode, background jobs do not run. Data export, storage **Apply**, the reset
+tiers, and the Knowledge imports and precedent bootstrap are disabled, with the reason
+"Data exports are not available in Demo Mode. Turn Demo Mode off to export." or
+"Background jobs are not available in Demo Mode. Turn Demo Mode off to run this." In the
+setup wizard you can still add a real source while Demo Mode is on. It is saved, but the
+list shows only the Demo sources until Demo Mode is turned off.
 
 ### Sections new or moved in this release
 

@@ -799,7 +799,8 @@ fixed order (Critical, High, Medium, Low, Info), zeros included.
 
 - **Help Center citations** (`D1`, `D2`, …) open the matching section of the Help
   Center for your installed version.
-- **Case citations** open the case in Case Manager. **ATT&CK citations** show the
+- **Case citations** show the case's number; select one to open the case in Case
+  Manager. **ATT&CK citations** show the
   technique ID and name. **Knowledge citations** show the retrieved excerpt as
   untrusted text and never link.
 - **Console links** open the page or Settings section the answer refers to, such as
@@ -1166,9 +1167,12 @@ on screen.
 - Each row's menu offers **Rename**, **Pin** or **Unpin**, **Open report** (when the
   conversation has one), **Export**, and **Delete**. A conversation with an answer in
   progress cannot be deleted until it finishes. Deleting a conversation keeps its
-  report in the Reports library.
+  report in the Reports library; when the conversation has a report, the delete dialog
+  says "Its report stays in Reports."
 - **Export** saves the conversation as Markdown, HTML, or Print / Save as PDF, with
-  indicators defanged.
+  indicators defanged. Its **Sources queried** line lists a log source only when a
+  lookup in that answer read it. Case, metric and knowledge lookups read Agentic SOC's
+  own data and are not listed.
 - While the Chat page stays open, unsent text is kept separately for each
   conversation. It is never saved: reloading or leaving the page discards it.
 

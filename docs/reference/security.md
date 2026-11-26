@@ -77,8 +77,18 @@ proposal/approval-gated, and closing a case is not an autonomous tool capability
 Authentication is **off by default** in the base backend configuration. That default
 supports isolated evaluation; it is not a production security posture. When auth is
 enabled, JWTs are accepted through an HTTP-only, SameSite=Lax cookie or a bearer
-header. Session records add revocation, idle/absolute expiry, refresh rotation, and
-token-version invalidation.
+header. Session records add revocation, idle/absolute expiry, and token-version
+invalidation. No sign-in issues a refresh token: a session lasts until its access token
+expires, within the idle and absolute limits. The deprecated `POST /api/auth/refresh`
+answers `401` with code `session_invalid`.
+
+Since 0.2, the server also enforces these account rules: an account an administrator
+created or reset must change its password before any other request (`403
+password_change_required`); changing your own password signs out your other sessions,
+and an administrator's reset signs the account out everywhere; ten wrong second-factor
+codes in a row lock second-factor checks for the account (`429 mfa_locked`), from 5
+minutes and doubling up to an hour; and only a stored Super admin with a fresh sign-in
+can change single sign-on.
 
 RBAC is a second switch:
 

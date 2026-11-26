@@ -144,6 +144,24 @@ All model-backed roles use one gateway. The gateway records model, role, input a
 output tokens, cache/batch accounting, outcome, and calculated cost. Candidates that
 never enter model investigation correctly cost `$0`.
 
+Each row written by version 0.2 or later also records the price it was charged, still in
+the same one row per call:
+
+| Field | Meaning |
+| --- | --- |
+| `input_rate_per_million` | US dollars per million input tokens |
+| `output_rate_per_million` | US dollars per million output tokens |
+| `cache_read_rate_per_million` | US dollars per million cache read tokens |
+| `cache_write_rate_per_million` | US dollars per million cache write tokens |
+| `cache_write_ttl` | The cache-write lifetime the rate is for, `5m` or `1h` |
+| `price_basis` | Where the rates came from: `catalog` (the price catalog), `overlay` (an operator price override), `custom` (a self-hosted model, free), `mock` (the mock provider) or `demo_simulated` (Demo Mode) |
+
+The rates are the undiscounted ones; the row's `batch` flag applies the half price of a
+Batch or Flex call. A row written before these fields existed leaves them out, and the
+Console reads its rate as "not recorded". `GET /api/cases/{case_id}/usage` (`cases:read`
+and `cost:view`) returns a case's rows with lifetime totals, so the investigation cost can
+be checked call by call; see [Explainable numbers](../analyst/explainable-numbers.md#cost).
+
 The default daily budget performs a preflight check and can block new provider calls.
 When blocked, the case routes to human review. The check is not an atomic spend
 reservation, so already-running calls can finish above the configured amount.

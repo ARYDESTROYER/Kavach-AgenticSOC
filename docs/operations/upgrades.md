@@ -492,10 +492,106 @@ that correctly reports **Manual upgrade required**:
 
 ## Changes that need attention when upgrading to this build
 
-This build (the `0.2.0` source candidate, which carries the Round 12, Round 13, Round 14
-and Round 15 changes of the never-tagged 0.1.13 candidate) needs no database migration and
-no new index or table. It changes
+This build (the `0.2.0` source candidate, which also carries every change of the
+never-tagged 0.1.13 candidate, described in the sections below) adds no new index or table
+and no migration step you run by hand. On PostgreSQL its first start widens one column in
+place (see [The audit id column](#the-audit-id-column)). It changes
 these behaviours, which operators should know about before upgrading.
+
+### Changes made for 0.2.0
+
+Version 0.2.0 adds no key-value namespace, index or table. Read these before upgrading:
+
+- **Set the repository first.** Add
+  `AGENTIC_SOC_UPDATE_REPOSITORY=ARYDESTROYER/Kavach-AgenticSOC` to `.env`, in exactly
+  that letter case, before the bootstrap. It refuses to run without it and prints the
+  line to add (see [The repository was renamed](#the-repository-was-renamed)). A
+  deployment that is not on the reference PostgreSQL Compose stack shows **Updates
+  unavailable** in the top bar, and its update panel says "This deployment cannot update
+  itself"; upgrade it by hand.
+- **Reads need their grant.** With role-based access on, every read asks for the grant of
+  the data it returns. The built-in roles hold every such grant; a custom role without
+  one now gets `403` on that read (see
+  [Permissions](../reference/permissions.md#read-grants-on-every-read)). The Standup now
+  needs `metrics:view`, and the Models page `models:read`.
+- **Account rules the server enforces.** An account an administrator created or reset
+  must change its password before any other request (`403 password_change_required`). A
+  password reset signs the account out everywhere, and changing your own password signs
+  out your other sessions. Ten wrong second-factor codes lock second-factor checks for
+  the account for 5 minutes, doubling up to an hour. Only a stored Super admin with a
+  fresh sign-in can change single sign-on, and an SSO default role or group mapping must
+  be a built-in role.
+- **No refresh tokens.** `POST /api/auth/refresh` is deprecated and answers `401
+  session_invalid`. A client signs in again when its access token expires.
+- **Reinvestigation.** `POST /api/cases/{case_id}/reinvestigate` answers `409
+  investigation_running` while a run on the case is in progress and `409
+  open_case_exists` for a closed case whose events another open case holds; `wait:
+  false` answers `202` at once. A script that reinvestigated a case twice in a row must
+  wait for the first run.
+- **Recorded inputs.** Cases scored by 0.2.0 keep their risk inputs, each decision records
+  the thresholds it compared in its audit row, and each new usage-ledger row records its
+  rates. Older records are not backfilled and read "not recorded".
+- **Elasticsearch cases index.** At startup the backend adds two mappings to the cases
+  index template and to every live cases index that lacks them: `risk_breakdown.inputs`,
+  stored but never indexed, and `awaiting_reason`, text with a `keyword` subfield, the
+  same as the mapping Elasticsearch made for it before. There is no operator step. When
+  the mapping cannot be added (the client may not read or change templates, or the call
+  fails), the case store leaves the inputs out, logs it once, and such cases read "not
+  recorded".
+- **What's new.** After the update, each person sees a short What's new welcome once
+  after signing in. Accounts created after the update start with it marked as seen.
+- **Communication.** The **Notifications** navigation group is now **Communication**,
+  with **Inbox** and **What's new**. Its stored id is unchanged.
+- **Case Manager.** Cases have six tabs on Alt+1 to Alt+6: Alt+2 now opens Evidence,
+  Alt+4 Response and Alt+5 Activity, and Chat moved to Alt+6. Old `#/case_manager` links
+  with a `tab` keep working.
+
+### The audit id column
+
+In every published release up to v0.1.12, the PostgreSQL `audit.id` column is a 32-bit
+integer, while the strict
+audit path writes a larger key. On its first start on an existing PostgreSQL database,
+this build widens the column and its sequence to `bigint` in place. PostgreSQL rewrites
+the table to do it and holds an exclusive lock on it meanwhile, so the first start takes
+longer on a large audit table, and audit writes wait until it is done. The time per
+million rows is measured at release preparation and recorded in the release notes.
+
+On a very large audit table, run the widening yourself in a maintenance window before
+the upgrade:
+
+```sql
+ALTER TABLE audit ALTER COLUMN id TYPE bigint;
+ALTER SEQUENCE audit_id_seq AS bigint;
+```
+
+The backend then finds the column already widened and does nothing. If the widening
+fails at startup, the backend still starts, logs the error with these statements, and
+`GET /api/diagnostics/health` reports the schema migration as failed: strict audit
+writes, such as approving or rejecting a proposal, fail until you apply it. SQLite and a
+fresh PostgreSQL database need nothing.
+
+### Rolling back from 0.2.0
+
+Every field 0.2.0 stores is additive, and the earlier builds ignore fields they do not
+know. The rollback lane boots the previous release pinned in
+`scripts/rollback_previous_release.json` on data this build wrote, and checks what it
+keeps. After an image-only rollback and the return:
+
+- **Recorded risk inputs** are lost on every case the earlier build saves again. Back on
+  this build, such a case reads "not recorded" and its explanation uses today's weights.
+- **Second-factor lock counters** reset.
+- **Usage-ledger rows** are append-only and keep their rate fields.
+- **What's new markers** survive, because the earlier build keeps unknown personal
+  preference keys.
+- **The read grants and the server-side forced password change** revert while the
+  earlier build runs: a custom role without a read grant can read again, and an account
+  flagged to change its password is not held to it. The lane runs with sign-in off, so it
+  does not prove these two; they follow from the earlier build's code.
+- **The `audit.id` column** stays `bigint`. It is never narrowed again.
+- **The in-memory investigation list** is lost, as on any restart.
+
+The result of the image-only rollback rehearsal to v0.1.1 on PostgreSQL is recorded at
+release preparation, in [Known limitations](../releases/known-limitations.md).
 
 ### Round 15 changes
 

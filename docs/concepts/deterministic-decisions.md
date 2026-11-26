@@ -30,7 +30,10 @@ recording a runbook decision step never changes the verdict or the case state.
 
 ## Auto-close policy
 
-True-positive and false-positive verdict classes have independent settings:
+Auto-close means that code closes a case without a person, because the verdict, the
+confidence and the risk score met the auto-close policy for that verdict. The model
+never closes a case itself. True-positive and false-positive verdict classes have
+independent settings:
 
 - enabled or disabled;
 - minimum confidence;
@@ -43,6 +46,26 @@ disabled or its confidence/risk bar is not cleared, the case routes to a human.
 
 `NEEDS_HUMAN`, a missing verdict, and an unknown verdict are never auto-closable.
 That rule is enforced in code and is not exposed as a setting.
+
+## What is recorded beside each decision
+
+Since version 0.2, the code records what each decision compared, after the decision and
+outside it, so that nothing it records can change the result:
+
+- **The decision gate.** The audit row of each decision holds the verdict, the
+  confidence and the risk score it compared, whether auto-close was on for the verdict,
+  the minimum confidence, the maximum risk, the objection window, the escalation
+  thresholds and the outcome. The case's **AI verdict** chip and the Decision stage read
+  this record, and say when today's policy would read the same numbers differently.
+- **The risk inputs.** Beside the risk score, the case keeps the inputs it was computed
+  from: the event count and time span of the scoring cluster, the events per minute, the
+  rule types, the reputation and asset inputs with where each came from, and the weights
+  in force. Anyone can recompute the score from them by hand; see
+  [Explainable numbers](../analyst/explainable-numbers.md#the-risk-score).
+
+Cases decided or scored before 0.2 have neither record. Their explanations use today's
+policy and weights and say so. The scoring function and the decision function did not
+change; only what is recorded beside them is new.
 
 ## Analyst rule policies
 
@@ -140,7 +163,8 @@ On a case, compare:
 1. the model verdict and confidence (in the case header and the case facts' Outcome);
 2. the deterministic risk score (in the header and the case facts' Signal);
 3. the Brief's **Decision** lane: its decision line, and the decision card with its
-   policy rationale, folded under **Policy inputs**; and
+   policy rationale, folded under **Policy inputs**, and the AI verdict chip's
+   explanation with the thresholds recorded at decision time; and
 4. the History on the **Activity** tab and the audit entries.
 
 The four should tell one traceable story without implying that model prose executed

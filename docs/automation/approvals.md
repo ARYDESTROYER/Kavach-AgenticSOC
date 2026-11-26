@@ -44,7 +44,10 @@ The queue shows **Pending** proposals by default; choose **All** to see the deci
 well. **Group by source or rule** gathers proposals that share a suppression field, a memory
 category, a tuning rule or an automation rule. Each card shows the proposed change, the case
 and evidence it came from, the confidence and rationale, and when it expires, and opens the
-source case when you can read cases.
+source case when you can read cases. Only proposals an agent scored show a confidence. The
+explanation reads "Why the agent drafted this" only when the AI agent drafted the
+proposal; automation checkpoints and tuning review items read "Why it was drafted". A
+decided proposal shows who approved, acknowledged or rejected it, when, and any reason.
 
 Select several cards to approve or acknowledge them together, or to reject them in one
 audited request. A decision that did not finish (for example, the connection dropped) shows

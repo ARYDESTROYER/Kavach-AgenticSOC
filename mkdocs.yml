@@ -146,6 +146,7 @@ nav:
           - Analytics: analyst/analytics.md
           - Team activity: analyst/team-activity.md
           - KPI glossary: analyst/kpi-glossary.md
+          - Explainable numbers: analyst/explainable-numbers.md
       - Automation:
           - Overview: automation/index.md
           - Detection rules: automation/rules.md

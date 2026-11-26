@@ -29,6 +29,7 @@ Most readers should begin here.
 | Trace one alert through triage | [Work your first case](getting-started/first-case.md) |
 | Work the split-pane queue or select cases in bulk | [Case Manager](analyst/case-manager.md) |
 | Understand a case assessment and decision | [Investigation](analyst/investigation.md) |
+| See how a risk score, decision, SLA or dashboard figure was calculated | [Explainable numbers](analyst/explainable-numbers.md) |
 | Ask a read-only question, resume a saved conversation, or build a report from answers | [Workspace Chat](analyst/chat.md) |
 | Find source evidence | [Logs and search](analyst/logs-search.md) |
 | Coordinate analyst work | [Collaboration](analyst/collaboration.md) |
@@ -36,6 +37,7 @@ Most readers should begin here.
 | Review what waits for a person's approval | [Approvals](automation/approvals.md) |
 | Read posture and performance | [Analytics](analyst/analytics.md) |
 | Monitor long-running work, cancellation, and downloads | [Background jobs](operations/background-jobs.md) |
+| See what changed in each release, with screenshots | [What's new](releases/whats-new.md) |
 
 If this is your first session, [choose a getting-started path](getting-started/index.md).
 The deterministic Demo Mode is the shortest way to explore the workflow without

@@ -221,7 +221,10 @@ As part of the final frozen release-preparation change:
 If promotion is abandoned, revert the prepared release heading rather than leaving
 a Testing snapshot that reads as though it were published.
 
-On every ref, `scripts/check_version.py` requires the curated What's new notes
+Every update that reaches users adds an entry to the curated What's new notes, with
+screenshots of what changed, so the Console's **Communication → What's new** page and
+the Help Center's [What's new](whats-new.md) track every release. On every ref,
+`scripts/check_version.py` requires the curated What's new notes
 `docs/releases/notes/X.Y.Z.json` (schema 1, naming the `VERSION`); on `Testing` they
 may read `"status": "testing"` with no date. On `main`, on a `v*` tag and on a pull
 request into `main`, it requires the `[Unreleased]` body to read exactly

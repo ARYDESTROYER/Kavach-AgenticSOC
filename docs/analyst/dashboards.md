@@ -150,6 +150,10 @@ its definition. A figure your role cannot read shows "No access"; a figure its s
 could not measure shows "Not measured" with the reason, never 0. "Open now" figures are
 a stock read across all time, whatever the window says.
 
+A KPI widget explains its figure: point at it for a one-line formula with the real
+numbers, and select it for the inputs, the steps and the rounding, with **Copy
+calculation**. See [Explainable numbers](explainable-numbers.md).
+
 | Board | Figure | What it counts |
 |---|---|---|
 | SOC operations | Open now | Cases not closed or resolved right now. |

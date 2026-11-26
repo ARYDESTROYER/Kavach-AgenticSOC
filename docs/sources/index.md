@@ -40,7 +40,9 @@ vendor names in the API do not imply a built-in runtime connector.
 The Sources page lets authorized operators create, update, enable, disable, and
 delete sources. A new enabled primary source unsets the previous primary. Only a
 pull/search connector can be primary; push receivers still participate fully in
-ingestion and cases.
+ingestion and cases. The Console offers Make primary only for a pull source, and says it
+worked only when the server confirms it. While Demo Mode is on, the Demo sources are
+read-only: a change to one is refused with `409 source_demo_readonly`.
 
 Editing a source reconciles its background receiver set. Rotating a pull credential
 rebuilds that source's query client for the next operation.

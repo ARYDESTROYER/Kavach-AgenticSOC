@@ -76,8 +76,16 @@ curl --fail-with-body \
 ```
 
 An MFA-enabled account receives a short-lived `pending_token` after password
-verification and completes sign-in through `/api/auth/mfa/verify`. Session refresh,
-revocation, and step-up reauthentication have dedicated endpoints in the auth group.
+verification and completes sign-in through `/api/auth/mfa/verify`. Session revocation
+and step-up reauthentication have dedicated endpoints in the auth group. No sign-in
+issues a refresh token: `POST /api/auth/refresh` is deprecated and every call answers
+`401` with code `session_invalid`, so a client signs in again when its access token
+expires.
+
+Since 0.2, an account an administrator created or reset answers `403` with code
+`password_change_required` to every request but the password change until it sets a new
+password. Ten wrong second-factor codes in a row answer `429` with code `mfa_locked`, a
+`retry_after_seconds` value and a `Retry-After` header.
 
 **Remember me.** `POST /api/auth/login` accepts an optional `remember: true`
 (`GET /api/auth/sso/authorize` takes `remember=true` as a query parameter). The server
@@ -125,7 +133,7 @@ the exact request model and every operation under a prefix.
 |---|---|---|
 | Service and health | `GET /`, `GET /api/health`, `/live`, `/ready`, `/build-info` | Service discovery, probes, dependency readiness, and release identity |
 | First-run setup | `GET /api/setup/status`; `POST /api/setup/account`, `/secrets`, `/complete` | Bootstrap the first account, submit runtime secrets, report whether the AI runtime can be called, and complete setup; see [First-run setup readiness](#first-run-setup-readiness) |
-| Authentication | `/api/auth/login`, `/logout`, `/refresh`, `/reauth`, `/change-password`; `/api/auth/mfa/*`; `/api/auth/sso/*` | Password sessions, MFA, refresh rotation, step-up authentication, and OIDC |
+| Authentication | `/api/auth/login`, `/logout`, `/reauth`, `/change-password`; `/api/auth/mfa/*`; `/api/auth/sso/*`; the deprecated `/refresh` | Password sessions, MFA, step-up authentication, and OIDC; `/refresh` answers `401 session_invalid` |
 | Account and sessions | `/api/account/*`, `/api/me/avatar`, `/api/sessions*`, `/api/admin/sessions*` | Profile, effective permissions, activity, and session revocation |
 | Users and roles | `/api/users*`, `/api/roles*` | User lifecycle, built-in/custom roles, permission preview, and simulation |
 | Role-based access | `GET /api/rbac`, `PUT /api/rbac` | Read whether role-based access is on and turn it on or off; see [Role-based access switch](#role-based-access-switch) |
@@ -133,7 +141,8 @@ the exact request model and every operation under a prefix.
 | Connector catalog | `GET /api/connectors`, `GET /api/connectors/{source_type}`, `POST /api/connectors/test` | Discover connector manifests and test source access |
 | Sources and ingest | `/api/sources*`, `POST /api/ingest/{source_id}`, `POST /api/poll`, `GET /api/logs` | Configure feeds, accept pushed records, poll pull sources, inspect health, and browse logs (with exact `rule`, `severity` and `severity_gte` filters) |
 | Cases | `GET /api/cases`, `GET /api/cases/{case_id}`, `POST /api/cases/{case_id}/action`, `POST /api/cases/bulk` | List, filter (including `q`, `assignee`, `severity`, `status_group`, an exact AI `verdict`, an exact `rule`, `closed_by`, and the auto-close `review` state), retrieve, export, and act on cases |
-| Case investigation | `/api/cases/{case_id}/triage`, `/timeline`, `/trace`, `/stages`, `/rationale`, `/threat-context`, `/forwarding`; `POST /investigate`, `/reinvestigate`, `/feedback` | Explain evidence, agent work, deterministic routing, and analyst feedback |
+| Case investigation | `/api/cases/{case_id}/triage`, `/timeline`, `/trace`, `/stages`, `/rationale`, `/threat-context`, `/forwarding`, `/events`, `/usage`; `POST /investigate`, `/reinvestigate`, `/feedback` | Explain evidence, agent work, deterministic routing, raw events, AI usage, and analyst feedback; see [Case records](#case-records) and [Explained numbers](#explained-numbers) |
+| AI investigation runs | `GET /api/investigations/active` | The AI investigations queued or running now and those that just finished; see [AI investigation runs](#ai-investigation-runs) |
 | Case collaboration | `/api/cases/{case_id}/thread*`, `/tasks*`, `/activity`, `/comment`, `/assign`, `/tags`, `/notify` | Discussion, reactions, tasks, ownership, activity, and manual notification |
 | Case screenshots | `GET` and `POST /api/cases/{case_id}/files`, `DELETE /api/cases/{case_id}/files/{file_id}`, `GET /api/cases/{case_id}/files/{file_id}/content` | List, add, delete and serve screenshots on a case; see [Case screenshots](#case-screenshots) |
 | Auto-close review | `POST /api/cases/{case_id}/review`, `GET /api/cases/{case_id}/review`, `GET /api/auto-close-review/summary`, `GET /api/metrics/auto-close-review` | Record a person's review of an automatic close, one case's review state, the Review scope badge, and the Agent effectiveness module; see [Auto-close review](#auto-close-review) |
@@ -145,7 +154,7 @@ the exact request model and every operation under a prefix.
 | Retired procedure routes | `GET /api/playbooks*` (read aliases), writes and `POST /api/cases/{case_id}/run-playbook` (`410 runbooks_moved`) | Kept for one release; see [Retired procedure routes](#retired-procedure-routes) |
 | Knowledge and memory | `/api/rag/*` (including `/api/rag/precedent/composition` and `/api/rag/precedent/exclusions*`), `/api/memory*`, `POST /api/threat-context/import` | Import/search/delete knowledge, inspect precedent composition, evict individual precedent records durably, and manage operator memory |
 | Enrichment and MITRE | `/api/enrichment/*`, `/api/mitre/coverage*`, `GET /api/cases/{case_id}/threat-context` | IOC enrichment, provider configuration, ATT&CK coverage, and Navigator export |
-| Dashboards and metrics | `/api/dashboards*`, `/api/metrics*` (including `GET /api/metrics/breakdown`), `/api/feedback/stats`, `/api/usage/summary`, `/api/cost/estimate` | Personal dashboards, posture/noise/improvement metrics, exact breakdowns for the built-in boards, usage, feedback, and cost estimates |
+| Dashboards and metrics | `/api/dashboards*`, `/api/metrics*` (including `GET /api/metrics/breakdown` and `GET /api/metrics/explain`), `/api/feedback/stats`, `/api/usage/summary`, `/api/cost/estimate` | Personal dashboards, posture/noise/improvement metrics, exact breakdowns for the built-in boards, usage, feedback, and cost estimates |
 | Agent health diagnostics | `GET /api/diagnostics/health`, `GET /api/diagnostics/precedent-composition`, `GET /api/metrics/auto-close-health` | Permission-separated precedent/migration and auto-close evidence for the range-aware Effectiveness surface, including the per-rule precedent distribution, futility findings, and the zero-cost corpus composition report |
 | Standup and handoff | `/api/standup*` | Shift report, acknowledgements, and action items |
 | Notifications | `/api/notifications/providers`, `/channels/*`, `/preview`, `/test`, `/prefs`, `/inbox*` | Channel catalog/secrets, safe previews, tests, per-user preferences, and in-app inbox |
@@ -849,6 +858,96 @@ activity) and publishes a `case.review` frame. Reopening from a review sends
 `review_via: "auto_close_review"` on `POST /api/cases/{case_id}/action`, recorded on the
 history entry and the audit row only; any other value is `422`, and bulk bodies refuse it.
 
+## AI investigation runs
+
+`GET /api/investigations/active` (`cases:read`) lists the AI investigations queued or
+running now (`items`), the ones that finished in the last 120 seconds (`recent`), how
+many runs are for alerts whose case does not exist yet (`new_runs`), and the
+investigation slots (`slots.in_use` and `slots.cap`). `?case_id=` narrows it to one case.
+Each run carries its id, case id, state (`queued`, `running` or `finished`), phase, trigger, start
+time, time cap and, once finished, its outcome and the status and verdict after it.
+`requested_by_you` is true for the caller's own runs. The requester's name is added only
+for a caller who holds `users:manage`. `process_local` is always `true`: the list is held
+in memory on the backend that runs the investigations, a restart forgets it, and another
+replica's runs are not seen.
+
+Each change publishes one `case.investigation` event on the `cases`, `cases:{case_id}`
+and `investigations` topics, with the same event id, so a client on all three receives
+it once. The frame carries ids, enums and counts only, never a name, and is not kept for
+replay: a reconnecting client reads the route.
+
+`POST /api/cases/{case_id}/reinvestigate` (`cases:reinvestigate`) accepts `wait: false`
+in its body and then answers `202` with `{run_id, case_id, state}` at once; without it,
+the call waits for the run and returns the updated case, as before. Before it writes an
+audit row or rebuilds anything, it refuses:
+
+- `409` with code `investigation_running` and the run, while a run on the case or its
+  signature is queued or running;
+- `409` with code `open_case_exists` and that case's id, for a closed case whose events
+  another open case now holds. A closed case is otherwise reinvestigated in place.
+
+A close or status change made while a run is in progress is replaced by the run's
+result when it finishes. The person's disposition, note, actions taken, comments and
+screenshots are kept, a `case.close_replaced` audit row records it, and that person gets
+an Inbox item. A person who started a run gets an Inbox item when it finishes.
+
+## Case records
+
+`GET /api/cases/{case_id}/events` (`cases:read` and `sources:read`) reads the raw events
+behind a case again from its source, through the read-only log client. It pages with
+`limit` (1 to 200, default 50) and `cursor` (the previous page's `next_cursor`). Each row
+is the `GET /api/logs` row shape plus `index`, `source_id` and `in_evidence` (the findings
+that cite it). When the events cannot be read, `available` is `false` and `reason` is
+`push_source_not_retrievable`, `aged_out` or `source_unavailable`. Every value is
+source-controlled data. Reads are audited as `case.events_viewed`, at most once per
+person and case every ten minutes.
+
+`GET /api/cases/{case_id}/usage` (`cases:read` and `cost:view`) returns the case's
+usage-ledger rows, newest first, at most 500, with `rows_total`, `truncated`, lifetime
+`totals` over every row, the case's `token_cost` and `reconciles`, which says whether the
+investigation total equals it. Rows
+written by 0.2 or later carry their rates and `price_basis` (see
+[State, audit, and cost](../concepts/state-audit-cost.md#model-usage-and-cost)).
+
+## Explained numbers
+
+`GET /api/cases/{case_id}/triage` adds, at read time and without storing them:
+
+- `auto_close_policy`: the auto-close entry for the case's verdict class;
+- `sla`: the case's SLA reading (the clock, its target, start, due time, stop and
+  state), or `null`;
+- `asset_cidr`, only for a `settings:read` holder: today's internal network range that
+  holds the entity, labelled as today's configuration.
+
+The risk calculation of a case says `weight_basis: "recorded_at_scoring"` when the case
+kept its inputs (`risk_breakdown.inputs`), else `current_preferences`. The decision span
+of the trace carries the gate recorded when the case was decided, with
+`policy_changed` when today's policy differs, and `run_failed` when the newest run
+failed.
+
+`GET /api/metrics/explain` (`metrics:view`) takes `metric` (`mtta`, `mttr`, `dwell`,
+`mttd`, `active_risk_index`, `fp_rate` or `sla_attainment`) and `window_hours`, and
+returns the cases behind that dashboard figure, computed from the same cases and the
+same code, so its value equals the figure. It lists up to 200 case rows. Without
+`cases:read` the rows are withheld and `samples_withheld` says why; with row-level data
+scope, `hidden_by_scope` counts the rows left out, which still count in the figure. An
+unknown `metric` answers `422` with code `explain_metric_unknown`, and an unreadable
+store `503`, never a zero.
+
+## Refusals and deprecations added in 0.2
+
+| Answer | When |
+|---|---|
+| `403` for a missing read grant | A read without the grant of its data, when role-based access is on; see [Permissions](permissions.md#read-grants-on-every-read) |
+| `403 password_change_required` | Any request but the password change from an account that must change its password |
+| `403` "Only a Super admin can change single sign-on." | A change to the `sso` settings or a provider secret from anyone but a stored Super admin with a fresh sign-in |
+| `422` | An SSO default role or group mapping that names a custom role |
+| `429 mfa_locked` | Ten wrong second-factor codes in a row |
+| `409 investigation_running` | A reinvestigation while a run on the case is queued or running |
+| `409 open_case_exists` | A reinvestigation of a closed case whose events another open case holds |
+| `409 source_demo_readonly` | A write to a Demo source while Demo Mode is on |
+| `401 session_invalid` | Every call to the deprecated `POST /api/auth/refresh` |
+
 ## Scheduler and telemetry evidence
 
 `GET /api/schedulers/health` (`automation:read`) returns
@@ -1456,7 +1555,9 @@ review publishes `case.review` (`{case_id, review_id, state}`, `state` `pending`
 `completed`) on both `cases:{id}` and `cases`, so an open queue refreshes its Review
 count. Adding or deleting a screenshot publishes `case.activity` on `cases:{id}` with
 `{case_id, kind, actor, ref: {file_id}}`, `kind` being `file_attached` or
-`file_deleted`. Runbook run changes publish `case.runbook`
+`file_deleted`. AI investigation changes publish `case.investigation` on `cases`, `cases:{id}` and
+`investigations` (the last served with `cases:read`); see
+[AI investigation runs](#ai-investigation-runs). Runbook run changes publish `case.runbook`
 (`{case_id, run_id, progress, revision}`) on topic `runbooks`, served only to holders of
 both `runbooks:read` and `cases:read`. Ordinary progress is sampled, while
 submission/start/terminal transitions force publication. SSE is a nudge, not the durable registry or Inbox.
