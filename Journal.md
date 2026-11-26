@@ -13405,3 +13405,58 @@
 - Tests: on the merged tree, the investigations, case detail AI run and case detail Console tests: 678 passed; tsc clean.
 - Status: done.
 - Next: FXA1, FXA2, FXC, FXD1, FXD2 and FXE as their reviews finish.
+
+
+### 2026-11-26 12:58Z - FXA1 agent - Case page lanes, tabs, facts and history
+- Context: Round 16 acceptance fix package FXA1. Eleven case-manager, records and ai-signals gaps on base 39743bd. Each was confirmed in code and in the seeded Demo before fixing.
+- Did:
+  - Added decisionWords in webui/src/soc/components/caseActivityText.ts. It is one mapping from the DECISION record and the decide() rationale templates to plain sentences, used by DecisionLane and CaseHistory.
+  - History shows the reason each automatic decision recorded, and long notes get Show more.
+  - Brief: the AI lane is renamed Assessment, a person-settled lane keeps the name Decision, and the People lane names the latest status change or runbook step a person made.
+  - Added triggerSentenceText for severity ranges with equal ends, in EvidencePanel and ClusterFormationDiagram.
+  - Underline TabsList keeps the selected tab in view and fades its edges; this is in ui/tabs.tsx.
+  - Moved the CaseEvents column breakpoints.
+  - FactsRail Outcome reads "Not classified yet".
+  - CaseDetail reads the case before Reopen acts and dismisses the close notice once the case reopens.
+  - Updated docs/analyst/case-manager.md, docs/analyst/cases.md and docs/getting-started/quickstart.md, test_docs_round15_records.py, and the knowledge corpus.
+- Tests:
+  - Touched Vitest suites pass: 760 + 463 + 20.
+  - Revert proof: 25 new or changed tests fail on base sources.
+  - typecheck, lint, gates and check:types are clean; build:app entry is 330,859 B (budget 331,092 B).
+  - Knowledge, golden set and docs records tests pass; check_docs, knowledge --check, check_version and check_ci_contract pass.
+- Status: done; committed on r16-fxa1 (ef74ad6), branch detached.
+- Next:
+  - The orchestrator updates ui-standard.md "Case tab bodies" (Assessment lane, decision wording, People lane, Not classified yet, History reason and Show more, tab overflow, Events columns).
+  - Recapture docs/assets/screenshots/case-manager.webp and its alt text in README.md and quickstart.md.
+  - Run the full suites on the integrated tree.
+
+### 2026-11-26 14:40Z - FXA1 reviewer - Case page lanes, tabs, facts and history review
+- Context: Adversarial review of Round 16 acceptance fix package FXA1 (r16-fxa1 at ef74ad6, base 39743bd).
+- Did:
+  - Checked the 11 fixes against the brief, the SPEC and ui-standard.md.
+  - Ran the revert proof: 20 tests fail on the base sources.
+  - Checked the seeded Demo (9081/6081) in both themes at 1440x900 and 390x844: lanes, inspector, Events, History, phone tab strip, keyboard focus and the close-then-replace flow.
+  - Fixed 4 defects in commit 59198e8, each with a test that fails before its fix:
+    - ui/tabs.tsx no longer pulls a swiped tab list back to the selected tab when a label or count changes.
+    - NoiseLineage.tsx reads an equal-end severity range as one value.
+    - The close notice's Reopen says "This case was already reopened." when a person reopened the case.
+    - The Activity tab count reads "1 message".
+  - Added a case-manager.md sentence and regenerated the knowledge corpus (1088 chunks).
+- Tests:
+  - Touched Vitest suites pass (840 passed and 1 skipped; 464; 41).
+  - typecheck, lint, gates and check:types are clean; build:app entry is 330,859 B (budget 331,092 B).
+  - Knowledge, docs, version and CI contract checks pass.
+  - Full backend suite under load: only the 5 known sandbox-only environment failures, plus 2 chat-starters tests that pass when run again; the unreached tail passed when run separately.
+  - test:strict: 9,780 passed, 6 timeouts under load; those 5 files pass with one worker.
+- Status: done; r16-fxa1 at 59198e8, HEAD detached.
+- Next:
+  - The orchestrator updates ui-standard.md "Case tab bodies": the Assessment lane name, the decision line wording with its reason, the People lane last action, "Not classified yet", the History reason and Show more, the tab overflow behaviour and the Events join points.
+  - WP17 recaptures case-manager.webp and its alt text.
+  - Run the full suites on the integrated tree.
+
+### 2026-11-26 14:45Z - orchestrator - FXA1 merged
+- Context: the acceptance fix package for the case page lanes, tabs, facts and history (FXA1), reviewed independently.
+- Did: merged r16-fxa1 (build ef74ad6, review 59198e8). Took the incoming knowledge manifest and regenerated the corpus (1,090 chunks).
+- Tests: on the merged tree, the case detail, case page, ui, components and investigations Console tests: 3,558 passed; tsc clean. The knowledge, golden set, XFUI3, XFD and XFR records and Help Center modules: 860 passed.
+- Status: done.
+- Next: FXC, FXA2, FXD1, FXD2 and FXE as their reviews finish; the ui-standard Case tab bodies lines and the case-manager screenshot go to the records pass and WP17D.
