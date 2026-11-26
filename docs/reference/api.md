@@ -30,7 +30,7 @@ that first-writer stamp. Legacy records are not backfilled and therefore return 
 an unset current build SHA is the explicit string `unknown`, not `null`. This is additive:
 it arrived with the 0.1.13 candidate, ships in `0.2.0` and requires no SQL migration.
 
-The committed 0.2 OpenAPI snapshot contains 221 paths. It is the
+The committed 0.2 OpenAPI snapshot contains 307 paths. It is the
 best source for current request-body models, enums, parameters, and operation IDs.
 Some handlers return plain dictionaries without a FastAPI `response_model`, so their
 generated response schema is intentionally less specific than the runtime payload.

@@ -220,9 +220,10 @@ only behind a flag.
 `prefers-contrast: more`: hairlines become ≥3:1 structural lines — including the
 alpha hairline variants (`border-border/70` and the like), through the
 `--border-alpha-floor` the `border` colour carries — secondary text strengthens (and
-is never weaker than muted text), the login identity canvas strengthens its own
-borders, field edges and text, and materials turn solid with a defined bottom rule
-instead of the scroll-edge fade.
+is never weaker than muted text), and materials turn solid with a defined bottom rule
+instead of the scroll-edge fade. The sign-in page has no rule of its own: it paints only
+Console tokens, so its field edges, text and focus ring strengthen with the rest of the
+Console (see Identity surfaces).
 
 ## Page anatomy
 
@@ -592,11 +593,12 @@ keyboard shortcuts) and the "About Case Manager" help tip; below a 400px queue t
 fills the row, so Refresh and "About Case Manager" move into the view menu. Row 2 holds,
 for a role that may do bulk work, the "Select visible" checkbox, then a `FilterBar` with
 the search and `primaryCount={0}`, so Severity, Status and Closed by sit behind its one
-"Filters (n)" control with their removable chips and Clear all. The AI queue notice ("N
-new alerts under investigation") is the band's third line, one 16px line that takes no
-room while it has nothing to say, so the band grows by 20px at most. A bulk bar with the
-selection count appears only while something is selected (or a bulk job runs or
-reports). Rows are two lines beside a 40px leading slot. The slot shows the severity
+"Filters (n)" control with their removable chips and Clear all. The AI queue notice ("AI
+is investigating 2 new alerts. They join the queue when the investigation finishes.") is
+the band's third line, one 16px line that truncates and takes no room while it has
+nothing to say, so the band grows by 20px at most (see AI investigation signals). A bulk
+bar with the selection count appears only while something is selected (or a bulk job
+runs or reports). Rows are two lines beside a 40px leading slot. The slot shows the severity
 glyph; for a role that may do bulk work it becomes the row checkbox on hover and focus,
 and stays the checkbox while anything is selected or a bulk job runs, and always on a
 touch screen (a role with no bulk action keeps the glyph). Line one is the title (one
@@ -604,12 +606,13 @@ line, its full value accessible) and the age; line two the severity word, "Risk 
 case number, and either the status of an open case or the outcome badge of a case that
 ended, never both, with the owner monogram at the end. "Risk N" is neutral
 (`text-foreground/80`): the severity word and the rail carry the row's colour, and the
-risk keeps its band colour in the case header and the facts rail. It wears the risk
-explainer's mouse-only row hover card, with no focusable content inside the row; the
-row's accessible name carries the number. While the AI investigates a case, its run mark
-takes the status glyph's place inside the status node, never the case chat glyph's slot
-before the age, so a row can show both, and the row's accessible name says so. The
-runbook chip and the source fact are not on the row. A compact density is one line. The
+risk keeps its band colour in the case header and in the inspector's Signal section. It
+wears the risk explainer's mouse-only row hover card, with no focusable content inside
+the row; the row's accessible name carries the number. While the AI investigates a case,
+its run mark takes the status glyph's place inside the status node (before the outcome
+badge on a case that ended), never the case chat glyph's slot before the age, so a row
+can show both, and the row's accessible name says so. The runbook chip and the source
+fact are not on the row. A compact density is one line. The
 list is one tab stop with a roving focus (↑/↓ or J/K move and open, X or Space select,
 Enter moves into the case, / searches, ? lists the shortcuts) and rows update live from
 the `cases` realtime topic. Where the split shows, `[` (or Hide queue) folds the queue to
@@ -757,6 +760,62 @@ the case is closed again with a new one, and the toast says so. Closing a Needs-
 case the analyst did not grade records no AI agreement either way; a grade the analyst
 does give there (or on a duplicate close, or a case with no AI verdict) carries no
 assessment, and the Agreement rate counts only grades that compare with the AI verdict.
+
+**AI investigation signals.** Anyone who may see a case can see that the AI is working
+on it before they act, and the run's result stays authoritative (Round 16, SPEC D10).
+The words are fixed: "AI working" while a run is under way, "AI queued" while it waits
+for an investigation slot, and "AI investigation running", "AI investigation waiting" or
+"AI investigation finished:" with the new status in words, in titles and announcements.
+Never "Investigating" alone: that is the acknowledged status a person sets. Every signal reads
+one store (`soc/investigations/store.ts`, a lazy chunk), fed by
+`GET /api/investigations/active`, the `case.investigation` frames of the
+`investigations` topic on the page's one event stream, and the `202` of a Reinvestigate.
+A run shows only after a 1 s hold-off, because most runs end at once and a mark that
+flashes helps nobody, and its elapsed time is counted in the browser's clock. Frames and
+views carry ids, enums, times and counts only; a requester's name is plain text, and only
+a viewer who may manage users sees it.
+
+- **Header chip.** On the case header's meta strip, after the AI verdict, adding no row:
+  the turning ring with "AI working · 0:42" (the clock ticks each second) or "AI queued",
+  and for 6 s after a run this console showed ends, a success tint with "AI finished".
+  It never gives way as the pane narrows. A click opens its popover, named by its title:
+  the five steps (Triage, Specialist and runbook, Looking up evidence, Verdict, Deciding)
+  with the current one marked, who or what started it ("You started it.", "Started by a
+  person.", the name for a viewer who may manage users, a background job, a freed
+  investigation slot or event detection), the time against the time cap or, while queued,
+  the slots in use ("Waiting for a free slot: 3 of 3 investigations are running."), what
+  acting now does ("If you close or change the status before it finishes, its result sets
+  the status again. Your disposition, note, actions taken, comments and screenshots are
+  kept."), and "See its steps in the audit log". While the popover is open the run is read
+  again every 3 s.
+- **Queue row mark.** The ring and "AI working" or "AI queued" in the row's status node
+  (see the queue above). It is decorative for assistive technology: the row's accessible
+  name ends with "AI investigation running, started 40 seconds ago" or "AI investigation
+  waiting, queued 12 seconds ago".
+- **Band line.** Runs on new events that have no case yet are the control band's third
+  line, "AI is investigating 2 new alerts. They join the queue when the investigation
+  finishes.", and nothing at 0.
+- **Navigation count.** The Case Manager item carries how many cases the AI investigates
+  now: a numeric badge after the label in the drawer and on the rail icon's corner ("9+"
+  above nine), with the hidden text "AI investigating 2 cases" joined to the item's
+  description. Only a viewer who may read cases loads it. The number lives in the
+  entry-safe `investigations/count.ts`; the store itself loads after first paint.
+- **Close dialog notes.** The close, bulk close and status change dialogs say before you
+  act that the run's result replaces what you do now: "An AI investigation is running on
+  this case." with "When it finishes, its result replaces a close you make now." (or "the
+  status you set now"), and for a selection "2 of the selected cases have an AI
+  investigation running." The note is a polite status, never an alert, and it never blocks
+  the submit. A run that finishes while the dialog is open turns it into an info note that
+  says the investigation finished, names the new verdict and asks you to check it before
+  you close.
+- **Reinvestigate** never blocks: the dialog closes on the `202` and the header chip shows
+  at once. A second request while a run is queued or running answers with a toast, and the
+  case is read again when its run finishes.
+- **Announcements and Inbox.** Each change is announced politely through the app's one
+  live region, at most once every 10 s, and the last state is never dropped. The ring
+  stands still under reduced motion. A manual run's requester gets an Inbox item when it
+  finishes ("AI investigation finished on case CASE-0042"), and a person whose close a run
+  replaced gets one that says so, written after its `case.close_replaced` audit row.
 
 Campaigns is analyst-first. The default **Campaign review** workspace owns the current
 group list, detail, and read-only refresh; manual correlation and saved cadence belong
@@ -1025,8 +1084,9 @@ count); the active row carries `aria-current`, and ↑/↓/
 Home/End move between rows through a single roving tab stop that always lands on an
 existing, enabled row. The row menu offers Rename (inline, IME-safe), Pin/Unpin, Open
 report (when the thread has one; disabled with its reason while another thread's turn
-runs), Export and Delete; Delete confirms that the report stays in Reports and is
-disabled for the thread a turn is running in. History truth is fail-closed: a read failure is an explicit
+runs), Export and Delete; Delete asks before it removes the thread (its confirmation
+adds that the report stays in Reports only when the thread has one) and is disabled for
+the thread a turn is running in. History truth is fail-closed: a read failure is an explicit
 retryable error, never the calm **No previous conversations** state. The footer
 discloses retention when history was truncated or at least 45 conversations exist.
 
@@ -1350,9 +1410,10 @@ own page instead.
 - **Landing and the Overview group.** The Console lands on the Cyber Defence Center
   (`#/overview`) after sign-in, at `#/`, at an unknown hash and after the first-run
   wizard; `#/dashboard` is its old alias and is replaced by `#/overview`. The Overview
-  group lists **Cyber Defence Center**, **Dashboards** (gated on `metrics:view`) and
-  **Standup**. Pressing the Overview row opens the Dashboards library (its target), or
-  the Cyber Defence Center for a viewer without `metrics:view`. The brand link opens the
+  group lists **Cyber Defence Center**, **Dashboards** and **Standup** (both gated on
+  `metrics:view`, which the standup reads require). Pressing the Overview row opens the
+  Dashboards library (its target), or the Cyber Defence Center for a viewer without
+  `metrics:view`. The brand link opens the
   Cyber Defence Center.
 - The **Intelligence** group uses four direct, non-overlapping operator destinations:
   **Knowledge corpus** is indexed RAG material; **Runbooks** are the team's step-by-step
@@ -1402,7 +1463,20 @@ own page instead.
   whose row opens Inbox; the top-bar bell keeps the name Notifications. A section holding
   one item of its own name (Intelligence, Analytics, Communication) gets a hairline, not a
   heading that repeats it; other section headings are 12px sentence case. The current page is a tinted pill
-  and a tinted icon, never an accent bar at the window edge.
+  and a tinted icon, never an accent bar at the window edge. The Case Manager row also
+  carries the count of cases the AI investigates now (see AI investigation signals under
+  Queue and detail workspaces).
+- **What's new** is a quiet dialog shown once per newest release-notes update id, only
+  inside the Console (never over sign-in, setup, a forced password change or the wizard),
+  and never blocking: 40rem wide on the shared scrim (full screen below 640px), focus on
+  its title, at most five highlights (an area tile, a title and one line), a screenshot as
+  the hero only when a row is pressed, and nothing that moves on its own. Any close writes
+  the marker once (`misc.whats_new_seen`, an audited preference); closing an automatic
+  dialog returns focus to the main landmark, a re-open to the control that opened it. A
+  highlight that needs a grant the viewer lacks stays on the Communication page only.
+  The personal switch "Show What's new after updates" turns it off. The entry chunk holds
+  only the marker compare and one import thunk; the page, the dialog and the notes are
+  lazy.
 - **The 64px rail.** A grouped icon opens its page on a click, with no flyout flash. Its
   pages appear in one flyout after a 300ms pointer rest (any movement restarts the
   clock), switch to a neighbour after 120ms once one is open, close 400ms after the
@@ -1480,7 +1554,7 @@ own page instead.
   give a long name a second line, breaking only between words; a single word wider than
   its room ends in an ellipsis, with the full name in its tooltip, and never breaks
   inside). Below `sm` the bar's gaps are 6px, so "Workspace" stays whole beside
-  "v0.1.13 · Testing" on a 360px phone. The search field shrinks first, down to 11rem,
+  "v0.2.0 · Testing" on a 360px phone. The search field shrinks first, down to 11rem,
   and becomes its icon opener below 46rem of bar; below 62rem the chips
   (Demo mode, platform health, update, source notice, account name) go icon-only, each
   with a tooltip and its full accessible name; below 72rem the product name leaves the
@@ -1606,7 +1680,9 @@ line reserves a two-line slot (`min-h-[2lh]`), so a caption that wraps keeps its
 level with its neighbours' and nothing is left to a mouse-only `title`. Never put context
 beside the numeral: at six columns flex shrinks the numeral first. Hero numerals are
 neutral ink; only a non-zero critical count is red. Hero tiles carry no icon, and their help and drill-down marks
-appear on hover or focus beside the numeral (always shown on devices without hover).
+appear on hover or focus beside the numeral (always shown on devices without hover). A
+tile's math follows "Explainable numbers": on the numeral of a tile that does not drill
+down, and inside the drill-down dialog of one that does.
 A strip on the canvas is followed by the next band after the normal band gap; its own
 bottom rule closes the strip, and the band below draws no second rule against it. The
 primary dashboard's strip sits on its own grouped panel instead (see "Dashboard bands").
@@ -1897,6 +1973,60 @@ Cost execution tiers report what the ledger recorded, not what Settings requeste
 Keep the fixed Standard/Flex/Batch/Unconfirmed buckets visible even when zero, include
 Unconfirmed in coverage denominators, and never label a Standard row as a Flex
 fallback unless a future ledger contract explicitly records that provenance.
+
+## Explainable numbers
+
+A number the Console derives (a score, a share, a median, a priority, an SLA reading, a
+cost) can show its math (Round 16, SPEC A7): hover it for one line with the real numbers,
+select it for the full arithmetic. The Explain kit renders it and computes nothing.
+
+- **One contract.** A pure builder (`lib/explain/builders.ts`, and
+  `soc/components/metrics-explain/builders.ts` for dashboard figures) turns the data the
+  page already holds into one `Explanation`: the value as shown, the hover line, the
+  formula, the inputs with where each came from, the arithmetic steps, the rounding, the
+  provenance and the caveats. `lib/explain/explain.contract.json` pins the numbers on both
+  ends, so the Console and the server cannot drift. Explanations carry our own numbers,
+  ids and enums; every value, a rule name or an entity included, renders as a text node.
+- **Hover line.** Pointer rest (300ms) or keyboard focus opens a hover card with the
+  summary ("Risk 38.31 = (0.25 x 65.24 + 0.20 x 20 + ...) / 1.00. Click for inputs.") and,
+  unless the summary already points at the panel like that one, "Select it for the full
+  calculation." under it. It meets WCAG 1.4.13: Escape dismisses it, the pointer can
+  move onto it, and it stays until the pointer or focus leaves (150ms grace). A touch never
+  opens it, so a tap goes straight to the panel. The trigger is the number itself, with a
+  dotted underline on hover, `cursor-help` and ", explain" in its accessible name.
+- **Click panel.** A click, Enter, Space or a tap opens a popover, at most 28rem wide and
+  scrolling inside the space it has, named by its title: the result as shown, the
+  summary, the formula in mono, the inputs (name, value, source), the steps as a table
+  (step, calculation, result), any detail the component adds, the rounding, the
+  provenance and the caveats, then **Copy calculation** and an optional link to the
+  records behind the number. Focus moves to the panel, so reading starts at its title;
+  closing it returns focus to the trigger, and the hover line stays down until the
+  pointer or focus leaves.
+- **Copy calculation** copies the whole explanation as plain text (the summary without its
+  pointer to the panel). The button reads "Copied" for 1.5 s and a status says
+  "Calculation copied."; a failure shows "Could not copy." beside it.
+- **Provenance is never guessed.** Each explanation says where its numbers came from:
+  "Recorded when the number was computed" (success text), "Computed by the server for this
+  reading" (neutral), "Reconstructed with today's settings" or "Not recorded" (warning
+  text). A case scored before its risk inputs were recorded reads "not recorded" and lists
+  its stored factors, never a re-derivation presented as the record; a decision whose
+  thresholds were not recorded labels today's policy values as today's.
+- **One rounding rule.** A score shows as an integer rounded half up
+  (`lib/explain/rounding.ts`, the server's `round_half_up`), its band is the band of that
+  integer, and the panel's Rounding line names the rule. The rounding is presentation
+  only: `decide()` compares the unrounded score.
+- **Where a trigger may sit.** Never inside another control. A queue row uses the
+  mouse-only `row-hover` mode: no focusable content and no pointer to a panel, the row's
+  accessible name carries the number, and the case header chip is the keyboard path. A
+  KPI tile takes the explanation through its `explain` slot only when the tile is not a
+  button and its numeral is not abbreviated; a tile that drills down shows the same panel
+  inside its drill-down dialog instead, as a labelled, scrollable "How X is calculated"
+  region. Lifecycle timings (time to acknowledge, resolve, dwell) hover with the median,
+  p90 and mean; opening the panel reads the cases behind the figure once
+  (`GET /api/metrics/explain`) for the rank arithmetic and a "Show all N" side sheet.
+- **Off the entry path.** Import the kit from `@/design-system/explain`, never the
+  `@/design-system` barrel, and only from lazy route chunks; `bundle-first-paint.test.ts`
+  fails if it reaches the entry.
 
 ## Theme and appearance
 
