@@ -30,14 +30,21 @@ const h = vi.hoisted(() => {
     toastInfo: vi.fn(),
     toastError: vi.fn(),
     toastSuccess: vi.fn(),
+    toastWarning: vi.fn(),
     canViewCost: true,
+    username: null as string | null,
   };
 });
 
 vi.mock('@/lib/api', () => ({ api: { getCase: h.getCase, reinvestigateCase: h.request }, ApiError: h.FakeApiError }));
-vi.mock('sonner', () => ({ toast: { info: h.toastInfo, error: h.toastError, success: h.toastSuccess } }));
+vi.mock('sonner', () => ({
+  toast: { info: h.toastInfo, error: h.toastError, success: h.toastSuccess, warning: h.toastWarning },
+}));
 vi.mock('@/soc/auth', () => ({
-  useAuth: () => ({ hasPermission: (r: string, a: string) => (r === 'cost' && a === 'view' ? h.canViewCost : true) }),
+  useAuth: () => ({
+    hasPermission: (r: string, a: string) => (r === 'cost' && a === 'view' ? h.canViewCost : true),
+    username: h.username,
+  }),
 }));
 vi.mock('@/lib/api-investigations', () => ({ getActiveInvestigations: h.read }));
 vi.mock('@/lib/useEventStream', () => ({
@@ -51,6 +58,8 @@ import { fmtMoney } from '@/lib/format';
 import { ReinvestigateDialog, finishedToastText, reinvestigateErrorText } from '../ReinvestigateDialog';
 import { AiRunChip } from '../AiRunChip';
 import { investigationSnapshot, resetInvestigationsForTests } from '../store';
+import { AiRunCloseNotice } from '../AiRunCloseNotice';
+import { resetRunEndMarksForTests, runEndSaid, runNoticeOpen } from '../announce';
 
 const T0 = Date.parse('2026-11-25T10:00:00Z');
 const CASE = { case_id: 'case-1', case_number: 'CASE-0042', token_cost: 0.25, status: 'investigating' } as Case;
@@ -124,7 +133,10 @@ beforeEach(() => {
   h.toastInfo.mockReset();
   h.toastError.mockReset();
   h.toastSuccess.mockReset();
+  h.toastWarning.mockReset();
   h.canViewCost = true;
+  h.username = null;
+  resetRunEndMarksForTests();
   h.onEvent = null;
 });
 
@@ -320,6 +332,199 @@ describe('ReinvestigateDialog', () => {
     expect(h.getCase).not.toHaveBeenCalled();
     expect(h.toastInfo).not.toHaveBeenCalled();
     expect(h.toastSuccess).not.toHaveBeenCalled();
+  });
+
+  describe('a run that replaced a close on screen (FXB)', () => {
+    // The run was queued 5 s before T0; by default the close on screen was made at T0,
+    // while the run went on.
+    const QUEUED = new Date(T0 - 5_000).toISOString();
+    const closedBy = (by: string, at = T0) =>
+      ({
+        ...CASE,
+        status: 'closed',
+        disposition: 'false_positive',
+        status_history: [
+          { from_status: 'investigating', to_status: 'closed', by, at: new Date(at).toISOString() },
+        ],
+      }) as Case;
+    const runEnds = async (id: string) => {
+      act(() =>
+        h.onEvent?.({
+          type: 'case.investigation',
+          data: { ...view({ trigger: 'automatic', queued_at: QUEUED }), active: 1, new_runs: 0 },
+          lastEventId: `${id}a`,
+        }),
+      );
+      await settle(1_000);
+      act(() =>
+        h.onEvent?.({
+          type: 'case.investigation',
+          data: {
+            ...view({ trigger: 'automatic', queued_at: QUEUED, state: 'finished', outcome: 'routed_to_person', status_after: 'needs_human' }),
+            active: 0,
+            new_runs: 0,
+          },
+          lastEventId: `${id}b`,
+        }),
+      );
+      await settle();
+    };
+
+    it('warns that the run replaced your close, never a plain success', async () => {
+      h.username = 'alice';
+      h.getCase.mockResolvedValue({ ...CASE, status: 'needs_human' } as Case);
+      const { onReinvestigated } = renderDialog({ caseRecord: closedBy('Alice') });
+      await settle();
+      await runEnds('r1');
+      expect(onReinvestigated).toHaveBeenCalled();
+      expect(h.toastWarning).toHaveBeenCalledWith(
+        'The AI investigation replaced your close of CASE-0042. Status: Open · awaiting analyst. Your disposition and note are kept.',
+      );
+      expect(h.toastSuccess).not.toHaveBeenCalled();
+      expect(h.toastInfo).not.toHaveBeenCalled();
+    });
+
+    it("says whose close it was not: someone else's close is the close", async () => {
+      h.username = 'alice';
+      h.getCase.mockResolvedValue({ ...CASE, status: 'needs_human' } as Case);
+      renderDialog({ caseRecord: closedBy('bob') });
+      await settle();
+      await runEnds('r2');
+      expect(h.toastWarning).toHaveBeenCalledWith(
+        'The AI investigation replaced the close of CASE-0042. Status: Open · awaiting analyst. The disposition and note are kept.',
+      );
+    });
+
+    it('never warns for a close made before the run was asked for, as the server counts it (FXB review)', async () => {
+      // A closed case reinvestigated: the run left it open, but it replaced no close made
+      // while it ran (no `case.close_replaced` row, no Inbox notice). The case changed under
+      // you, so the plain finish toast says the new status.
+      h.username = 'alice';
+      h.getCase.mockResolvedValue({ ...CASE, status: 'needs_human' } as Case);
+      renderDialog({ caseRecord: closedBy('alice', T0 - 60_000) });
+      await settle();
+      await runEnds('r4');
+      expect(h.toastWarning).not.toHaveBeenCalled();
+      expect(h.toastSuccess).toHaveBeenCalledWith('AI investigation finished on CASE-0042: Open · awaiting analyst.');
+    });
+
+    it('never warns for a close the AI or the system made (FXB review)', async () => {
+      h.getCase.mockResolvedValue({ ...CASE, status: 'needs_human' } as Case);
+      renderDialog({ caseRecord: closedBy('agent') });
+      await settle();
+      await runEnds('r5');
+      expect(h.toastWarning).not.toHaveBeenCalled();
+      expect(h.toastSuccess).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps the success toast when the run closed the case again', async () => {
+      h.getCase.mockResolvedValue({ ...CASE, status: 'closed' } as Case);
+      renderDialog({ caseRecord: { ...CASE, status: 'resolved' } as Case });
+      await settle();
+      await runEnds('r3');
+      expect(h.toastWarning).not.toHaveBeenCalled();
+      expect(h.toastSuccess).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it('shows no finish toast while a close dialog note covers the case, and its note says the end (FXB)', async () => {
+    h.request.mockResolvedValue({ run_id: 'inv-9', case_id: 'case-1', state: 'queued' });
+    const next = { ...CASE, status: 'needs_human' } as Case;
+    h.getCase.mockResolvedValue(next);
+    const { onReinvestigated, rerender } = renderDialog();
+    await settle();
+    reinvestigate();
+    await settle();
+    act(() => h.onEvent?.({ type: 'case.investigation', data: { ...view(), active: 1, new_runs: 0 }, lastEventId: 'n1' }));
+    await settle(1_000);
+    // The close dialog opens while the run goes on.
+    rerender(
+      <>
+        <AiRunChip caseId="case-1" />
+        <ReinvestigateDialog caseRecord={CASE} open={false} onOpenChange={vi.fn()} models={null} onReinvestigated={onReinvestigated} />
+        <AiRunCloseNotice caseIds={['case-1']} open action="close" />
+      </>,
+    );
+    await settle();
+    expect(runNoticeOpen('case-1')).toBe(true);
+    act(() =>
+      h.onEvent?.({
+        type: 'case.investigation',
+        data: { ...view({ state: 'finished', outcome: 'decided', status_after: 'needs_human', verdict_after: 'NEEDS_HUMAN' }), active: 0, new_runs: 0 },
+        lastEventId: 'n2',
+      }),
+    );
+    await settle();
+    // The case is still read again, but the toast would sit over the dialog's buttons.
+    expect(onReinvestigated).toHaveBeenCalledWith(next);
+    expect(h.toastSuccess).not.toHaveBeenCalled();
+    expect(h.toastInfo).not.toHaveBeenCalled();
+    expect(screen.getByTestId('ai-run-close-finished')).toHaveTextContent(
+      'The AI investigation finished with the verdict Needs human review. Check it before you close.',
+    );
+    expect(runEndSaid('inv-9')).toBe('said');
+  });
+
+  it('keeps the end said when a close dialog note marked it before the page read the case (FXB review)', async () => {
+    // The note may sit before the Reinvestigate dialog in the tree, so its effect marks the
+    // end first; the page must not turn "said" back into "pending", which the read then
+    // clears, so the header chip would say the end a second time.
+    h.request.mockResolvedValue({ run_id: 'inv-9', case_id: 'case-1', state: 'queued' });
+    h.getCase.mockResolvedValue({ ...CASE, status: 'needs_human' } as Case);
+    const onReinvestigated = vi.fn();
+    const tree = (notice: boolean) => (
+      <>
+        <AiRunCloseNotice caseIds={['case-1']} open={notice} action="close" />
+        <AiRunChip caseId="case-1" />
+        <ReinvestigateDialog caseRecord={CASE} open={!notice} onOpenChange={vi.fn()} models={null} onReinvestigated={onReinvestigated} />
+      </>
+    );
+    const { rerender } = render(tree(false));
+    await settle();
+    reinvestigate();
+    await settle();
+    act(() => h.onEvent?.({ type: 'case.investigation', data: { ...view(), active: 1, new_runs: 0 }, lastEventId: 'o1' }));
+    await settle(1_000);
+    rerender(tree(true));
+    await settle();
+    act(() =>
+      h.onEvent?.({
+        type: 'case.investigation',
+        data: { ...view({ state: 'finished', outcome: 'decided', status_after: 'needs_human', verdict_after: 'NEEDS_HUMAN' }), active: 0, new_runs: 0 },
+        lastEventId: 'o2',
+      }),
+    );
+    await settle();
+    expect(onReinvestigated).toHaveBeenCalled();
+    expect(screen.getByTestId('ai-run-close-finished')).toBeInTheDocument();
+    expect(h.toastSuccess).not.toHaveBeenCalled();
+    expect(runEndSaid('inv-9')).toBe('said');
+  });
+
+  it('marks the end of your run said once its toast shows, so the header chip leaves it out (FXB)', async () => {
+    h.request.mockResolvedValue({ run_id: 'inv-9', case_id: 'case-1', state: 'queued' });
+    let reply: (value: Case) => void = () => undefined;
+    h.getCase.mockImplementation(() => new Promise<Case>((resolve) => (reply = resolve)));
+    renderDialog();
+    await settle();
+    reinvestigate();
+    await settle();
+    act(() =>
+      h.onEvent?.({
+        type: 'case.investigation',
+        data: { ...view({ state: 'finished', outcome: 'decided', status_after: 'needs_human' }), active: 0, new_runs: 0 },
+        lastEventId: 'm1',
+      }),
+    );
+    await settle();
+    // While the case is read, a toast may follow: the chip waits.
+    expect(runEndSaid('inv-9')).toBe('pending');
+    await act(async () => {
+      reply({ ...CASE, status: 'needs_human' } as Case);
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(h.toastSuccess).toHaveBeenCalledTimes(1);
+    expect(runEndSaid('inv-9')).toBe('said');
   });
 
   it('words every way a run can end', () => {

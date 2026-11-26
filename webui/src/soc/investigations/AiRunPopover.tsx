@@ -79,6 +79,17 @@ export function aiRunFinishedText(run: InvestigationView): string {
   }
 }
 
+/**
+ * The popover's title (its accessible name). A run that failed or was cancelled
+ * "stopped": it never reads as finished (FXB).
+ */
+export function aiRunPopoverTitle(run: InvestigationView): string {
+  if (run.state === 'finished') {
+    return run.outcome === 'failed' || run.outcome === 'cancelled' ? 'AI investigation stopped' : 'AI investigation finished';
+  }
+  return run.state === 'queued' ? 'AI investigation waiting' : 'AI investigation running';
+}
+
 export const ACT_NOW_TEXT =
   'If you close or change the status before it finishes, its result sets the status again. Your disposition, note, actions taken, comments and screenshots are kept.';
 
@@ -97,7 +108,7 @@ export const AiRunPopoverBody: React.FC<AiRunPopoverBodyProps> = ({ caseId, run,
   return (
     <div className="space-y-3 text-xs leading-relaxed" data-testid="ai-run-popover">
       <p id={titleId} className="text-sm font-semibold text-foreground">
-        {done ? 'AI investigation finished' : run.state === 'queued' ? 'AI investigation waiting' : 'AI investigation running'}
+        {aiRunPopoverTitle(run)}
       </p>
       {done ? (
         <p className="text-foreground">{aiRunFinishedText(run)}</p>

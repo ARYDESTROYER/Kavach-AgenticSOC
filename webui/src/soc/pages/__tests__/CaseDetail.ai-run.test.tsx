@@ -10,7 +10,7 @@
  *   with "Previous verdict. The running investigation replaces it.";
  * - the run chip keeps its words ("AI working · 0:38", then "AI finished") on every
  *   measured strip of 30rem or wider, the 779px strip of Case Manager at 1440 by 900
- *   among them, and the ring alone below 30rem (XFCM);
+ *   among them, and its mark with the word "AI" below 30rem (XFCM, FXB);
  * - the Signal section's event count opens the Evidence tab.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -190,13 +190,14 @@ describe('the header verdict while an AI investigation runs', () => {
     expect(within(verdict).queryByText('Previous verdict:')).toBeNull();
   });
 
-  it('fits the running chip to a measured phone-width strip: the ring alone', async () => {
+  it('fits the running chip to a measured phone-width strip: its mark and "AI", never a bare ring (FXB)', async () => {
     h.run = running();
     const restore = stripWidth(326);
     try {
       await renderLoaded();
       const chip = await screen.findByTestId('ai-run-chip');
-      await waitFor(() => expect(chip).toHaveTextContent(/^$/));
+      // A still ring under reduced motion says nothing on its own: the word stays.
+      await waitFor(() => expect(chip).toHaveTextContent(/^AI$/));
       expect(chip).toHaveAttribute('data-run-state', 'running');
       // The closer spacing follows the chip itself (running or just finished), never a
       // run the chip does not show.
@@ -220,7 +221,7 @@ describe('the header verdict while an AI investigation runs', () => {
     }
   });
 
-  it('says "AI queued" on a 30rem strip, and the ring alone just below it (XFCM)', async () => {
+  it('says "AI queued" on a 30rem strip, and its mark with "AI" just below it (XFCM, FXB)', async () => {
     h.run = running('queued');
     const restore = stripWidth(META_RING_RUN_PX);
     try {
@@ -235,14 +236,14 @@ describe('the header verdict while an AI investigation runs', () => {
     try {
       await renderLoaded();
       const chip = await screen.findByTestId('ai-run-chip');
-      await waitFor(() => expect(chip).toHaveTextContent(/^$/));
+      await waitFor(() => expect(chip).toHaveTextContent(/^AI$/));
       expect(chip).toHaveAttribute('aria-label', 'AI queued. Show the AI investigation');
     } finally {
       narrow();
     }
   });
 
-  it('says "AI finished" after the run on every strip of 30rem or wider, the ring alone on a phone (XFCM)', async () => {
+  it('says "AI finished" after the run on every strip of 30rem or wider, its mark with "AI" on a phone (XFCM, FXB)', async () => {
     // The run just ended on this console: the chip shows its success tint for a few seconds.
     h.finished = { view: { ...running(), state: 'finished', outcome: 'decided' } as InvestigationView, at: Date.now(), active: true, shown: true };
     const phone = stripWidth(326);
@@ -250,7 +251,7 @@ describe('the header verdict while an AI investigation runs', () => {
       await renderLoaded();
       const chip = await screen.findByTestId('ai-run-chip');
       expect(chip).toHaveAttribute('data-run-state', 'finished');
-      await waitFor(() => expect(chip).toHaveTextContent(/^$/));
+      await waitFor(() => expect(chip).toHaveTextContent(/^AI$/));
       expect(chip).toHaveAttribute('aria-label', 'AI finished. Show the AI investigation');
     } finally {
       phone();
@@ -268,7 +269,7 @@ describe('the header verdict while an AI investigation runs', () => {
     }
   });
 
-  it('fits the run chip to the strip: its words from 30rem, the ring alone below (XFCM)', () => {
+  it('fits the run chip to the strip: its words from 30rem, its mark and "AI" below (XFCM, FXB)', () => {
     expect(runChipFit(null)).toBe(false);
     expect(runChipFit(0)).toBe(false);
     expect(runChipFit(1100)).toBe(false);

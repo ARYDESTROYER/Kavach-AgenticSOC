@@ -174,8 +174,8 @@ while it runs.
 
 - In the case header, a chip shows a turning ring with **AI working** and the time since
   the run started ("AI working · 0:42"), or **AI queued** while it waits for a free
-  investigation slot. On a phone the chip shows the ring alone; its name still says what
-  it is. Select the chip, or press **W**, to see:
+  investigation slot. On a phone the chip shows the ring with the word **AI** and no
+  clock; its name still says the whole state. Select the chip, or press **W**, to see:
   - the step the run is on;
   - who or what started it. This is one of "You started it", "Started by" and the
     person's name (shown only to people who manage accounts), "Started by a person",
@@ -189,7 +189,9 @@ while it runs.
   unavailable, with the reason "An AI investigation is already running."
 - In the queue, the row shows the same ring with **AI working** or **AI queued** at
   every queue width. In a narrow queue the status, the outcome and the severity word step
-  aside for them; the case header still shows the status and the severity. The
+  aside for them; the case header still shows the status and the severity. A screen
+  reader hears "AI investigation running" or "AI investigation waiting" at the end of the
+  row's name; the time the run has taken is on the case header chip. The
   **Case Manager** item in the navigation shows how many cases the AI is investigating.
 - On the **AI investigation** tab the trace updates every few seconds while the run is
   under way.
@@ -197,15 +199,26 @@ while it runs.
   "AI is investigating 3 new alerts. They join the queue when the investigation
   finishes."
 - When the run finishes, the chip reads **AI finished** for 6 seconds and a screen
-  reader hears "AI investigation finished:" with the new status.
+  reader hears "AI investigation finished:" with the new status, once: when the finish
+  message or the close dialog already says it, the chip does not say it again. A run that
+  failed or was stopped reads **AI stopped** instead, in a neutral color with an alert
+  mark, and its details say "AI investigation stopped".
 
 The run's result decides the status. If you close a case or change its status while a
 run is in progress, the result sets the status again when it finishes. Your
 disposition, note, actions taken, comments and screenshots are kept. The close dialog
 says this before you submit ("An AI investigation is running on this case. When it
-finishes, its result replaces a close you make now."), and never stops you. A bulk close
-or status change says how many of the selected cases have a run in progress. When the AI's
-result replaces your close, you get an Inbox notice that says so.
+finishes, its result replaces a close you make now."), and never stops you. If the run
+finishes while the dialog is open, the dialog says so and names the verdict, for example
+"The AI investigation finished with the verdict Needs human review. Check it before you
+close.", and no finish message covers the dialog. If the run stopped or could not
+finish, the dialog says so and that the case was not changed. A bulk close or status
+change says how many of the selected cases have a run in progress. When the AI's result
+replaces a close you made while the run was in progress, a warning on the case page says
+so ("The AI investigation replaced your close of CASE-0042. Status: Open · awaiting
+analyst. Your disposition and note are kept."), and you also get an Inbox notice. A close
+made before you reinvestigated the case is not replaced: the finish message gives the new
+status.
 
 **Reinvestigate** starts a fresh run and its dialog closes at once, so you can keep
 working. When the run finishes, the case shows the result, a short message appears, and

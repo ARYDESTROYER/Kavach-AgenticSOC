@@ -5,14 +5,34 @@
  * blocks the submit. A run seen while the dialog is open that then finishes turns the
  * note into a "finished" note. For several cases it counts how many have a run.
  * Announced politely (`role="status"`), never as an alert.
+ *
+ * While open it marks the cases it covers (`holdRunNotice`), so the case page shows no
+ * finish toast over the dialog, and its finished note marks the run's end as said, so the
+ * header chip does not say it again (FXB, `announce.ts`).
  */
 import * as React from 'react';
-import { Bot, CheckCircle2 } from 'lucide-react';
+import { Bot, CheckCircle2, CircleAlert } from 'lucide-react';
 
+import type { InvestigationView } from '@/lib/types';
 import { verdictWords } from '@/soc/components/outcome';
 import { Alert, AlertDescription, AlertTitle } from '@/ui/alert';
 
+import { holdRunNotice, noteRunEnd } from './announce';
 import { useInvestigations } from './store';
+
+/**
+ * The finished note for one case: "The AI investigation finished with the verdict Needs
+ * human review. Check it before you close." The verdict keeps its own words, and the
+ * sentence names it without saying it changed: it may be the verdict the case had before.
+ * A run that failed or was cancelled never reads as finished: it did not change the case,
+ * so the note says that instead (FXB review).
+ */
+export function aiRunFinishedNoteText(ended: InvestigationView, closes: boolean): string {
+  if (ended.outcome === 'cancelled') return 'The AI investigation stopped before it finished. The case was not changed.';
+  if (ended.outcome === 'failed') return 'The AI investigation could not finish. The case was not changed.';
+  const verdict = ended.verdict_after ? ` with the verdict ${verdictWords(ended.verdict_after)}` : '';
+  return `The AI investigation finished${verdict}. Check it before you ${closes ? 'close' : 'change the status'}.`;
+}
 
 export const AI_RUN_CLOSE_TITLE = 'An AI investigation is running on this case.';
 export const AI_RUN_CLOSE_BODY = 'When it finishes, its result replaces a close you make now.';
@@ -59,6 +79,17 @@ export const AiRunCloseNotice: React.FC<AiRunCloseNoticeProps> = ({ caseIds, ope
     if (open && running > 0) setHadRuns(true);
   }, [open, running]);
 
+  // While open, the cases this note covers get no finish toast over the dialog.
+  const covered = ids ? ids.join('\n') : '';
+  React.useEffect(() => (covered ? holdRunNotice(covered.split('\n')) : undefined), [covered]);
+
+  const ended = single && watched && done?.view.run_id === watched ? done.view : null;
+  // The finished note says the end, so the header chip leaves it out.
+  const endedRunId = ended?.run_id ?? null;
+  React.useEffect(() => {
+    if (endedRunId) noteRunEnd(endedRunId, 'said');
+  }, [endedRunId]);
+
   if (!ids) return null;
   if (run) {
     return (
@@ -87,16 +118,14 @@ export const AiRunCloseNotice: React.FC<AiRunCloseNoticeProps> = ({ caseIds, ope
       </Alert>
     );
   }
-  const ended = single && watched && done?.view.run_id === watched ? done.view : null;
   if (ended || (ids.length > 1 && hadRuns)) {
-    // Mid-sentence, so the verdict's words are lower case ("The verdict is now false positive.").
-    const verdict = ended?.verdict_after ? ` The verdict is now ${verdictWords(ended.verdict_after).toLowerCase()}.` : '';
     const text = ended
-      ? `The AI investigation finished.${verdict} Check it before you ${closes ? 'close' : 'change the status'}.`
+      ? aiRunFinishedNoteText(ended, closes)
       : `The AI investigations on the selected cases finished. Check them before you ${closes ? 'close' : 'change the status'}.`;
+    const stopped = ended?.outcome === 'failed' || ended?.outcome === 'cancelled';
     return (
       <Alert variant="info" data-testid="ai-run-close-finished" className={className}>
-        <CheckCircle2 className="h-4 w-4" aria-hidden />
+        {stopped ? <CircleAlert className="h-4 w-4" aria-hidden /> : <CheckCircle2 className="h-4 w-4" aria-hidden />}
         <AlertDescription>{text}</AlertDescription>
       </Alert>
     );

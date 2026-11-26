@@ -793,8 +793,9 @@ assessment, and the Agreement rate counts only grades that compare with the AI v
 **AI investigation signals.** Anyone who may see a case can see that the AI is working
 on it before they act, and the run's result stays authoritative (Round 16, SPEC D10).
 The words are fixed: "AI working" while a run is under way, "AI queued" while it waits
-for an investigation slot, and "AI investigation running", "AI investigation waiting" or
-"AI investigation finished:" with the new status in words, in titles and announcements.
+for an investigation slot, "AI stopped" for a run that failed or was cancelled, and "AI
+investigation running", "AI investigation waiting", "AI investigation stopped" or "AI
+investigation finished:" with the new status in words, in titles and announcements.
 Never "Investigating" alone: that is the acknowledged status a person sets. Every signal reads
 one store (`soc/investigations/store.ts`, a lazy chunk), fed by
 `GET /api/investigations/active`, the `case.investigation` frames of the
@@ -807,10 +808,13 @@ a viewer who may manage users sees it.
 
 - **Header chip.** On the case header's meta strip, after the AI verdict, adding no row:
   the turning ring with "AI working · 0:42" (the clock ticks each second) or "AI queued",
-  and for 6 s after a run this console showed ends, a success tint with "AI finished".
-  It keeps its words from a 30rem strip. Below that it shows the ring alone, and its name
-  still says what it is. There is no clock without its words: the ring alone is the case
-  chat glyph. While it shows, lower-priority items give way first: the verdict's label
+  and for 6 s after a run this console showed ends, a success tint with "AI finished", or
+  for a run that failed or was cancelled the neutral tint, an alert mark and "AI stopped"
+  (its popover title says "AI investigation stopped"). It keeps its words from a 30rem
+  strip. Below that it shows its mark with the word "AI" and no clock, and its name still
+  says the whole state; the status words truncate before it does. There is never a clock
+  without its words, nor a bare ring: the ring alone is the case chat glyph, and under
+  reduced motion a still ring says nothing. While it shows, lower-priority items give way first: the verdict's label
   word, the owner's name below a 56rem pane (the monogram stays), and the SLA, the
   review chip and the outcome's `Analyst` tag below 64rem (the SLA stays in the
   inspector's Signal section). The status
@@ -831,8 +835,10 @@ a viewer who may manage users sees it.
   never run under the owner monogram; the row's accessible name keeps all three, the
   leading glyph and the rail keep the severity, and the case header still shows the
   status. It is decorative for assistive technology: the row's accessible
-  name ends with "AI investigation running, started 40 seconds ago" or "AI investigation
-  waiting, queued 12 seconds ago".
+  name ends with "AI investigation running" or "AI investigation waiting". It carries no
+  elapsed time: the row is drawn again only when its run changes, so a time in the name
+  would stay at its first value, and a name that ticks would make a focused row read
+  itself again. The header chip has the clock.
 - **Band line.** Runs on new events that have no case yet are the control band's third
   line, "AI is investigating 2 new alerts. They join the queue when the investigation
   finishes.", and nothing at 0.
@@ -850,13 +856,29 @@ a viewer who may manage users sees it.
   status you set now"), and for a selection "2 of the selected cases have an AI
   investigation running." The note is a polite status, never an alert, and it never blocks
   the submit. A run that finishes while the dialog is open turns it into an info note that
-  says the investigation finished, names the new verdict when there is one and asks you to
-  check it before you close (or change the status).
+  says the investigation finished, names its verdict in the verdict's own words when there
+  is one, never as a change ("The AI investigation finished with the verdict Needs human
+  review. Check it before you close."), and asks you to check it before you close (or
+  change the status). A run that failed or was cancelled never reads as finished: the note
+  says it stopped (or could not finish) and that the case was not changed, with the alert
+  mark. While a close or status dialog's note covers a case, the case page
+  shows no finish toast for it: the note already says so, and a toast would sit over the
+  dialog's buttons.
 - **Reinvestigate** never blocks: the dialog closes on the `202` and the header chip shows
   at once. A second request while a run is queued or running answers with a toast, and the
-  case is read again when its run finishes.
+  case is read again when its run finishes. The finish toast shows for your own run or a
+  status that changed under you. When a person closed or resolved the case on screen while
+  the run was queued or running, and the run left it open, it is a warning that names the
+  replaced close, the same close the server records as replaced and the Inbox notice names
+  (a close made before the run was asked for, or by the AI or the system, is not one):
+  "The AI investigation replaced your close of CASE-0042. Status: Open · awaiting analyst.
+  Your disposition and note are kept." ("the close" and "The disposition" when the record
+  does not show it was yours).
 - **Announcements and Inbox.** Each change is announced politely through the app's one
-  live region, at most once every 10 s, and the last state is never dropped. The ring
+  live region, at most once every 10 s, and the last state is never dropped. The end of a
+  run is said once on a console: when the finish toast or a close dialog's finished note
+  says it, the header chip does not; the chip waits a moment before it says an end, and
+  longer while the page reads the case to decide on its toast. The ring
   stands still under reduced motion. A manual run's requester gets an Inbox item when it
   finishes ("AI investigation finished on case CASE-0042"), and a person whose close a run
   replaced gets one that says so, written after its `case.close_replaced` audit row.
@@ -1667,7 +1689,8 @@ while a chat turn is running, and the same glyph as the AI run ring while an AI
 investigation runs or waits on a case (the header chip, the queue row mark and the Case
 Manager navigation item). The glyph is a rotation or arc sweep with a period of about
 1.2 to 1.35 s, never a slow "breathing" loop. Under reduced motion it is a static mark,
-with the word "Working" for a chat turn and "AI working" or "AI queued" for a run. A
+with the word "Working" for a chat turn and "AI working" or "AI queued" for a run (on a
+case header strip narrower than 30rem, the word "AI", never the mark alone). A
 successfully committed data refresh
 may replay one short transform/opacity-only cue tied to the new payload; it must never
 run on its own timer or imply that a request is in flight when it is not. Springs,

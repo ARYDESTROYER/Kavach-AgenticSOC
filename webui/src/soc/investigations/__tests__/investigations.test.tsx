@@ -30,6 +30,8 @@ vi.mock('@/soc/components/announcer', () => ({ useAnnouncer: () => h.announce })
 import { aiRunAccessibleText, elapsedClock, spokenDuration } from '../aiRunText';
 import { AiRunMark } from '../AiRunMark';
 import { AiQueueNotice, newRunsText } from '../AiQueueNotice';
+import { AiRunCloseNotice, aiRunFinishedNoteText } from '../AiRunCloseNotice';
+import { resetRunEndMarksForTests, runEndSaid } from '../announce';
 import { HOLD_OFF_MS, resetInvestigationsForTests } from '../store';
 
 const T0 = Date.parse('2026-11-25T10:00:00Z');
@@ -88,17 +90,29 @@ afterEach(() => {
 
 describe('the run words', () => {
   it('give the queue row a bare phrase that joins its accessible name', () => {
-    const now = T0 + 40_000;
     const running = view({ started_at: new Date(T0).toISOString() });
-    expect(aiRunAccessibleText(running, now)).toBe('AI investigation running, started 40 seconds ago');
+    expect(aiRunAccessibleText(running)).toBe('AI investigation running');
     // The row joins its parts with ", ", so the name ends with the run's words.
-    const name = ['Brute force on host-7', 'CASE-0042', 'Open', aiRunAccessibleText(running, now)].join(', ');
-    expect(name.endsWith(', AI investigation running, started 40 seconds ago')).toBe(true);
-    expect(aiRunAccessibleText(view({ state: 'queued', started_at: null, queued_at: new Date(T0).toISOString() }), T0 + 61_000)).toBe(
-      'AI investigation waiting, queued 1 minute ago',
+    const name = ['Brute force on host-7', 'CASE-0042', 'Open', aiRunAccessibleText(running)].join(', ');
+    expect(name.endsWith(', AI investigation running')).toBe(true);
+    expect(aiRunAccessibleText(view({ state: 'queued', started_at: null, queued_at: new Date(T0).toISOString() }))).toBe(
+      'AI investigation waiting',
     );
-    expect(aiRunAccessibleText(view({ state: 'finished' }), now)).toBeNull();
-    expect(aiRunAccessibleText(null, now)).toBeNull();
+    expect(aiRunAccessibleText(view({ state: 'finished' }))).toBeNull();
+    expect(aiRunAccessibleText(null)).toBeNull();
+  });
+
+  it('keep the row name true for the whole run: it claims no elapsed time (FXB)', () => {
+    // The row is drawn again only when its run changes (frames come at the start, when the
+    // case is attached and at the end), so the name read two minutes in is the one made at
+    // the start: a "started 1 second ago" made then would still be read at two minutes.
+    const running = view({ started_at: new Date(T0).toISOString() });
+    vi.setSystemTime(T0 + 1_000);
+    const atStart = aiRunAccessibleText(running);
+    vi.setSystemTime(T0 + 120_000);
+    expect(aiRunAccessibleText(running)).toBe(atStart);
+    expect(atStart).toBe('AI investigation running');
+    expect(atStart).not.toMatch(/\d|ago/);
   });
 
   it('never says "Investigating" alone and counts time plainly', () => {
@@ -108,10 +122,7 @@ describe('the run words', () => {
     expect(elapsedClock(new Date(T0).toISOString(), T0 + 42_000)).toBe('0:42');
     expect(elapsedClock(new Date(T0).toISOString(), T0 + 3_729_000)).toBe('1:02:09');
     expect(elapsedClock(null, T0)).toBe('0:00');
-    const words = [
-      aiRunAccessibleText(view(), T0 + 5_000),
-      aiRunAccessibleText(view({ state: 'queued' }), T0 + 5_000),
-    ].join(' ');
+    const words = [aiRunAccessibleText(view()), aiRunAccessibleText(view({ state: 'queued' }))].join(' ');
     expect(words).not.toMatch(/\bInvestigating\b/);
   });
 });
@@ -234,5 +245,40 @@ describe('the store and its readers', () => {
     act(() => h.onEvent?.({ type: 'case.investigation', data: { run_id: 'x', state: 'thinking', case_id: 'case-1' }, lastEventId: '20' }));
     await settle(HOLD_OFF_MS);
     expect(screen.queryByTestId('ai-run-mark')).toBeNull();
+  });
+});
+
+describe('the close dialog note for a run that ended (FXB review)', () => {
+  it.each([
+    ['failed', 'The AI investigation could not finish. The case was not changed.'],
+    ['cancelled', 'The AI investigation stopped before it finished. The case was not changed.'],
+  ] as const)('never says a %s run finished: it did not change the case', async (outcome, text) => {
+    resetRunEndMarksForTests();
+    h.read.mockResolvedValue(body({ items: [view({ queued_at: new Date(T0 - 5_000).toISOString() })] }));
+    render(<AiRunCloseNotice caseIds={['case-1']} open action="close" />);
+    await settle();
+    expect(screen.getByTestId('ai-run-close-notice')).toBeInTheDocument();
+    act(() =>
+      h.onEvent?.({
+        type: 'case.investigation',
+        data: { ...view({ state: 'finished', phase: 'decision', outcome }), active: 0, new_runs: 0 },
+        lastEventId: '30',
+      }),
+    );
+    const note = screen.getByTestId('ai-run-close-finished');
+    expect(note).toHaveTextContent(text);
+    expect(note).not.toHaveTextContent(/investigation finished|Check it/);
+    // The note says how the run ended, so the header chip does not say it again.
+    expect(runEndSaid('inv-1')).toBe('said');
+  });
+
+  it('names the verdict of a run that finished, for a close or a status change', () => {
+    const ended = view({ state: 'finished', outcome: 'decided', verdict_after: 'NEEDS_HUMAN' });
+    expect(aiRunFinishedNoteText(ended, true)).toBe(
+      'The AI investigation finished with the verdict Needs human review. Check it before you close.',
+    );
+    expect(aiRunFinishedNoteText({ ...ended, verdict_after: null }, false)).toBe(
+      'The AI investigation finished. Check it before you change the status.',
+    );
   });
 });
