@@ -223,7 +223,8 @@ describe('Login: single sign-on buttons (R6)', () => {
       'Sign in with Microsoft',
       'Sign in with Contoso Okta',
     ]);
-    for (const button of buttons) expect(button).toHaveClass('w-full', 'h-11');
+    // At least 44px: a long provider name wraps onto a taller button (FXC).
+    for (const button of buttons) expect(button).toHaveClass('w-full', 'min-h-11');
     // The divider reads "or" and sits above the providers.
     expect(screen.getByText('or')).toBeInTheDocument();
   });
@@ -343,7 +344,10 @@ describe('Login: a refused code or password keeps the keyboard in place', () => 
     await waitFor(() => expect(next).toBeDisabled());
     screen.getByRole('button', { name: 'Use system theme' }).focus();
     await act(async () => reject(new MockApiError(400, 'The new password is too weak.')));
-    expect(await screen.findByText('The new password is too weak.')).toBeInTheDocument();
+    // The forced change maps the server's 400 to a fixed sentence (FXC); the first-admin
+    // step below still keeps the server's policy reason.
+    expect(await screen.findByText('Could not change the password.')).toBeInTheDocument();
+    expect(screen.queryByText('The new password is too weak.')).toBeNull();
     await waitFor(() => expect(next).toHaveFocus());
   });
 

@@ -25,8 +25,6 @@ import { Checkbox } from '@/ui/checkbox';
 import { Alert, AlertDescription } from '@/ui/alert';
 import { ConfirmDialog } from '@/soc/components/ConfirmDialog';
 import {
-  formatRememberDuration,
-  formatRememberWindow,
   insecureRememberHint,
   readRememberedUsername,
   rememberAckCovers,
@@ -46,18 +44,6 @@ export interface RememberMeControlProps {
   username: string;
   /** The product / organisation name shown in the warning. */
   wordmark: string;
-}
-
-/**
- * The remembered inactivity limit worth stating ("12 hours"), or null when no
- * inactivity limit is shorter than the remembered lifetime (or the server does not
- * report one).
- */
-export function rememberIdleLimit(status: RememberMeStatus | null | undefined): string | null {
-  const idle = Math.round(Number(status?.idle_seconds) || 0);
-  const lifetime = Math.round(Number(status?.duration_seconds) || 0);
-  if (idle <= 0 || (lifetime > 0 && idle >= lifetime)) return null;
-  return formatRememberDuration(idle);
 }
 
 /** Whether the policy lets this console offer Remember me right now. */
@@ -80,11 +66,11 @@ export function RememberMeControl({
   const checkboxRef = React.useRef<HTMLButtonElement>(null);
   const available = rememberAvailable(status);
   const interactive = available && !busy;
-  const duration = formatRememberDuration(status.duration_seconds);
-  const idle = rememberIdleLimit(status);
   // Round 16 D6: when the box can be ticked the row is the label alone, with no
   // duration and no accessible description. The warning dialog the first tick opens is
-  // the disclosure: it states every limit. An inert box keeps its one-line reason.
+  // the disclosure: who can use this browser and what still signs it out, with no
+  // duration or limit in hours, minutes or days (D6 as amended). An inert box keeps its
+  // one-line reason.
   const hint = !status.enabled
     ? 'Turned off by your administrator'
     : status.insecure_blocked
@@ -135,6 +121,9 @@ export function RememberMeControl({
           }}
           aria-labelledby="login-remember-label"
           aria-describedby={hint ? 'login-remember-hint' : undefined}
+          // The sign-in page's full-strength focus ring (3:1 on the canvas), not the
+          // shared primitive's soft one.
+          className="focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-canvas"
         />
         <span className="min-w-0">
           <span
@@ -159,7 +148,7 @@ export function RememberMeControl({
           // Warning tone, not destructive: an amber shield and a normal primary button.
           <span className="flex items-center gap-2" data-remember-warning-title>
             <ShieldAlert className="h-5 w-5 shrink-0 text-warning-text" aria-hidden="true" />
-            Keep this device signed in?
+            Stay signed in on this device?
           </span>
         }
         description={
@@ -167,9 +156,7 @@ export function RememberMeControl({
           // accessible description, so a screen reader hears the shared-device advice.
           <>
             <p>
-              Only choose this on a device that you alone use. For{' '}
-              {formatRememberWindow(status.duration_seconds)}, anyone who can open this browser
-              can use {wordmark}
+              Anyone who uses this browser can open {wordmark}
               {name ? (
                 <>
                   {' '}as <span className="font-medium text-foreground">{name}</span>
@@ -177,7 +164,8 @@ export function RememberMeControl({
               ) : (
                 ' with your account'
               )}
-              , including cases, chat and response actions, without entering your password.
+              , including cases, chat and response actions, until you sign out or your session
+              ends. Use it only on a device you trust.
             </p>
             <ul data-remember-warning className="list-disc space-y-1.5 pl-5">
               <li>
@@ -185,9 +173,8 @@ export function RememberMeControl({
                 save your password.
               </li>
               <li data-remember-warning-limits>
-                You&apos;ll be asked to sign in again after {duration}
-                {idle ? <>, after {idle} without activity,</> : ','} or sooner if an
-                administrator ends your session. Sensitive actions still ask for your password.
+                Your session still ends on the schedule your administrator set, and an
+                administrator can end it sooner. Sensitive actions still ask for your password.
               </li>
               <li>
                 Don&apos;t use this on shared, public, or kiosk computers. Sign out when

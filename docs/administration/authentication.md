@@ -79,10 +79,11 @@ notice once on this device. The server still reports the limit (`lifetime_second
 
 The sign-in page offers **Remember me**. The row shows only its label, with no duration.
 When Remember me is turned off, or the connection is insecure, the row stays visible and
-disabled with its one-line reason. Checking it shows a warning first ("Keep this
-device signed in?", with **Cancel** focused): anyone who can open this browser can use
-the console as that user, without a password, until the remembered time runs out. After
-**Keep me signed in**:
+disabled with its one-line reason. Checking it shows a warning first ("Stay signed in on
+this device?", with **Cancel** focused): anyone who uses this browser can open the
+console as that user, without a password, until they sign out or the session ends, so it
+belongs only on a device they trust. The warning states no duration; the limits below are
+yours to set. After **Keep me signed in**:
 
 - the session survives browser restarts for the remembered duration (6, 12, or 24
   hours; 24 by default and at most), and never longer than the **Absolute lifetime**;
@@ -128,7 +129,10 @@ a separate stable key and include it in secret backup procedures.
 Agentic SOC includes Google, Microsoft, and generic OIDC provider shapes. Configure provider
 metadata as organization preferences and supply each client secret through the secret
 tier. Register the callback URL ending in `/api/auth/sso/callback` at the identity
-provider.
+provider. The sign-in page shows one **Sign in with** button per enabled provider, named
+by its display name; a Google or Microsoft provider without one reads "Sign in with
+Google" or "Sign in with Microsoft", never its internal id, and a long name wraps onto a
+second line.
 
 The callback validates browser-bound state. Email-based linking requires a verified
 email and does not attach an SSO identity to a local-credential account merely because

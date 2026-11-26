@@ -73,6 +73,8 @@ import { Alert, AlertDescription } from '@/ui/alert';
 import { Card, CardContent } from '@/ui/card';
 import { Badge } from '@/ui/badge';
 import { Separator } from '@/ui/separator';
+import { cn } from '@/lib/cn';
+import { FieldError, LOGIN_ERROR_ID, LoginTextInput } from '@/soc/components/auth/loginParts';
 
 /**
  * Stand-in for the QR encoder when its chunk cannot be fetched. It reports the failure
@@ -237,6 +239,9 @@ export function MfaSetupCard({
   // pulls focus back to it).
   const focusOnMount = React.useCallback((el: HTMLElement | null) => el?.focus(), []);
   const [disableCode, setDisableCode] = React.useState('');
+  // The sign-in page's 44px field (16px text on phones, so no focus zoom) in the login
+  // mode; the dense Settings field otherwise.
+  const CodeInput = pendingToken ? LoginTextInput : Input;
 
   /**
    * Is this error the pending token being rejected (vs a retryable wrong code)?
@@ -378,6 +383,13 @@ export function MfaSetupCard({
     downloadBlob('agentic-soc-recovery-codes.txt', blob);
   };
 
+  // On the sign-in page a refused code shows under the code field, as every sign-in
+  // field error does: the card's top alert sat above the QR code, off screen on a phone,
+  // and pushed the field being retyped down.
+  const fieldError = pendingToken && enroll ? error : null;
+  // The sign-in page's 16px rhythm between sections; the Settings card keeps 20px.
+  const rhythm = pendingToken ? 'space-y-4' : 'space-y-5';
+
   const body = (
     <>
       {frameless ? null : (
@@ -397,7 +409,7 @@ export function MfaSetupCard({
         </div>
       )}
 
-        {error ? (
+        {error && !fieldError ? (
           <Alert variant="destructive">
             <AlertCircle aria-hidden />
             <AlertDescription>{error}</AlertDescription>
@@ -484,12 +496,15 @@ export function MfaSetupCard({
 
         {/* ---- Enrollment in progress: QR + secret + recovery + confirm ----- */}
         {enroll ? (
-          <div className="space-y-5">
+          <div className={rhythm}>
             {/* A host-started card sits under its Settings row, whose hairline already
                 divides it from the row; a second rule would stack under it. */}
             {hostStarted ? null : <Separator />}
-            <div className="flex flex-col gap-5 sm:flex-row sm:items-start">
-              <div className="shrink-0">
+            {/* On the sign-in page (`pendingToken`) the 400px column is too narrow for the
+                QR code beside the text: it sits centred above it, and the secret wraps. The
+                sign-in page keeps its 16px rhythm between sections. */}
+            <div className={cn('flex flex-col', pendingToken ? 'gap-4' : 'gap-5 sm:flex-row sm:items-start')}>
+              <div className={pendingToken ? 'self-center' : 'shrink-0'}>
                 {qrFailed ? (
                   <div className="flex h-[180px] w-[180px] items-center justify-center rounded-md border border-dashed border-border bg-muted/40 p-3 text-center text-xs text-muted-foreground">
                     QR code unavailable. Enter the secret by hand below.
@@ -523,7 +538,7 @@ export function MfaSetupCard({
                 <div className="space-y-1.5">
                   <Label className="text-xs">Secret</Label>
                   <div className="flex items-center gap-2">
-                    <code className="min-w-0 flex-1 truncate rounded border border-border bg-muted px-2 py-1 font-mono text-xs">
+                    <code className={cn('min-w-0 flex-1 rounded border border-border bg-muted px-2 py-1 font-mono text-xs', pendingToken ? 'break-all' : 'truncate')}>
                       {enroll.secret}
                     </code>
                     <CopyButton text={enroll.secret} />
@@ -581,30 +596,35 @@ export function MfaSetupCard({
 
             <form onSubmit={confirm} className="space-y-2" noValidate>
               <Label htmlFor="mfa-confirm-code">3. Enter the 6-digit code to finish</Label>
-              <div className="flex gap-2">
+              {/* On the sign-in page the field and the button use its 44px, full-width grammar,
+                  with a refused code 8px under the field and the button 16px below. */}
+              <div className={pendingToken ? 'space-y-2' : 'flex gap-2'}>
                 {/* No autoFocus in any mode: focus starts at step 1 (or stays on the
                     login-phase mode heading), and yanking it to this last field would skip
                     the QR code, secret and one-time recovery codes. Read-only, not
                     disabled, while the request runs, so focus is never dropped. */}
-                <Input
+                <CodeInput
                   ref={confirmInputRef}
                   id="mfa-confirm-code"
                   inputMode="numeric"
                   autoComplete="one-time-code"
                   placeholder="123456"
-                  className="max-w-[160px]"
+                  className={pendingToken ? undefined : 'max-w-[160px]'}
                   value={confirmCode}
                   onChange={(ev) => setConfirmCode(ev.target.value)}
                   readOnly={busy}
                   aria-busy={busy || undefined}
+                  aria-invalid={fieldError ? true : undefined}
+                  aria-describedby={fieldError ? LOGIN_ERROR_ID : undefined}
                 />
+                <FieldError message={fieldError} />
                 <Button
                   type="submit"
-                  size="sm"
+                  size={pendingToken ? 'default' : 'sm'}
                   // Busy, not disabled: it keeps focus while the code is checked.
                   disabled={!busy && (confirmCode.trim().length < 6 || (!!pendingToken && !savedAck))}
                   aria-disabled={busy || undefined}
-                  className={BUSY_INERT}
+                  className={cn(BUSY_INERT, pendingToken && '!mt-4 h-11 w-full')}
                 >
                   {busy ? <Loader2 className="animate-spin" aria-hidden /> : <Check aria-hidden />}
                   {/* In the login-phase mandated mode a successful confirm IS the login. */}
@@ -627,7 +647,7 @@ export function MfaSetupCard({
 
   // Frameless: a parent supplies the card frame + heading (login MFA-enroll step),
   // so render just the body to avoid a double frame + duplicate heading.
-  if (frameless) return <div ref={rootRef} className="space-y-5">{body}</div>;
+  if (frameless) return <div ref={rootRef} className={rhythm}>{body}</div>;
 
   return (
     <Card>

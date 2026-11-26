@@ -9,6 +9,7 @@
  */
 import * as React from 'react';
 import {
+  AlertCircle,
   ShieldCheck,
   Eye,
   EyeOff,
@@ -26,6 +27,31 @@ import { Input, type InputProps } from '@/ui/input';
 // canvas and the field fill), the ring the Console's focus ring, and the text 16px
 // on phones (no browser focus zoom) and 14px from the small breakpoint up.
 // --------------------------------------------------------------------------- //
+
+/** The inline error region's id: the field it belongs to points `aria-describedby` here. */
+export const LOGIN_ERROR_ID = 'login-error';
+
+/**
+ * The inline error under the field it belongs to: one line in the critical text
+ * colour, an optional quieter second line, announced when it appears. The sign-in
+ * steps and the mandated two-factor setup's code field share it.
+ */
+export function FieldError({ message, detail }: { message: string | null; detail?: string | null }) {
+  if (!message) return null;
+  return (
+    <div
+      id={LOGIN_ERROR_ID}
+      role="alert"
+      className="login-field-error flex items-start gap-2 text-base text-critical-text"
+    >
+      <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
+      <div className="min-w-0 break-words">
+        <p>{message}</p>
+        {detail ? <p className="mt-0.5 text-xs text-muted-foreground">{detail}</p> : null}
+      </div>
+    </div>
+  );
+}
 
 const LOGIN_CONTROL_CLASS = cn(
   'h-11 rounded-md border border-input bg-background text-lg shadow-none sm:text-base',
@@ -238,8 +264,10 @@ export const PasswordInput = React.forwardRef<HTMLInputElement, PasswordInputPro
         disabled={disabled}
         aria-label={reveal ? 'Hide password' : 'Show password'}
         aria-pressed={reveal}
+        // 44px on phones (the field's full height, its ring drawn inside), 36px from the
+        // small breakpoint up.
         className={cn(
-          'absolute right-1 top-1/2 flex h-9 w-9 -translate-y-1/2 items-center justify-center rounded-sm text-muted-foreground',
+          'absolute right-0 top-1/2 flex h-11 w-11 -translate-y-1/2 items-center justify-center rounded-md text-muted-foreground focus-visible:ring-inset sm:right-1 sm:h-9 sm:w-9 sm:rounded-sm',
           'transition-colors hover:bg-muted hover:text-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-ring',
           'disabled:pointer-events-none disabled:opacity-50',
         )}

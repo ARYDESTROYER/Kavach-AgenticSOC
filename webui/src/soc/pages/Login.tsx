@@ -74,6 +74,8 @@ import { Label } from '@/ui/label';
 import { Alert, AlertDescription } from '@/ui/alert';
 import {
   asLoginLayout,
+  FieldError,
+  LOGIN_ERROR_ID as ERROR_ID,
   LoginTextInput,
   OtpInput,
   PasswordInput,
@@ -94,31 +96,36 @@ const loadRememberDevice = () => import('@/soc/components/auth/rememberMe');
 const loadSsoErrors = () => import('@/soc/components/auth/ssoErrors');
 const SSO_ERROR_FALLBACK = 'Single sign-on failed. Try again.';
 type RememberUi = Awaited<ReturnType<typeof loadRememberControls>>;
-/** The quiet text-link buttons under a form ("Back to sign in", recovery codes). */
+/**
+ * The quiet text-link buttons under a form ("Back to sign in", recovery codes), 44px tall
+ * on phones like every other target on the page.
+ */
 const LINK_BUTTON =
-  'h-auto p-0 text-xs font-normal text-muted-foreground underline-offset-2 hover:text-foreground hover:underline';
+  'h-auto min-h-11 p-0 text-xs font-normal text-muted-foreground underline-offset-2 hover:text-foreground hover:underline sm:min-h-0';
 /** The primary and single sign-on actions: full width and 44px, like the fields. */
 const ACTION_BUTTON = 'h-11 w-full';
-/** The inline error region's id: the field it belongs to points `aria-describedby` here. */
-const ERROR_ID = 'login-error';
 /** Why the code step went back to the password: its pending token is spent or lapsed. */
 export const MFA_PENDING_SPENT_TEXT = 'Too many wrong codes, or the sign-in step timed out. Sign in again.';
 /**
  * The sentence for a refused request. This page never shows the server's own text (a
  * proxy answers with an HTML page, a failed fetch with the browser's words). A step that
- * sets a password (`setsPassword`: the first admin, a forced change) shows a 400 as the
- * rule the server names and any other refusal as `wrong`; a sign-in step shows `wrong`
- * for a 401 and one fixed sentence for anything else.
+ * sets a password (the first admin, a forced change) passes `rule`, which turns the
+ * server's 400 into the sentence to show (the first-admin step keeps the server's policy
+ * reason; the forced change maps its length rule to a fixed sentence and anything else to
+ * '', which shows `wrong`), and shows any other refusal as `wrong`; a sign-in step shows
+ * `wrong` for a 401 and one fixed sentence for anything else.
  */
-function failText(err: unknown, wrong: string, setsPassword?: boolean): string {
+function failText(err: unknown, wrong: string, rule?: (said: string) => string): string {
   const status = err instanceof ApiError ? err.status : 0;
   if (!status || status >= 500) return 'Could not reach the server. Try again.';
   // A 429 is the rate limiter or, on the code step, a second-factor lock of 5 to 60
   // minutes (B19), so it never promises a minute.
   if (status === 429) return 'Too many attempts. Wait a few minutes, then try again.';
-  if (setsPassword) return status === 400 ? (err as ApiError).message : wrong;
+  if (rule) return (status === 400 && rule((err as ApiError).message)) || wrong;
   return status === 401 ? wrong : 'Sign in failed. Try again.';
 }
+/** The forced change's length rule, checked here and named by the server's 400 too. */
+const CHANGE_MIN_TEXT = 'New password must be at least 8 characters.';
 /**
  * Focus a field once the next render has committed: the step that holds it may only
  * just be mounting, or the field may still be disabled by the request that just ended.
@@ -166,27 +173,6 @@ const appearance = (
   { mode: 'light', label: 'Light theme', Icon: Sun },
   { mode: 'dark', label: 'Dark theme', Icon: Moon },
 ];
-
-/**
- * The inline error under the field it belongs to: one line in the critical text
- * colour, an optional quieter second line, announced when it appears.
- */
-function FieldError({ message, detail }: { message: string | null; detail?: string | null }) {
-  if (!message) return null;
-  return (
-    <div
-      id={ERROR_ID}
-      role="alert"
-      className="login-field-error flex items-start gap-2 text-base text-critical-text"
-    >
-      <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
-      <div className="min-w-0 break-words">
-        <p>{message}</p>
-        {detail ? <p className="mt-0.5 text-xs text-muted-foreground">{detail}</p> : null}
-      </div>
-    </div>
-  );
-}
 
 // The OOBE password policy MIRRORS the server-side gate in routes_setup.py
 // (min length + not equal to the username + not a trivially-common password) so the
@@ -595,7 +581,8 @@ export default function Login({ onAuthenticated }: LoginProps) {
       }
       handOff();
     } catch (err) {
-      setError(failText(err, 'Could not create the admin account.', true));
+      // The first-admin step keeps the server's policy reason (`String` passes it on).
+      setError(failText(err, 'Could not create the admin account.', String));
       setBusy(false);
       focusSoon(setupPasswordRef);
     }
@@ -717,6 +704,14 @@ export default function Login({ onAuthenticated }: LoginProps) {
   };
   const submitMfa = (e?: React.FormEvent) => {
     e?.preventDefault();
+    // Verify stays enabled (a disabled button explains nothing): an empty submit names
+    // what is missing and puts focus back on the code.
+    if (!mfaCode.trim()) {
+      setError(useRecovery ? 'Enter a recovery code.' : 'Enter the 6-digit code.');
+      if (useRecovery) mfaRecoveryRef.current?.focus();
+      else setOtpAttempt((n) => n + 1);
+      return;
+    }
     void verifyMfa(mfaCode);
   };
 
@@ -760,12 +755,12 @@ export default function Login({ onAuthenticated }: LoginProps) {
   const submitChange = async (e?: React.FormEvent) => {
     e?.preventDefault();
     if (busy) return;
-    if (newPassword.length < 8) {
-      setError('New password must be at least 8 characters.');
-      return;
-    }
-    if (newPassword !== confirm) {
-      setError('Passwords do not match.');
+    // Set password stays enabled: an empty submit says so. The server strips the value
+    // before its length check, so this check does too.
+    const typed = newPassword.trim();
+    if (typed.length < 8 || newPassword !== confirm) {
+      setError(!newPassword ? 'Enter a new password.' : typed.length < 8 ? CHANGE_MIN_TEXT : 'Passwords do not match.');
+      changePasswordRef.current?.focus();
       return;
     }
     setBusy(true);
@@ -774,7 +769,9 @@ export default function Login({ onAuthenticated }: LoginProps) {
       await api.auth.changePassword(password, newPassword);
       handOff();
     } catch (err) {
-      setError(failText(err, 'Could not change the password.', true));
+      // A 400 is the length rule or a refusal such as a stale current password: a fixed
+      // sentence either way, never the server's own lower-case text.
+      setError(failText(err, 'Could not change the password.', (said) => (/at least/i.test(said) ? CHANGE_MIN_TEXT : '')));
       setBusy(false);
       focusSoon(changePasswordRef);
     }
@@ -809,8 +806,9 @@ export default function Login({ onAuthenticated }: LoginProps) {
   };
   const activeTitle = titleByMode[mode];
   const activeDescription = descByMode[mode];
-  // The sign-in and two-factor steps show a field's error under that field.
-  const inlineErrors = mode === 'signin' || mode === 'mfa';
+  // Every step but the first-admin form shows a field's error under its field, so the
+  // field being retyped stays where it is.
+  const inlineErrors = mode !== 'setup';
   const describedBy = error ? ERROR_ID : noticeId;
 
   // OOBE submit guard: mirror the server policy so the button reflects acceptance.
@@ -854,7 +852,7 @@ export default function Login({ onAuthenticated }: LoginProps) {
             aria-pressed={theme === mode}
             onClick={() => setTheme(mode)}
             className={cn(
-              'inline-flex h-9 w-9 items-center justify-center rounded-full transition-colors sm:h-7 sm:w-7',
+              'inline-flex h-11 w-11 items-center justify-center rounded-full transition-colors sm:h-7 sm:w-7',
               'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-card',
               // The pressed state is an inverted fill: `bg-muted` alone would be about
               // 1.1:1 on the card, a difference nobody can see (WCAG 1.4.11).
@@ -869,10 +867,11 @@ export default function Login({ onAuthenticated }: LoginProps) {
       </div>
     </div>
   );
-  // One column for every mode: full width with 24px gutters on phones, top aligned so
-  // a software keyboard never pushes it around, and centred at 400px from 640px up.
+  // One column for every mode: full width with 24px gutters on phones and 400px wide
+  // from 640px up, centred across and top aligned at every width, so a step change or an
+  // error grows the page downward and never moves the field being retyped.
   const mainClass =
-    'login-canvas relative isolate flex min-h-dvh flex-col items-center overflow-x-hidden bg-canvas px-6 pb-16 pt-[max(4rem,12dvh)] sm:justify-center sm:px-8 sm:py-16';
+    'login-canvas relative isolate flex min-h-dvh flex-col items-center overflow-x-hidden bg-canvas px-6 pb-16 pt-[max(4rem,12dvh)] sm:px-8 sm:pt-[max(4rem,18dvh)]';
   const columnClass = 'w-full sm:w-[25rem]';
   const markSlot = 'mb-8 flex h-10 items-center';
 
@@ -919,7 +918,7 @@ export default function Login({ onAuthenticated }: LoginProps) {
       <div data-login-identity-pane className={cn('login-enter', columnClass)}>
         <div className={markSlot} aria-hidden>
           {logoUrl ? (
-            <img src={logoUrl} alt="" className="h-10 w-10 object-contain" />
+            <img src={logoUrl} alt="" className="h-10 w-auto max-w-48 object-contain object-left" />
           ) : (
             <Shield className="h-7 w-7 text-primary" aria-hidden />
           )}
@@ -933,7 +932,7 @@ export default function Login({ onAuthenticated }: LoginProps) {
           ref={modeHeadingRef}
           tabIndex={-1}
           aria-describedby={activeDescription ? 'login-mode-description' : undefined}
-          className="break-words text-3xl text-foreground outline-0"
+          className="break-words text-3xl text-foreground [outline:none]"
         >
           {activeTitle}
         </h1>
@@ -951,13 +950,13 @@ export default function Login({ onAuthenticated }: LoginProps) {
             <SessionEndNotice reason={endedSession?.reason} onShownChange={setNoticeShown} />
           ) : null}
           {pageError && mode === 'signin' ? (
-            <Alert variant="destructive" className="mb-5" data-login-page-error>
+            <Alert variant="destructive" className="mb-4" data-login-page-error>
               <AlertCircle aria-hidden />
               <AlertDescription>{pageError}</AlertDescription>
             </Alert>
           ) : null}
           {error && !inlineErrors ? (
-            <Alert variant="destructive" className="mb-5">
+            <Alert variant="destructive" className="mb-4">
               <AlertCircle aria-hidden />
               <AlertDescription>
                 <span className="font-medium">{error}</span>
@@ -973,7 +972,7 @@ export default function Login({ onAuthenticated }: LoginProps) {
           <div key={`${mode}:${signinStep}`} className={stepClass} data-login-step={`${mode}:${signinStep}`}>
             {/* ---- Mode: create first admin (OOBE account-setup) ----------- */}
             {mode === 'setup' ? (
-              <form onSubmit={submitSetup} className="space-y-5" noValidate>
+              <form onSubmit={submitSetup} className="space-y-4" noValidate>
                 <div className="space-y-2">
                   <Label htmlFor="setup-username">Admin username</Label>
                   <LoginTextInput
@@ -1094,11 +1093,9 @@ export default function Login({ onAuthenticated }: LoginProps) {
                     onPendingExpired={expireEnrollLogin}
                   />
                 </div>
-                <div className="text-center">
-                  <Button type="button" variant="link" className={LINK_BUTTON} onClick={backToSignIn}>
-                    Back to sign in
-                  </Button>
-                </div>
+                <Button type="button" variant="link" className={LINK_BUTTON} onClick={backToSignIn}>
+                  Back to sign in
+                </Button>
               </div>
             ) : null}
 
@@ -1159,7 +1156,8 @@ export default function Login({ onAuthenticated }: LoginProps) {
                       type="button"
                       variant="ghost"
                       size="sm"
-                      className="h-8 shrink-0 px-2 text-xs text-muted-foreground"
+                      // -mr-2: the text ends on the column edge, as the links below do.
+                      className="-mr-2 h-11 shrink-0 px-2 text-xs text-muted-foreground sm:h-8"
                       onClick={() => {
                         if (rememberedChip) {
                           forgetThisDevice();
@@ -1180,15 +1178,16 @@ export default function Login({ onAuthenticated }: LoginProps) {
                   <div className="space-y-2">
                     <div className="flex items-center justify-between gap-3">
                       <Label htmlFor="login-password">Password</Label>
-                      <button
+                      <Button
                         type="button"
+                        variant="link"
+                        className={LINK_BUTTON}
                         onClick={() => setShowForgotHelp((v) => !v)}
                         aria-expanded={showForgotHelp}
                         aria-controls={showForgotHelp ? 'login-forgot-help' : undefined}
-                        className="rounded-sm text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                       >
                         Forgot password?
-                      </button>
+                      </Button>
                     </div>
                     <PasswordInput
                       ref={signinPasswordRef}
@@ -1228,7 +1227,7 @@ export default function Login({ onAuthenticated }: LoginProps) {
 
             {/* With single sign-on, Remember me also sits on the identity step, right
                 under Continue (it applies to the provider buttons below). */}
-            {ssoOffered && rememberRow ? <div className="mt-3">{rememberRow}</div> : null}
+            {ssoOffered && rememberRow ? <div className="mt-4">{rememberRow}</div> : null}
             {ssoOffered ? (
               <div className="mt-6">
                 <div className="flex items-center gap-3 text-xs text-muted-foreground" aria-hidden>
@@ -1244,7 +1243,8 @@ export default function Login({ onAuthenticated }: LoginProps) {
                         key={p.id}
                         type="button"
                         variant="outline"
-                        className={cn(ACTION_BUTTON, 'min-w-0')}
+                        // A long provider name wraps instead of being cut off.
+                        className={cn(ACTION_BUTTON, 'h-auto min-h-11 whitespace-normal py-2')}
                         onClick={() => void startSso(p.id)}
                         disabled={Boolean(ssoBusy)}
                       >
@@ -1253,7 +1253,7 @@ export default function Login({ onAuthenticated }: LoginProps) {
                         ) : (
                           <SsoBrandIcon type={p.type} />
                         )}
-                        <span className="min-w-0 truncate">Sign in with {label}</span>
+                        <span className="min-w-0 break-words">Sign in with {label}</span>
                       </Button>
                     );
                   })}
@@ -1279,7 +1279,7 @@ export default function Login({ onAuthenticated }: LoginProps) {
                   variant="ghost"
                   size="sm"
                   aria-label="Use demo credentials"
-                  className="h-8 shrink-0 px-2 text-xs"
+                  className="-mr-2 h-11 shrink-0 px-2 text-xs sm:h-8"
                   onClick={() => {
                     setUsername('Admin');
                     setPassword('Admin@123');
@@ -1297,7 +1297,7 @@ export default function Login({ onAuthenticated }: LoginProps) {
 
             {/* ---- Mode: MFA second factor (TOTP / recovery) --------------- */}
             {mode === 'mfa' ? (
-              <form onSubmit={submitMfa} className="space-y-5" noValidate>
+              <form onSubmit={submitMfa} className="space-y-4" noValidate>
                 <div className="space-y-2">
                   {/* htmlFor only in the recovery branch (id="mfa-code" is the text
                       Input there). In the OTP branch the control is the segmented
@@ -1325,14 +1325,15 @@ export default function Login({ onAuthenticated }: LoginProps) {
                         autoFocus
                       />
                       <div className="text-xs">
-                        <button
+                        <Button
                           type="button"
+                          variant="link"
+                          className={LINK_BUTTON}
                           onClick={() => setShowRecoveryHelp((v) => !v)}
                           aria-expanded={showRecoveryHelp}
-                          className="rounded-sm font-normal text-muted-foreground underline-offset-2 hover:text-foreground hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                         >
                           Where can I find my recovery codes?
-                        </button>
+                        </Button>
                         {showRecoveryHelp ? (
                           <p className="mt-1.5 rounded-md bg-muted/50 p-2 leading-relaxed text-muted-foreground">
                             Recovery codes were shown when you enabled two-factor authentication.
@@ -1359,11 +1360,7 @@ export default function Login({ onAuthenticated }: LoginProps) {
                   )}
                   <FieldError message={error} />
                 </div>
-                <Button
-                  type="submit"
-                  className={ACTION_BUTTON}
-                  disabled={busy || mfaCode.trim().length === 0}
-                >
+                <Button type="submit" className={ACTION_BUTTON} disabled={busy}>
                   {busy ? <Loader2 className="animate-spin" aria-hidden /> : <ShieldCheck aria-hidden />}
                   {busy ? 'Verifying…' : 'Verify and continue'}
                 </Button>
@@ -1401,7 +1398,7 @@ export default function Login({ onAuthenticated }: LoginProps) {
 
             {/* ---- Mode: forced password change ---------------------------- */}
             {mode === 'change' ? (
-              <form onSubmit={submitChange} className="space-y-5" noValidate>
+              <form onSubmit={submitChange} className="space-y-4" noValidate>
                 <div className="space-y-2">
                   <Label htmlFor="change-new">New password</Label>
                   <PasswordInput
@@ -1411,6 +1408,8 @@ export default function Login({ onAuthenticated }: LoginProps) {
                     onChange={setNewPassword}
                     autoComplete="new-password"
                     placeholder="Create a new password"
+                    ariaDescribedBy={describedBy}
+                    ariaInvalid={Boolean(error)}
                     disabled={busy}
                     required
                     /* eslint-disable-next-line jsx-a11y/no-autofocus -- deliberate focus placement on the primary field of the forced password-change step; behavior-preserving */
@@ -1432,12 +1431,9 @@ export default function Login({ onAuthenticated }: LoginProps) {
                     disabled={busy}
                     required
                   />
+                  <FieldError message={error} />
                 </div>
-                <Button
-                  type="submit"
-                  className={ACTION_BUTTON}
-                  disabled={busy || newPassword.length === 0 || confirm.length === 0}
-                >
+                <Button type="submit" className={ACTION_BUTTON} disabled={busy}>
                   {busy ? <Loader2 className="animate-spin" aria-hidden /> : <KeyRound aria-hidden />}
                   {busy ? 'Updating…' : 'Set password & continue'}
                 </Button>

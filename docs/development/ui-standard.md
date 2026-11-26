@@ -2179,14 +2179,19 @@ its two gradient controls; nothing on this page has a palette of its own.
   JavaScript, and is removed under `prefers-reduced-transparency: reduce` and
   `forced-colors: active`. No slab, card, border, shadow, hero, illustration, fake
   telemetry or repeated security claim.
-- **Column.** One column, 400px wide from the small breakpoint up and centred in the
-  viewport. On phones it is full width with 24px gutters, top aligned at
-  `max(4rem, 12dvh)`, in the ordinary document scroll (no nested scroller). Every mode
-  (sign-in, setup, MFA, MFA enrollment, forced password change) uses the same column;
-  taller modes grow and scroll with the page.
-- **Hierarchy.** The organization logo (40px, `object-contain`) or the built-in shield
-  (28px, `text-primary`), 32px above the heading. The page's one `h1` is
-  "Sign in to {organization}"; "Welcome back" appears only when this device remembers a
+- **Column.** One column, 400px wide from the small breakpoint up and centred across the
+  viewport. It is top aligned at every width: at `max(4rem, 18dvh)` from the small
+  breakpoint up and, on phones, full width with 24px gutters at `max(4rem, 12dvh)`, in the
+  ordinary document scroll (no nested scroller). A step change or an error therefore grows
+  the page downward and never moves the heading or the field being retyped (a vertically
+  centred column shifted by half of every change). Every mode (sign-in, setup, MFA, MFA
+  enrollment, forced password change) uses the same column; taller modes grow and scroll
+  with the page. Rows sit on one 16px rhythm in every mode (`space-y-4`, a 16px gap under
+  a top alert and above the Remember me row under Continue).
+- **Hierarchy.** The organization logo, 40px tall at its own width up to 192px
+  (`object-contain`, left aligned, so a wordmark is never shrunk into a 40px square), or
+  the built-in shield (28px, `text-primary`), 32px above the heading. The page's one `h1`
+  is "Sign in to {organization}"; "Welcome back" appears only when this device remembers a
   username; an operator `login_headline` replaces either and never stacks above a second
   `h1`. A description appears only when it carries information: the operator's
   `login_body` or `login_subtitle` on the identity step, and the instructions of the setup,
@@ -2198,7 +2203,17 @@ its two gradient controls; nothing on this page has a palette of its own.
   edge (at least 3:1 on the canvas and on the field fill) and the Console focus ring. The
   primary action is the ordinary primary `Button` (`--primary` and
   `--primary-foreground`, AA guarded for any operator accent), full width and 44px.
-  Credential fields keep password-manager `autocomplete` and paste.
+  Credential fields keep password-manager `autocomplete` and paste. Every phone target is
+  at least 44px tall: the text links (`min-h-11`, natural height from the small breakpoint
+  up), **Back** and the demo **Use** (44px, 32px from the small breakpoint up, with `-mr-2`
+  so their text ends on the column edge like the links below them), the appearance buttons
+  (44px, 28px from the small breakpoint up) and the password reveal toggle (44px, its ring
+  drawn inside the field, 36px from the small breakpoint up). **Continue**, **Sign in**,
+  "Verify and continue" and "Set password & continue" stay enabled while their field is
+  empty and explain an empty submit under the field ("Enter your username.", "Enter your
+  password.", "Enter the 6-digit code.", "Enter a recovery code.", "Enter a new
+  password."): a disabled button explains nothing. The first-admin form and the mandated
+  setup keep their submit disabled until the policy hint or the saved-codes box is met.
 - **Identity first.** The identity step holds the username and **Continue**, which is
   always rendered: an empty submit shows "Enter your username." under the field and keeps
   the step. The password step repeats the identity as a quiet row with **Back** (or "Use a
@@ -2206,18 +2221,28 @@ its two gradient controls; nothing on this page has a palette of its own.
   "Forgot password?" disclosure that says to ask an administrator, the Remember me row,
   and **Sign in**. A hidden `autocomplete="username"` field stays in the password form.
 - **Single sign-on.** When providers exist, an "or" divider follows the identity form,
-  then one full-width 44px outline button per provider with its mark and visible text
-  "Sign in with {name}". The visible text is the accessible name. No region is reserved
+  then one full-width outline button per provider, at least 44px tall, with its mark and
+  visible text "Sign in with {name}"; a long name wraps onto a taller button instead of
+  being cut off. The name is the provider's display name or, when none is set, "Google" or
+  "Microsoft" by its type; the public providers route never offers the internal id in its
+  place. The visible text is the accessible name. No region is reserved
   when single sign-on is off. When single sign-on is offered, the Remember me row also
   sits under Continue.
 - **Remember me.** When it can be ticked, the row is the label "Remember me" alone, with
   no duration and no accessible description (Round 16 D6). The warning dialog the first
-  tick opens is the disclosure and states every limit. When an administrator turned it
+  tick opens ("Stay signed in on this device?") is the disclosure: anyone who uses this
+  browser can open the Console as this account until they sign out or the session ends,
+  the session still ends on the administrator's schedule, and the device should be one
+  they trust. It states no duration or limit in hours, minutes or days (D6 as amended by
+  the acceptance pass). The checkbox draws the page's full-strength focus ring with a 2px
+  canvas offset, not the shared primitive's soft one. When an administrator turned it
   off, or the connection is not secure, the row stays visible and disabled with its
   one-line reason.
 - **Errors.** A field error (an empty field, wrong credentials, too many attempts, no
-  connection) renders under its field: 14px `text-critical-text` with a 16px alert icon,
-  `id="login-error"`, `role="alert"`, the field `aria-invalid` and described by it. A quieter
+  connection, a forced-change rule) renders under its field: 14px `text-critical-text`
+  with a 16px alert icon, `id="login-error"`, `role="alert"`, the field `aria-invalid` and
+  described by it. The forced change shows its errors under the confirm field and keeps
+  the focus in the new password. A quieter
   second line may count attempts. Page errors that belong to no field (a single sign-on
   callback failure, an expired enrollment) keep the top alert. A single sign-on error is a
   backend code mapped to a fixed sentence; the page never renders a query-string value
@@ -2227,11 +2252,13 @@ its two gradient controls; nothing on this page has a palette of its own.
   Wait a few minutes, then try again." for a 429, "Sign in failed. Try again." for any
   other sign-in or code refusal, and "Could not create the admin account." or "Could not
   change the password." for any other refusal on the setup and forced-change steps); the
-  page never renders the server's raw text, except a 400 password rule on those two
-  steps. The session-ended notice keeps its calm info
-  style. Fields are disabled while a request runs, which takes the focus away, so a refused
-  request puts focus back in the field to fix: the password, the first code cell, the
-  recovery code, the new password or the setup password.
+  page never renders the server's raw text, except a 400 password rule on the first-admin
+  step. The forced change counts the new password without its outer spaces, as the
+  server does, and maps the server's length rule to "New password must be at least 8
+  characters." and any other 400 to "Could not change the password." The session-ended
+  notice keeps its calm info style. Fields are disabled while a request runs, which takes
+  the focus away, so a refused request puts focus back in the field to fix: the password,
+  the first code cell, the recovery code, the new password or the setup password.
 - **Appearance.** One `role="group"` named "Appearance" in the top-right corner: three
   round icon buttons, "Use system theme", "Light theme" and "Dark theme", each with
   `aria-pressed`. The first button is named "Use the organization default theme" while
@@ -2243,6 +2270,17 @@ its two gradient controls; nothing on this page has a palette of its own.
   phone). The cells submit once when the sixth digit arrives; "Verify and continue" stays
   for recovery codes and as a fallback. A wrong code clears the cells and focuses the
   first one.
+- **Mandated two-factor setup.** The heading takes focus programmatically and draws no
+  focus box (`[outline:none]`: `outline-0` only zeroes the width, and Chromium still draws
+  its `auto` ring; `outline-none` is a permanent transparent outline that forced colours
+  paints). On this page the QR code sits centred above the steps, the secret wraps
+  instead of being cut off, and the code field and "Verify and sign in" use the sign-in
+  grammar (a 44px field with 16px phone text, a full-width 44px button). A refused code
+  shows under the code field as the page's field error (the field `aria-invalid` and
+  described by it, focus kept in it), never in the card's alert above the QR code, which
+  sat off screen on a phone and pushed the field down. Its sections keep the page's 16px
+  rhythm, not the Settings card's 20px. "Back to sign in" is left aligned with everything
+  else.
 - **Loading.** The page waits for the setup status, the single sign-on providers, the
   branding and the Remember me chunk before it paints the form, so nothing flashes or pops
   in. Meanwhile the final shell is in place: the canvas, the appearance group and the

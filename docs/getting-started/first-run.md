@@ -111,23 +111,31 @@ each provider follows Continue.
 </figure>
 
 Then enter the **Password** (badge 1). **Remember me** (badge 2) keeps this browser
-signed in for a limited time set by your administrator, up to 24 hours. The row shows
-only its label. The first time you tick it, a dialog states how long you stay signed in
-and asks you to confirm with **Keep me signed in**; leave it clear on a shared computer.
+signed in for a time your administrator sets. The row shows only its label. The first
+time you tick it, a dialog asks "Stay signed in on this device?": anyone who uses this
+browser can open the Console as you until you sign out or your session ends. Confirm with
+**Keep me signed in** only on a device you trust; leave it clear on a shared computer.
 When your administrator turned Remember me off, the row stays visible, greyed out, with
 "Turned off by your administrator". Select **Sign in** (badge 3). **Back** returns to
 the username step. **Forgot password?** explains that an administrator resets passwords;
 there is no self-service reset. A wrong password shows "The username or password is not
 correct." under the field. If the server cannot be reached, the page says "Could not
 reach the server. Try again.", and after too many tries it says "Too many attempts. Wait
-a few minutes, then try again." The page never shows the server's own error text.
+a few minutes, then try again." The page never shows the server's own error text. If
+you select a button before filling its field, the page says what is missing under the
+field, for example "Enter the 6-digit code." or "Enter a new password."
 
 With two-factor sign-in, type or paste the six-digit code; it is checked as soon as the
 last digit is in, and a wrong code reads "That code is not correct. Try again." Ten
 wrong codes in a row lock second-factor checks for the account for a while (see
 [Authentication](../administration/authentication.md#sessions)). If single sign-on
 fails, the page says in one short sentence what went wrong. An account that an
-administrator created or reset asks you to **Set a new password** before anything else.
+administrator created or reset asks you to **Set a new password** before anything else;
+it needs at least 8 characters, not counting spaces at either end. An account that must
+use two-factor authentication but has none yet shows **Set up two-factor authentication**:
+scan the QR code (or type the secret shown under it), save the recovery codes and tick
+**I have saved my recovery codes somewhere safe**, then enter the 6-digit code and select
+**Verify and sign in**.
 The three buttons in the top right corner set the sign-in page to the default theme,
 light or dark.
 

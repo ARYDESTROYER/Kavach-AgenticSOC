@@ -53,4 +53,21 @@ describe('Alert role derivation', () => {
     const { getByText } = render(<Alert variant={variant}>Message</Alert>);
     expect(getByText('Message')).toHaveClass(tokenClass);
   });
+
+  it('centres the icon on a one-line message without nudging the text (alert-icon-off-centre)', () => {
+    // 12px padding + half of the 20px line box, less the font's taller ascent, puts the
+    // centre of one line of 14px text 21px from the top. The 16px icon at 13px shares
+    // it. The old icon sat at 16px (centre 24px) and the text was shifted up 2px, so
+    // they were 5px apart on the sign-in page.
+    const { getByRole } = render(
+      <Alert variant="destructive">
+        <svg data-testid="icon" />
+        <div>One line</div>
+      </Alert>,
+    );
+    const alert = getByRole('alert');
+    expect(alert).toHaveClass('[&>svg]:top-[0.8125rem]', 'py-3');
+    expect(alert.className).not.toMatch(/\[&>svg\]:top-4\b/);
+    expect(alert.className).not.toMatch(/translate-y/);
+  });
 });
