@@ -13607,3 +13607,10 @@
 - Tests: on the merged tree, the dashboard, Overview, Metrics, Cost, explain library and KPI tile Console tests: 650 passed; tsc clean. The knowledge, golden set, trends and FXD1 backend modules: 839 passed. The stamped entry chunk, built the way CI builds it, is measured for FXF.
 - Status: done.
 - Next: FXF (entry headroom and the reviews' leftovers) and WP17D (release tracker screenshots); then the accessibility sweep, the records and the closing gates.
+
+### 2026-11-26 17:30Z - orchestrator - Whole suites on the integrated tree after the acceptance fixes
+- Context: an early run of both full suites on the integrated tree (39335e5, every acceptance fix package merged) while FXF and WP17D build.
+- Did: ran the whole backend suite and npm run test:strict in a separate verification checkout. The strict gate failed only on stderr output: MfaSetupCard.autostart.test.tsx let the lazy QR code chunk finish loading outside act (exposed after the FXC sign-in changes). Fixed at the test by resolving the enrollment and awaiting the chunk inside one act scope; no product code changed.
+- Tests: backend 13,976 passed, 29 skipped, 0 failed. Vitest 9,919 passed, 18 skipped / 778 files; the strict gate then passes on the two-factor, sign-in and auth test files (14 files, 180 passed, no stderr).
+- Status: done.
+- Next: FXF (the entry chunk measures 331,181 B stamped, 89 B over the 331,092 B budget) and WP17D; then XFREC records, the accessibility sweep and the closing gates.
