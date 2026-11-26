@@ -205,6 +205,7 @@ async def _related_section(
                         seen.add(cid)
                     out.append({
                         "case_id": cid,
+                        "case_number": str((ch.metadata or {}).get("case_number") or ""),
                         "verdict": str((ch.metadata or {}).get("verdict") or ""),
                         "entity": str((ch.metadata or {}).get("entity") or ""),
                         "score": round(float(ch.score), 4),
@@ -224,6 +225,7 @@ async def _related_section(
                         seen.add(c.case_id)
                         out.append({
                             "case_id": c.case_id,
+                            "case_number": c.case_number or "",
                             "verdict": c.verdict.value if c.verdict else "",
                             "entity": entity_key,
                             "score": 1.0,  # exact entity match
@@ -344,6 +346,35 @@ async def assemble(
         base.clustering = build_clustering_explanation(
             case, related_cases=base.related_cases,
         )
+        # Each related case reads by its case number, never its internal id (Round 16
+        # cross-cutting review). The numbers this panel already holds come first; one
+        # bounded, read-only, fail-open store read finds the rest (a cross-source link,
+        # a recalled case whose chunk has no number). A miss leaves the number "".
+        rows = [r for r in base.clustering.get("related_cases") or [] if isinstance(r, dict)]
+        numbers = {
+            str(r.get("case_id") or ""): str(r.get("case_number") or "")
+            for r in base.related_cases
+            if isinstance(r, dict)
+        }
+        ids = [str(r.get("case_id") or "") for r in rows]
+        missing = [cid for cid in dict.fromkeys(ids) if cid and not numbers.get(cid)][:12]
+        if missing and cases is not None:
+            try:
+                get_many = getattr(cases, "get_many", None)
+                if callable(get_many):
+                    found = dict(await get_many(missing) or {})
+                else:
+                    got = await asyncio.gather(
+                        *(cases.get(cid) for cid in missing), return_exceptions=True
+                    )
+                    found = {cid: c for cid, c in zip(missing, got) if isinstance(c, Case)}
+                for cid, found_case in found.items():
+                    numbers[str(cid)] = str(getattr(found_case, "case_number", "") or "")
+            except Exception as exc:  # noqa: BLE001 (a label lookup never fails the panel)
+                logger.debug("threat_context related case number lookup failed: %s", exc)
+        for row in [*rows, *base.related_cases]:
+            if isinstance(row, dict) and not row.get("case_number"):
+                row["case_number"] = numbers.get(str(row.get("case_id") or ""), "")
         # The asset + evidence sections are pure/local — compute them directly.
         base.asset_context = _asset_section(case, prefs)
         base.evidence = _evidence_section(case)

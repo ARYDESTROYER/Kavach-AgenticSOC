@@ -20,11 +20,12 @@ import { axe, toHaveNoViolations } from 'jest-axe';
 
 expect.extend(toHaveNoViolations);
 
-const { brandingMock, setupStatusMock, ssoMock, loginMock, verifyMock, postMock, changeMock } =
+const { brandingMock, setupStatusMock, ssoMock, authorizeMock, loginMock, verifyMock, postMock, changeMock } =
   vi.hoisted(() => ({
     brandingMock: vi.fn(),
     setupStatusMock: vi.fn(),
     ssoMock: vi.fn(),
+    authorizeMock: vi.fn(),
     loginMock: vi.fn(),
     verifyMock: vi.fn(),
     postMock: vi.fn(),
@@ -60,7 +61,7 @@ vi.mock('@/lib/api', () => {
           verify: (t: string, c: string) => verifyMock(t, c),
           disable: ok({}),
         },
-        sso: { providers: () => ssoMock(), authorize: ok({ auth_url: 'https://idp/' }) },
+        sso: { providers: () => ssoMock(), authorize: (id: string, o?: unknown) => authorizeMock(id, o) },
       },
     },
   };
@@ -112,6 +113,7 @@ beforeEach(() => {
   brandingMock.mockReset().mockResolvedValue({ ...BRANDING });
   setupStatusMock.mockReset().mockResolvedValue({ setup_complete: true, seeded_default: false });
   ssoMock.mockReset().mockResolvedValue({ providers: [] });
+  authorizeMock.mockReset().mockResolvedValue({ auth_url: 'https://idp/' });
   loginMock.mockReset();
   verifyMock.mockReset();
   postMock.mockReset().mockResolvedValue({});
@@ -169,12 +171,14 @@ describe('Login: the identity step (R5, R8, R9)', () => {
   });
 
   it('renders a failed sign-in under the password field, not in a top banner', async () => {
-    loginMock.mockRejectedValue(new MockApiError(401, 'Invalid username or password.'));
+    // The detail POST /api/auth/login really sends for a wrong password.
+    loginMock.mockRejectedValue(new MockApiError(401, 'invalid credentials'));
     renderLogin();
     const pw = await toPasswordStep();
     fireEvent.change(pw, { target: { value: 'wrong' } });
     fireEvent.click(screen.getByRole('button', { name: 'Sign in' }));
-    const message = await screen.findByText('Invalid username or password.');
+    const message = await screen.findByText('The username or password is not correct.');
+    expect(screen.queryByText('invalid credentials')).toBeNull();
     expect(pw.closest('.space-y-2')).toContainElement(message);
     expect(message.closest('[role="alert"]')).toHaveClass('login-field-error', 'text-critical-text');
     expect(document.querySelector('[data-login-page-error]')).toBeNull();
@@ -261,11 +265,12 @@ describe('Login: the code cells submit on their own, once (R10)', () => {
   });
 
   it('clears the cells and focuses the first one after a wrong code', async () => {
-    verifyMock.mockRejectedValue(new MockApiError(401, 'Invalid code.'));
+    verifyMock.mockRejectedValue(new MockApiError(401, 'invalid code'));
     renderLogin();
     const cells = await toMfaStep();
     '111111'.split('').forEach((digit, i) => fireEvent.change(cells[i], { target: { value: digit } }));
-    expect(await screen.findByText('Invalid code.')).toBeInTheDocument();
+    expect(await screen.findByText('That code is not correct. Try again.')).toBeInTheDocument();
+    expect(screen.queryByText('invalid code')).toBeNull();
     const fresh = screen.getAllByLabelText(/Authentication code digit/) as HTMLInputElement[];
     expect(fresh.map((c) => c.value).join('')).toBe('');
     await waitFor(() => expect(fresh[0]).toHaveFocus());
@@ -280,7 +285,7 @@ describe('Login: the code cells submit on their own, once (R10)', () => {
     const cells = await toMfaStep();
     // A wrong code keeps the code step, with its error.
     '111111'.split('').forEach((digit, i) => fireEvent.change(cells[i], { target: { value: digit } }));
-    expect(await screen.findByText('invalid code')).toBeInTheDocument();
+    expect(await screen.findByText('That code is not correct. Try again.')).toBeInTheDocument();
     // The spent pending token cannot take any code: the password step, with the reason.
     const fresh = screen.getAllByLabelText(/Authentication code digit/) as HTMLInputElement[];
     '222222'.split('').forEach((digit, i) => fireEvent.change(fresh[i], { target: { value: digit } }));
@@ -314,8 +319,8 @@ describe('Login: a refused code or password keeps the keyboard in place', () => 
     await waitFor(() => expect(field).toBeDisabled());
     screen.getByRole('button', { name: 'Use system theme' }).focus();
     expect(field).not.toHaveFocus();
-    await act(async () => reject(new MockApiError(401, 'Invalid code.')));
-    expect(await screen.findByText('Invalid code.')).toBeInTheDocument();
+    await act(async () => reject(new MockApiError(401, 'invalid code')));
+    expect(await screen.findByText('That code is not correct. Try again.')).toBeInTheDocument();
     await waitFor(() => expect(field).toHaveFocus());
     expect(field).toHaveValue('');
     expect(field).toHaveAttribute('aria-invalid', 'true');
@@ -358,6 +363,106 @@ describe('Login: a refused code or password keeps the keyboard in place', () => 
     expect(await screen.findByText('That password is not allowed.')).toBeInTheDocument();
     await waitFor(() => expect(pw).toHaveFocus());
     expect(postMock).toHaveBeenCalledWith('setup/account', expect.objectContaining({ username: 'chief' }));
+  });
+});
+
+describe('Login: a failure shows a fixed sentence, never the server text', () => {
+  const NETWORK = 'Could not reach the server. Try again.';
+  const PROXY_PAGE = '<html><head><title>502 Bad Gateway</title></head></html>';
+
+  /** The page holds none of the raw failure texts. */
+  function expectNoRawText() {
+    const text = document.body.textContent ?? '';
+    expect(text).not.toContain('<html');
+    expect(text).not.toContain('Bad Gateway');
+    expect(text).not.toContain('Cannot reach backend');
+    expect(text).not.toContain('Failed to fetch');
+  }
+
+  async function signInAndFail(error: unknown) {
+    loginMock.mockRejectedValue(error);
+    renderLogin();
+    const pw = await toPasswordStep();
+    fireEvent.change(pw, { target: { value: 'pw' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in' }));
+    return pw;
+  }
+
+  it('names an unreachable server when the request never left the browser', async () => {
+    const pw = await signInAndFail(new MockApiError(0, 'Cannot reach backend: Failed to fetch'));
+    const message = await screen.findByText(NETWORK);
+    expect(pw.closest('.space-y-2')).toContainElement(message);
+    expectNoRawText();
+  });
+
+  it('names an unreachable server for a proxy error page', async () => {
+    await signInAndFail(new MockApiError(502, PROXY_PAGE));
+    expect(await screen.findByText(NETWORK)).toBeInTheDocument();
+    expectNoRawText();
+  });
+
+  it('gives the rate limit its own fixed sentence', async () => {
+    await signInAndFail(new MockApiError(429, 'rate limit exceeded'));
+    expect(await screen.findByText('Too many attempts. Try again in a minute.')).toBeInTheDocument();
+    expect(screen.queryByText('rate limit exceeded')).toBeNull();
+  });
+
+  it('gives an unexpected refusal one fixed sentence', async () => {
+    await signInAndFail(new MockApiError(403, 'account is disabled by policy xyz'));
+    expect(await screen.findByText('Sign in failed. Try again.')).toBeInTheDocument();
+    expect(screen.queryByText(/policy xyz/)).toBeNull();
+  });
+
+  it('names an unreachable server when the code check cannot reach it', async () => {
+    verifyMock.mockRejectedValue(new MockApiError(504, PROXY_PAGE));
+    renderLogin();
+    const cells = await toMfaStep();
+    '111111'.split('').forEach((digit, i) => fireEvent.change(cells[i], { target: { value: digit } }));
+    expect(await screen.findByText(NETWORK)).toBeInTheDocument();
+    expectNoRawText();
+  });
+
+  it('gives a single sign-on start failure a fixed sentence', async () => {
+    ssoMock.mockResolvedValue({ providers: [{ id: 'g', type: 'google', display_name: 'Google' }] });
+    authorizeMock.mockRejectedValue(new MockApiError(502, PROXY_PAGE));
+    renderLogin();
+    fireEvent.click(await screen.findByRole('button', { name: 'Sign in with Google' }));
+    expect(await screen.findByText('Single sign-on failed. Try again.')).toBeInTheDocument();
+    expectNoRawText();
+  });
+
+  it('keeps a first-admin password rule but hides a proxy error page', async () => {
+    setupStatusMock.mockResolvedValue({ setup_complete: false, needs_user: true, seeded_default: false });
+    postMock.mockRejectedValueOnce(new MockApiError(400, 'password must not contain the organization name'));
+    renderLogin();
+    fireEvent.change(await screen.findByLabelText('Admin username'), { target: { value: 'chief' } });
+    const pw = screen.getByLabelText('Password') as HTMLInputElement;
+    fireEvent.change(pw, { target: { value: 'Long-and-unusual-42' } });
+    fireEvent.change(screen.getByLabelText('Confirm password'), { target: { value: 'Long-and-unusual-42' } });
+    const create = screen.getByRole('button', { name: /Create admin/ });
+    fireEvent.click(create);
+    // A password policy reason is the one server text the page keeps: it says what to change.
+    expect(await screen.findByText('password must not contain the organization name')).toBeInTheDocument();
+    await waitFor(() => expect(create).toBeEnabled());
+    postMock.mockRejectedValueOnce(new MockApiError(502, PROXY_PAGE));
+    fireEvent.click(create);
+    expect(await screen.findByText(NETWORK)).toBeInTheDocument();
+    expectNoRawText();
+  });
+
+  it('hides a proxy error page on the forced password change', async () => {
+    loginMock.mockResolvedValue({ user: { username: 'alice', must_change_password: true } });
+    changeMock.mockRejectedValue(new MockApiError(502, PROXY_PAGE));
+    renderLogin();
+    const pw = await toPasswordStep();
+    fireEvent.change(pw, { target: { value: 'old-password' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in' }));
+    const next = (await screen.findByLabelText('New password')) as HTMLInputElement;
+    fireEvent.change(next, { target: { value: 'abcdefgh1' } });
+    fireEvent.change(screen.getByLabelText('Confirm new password'), { target: { value: 'abcdefgh1' } });
+    fireEvent.submit(next.closest('form')!);
+    expect(await screen.findByText(NETWORK)).toBeInTheDocument();
+    expectNoRawText();
   });
 });
 

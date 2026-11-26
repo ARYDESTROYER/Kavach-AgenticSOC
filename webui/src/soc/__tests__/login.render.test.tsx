@@ -238,6 +238,52 @@ describe('Login — four-mode render', () => {
     expect(screen.queryByRole('button', { name: 'Continue' })).not.toBeInTheDocument();
   });
 
+  it('names the first appearance button for the organization default theme when Branding sets one', async () => {
+    // The factory default: Branding sets dark. On `system` the page follows it, as the
+    // Console does, so the pressed button must say so (a light-mode browser stays dark).
+    brandingMock.mockResolvedValue({ ...BASE_BRANDING, default_theme: 'dark' });
+    renderLogin();
+    await screen.findByLabelText('Username');
+    const group = screen.getByRole('group', { name: 'Appearance' });
+    const first = await within(group).findByRole('button', { name: 'Use the organization default theme' });
+    expect(first).toHaveAttribute('title', 'Use the organization default theme');
+    expect(first).toHaveAttribute('aria-pressed', 'true');
+    expect(within(group).queryByRole('button', { name: 'Use system theme' })).toBeNull();
+    await waitFor(() => expect(document.documentElement).toHaveClass('dark'));
+    // An explicit choice still wins, and the default stays one press away.
+    fireEvent.click(within(group).getByRole('button', { name: 'Light theme' }));
+    await waitFor(() => expect(document.documentElement).not.toHaveClass('dark'));
+    expect(first).toHaveAttribute('aria-pressed', 'false');
+    fireEvent.click(first);
+    expect(window.localStorage.getItem('soc.theme')).toBe('system');
+    await waitFor(() => expect(document.documentElement).toHaveClass('dark'));
+    expect(first).toHaveAttribute('aria-pressed', 'true');
+  });
+
+  it('names the legacy dark default the same way', async () => {
+    brandingMock.mockResolvedValue({ ...BASE_BRANDING, dark_mode_default: true });
+    renderLogin();
+    await screen.findByLabelText('Username');
+    expect(
+      await screen.findByRole('button', { name: 'Use the organization default theme' }),
+    ).toHaveAttribute('aria-pressed', 'true');
+  });
+
+  it.each([
+    ['system', { default_theme: 'system' }],
+    ['unset', {}],
+  ])('keeps "Use system theme" when the organization default is %s', async (_label, extra) => {
+    brandingMock.mockResolvedValue({ ...BASE_BRANDING, ...extra });
+    renderLogin();
+    await screen.findByLabelText('Username');
+    const group = screen.getByRole('group', { name: 'Appearance' });
+    expect(within(group).getByRole('button', { name: 'Use system theme' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+    expect(within(group).queryByRole('button', { name: 'Use the organization default theme' })).toBeNull();
+  });
+
   it('returns from password to identity with the username preserved and focused', async () => {
     renderLogin();
     await advanceSigninToPassword('analyst@example.com');
@@ -371,7 +417,7 @@ describe('Login — four-mode render', () => {
     fireEvent.change(password, { target: { value: 'incorrect' } });
     fireEvent.click(screen.getByRole('button', { name: 'Sign in' }));
 
-    expect(await screen.findByText('Could not reach the backend. Please try again.')).toBeInTheDocument();
+    expect(await screen.findByText('Could not reach the server. Try again.')).toBeInTheDocument();
     await waitFor(() => {
       expect(password).toHaveValue('');
       expect(password).toHaveAttribute('aria-invalid', 'true');

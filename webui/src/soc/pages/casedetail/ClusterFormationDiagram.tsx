@@ -10,7 +10,10 @@ import type { LucideIcon } from 'lucide-react';
 
 import { cn } from '@/lib/cn';
 import { middleEllipsis } from './caseFacts';
-import { DASH, humanizeToken } from '@/lib/format';
+import { DASH, caseLabel, humanizeToken } from '@/lib/format';
+import { isSafeCaseId } from '@/soc/case-result-route';
+import { safeRouteHref, useRouteLinkClick } from '@/soc/route-link';
+import { pageHash } from '@/soc/router';
 import { Badge } from '@/ui/badge';
 import { HoverCard, HoverCardContent, HoverCardTrigger } from '@/ui/hover-card';
 
@@ -27,6 +30,8 @@ type ClusterCorrelation = {
 
 type RelatedClusterCase = {
   case_id?: string;
+  /** The case number ("CASE-000049"), the row's label; "" when the store had none. */
+  case_number?: string;
   relationship?: string;
   reason?: string;
   verdict?: string;
@@ -51,6 +56,36 @@ export type ClusterExplanation = {
   related_cases?: RelatedClusterCase[];
   limitations?: string;
 };
+
+/**
+ * A related case, named by its case number (the internal id is only its tooltip), as a
+ * link that opens it in Case Manager through the router. Plain text when the id cannot
+ * be a safe route.
+ */
+function RelatedCaseLink({ row }: { row: RelatedClusterCase }) {
+  const id = String(row.case_id);
+  const label = caseLabel(row);
+  const href = isSafeCaseId(id) ? safeRouteHref(pageHash('case_manager', { caseId: id })) : undefined;
+  const onClick = useRouteLinkClick(href);
+  if (!href) {
+    return (
+      <span className="break-all font-mono text-foreground" title={id}>
+        {label}
+      </span>
+    );
+  }
+  return (
+    <a
+      href={href}
+      onClick={onClick}
+      title={id}
+      aria-label={`Open case ${label}`}
+      className="inline-flex min-h-6 items-center break-all rounded-sm font-mono text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+    >
+      {label}
+    </a>
+  );
+}
 
 function secondsLabel(seconds: number): string {
   if (seconds <= 0) return 'No persisted window';
@@ -263,9 +298,9 @@ export function ClusterFormationDiagram({ data }: { data: ClusterExplanation | n
             <Link2 className="h-3.5 w-3.5" aria-hidden /> Related cases
             <span className="tabular-nums">{related.length}</span>
           </h4>
-          {/* Readable rows instead of raw 32-hex chips: the id is middle-ellipsised (the
-              full id stays in the tooltip and the accessible name), with the relationship,
-              the AI verdict and the reason beside it. Plain text only (#9). */}
+          {/* Each row names its case by number and opens it (the internal id stays in
+              the tooltip), with the relationship, the AI verdict and the reason beside
+              it. Plain text only (#9). */}
           <ul className="mt-2 divide-y divide-border/70" data-testid="cluster-related-cases">
             {related.map((row) => {
               const id = String(row.case_id);
@@ -274,9 +309,7 @@ export function ClusterFormationDiagram({ data }: { data: ClusterExplanation | n
                   key={`${row.relationship}-${id}`}
                   className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 py-1.5 text-xs"
                 >
-                  <span className="font-mono text-foreground" title={id} aria-label={`Case ${id}`}>
-                    {middleEllipsis(id, 10, 6)}
-                  </span>
+                  <RelatedCaseLink row={row} />
                   {row.relationship ? (
                     <span className="text-muted-foreground">{humanizeToken(row.relationship)}</span>
                   ) : null}

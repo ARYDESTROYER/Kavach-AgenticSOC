@@ -556,7 +556,9 @@ describe('Login — Remember me', () => {
     await acceptWarning();
     fireEvent.change(pw, { target: { value: 'wrong' } });
     fireEvent.click(screen.getByRole('button', { name: 'Sign in' }));
-    await screen.findByText('invalid credentials');
+    // A fixed sentence, never the server's own lower-case detail.
+    await screen.findByText('The username or password is not correct.');
+    expect(screen.queryByText('invalid credentials')).toBeNull();
     expect(window.localStorage.getItem(REMEMBERED_USERNAME_KEY)).toBeNull();
     expect(window.localStorage.getItem(REMEMBER_ACK_KEY)).toBeNull();
   });
