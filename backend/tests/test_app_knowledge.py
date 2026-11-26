@@ -1489,7 +1489,14 @@ async def test_app_help_tool_destinations_come_from_the_best_sections_page(quest
 async def test_app_help_tool_keeps_a_destination_the_console_labels_confirm():
     """Another page's section adds its destination only when the console labels and
     keywords name it too: "Kill the export job" keeps Analytics › Jobs (the Data export
-    section and the 'jobs' keywords both name it), never the Data export section alone."""
+    section and the 'jobs' keywords both name it), never the Data export section alone.
+
+    Round 16 XFINT: the best section is now the analyst guide's Analytics › Jobs section,
+    which says how to stop a running job and names only Analytics › Jobs. Before it, three
+    sections tied within 1 percent for this question and the Data export section could win
+    the tie, which lent its page's Data export destination to a question about the Jobs
+    page. The assertions are unchanged; the cross-page rule itself stays covered by the
+    destinations test above ("Where are runbooks?", "How do I export a chart as CSV?")."""
     outcome = await AppHelpTool().run(_ctx(_role_grants("super_admin")), query="Kill the export job")
     assert outcome.ok
     assert "page:batchjobs" in outcome.console_links, outcome.console_links

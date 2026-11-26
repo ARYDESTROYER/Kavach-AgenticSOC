@@ -3448,9 +3448,19 @@
    "page": "analyst/analytics.md",
    "anchor": "cost",
    "heading": "Cost",
-   "text": "Open **Analytics → Cost** to inspect model calls, tokens, the execution tier each call\nran on, spend over time, a breakdown by model, role and surface (ranked by cost, tokens\nor calls), the detailed ledger with its cost composition, and the top cost drivers. Every\ntile and module names the range it covers, except **Today**. **Spend over time** places\nthe ledger's hourly spend on the range's own time axis, hour by hour for the last 24\nhours and day by day for longer ranges, with the hours that had no spend counted as\nzero; the change on **Total cost** compares the second half of the range with the first.\n**Per hour** and **Per day** divide the range total by the hours or days of the range\nitself, so a 7-day range reads per day over 7 days, not over the 8 calendar days it\ntouches.\nEvery model call must pass through this ledger. A price is an estimate based on the active catalog or operator override; it\ndoes not replace the provider invoice. Each call made by version 0.2 or later also\nrecords the rates it was charged and where they came from, so a case's AI usage list can\nrecompute every call; see Explainable numbers.\n\nSee Analyst overview, Cases, and\nBackground jobs.",
+   "text": "Open **Analytics → Cost** to inspect model calls, tokens, the execution tier each call\nran on, spend over time, a breakdown by model, role and surface (ranked by cost, tokens\nor calls), the detailed ledger with its cost composition, and the top cost drivers. Every\ntile and module names the range it covers, except **Today**. **Spend over time** places\nthe ledger's hourly spend on the range's own time axis, hour by hour for the last 24\nhours and day by day for longer ranges, with the hours that had no spend counted as\nzero; the change on **Total cost** compares the second half of the range with the first.\n**Per hour** and **Per day** divide the range total by the hours or days of the range\nitself, so a 7-day range reads per day over 7 days, not over the 8 calendar days it\ntouches.\nEvery model call must pass through this ledger. A price is an estimate based on the active catalog or operator override; it\ndoes not replace the provider invoice. Each call made by version 0.2 or later also\nrecords the rates it was charged and where they came from, so a case's AI usage list can\nrecompute every call; see Explainable numbers.",
    "console": [
     "page:cost"
+   ]
+  },
+  {
+   "id": "analyst/analytics#jobs:0",
+   "page": "analyst/analytics.md",
+   "anchor": "jobs",
+   "heading": "Jobs",
+   "text": "Open **Analytics → Jobs** to follow the background jobs you started, such as a data\nexport, an audit log export, a bulk change from Case Manager or a reset. To stop a job\nthat is still running, choose **Cancel** on its row. There is no force kill: the button\nreads **Stopping…** until the job reaches its next safe checkpoint, and work the job\nalready finished is kept. Each row shows the job's progress and result, and an export\noffers **Download** once its file is ready.\n\nSee Analyst overview, Cases, and\nBackground jobs.",
+   "console": [
+    "page:batchjobs"
    ]
   },
   {

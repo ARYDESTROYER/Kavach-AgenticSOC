@@ -724,6 +724,25 @@ def _stored(client: TestClient, ip: str) -> list[Case]:
     return items
 
 
+def _settle(client: TestClient) -> None:
+    """Wait until no tracked background writer (``AppState.spawn_mutation_task``: the
+    read-only lookups a runbook run starts on attach, the run notices) is pending, so an
+    audit count taken next holds only rows already written. Under a loaded machine such a
+    writer can still be adding ``step.evidence_collected`` rows after the request that
+    started it has answered."""
+
+    async def _drain() -> list[str]:
+        state = _state(client)
+        for _ in range(50):
+            tasks = [t for t in list(state._mutation_tasks) if not t.done()]  # noqa: SLF001
+            if not tasks:
+                return []
+            await asyncio.gather(*tasks, return_exceptions=True)
+        return [t.get_name() for t in list(state._mutation_tasks) if not t.done()]  # noqa: SLF001
+
+    assert client.portal.call(_drain) == []
+
+
 def test_reinvestigating_a_closed_case_over_the_route_keeps_one_case(api_client, mock_provider) -> None:
     case_id = _create_case(api_client, mock_provider, "192.0.2.61")
     r = api_client.post(f"/api/cases/{case_id}/action", json={"action": "close"})
@@ -743,11 +762,17 @@ def test_close_x_new_events_open_y_then_reinvestigate_x_answers_open_case_exists
     assert api_client.post(f"/api/cases/{x}/action", json={"action": "close"}).status_code == 200
     y = _create_case(api_client, mock_provider, "192.0.2.62")
     assert y != x
+    # X's runbook run may still be writing its on-attach lookup rows in the background:
+    # count only once every background writer has finished, so the count holds only rows
+    # written before the refused request.
+    _settle(api_client)
     audit_before = len(api_client.portal.call(lambda: _state(api_client).audit.records_for_case(x)))
     r = api_client.post(f"/api/cases/{x}/reinvestigate")
     assert r.status_code == 409, r.text
     assert r.json()["detail"]["code"] == "open_case_exists"
     assert r.json()["detail"]["case_id"] == y
+    # The refused request writes no audit row, now or from a writer it left behind.
+    _settle(api_client)
     assert len(api_client.portal.call(lambda: _state(api_client).audit.records_for_case(x))) == audit_before
     r = api_client.post(f"/api/cases/{x}/investigate")
     assert r.status_code == 409 and r.json()["detail"]["case_id"] == y
