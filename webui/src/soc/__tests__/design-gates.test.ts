@@ -20,6 +20,8 @@ import { describe, it, expect } from 'vitest';
 import { checkTokenExistence } from '../../../scripts/gate-tokens.mjs';
 import {
   checkContrast,
+  SELECTED_FILLS,
+  SELECTED_TEXT_AXES,
   SEMANTIC_FILL_AXES,
   SIGN_IN_NON_TEXT_AXES,
   SIGN_IN_TEXT_AXES,
@@ -156,6 +158,25 @@ describe('design gate: grep baseline only ratchets DOWN (M1 anti-grandfather)', 
     // violations (the M1 defect), so the assertion is deliberately a hard `<=`.
     const total = Object.values(textBase).reduce((a, b) => a + b, 0);
     expect(total).toBeLessThanOrEqual(75);
+  });
+});
+
+describe('design gate: text on a selected fill', () => {
+  // A selected runbook phase tab and a pressed KPI tile raise their muted text to the
+  // foreground ink, because muted text on the panel's selected wash is 4.2:1 in light.
+  it('measures the foreground on the canvas and the panel selected fills, in both themes', () => {
+    const { results } = checkContrast();
+    const selected = results.filter((r) => r.kind === 'selected-text');
+    expect(selected.length).toBe(SELECTED_TEXT_AXES.length * SELECTED_FILLS.length * 2);
+    const failures = selected.filter((r) => !r.pass);
+    expect(failures, JSON.stringify(failures, null, 2)).toEqual([]);
+    for (const name of ['foreground on accent (selected fill)', 'foreground on panel-accent (selected fill)']) {
+      for (const theme of ['light', 'dark']) {
+        const hit = selected.find((r) => r.name === name && r.theme === theme);
+        expect(hit, `${theme} ${name}`).toBeDefined();
+        expect(hit!.bar).toBe(4.5);
+      }
+    }
   });
 });
 

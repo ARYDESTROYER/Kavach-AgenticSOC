@@ -23,6 +23,15 @@ import { nextStep, numberedSteps, phaseCounts, phaseTabName, phaseWords } from '
 import { focusHeading } from './NextStepCard';
 import { StepRow } from './StepRow';
 
+/**
+ * The ink of a phase tab's caption ("3/3 · Complete"): muted at rest, the foreground on
+ * the selected tab. The selected fill is `--accent`, which a grouped panel re-points to
+ * `--panel-accent`, and muted text on that wash is 4.2:1 in light, below 4.5:1 for 12px
+ * text, so the selected tab raises it (the pressed KPI tile does the same). The contrast
+ * gate measures the foreground on both selected fills in both themes.
+ */
+export const PHASE_CAPTION_INK = 'text-muted-foreground group-data-[state=active]:text-foreground';
+
 export interface PhaseTabsProps {
   /** The selected phase (controlled by the panel, defaulting to the Next step's). */
   phase: PhaseId;
@@ -101,7 +110,10 @@ export function PhaseTabs({ phase, onPhaseChange, narrow }: PhaseTabsProps) {
                     style={{ width: `${pct}%` }}
                   />
                 </span>
-                <span className="mt-1 flex items-center gap-1.5 text-xs tabular-nums text-muted-foreground" aria-hidden>
+                {/* The selected tab raises its caption to the foreground ink: muted text on
+                    the selected fill is below 4.5:1 inside a panel in light
+                    (`PHASE_CAPTION_INK`). */}
+                <span className={cn('mt-1 flex items-center gap-1.5 text-xs tabular-nums', PHASE_CAPTION_INK)} aria-hidden>
                   <span className="min-w-0">
                     {c.done.toLocaleString()}/{c.total.toLocaleString()} · {phaseWords(c)}
                   </span>

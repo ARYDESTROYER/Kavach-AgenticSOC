@@ -686,12 +686,15 @@ the status while the case is open or its outcome once it ended, the Risk chip (i
 explanation on hover or click), the AI verdict (explained the same way) with the live AI
 run chip after it, the owner (its one editable home, opened with M), the SLA while open
 and the review chip while an auto-close review waits. As the pane narrows, items give way
-by container query, never the viewport: the Risk chip below 30rem, the verdict and the
-long severity label below 36rem, the owner's name and the review chip below 44rem, the SLA
+by container query, never the viewport: the Risk chip below 30rem, the verdict, the
+long severity label and the outcome's `Analyst` tag below 36rem (its word is still read
+aloud), the owner's name and the review chip below 44rem, the SLA
 below 52rem. The owner's monogram never hides. On a short line the owner's name truncates
 first, then the verdict's words (its label and confidence keep their width), and the status
 words or the outcome give way last, only once both are at their minimum: on a phone-width
-strip, where the owner's name and the verdict are already hidden, the status truncates. A review
+strip, where the owner's name and the verdict are already hidden, the status truncates. The
+outcome badge is never cut: its words end in an ellipsis inside its whole border, and the
+whole outcome is its hover title. A review
 sample has no band in the header: its sentence is the review chip's hover and the Brief's
 first block. Tags, the campaign, the factor reading of the risk, Ask AI about the case
 and the Sample mark live in the inspector. The primary action follows the status: Acknowledge when new; Close case while open,
@@ -797,8 +800,9 @@ a viewer who may manage users sees it.
   It keeps its words from a 30rem strip. Below that it shows the ring alone, and its name
   still says what it is. There is no clock without its words: the ring alone is the case
   chat glyph. While it shows, lower-priority items give way first: the verdict's label
-  word, the owner's name below a 56rem pane (the monogram stays), and the SLA and the
-  review chip below 64rem (the SLA stays in the inspector's Signal section). The status
+  word, the owner's name below a 56rem pane (the monogram stays), and the SLA, the
+  review chip and the outcome's `Analyst` tag below 64rem (the SLA stays in the
+  inspector's Signal section). The status
   words truncate last and never vanish. A click opens its popover, named by its title:
   the five steps (Triage, Specialist and runbook, Looking up evidence, Verdict, Deciding)
   with the current one marked, who or what started it ("You started it.", "Started by a

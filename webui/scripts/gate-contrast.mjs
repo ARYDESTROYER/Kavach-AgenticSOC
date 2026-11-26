@@ -49,6 +49,11 @@
  *      ≥ 4.5:1 on the canvas; the field edge `--input` ≥ 3:1 on the canvas and on the
  *      field fill `--background`; the focus ring ≥ 3:1 on the canvas. These replace the
  *      retired login-accents gate, whose subject (the gradient controls) was deleted.
+ *   6. TEXT ON A SELECTED FILL. A selected tab or a pressed tile paints the selected fill
+ *      (`--accent`, which a grouped panel re-points to `--panel-accent`), and muted text on
+ *      the panel's selected wash is 4.2:1 in light. So a selected surface raises its muted
+ *      text to the foreground ink (the selected runbook phase tab's caption, the pressed
+ *      KPI tile), and the foreground is measured on both selected fills ≥ 4.5:1.
  *
  * Usage:  node scripts/gate-contrast.mjs   (exit 0 = pass, 1 = fail)
  * Library: `checkContrast()` returns { ok, results[] } for the Vitest wiring.
@@ -145,6 +150,11 @@ export const SIGN_IN_NON_TEXT_AXES = [
   { name: 'input on background (sign-in field fill)', fg: '--input', bg: '--background' },
   { name: 'ring on canvas (sign-in)', fg: '--ring', bg: '--canvas' },
 ];
+
+/** The ink a selected surface raises its muted text to (bar 6: AA normal text). */
+export const SELECTED_TEXT_AXES = ['--foreground'];
+/** The selected fills that ink is measured on: the canvas's and the grouped panel's. */
+export const SELECTED_FILLS = ['--accent', '--panel-accent'];
 
 /** Alpha-composite a foreground wash over an opaque card (sRGB CSS compositing). */
 function composite(fg, bg, alpha) {
@@ -286,6 +296,20 @@ export function checkContrast() {
     }
     for (const { name, fg, bg } of SIGN_IN_NON_TEXT_AXES) {
       push(results, theme, name, 'sign-in-nontext', AA_NONTEXT, resolveTokenRgb(fg, map), resolveTokenRgb(bg, map));
+    }
+    // Bar 6: the ink a selected tab or pressed tile raises its muted text to.
+    for (const t of SELECTED_TEXT_AXES) {
+      for (const fill of SELECTED_FILLS) {
+        push(
+          results,
+          theme,
+          `${t.slice(2)} on ${fill.slice(2)} (selected fill)`,
+          'selected-text',
+          AA_TEXT,
+          resolveTokenRgb(t, map),
+          resolveTokenRgb(fill, map),
+        );
+      }
     }
   }
   return { ok: results.every((r) => r.pass), results };
