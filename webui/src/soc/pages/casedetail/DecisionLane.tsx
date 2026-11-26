@@ -3,17 +3,23 @@
  * section of the Investigation tab before it).
  *
  * What settled the case, and why, from the code or the person who did it, never the
- * model (#3): the decision line (the deterministic `decide()` record, or the analyst or
- * analyst policy that closed it), the numbers it compared against the auto-close entry
+ * model (#3): the decision line, the numbers it compared against the auto-close entry
  * for the case's verdict (B27: the entry `decide()` acts on, `policyForVerdict`), the
  * authority sentence ONCE on the case, then two disclosures: "Policy inputs" (the
- * `DecisionCard`) and "Automation applied (N)" (what threshold automation did after it).
+ * `DecisionCard`, which keeps the decision record word for word) and "Automation applied
+ * (N)" (what threshold automation did after it).
  *
- * The verdict, confidence, risk, status and owner are the header's: this lane does not
- * repeat them (the ui-standard one-home rule). The model's reading is the AI lane's (G17).
+ * The decision line is a sentence about who settled the case and how: the case manager's
+ * `key=value` record reads "Escalated by the system." (`decisionRecordSentence`). On a
+ * person's close it is what the policy recorded before them ("Before the analyst: …"),
+ * or nothing: the outcome, the person and the time are the header's, the inspector's and
+ * the People lane's. The verdict, confidence, risk, status and owner are the header's
+ * too: this lane does not repeat them (the ui-standard one-home rule). The model's
+ * reading is the AI lane's (G17).
  *
- * SECURITY (#9): the decision record is server-written text rendered as a text node;
- * automation details are plain text. Read only: nothing here decides or changes the case.
+ * SECURITY (#9): the decision line is our own words or server-written prose rendered as
+ * a text node; automation details are plain text. Read only: nothing here decides or
+ * changes the case.
  */
 import * as React from 'react';
 import { ChevronDown, Lock } from 'lucide-react';
@@ -25,6 +31,7 @@ import { cn } from '@/lib/cn';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/ui/collapsible';
 
 import { isAutoClosedByAI } from '@/soc/components/badges';
+import { decisionRecordSentence } from '@/soc/components/caseActivityText';
 import { caseOutcome, isHumanClosed } from '@/soc/components/outcome';
 import type { Navigate } from '@/soc/router';
 
@@ -104,12 +111,25 @@ export const DecisionLane: React.FC<DecisionLaneProps> = ({
   // An operator's declared-benign policy is neither a person's case work nor the model's.
   const policyClosed = outcome.source === 'analyst_policy';
   const decisionSummary = rationale?.decision_rationale?.trim() || '';
+  // The code's record in words: the case manager's `key=value` row becomes a sentence,
+  // prose from older history passes through, and any other `key=value` record is left to
+  // Policy inputs, which shows it word for word.
+  const codeLine = decisionSummary
+    ? (decisionRecordSentence(decisionSummary) ?? (DECISION_RECORD.test(decisionSummary) ? '' : decisionSummary))
+    : '';
   // Undecided: the AI has not assessed the case and nobody settled it (a candidate).
   const undecided = !humanClosed && !policyClosed && !aiAssessed(c) && !String(c.decision_by ?? '').trim();
-  const decisionLine =
-    humanClosed || policyClosed
-      ? `${outcome.headline}${outcome.by ? ` by ${outcome.by}` : ''}.`
-      : decisionSummary || 'The server-side case policy recorded the outcome shown for this case.';
+  // A person's close: the line is what the policy recorded before them, or nothing (the
+  // outcome, the person and the time have their homes in the header, the inspector and
+  // the People lane).
+  const personClosed = humanClosed && !policyClosed;
+  const decisionLine = policyClosed
+    ? `${outcome.headline}${outcome.by ? ` by ${outcome.by}` : ''}.`
+    : personClosed
+      ? codeLine
+        ? `Before the analyst: ${codeLine}`
+        : ''
+      : codeLine || 'The server-side case policy recorded the outcome shown for this case.';
   const resolvedByHuman = String(c.status || '').toLowerCase() === 'resolved';
   // The authority sentence, ONCE on the case.
   const authority = policyClosed
@@ -134,21 +154,14 @@ export const DecisionLane: React.FC<DecisionLaneProps> = ({
       data-testid="brief-decision"
       data-decided-by={policyClosed ? 'analyst_policy' : humanClosed ? 'analyst' : 'code'}
     >
-      {/* The server's decision record is a `key=value` audit line: shown as the record it
-          is (mono, wrapping) rather than as a prose sentence. */}
-      <DecisionExplain caseRecord={c}>
-        <p
-          data-testid="decision-line"
-          className={cn(
-            'leading-relaxed text-foreground/90',
-            DECISION_RECORD.test(decisionLine) ? 'font-mono text-xs [overflow-wrap:anywhere]' : 'text-base',
-          )}
-        >
-          {decisionLine}
-        </p>
-      </DecisionExplain>
-      {humanClosed && !policyClosed && decisionSummary ? (
-        <p className="text-xs leading-relaxed text-muted-foreground">Before the analyst: {decisionSummary}</p>
+      {/* A sentence, never the raw record: Policy inputs keeps that word for word. The
+          hover explains how the policy compared the numbers. */}
+      {decisionLine ? (
+        <DecisionExplain caseRecord={c}>
+          <p data-testid="decision-line" className="text-base leading-relaxed text-foreground/90">
+            {decisionLine}
+          </p>
+        </DecisionExplain>
       ) : null}
       {autoClose ? (
         <p data-testid="decision-auto-close" className="text-sm leading-relaxed text-foreground/90">

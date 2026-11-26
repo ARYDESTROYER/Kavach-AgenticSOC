@@ -118,13 +118,14 @@ describe('the header chip', () => {
     expect(chip).toHaveTextContent('AI working · 0:42');
   });
 
-  it('drops its words when compact, and keeps the ring alone for a phone-width line (WP16)', async () => {
+  it('keeps its words unless compact, and compact keeps the ring alone for a phone-width line (XFCM)', async () => {
     serve({ items: [view()] });
-    const { rerender } = render(<AiRunChip caseId="case-1" compact />);
+    const { rerender } = render(<AiRunChip caseId="case-1" compact={false} />);
     await settle();
     const chip = screen.getByTestId('ai-run-chip');
-    expect(chip).toHaveTextContent(/^0:02$/);
-    rerender(<AiRunChip caseId="case-1" compact="ring" />);
+    // Never a clock without its words: the ring alone is the case chat glyph.
+    expect(chip).toHaveTextContent(/^AI working · 0:02$/);
+    rerender(<AiRunChip caseId="case-1" compact />);
     expect(chip).toHaveTextContent('');
     expect(chip.querySelector('[data-activity="running"]')).not.toBeNull();
     // The name still says what it is.

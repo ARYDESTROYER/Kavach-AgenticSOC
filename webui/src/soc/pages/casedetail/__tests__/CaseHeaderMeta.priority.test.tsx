@@ -12,15 +12,15 @@ import { render, screen, within } from '@testing-library/react';
 vi.mock('@/lib/api', () => ({ api: { get: vi.fn(), caseAssign: vi.fn() } }));
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn(), message: vi.fn() } }));
 
-import type { Case } from '@/lib/types';
+import type { Case, SlaPolicy } from '@/lib/types';
 import { TooltipProvider } from '@/ui/tooltip';
 import { caseOutcome } from '@/soc/components/outcome';
 
-import { CaseHeaderMeta } from '../CaseHeaderMeta';
+import { CaseHeaderMeta, META_RUN_ROOM, META_SHRINK } from '../CaseHeaderMeta';
 
 const LONG_OWNER = 'maximilian.alexander-worthington@soc.example.org';
 
-function renderMeta(over: Partial<Case> = {}) {
+function renderMeta(over: Partial<Case> = {}, slaPolicy: SlaPolicy | null = null) {
   const c = {
     case_id: 'case-prio',
     case_number: 'CASE-0042',
@@ -38,6 +38,7 @@ function renderMeta(over: Partial<Case> = {}) {
         outcome={caseOutcome(c)}
         users={[]}
         canAssign={false}
+        slaPolicy={slaPolicy}
         onCaseChange={vi.fn()}
         ownerOpen={false}
         onOwnerOpenChange={vi.fn()}
@@ -87,5 +88,85 @@ describe('the case header meta strip gives the status words priority', () => {
     const owner = shrinkWeight(screen.getByTestId('case-detail-owner'));
     expect(shrinkWeight(outcome)).toBeGreaterThanOrEqual(1);
     expect(owner).toBeGreaterThanOrEqual(shrinkWeight(outcome) * 1e12);
+  });
+
+  it('keeps a small floor under the status words, so they truncate but never vanish (XFCM)', () => {
+    renderMeta();
+    expect(classesOf(screen.getByTestId('case-detail-status'))).toContain('min-w-14');
+    expect(META_SHRINK.status).toMatch(/\bmin-w-14\b/);
+  });
+});
+
+describe('the meta strip makes room for the AI run chip (XFCM)', () => {
+  // jsdom evaluates neither container queries nor `:has`, so this pins the classes; the
+  // seeded Demo check measures them at 1440 by 900 (a 779px strip) and 1920 by 1080.
+  const POLICY = {
+    enabled: true,
+    business_hours_only: false,
+    targets: { P3: { response_minutes: 120, resolve_minutes: 1440 } },
+  } as unknown as SlaPolicy;
+
+  it('keys the room on the chip itself: the strip is the :has group', () => {
+    renderMeta();
+    expect(classesOf(screen.getByTestId('case-detail-meta'))).toContain('group/meta');
+    expect(META_RUN_ROOM.strip).toBe('group/meta');
+  });
+
+  it('lets the SLA give way below a 64rem pane while the chip shows (it stays in the inspector)', () => {
+    renderMeta({ priority_level: 'P3', created_at: new Date(Date.now() - 26 * 60_000).toISOString() } as Partial<Case>, POLICY);
+    const sla = classesOf(screen.getByTestId('case-detail-sla'));
+    expect(sla).toEqual(
+      expect.arrayContaining([
+        'group-has-[[data-meta-item=ai-run]]/meta:hidden',
+        '@[64rem]/case:group-has-[[data-meta-item=ai-run]]/meta:inline-flex',
+      ]),
+    );
+    // Without the chip it keeps its own rule (from 52rem).
+    expect(sla).toContain('@[52rem]/case:inline-flex');
+  });
+
+  it("lets the owner's name give way below a 56rem pane while the chip shows (the monogram stays)", () => {
+    renderMeta();
+    const name = classesOf(screen.getByTestId('case-detail-owner-name'));
+    expect(name).toEqual(
+      expect.arrayContaining([
+        'group-has-[[data-meta-item=ai-run]]/meta:hidden',
+        '@[56rem]/case:group-has-[[data-meta-item=ai-run]]/meta:inline',
+      ]),
+    );
+    // The owner control itself, with its disk and its name for assistive technology, stays.
+    expect(classesOf(screen.getByTestId('case-detail-owner'))).not.toContain('hidden');
+  });
+
+  it('hides the verdict label word while the chip shows, the finished window included', () => {
+    renderMeta();
+    const label = within(screen.getByTestId('case-ai-verdict')).getByText('AI verdict', { selector: '[aria-hidden="true"]' });
+    expect(classesOf(label)).toEqual(
+      expect.arrayContaining(['hidden', '@[48rem]/case:inline', 'group-has-[[data-meta-item=ai-run]]/meta:hidden']),
+    );
+  });
+
+  it('lets the review chip give way below 64rem while the run chip shows', () => {
+    const c = { case_id: 'case-r', case_number: 'CASE-0043', status: 'closed', decision_by: 'agent', verdict: 'FALSE_POSITIVE' } as unknown as Case;
+    render(
+      <TooltipProvider>
+        <CaseHeaderMeta
+          c={c}
+          outcome={caseOutcome(c)}
+          users={[]}
+          canAssign={false}
+          onCaseChange={vi.fn()}
+          ownerOpen={false}
+          onOwnerOpenChange={vi.fn()}
+          onStartReview={vi.fn()}
+        />
+      </TooltipProvider>,
+    );
+    expect(classesOf(screen.getByTestId('case-review-chip'))).toEqual(
+      expect.arrayContaining([
+        'group-has-[[data-meta-item=ai-run]]/meta:hidden',
+        '@[64rem]/case:group-has-[[data-meta-item=ai-run]]/meta:inline-flex',
+      ]),
+    );
   });
 });

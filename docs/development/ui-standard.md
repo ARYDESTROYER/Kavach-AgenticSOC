@@ -732,7 +732,11 @@ times and source), AI (ai: the model's own reasoning, its first two or three sen
 and the recommendation while the case is open), Decision (code, or analyst when a person
 settled it: the decision line, the authority sentence once, the auto-close reading
 against the policy entry for the case's verdict, with Policy inputs and Automation
-applied one disclosure away each) and People (analyst: the last action and the counts of
+applied one disclosure away each; the decision line is a sentence about who settled the
+case and how, "Escalated by the system.", never the `key=value` record, which Policy
+inputs keeps word for word. On a person's close the decision line is what the policy
+recorded before them; the outcome, the person and the time are in the header, the
+inspector and the People lane) and People (analyst: the last action and the counts of
 tasks, messages and screenshots). Each lane links to its tab. The AI lane never falls
 back to the deterministic decision's text, which belongs to the code and is shown,
 attributed to the code, only under the Brief's Decision lane (G17). A case the AI did not
@@ -790,7 +794,12 @@ a viewer who may manage users sees it.
 - **Header chip.** On the case header's meta strip, after the AI verdict, adding no row:
   the turning ring with "AI working · 0:42" (the clock ticks each second) or "AI queued",
   and for 6 s after a run this console showed ends, a success tint with "AI finished".
-  It never gives way as the pane narrows. A click opens its popover, named by its title:
+  It keeps its words from a 30rem strip. Below that it shows the ring alone, and its name
+  still says what it is. There is no clock without its words: the ring alone is the case
+  chat glyph. While it shows, lower-priority items give way first: the verdict's label
+  word, the owner's name below a 56rem pane (the monogram stays), and the SLA and the
+  review chip below 64rem (the SLA stays in the inspector's Signal section). The status
+  words truncate last and never vanish. A click opens its popover, named by its title:
   the five steps (Triage, Specialist and runbook, Looking up evidence, Verdict, Deciding)
   with the current one marked, who or what started it ("You started it.", "Started by a
   person.", the name for a viewer who may manage users, a background job, a freed
@@ -801,7 +810,10 @@ a viewer who may manage users sees it.
   kept."), and "See its steps in the audit log". While the popover is open the run is read
   again every 3 s.
 - **Queue row mark.** The ring and "AI working" or "AI queued" in the row's status node
-  (see the queue above). It is decorative for assistive technology: the row's accessible
+  (see the queue above). The words always show. In a queue narrower than 30rem the status
+  words give way to the run's words while it runs (the outcome badge of a case that ended
+  does the same); the row's accessible name keeps both, and the case header still shows
+  the status. It is decorative for assistive technology: the row's accessible
   name ends with "AI investigation running, started 40 seconds ago" or "AI investigation
   waiting, queued 12 seconds ago".
 - **Band line.** Runs on new events that have no case yet are the control band's third
@@ -811,7 +823,10 @@ a viewer who may manage users sees it.
   now: the number after the label in the drawer, and a badge on the rail icon's corner
   ("9+" above nine), with the hidden text "AI investigating 2 cases" joined to the item's
   description. Only a viewer who may read cases loads it. The number lives in the
-  entry-safe `investigations/count.ts`; the store itself loads after first paint.
+  entry-safe `investigations/count.ts`; the store itself loads after first paint. While
+  the count is above zero, the item's activity glyph turns, as it does for a running case
+  chat. A case chat answer that waits, failed or is unread keeps its own mark, and the
+  count still shows.
 - **Close dialog notes.** The close, bulk close and status change dialogs say before you
   act that the run's result replaces what you do now: "An AI investigation is running on
   this case." with "When it finishes, its result replaces a close you make now." (or "the
@@ -1629,11 +1644,14 @@ background data refreshes still follow the `LoadingState` / `LoadingBar` contrac
 
 Motion explains state change: route entry, disclosure, row insertion/removal, or a
 terminal live marker. It does not decorate static content. Honor
-`prefers-reduced-motion`; no required information depends on animation. Only two things
-may animate continuously: the newest terminal timeline marker, and the single
-agent-activity glyph while a chat turn is running (a rotation or arc sweep of about a
-1.2–1.35s period — never a slow "breathing" loop — with a static mark and the word
-"Working" under reduced motion). A successfully committed data refresh
+`prefers-reduced-motion`; no required information depends on animation. Only these may
+animate continuously: the newest terminal timeline marker, the agent-activity glyph
+while a chat turn is running, and the same glyph as the AI run ring while an AI
+investigation runs or waits on a case (the header chip, the queue row mark and the Case
+Manager navigation item). The glyph is a rotation or arc sweep with a period of about
+1.2 to 1.35 s, never a slow "breathing" loop. Under reduced motion it is a static mark,
+with the word "Working" for a chat turn and "AI working" or "AI queued" for a run. A
+successfully committed data refresh
 may replay one short transform/opacity-only cue tied to the new payload; it must never
 run on its own timer or imply that a request is in flight when it is not. Springs,
 press feedback and overlay origins follow **Foundations → Motion**.

@@ -121,9 +121,13 @@ describe('CaseDetail: the six-tab shell (Round 16, D8)', () => {
   });
 
   it('the merged sub-panels + retired Feedback tab are not mounted in the shell', () => {
-    for (const gone of ['StageTimeline', 'WhyPanel', 'TraceTimeline', 'FeedbackTab', 'ReviewBand', 'OverviewNextStep']) {
+    for (const gone of ['StageTimeline', 'WhyPanel', 'FeedbackTab', 'ReviewBand', 'OverviewNextStep']) {
       expect(src, `${gone} must not be referenced by the shell`).not.toContain(gone);
     }
+    // The trace mounts in the AI investigation tab only; the shell reads its step counter
+    // for the tab count (XFCM) and nothing else from it.
+    expect(src).not.toMatch(/<TraceTimeline\b/);
+    expect(src).toContain("import { traceStepCounts } from '@/soc/components/TraceTimeline';");
   });
 
   it('the Brief carries the folded story, the Next step row and the Decision lane inputs', () => {
@@ -225,9 +229,11 @@ describe('CaseDetail: the six-tab shell (Round 16, D8)', () => {
     expect(src).toContain('<CaseHeaderMeta');
   });
 
-  it('the tab triggers carry their counts (runbook progress, trace steps, messages)', () => {
+  it('the tab triggers carry their counts (runbook progress, AI steps, messages)', () => {
     const tabsList = slice(src, '<TabsList', '</TabsList>');
-    expect(tabsList).toContain('<TabCount label="steps">');
+    // The AI's own steps, the trace's "N AI steps" (XFCM), never every span.
+    expect(tabsList).toContain("<TabCount label={traceAiSteps === 1 ? 'AI step' : 'AI steps'}>");
+    expect(tabsList).not.toContain('<TabCount label="steps">');
     expect(tabsList).toContain('<TabCount label="messages">');
     expect(tabsList).toContain('<RunbookTabCount progress={runbookProgress} abandoned={runbookData.runs.length > 0} />');
     expect(tabsList).not.toContain('<TabCount label="MITRE techniques">');

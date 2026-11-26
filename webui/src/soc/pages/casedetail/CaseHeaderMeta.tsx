@@ -21,11 +21,13 @@
  * truncates first, down to its disk, then the verdict chip's words, and the status words
  * only once both are at their minimum (`META_SHRINK`).
  *
- * While an AI run is under way the status words keep priority (WP16): the verdict chip is
- * dimmed and drops its label word ("Previous verdict. The running investigation replaces
- * it." leads its hover line), below a 56rem strip the run chip shows the ring and the time
- * only, and below 30rem the items sit closer and the status glyph gives way to the ring.
- * The "AI finished" chip of the next few seconds fits the strip the same way.
+ * While an AI run is under way the verdict chip is dimmed ("Previous verdict. The running
+ * investigation replaces it." leads its hover line). The run chip keeps its words, "AI
+ * working · 0:42", "AI queued" and then "AI finished", on every strip of 30rem or wider;
+ * below that it shows the ring alone, the items sit closer and the status glyph gives way
+ * to the ring. While the chip is on the strip, lower-priority items make room first
+ * (`META_RUN_ROOM`): the verdict's label word, the owner's name below a 56rem pane, and the
+ * SLA and the review chip below 64rem. The status words never vanish (`META_SHRINK`).
  *
  * SECURITY (#9): every case-derived value (id, owner) renders as a plain text node. #3:
  * the owner edit is the existing collaboration route; nothing here changes status,
@@ -112,19 +114,39 @@ export const META_SHRINK = {
   verdict: 'min-w-0 shrink-[1000000]',
   verdictChip: 'min-w-0 max-w-full overflow-hidden',
   verdictWords: 'min-w-0 truncate',
-  status: 'min-w-0 shrink',
+  // A small floor: the status words truncate, but never vanish from the line.
+  status: 'min-w-14 shrink',
   statusWords: 'min-w-0 truncate',
+} as const;
+
+/** While the run chip is on the strip (its `data-meta-item`), keyed with CSS `:has`. */
+const WITH_RUN_CHIP = 'group-has-[[data-meta-item=ai-run]]/meta';
+
+/**
+ * Who makes room for the run chip while it is on the strip (a run under way, or the few
+ * seconds of "AI finished" after one), so the chip keeps its words and the status words
+ * stay whole. Lower priority gives way first: the verdict chip's label word at every
+ * width, the owner's name below a 56rem pane (the monogram, the button's name and the M
+ * popover stay), and the SLA and the review chip below 64rem (the SLA stays in the
+ * inspector's Signal section, the review sentence in the Brief). Keyed on the chip itself,
+ * so these follow it exactly. The strip carries `META_RUN_ROOM.strip`.
+ */
+export const META_RUN_ROOM = {
+  strip: 'group/meta',
+  verdictLabel: `${WITH_RUN_CHIP}:hidden`,
+  ownerName: `${WITH_RUN_CHIP}:hidden @[56rem]/case:${WITH_RUN_CHIP}:inline`,
+  sla: `${WITH_RUN_CHIP}:hidden @[64rem]/case:${WITH_RUN_CHIP}:inline-flex`,
+  review: `${WITH_RUN_CHIP}:hidden @[64rem]/case:${WITH_RUN_CHIP}:inline-flex`,
 } as const;
 
 /** The verdict chip's note while an AI run is under way on the case. */
 export const PREVIOUS_VERDICT_NOTE = 'Previous verdict. The running investigation replaces it.';
 
 /**
- * Below this strip width (56rem) the AI run chip drops its words ("0:42" with the ring),
- * and below 30rem it keeps the ring alone, so the status words keep their place beside
- * it (WP16).
+ * Below this strip width (30rem) the AI run chip keeps the ring alone, and its name still
+ * says what it is. From 30rem it always keeps its words: "AI working · 0:42", "AI queued"
+ * and "AI finished".
  */
-export const META_COMPACT_RUN_PX = 896;
 export const META_RING_RUN_PX = 480;
 
 /**
@@ -134,11 +156,13 @@ export const META_RING_RUN_PX = 480;
 export const META_RUN_GAP =
   'gap-x-2.5 has-[[data-meta-item=ai-run]]:gap-x-1.5 @[30rem]/case:has-[[data-meta-item=ai-run]]:gap-x-2.5';
 
-/** How much of the run chip a strip of `width` px shows (`width` null: not measured). */
-export function runChipFit(width: number | null): boolean | 'ring' {
+/**
+ * How much of the run chip a strip of `width` px shows: `'ring'` below 30rem, else all of
+ * it (`false`, its words kept). `width` null: not measured.
+ */
+export function runChipFit(width: number | null): false | 'ring' {
   if (width === null || width <= 0) return false;
-  if (width < META_RING_RUN_PX) return 'ring';
-  return width < META_COMPACT_RUN_PX;
+  return width < META_RING_RUN_PX ? 'ring' : false;
 }
 
 /** The width of `ref`'s element while `active` (null where it cannot be measured). */
@@ -263,7 +287,7 @@ export const CaseHeaderMeta: React.FC<CaseHeaderMetaProps> = ({
   const [assigningSelf, setAssigningSelf] = React.useState(false);
   const ownerTitleId = React.useId();
   // An AI run under way: the verdict on screen is the one it replaces, and the run chip
-  // takes room on the line, so the status words keep priority (WP16).
+  // takes room on the line, so lower-priority items make room first (META_RUN_ROOM).
   const run = useAiRun(c.case_id);
   const aiRunning = run !== null && run.state !== 'finished';
   // The chip also shows for a few seconds after a run this console saw ends ("AI
@@ -295,6 +319,8 @@ export const CaseHeaderMeta: React.FC<CaseHeaderMetaProps> = ({
         // of "AI finished" after one) spaces its items closer, so the status words keep
         // their room beside it. Keyed on the chip itself, so the spacing follows it exactly.
         META_RUN_GAP,
+        // The `:has` group the items that make room for the run chip key on.
+        META_RUN_ROOM.strip,
         // Never a visible scrollbar: in a very narrow pane the line scrolls sideways.
         '[scrollbar-width:none] [&::-webkit-scrollbar]:hidden',
       )}
@@ -381,17 +407,16 @@ export const CaseHeaderMeta: React.FC<CaseHeaderMetaProps> = ({
               verdict={c.verdict}
               confidence={c.confidence}
               className={cn('h-5', META_SHRINK.verdictChip, aiRunning && 'border-dashed text-muted-foreground [&>svg]:text-muted-foreground')}
-              labelClassName={aiRunning ? 'hidden' : 'hidden @[48rem]/case:inline'}
+              labelClassName={aiRunning ? 'hidden' : cn('hidden @[48rem]/case:inline', META_RUN_ROOM.verdictLabel)}
               wordsClassName={META_SHRINK.verdictWords}
             />
           </DecisionExplain>
         </span>
       ) : null}
-      {/* The AI working on this case right now (WP09); renders nothing otherwise. On a
-          narrow strip it drops its words, so the status words keep their place. The
-          "AI finished" chip has no clock to keep and the verdict beside it has its label
-          back, so below 56rem it keeps its mark alone. */}
-      <AiRunChip caseId={c.case_id} compact={aiRunning ? runFit : runFit ? 'ring' : false} />
+      {/* The AI working on this case right now (WP09), and "AI finished" for a few seconds
+          after; renders nothing otherwise. It keeps its words from a 30rem strip, the
+          ring alone below that (its name still says what it is). */}
+      <AiRunChip caseId={c.case_id} compact={runFit === 'ring'} />
 
       <Popover open={ownerOpen} onOpenChange={onOwnerOpenChange}>
         <PopoverTrigger asChild>
@@ -414,7 +439,12 @@ export const CaseHeaderMeta: React.FC<CaseHeaderMetaProps> = ({
             )}
             <span
               data-testid="case-detail-owner-name"
-              className={cn('min-w-0 max-w-[10rem] truncate', META_HIDE.ownerName, !owner && 'text-muted-foreground')}
+              className={cn(
+                'min-w-0 max-w-[10rem] truncate',
+                META_HIDE.ownerName,
+                META_RUN_ROOM.ownerName,
+                !owner && 'text-muted-foreground',
+              )}
             >
               {owner || 'Unassigned'}
             </span>
@@ -453,7 +483,7 @@ export const CaseHeaderMeta: React.FC<CaseHeaderMetaProps> = ({
 
       {sla ? (
         <span
-          className={cn('shrink-0 items-center gap-1 font-medium', META_HIDE.sla, SLA_TONE[sla.state])}
+          className={cn('shrink-0 items-center gap-1 font-medium', META_HIDE.sla, META_RUN_ROOM.sla, SLA_TONE[sla.state])}
           data-meta-item="sla"
           data-testid="case-detail-sla"
           data-sla-state={sla.state}
@@ -485,6 +515,7 @@ export const CaseHeaderMeta: React.FC<CaseHeaderMetaProps> = ({
               className={cn(
                 'h-5 shrink-0 items-center gap-1 rounded-sm bg-primary/10 px-1.5 font-medium text-primary hover:bg-primary/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
                 META_HIDE.review,
+                META_RUN_ROOM.review,
               )}
             >
               <ClipboardCheck className="size-3.5" aria-hidden />

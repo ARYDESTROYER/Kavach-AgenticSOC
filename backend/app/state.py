@@ -4510,10 +4510,12 @@ def parse_user_agent(ua: str) -> dict[str, str]:
 
 #: A verdict and a status in the Console's words, for the AI investigation notices
 #: (Round 16 SPEC §4.5 WP08; research ``ai-investigating`` §4.5). Enums only (#9).
+#: The verdict is the case header's word (the Console's ``verdictWords``): one term,
+#: "Needs human review", in the Inbox and on the case.
 _AI_VERDICT_WORDS = {
     "TRUE_POSITIVE": "True positive",
     "FALSE_POSITIVE": "False positive",
-    "NEEDS_HUMAN": "Needs a person",
+    "NEEDS_HUMAN": "Needs human review",
 }
 _AI_STATUS_WORDS = {
     "new": "New",

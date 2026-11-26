@@ -318,6 +318,29 @@ describe('Cases: one status badge, the closer in Outcome (Round 14)', () => {
     expect(recorded).toHaveTextContent(/^Suspicious, recorded on the case; no analyst has classified this case yet$/);
   });
 
+  it("says an analyst classified a case whose close a later AI investigation replaced (XFCM)", async () => {
+    seed([
+      {
+        case_id: 'c-replaced', case_number: 'T-RP', title: 'CloseReplaced', status: 'escalated',
+        verdict: 'TRUE_POSITIVE', decision_by: 'system', disposition: 'false_positive', risk_score: 29,
+        history: [
+          { event: 'analyst_action', action: 'close', analyst: 'Admin', ts: '2026-11-20T10:00:00Z', classified_disposition: 'false_positive' },
+        ],
+        updated_at: '2026-11-20T10:05:00Z', tags: [], comments: [],
+      },
+    ]);
+    renderCases();
+    await waitFor(() => expect(screen.getByText('CloseReplaced')).toBeInTheDocument());
+    const pending = within(rowFor('CloseReplaced')).getByText(
+      (_, el) => el?.getAttribute('data-outcome-source') === 'pending',
+    );
+    expect(pending).toHaveAttribute('title', 'Classified by an analyst before a later AI investigation set the status');
+    expect(pending).toHaveTextContent(
+      /^False positive, classified by an analyst before a later AI investigation set the status$/,
+    );
+    expect(pending).not.toHaveTextContent(/no analyst has classified/);
+  });
+
   it('does not show the badge on a still-open agent case (non-terminal)', async () => {
     seed([
       {

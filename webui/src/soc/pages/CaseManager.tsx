@@ -387,12 +387,17 @@ const MetaDot = ({ className }: { className?: string }) => (
 );
 
 /**
- * Where a queue row shows the AI run's words beside the ring: only in a queue wide enough
- * for them and the status words both. Narrower, the ring alone stands in the status
- * glyph's place, so the status words keep their room (WP16); the row's accessible name
- * carries the run in words either way.
+ * Where a queue row shows its status words (and the dot before them) while the AI run's
+ * mark is in the status node: only in a queue of 30rem or wider. The run's own words,
+ * "AI working" or "AI queued", always show, because the ring alone is the case chat
+ * glyph and only the words tell the two apart. So in a narrower queue the status words
+ * give way to the run's words while it runs (the outcome badge of a case that ended
+ * does the same, `RUN_MARK_OUTCOME`); the row's accessible name keeps both, and the
+ * case header still shows the status.
  */
 export const RUN_MARK_WORDS = 'hidden @[30rem]/queue:inline';
+/** The compact outcome badge beside a run's mark: it gives way below a 30rem queue. */
+export const RUN_MARK_OUTCOME = 'hidden @[30rem]/queue:inline-flex';
 
 interface RowJobState {
   /** The case is in a bulk job that is still running. */
@@ -501,9 +506,10 @@ const QueueRow: React.FC<{
   ) : job?.failure ? (
     <AlertTriangle className="size-3 shrink-0 text-warning-text" aria-hidden />
   ) : null;
+  // The run's words always show; in a narrow queue the status words after them give way.
   const runMark = run ? (
     <>
-      <AiRunMark caseId={item.case_id} wordsClassName={RUN_MARK_WORDS} />
+      <AiRunMark caseId={item.case_id} />
       <MetaDot className={RUN_MARK_WORDS} />
     </>
   ) : null;
@@ -512,7 +518,14 @@ const QueueRow: React.FC<{
       {jobGlyph}
       {runMark ??
         (!jobGlyph && StatusGlyph ? <StatusGlyph className="size-3 shrink-0 text-muted-foreground" aria-hidden /> : null)}
-      {item.status ? <span className="truncate">{statusText}</span> : <span className="text-muted-foreground">{DASH}</span>}
+      {/* A cut word keeps its whole value on hover, as the title and case number do. */}
+      {item.status ? (
+        <span data-testid="case-queue-status-words" className={cn('truncate', run && RUN_MARK_WORDS)} title={statusText}>
+          {statusText}
+        </span>
+      ) : (
+        <span className={cn('text-muted-foreground', run && RUN_MARK_WORDS)}>{DASH}</span>
+      )}
     </span>
   );
   const outcomeNode = (
@@ -523,7 +536,7 @@ const QueueRow: React.FC<{
     >
       {job?.pending ? <LoaderCircle className="size-3 shrink-0 animate-spin text-primary" aria-hidden /> : null}
       {runMark}
-      <OutcomeBadge outcome={outcome} compact className="max-w-[10rem]" />
+      <OutcomeBadge outcome={outcome} compact className={cn('max-w-[10rem]', run && RUN_MARK_OUTCOME)} />
     </span>
   );
   // Neutral, and the explainer's mouse-only row hover card (S11).

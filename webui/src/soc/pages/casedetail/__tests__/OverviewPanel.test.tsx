@@ -209,6 +209,33 @@ describe('OverviewPanel: the Brief (Round 16, D8)', () => {
     expect(lane).toHaveTextContent('Runbook 2 of 9 steps, 7 required open · 3 messages');
   });
 
+  it("gives an analyst's close one home: the People lane, never the Decision lane too (XFCM)", () => {
+    renderBrief({
+      ...CASE,
+      verdict: 'NEEDS_HUMAN',
+      status: 'closed',
+      decision_by: 'analyst',
+      disposition: 'false_positive',
+      history: [
+        {
+          event: 'analyst_action',
+          action: 'close',
+          analyst: 'aryan',
+          ts: '2026-11-01T09:30:00Z',
+          classified_disposition: 'false_positive',
+        },
+      ],
+    } as unknown as Case);
+    const decision = screen.getByTestId('brief-decision');
+    expect(decision).not.toHaveTextContent('Closed as false positive');
+    expect(decision).not.toHaveTextContent('aryan');
+    // The line is the policy's own record from before the analyst.
+    expect(within(decision).getByTestId('decision-line')).toHaveTextContent(
+      'Before the analyst: No confident close decision; routing to human (fail-safe).',
+    );
+    expect(screen.getByTestId('brief-last-action')).toHaveTextContent(/^Closed as false positive by aryan, /);
+  });
+
   it('shows the next required runbook step as one row that opens it on the Response tab', () => {
     const onOpenRunbook = vi.fn();
     renderBrief(CASE, { runbookRun: RUN, onOpenRunbook });

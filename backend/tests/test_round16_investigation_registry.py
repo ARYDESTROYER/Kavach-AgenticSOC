@@ -421,7 +421,7 @@ async def test_a_close_made_during_the_run_is_replaced_and_reported(app_state, b
     assert len(items) == 1
     assert items[0].category == "assignment"
     assert items[0].title == "An AI investigation replaced your close of case CASE-0042"
-    assert "Needs a person" in items[0].body and "Open, awaiting analyst" in items[0].body
+    assert "Needs human review" in items[0].body and "Open, awaiting analyst" in items[0].body
     rows = [r for r in await app_state.audit.records_for_case("case-r16")
             if r.get("action") == "case.close_replaced"]
     assert len(rows) == 1
@@ -459,7 +459,7 @@ async def test_the_requester_of_a_manual_run_gets_one_finish_notice(app_state, b
     items = await _inbox(app_state.inbox, "alice")
     assert [(i.category, i.title, i.body) for i in items] == [(
         "system", "AI investigation finished on case CASE-0042",
-        "Verdict: Needs a person. Status: Open, awaiting analyst.",
+        "Verdict: Needs human review. Status: Open, awaiting analyst.",
     )]
     assert items[0].ref == {"kind": "investigation", "run_id": app_state.investigation_registry.recent()[-1].run_id}
     assert [t for t in bus.targeted if t[0] == "notifications"][-1][3] == ["alice"]

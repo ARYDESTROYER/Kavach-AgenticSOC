@@ -251,6 +251,28 @@ function decisionRow(fields: {
   return sentences(`${[status, by].filter(Boolean).join(' ')}${facts ? `: ${facts}` : ''}`, GATE[fields.gate] ?? '');
 }
 
+/** The case manager's DECISION record, its gate token optional (older rows lack it). */
+const DECISION_RECORD_ROW =
+  /^verdict=\S+ status=(\S+) decision_by=(\S+) risk=\S+ cost=\S+ confidence=\S+(?: auto_close_gate=\S+)?$/;
+
+/**
+ * Who settled a case and how, in words, from the case manager's DECISION record
+ * (`verdict=… status=… decision_by=… risk=… cost=… confidence=… auto_close_gate=…`):
+ * "Escalated by the system.", "Closed by the AI agent.", "Left for an analyst.". Null when
+ * `raw` is not that record. It leaves out the verdict, confidence, risk and cost (the
+ * header has them, and Policy inputs keeps the record word for word) and the gate (the
+ * auto-close line explains it). Our own words from the enum tokens only (#9).
+ */
+export function decisionRecordSentence(raw: string): string | null {
+  const m = DECISION_RECORD_ROW.exec(raw.trim());
+  if (!m) return null;
+  const [, status, by] = m;
+  const own = (table: Readonly<Record<string, string>>, key: string): string | undefined =>
+    Object.prototype.hasOwnProperty.call(table, key) ? table[key] : undefined;
+  const decider = own(DECIDERS, by);
+  return `${own(DECISION_STATUS, status) ?? humanizeToken(status)}${decider ? ` ${decider}` : ''}.`;
+}
+
 const TRIAGE: Readonly<Record<string, string>> = {
   needs_strong_model: 'Triage sent the case to a full investigation',
   obviously_benign: 'Triage judged the case obviously benign',

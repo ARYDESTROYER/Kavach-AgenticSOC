@@ -71,10 +71,11 @@ vi.mock('@/soc/investigations/aiRunText', () => ({
     view ? (view.state === 'queued' ? 'AI investigation waiting' : 'AI investigation running') : null,
 }));
 vi.mock('@/soc/investigations/AiRunMark', () => ({
-  AiRunMark: ({ caseId, wordsClassName }: { caseId: string; wordsClassName?: string }) =>
+  // The props the row passes reach the words, so a class meant to hide them would show.
+  AiRunMark: ({ caseId, ...rest }: { caseId: string } & Record<string, unknown>) =>
     mocks.aiRuns[caseId] ? (
       <span data-testid="ai-run-mark">
-        <span data-testid="ai-run-mark-words" className={wordsClassName}>
+        <span data-testid="ai-run-mark-words" className={typeof rest.wordsClassName === 'string' ? rest.wordsClassName : ''}>
           AI working
         </span>
       </span>
@@ -892,17 +893,59 @@ describe('CaseManager', () => {
     expect(screen.getByText('2 selected')).toBeInTheDocument();
   });
 
-  it('keeps the status words beside an AI run mark: the ring alone in a narrow queue (WP16)', async () => {
+  it('keeps "AI working" on a row at every queue width; the status words give way below 30rem (XFCM)', async () => {
     mocks.aiRuns = { [OPEN_HIGH.case_id]: { run_id: 'inv-1', state: 'running' } };
     render(<CaseManager />);
     await screen.findByText('Multiple failed logins');
     const row = document.querySelector(`[data-case-id="${OPEN_HIGH.case_id}"]`) as HTMLElement;
     const status = within(row).getByTestId('case-queue-status');
-    // The words and the dot after them show only in a queue wide enough for both.
-    expect(within(status).getByTestId('ai-run-mark-words')).toHaveClass('hidden', '@[30rem]/queue:inline');
-    const dot = within(status).getByText('·');
-    expect(dot).toHaveClass('hidden', '@[30rem]/queue:inline');
-    expect(status).toHaveTextContent('Open · awaiting analyst');
+    // The run's words never hide: the ring alone is the case chat glyph (C32).
+    const runWords = within(status).getByTestId('ai-run-mark-words');
+    expect(runWords).toHaveTextContent('AI working');
+    expect(runWords.className).not.toMatch(/\bhidden\b/);
+    // The status words, and the dot before them, show from a 30rem queue only.
+    const words = within(status).getByTestId('case-queue-status-words');
+    expect(words).toHaveTextContent('Open · awaiting analyst');
+    expect(words).toHaveClass('truncate', 'hidden', '@[30rem]/queue:inline');
+    expect(within(status).getByText('·')).toHaveClass('hidden', '@[30rem]/queue:inline');
+    // The row's accessible name keeps both.
+    const open = within(row).getByRole('button', { name: /Multiple failed logins/ });
+    expect(open.getAttribute('aria-label')).toMatch(/open · awaiting analyst.*AI investigation running/i);
+
+    // Without a run the status words always show.
+    const other = document.querySelector(`[data-case-id="${OPEN_CRITICAL.case_id}"]`) as HTMLElement;
+    const otherWords = within(other).getByTestId('case-queue-status-words');
+    expect(otherWords).toHaveTextContent('Investigating');
+    expect(otherWords.className).not.toMatch(/\bhidden\b/);
+  });
+
+  it('lets the outcome badge of an ended case give way to a run mark below a 30rem queue (XFCM)', async () => {
+    const closed: Case = {
+      ...RESOLVED_LOW,
+      decision_by: 'analyst',
+      disposition: 'benign',
+      history: [{ event: 'analyst_action', action: 'resolve', analyst: 'aryan', ts: '2026-07-20T09:00:00Z', classified_disposition: 'benign' }],
+    } as Case;
+    mocks.listCases.mockImplementation(serve([closed]));
+    mocks.aiRuns = { [closed.case_id]: { run_id: 'inv-2', state: 'queued' } };
+    render(<CaseManager />);
+    // An ended case lists in the All scope.
+    fireEvent.click(await screen.findByRole('radio', { name: 'All' }));
+    await screen.findByText('Benign health check');
+    const row = document.querySelector(`[data-case-id="${closed.case_id}"]`) as HTMLElement;
+    const outcome = within(row).getByTestId('case-queue-outcome');
+    expect(within(outcome).getByTestId('ai-run-mark-words').className).not.toMatch(/\bhidden\b/);
+    expect(within(outcome).getByTestId('case-outcome')).toHaveClass('hidden', '@[30rem]/queue:inline-flex');
+  });
+
+  it('gives a cut status word its whole value on hover, in either density (XFCM)', async () => {
+    render(<CaseManager />);
+    await screen.findByText('Multiple failed logins');
+    const row = document.querySelector(`[data-case-id="${OPEN_HIGH.case_id}"]`) as HTMLElement;
+    const words = within(row).getByTestId('case-queue-status-words');
+    expect(words).toHaveAttribute('title', 'Open · awaiting analyst');
+    const critical = document.querySelector(`[data-case-id="${OPEN_CRITICAL.case_id}"]`) as HTMLElement;
+    expect(within(critical).getByTestId('case-queue-status-words')).toHaveAttribute('title', 'Investigating');
   });
 
   it('notes an AI run on a selected case in the bulk Acknowledge and Set status dialogs (WP16)', async () => {

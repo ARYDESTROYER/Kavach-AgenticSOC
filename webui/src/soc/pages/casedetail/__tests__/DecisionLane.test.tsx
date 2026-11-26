@@ -57,15 +57,39 @@ function renderLane(over: Partial<DecisionLaneProps> = {}) {
 }
 
 describe('DecisionLane', () => {
-  it('shows a machine decision record as a mono record line, prose as prose', () => {
-    const record = 'verdict=TRUE_POSITIVE status=escalated decision_by=system risk=7.41';
+  it('writes the decision record as a sentence, and keeps prose as prose (XFCM)', () => {
+    const record =
+      'verdict=TRUE_POSITIVE status=escalated decision_by=system risk=7.41 cost=0.02 confidence=0.9 auto_close_gate=class_disabled';
     const { unmount } = renderLane({ rationale: { decision_rationale: record } as unknown as CaseRationale });
-    expect(screen.getByTestId('decision-line')).toHaveTextContent(record);
-    expect(screen.getByTestId('decision-line')).toHaveClass('font-mono');
+    const line = screen.getByTestId('decision-line');
+    expect(line).toHaveTextContent(/^Escalated by the system\.$/);
+    expect(line).not.toHaveClass('font-mono');
+    expect(line).toHaveClass('text-base');
+    // The header's facts and the cost are not repeated here.
+    const lane = screen.getByTestId('brief-decision');
+    for (const token of ['verdict=', 'risk=', 'cost=', 'confidence=', 'auto_close_gate=']) {
+      expect(lane.textContent).not.toContain(token);
+    }
     unmount();
     renderLane();
     expect(screen.getByTestId('decision-line')).not.toHaveClass('font-mono');
     expect(screen.getByTestId('decision-line')).toHaveTextContent('Escalated for a person to review.');
+  });
+
+  it('leaves an unknown key=value record to Policy inputs and says the plain line instead (XFCM)', () => {
+    renderLane({ rationale: { decision_rationale: 'gate=open route=human' } as unknown as CaseRationale });
+    expect(screen.getByTestId('decision-line')).toHaveTextContent(
+      'The server-side case policy recorded the outcome shown for this case.',
+    );
+  });
+
+  it('keeps the record word for word one disclosure away, in Policy inputs (XFCM)', () => {
+    const record =
+      'verdict=TRUE_POSITIVE status=escalated decision_by=system risk=7.41 cost=0.02 confidence=0.9 auto_close_gate=class_disabled';
+    renderLane({ rationale: { decision_rationale: record } as unknown as CaseRationale });
+    expect(screen.queryByText(record)).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: /Policy inputs/ }));
+    expect(screen.getByText(record)).toBeInTheDocument();
   });
 
   it('says the authority sentence once, with the auto-close reading against the verdict entry', () => {
@@ -96,10 +120,55 @@ describe('DecisionLane', () => {
     });
     const lane = screen.getByTestId('brief-decision');
     expect(lane).toHaveAttribute('data-decided-by', 'analyst');
-    expect(lane).toHaveTextContent('Closed as false positive by aryan.');
+    // One home per fact (XFCM): the outcome and the person are the header's, the
+    // inspector's and the People lane's, never this lane's.
+    expect(lane).not.toHaveTextContent('Closed as false positive by aryan');
+    expect(lane).not.toHaveTextContent('aryan');
+    // The line is what the policy recorded before the analyst.
+    expect(screen.getByTestId('decision-line')).toHaveTextContent(/^Before the analyst: Escalated for a person to review\.$/);
     expect(screen.getByTestId('decision-authority')).toHaveTextContent(/closed by an analyst/i);
     // A person settled it: no auto-close reading.
     expect(screen.queryByTestId('decision-auto-close')).toBeNull();
+  });
+
+  it("writes the policy's record before a person's close as a sentence (XFCM)", () => {
+    renderLane({
+      c: {
+        ...CASE,
+        status: 'closed',
+        decision_by: 'analyst',
+        disposition: 'true_positive',
+        history: [
+          { event: 'analyst_action', action: 'close', analyst: 'aryan', ts: '2026-10-09T10:00:00Z', classified_disposition: 'true_positive' },
+        ],
+      } as unknown as Case,
+      rationale: {
+        decision_rationale:
+          'verdict=TRUE_POSITIVE status=escalated decision_by=system risk=7.41 cost=hidden confidence=0.9 auto_close_gate=class_disabled',
+      } as unknown as CaseRationale,
+    });
+    expect(screen.getByTestId('decision-line')).toHaveTextContent(/^Before the analyst: Escalated by the system\.$/);
+    expect(screen.getByTestId('brief-decision')).not.toHaveTextContent('aryan');
+  });
+
+  it("shows the authority sentence alone on a person's close with no policy record (XFCM)", () => {
+    renderLane({
+      c: {
+        ...CASE,
+        status: 'resolved',
+        decision_by: 'analyst',
+        disposition: 'true_positive',
+        history: [
+          { event: 'analyst_action', action: 'resolve', analyst: 'aryan', ts: '2026-10-09T10:00:00Z', classified_disposition: 'true_positive' },
+        ],
+      } as unknown as Case,
+      rationale: null,
+    });
+    expect(screen.queryByTestId('decision-line')).toBeNull();
+    expect(screen.getByTestId('decision-authority')).toHaveTextContent(
+      'Resolved by an analyst (a human lifecycle action). The deterministic policy did not resolve this case.',
+    );
+    expect(screen.getByTestId('brief-decision')).not.toHaveTextContent('aryan');
   });
 
   it('keeps the policy inputs one disclosure away, and asks for the trace when they open', () => {
