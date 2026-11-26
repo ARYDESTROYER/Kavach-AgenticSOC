@@ -314,10 +314,10 @@ download it. The list updates when a teammate adds or deletes one.
 Every record a case keeps can be reached from the case:
 
 - **Events.** The Evidence tab lists the raw events behind the case, read again from
-  their source, up to 200 to a page. Select a time to open one event, with a **Table**
-  view of every field and a **JSON** view you can search, copy or download. **Download
-  these events (NDJSON)** saves the loaded rows, and **Open in Logs** searches the same
-  window in Logs. When the events cannot be shown, the table says why: the case came
+  their source, 50 at a time; **Load more events** reads the next 50. Select a time to
+  open one event, with a **Table** view of every field and a **JSON** view you can
+  search, copy or download. **Download these events (NDJSON)** saves the loaded rows,
+  and **Open in Logs** searches the same window in Logs. When the events cannot be shown, the table says why: the case came
   from a push source, which keeps no copy that can be read back; the source no longer
   holds the events (older events age out first, so later pages may still have some); or
   the source was removed, turned off, or did not answer. You need `cases:read` and
@@ -328,7 +328,8 @@ Every record a case keeps can be reached from the case:
   model, tokens, latency, cost, and the cost formula with its own rates. If a call's
   recorded cost differs from what its rates give, the call says so. Case chat spend is
   shown on its own line and is not part of the investigation cost. You need
-  `cost:view`; without it, cost figures in step text read "hidden".
+  `cases:read` and `cost:view`; without `cost:view`, cost figures in step text read
+  "hidden".
 - **All fields.** **View all fields** in the Record section shows every stored field of
   the case. Search by field or value, copy the record as JSON, or download it.
 - **Findings.** **More** shows a finding's full text. **Cites N events** opens the

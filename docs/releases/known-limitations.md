@@ -563,7 +563,9 @@ which brings the tabs back to five and changes the keys again.
 
 Cases scored, decisions made and model calls recorded before 0.2.0 did not keep their
 inputs, thresholds or rates. Their explanations say "not recorded" and, where they can,
-use today's weights, policy or prices, marked as such. On Elasticsearch, a deployment
+use today's weights or policy, marked as such. A model call recorded before 0.2.0 shows
+its stored cost and says its rates were not recorded; it is never repriced. On
+Elasticsearch, a deployment
 whose client may not read or change index templates cannot add the new cases mapping,
 so its cases keep no risk inputs either; the backend logs this once.
 

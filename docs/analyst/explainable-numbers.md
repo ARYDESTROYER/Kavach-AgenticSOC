@@ -29,9 +29,10 @@ In the Case Manager queue, the risk number in each row shows its formula when th
 rests on it. The row stays one control: the line has no buttons, and a screen reader
 hears the number in the row's name. Open the case for the full calculation.
 
-On the **Cyber Defence Center**, on **Analytics** and on a dashboard, every figure shows
-its formula on hover, and the response times (MTTD, Respond, MTTA, MTTR and dwell) also
-read the cases behind the median. The **Cost** page explains its totals the same way.
+On the **Cyber Defence Center** and on a dashboard, the KPI figures show their formula on
+hover. On **Analytics**, many figures do, such as MTTR, the agreement rate and the FP
+rate. The response times (MTTD, Respond, MTTA, MTTR and dwell) also read the cases behind
+the median. The **Cost** page explains its totals the same way.
 
 ## Read the hover line
 
@@ -211,8 +212,10 @@ the clock started, the first human response, the time elapsed and the state.
 
 - The response clock starts when the case was detected, or when it was created if no
   detection time is recorded. It stops at the first human response: an
-  acknowledgement, or a person moving the case to Investigating, Escalated or On hold. A
-  move made by the system or the AI agent is not a response.
+  acknowledgement, or a person moving the case to Investigating, Escalated, On hold,
+  Resolved or Closed. A move made by the system, the AI agent or an analyst policy is
+  not a response. If the case is closed before anyone responds, the response clock
+  stops at the close.
 - The resolution clock stops when the case is first resolved or closed, and runs again if
   the case is reopened.
 - A running clock is **at risk** from 80% of its target and **breached** once it is past

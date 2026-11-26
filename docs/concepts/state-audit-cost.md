@@ -158,9 +158,9 @@ the same one row per call:
 
 The rates are the undiscounted ones; the row's `batch` flag applies the half price of a
 Batch or Flex call. A row written before these fields existed leaves them out, and the
-Console reads its rate as "not recorded". `GET /api/cases/{case_id}/usage` (`cost:view`)
-returns a case's rows with lifetime totals, so the investigation cost can be checked
-call by call; see [Explainable numbers](../analyst/explainable-numbers.md#cost).
+Console reads its rate as "not recorded". `GET /api/cases/{case_id}/usage` (`cases:read`
+and `cost:view`) returns a case's rows with lifetime totals, so the investigation cost can
+be checked call by call; see [Explainable numbers](../analyst/explainable-numbers.md#cost).
 
 The default daily budget performs a preflight check and can block new provider calls.
 When blocked, the case routes to human review. The check is not an atomic spend

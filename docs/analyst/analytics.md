@@ -16,8 +16,8 @@ never feed the case decision policy.
 Posture and ATT&CK endpoints require `metrics:view` when RBAC is enabled, and so does
 the Standup.
 
-Every figure on these pages explains itself. Point at it for a one-line formula with the
-real numbers; select it, or press Enter or Space while it has focus, for the inputs, the
+Many figures on these pages explain themselves. Point at one for a one-line formula with
+the real numbers; select it, or press Enter or Space while it has focus, for the inputs, the
 steps, the rounding and who computed it, with **Copy calculation**. MTTA, MTTR and dwell
 also read the cases behind the median: the panel shows the rank arithmetic of the median
 and p90, and **Show all** opens the cases in a side sheet, shortest first, with the

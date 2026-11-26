@@ -902,8 +902,8 @@ that cite it). When the events cannot be read, `available` is `false` and `reaso
 source-controlled data. Reads are audited as `case.events_viewed`, at most once per
 person and case every ten minutes.
 
-`GET /api/cases/{case_id}/usage` (`cost:view`) returns the case's usage-ledger rows,
-newest first, with `rows_total`, `truncated`, lifetime `totals` over every row, the case's
+`GET /api/cases/{case_id}/usage` (`cases:read` and `cost:view`) returns the case's
+usage-ledger rows, newest first, at most 500, with `rows_total`, `truncated`, lifetime `totals` over every row, the case's
 `token_cost` and `reconciles`, which says whether the investigation total equals it. Rows
 written by 0.2 or later carry their rates and `price_basis` (see
 [State, audit, and cost](../concepts/state-audit-cost.md#model-usage-and-cost)).

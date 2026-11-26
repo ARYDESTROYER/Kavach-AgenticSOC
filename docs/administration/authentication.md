@@ -134,11 +134,11 @@ The callback validates browser-bound state. Email-based linking requires a verif
 email and does not attach an SSO identity to a local-credential account merely because
 the email strings match. A verified email links only to an account of the same provider
 that has no subject yet; an account of another provider, or one already bound to a
-different subject, is refused, so an existing subject is never re-bound by email. An
+different subject, is refused, so an existing subject is never re-bound by email.
 **Allowed domains** checks the hosted domain of a Google identity, and for every other
-identity the domain of its verified email; an unverified email gives no domain. A group mapping never changes the role of a stored Super
-admin. Test sign-in and account-linking behavior with a non-admin identity before
-rollout.
+identity the domain of its verified email; an unverified email gives no domain. A group
+mapping never changes the role of a stored Super admin. Test sign-in and account-linking
+behavior with a non-admin identity before rollout.
 
 Only a stored Super admin who signed in recently can change single sign-on: adding,
 removing or editing a provider, turning SSO on or off, or setting a provider's client

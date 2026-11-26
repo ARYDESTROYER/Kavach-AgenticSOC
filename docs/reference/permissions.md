@@ -177,7 +177,8 @@ not change; a custom role without the grant now gets `403` on that read.
 | A case's export, trace, rationale, activity, thread and tasks; `GET /api/scans` and `/api/scans/notifications` | `cases:read` |
 | The AI investigations in progress (`GET /api/investigations/active` and the `investigations` live topic) | `cases:read` |
 | A case's raw events (`GET /api/cases/{case_id}/events`) | `cases:read` and `sources:read` |
-| A case's AI usage (`GET /api/cases/{case_id}/usage`) and cost values in **View all fields** | `cost:view` |
+| A case's AI usage (`GET /api/cases/{case_id}/usage`) | `cases:read` and `cost:view` |
+| The cost values in a case's **View all fields** | `cost:view` |
 | A source's feeds (`GET /api/sources/{source_id}/feeds`) | `sources:read` |
 | `GET /api/settings`, and today's network range in a case's risk explanation | `settings:read` |
 | The Standup (`GET /api/standup` and its report, action items and acknowledgements) and `GET /api/metrics/explain` | `metrics:view` |
