@@ -43,7 +43,7 @@
                   "width": 1950,
                   "height": 882
                 },
-                "alt": "Case header with the AI working chip and its popover open, titled AI investigation running, saying You started it, with the time the run has taken so far.",
+                "alt": "Case header with the AI working chip and its popover open. The popover lists the five steps of the run with the current one marked, says You started it with the time so far and the time cap, and says what happens to a close made before it finishes.",
                 "caption": "The AI working chip and its popover."
               }
             },
@@ -74,7 +74,7 @@
                   "width": 2880,
                   "height": 1800
                 },
-                "alt": "Case Manager with the queue on the left, one row marked AI working, and an open case with its two-line header, the six tabs and the case facts column on the right.",
+                "alt": "Case Manager with the queue on the left, one row marked AI working, and an open case on its Evidence tab with its two-line header, the six tabs and the case facts column on the right. The navigation counts one case the AI is working on.",
                 "caption": "The Case Manager in this update."
               }
             },
@@ -134,7 +134,7 @@
                   "width": 1950,
                   "height": 1322
                 },
-                "alt": "Brief tab of a case under the six tabs Brief, Evidence, AI investigation, Response, Activity and Chat, with the Next step row above the Evidence, AI, Decision and People lanes.",
+                "alt": "Brief tab of a case the AI closed as a false positive, under the six tabs Brief, Evidence, AI investigation, Response, Activity and Chat, with the Evidence, Assessment, Decision and People lanes.",
                 "caption": "The six case tabs, with the Brief open."
               }
             },
@@ -165,7 +165,7 @@
                   "width": 1950,
                   "height": 1664
                 },
-                "alt": "Risk score panel for one case listing each factor, its weight and its value, the weighted sum, the rounding and the total, with a Copy calculation button.",
+                "alt": "Risk score panel for one case with the weights in force, each factor's formula and value, the weighted sum, the total, the rounding and the provenance, with a Copy calculation button.",
                 "caption": "The risk score with its math."
               }
             },
@@ -334,7 +334,20 @@
               "requires": "team:view",
               "open": "team",
               "help": "analyst/team-activity/",
-              "screenshot": null
+              "screenshot": {
+                "light": {
+                  "src": "assets/releases/0.2.0/team-activity-light.webp",
+                  "width": 2880,
+                  "height": 1800
+                },
+                "dark": {
+                  "src": "assets/releases/0.2.0/team-activity-dark.webp",
+                  "width": 2880,
+                  "height": 1800
+                },
+                "alt": "Team activity page for today, under a notice that role-based access is off. It shows people active, cases closed by people, acknowledged, reviews completed and the median time to acknowledge, a work per day chart, and the People table with Download CSV.",
+                "caption": "Team activity in the seeded Demo."
+              }
             },
             {
               "id": "case-screenshots",
@@ -350,7 +363,20 @@
               "requires": "cases:read",
               "open": "case_manager",
               "help": "analyst/collaboration/",
-              "screenshot": null
+              "screenshot": {
+                "light": {
+                  "src": "assets/releases/0.2.0/case-screenshots-light.webp",
+                  "width": 1390,
+                  "height": 704
+                },
+                "dark": {
+                  "src": "assets/releases/0.2.0/case-screenshots-dark.webp",
+                  "width": 1390,
+                  "height": 704
+                },
+                "alt": "Files section of a case's Activity tab with a caption field, the Add screenshots button that also takes a drop or a paste, and one added screenshot with its caption, who added it and when.",
+                "caption": "Screenshots on a case's Activity tab."
+              }
             },
             {
               "id": "auto-close-review",
@@ -367,7 +393,20 @@
               "requires": "cases:read",
               "open": "case_manager",
               "help": "automation/auto-close-review/",
-              "screenshot": null
+              "screenshot": {
+                "light": {
+                  "src": "assets/releases/0.2.0/auto-close-review-light.webp",
+                  "width": 2880,
+                  "height": 1800
+                },
+                "dark": {
+                  "src": "assets/releases/0.2.0/auto-close-review-dark.webp",
+                  "width": 2880,
+                  "height": 1800
+                },
+                "alt": "Case Manager on the Review scope with three automatically closed cases waiting. One is open with the note that it was picked at random for review, beside the Review this auto-close panel that asks What was it before it shows the AI's answer.",
+                "caption": "A review of an automatic close."
+              }
             },
             {
               "id": "calmer-case-manager",
@@ -406,7 +445,20 @@
               "requires": "cases:read",
               "open": "case_manager",
               "help": "analyst/case-manager/#close-or-resolve-with-a-disposition",
-              "screenshot": null
+              "screenshot": {
+                "light": {
+                  "src": "assets/releases/0.2.0/close-case-light.webp",
+                  "width": 1632,
+                  "height": 1628
+                },
+                "dark": {
+                  "src": "assets/releases/0.2.0/close-case-dark.webp",
+                  "width": 1632,
+                  "height": 1628
+                },
+                "alt": "Close with a disposition dialog with the six dispositions, the AI's suggestion beside the heading, the Actions taken choices, an optional analyst note and screenshots, and the close buttons.",
+                "caption": "The close dialog."
+              }
             },
             {
               "id": "rbac-switch",
@@ -570,7 +622,20 @@
               "requires": null,
               "open": null,
               "help": null,
-              "screenshot": null
+              "screenshot": {
+                "light": {
+                  "src": "assets/releases/0.2.0/account-activity-light.webp",
+                  "width": 2880,
+                  "height": 1800
+                },
+                "dark": {
+                  "src": "assets/releases/0.2.0/account-activity-dark.webp",
+                  "width": 2880,
+                  "height": 1800
+                },
+                "alt": "Sessions and activity settings on the Activity tab, listing the signed-in person's own events, such as sign-ins, started sessions and preference changes, with where and when.",
+                "caption": "Your own activity in Settings."
+              }
             },
             {
               "id": "rollback-safety",
@@ -651,7 +716,20 @@
               "requires": null,
               "open": null,
               "help": "automation/rules/",
-              "screenshot": null
+              "screenshot": {
+                "light": {
+                  "src": "assets/releases/0.2.0/rule-sheets-light.webp",
+                  "width": 2880,
+                  "height": 1800
+                },
+                "dark": {
+                  "src": "assets/releases/0.2.0/rule-sheets-dark.webp",
+                  "width": 2880,
+                  "height": 1800
+                },
+                "alt": "Rule sheet for LP-ES-RISK-1001 opened from a chat answer, with alerts, cases, still open and analyst outcome counts, Open all 6 in Logs, an alerts over time chart, top source IPs and targets, and the latest alerts.",
+                "caption": "The sheet for one rule."
+              }
             },
             {
               "id": "runbooks",
@@ -702,7 +780,20 @@
               "requires": null,
               "open": null,
               "help": null,
-              "screenshot": null
+              "screenshot": {
+                "light": {
+                  "src": "assets/releases/0.2.0/severity-levels-light.webp",
+                  "width": 1462,
+                  "height": 834
+                },
+                "dark": {
+                  "src": "assets/releases/0.2.0/severity-levels-dark.webp",
+                  "width": 1462,
+                  "height": 834
+                },
+                "alt": "New cases by severity block with the named levels Critical, High, Medium, Low and Info, their counts, shares and trends, the top rules for each level, and the Split by Rule control.",
+                "caption": "Severity by named level, with top rules."
+              }
             },
             {
               "id": "docked-navigation",
@@ -715,7 +806,20 @@
               "requires": null,
               "open": null,
               "help": null,
-              "screenshot": null
+              "screenshot": {
+                "light": {
+                  "src": "assets/releases/0.2.0/docked-navigation-light.webp",
+                  "width": 2880,
+                  "height": 1800
+                },
+                "dark": {
+                  "src": "assets/releases/0.2.0/docked-navigation-dark.webp",
+                  "width": 2880,
+                  "height": 1800
+                },
+                "alt": "Settings with the navigation rail docked and expanded on the left, and the settings sections grouped under Account, General and Integrations, open on Profile.",
+                "caption": "The docked navigation and grouped Settings."
+              }
             },
             {
               "id": "chat-capacity",
@@ -728,7 +832,20 @@
               "requires": null,
               "open": null,
               "help": null,
-              "screenshot": null
+              "screenshot": {
+                "light": {
+                  "src": "assets/releases/0.2.0/chat-capacity-light.webp",
+                  "width": 1536,
+                  "height": 1520
+                },
+                "dark": {
+                  "src": "assets/releases/0.2.0/chat-capacity-dark.webp",
+                  "width": 1536,
+                  "height": 1520
+                },
+                "alt": "Timeouts and capacity settings for chat: 12 lookups at once, a 45 second lookup timeout, a 900 second model call timeout, 12 questions at once per user and 48 in total, then the indicator lookup limits.",
+                "caption": "Chat timeouts and capacity in Settings."
+              }
             }
           ]
         },
@@ -751,7 +868,20 @@
               "requires": null,
               "open": "chat",
               "help": "analyst/chat/",
-              "screenshot": null
+              "screenshot": {
+                "light": {
+                  "src": "assets/releases/0.2.0/chat-starters-light.webp",
+                  "width": 2186,
+                  "height": 866
+                },
+                "dark": {
+                  "src": "assets/releases/0.2.0/chat-starters-dark.webp",
+                  "width": 2186,
+                  "height": 866
+                },
+                "alt": "New chat with a greeting, a line saying what changed since the last visit, four suggested questions built from the Demo's cases, each with a one-line reason, the prompt categories and the composer.",
+                "caption": "Suggested questions on a new chat."
+              }
             },
             {
               "id": "chat-follow-ups",
@@ -786,7 +916,20 @@
               "requires": null,
               "open": null,
               "help": null,
-              "screenshot": null
+              "screenshot": {
+                "light": {
+                  "src": "assets/releases/0.2.0/chat-titles-light.webp",
+                  "width": 2742,
+                  "height": 376
+                },
+                "dark": {
+                  "src": "assets/releases/0.2.0/chat-titles-dark.webp",
+                  "width": 2742,
+                  "height": 376
+                },
+                "alt": "Chat history with a conversation titled New cases to triage, the same title at the top of the conversation, and the first question with the start of its answer.",
+                "caption": "A conversation titled from its first answer."
+              }
             },
             {
               "id": "chat-reading",
@@ -822,7 +965,20 @@
               "requires": null,
               "open": "chat",
               "help": "analyst/chat/",
-              "screenshot": null
+              "screenshot": {
+                "light": {
+                  "src": "assets/releases/0.2.0/chat-unlimited-light.webp",
+                  "width": 1536,
+                  "height": 980
+                },
+                "dark": {
+                  "src": "assets/releases/0.2.0/chat-unlimited-dark.webp",
+                  "width": 1536,
+                  "height": 980
+                },
+                "alt": "Chat assistant settings with Limits per question set to Unlimited and the loop guards that still apply, and the Daily chat spending limit switched off, under the note that chat is outside the daily AI budget.",
+                "caption": "Chat limits and spending in Settings."
+              }
             },
             {
               "id": "chat-working",
@@ -848,7 +1004,20 @@
               "requires": null,
               "open": null,
               "help": "administration/authentication/#remember-me",
-              "screenshot": null
+              "screenshot": {
+                "light": {
+                  "src": "assets/releases/0.2.0/remember-me-light.webp",
+                  "width": 1600,
+                  "height": 900
+                },
+                "dark": {
+                  "src": "assets/releases/0.2.0/remember-me-dark.webp",
+                  "width": 1600,
+                  "height": 900
+                },
+                "alt": "Sign-in page with the Stay signed in on this device dialog. It says who can use this browser, that the session still ends on the administrator's schedule, and offers Cancel and Keep me signed in.",
+                "caption": "The Remember me dialog."
+              }
             },
             {
               "id": "report-downloads",
@@ -861,7 +1030,20 @@
               "requires": "cases:read",
               "open": "reports",
               "help": null,
-              "screenshot": null
+              "screenshot": {
+                "light": {
+                  "src": "assets/releases/0.2.0/report-downloads-light.webp",
+                  "width": 824,
+                  "height": 886
+                },
+                "dark": {
+                  "src": "assets/releases/0.2.0/report-downloads-dark.webp",
+                  "width": 824,
+                  "height": 886
+                },
+                "alt": "Report panel with its Download as menu open: PDF, Word and Excel, then Markdown, HTML, CSV and JSON, and the Defang indicators option.",
+                "caption": "The report download menu."
+              }
             },
             {
               "id": "exact-counts",
@@ -923,7 +1105,20 @@
               "requires": null,
               "open": "chat",
               "help": "analyst/chat/",
-              "screenshot": null
+              "screenshot": {
+                "light": {
+                  "src": "assets/releases/0.2.0/workspace-chat-light.webp",
+                  "width": 2880,
+                  "height": 1800
+                },
+                "dark": {
+                  "src": "assets/releases/0.2.0/workspace-chat-dark.webp",
+                  "width": 2880,
+                  "height": 1800
+                },
+                "alt": "Workspace chat with a question about new cases and its answer: a short summary, the cases that need attention first, and a New cases by risk table built from read-only lookups.",
+                "caption": "A chat answer with a table block."
+              }
             },
             {
               "id": "reports",
@@ -936,7 +1131,20 @@
               "requires": "cases:read",
               "open": "reports",
               "help": "analyst/chat/",
-              "screenshot": null
+              "screenshot": {
+                "light": {
+                  "src": "assets/releases/0.2.0/reports-light.webp",
+                  "width": 2880,
+                  "height": 1800
+                },
+                "dark": {
+                  "src": "assets/releases/0.2.0/reports-dark.webp",
+                  "width": 2880,
+                  "height": 1800
+                },
+                "alt": "Workspace chat with the report panel open: an AI-written summary marked to verify before acting, and two items added from the answer, each with a note field.",
+                "caption": "A report built from chat answers."
+              }
             }
           ]
         },
@@ -956,7 +1164,20 @@
               "requires": "metrics:view",
               "open": "overview",
               "help": "analyst/overview/",
-              "screenshot": null
+              "screenshot": {
+                "light": {
+                  "src": "assets/releases/0.2.0/kpi-drilldown-light.webp",
+                  "width": 2880,
+                  "height": 1800
+                },
+                "dark": {
+                  "src": "assets/releases/0.2.0/kpi-drilldown-dark.webp",
+                  "width": 2880,
+                  "height": 1800
+                },
+                "alt": "Total critical details panel from the Cyber Defence Center, with the calculation, switches for the other KPIs, filters, counts over the listed cases and the six critical cases as rows, with Export listed and Open in Cases.",
+                "caption": "The drill-down behind a KPI."
+              }
             },
             {
               "id": "auto-closed-tile",
@@ -969,7 +1190,20 @@
               "requires": null,
               "open": null,
               "help": "analyst/kpi-glossary/#auto-closed",
-              "screenshot": null
+              "screenshot": {
+                "light": {
+                  "src": "assets/releases/0.2.0/auto-closed-tile-light.webp",
+                  "width": 2728,
+                  "height": 292
+                },
+                "dark": {
+                  "src": "assets/releases/0.2.0/auto-closed-tile-dark.webp",
+                  "width": 2728,
+                  "height": 292
+                },
+                "alt": "The six KPI tiles of the Cyber Defence Center, ending with Auto-closed: 31 cases, 94% of worked closes.",
+                "caption": "The Auto-closed tile."
+              }
             },
             {
               "id": "agent-health-bell",
@@ -1041,7 +1275,20 @@
               "requires": null,
               "open": "overview",
               "help": "analyst/overview/",
-              "screenshot": null
+              "screenshot": {
+                "light": {
+                  "src": "assets/releases/0.2.0/cyber-defence-center-light.webp",
+                  "width": 2880,
+                  "height": 1800
+                },
+                "dark": {
+                  "src": "assets/releases/0.2.0/cyber-defence-center-dark.webp",
+                  "width": 2880,
+                  "height": 1800
+                },
+                "alt": "Cyber Defence Center dashboard for the last 24 hours with the Total cases tile under the pointer. Its card says what the tile counts and shows a trend of new cases per hour. Below are the noise reduction flow and the Human vs AI card.",
+                "caption": "The Cyber Defence Center with a KPI trend open."
+              }
             },
             {
               "id": "human-vs-ai",
@@ -1054,7 +1301,20 @@
               "requires": null,
               "open": "overview",
               "help": "analyst/kpi-glossary/#human-vs-ai",
-              "screenshot": null
+              "screenshot": {
+                "light": {
+                  "src": "assets/releases/0.2.0/human-vs-ai-light.webp",
+                  "width": 924,
+                  "height": 966
+                },
+                "dark": {
+                  "src": "assets/releases/0.2.0/human-vs-ai-dark.webp",
+                  "width": 924,
+                  "height": 966
+                },
+                "alt": "Human vs AI card with the AI agent, Human and System counts and shares for the last 24 hours, and a chart of closes per hour.",
+                "caption": "The Human vs AI card."
+              }
             },
             {
               "id": "required-mfa",
@@ -1067,7 +1327,20 @@
               "requires": null,
               "open": null,
               "help": "administration/authentication/#mfa",
-              "screenshot": null
+              "screenshot": {
+                "light": {
+                  "src": "assets/releases/0.2.0/required-mfa-light.webp",
+                  "width": 1440,
+                  "height": 1318
+                },
+                "dark": {
+                  "src": "assets/releases/0.2.0/required-mfa-dark.webp",
+                  "width": 1440,
+                  "height": 1318
+                },
+                "alt": "Add user dialog with the role and its grants and, under Security, Require multi-factor authentication switched on, so the person sets up an authenticator at their next sign-in.",
+                "caption": "Requiring multi-factor sign-in for a new account."
+              }
             },
             {
               "id": "user-creation",
@@ -1102,7 +1375,20 @@
               "requires": null,
               "open": null,
               "help": "intelligence/enrichment/",
-              "screenshot": null
+              "screenshot": {
+                "light": {
+                  "src": "assets/releases/0.2.0/enrichment-providers-light.webp",
+                  "width": 2880,
+                  "height": 1800
+                },
+                "dark": {
+                  "src": "assets/releases/0.2.0/enrichment-providers-dark.webp",
+                  "width": 2880,
+                  "height": 1800
+                },
+                "alt": "Enrichment settings with the Providers list, 11 of 38 on, each provider with a short description, a Free or Needs key label and its switch.",
+                "caption": "The enrichment providers."
+              }
             },
             {
               "id": "authenticator-qr",
@@ -1138,7 +1424,20 @@
               "requires": null,
               "open": "batchjobs",
               "help": "operations/background-jobs/",
-              "screenshot": null
+              "screenshot": {
+                "light": {
+                  "src": "assets/releases/0.2.0/background-jobs-light.webp",
+                  "width": 2880,
+                  "height": 1800
+                },
+                "dark": {
+                  "src": "assets/releases/0.2.0/background-jobs-dark.webp",
+                  "width": 2880,
+                  "height": 1800
+                },
+                "alt": "Jobs page with no application jobs, because Demo Mode runs none, the system workers with their schedules and states, and the related LLM Batch jobs counts.",
+                "caption": "Analytics, Jobs. Demo Mode runs no background jobs."
+              }
             },
             {
               "id": "data-export",
@@ -1151,7 +1450,20 @@
               "requires": "data_export:export",
               "open": null,
               "help": "administration/settings/#export-portable-application-state",
-              "screenshot": null
+              "screenshot": {
+                "light": {
+                  "src": "assets/releases/0.2.0/data-export-light.webp",
+                  "width": 2880,
+                  "height": 1800
+                },
+                "dark": {
+                  "src": "assets/releases/0.2.0/data-export-dark.webp",
+                  "width": 2880,
+                  "height": 1800
+                },
+                "alt": "Data export settings with the Archive and Segmented assembly choices and the scopes to include. The Build ZIP in background button is unavailable, with the note that exports are not available in Demo Mode.",
+                "caption": "Data export in Settings."
+              }
             },
             {
               "id": "declared-benign",
@@ -1166,7 +1478,20 @@
               "requires": "rules:manage",
               "open": null,
               "help": "automation/rules/#analyst-rule-policies",
-              "screenshot": null
+              "screenshot": {
+                "light": {
+                  "src": "assets/releases/0.2.0/declared-benign-light.webp",
+                  "width": 2880,
+                  "height": 1800
+                },
+                "dark": {
+                  "src": "assets/releases/0.2.0/declared-benign-dark.webp",
+                  "width": 2880,
+                  "height": 1800
+                },
+                "alt": "SLA, priority and suppression settings at Declared benign, with the warning that a declaration closes matching alerts with no model call and no human, no declarations yet and a Declare a rule benign button.",
+                "caption": "Declared benign rules in Settings."
+              }
             },
             {
               "id": "precedent-promotion",
@@ -1192,7 +1517,20 @@
               "requires": null,
               "open": "overview",
               "help": "analyst/kpi-glossary/#noise-reduction-funnel",
-              "screenshot": null
+              "screenshot": {
+                "light": {
+                  "src": "assets/releases/0.2.0/noise-flow-views-light.webp",
+                  "width": 1822,
+                  "height": 982
+                },
+                "dark": {
+                  "src": "assets/releases/0.2.0/noise-flow-views-dark.webp",
+                  "width": 1822,
+                  "height": 982
+                },
+                "alt": "Noise reduction flow card in its Detailed view, with the Simple and Detailed switch, the flow from alerts ingested to closed by human, and a count and share for each stage. The reduction reads not measured because of partial coverage.",
+                "caption": "The Detailed view of the noise reduction flow."
+              }
             },
             {
               "id": "corpus-guard",
