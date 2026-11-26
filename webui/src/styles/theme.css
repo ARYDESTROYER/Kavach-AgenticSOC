@@ -693,6 +693,22 @@
     backdrop-filter: none !important;
     background-color: hsl(var(--material-solid, var(--background))) !important;
   }
+  /* Coloured text on a material (the top bar's Demo and release chips, a status badge in
+     a sticky header) sits on its 10% wash over a fill that lets 2 to 3% of the page show
+     through. With dark content scrolled beneath, the light theme's tints fell below 4.5:1
+     (4.34:1 for warning). A material re-points the semantic tints at the grouped panel's
+     stronger inks, which clear 4.5:1 there with black (light) or white (dark) beneath.
+     Measured by src/design-system/__tests__/material-chip-contrast.test.ts. */
+  .glass-surface,
+  .material-surface {
+    --critical-text: var(--panel-critical-text);
+    --high-text: var(--panel-high-text);
+    --medium-text: var(--panel-medium-text);
+    --low-text: var(--panel-low-text);
+    --info-text: var(--panel-info-text);
+    --success-text: var(--panel-success-text);
+    --warning-text: var(--panel-warning-text);
+  }
 
   /* ------------------------------------------------------------------------ *
    * Round 12 — the FLUID hero numeral (KpiTile `size="fluid"`).              *

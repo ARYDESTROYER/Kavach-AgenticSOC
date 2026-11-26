@@ -144,6 +144,43 @@ const UsageRow: React.FC<{ row: CaseUsageRow }> = ({ row }) => {
   );
 };
 
+/**
+ * The calls, in a list that scrolls past half the window. While it scrolls it is a named
+ * region that takes focus, so a keyboard can scroll it (axe scrollable-region-focusable);
+ * a short list adds no tab stop.
+ */
+const UsageList: React.FC<{ rows: CaseUsageRow[] }> = ({ rows }) => {
+  const ref = React.useRef<HTMLDivElement>(null);
+  const [scrolls, setScrolls] = React.useState(false);
+  React.useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return undefined;
+    const measure = () => setScrolls(el.scrollHeight > el.clientHeight);
+    measure();
+    if (typeof ResizeObserver !== 'function') return undefined;
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [rows]);
+  return (
+    <div
+      ref={ref}
+      // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- a scrollable region must take focus (axe scrollable-region-focusable)
+      tabIndex={scrolls ? 0 : undefined}
+      role={scrolls ? 'region' : undefined}
+      aria-label={scrolls ? 'AI calls' : undefined}
+      data-testid="case-usage-list"
+      className="max-h-[50vh] overflow-y-auto rounded-sm pr-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+    >
+      <ol className="divide-y divide-border/60">
+        {rows.map((row, index) => (
+          <UsageRow key={`${row.ts}-${row.idempotency_key ?? ''}-${index}`} row={row} />
+        ))}
+      </ol>
+    </div>
+  );
+};
+
 /** The popover body: the calls, the chat line and the reconciliation. */
 export const CaseUsageDetails: React.FC<{ loaded: Loaded; totalCost: number }> = ({ loaded, totalCost }) => {
   if (loaded.state === 'loading') return <p className="text-xs text-muted-foreground">Loading the AI calls.</p>;
@@ -167,13 +204,7 @@ export const CaseUsageDetails: React.FC<{ loaded: Loaded; totalCost: number }> =
             ? `The newest ${rows.length.toLocaleString('en-US')} calls, newest first. Older calls are not listed.`
             : `${rows.length.toLocaleString('en-US')} call${rows.length === 1 ? '' : 's'}, newest first.`}
       </p>
-      {rows.length ? (
-        <ol className="max-h-[50vh] divide-y divide-border/60 overflow-y-auto pr-1">
-          {rows.map((row, index) => (
-            <UsageRow key={`${row.ts}-${row.idempotency_key ?? ''}-${index}`} row={row} />
-          ))}
-        </ol>
-      ) : null}
+      {rows.length ? <UsageList rows={rows} /> : null}
       <div className="space-y-1 border-t border-border/60 pt-2 text-xs">
         <p className="flex justify-between gap-3">
           <span className="text-muted-foreground">Investigation calls</span>

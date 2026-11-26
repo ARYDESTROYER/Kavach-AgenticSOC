@@ -398,6 +398,38 @@ export function activityRows(res: ActivityResponse | null | undefined): Activity
   });
 }
 
+/**
+ * The plain sentence under each known account and session event. The audit row's own
+ * summary (`detail`, such as "session_create sid=... new session") is an internal record
+ * and never shows here; an event this list does not know shows its name alone.
+ */
+const ACTIVITY_SENTENCES: Readonly<Record<string, string>> = {
+  'auth.login': 'You signed in.',
+  'auth.login_failed': 'A sign-in to this account failed.',
+  'auth.logout': 'You signed out.',
+  'auth.reauthenticated': 'You confirmed your password for a protected action.',
+  'auth.reauth_failed': 'A password confirmation failed.',
+  'auth.password_changed': 'The password of this account was changed.',
+  'auth.password_change_failed': 'A password change failed.',
+  'auth.mfa_setup_started': 'Two-factor setup started.',
+  'auth.mfa_enrolled': 'Two-factor authentication was set up.',
+  'auth.mfa_challenged': 'A two-factor code was asked for.',
+  'auth.mfa_failed': 'A two-factor code was not accepted.',
+  'auth.mfa_locked': 'Two-factor checks were paused after too many wrong codes.',
+  'auth.mfa_disabled': 'Two-factor authentication was turned off.',
+  'session.created': 'A new session started.',
+  'session.refreshed': 'A session was renewed.',
+  'session.revoked': 'A session was signed out.',
+  'user.preferences_updated': 'Your personal preferences changed.',
+};
+
+/** The sentence for an event's action, or null when the list does not know it. Exported for tests. */
+export function activitySentence(action: unknown): string | null {
+  return typeof action === 'string' && Object.prototype.hasOwnProperty.call(ACTIVITY_SENTENCES, action)
+    ? ACTIVITY_SENTENCES[action]
+    : null;
+}
+
 function ActivityList({
   events,
   loading,
@@ -412,16 +444,21 @@ function ActivityList({
     {
       id: 'action',
       header: 'Event',
-      cell: (e) => (
-        <div className="min-w-0">
-          <span className="block truncate text-sm font-medium text-foreground">
-            {e.event_label || (e.action ? humanizeToken(String(e.action)) : 'Event')}
-          </span>
-          {e.detail ? (
-            <span className="block truncate text-xs text-muted-foreground">{e.detail}</span>
-          ) : null}
-        </div>
-      ),
+      cell: (e) => {
+        const sentence = activitySentence(e.action);
+        return (
+          <div className="min-w-0">
+            <span className="block truncate text-sm font-medium text-foreground">
+              {e.event_label || (e.action ? humanizeToken(String(e.action)) : 'Event')}
+            </span>
+            {sentence ? (
+              <span className="block truncate text-xs text-muted-foreground" data-activity-sentence>
+                {sentence}
+              </span>
+            ) : null}
+          </div>
+        );
+      },
     },
     {
       id: 'location',

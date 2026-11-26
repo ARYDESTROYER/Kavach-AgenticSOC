@@ -27,6 +27,9 @@
  *    the steppers needs 12rem).
  *  - `unit` is a muted suffix INSIDE the field ("s", "min", "%", "USD"), never a label
  *    of its own beside the box.
+ *  - Disabled: the box takes the muted fill and the number the muted ink, so the unit
+ *    stays readable (4.5:1). The box is never faded with opacity: the unit sits outside
+ *    the input, so a fade would take it below AA.
  *  - Steppers (Round 14): the − and + buttons sit inside the field's right edge. They
  *    show when the field accepts values of up to four digits (a bounded `max` of 9,999
  *    or less), whatever the box width, or when the caller gives a `stepperStep`; they are
@@ -350,9 +353,11 @@ export const NumberField = React.forwardRef<HTMLInputElement, NumberFieldProps>(
             className={cn(
               'relative flex h-9 max-w-full items-center rounded-md border bg-background text-sm text-foreground transition-colors',
               SIZE_CLASS[width],
-              invalid ? 'border-critical' : 'border-input hover:border-border-strong',
+              invalid ? 'border-critical' : disabled ? 'border-input' : 'border-input hover:border-border-strong',
               'has-[:focus-visible]:border-ring has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-ring has-[:focus-visible]:ring-offset-2 has-[:focus-visible]:ring-offset-background',
-              disabled && 'cursor-not-allowed opacity-50',
+              // Disabled draws from tokens, never a fade: the unit outside the input is
+              // text a fade would take below 4.5:1 (A11Y sweep, axe color-contrast).
+              disabled && 'cursor-not-allowed bg-muted',
             )}
             data-number-field={width}
           >
@@ -405,7 +410,7 @@ export const NumberField = React.forwardRef<HTMLInputElement, NumberFieldProps>(
               style={{ paddingRight: trailingRoom(unit, showSteppers) }}
               className={cn(
                 'absolute inset-0 h-full w-full rounded-md bg-transparent pl-3 text-sm tabular-nums text-foreground outline-none',
-                'placeholder:text-muted-foreground disabled:cursor-not-allowed',
+                'placeholder:text-muted-foreground disabled:cursor-not-allowed disabled:text-muted-foreground',
               )}
             />
             {unit || showSteppers ? (

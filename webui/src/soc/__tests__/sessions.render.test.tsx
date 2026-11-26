@@ -54,7 +54,7 @@ vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
 import { AuthProvider } from '../auth';
 import { TooltipProvider } from '@/ui/tooltip';
-import Sessions, { activityRows, sessionActionLabel } from '../pages/Sessions';
+import Sessions, { activityRows, activitySentence, sessionActionLabel } from '../pages/Sessions';
 
 function renderSessions() {
   return render(
@@ -190,8 +190,43 @@ describe('Sessions activity rows', () => {
     sessionsList.mockResolvedValue({ sessions: [] });
     renderSessions();
     fireEvent.mouseDown(await screen.findByRole('tab', { name: 'Activity' }));
-    expect(await screen.findByText('Signed in with a password')).toBeInTheDocument();
+    expect(await screen.findByText('You signed in.')).toBeInTheDocument();
     expect(screen.queryByText('No recent activity.')).not.toBeInTheDocument();
+  });
+
+  it('shows a plain sentence per known event and never the raw audit detail', async () => {
+    // The audit rows' own summaries are internal records: an event this list knows reads
+    // as a sentence, and one it does not know shows its name alone.
+    activity.mockResolvedValue({
+      activity: [
+        { ...record, id: 'a-1', event_label: 'Signed in', result_summary: 'login ok' },
+        {
+          ...record,
+          id: 'a-2',
+          action: 'session.created',
+          event_label: 'Session started',
+          result_summary: 'session_create sid=3970e7b9… new session (unknown /)',
+        },
+        { ...record, id: 'a-3', action: 'session.refreshed', event_label: 'Session renewed', result_summary: 'refresh_rotate sid=1a2b3c4d… rotated from 5e6f7a8b' },
+        { ...record, id: 'a-4', action: 'case.closed', event_label: 'Case closed', result_summary: 'closed demo-0001 as fp' },
+      ],
+    });
+    sessionsList.mockResolvedValue({ sessions: [] });
+    renderSessions();
+    fireEvent.mouseDown(await screen.findByRole('tab', { name: 'Activity' }));
+    const table = await screen.findByRole('table', { name: 'Recent account activity' });
+    expect(within(table).getByText('You signed in.')).toBeInTheDocument();
+    expect(within(table).getByText('A new session started.')).toBeInTheDocument();
+    expect(within(table).getByText('A session was renewed.')).toBeInTheDocument();
+    expect(within(table).getByText('Case closed')).toBeInTheDocument();
+    const text = table.textContent ?? '';
+    for (const raw of ['login ok', 'session_create', 'sid=', 'refresh_rotate', 'closed demo-0001 as fp']) {
+      expect(text).not.toContain(raw);
+    }
+    expect(activitySentence('session.revoked')).toBe('A session was signed out.');
+    expect(activitySentence('case.closed')).toBeNull();
+    expect(activitySentence('toString')).toBeNull();
+    expect(activitySentence(undefined)).toBeNull();
   });
 
   it('names each event the way the Audit log does, never the raw event id', async () => {
