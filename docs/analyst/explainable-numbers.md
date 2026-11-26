@@ -10,7 +10,8 @@ a one-line formula with the real numbers. Click it to see the whole calculation:
 inputs and where each one came from, every arithmetic step, how the result was rounded,
 and whether the inputs were recorded when the number was computed.
 
-An explanation only describes a number. It never changes a case, a score or a decision.
+Every calculation an explanation prints gives the result it prints. An explanation only
+describes a number. It never changes a case, a score or a decision.
 The automatic close or escalate decision is still made by code against the auto-close
 policy (see [Deterministic decisions](../concepts/deterministic-decisions.md)).
 
@@ -29,10 +30,16 @@ In the Case Manager queue, the risk number in each row shows its formula when th
 rests on it. The row stays one control: the line has no buttons, and a screen reader
 hears the number in the row's name. Open the case for the full calculation.
 
-On the **Cyber Defence Center** and on a dashboard, the KPI figures show their formula on
-hover. On **Analytics**, many figures do, such as MTTR, the agreement rate and the FP
-rate. The response times (MTTD, Respond, MTTA, MTTR and dwell) also read the cases behind
-the median. The **Cost** page explains its totals the same way.
+On the **Cyber Defence Center** and on a dashboard, the KPI figures and the cells of a KPI
+strip show their formula on hover. On **Analytics**, many figures do, such as MTTR, the
+agreement rate, the FP rate, Average risk, Incident yield, Escalation rate, Containment
+and the Posture SLA strip. The response times (MTTD, Respond, MTTA, MTTR and dwell) also
+read the cases behind the median. The **Cost** page explains its totals the same way, and
+**Team activity** explains its median time to acknowledge.
+
+On the **Noise Reduction** flow, the Detailed view's **Reduced by** figure is
+`1 - cases that needed a human / alerts ingested`, and its explanation names both counts.
+It is not shown while the counters cover only part of the window.
 
 ## Read the hover line
 
@@ -98,7 +105,7 @@ Inputs:
 - Rule types: ssh-bruteforce, port-scan (Recorded at scoring)
 Steps:
 - Volume: min(100, 100 x ln(1 + 12) / ln(1 + 50)) = 65.24
-- Velocity: min(100, 100 x 2.4 / 10) = 24
+- Velocity: min(100, 100 x 12 / (300 / 60) / 10) = 24
 - Reputation: clamp(40, 0, 100) = 40
 - Diversity: min(100, 100 x 2 / 5) = 40
 - Asset criticality: clamp(0, 0, 100) = 0
@@ -123,6 +130,10 @@ AI never computes it. The score is the weighted mean of five factors, each from 
 | Reputation | 0.30 | The threat-intelligence reputation of the entity, kept between 0 and 100. 0 when the entity is not an IP address, enrichment is off, or it was not looked up. |
 | Diversity | 0.15 | `min(100, 100 x distinct rule types / 5)`. Full at five rule types. |
 | Asset criticality | 0.10 | The criticality you gave the asset, kept between 0 and 100. A network range that holds the IP address wins over an exact entry. 0 when the asset has no entry. |
+
+The Velocity step is written from the recorded event count and window, so its
+expression gives its result: for 8 events over 434.875 seconds it reads
+`min(100, 100 x 8 / (434.875 / 60) / 10) = 11.04`.
 
 Then:
 
@@ -161,7 +172,10 @@ The band of a score is the band of the number the Console shows:
 | Medium | 22 to 47 |
 | Low | 0 to 21 |
 
-A score of 73.6 is shown as 74 and is Critical everywhere it appears.
+A score of 73.6 is shown as 74 and is Critical everywhere it appears. Urgency and the
+derived severity also use the score as shown, rounded half up, so a risk of 47.74 is
+shown as 48 and reads High everywhere, and the advisory priority and SLA target follow
+it. The automatic close decision still compares the unrounded score.
 
 ### Event counts that change later
 
@@ -257,7 +271,10 @@ investigation cost. You need the **View cost** permission to see cost figures.
   81 and 47.5 as 48. The code decides on the unrounded score.
 - Each risk factor is stored with 2 decimals, and the total is computed from the
   unrounded factors. A sum of the stored factors by hand can differ from the total by up
-  to 0.01.
+  to 0.01. When it does, the Total step and the hover line do not print a division that
+  would not give the score: they say the score was recorded from the unrounded factors
+  and show what the stored factors give, for example "Risk 20.81, from the unrounded
+  factors. The stored factors give (...) / 1.00 = 20.82."
 - A percentage is shown with at most one decimal: `0.9654` is shown as `96.5%`.
 - Time left on an SLA is rounded down, so "due in 1h" never means more than one hour
   remains. Under a minute reads "under 1m".

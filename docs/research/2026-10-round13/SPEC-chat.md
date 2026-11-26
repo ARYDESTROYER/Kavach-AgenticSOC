@@ -1438,6 +1438,9 @@ overrides as amendments A64 to A68 and BLOCKS as amendments 32 and 33.
   rows carry the assignee). The `sla` card and the tool count the same cases (both run
   `sla_aging` over the whole open set; the card is skipped when the snapshot reads a
   subset), and `sla.totals.about_to_breach` stays the full count.
+  *Amendment (2026-11-26, Round 16 SPEC §8.5):* "close" now starts at 80 percent of the
+  target (`metrics.SLA_AT_RISK_FRACTION`), the case page and Posture rule; a case is
+  breached only after its target, and a case whose priority has no target is not counted.
 - **Case chips (amends §3.1 and §3.14):** the chips are the templates that apply to the
   case, at most three, not always three. The pick and the fill add only templates that
   apply (and that the caller's tools allow), so an open case that is not escalated or

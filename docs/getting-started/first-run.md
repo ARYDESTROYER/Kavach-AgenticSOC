@@ -13,8 +13,11 @@ The screenshots on this page come from a real fresh install of 0.1.13. Numbered 
 badges mark the controls each step uses; select a screenshot to open it full size. The
 screenshots use the light theme; a fresh install opens in the dark theme, the
 organization default, and each user can change it under
-**Settings → Account → Appearance**. The sign-in screens follow the browser's own
-choice, with three appearance buttons in the top right corner: system, light and dark.
+**Settings → Account → Appearance**. The sign-in screens use the same theme. Three
+appearance buttons sit in the top right corner: default, light and dark. The default
+button uses the organization default theme when one is set, otherwise the browser's
+choice. While an organization default is set, it is named **Use the organization default
+theme**; otherwise it is named **Use system theme**.
 
 ## Before you begin
 
@@ -114,14 +117,18 @@ and asks you to confirm with **Keep me signed in**; leave it clear on a shared c
 When your administrator turned Remember me off, the row stays visible, greyed out, with
 "Turned off by your administrator". Select **Sign in** (badge 3). **Back** returns to
 the username step. **Forgot password?** explains that an administrator resets passwords;
-there is no self-service reset. A wrong password shows its message under the field.
+there is no self-service reset. A wrong password shows "The username or password is not
+correct." under the field. If the server cannot be reached, the page says "Could not
+reach the server. Try again.", and after too many tries it says "Too many attempts. Wait
+a few minutes, then try again." The page never shows the server's own error text.
 
 With two-factor sign-in, type or paste the six-digit code; it is checked as soon as the
-last digit is in. Ten wrong codes in a row lock second-factor checks for the account for
-a while (see [Authentication](../administration/authentication.md#sessions)). If single
-sign-on fails, the page says in one short sentence what went wrong. An account that an
+last digit is in, and a wrong code reads "That code is not correct. Try again." Ten
+wrong codes in a row lock second-factor checks for the account for a while (see
+[Authentication](../administration/authentication.md#sessions)). If single sign-on
+fails, the page says in one short sentence what went wrong. An account that an
 administrator created or reset asks you to **Set a new password** before anything else.
-The three buttons in the top right corner set the sign-in page to your system theme,
+The three buttons in the top right corner set the sign-in page to the default theme,
 light or dark.
 
 After you sign in following an update, a short **What's new** welcome shows the

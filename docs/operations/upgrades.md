@@ -668,26 +668,28 @@ the keys it does not model. After an image-only rollback and the return:
 Round 14 (built as the same candidate) adds no database migration, index or table. Its
 new state lives in the existing key-value store. Read these before upgrading:
 
-- **Elasticsearch audit mapping (required step).** New audit rows carry structured
-  fields (outcome, actor type, action, client, session, target, changes, request id,
-  run id), and the shipped audit template turns date detection off. On an Elasticsearch
-  state backend upgraded from an earlier build, do this **before** you start the
-  Round 14 backend: apply `deploy/mappings/tlsoc-agent-audit.template.json` as the index
-  template `tlsoc-agent-audit-template`, then roll the audit write index so new rows go
-  to an index made from it (the commands are in
-  [Applying the Round 14 audit template](#applying-the-round-14-audit-template) below).
-  The shipped Elasticsearch client cannot read or extend index mappings, so the backend
-  does not do this for you: bootstrap never replaces or remaps an existing template or
-  index, changes nothing here, and logs a warning naming this step on every start.
-  The warning keeps appearing after the step is done, and on deployments first created
-  by Round 14 from their second start on, because the backend cannot read the mapping
-  to check; the subsection below says how to confirm the step instead.
-  Until the step is done, a date-like value in a new audit row (a runbook review date, a
-  runbook id such as `2026-10-28`) can map a field as a date, and later audit-first
-  writes then answer `503 audit_unavailable`. If Storage & retention is active on this
-  Elasticsearch backend, the shipped template has no lifecycle settings, so the step
-  also takes the audit template and the new write index out of the lifecycle policy
-  until you put it back (also in the subsection below). A deployment whose audit index
+- **Elasticsearch audit mapping.** New audit rows carry structured fields (outcome,
+  actor type, action, client, session, target, changes, request id, run id), and the
+  shipped audit template turns date detection off. On an Elasticsearch state backend
+  upgraded from an earlier build, bootstrap applies it itself at every start since 0.2.0,
+  with the management key's documented grants (`manage_index_templates` and `manage` on
+  `tlsoc-agent-*`). It adds the missing audit properties and `date_detection: false` to
+  the stored `tlsoc-agent-audit-template`, and keeps everything else that template holds,
+  the Storage & retention lifecycle settings included. It adds the same to every existing
+  audit index. It only adds: a property that is already mapped is left as it is, and
+  nothing is reindexed or rolled over. The manual step in
+  [Applying the Round 14 audit template](#applying-the-round-14-audit-template) below is a
+  fallback, needed only when the backend logs one of these warnings:
+  - "Audit template tlsoc-agent-audit-template could not be read" or "could not be
+    updated" (the management key may not read or write templates);
+  - "Audit index mappings could not be read" or "Audit index ... mapping could not be
+    extended";
+  - "Audit index ... already maps ... another way", where rolling the audit write index
+    over is enough.
+
+  Until the mapping is extended, a date-like value in a new audit row (a runbook review
+  date, a runbook id such as `2026-10-28`) can map a field as a date, and later
+  audit-first writes then answer `503 audit_unavailable`. A deployment whose audit index
   was first created by Round 14 or later needs nothing; PostgreSQL and SQLite need
   nothing.
 - **Settings and other changes are recorded first.** A settings save, a user or role
@@ -803,9 +805,10 @@ new state lives in the existing key-value store. Read these before upgrading:
 
 #### Applying the Round 14 audit template
 
-On an Elasticsearch state backend upgraded from an earlier build, run these before the
-Round 14 backend starts, with the management API key (its `manage_index_templates`
-cluster grant and `manage` on `tlsoc-agent-*` cover both calls). `ES_URL`, `ES_CA_CERT`
+Run these only when the backend logged one of the warnings above, with the management
+API key (its `manage_index_templates` cluster grant and `manage` on `tlsoc-agent-*` cover
+both calls). A build before 0.2.0 could not apply the upgrade itself; on such a build,
+run them before the backend starts. `ES_URL`, `ES_CA_CERT`
 and `TLSOC_ES_MGMT_API_KEY` stand for your cluster's URL, its CA file and the encoded
 management key:
 
@@ -848,20 +851,18 @@ If its `template.settings` show a `lifecycle` entry, do one of these:
   }
   ```
 
-- Or put the policy back afterwards: once the Round 14 backend has started, open
+- Or put the policy back afterwards: once the backend has started, open
   **Settings → Organization → Storage & retention** and use **Apply supported
   lifecycle** again. That puts the policy back on the audit template and on every audit
   index, including the one the rollover created. Until then, Storage & retention shows
   the lifecycle as drifted rather than active.
 
-**Confirming the step.** The backend keeps logging the reminder on every start after the
-step is done, and on deployments first created by Round 14 from their second start on,
-because the shipped client cannot read the mapping to check. To confirm the step, check
-that `GET _index_template/tlsoc-agent-audit-template` shows `"date_detection": false`
-under `template.mappings`, and that the audit write index shows it too:
-`GET _alias/tlsoc-agent-audit` names the index with `"is_write_index": true`, and
-`GET <that index>/_mapping` shows `"date_detection": false`. When both do, the reminder
-can be ignored.
+**Confirming the upgrade.** Check that `GET _index_template/tlsoc-agent-audit-template`
+shows `"date_detection": false` under `template.mappings`, and that the audit write index
+shows it too: `GET _alias/tlsoc-agent-audit` names the index with
+`"is_write_index": true`, and `GET <that index>/_mapping` shows
+`"date_detection": false`. When both do, nothing more is needed, whether bootstrap or the
+manual fallback made the change.
 
 ### Rolling back from Round 14
 

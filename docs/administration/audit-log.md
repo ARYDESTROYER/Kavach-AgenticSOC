@@ -312,6 +312,14 @@ changed.
 | Request id | The id of the request (also in the `X-Request-ID` response header). |
 | Run id | The investigation run, so its steps group together. |
 
+### Spend figures
+
+A few rows record an AI spend figure in their summary: an investigation that ran out of
+time, the code's decision, a runbook AI request and a budget refusal. Without the
+permission to see AI spend (`cost:view`), those figures read "hidden" or "(amount
+hidden)" in the list and in the record. The same applies to a budget refusal shown on a
+case. The stored rows never change, and every other row is shown as recorded.
+
 ### Personal data
 
 The client address and the user agent are personal data. They are kept as long as the

@@ -886,6 +886,9 @@ audit row or rebuilds anything, it refuses:
 - `409` with code `open_case_exists` and that case's id, for a closed case whose events
   another open case now holds. A closed case is otherwise reinvestigated in place.
 
+`POST /api/cases/{case_id}/investigate` makes the same two checks before it rebuilds the
+case. It has no `wait` field and always answers when the run ends.
+
 A close or status change made while a run is in progress is replaced by the run's
 result when it finishes. The person's disposition, note, actions taken, comments and
 screenshots are kept, a `case.close_replaced` audit row records it, and that person gets
@@ -943,8 +946,8 @@ store `503`, never a zero.
 | `403` "Only a Super admin can change single sign-on." | A change to the `sso` settings or a provider secret from anyone but a stored Super admin with a fresh sign-in |
 | `422` | An SSO default role or group mapping that names a custom role |
 | `429 mfa_locked` | Ten wrong second-factor codes in a row |
-| `409 investigation_running` | A reinvestigation while a run on the case is queued or running |
-| `409 open_case_exists` | A reinvestigation of a closed case whose events another open case holds |
+| `409 investigation_running` | A reinvestigation or case investigation while a run on the case is queued or running |
+| `409 open_case_exists` | A reinvestigation or case investigation of a closed case whose events another open case holds |
 | `409 source_demo_readonly` | A write to a Demo source while Demo Mode is on |
 | `401 session_invalid` | Every call to the deprecated `POST /api/auth/refresh` |
 

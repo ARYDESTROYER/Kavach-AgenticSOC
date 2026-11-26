@@ -1316,9 +1316,9 @@ the longer [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md).
 - **In the Console:** select **Help Center** at the bottom of the navigation rail. It is the
   version-matched manual for the build you run and works without internet access.
 
-![Bundled Help Center home page with the Matched to this app note, which says documentation 0.1 describes Agentic SOC 0.1.13 and is served under /docs/0.1/, above a table of guides by goal.](docs/assets/screenshots/help-center.webp)
+![Bundled Help Center home page with the Matched to this app note, which names the documentation line and the running version, above a table of guides by goal.](docs/assets/screenshots/help-center.webp)
 
-*Figure 16. The bundled Help Center, served by the Console at `/docs/0.1/`.*
+*Figure 16. The bundled Help Center, served by the Console at `/docs/0.2/`.*
 
 - **Reference documents:** [`DEPLOY.md`](DEPLOY.md) (deployment reference),
   [`docs/USAGE.md`](docs/USAGE.md) (day-to-day use), [`SECURITY.md`](SECURITY.md) (threat model),

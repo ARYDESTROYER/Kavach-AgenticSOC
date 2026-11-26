@@ -253,7 +253,9 @@ the outcome of one that ended, the risk, the AI verdict, the owner (select to re
 or **Assign to me**; this is the one place to change it), the SLA while the case is
 open, and the review chip on a case waiting for its auto-close review. In a narrow pane
 the later items hide first and the owner always stays; a hidden SLA is still in the case
-facts' **Signal** section. The tabs sit under it.
+facts' **Signal** section. On a short line the owner's name is shortened first, then the
+AI verdict's words; the status words stay whole until both have given way. The tabs sit
+under it.
 
 Point at the risk, the AI verdict, the severity, the priority or the SLA to see a
 one-line formula with the real numbers, and select it for the whole calculation with
