@@ -682,7 +682,8 @@ new state lives in the existing key-value store. Read these before upgrading:
   fallback, needed only when the backend logs one of these warnings:
   - "Audit template tlsoc-agent-audit-template could not be read" or "could not be
     updated" (the management key may not read or write templates);
-  - "Audit index ... mapping could not be extended";
+  - "Audit index mappings could not be read" or "Audit index ... mapping could not be
+    extended";
   - "Audit index ... already maps ... another way", where rolling the audit write index
     over is enough.
 

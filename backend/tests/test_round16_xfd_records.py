@@ -7,6 +7,7 @@ code again. Offline: it reads repository files and imports modules only.
 
 from __future__ import annotations
 
+import ast
 import re
 from pathlib import Path
 
@@ -273,3 +274,84 @@ def test_ui_standard_states_the_fixed_sign_in_sentences_and_the_hover_fallback()
     assert "Use the organization default theme" in standard
     assert "never renders the server's raw text" in standard
     assert "from the unrounded factors" in standard
+
+
+# Review of XFD: each check reads the code fact first, then the record.
+
+INDICES_PY = REPO_ROOT / "backend" / "app" / "es" / "indices.py"
+INVESTIGATE_TSX = WEBUI / "soc" / "pages" / "Investigate.tsx"
+
+
+def _audit_fallback_warnings() -> list[str]:
+    """The fixed part of each warning the audit upgrade logs through the shipped client
+    when it could not extend a mapping: the text after the last argument, up to the
+    first colon or semicolon ("could not be read", "another way", ...)."""
+    tree = ast.parse(_read(INDICES_PY))
+    found: list[str] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.AsyncFunctionDef):
+            continue
+        if node.name not in {"_refresh_audit_template", "extend_audit_mapping"}:
+            continue
+        for call in ast.walk(node):
+            if not (isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute)):
+                continue
+            if call.func.attr != "warning" or not call.args:
+                continue
+            first = call.args[0]
+            if not (isinstance(first, ast.Constant) and isinstance(first.value, str)):
+                continue
+            message = first.value
+            # A client without the mapping methods is not the shipped one, and a template
+            # of an unexpected shape is not an upgrade the fallback can repair.
+            if "not checked" in message or "unexpected shape" in message:
+                continue
+            head = re.split(r"[:;]", message, maxsplit=1)[0]
+            found.append(head.rsplit("%s", 1)[-1].strip())
+    return found
+
+
+def test_the_docs_name_every_audit_upgrade_warning_that_calls_for_the_fallback():
+    warnings = _audit_fallback_warnings()
+    assert "Audit index mappings could not be read" in warnings
+    assert {"could not be read", "could not be updated", "mapping could not be extended",
+            "another way"} <= set(warnings)
+    for path in (UPGRADES_MD, DEPLOY, OPS_TROUBLESHOOTING_MD, ROOT_TROUBLESHOOTING):
+        text = _flat(_read(path))
+        for warning in warnings:
+            assert warning in text, (path.name, warning)
+
+
+def test_the_paced_demo_runs_are_named_as_the_console_names_them():
+    # The Entity investigation page runs with trigger "manual", which the Demo paces.
+    assert "label: 'Entity investigation'" in _read(REGISTRY_TSX)
+    assert "'Run investigation'" in _read(INVESTIGATE_TSX)
+    routes = _read(ROUTES_PY)
+    start = routes.index('@router.post("/investigate")')
+    assert 'trigger="manual"' in routes[start:start + 2000]
+    demo = _flat(_read(DEMO_MD))
+    assert "the Investigate page" not in demo
+    assert "**Run investigation** on **Workspace → Entity investigation**" in demo
+    changelog = _flat(_round16_changelog())
+    assert "(Reinvestigate or Investigate)" not in changelog
+    assert "Run investigation on Entity investigation" in changelog
+
+
+def test_the_cost_view_list_names_the_standup_cost():
+    routes = _read(ROUTES_PY)
+    start = routes.index('@router.get("/standup")')
+    assert 'result["cost"] = None' in routes[start:start + 3000]
+    cost_view = _flat(_read(PERMISSIONS_MD))
+    assert "Standup summary's AI cost (`GET /api/standup` returns `cost` as `null`)" in cost_view
+
+
+def test_ui_standard_names_every_fixed_sign_in_failure_sentence():
+    login = _read(LOGIN_TSX)
+    body = login[login.index("function failText("):]
+    body = body[: body.index("\n}\n")]
+    fixed = re.findall(r"'([A-Z][^']*\.)'", body)
+    wrong = re.findall(r"failText\(err, '([^']+)'", login)
+    assert len(fixed) >= 3 and len(wrong) >= 4
+    standard = _flat(_read(UI_STANDARD))
+    for sentence in fixed + wrong:
+        assert sentence in standard, sentence

@@ -47,8 +47,8 @@ seeded case's cost matches the ledger rows of its investigation. The real
 deterministic case policy is still used inside the sandbox: an uncertain verdict
 remains open for a human.
 
-In Demo Mode, an investigation you start (Reinvestigate, or the Investigate page) pauses
-at each step, so you can watch the AI work on the case: the case header shows **AI
+In Demo Mode, an investigation you start (**Reinvestigate** on a case, or **Run
+investigation** on **Workspace → Entity investigation**) pauses at each step, so you can watch the AI work on the case: the case header shows **AI
 working** with its clock, the queue row and the Case Manager count mark the run, and a
 close made meanwhile says the run's result will replace it. A manual run takes a few
 seconds; its pauses never use more than a quarter of the run's time cap. Chat, report

@@ -385,9 +385,9 @@ additive audit mapping upgrade too), and no new runtime dependency. Bug ids refe
   - Reinvestigate no longer turns a benign or unrelated case into the "SQL injection to
     webshell" storyline and escalates it: the Demo model reads a case's storyline only from
     the case's own events, never from a precedent, a memory or a runbook.
-  - An investigation you start (Reinvestigate or Investigate) takes a few seconds, so the AI
-    working chip, the queue mark, the Case Manager count and the close warning show while
-    it runs. Its pauses stay within a quarter of the run's time cap. Chat, report summaries,
+  - An investigation you start (Reinvestigate on a case, or Run investigation on Entity
+    investigation) takes a few seconds, so the AI working chip, the queue mark, the Case
+    Manager count and the close warning show while it runs. Its pauses stay within a quarter of the run's time cap. Chat, report summaries,
     runbook help and automatic runs are not slowed.
 - **Chat and local models.** Exported conversations name a log source under "Sources queried"
   only when a lookup read it [B38]. Deleting a conversation says "Its report stays in

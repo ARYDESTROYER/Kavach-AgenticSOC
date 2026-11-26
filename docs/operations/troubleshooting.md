@@ -115,7 +115,8 @@ Sign-ins and sign-outs are never blocked this way.
   date-like value in an audit row can map a field as a date, and later rows with
   ordinary text there are refused. Look in the backend log for "Audit template
   tlsoc-agent-audit-template could not be read" or "could not be updated", "Audit index
-  ... mapping could not be extended", or "Audit index ... already maps ... another way".
+  mappings could not be read", "Audit index ... mapping could not be extended", or "Audit
+  index ... already maps ... another way".
   To confirm the upgrade, check that
   `GET _index_template/tlsoc-agent-audit-template` shows `date_detection: false`, and
   that the write index behind `tlsoc-agent-audit` (`GET _alias/tlsoc-agent-audit`)

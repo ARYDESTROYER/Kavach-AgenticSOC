@@ -2166,9 +2166,11 @@ its two gradient controls; nothing on this page has a palette of its own.
   (B25). A refused sign-in, code or password change shows a fixed sentence too ("The
   username or password is not correct.", "That code is not correct. Try again.", "Could
   not reach the server. Try again." for a failed request or any 5xx, "Too many attempts.
-  Wait a few minutes, then try again." for a 429, "Sign in failed. Try again." for
-  anything else); the page never renders the server's raw text, except a 400 password
-  rule on the setup and forced-change steps. The session-ended notice keeps its calm info
+  Wait a few minutes, then try again." for a 429, "Sign in failed. Try again." for any
+  other sign-in or code refusal, and "Could not create the admin account." or "Could not
+  change the password." for any other refusal on the setup and forced-change steps); the
+  page never renders the server's raw text, except a 400 password rule on those two
+  steps. The session-ended notice keeps its calm info
   style. Fields are disabled while a request runs, which takes the focus away, so a refused
   request puts focus back in the field to fix: the password, the first code cell, the
   recovery code, the new password or the setup password.

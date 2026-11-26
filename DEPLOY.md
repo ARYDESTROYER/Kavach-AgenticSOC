@@ -743,9 +743,9 @@ or table is added. The full list is in `docs/operations/upgrades.md` ("Round 14 
   and to every existing audit index. It only adds mappings; it never changes a property
   already mapped, never reindexes and never rolls an index over. The manual step is a
   fallback for when the backend logs that it could not: "Audit template ... could not be
-  read" or "could not be updated", "Audit index ... mapping could not be extended", or
-  "Audit index ... already maps ... another way" (a rollover of the audit write index is
-  enough for that one). The fallback applies `deploy/mappings/tlsoc-agent-audit.template.json`
+  read" or "could not be updated", "Audit index mappings could not be read", "Audit index
+  ... mapping could not be extended", or "Audit index ... already maps ... another way" (a
+  rollover of the audit write index is enough for that one). The fallback applies `deploy/mappings/tlsoc-agent-audit.template.json`
   as the index template `tlsoc-agent-audit-template`
   (`PUT _index_template/tlsoc-agent-audit-template`) and rolls the audit write index
   (`POST tlsoc-agent-audit/_rollover`); the commands are in

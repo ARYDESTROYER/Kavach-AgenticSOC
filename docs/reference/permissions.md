@@ -82,7 +82,8 @@ covers a case's AI usage list (`GET /api/cases/{case_id}/usage`), the cost value
 **View all fields**, and the cost figures in the text of a case's timeout, decision,
 runbook AI and budget rows, which read "hidden" (amounts "(amount hidden)") in the trace,
 the timeline, the activity feed, the case rationale, chat answers about the case and the
-Audit log list and record, and the figure in a budget refusal shown on a case.
+Audit log list and record, the figure in a budget refusal shown on a case, and the
+Standup summary's AI cost (`GET /api/standup` returns `cost` as `null`).
 Tool output and log evidence are never rewritten. A role without `cost:view` still
 reads everything else on those pages.
 

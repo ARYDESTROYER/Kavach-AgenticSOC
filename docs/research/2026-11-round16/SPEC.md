@@ -2910,8 +2910,13 @@ reverting.
   again." and a single sign-on start failure reuses "Single sign-on failed. Try again."; the
   setup and forced-change steps show only a 400 rule; related rows are `<a href>` links through
   the router; case numbers are added in `threat_context.assemble()`.
-- **XFD, docs and records** (`r16-xfd`, on `5f00529`): the docs findings and these records
-  (§8.5), with `test_round16_xfd_records.py`, whose checks each fail on the base.
+- **XFD, docs and records** (`fe3a803` on `5f00529`, reviewed on the same branch): the docs
+  findings and these records (§8.5), with `test_round16_xfd_records.py`, whose checks each
+  fail on the base. Review fixes: the Demo page and the CHANGELOG name Run investigation on
+  Entity investigation, not an Investigate page; the `cost:view` list names the Standup
+  summary's AI cost; the audit fallback warnings include "Audit index mappings could not be
+  read"; and the sign-in errors bullet of `ui-standard.md` names the setup and
+  forced-change sentences.
 
 XFCM, WP17B and WP19 are recorded with the closing gates.
 
@@ -2948,7 +2953,8 @@ XFCM, WP17B and WP19 are recorded with the closing gates.
   note cannot be shown there. A paced manual run's popover does not advance step by step:
   Triage and Specialist tick at once, the run sits on Looking up evidence, and Verdict and
   Deciding pass in its last instant, because every Demo model call falls in the evidence phase.
-  Durable jobs refuse to run in Demo Mode, so only Reinvestigate and Investigate are paced.
+  Durable jobs refuse to run in Demo Mode, so only Reinvestigate and Entity investigation's
+  Run investigation (both `trigger="manual"`) are paced.
 - **What's new with sign-in off** is per installation: every caller shares the `default`
   preferences bucket. The welcome can open over the What's new page itself after the badge
   link; that is harmless.
