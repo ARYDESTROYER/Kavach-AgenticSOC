@@ -478,8 +478,8 @@ Background jobs, a full data export and declared-benign rules.
 - **A full data export** (New, Administration). Settings, Organization, Data export builds one verified ZIP of the scopes you choose, on the server. [Read more](../administration/settings.md#export-portable-application-state).
 
 <figure markdown="span">
-[![Data export settings with the Archive and Segmented assembly choices and the scopes to include. Build ZIP in background is off, with the note that exports are not available in Demo Mode.](../assets/releases/0.2.0/data-export-light.webp#only-light) ](../assets/releases/0.2.0/data-export-light.webp)
-[![Data export settings with the Archive and Segmented assembly choices and the scopes to include. Build ZIP in background is off, with the note that exports are not available in Demo Mode.](../assets/releases/0.2.0/data-export-dark.webp#only-dark) ](../assets/releases/0.2.0/data-export-dark.webp)
+[![Data export settings with the Archive and Segmented assembly choices and the scopes to include. The Build ZIP in background button is unavailable, with the note that exports are not available in Demo Mode.](../assets/releases/0.2.0/data-export-light.webp#only-light) ](../assets/releases/0.2.0/data-export-light.webp)
+[![Data export settings with the Archive and Segmented assembly choices and the scopes to include. The Build ZIP in background button is unavailable, with the note that exports are not available in Demo Mode.](../assets/releases/0.2.0/data-export-dark.webp#only-dark) ](../assets/releases/0.2.0/data-export-dark.webp)
 <figcaption>Data export in Settings.</figcaption>
 </figure>
 

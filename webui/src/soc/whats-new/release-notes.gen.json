@@ -919,13 +919,13 @@
               "screenshot": {
                 "light": {
                   "src": "assets/releases/0.2.0/chat-titles-light.webp",
-                  "width": 1992,
-                  "height": 416
+                  "width": 2742,
+                  "height": 376
                 },
                 "dark": {
                   "src": "assets/releases/0.2.0/chat-titles-dark.webp",
-                  "width": 1992,
-                  "height": 416
+                  "width": 2742,
+                  "height": 376
                 },
                 "alt": "Chat history with a conversation titled New cases to triage, the same title at the top of the conversation, and the first question with the start of its answer.",
                 "caption": "A conversation titled from its first answer."
@@ -1461,7 +1461,7 @@
                   "width": 2880,
                   "height": 1800
                 },
-                "alt": "Data export settings with the Archive and Segmented assembly choices and the scopes to include. Build ZIP in background is off, with the note that exports are not available in Demo Mode.",
+                "alt": "Data export settings with the Archive and Segmented assembly choices and the scopes to include. The Build ZIP in background button is unavailable, with the note that exports are not available in Demo Mode.",
                 "caption": "Data export in Settings."
               }
             },

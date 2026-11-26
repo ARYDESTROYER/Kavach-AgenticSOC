@@ -247,7 +247,7 @@ interface of the update they belong to (SPEC §4.7 WP17), so they stay as they a
 | `docked-navigation` (0.2.0.2026-11-06) | `docked-navigation-light.webp`: 115,750 B | `docked-navigation-dark.webp`: 111,620 B | 2880 by 1800 |
 | `chat-capacity` (0.2.0.2026-11-06) | `chat-capacity-light.webp`: 58,110 B | `chat-capacity-dark.webp`: 56,016 B | 1536 by 1520 |
 | `chat-starters` (0.2.0.2026-10-24) | `chat-starters-light.webp`: 56,874 B | `chat-starters-dark.webp`: 54,064 B | 2186 by 866 |
-| `chat-titles` (0.2.0.2026-10-24) | `chat-titles-light.webp`: 29,200 B | `chat-titles-dark.webp`: 27,844 B | 1992 by 416 |
+| `chat-titles` (0.2.0.2026-10-24) | `chat-titles-light.webp`: 29,900 B | `chat-titles-dark.webp`: 28,508 B | 2742 by 376 |
 | `chat-unlimited` (0.2.0.2026-10-12) | `chat-unlimited-light.webp`: 56,542 B | `chat-unlimited-dark.webp`: 53,864 B | 1536 by 980 |
 | `remember-me` (0.2.0.2026-10-12) | `remember-me-light.webp`: 48,056 B | `remember-me-dark.webp`: 43,536 B | 1600 by 900 |
 | `report-downloads` (0.2.0.2026-10-12) | `report-downloads-light.webp`: 27,340 B | `report-downloads-dark.webp`: 25,350 B | 824 by 886 |
@@ -271,10 +271,11 @@ The fourteen highlights the acceptance pass named all have figures. The other tw
 
 ### Docs screenshot
 
-`docs/assets/screenshots/case-manager.webp` (121,912 B, 2880 by 1800, light, the navigation
+`docs/assets/screenshots/case-manager.webp` (180,400 B, 2880 by 1800, light, the navigation
 expanded) was captured again: it showed the Brief's model lane as "AI AI", and the lane is now
-named Assessment. It shows CASE-000040, a false positive the AI closed, found with the queue's
-All scope and a search, so the open case is the highlighted row. The alt text in `README.md`
+named Assessment. It shows CASE-000040, a false positive the AI closed, open from the queue's
+All scope with no search, so the queue lists the other cases around its highlighted row. The
+alt text in `README.md`
 and `docs/getting-started/quickstart.md` now names the Assessment lane and says the case policy
 closed the case.
 
@@ -325,9 +326,9 @@ closed the case.
   none broken once each was scrolled into view: 35 themed pairs, each loaded in the page's
   theme with no file of the other theme, and the 9 single images of older updates. 0.1.1 renders
   9 highlights and no figures. The same in light and dark.
-- **Help Center bundle.** 18,063,795 bytes in 281 files before and 22,068,113 bytes in 333 files
-  after (`npm run docs:bundle`), so 4,004,318 bytes more: the 52 new images. The 79 files in
-  `docs/assets/releases/0.2.0/` hold 7,498,280 bytes.
+- **Help Center bundle.** 18,063,795 bytes in 281 files before and 22,128,003 bytes in 333 files
+  after the review (`npm run docs:bundle`), so 4,064,208 bytes more: the 52 new images and the
+  images captured again. The 79 files in `docs/assets/releases/0.2.0/` hold 7,499,644 bytes.
 
 ### Limitations
 
@@ -339,3 +340,17 @@ closed the case.
   and summarised; the Reports library page lists the same report as one row.
 - **Noise reduction.** The Demo's alert counters cover part of the window, so
   `noise-flow-views` reads "Reduced by" not measured, with the partial coverage note.
+
+### Review
+
+The independent review checked every image by eye and by luminance, and the live page and the
+welcome in both themes at 1440 by 900 and 390 by 844 (44 figures, all loaded, none of the other
+theme, no horizontal scroll). It changed three things:
+
+- **`chat-titles`** was cut through the first question at the right edge ("Which of the 37")
+  and through the first list line at the bottom. It was captured again from a fresh seeded
+  Demo, light and dark, so the whole question shows and the crop ends between two lines.
+- **`case-manager.webp`** showed a queue of one row, filtered by a search. It was captured
+  again with the All scope and no search, so the queue lists the cases around the open one.
+- **`data-export`** alt text said the Build ZIP in background button "is off". The button is
+  unavailable in Demo Mode, and the alt text now says so.

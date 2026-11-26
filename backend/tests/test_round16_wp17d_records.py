@@ -78,6 +78,19 @@ REPLACED_SIZE = {
 }
 CASE_MANAGER_0_2_0_BEFORE = "093b778fafa1ed91bad195d1451af7f09c441473dd87738f28a0f1dfcd6f8667"
 
+# The review's recaptures: the sha256 of each file as WP17D first committed it (2c147cc).
+# chat-titles was cut through the first question at the right edge and through a list line
+# at the bottom; case-manager.webp showed a queue of one row filtered by a search.
+REVIEW_REPLACED = {
+    ASSETS / "chat-titles-light.webp": "878e532e852d03af75a1ba5cd4057d76808bee5aa9f7bbd217af2a303bf2c147",
+    ASSETS / "chat-titles-dark.webp": "2f451db6cea9b2b579cc62caa680eb6e1ba45a04fce24b843bbcb02025f03b4d",
+    CASE_MANAGER_SHOT: "576f5190180025304a24c27ca254ae99ece096e6d6ec79c29439131adc917413",
+}
+# The question bubble ends 1,402 CSS pixels from the left of the 1,440 viewport and the crop
+# starts after the 64-pixel rail, so a crop that holds the whole question is at least
+# 2 x (1,402 - 64) = 2,676 device pixels wide.
+CHAT_TITLES_MIN_WIDTH = 2 * (1402 - 64)
+
 
 def _read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
@@ -192,3 +205,23 @@ def test_the_record_lists_every_file_this_package_added_or_replaced():
     names.append("case-manager.webp")
     unlisted = [name for name in names if f"`{name}`" not in section]
     assert unlisted == []
+
+
+def test_the_review_recaptures_replace_the_cut_and_filtered_frames():
+    stale = [path.name for path, old_sha in REVIEW_REPLACED.items()
+             if hashlib.sha256(path.read_bytes()).hexdigest() == old_sha]
+    assert stale == []
+    sizes = {_webp_size((ASSETS / f"chat-titles-{theme}.webp").read_bytes()) for theme in ("light", "dark")}
+    assert len(sizes) == 1, sizes
+    ((width, _height),) = sizes
+    assert width >= CHAT_TITLES_MIN_WIDTH, width
+    assert _webp_size(CASE_MANAGER_SHOT.read_bytes()) == (2880, 1800)
+    section = _wp17d_section()
+    assert "All scope with no search" in section
+    assert "and a search, so the open case" not in section
+
+
+def test_the_data_export_alt_says_the_button_is_unavailable():
+    alt = _highlights()["data-export"]["screenshot"]["alt"]
+    assert "Build ZIP in background button is unavailable" in alt
+    assert "is off" not in alt
