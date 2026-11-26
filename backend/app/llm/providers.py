@@ -1137,11 +1137,15 @@ DEMO_STREAM_WORDS_PER_GROUP = 4
 #: (Reinvestigate and Investigate; durable jobs do not run while Demo Mode is on), so
 #: the Console's AI working signals show and a person can act on the case while the
 #: run goes on. The case lock is not held while it waits. A run makes three or four
-#: such calls, so it takes about 6 to 8 seconds, well inside the time cap. Never for
+#: such calls, so it takes about 6 to 8 seconds under the default time cap; its pauses
+#: never use more than :data:`DEMO_PACE_CAP_SHARE` of the run's own cap. Never for
 #: chat, report summaries, runbook help, seeding or the automatic and detection runs
 #: of the live Demo, and never outside Demo Mode. No model call, no extra ledger row
 #: (#6); the verdict is unchanged (#3). Read at call time; the test suite sets it to 0.
 DEMO_INVESTIGATION_STEP_DELAY_S = 2.0
+#: The share of a run's time cap its Demo pauses may use in all. A short time cap set in
+#: Settings then shortens the pauses; it never turns a paced run into a timed-out one.
+DEMO_PACE_CAP_SHARE = 0.25
 #: The roles of one investigation run (router, investigator with its persona, formatter).
 _DEMO_PACED_ROLES = frozenset({"router", "investigator", "formatter"})
 #: The run triggers a person or a job starts.
@@ -1206,19 +1210,33 @@ def _demo_stream_chunks(text: str) -> list[str]:
     return [piece for piece in pieces if piece]
 
 
-def _demo_current_trigger() -> str | None:
-    """The ``trigger`` of the investigation running in this task (``manual``, ``job``,
-    ``automatic``, ``drain`` or ``detection``), or ``None`` outside a run. Read from the
-    pipeline's current registry handle, lazily: the pipeline sits far above this
-    low-level module. Never raises."""
+def _demo_current_run() -> Any:
+    """The registry handle of the investigation running in this task (its ``trigger``
+    is ``manual``, ``job``, ``automatic``, ``drain`` or ``detection``), or ``None``
+    outside a run. Read from the pipeline's current investigation, lazily: the pipeline
+    sits far above this low-level module. Never raises."""
     try:
         from ..agents import pipeline as _pipeline
 
-        handle = _pipeline._CURRENT_INVESTIGATION.get()
+        return _pipeline._CURRENT_INVESTIGATION.get()
     except Exception:  # noqa: BLE001 -- no pipeline, no run
         return None
-    trigger = getattr(handle, "trigger", None) if handle is not None else None
-    return str(trigger) if trigger else None
+
+
+def _demo_pace_room(handle: Any, delay: float) -> float:
+    """How long one Demo pause of this run may last: ``delay``, cut so that the run's
+    pauses end within :data:`DEMO_PACE_CAP_SHARE` of its time cap, counted from when it
+    started. ``0`` when the run has no known start or cap, or they cannot be read, so a
+    pause can never push a run past its time cap. Never raises."""
+    try:
+        cap = float(getattr(handle, "time_cap_seconds", 0) or 0)
+        started = getattr(handle, "started_at", None)
+        if cap <= 0 or not isinstance(started, datetime):
+            return 0.0
+        elapsed = (datetime.now(timezone.utc) - started).total_seconds()
+        return max(0.0, min(delay, cap * float(DEMO_PACE_CAP_SHARE) - elapsed))
+    except Exception:  # noqa: BLE001 -- an unreadable run never waits
+        return 0.0
 
 
 def _demo_cluster_block(content: str) -> str:
@@ -1291,19 +1309,25 @@ class DemoMockProvider(MockProvider):
         The run is read from the pipeline's current investigation (its ``trigger``):
         an automatic, drain or detection run, a call outside any run (chat, report
         summaries, runbook help, seeding) and a prompt the chat, report or runbook
-        markers route never wait. Only a sleep: no model call and no ledger row, and a
-        cancel or the time cap ends it like any other call."""
+        markers route never wait. The pauses of one run stay within a share of its
+        time cap (:func:`_demo_pace_room`), so a short cap never ends a paced run as
+        timed out. Only a sleep: no model call and no ledger row, and a cancel ends it
+        like any other call."""
         try:
             delay = float(DEMO_INVESTIGATION_STEP_DELAY_S)
         except (TypeError, ValueError):
             return
         if delay <= 0 or str(role) not in _DEMO_PACED_ROLES:
             return
-        if _demo_current_trigger() not in _DEMO_PACED_TRIGGERS:
+        handle = _demo_current_run()
+        trigger = getattr(handle, "trigger", None) if handle is not None else None
+        if str(trigger or "") not in _DEMO_PACED_TRIGGERS:
             return
         if self._routed_system_prompt(messages):
             return
-        await asyncio.sleep(delay)
+        delay = _demo_pace_room(handle, delay)
+        if delay > 0:
+            await asyncio.sleep(delay)
 
     async def complete_stream(
         self, role, messages, model, temperature, max_tokens, on_text: OnText

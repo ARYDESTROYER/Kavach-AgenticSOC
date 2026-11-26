@@ -21,6 +21,7 @@ import random
 import time
 from collections.abc import Iterator
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -215,9 +216,16 @@ def test_a_seeded_demo_reinvestigate_keeps_the_cases_own_storyline(
 # --------------------------------------------------------------------------- #
 # demo-run-under-hold-off: the pause
 # --------------------------------------------------------------------------- #
-def _in_run(trigger: str | None):
-    """Run a coroutine as if inside an investigation with ``trigger``."""
-    handle = SimpleNamespace(trigger=trigger) if trigger is not None else None
+def _in_run(trigger: str | None, *, time_cap_seconds: int = 120):
+    """Run a coroutine as if inside an investigation with ``trigger`` that started now
+    under ``time_cap_seconds``."""
+    handle = (
+        SimpleNamespace(
+            trigger=trigger, started_at=datetime.now(timezone.utc),
+            time_cap_seconds=time_cap_seconds,
+        )
+        if trigger is not None else None
+    )
 
     async def _call(coro_factory):
         token = pipeline_mod._CURRENT_INVESTIGATION.set(handle)
@@ -301,6 +309,73 @@ async def test_the_pause_adds_no_call_and_changes_no_answer(monkeypatch: pytest.
     assert (paced_result.prompt_tokens, paced_result.completion_tokens) == (
         paced_still.prompt_tokens, paced_still.completion_tokens,
     )
+
+
+@pytest.mark.asyncio
+async def test_the_pauses_of_one_run_stay_within_a_share_of_its_time_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Under a 2 s time cap the four steps of a run may pause 0.5 s in all, not 4 x 0.5 s."""
+    monkeypatch.setattr(providers, "DEMO_INVESTIGATION_STEP_DELAY_S", 0.5)
+    messages = _messages(_poisoned_prompt(STAGING_RULE))
+    provider = DemoMockProvider()
+
+    async def _four_steps() -> None:
+        for role in ("router", "investigator", "investigator", "formatter"):
+            await provider.complete(role, messages, "demo-model", 0.0, 1000)
+
+    started = time.monotonic()
+    await _in_run("manual", time_cap_seconds=2)(_four_steps)
+    elapsed = time.monotonic() - started
+    assert 2 * providers.DEMO_PACE_CAP_SHARE * 0.8 <= elapsed < 2 * providers.DEMO_PACE_CAP_SHARE + 0.4
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "handle",
+    [
+        SimpleNamespace(trigger="manual"),
+        SimpleNamespace(trigger="manual", started_at=None, time_cap_seconds=120),
+        SimpleNamespace(trigger="manual", started_at=datetime.now(timezone.utc), time_cap_seconds=0),
+        SimpleNamespace(trigger="manual", started_at="2026-11-26T00:00:00Z", time_cap_seconds=120),
+    ],
+)
+async def test_a_run_without_a_readable_start_or_cap_never_waits(
+    monkeypatch: pytest.MonkeyPatch, handle: SimpleNamespace,
+) -> None:
+    monkeypatch.setattr(providers, "DEMO_INVESTIGATION_STEP_DELAY_S", 30)
+    provider = DemoMockProvider()
+    token = pipeline_mod._CURRENT_INVESTIGATION.set(handle)
+    try:
+        await asyncio.wait_for(
+            provider.complete(
+                "investigator", _messages(_poisoned_prompt(STAGING_RULE)), "demo-model", 0.0, 1000,
+            ),
+            5,
+        )
+    finally:
+        pipeline_mod._CURRENT_INVESTIGATION.reset(token)
+
+
+def test_a_short_time_cap_never_turns_a_paced_demo_run_into_a_timeout(
+    demo: TestClient, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A 3 s time cap in Settings: the paced Reinvestigate still ends with the case's
+    own benign false positive, not "Investigation exceeded the 3s time cap"."""
+    state = _state(demo)
+    prefs = state.execution_prefs
+    capped = prefs.model_copy(update={"caps": prefs.caps.model_copy(update={"timeout_seconds": 3})})
+    demo.portal.call(lambda: state.update_execution_prefs(capped))
+    assert state.execution_prefs.caps.timeout_seconds == 3
+    monkeypatch.setattr(providers, "DEMO_INVESTIGATION_STEP_DELAY_S", 2.0)
+    case = _case_by_number(demo, "CASE-000045")
+    started = time.monotonic()
+    response = demo.post(f"/api/cases/{case.case_id}/reinvestigate", json={})
+    assert response.status_code == 200, response.text
+    assert time.monotonic() - started < 3
+    after = _case_by_number(demo, "CASE-000045")
+    assert (after.verdict, after.confidence) == (Verdict.FALSE_POSITIVE, 0.97)
+    assert "time cap" not in (after.recommended_action or "")
 
 
 def test_a_seeded_demo_reinvestigate_is_running_while_it_waits(
