@@ -2860,15 +2860,21 @@ Each table persists its own **column state** (order / hidden / widths) per user 
 Theme mode, pinned view ids, and last-list-state live on your personal bucket via
 `GET/PUT /api/prefs/user` (a partial patch — only the fields you send change):
 the compact **System / Light / Dark** segmented control writes `theme_mode` as
-`system` | `light` | `dark` and overrides the org `default_theme`. System follows
-the organization default when one is set, otherwise the device preference.
+`system` | `light` | `dark`. A personal Light or Dark choice wins. System follows the
+organization default theme, which is Branding's `default_theme` (Settings → Organization →
+Branding, `PUT /api/branding`), and follows the device preference when that default is
+itself `system`.
 
 ### Terminology
 
 Admins can rename suite nouns org-wide via `GET/PUT /api/terminology` (the map, e.g.
 `{"case":"incident","cases":"incidents"}`) or the broader
 `GET /api/prefs/org` / `PUT /api/prefs/org` (`CustomizationConfig`: `terminology`,
-`default_saved_views`, `default_theme`). The UI renders every label through a
+`default_saved_views`). The legacy `customization.default_theme` is no longer an
+organization default (since 0.2.0, B45): a value other than `system` sent to
+`PUT /api/prefs/org` is copied into Branding's `default_theme` only while Branding is
+still at its factory default, and is otherwise dropped; the stored and returned
+`customization.default_theme` is always `system`. The UI renders every label through a
 `t(key)` helper; all terminology and view text is **plain data**, never markup and
 never an LLM-prompt input (#9). Writes to `prefs/org` + `terminology` are admin-gated
 and audited; reads are open to any signed-in user (the cascade needs them).

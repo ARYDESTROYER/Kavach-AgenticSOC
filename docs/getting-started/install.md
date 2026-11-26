@@ -309,8 +309,8 @@ Center matches the installed application and remains usable without access to Gi
 or the public docs site.
 
 <figure markdown="span">
-[![Bundled Help Center home page with the Matched to this app note, which says documentation 0.1 describes Agentic SOC 0.1.13 and is served under /docs/0.1/, above a table of guides by goal.](../assets/screenshots/help-center.webp) ](../assets/screenshots/help-center.webp)
-<figcaption>The bundled Help Center, served by the Console at /docs/0.1/.</figcaption>
+[![Bundled Help Center home page with the Matched to this app note, which names the documentation line and the running version, above a table of guides by goal.](../assets/screenshots/help-center.webp) ](../assets/screenshots/help-center.webp)
+<figcaption>The bundled Help Center, served by the Console at /docs/0.2/.</figcaption>
 </figure>
 
 If readiness fails, inspect the backend service logs and use the

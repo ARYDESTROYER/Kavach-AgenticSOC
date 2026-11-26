@@ -327,6 +327,10 @@ Where the skeptic's minimal fix conflicts with a non-negotiable, this SPEC repla
   `automation_actions`: all four are carried, and `link_cross_source` (`engine/ingest.py:518`)
   re-reads each case under its signature lock before saving the link fields. `campaign_id` has no
   writer on the case (campaigns store `Campaign` objects), so it is not carried.
+  *Amendment (2026-11-26, XFB, §8.5):* `link_cross_source` re-reads each linked case under
+  `pipeline.case_lock(case.case_id)`, taken alone (the signature lock only for a pipeline
+  without `case_lock`), and saves only the three link fields; threshold automation and the
+  notifier hold the same lock from their re-read to their save, never during a send.
 - B20: the seeded Demo Admin stays unflagged on purpose (`config.py:232-236`, pinned by
   `tests/test_oobe.py:104-110`); the docs are corrected instead, and the server enforces the flag
   for every other account.
@@ -1258,6 +1262,9 @@ Total: 75 fixes plus 6 merged duplicates, 81 bug ids (Appendix A).
   - **SSO errors (B25).** The ten backend `sso_error` codes map to fixed sentences; anything else
     shows "Single sign-on failed. Try again." The URL is still cleaned.
   - **Appearance.** A three-button group: "Use system theme", "Light theme", "Dark theme".
+    *Amendment (2026-11-26, XFSIGN, §8.5):* the first button is named "Use the organization
+    default theme" while Branding sets a light or dark default, and "Use system theme"
+    otherwise; the pressed button matches the theme on screen, by the Console's theme rules.
   - **Heading and fields.** H1 "Sign in to {org_name}", or "Welcome back" when the device remembers
     a username; Continue always rendered; an empty submit shows "Enter your username."; OTP
     submits automatically, once, guarded by `busy`.
@@ -1451,6 +1458,12 @@ Total: 75 fixes plus 6 merged duplicates, 81 bug ids (Appendix A).
     re-reads the case by id under `pipeline.signature_lock(case.cluster_signature)` (through the
     existing `_sig_lock` helper) and saves only the three link fields; without a pipeline it keeps
     today's behaviour. This closes the `ROADMAP.md` section I link contract.
+    *Amendment (2026-11-26, XFB, §8.5):* `link_cross_source` re-reads each linked case under
+    `pipeline.case_lock(case.case_id)`, taken alone (the signature lock only for a pipeline
+    without `case_lock`), and saves only the three link fields; threshold automation and the
+    notifier hold the same lock from their re-read to their save, never during a send. The
+    analyst-policy builder carries `automation_actions`, `notifications_sent` and the three link
+    fields.
   - **B10.** The identity lookup in `_investigate_cluster_run` runs before the `try`, so a lookup
     failure reaches the existing retry boundaries and no case is minted.
   - **B11.** `CaseRepository.list_deferred_candidates(*, older_than, limit)`: the base default keeps
@@ -1571,6 +1584,10 @@ configuration. Contracts and tests are in §4.5 WP15E.
     Demo split; `_investigation_finished`, started with `spawn_mutation_task`; the case-lock
     registry, cleared on factory reset; `_reenter_detections` (line 2086, after WP15B) passes
     `trigger="detection"` only.
+    *Amendment (2026-11-26, XFB, §8.5):* `_reenter_detections` passes `trigger="detection"` and
+    `known_case_id`; the D10 re-read in `_investigate_cluster_run` covers both the drain and
+    detection triggers (`_KNOWN_CANDIDATE_TRIGGERS`), and the Demo `route_event_batch` passes
+    both too. `handle_clusters` still passes no `known_case_id` (#4).
 - **Contracts.**
   - **The frame.** `case.investigation` carries exactly: `run_id`, `case_id|null`; `state`
     (`queued|running|finished`), `phase` (`queued|triage|specialist|evidence|verdict|decision`);
@@ -1612,6 +1629,11 @@ configuration. Contracts and tests are in §4.5 WP15E.
     the real and Demo pipelines, exposed as `pipeline.case_lock(case_id)`. The pipeline takes it
     only inside the signature lock; a person's action and the collaboration writers take it alone;
     so no path holds the case lock while waiting for a signature lock.
+    *Amendment (2026-11-26, XFB, §8.5):* the cross-source link write, the notifier (from its
+    detached task) and the Demo HITL seed's automation take the case lock alone; a run's
+    threshold automation takes it inside the signature lock, after the run let go of its own
+    hold. Each holds it only from its re-read to its save, never during a send, and none holds
+    the review store lock. The order is still signature lock, then case lock, never the reverse.
 - **Bugs fixed.** None (B05 and B10 land first in WP15B).
 - **Tests.** The [ai] flip probes F1 and F6; F5 close-replaced (one Inbox item, one audit row); no
   item for job or automatic runs; cancellation empties the registry; the queued state with a cap of
@@ -2544,11 +2566,12 @@ logic.
 
 ## 8. As built
 
-Recorded by WP18 from the package reports, their independent reviews, the Journal and the code
-as built on `claude/round16` at `9a94df2` (WP16C merged). WP16P (the entry trim and the
-post-integration items), the cross-cutting review, WP17 and WP19 land after this was written and
-add to it where the placeholders below say so. Where this section and §1 to §7 disagree, this
-section wins.
+Recorded by WP18B from the package reports, their independent reviews, the Journal and the code
+as built on `claude/round16` at `9a94df2` (WP16C merged). XFD then added, on `5f00529`, WP16P
+(the entry trim and the post-integration items), WP17A, WP18B, WP18C, the cross-cutting review
+(§8.5) and the fix packages merged by then, from their reports and reviews. XFCM, WP17B and WP19
+land after that and add to it where the placeholders below say so. Where this section and §1 to
+§7 disagree, this section wins.
 
 ### 8.1 Contract resolutions
 
@@ -2606,7 +2629,10 @@ taken.
   `person` and are left out of the investigation trace (WP10).
 - **Whole-document case writers.** The case lock (WP08) covers the pipeline, the case action
   path and the collaboration writers; WP16B extended it to the auto-close review save, the
-  precedent ratification, the analyst-policy close and the candidate rebuild.
+  precedent ratification, the analyst-policy close and the candidate rebuild. XFB then put the
+  cross-source link write, threshold automation and the notifier under it, each only from its
+  re-read to its save and never during a send (the B09 amendments in §2 and §4.4), which also
+  let the link write leave the signature lock (§8.5).
 - **POST /api/investigate** passes `trigger="manual"` and `requested_by`, so the popover names
   the person and they get the finish notice (WP16B).
 - **A background job run waiting for headroom** announces itself as queued through a new
@@ -2645,6 +2671,10 @@ taken.
   interrupted package's uncommitted work was saved as a work-in-progress commit on its own
   branch and the builders and reviewers resumed from it; the resumed reviewers re-proved the
   earlier fixes by reverting them.
+- **A second container restart** (2026-11-26) stopped the reviews of WP16P, WP17A, WP18C,
+  XFDEMO, XFNUM and XFSIGN at their final full-suite gates, after their review fixes were
+  committed. The orchestrator merged them and ran the full suites once on the integrated tree
+  instead of once per package.
 
 ### 8.2 Per package
 
@@ -2800,12 +2830,90 @@ reverting.
   shortcut rows, Reinvestigate unavailable during a run, the dimmed verdict, the run chip that
   fits the strip, the bulk Acknowledge note, one Back on a phone, the trace kit in the AI lane,
   `NotificationsSent`, the signal count link, "Older runbook", the Active risk index and SLA
-  attainment explanations, and the Help Center banner and version selector. WP16P (the entry
-  trim, the ratchet and the post-integration items) is recorded with the closing gates.
+  attainment explanations, and the Help Center banner and version selector. **WP16P**
+  (`7a31bda`, review `9a0cb6e`): the entry trim and the ratchet (§8.1), then the
+  post-integration items: the confirm dialog returns focus to the control that asked, the close
+  note writes the verdict in lower case, `GET /api/audit` and a budget refusal kept in
+  `Case.error` withhold spend figures without `cost:view`, the C43 sticky-column rule in
+  `ui-standard.md`, the rationale truncation note, a docs test that keeps the `api.md` path
+  count equal to `openapi.json`, the Agent effectiveness fold without an `act()` warning, a
+  precedent candidate whose case was deleted fails and is never saved back, the header strip's
+  give-way order (owner's name, then the verdict's words, then the status words) and the
+  dashboards board-title wait. Review fixes: a regression test for the acknowledgement path of
+  the deleted-case fix, and `PrecedentCaseGone` now reads "case <id> was deleted", since a case
+  deleted after its ratification was ratified. Deviations: the baseline rose to 330,068 B
+  instead of falling (§8.1), and `badges.tsx` gained an optional `wordsClassName` on
+  `AiVerdictChip`.
 - **WP18A, case workspace docs** (`8adb164`, review `8b59c0f`): the six-tab docs and their
   records tests, ahead of the rest of WP18.
+- **WP18B, repository records** (`dd1ab4d`, review `646a3de`). The CHANGELOG Round 16 section,
+  AGENTS, HANDOFF, ROADMAP section K, USAGE, testing.md, ENVIRONMENT, RUNBOOK,
+  TROUBLESHOOTING, DEPLOY, README, INSTALL, SECURITY, COMPATIBILITY and DEMO, the
+  `es/indices.py` docstring, the Round 14 and Round 15 SPEC amendments and this §8 at
+  `9a94df2`. Review fixes: the Round 14 D3 amendment moved below its table, a new account
+  starts with What's new marked seen, the CHANGELOG intro names only the mapping this round
+  adds, USAGE's What's new section follows the whole Inbox section, the 0.1 history no longer
+  calls 0.1.13 a live candidate, the WP04 entry saving matches its §8.2 note, and the DEMO
+  navigation list names Runbooks; `test_round16_wp18b_records.py` pins each.
+- **WP18C, Help Center pages** (`c58dddf`, reviews `eed4d81` and `ccbac27`). The new
+  `analyst/explainable-numbers.md`, whose worked example and copied calculation were produced
+  by `compute_risk` and the Console builder, and the §6.1 pages of the analyst,
+  getting-started, administration, concepts, reference, operations and releases guides, with
+  the knowledge corpus regenerated. Review fixes: the events table reads 50 at a time, every
+  page names both grants of the case usage route, the response clock also stops at a close
+  nobody answered, no page claims that every Analytics figure explains itself, an older ledger
+  row keeps its stored cost, and the Allowed domains sentence; `test_docs_round16_helpcenter.py`
+  reads each code fact first. Deviation: a few new passages were moved or reworded so the
+  app-help retrieval and golden-set tests stay green, rather than changing the tests.
+- **WP17A, What's new content** (`d97cd71`, review `4e993da`). Twelve dated updates for 0.2.0,
+  newest first, with 66 highlights; the newest, `0.2.0.2026-12`, stays undated for WP19. Four
+  updates the [wn] table did not list (22 Aug, 9 Sep, 11 Nov and 13 Nov) come from Testing
+  merges. A new `docs/releases/notes/0.1.1.json` covers the 0.1 line (9 highlights, no
+  screenshots), and eleven reused Help Center screenshots are copied into
+  `docs/assets/releases/0.2.0/`. No highlight is featured yet, so the welcome shows the newest
+  update's first five highlights until WP17B adds light and dark images. Review fixes: the
+  case-tabs summary names the tabs the changed keys open, the 0.1.1 Case Manager line no longer
+  lists pages that are not part of it, and `test_round16_release_notes_content.py` reads the tab
+  triggers, the 0.1 record and every help anchor. Left: the generator's fixed intro names
+  "Settings, Appearance" (WP07's file), and `explain-numbers.help` still points at the KPI
+  glossary for WP17B to repoint.
+- **XFB, spine and security** (`0b4cd6d`, reviews `b56b587` and `375e2c4`): the four confirmed
+  backend findings and the refuted link wait (§8.5). Review fixes: the OpenAPI types
+  regenerated for the standup docstring (a real `check:types` failure), the two
+  `link_cross_source` call-site comments and the `CaseLocks` order note, and a policy carry test
+  that cannot pass on two empty lists. Deviations: the Demo event batch passes
+  `trigger="detection"` and `known_case_id`, so Demo event-batch runs show as started by event
+  detection, and a WP15B spine stub gained the `case_lock` keyword.
+- **XFDEMO, Demo** (`0eb619b`, review `581ed25`): the storyline from the case's own cluster
+  block (`CLUSTER_CONTEXT_HEADING` and `SAMPLE_EVENTS_HEADING` in `agents/prompts.py`), and
+  `DEMO_INVESTIGATION_STEP_DELAY_S = 2.0` before each model answer of a manual or job run.
+  Review fix: one run's pauses stay within `DEMO_PACE_CAP_SHARE` (a quarter) of its own time
+  cap, so a short cap no longer turns a paced benign run into a time-cap escalation. Deviations:
+  the tests are in `test_round16_xfdemo.py`; the pause reads the private
+  `agents.pipeline._CURRENT_INVESTIGATION`; the job trigger never applies today, because
+  durable jobs refuse to run in Demo Mode.
+- **XFNUM, numbers** (`90fc872`, review `8e24774`): the ten numbers findings (§8.5), with a
+  property test that recomputes every risk step, rate row and hover line of the 77 seeded Demo
+  cases and a band-edge backend test. Review fixes: percent steps written from the counts
+  (129 / 167 x 100 = 77.2%), a whole-percent tile ends on a Shown step that holds, Copy
+  calculation ends a worded step with "Result:", strip counts of sources and alerts no longer
+  say they were counted over cases, dwell no longer claims to equal time to acknowledge,
+  Average risk never says every case, and Standup SLA aging reports the 0.8 fraction its rule
+  used. Deviations: fix sites in `strip.tsx`, `posture.format.ts`, `lifecycle.tsx`,
+  `test_chat_golden_set.py` and `test_explain_contract.py`; three contract vectors at the band
+  edges (47.5, 47.74, 21.5); `Metrics.tsx` reads `avg_risk_case_count` through a local cast.
+- **XFSIGN, sign-in and clustering** (`4b20fa2`, review `8cb825c`): the three findings (§8.5);
+  the entry fell by 18 B. Review fixes: the 429 sentence no longer promises a minute ("Too many
+  attempts. Wait a few minutes, then try again."), because on the code step it can be a lock of
+  5 to 60 minutes, and the "Use system theme" test waits for the branding. Deviations: to keep
+  the entry from growing, a code-step refusal that is not a 401 reads "Sign in failed. Try
+  again." and a single sign-on start failure reuses "Single sign-on failed. Try again."; the
+  setup and forced-change steps show only a 400 rule; related rows are `<a href>` links through
+  the router; case numbers are added in `threat_context.assemble()`.
+- **XFD, docs and records** (`r16-xfd`, on `5f00529`): the docs findings and these records
+  (§8.5), with `test_round16_xfd_records.py`, whose checks each fail on the base.
 
-WP17, WP18 and WP19 are recorded with the closing gates.
+XFCM, WP17B and WP19 are recorded with the closing gates.
 
 ### 8.3 Known limitations
 
@@ -2837,7 +2945,10 @@ WP17, WP18 and WP19 are recorded with the closing gates.
 - **Demo Mode.** Without a Demo asset map, honest seeded risk tops out near 50 for IP cases and
   near 30 for user and host cases, and severity comes from each case's own events, so the queue
   shows pairs such as "Critical, Risk 17". Bulk actions are off in Demo, so the bulk-close AI
-  note cannot be shown there.
+  note cannot be shown there. A paced manual run's popover does not advance step by step:
+  Triage and Specialist tick at once, the run sits on Looking up evidence, and Verdict and
+  Deciding pass in its last instant, because every Demo model call falls in the evidence phase.
+  Durable jobs refuse to run in Demo Mode, so only Reinvestigate and Investigate are paced.
 - **What's new with sign-in off** is per installation: every caller shares the `default`
   preferences bucket. The welcome can open over the What's new page itself after the badge
   link; that is harmless.
@@ -2849,12 +2960,19 @@ WP17, WP18 and WP19 are recorded with the closing gates.
   before [oss] B1; it cannot fail today, because the Batch provider only gets the default host.
 - **B81** is verified in Chromium with a coarse-pointer touch context; an iOS device check is
   maintainer action M6.
-- Open when this was written and taken by the post-integration package (WP16P): the
-  ConfirmProvider focus return after Cancel, the verdict casing in the close notice, cost text in
-  `GET /api/audit` and a budget refusal's figure in `Case.error` for a viewer without
-  `cost:view`, a deleted case revived by the precedent candidate save, the rationale truncation
-  in the Console, the header status words beside a long verdict or owner name, and the two
-  load-sensitive Console tests. The closing record says which closed.
+- **Explanations with no arithmetic.** Average risk shows the mean and the case count but no
+  sum, because the server does not return the sum. The Detection board's Events per minute
+  prints no arithmetic. The noise flow's Detailed "Reduced by" figure is withheld while its
+  counters cover only part of the window, as in a fresh seeded Demo.
+- **The admin data export** (`data_export:export`) keeps a budget refusal's figure in
+  `Case.error` as stored: it is an administrator backup.
+- **A failed re-read.** `attach_cluster` saves its earlier copy when its re-read under the case
+  lock fails or finds nothing, so a link written just before can be lost. It is the fallback
+  WP08 accepted for a person's close, and it needs a store read failure.
+- **The header strip.** On a very narrow strip the owner's name can shrink to one letter before
+  the verdict gives way, by the give-way order.
+- **Lineage rows.** The Noise Reduction lineage view's cross-source related rows still carry no
+  case number.
 
 ### 8.4 Verification record
 
@@ -2862,7 +2980,78 @@ Written after the closing gates.
 
 ### 8.5 Cross-cutting review
 
-Written after the cross-cutting review.
+After WP16C merged, seven reviewers read the integrated tree at `9a94df2`, one dimension each:
+the spine (backend correctness, #3 and #4), security (access, untrusted data and Demo), numbers
+(every number explainable and correct), the Console UI against `ui-standard.md` (light and dark,
+desktop and phone), tests (whether each test proves what it claims), flows (whole paths in the
+seeded Demo) and docs. They raised 50 findings. 4 duplicated others and were merged first, so an
+independent skeptic judged 46 against the code, the SPEC and a live seeded Demo: 40 were
+confirmed and 6 were refuted. By dimension, judged and confirmed: spine 4 and 3, security 3 and
+1, numbers 8 and 7, UI 11 and 10, tests 1 and 1, flows 7 and 7, docs 12 and 11.
+
+The six refuted findings, and why:
+
+- **The link write waits for a run** (spine). The wait was real: the cross-source link write
+  took the signature lock, which a run holds for its whole life. The skeptic judged it the
+  design the B09 contract asked for, with no correctness cost (the poll cursor is saved after
+  the link pass and nothing can deadlock), and the proposed move unsafe while automation saved
+  the whole case without the case lock. It was changed anyway once XFB put automation and the
+  notifier under the case lock, which made the move safe (the B09 amendments).
+- **The requester's name in case history** (security). D10 covers the AI run indicator: the
+  frame never carries a name and the route adds it only for `users:manage`. The trace, timeline
+  and activity rows that name who asked for a reinvestigation predate this round (the Round 15
+  attribution fix), and every other case row names people the same way.
+- **The Demo source guard through `PUT /api/settings`** (security). The B43 guard covers the
+  three source routes the SPEC names. A whole-settings write needs `settings:manage`, the Console
+  never sends `sources` there, and the same state is reachable through allowed paths, so no
+  boundary is crossed.
+- **The SLA overdue rounding** (numbers). B32 floors only the "due in" line so it never claims
+  more time than remains; the overdue amount keeps nearest rounding, a recorded B32 decision,
+  and the hover gives the exact figures.
+- **The verdict word** (UI). "Needs a person" in the Inbox notice and "Needs human review" on
+  the case are both existing Console words for the verdict, and the Inbox copy is the [ai] §4.5
+  text. Judged polish, it was done anyway in XFCM.
+- **The word Round in operator docs** (docs). The ban covers Console copy and What's new titles.
+  Operator and repository docs use "Round N" as an established convention, and a records test
+  requires it.
+
+Six fix packages took the confirmed findings and the two refuted ones done anyway. Each fix
+ships with a regression test that failed before it, and each package was reviewed
+independently (§8.2):
+
+- **XFB, spine and security.** The cross-source link write, threshold automation and the
+  notifier re-read and save under the case lock, so none of them undoes a person's close; the
+  link write leaves the signature lock (the refuted wait). Event detection re-entry passes
+  `known_case_id`, so a close while its run waits for a slot makes no second case. The
+  analyst-policy close keeps the links and `notifications_sent`. `GET /api/standup` withholds
+  its AI cost without `cost:view`.
+- **XFDEMO, Demo.** The Demo model reads a case's storyline only from its own cluster block, so
+  Reinvestigate no longer escalates a benign case into another storyline. A manual Demo run is
+  paced, so the AI signals can be seen.
+- **XFNUM, numbers.** One SLA rule for Standup, the SOC operations board and chat's past-target
+  card; urgency and derived severity band the shown risk; the Velocity step, the Total step and
+  the hover line print only arithmetic that holds; the priority and severity explanations print
+  the shown score; the noise Detailed headline names its inputs; dwell reads a person's
+  response; the Open cases wording; explanations for the figures that had none (Average risk,
+  Incident yield, Escalation rate, Containment, the Posture SLA strip, the KPI strip cells and
+  the Team activity median); "Not checked" for an indicator no provider checked.
+- **XFSIGN, sign-in and clustering.** A fixed sentence for every sign-in failure, the
+  organization default name on the first Appearance button, and related cases listed by case
+  number as links.
+- **XFCM, Case Manager and AI signals** (in review when this was written). The AI run row mark
+  and header chip words, the cut queue status, the Decision lane's raw record, the AI
+  investigation tab count, the trace frozen during a run, the outcome after a replaced close,
+  the Brief's repeated outcome, the motion rule in `ui-standard.md`, the verdict word and the
+  vacuous `AiRunMark` escaping test.
+- **XFD, docs and records.** Of the eleven docs findings, WP18B and WP18C had already fixed two
+  (the risk weights on the case pages and the keyboard table) and part of six more. XFD fixed
+  the rest: the 1-second window floor in the KPI glossary's Velocity row, the `/docs/0.2/`
+  captions and the alt text that described removed layouts (the images are WP17B's), the
+  read-gate sentences in the permissions and authentication pages, the automatic audit mapping
+  upgrade in the upgrade, deploy and troubleshooting notes, the Communication inbox heading in
+  the demo tour, Branding as the one theme default in USAGE, the Response tab in AGENTS, and
+  the second route that answers the two `409` codes in the API reference. It also folded the
+  packages merged after WP18B into the CHANGELOG, the Help Center and this §8.
 
 ---
 
@@ -2994,7 +3183,7 @@ reviewers are marked and resolved once.
 | C7 | backend | low | The drain re-read does not close the race (a close while the run waits on the lock or gate mints a new case); `known_case_id` has no semantics; `trigger="detection"` needs a `state.py` hunk; the 409 misses an unattached automatic run | Fixed. WP08: for a non-forced `drain` run, re-read inside the signature lock and return unchanged, never mint; `handle_clusters` passes no `known_case_id` so #4 holds for new events; `_reenter_detections` hunk added; the 409 also matches by `cluster_signature` |
 | C8 | backend | low | A read-time `investigation` key in `_case_view` would appear on mutation responses and vanish on `GET /api/cases/{id}` (`response_model=Case`) | Fixed. The hunk is removed; the Console reads run state from the route and frames only |
 | C9 | backend | low | `sla_aging` has two callers in `engine/chat_starters.py` (1381, 1496); left alone, starter cards disagree with Standup | Fixed. WP15C hunk passes `prefs=b.prefs`, with a count-agreement test; §4.10 row added |
-| C10 | backend | low | `link_cross_source(clusters, prefs, *, cases)` has no access to the signature lock | Fixed as proposed. WP15B adds a `pipeline` keyword passed from both call sites (`ingest.py:911`, `poller.py:740`) and uses `pipeline.signature_lock` |
+| C10 | backend | low | `link_cross_source(clusters, prefs, *, cases)` has no access to the signature lock | Fixed as proposed. WP15B adds a `pipeline` keyword passed from both call sites (`ingest.py:911`, `poller.py:740`) and uses `pipeline.signature_lock`. *Amendment (2026-11-26, XFB, §8.5):* `link_cross_source` re-reads each linked case under `pipeline.case_lock(case.case_id)`, taken alone (the signature lock only for a pipeline without `case_lock`), and saves only the three link fields; threshold automation and the notifier hold the same lock from their re-read to their save, never during a send |
 | C11 | backend | low | Fetching exactly `limit` deferred candidates blocks behind an unrebuildable one | Fixed. WP15B B11 asks for `max(50, 2 * limit)` and iterates until `limit` are investigated, with a test where the oldest cannot be rebuilt |
 | C12 | backend | low | The push look-back reads a 500-event in-memory ring, so a widened window does not reach older events on a busy push source | Fixed by stating it. WP15B B07 records the limit in `known-limitations.md`; the push test uses a rate under the ring |
 | C13 | backend | low | B45's one-time copy has no owner hunk and no idempotence rule | Fixed. WP15E gains one `Preferences` after-validator in `config.py` (after WP15B) that copies once and sets the legacy value to `system`, with an idempotence test; §4.10 updated |

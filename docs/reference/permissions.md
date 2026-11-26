@@ -81,7 +81,8 @@ recorded case cost in Agent effectiveness (shown as unavailable). Since 0.2 it a
 covers a case's AI usage list (`GET /api/cases/{case_id}/usage`), the cost values in
 **View all fields**, and the cost figures in the text of a case's timeout, decision,
 runbook AI and budget rows, which read "hidden" (amounts "(amount hidden)") in the trace,
-the timeline, the activity feed, the case rationale and chat answers about the case.
+the timeline, the activity feed, the case rationale, chat answers about the case and the
+Audit log list and record, and the figure in a budget refusal shown on a case.
 Tool output and log evidence are never rewritten. A role without `cost:view` still
 reads everything else on those pages.
 
@@ -315,9 +316,12 @@ The Agentic SOC Console uses permission guards for presentation, but the API is 
 boundary. The guards read only `GET /api/account/permissions`, so the Console shows the
 actions a custom role grants (for example `runbooks:publish` or `audit:export`) and hides
 what a deny removes, exactly as the API decides. When that read fails, the Console hides
-every restricted action (`super_admin` excepted) rather than guess. Non-GET routes are
-expected to declare an authorization dependency in addition to the central authentication
-gate.
+every restricted action (`super_admin` excepted) rather than guess. Behind the central
+authentication gate, every `/api` route, reads included, declares the grant it needs or
+checks it in the request. The only exceptions are the public paths (health, sign-in,
+setup status, single sign-on and branding) and the reads that need only a signed-in
+account, listed under [Read grants on every read](#read-grants-on-every-read). A test
+fails the build when a new route has neither.
 
 Object-level scope conditions exist as an opt-in policy hook and use a fixed,
 non-`eval` condition vocabulary. They are off by default. Built-in RBAC therefore does

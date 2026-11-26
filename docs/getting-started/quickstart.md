@@ -255,7 +255,7 @@ case, its header shows **AI working**. The screenshot below is from version 0.1.
 the assessment and the decision card shared one tab.
 
 <figure markdown="span">
-[![Case Manager with an escalated true-positive case open on its Investigation tab: the advisory AI assessment, labelled AI, gives the model's reading and findings, and the Decision card below it, labelled Code, records that code routed the case to a person.](../assets/screenshots/case-manager.webp) ](../assets/screenshots/case-manager.webp)
+[![Case Manager with an escalated true-positive case open: the advisory AI assessment, labelled AI, gives the model's reading and findings, and the decision below it, labelled Code, records that code routed the case to a person.](../assets/screenshots/case-manager.webp) ](../assets/screenshots/case-manager.webp)
 <figcaption>Case Manager: the advisory AI assessment, then the code decision.</figcaption>
 </figure>
 

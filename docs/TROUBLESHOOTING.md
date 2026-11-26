@@ -619,10 +619,12 @@ read-only mode`.
 role, source, runbook and dashboard change, and every job file download, writes its
 audit row first; when the row cannot be written, nothing changes. Check the audit
 store's health and the management key's write rights. On an Elasticsearch state backend
-upgraded from an earlier build, apply the shipped audit template and roll the audit
-write index (`docs/operations/upgrades.md`, "Applying the Round 14 audit template"):
-until then a date-like value in an audit row can map a field as a date and later rows
-are refused.
+upgraded from an earlier build, the backend extends the audit mapping itself at every
+start. When its log says it could not ("Audit template ... could not be read" or "could
+not be updated", or "Audit index ... mapping could not be extended"), apply the shipped
+audit template and roll the audit write index (`docs/operations/upgrades.md`, "Applying
+the Round 14 audit template"): until the mapping is extended, a date-like value in an
+audit row can map a field as a date and later rows are refused.
 
 **Symptom: on PostgreSQL the Audit log's People and settings or Agent activity view
 answers `503 audit_unavailable`, while All still works, and account activity is empty.**

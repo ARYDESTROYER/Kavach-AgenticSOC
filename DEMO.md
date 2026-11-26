@@ -251,7 +251,8 @@ cursors. It is **fully reversible in one click**.
   Chat/Entity investigation/Reports, Approvals), **Intelligence** (Knowledge corpus,
   Runbooks, Operator memory, Agent personas), **Analytics** (Metrics, Team activity, Agent
   effectiveness, Cost, Models, Baseline, Jobs), **Communication** (Inbox and What's new,
-  since 0.2.0), and **Platform** (Sources, Audit log, Auto-tuning, Settings). Point out
+  since 0.2.0), and **Platform** (Sources, Audit log, Auto-tuning, Settings, and Help
+  Center at the foot of the rail). Point out
   Sources and Audit log are standalone **Platform** pages now, not buried in
   Settings.
 
@@ -393,12 +394,13 @@ cursors. It is **fully reversible in one click**.
   tasking — ever reads or sets the case's `status`/`verdict`/`disposition`. A
   deleted message is always a soft-delete tombstone, never erased (#2).
 
-### 3m. The in-app inbox — *Notifications → Inbox*
+### 3m. The in-app inbox: *Communication → Inbox*
 - Open **Inbox**: your personal, self-scoped notification feed, including the
   @mention you just triggered in §3l. Show the unread-count bell badge, mark one
   read, mark all read, and the per-category × channel delivery **prefs**
   (`GET/PUT /api/notifications/prefs`) — a user manages their own inbox; there's
-  no admin view into someone else's.
+  no admin view into someone else's. The top-bar bell keeps the name
+  **Notifications**; only the navigation group is now Communication.
 
 ### 3n. Custom dashboards — *Overview → Dashboards*
 - Create a new dashboard and drag/resize widgets on the 12-column grid

@@ -952,7 +952,7 @@
    "page": "getting-started/first-run.md",
    "anchor": "",
    "heading": "",
-   "text": "This guide applies to **Agentic SOC 0.2** and is for administrators opening a new Agentic SOC\nConsole for the first time. The console shows setup instead of the operational\nworkspace until the deployment is marked complete.\n\nThe screenshots on this page come from a real fresh install of 0.1.13. Numbered amber\nbadges mark the controls each step uses; select a screenshot to open it full size. The\nscreenshots use the light theme; a fresh install opens in the dark theme, the\norganization default, and each user can change it under\n**Settings → Account → Appearance**. The sign-in screens follow the browser's own\nchoice, with three appearance buttons in the top right corner: system, light and dark.",
+   "text": "This guide applies to **Agentic SOC 0.2** and is for administrators opening a new Agentic SOC\nConsole for the first time. The console shows setup instead of the operational\nworkspace until the deployment is marked complete.\n\nThe screenshots on this page come from a real fresh install of 0.1.13. Numbered amber\nbadges mark the controls each step uses; select a screenshot to open it full size. The\nscreenshots use the light theme; a fresh install opens in the dark theme, the\norganization default, and each user can change it under\n**Settings → Account → Appearance**. The sign-in screens use the same theme. Three\nappearance buttons sit in the top right corner: default, light and dark. The default\nbutton uses the organization default theme when one is set, otherwise the browser's\nchoice. While an organization default is set, it is named **Use the organization default\ntheme**; otherwise it is named **Use system theme**.",
    "console": [
     "settings:customization"
    ]
@@ -1000,7 +1000,7 @@
    "page": "getting-started/first-run.md",
    "anchor": "sign-in-later",
    "heading": "Sign in later",
-   "text": "The sign-in form has two steps. First enter the **Username** (badge 1) and select\n**Continue** (badge 2). The heading names your organization; on a device that remembers\nyou it says \"Welcome back\". When single sign-on is set up, a **Sign in with** button for\neach provider follows Continue.\n\nSign-in, step 1: the username.\n\nThen enter the **Password** (badge 1). **Remember me** (badge 2) keeps this browser\nsigned in for a limited time set by your administrator, up to 24 hours. The row shows\nonly its label. The first time you tick it, a dialog states how long you stay signed in\nand asks you to confirm with **Keep me signed in**; leave it clear on a shared computer.\nWhen your administrator turned Remember me off, the row stays visible, greyed out, with\n\"Turned off by your administrator\". Select **Sign in** (badge 3). **Back** returns to\nthe username step. **Forgot password?** explains that an administrator resets passwords;\nthere is no self-service reset. A wrong password shows its message under the field.",
+   "text": "The sign-in form has two steps. First enter the **Username** (badge 1) and select\n**Continue** (badge 2). The heading names your organization; on a device that remembers\nyou it says \"Welcome back\". When single sign-on is set up, a **Sign in with** button for\neach provider follows Continue.\n\nSign-in, step 1: the username.\n\nThen enter the **Password** (badge 1). **Remember me** (badge 2) keeps this browser\nsigned in for a limited time set by your administrator, up to 24 hours. The row shows\nonly its label. The first time you tick it, a dialog states how long you stay signed in\nand asks you to confirm with **Keep me signed in**; leave it clear on a shared computer.\nWhen your administrator turned Remember me off, the row stays visible, greyed out, with\n\"Turned off by your administrator\". Select **Sign in** (badge 3). **Back** returns to\nthe username step. **Forgot password?** explains that an administrator resets passwords;\nthere is no self-service reset. A wrong password shows \"The username or password is not\ncorrect.\" under the field. If the server cannot be reached, the page says \"Could not\nreach the server. Try again.\", and after too many tries it says \"Too many attempts. Wait\na few minutes, then try again.\" The page never shows the server's own error text.",
    "console": [
     "page:whats_new",
     "settings:customization"
@@ -1011,7 +1011,7 @@
    "page": "getting-started/first-run.md",
    "anchor": "sign-in-later",
    "heading": "Sign in later",
-   "text": "With two-factor sign-in, type or paste the six-digit code; it is checked as soon as the\nlast digit is in. Ten wrong codes in a row lock second-factor checks for the account for\na while (see Authentication). If single\nsign-on fails, the page says in one short sentence what went wrong. An account that an\nadministrator created or reset asks you to **Set a new password** before anything else.\nThe three buttons in the top right corner set the sign-in page to your system theme,\nlight or dark.\n\nAfter you sign in following an update, a short **What's new** welcome shows the\nrelease's highlights once. Close it to go on; it never blocks the Console. You can open\nit again from **Communication → What's new**, and **Show What's new after updates** in\n**Settings → Account → Appearance** turns it off.\n\nSign-in, step 2: the password and Remember me.\n\nNote: Remember me over plain HTTP\n\nThis screenshot was captured on a direct local connection. On the Compose stack over\nplain HTTP, **Remember me** is greyed out and reads \"Available when the console is\nserved over HTTPS\". It becomes available once the Console is behind TLS and\n`TLSOC_AUTH_COOKIE_SECURE=true`.",
+   "text": "With two-factor sign-in, type or paste the six-digit code; it is checked as soon as the\nlast digit is in, and a wrong code reads \"That code is not correct. Try again.\" Ten\nwrong codes in a row lock second-factor checks for the account for a while (see\nAuthentication). If single sign-on\nfails, the page says in one short sentence what went wrong. An account that an\nadministrator created or reset asks you to **Set a new password** before anything else.\nThe three buttons in the top right corner set the sign-in page to the default theme,\nlight or dark.\n\nAfter you sign in following an update, a short **What's new** welcome shows the\nrelease's highlights once. Close it to go on; it never blocks the Console. You can open\nit again from **Communication → What's new**, and **Show What's new after updates** in\n**Settings → Account → Appearance** turns it off.\n\nSign-in, step 2: the password and Remember me.\n\nNote: Remember me over plain HTTP\n\nThis screenshot was captured on a direct local connection. On the Compose stack over\nplain HTTP, **Remember me** is greyed out and reads \"Available when the console is\nserved over HTTPS\". It becomes available once the Console is behind TLS and\n`TLSOC_AUTH_COOKIE_SECURE=true`.",
    "console": [
     "page:whats_new",
     "settings:customization"
@@ -1171,6 +1171,14 @@
    "anchor": "what-the-demo-exercises",
    "heading": "What the demo exercises",
    "text": "The simulator creates protocol-compatible synthetic stories for Splunk HEC, QRadar\nLEEF/offenses, Wazuh JSON, RFC syslog, and Microsoft Entra ID / Active Directory.\nThe Entra stream uses Microsoft Graph `auditLogs/signIns` and Identity\nProtection-shaped vocabulary. All five pass through the real parser, OCSF\nnormalization, correlation, investigation, and deterministic decision pipeline.\n\nDemo-generated cases, events, usage, retrieval data, and polling cursors are kept in\nan isolated demo store. Demo spend is simulated: the mock model is never billed, and\neach Demo call is priced at a fixed simulated rate so the cost figures add up. A\nseeded case's cost matches the ledger rows of its investigation. The real\ndeterministic case policy is still used inside the sandbox: an uncertain verdict\nremains open for a human.",
+   "console": []
+  },
+  {
+   "id": "getting-started/demo#what-the-demo-exercises:1",
+   "page": "getting-started/demo.md",
+   "anchor": "what-the-demo-exercises",
+   "heading": "What the demo exercises",
+   "text": "In Demo Mode, an investigation you start (Reinvestigate, or the Investigate page) pauses\nat each step, so you can watch the AI work on the case: the case header shows **AI\nworking** with its clock, the queue row and the Case Manager count mark the run, and a\nclose made meanwhile says the run's result will replace it. A manual run takes a few\nseconds; its pauses never use more than a quarter of the run's time cap. Chat, report\nsummaries, runbook help and automatic runs are not slowed. A case keeps its own\nstoryline when you reinvestigate it: the Demo model reads the storyline only from the\ncase's own events, never from a precedent, a memory or a runbook that names another\none.",
    "console": []
   },
   {
@@ -1835,7 +1843,7 @@
    "page": "analyst/case-manager.md",
    "anchor": "read-the-workspace",
    "heading": "Read the workspace",
-   "text": "The second line of the header holds the facts every tab needs, on one line at every\nwidth: the case number with a copy button, the severity, the status of an open case or\nthe outcome of one that ended, the risk, the AI verdict, the owner (select to reassign,\nor **Assign to me**; this is the one place to change it), the SLA while the case is\nopen, and the review chip on a case waiting for its auto-close review. In a narrow pane\nthe later items hide first and the owner always stays; a hidden SLA is still in the case\nfacts' **Signal** section. The tabs sit under it.\n\nPoint at the risk, the AI verdict, the severity, the priority or the SLA to see a\none-line formula with the real numbers, and select it for the whole calculation with\n**Copy calculation**. See Explainable numbers.",
+   "text": "The second line of the header holds the facts every tab needs, on one line at every\nwidth: the case number with a copy button, the severity, the status of an open case or\nthe outcome of one that ended, the risk, the AI verdict, the owner (select to reassign,\nor **Assign to me**; this is the one place to change it), the SLA while the case is\nopen, and the review chip on a case waiting for its auto-close review. In a narrow pane\nthe later items hide first and the owner always stays; a hidden SLA is still in the case\nfacts' **Signal** section. On a short line the owner's name is shortened first, then the\nAI verdict's words; the status words stay whole until both have given way. The tabs sit\nunder it.\n\nPoint at the risk, the AI verdict, the severity, the priority or the SLA to see a\none-line formula with the real numbers, and select it for the whole calculation with\n**Copy calculation**. See Explainable numbers.",
    "console": []
   },
   {
@@ -2173,7 +2181,7 @@
    "page": "analyst/investigation.md",
    "anchor": "read-the-result-in-layers",
    "heading": "Read the result in layers",
-   "text": "RAG remains fail-soft. If corpus refresh/seeding cannot be verified, the investigator may\nstill use bounded last-known-good references. If one configured query group fails, chunks\nfrom successful groups may still ground the prompt. In either case the latest run records\n`unavailable` with an `incomplete:*` or specific failure reason, and the partial context\ndoes not advance `retrieval_observation_status` or enter the case-level coverage measure\nas a completed observation. Only completion of every configured query group makes the\nrun `measured`; a completed zero-hit result is then an honest measured empty result.\n\nThe trace marks people's steps, case chat and automatic code steps apart from the AI's\nsteps, and its filter offers All, Agent, Tool, Code, People and Chat. Each step's\n**Details** show what it recorded: the model, latency, tokens, cost and how the cost was\nfound, and the tool input, query and output, with log values marked untrusted. A call\nshows its own cost and latency when the ledger names it, otherwise an even split, and\nthe trace says when it shows only the newest records. Without `cost:view`, cost figures\nin step text read \"hidden\" and amounts \"(amount hidden)\".",
+   "text": "RAG remains fail-soft. If corpus refresh/seeding cannot be verified, the investigator may\nstill use bounded last-known-good references. If one configured query group fails, chunks\nfrom successful groups may still ground the prompt. In either case the latest run records\n`unavailable` with an `incomplete:*` or specific failure reason, and the partial context\ndoes not advance `retrieval_observation_status` or enter the case-level coverage measure\nas a completed observation. Only completion of every configured query group makes the\nrun `measured`; a completed zero-hit result is then an honest measured empty result.",
    "console": []
   },
   {
@@ -2181,7 +2189,7 @@
    "page": "analyst/investigation.md",
    "anchor": "read-the-result-in-layers",
    "heading": "Read the result in layers",
-   "text": "The trace is diagnostic evidence, not a second decision system. Tool calls available\nto the investigator are read-only log search, cached enrichment, and knowledge\nretrieval. Memory, knowledge, runbooks, and threshold tuning may inform preprocessing\nor the agent assessment; deterministic case policy remains the final close/escalate\nroute authority.",
+   "text": "The trace marks people's steps, case chat and automatic code steps apart from the AI's\nsteps, and its filter offers All, Agent, Tool, Code, People and Chat. Each step's\n**Details** show what it recorded: the model, latency, tokens, cost and how the cost was\nfound, and the tool input, query and output, with log values marked untrusted. A call\nshows its own cost and latency when the ledger names it, otherwise an even split, and\nthe trace says when it shows only the newest records. On a case with a very long\nhistory, the AI investigation tab also says when its rationale was built from the newest\nrecords only, for example \"Built from the newest 500 of 1,200 records. The audit log has\nthe rest.\" Without `cost:view`, cost figures in step text read \"hidden\" and amounts\n\"(amount hidden)\".\n\nThe trace is diagnostic evidence, not a second decision system. Tool calls available\nto the investigator are read-only log search, cached enrichment, and knowledge\nretrieval. Memory, knowledge, runbooks, and threshold tuning may inform preprocessing\nor the agent assessment; deterministic case policy remains the final close/escalate\nroute authority.",
    "console": []
   },
   {
@@ -3593,7 +3601,7 @@
    "page": "analyst/kpi-glossary.md",
    "anchor": "risk-score",
    "heading": "Risk score",
-   "text": "Each case carries a deterministic **risk score** from 0 to 100. It is a weighted blend\nof five factors (default weights):\n\n| Factor | Weight | What it measures |\n| --- | --- | --- |\n| Reputation | 30% (heaviest) | The worst threat-intelligence reputation among the cluster's IP addresses; 0 when there is no IP |\n| Volume | 25% | How many events fired, log-normalised so large clusters level off around 50 events |\n| Velocity | 20% | Events per minute (full near 10 per minute); 0 below three events or a sub-second window |\n| Diversity | 15% | How many distinct rule types fired (maxes out at five) |\n| Asset criticality | 10% | How important the targeted asset is, from the operator's CIDR or exact-match map; 0 when uncatalogued |\n\nEach case scored by version 0.2 or later keeps the inputs and the weights it was scored\nwith, so its score can be checked by hand; older cases say their inputs were not\nrecorded. A score is shown rounded half up, and its band is the band of the shown\nnumber. The formula for each factor and a worked example are in\nExplainable numbers.",
+   "text": "Each case carries a deterministic **risk score** from 0 to 100. It is a weighted blend\nof five factors (default weights):\n\n| Factor | Weight | What it measures |\n| --- | --- | --- |\n| Reputation | 30% (heaviest) | The worst threat-intelligence reputation among the cluster's IP addresses; 0 when there is no IP |\n| Volume | 25% | How many events fired, log-normalised so large clusters level off around 50 events |\n| Velocity | 20% | Events per minute (full at 10 per minute); 0 below three events. A window shorter than 1 second counts as 1 second, so a fast burst of three or more events scores high |\n| Diversity | 15% | How many distinct rule types fired (maxes out at five) |\n| Asset criticality | 10% | How important the targeted asset is, from the operator's CIDR or exact-match map; 0 when uncatalogued |\n\nEach case scored by version 0.2 or later keeps the inputs and the weights it was scored\nwith, so its score can be checked by hand; older cases say their inputs were not\nrecorded. A score is shown rounded half up, and its band is the band of the shown\nnumber. The formula for each factor and a worked example are in\nExplainable numbers.\n\nAn indicator's **Reputation** in a case's threat context is its reputation score from\nthe providers asked. **Not checked** means no provider was asked, so there is no score,\nnot a score of 0.",
    "console": [
     "settings:detection.detection-risk",
     "settings:detection.detection-asset"
@@ -3609,6 +3617,14 @@
     "settings:detection.detection-risk",
     "settings:detection.detection-asset"
    ]
+  },
+  {
+   "id": "analyst/kpi-glossary#average-risk:0",
+   "page": "analyst/kpi-glossary.md",
+   "anchor": "average-risk",
+   "heading": "Average risk",
+   "text": "The mean risk score of the scored cases in the window. Its explanation names how many\ncases it divides by; a case with no risk score is not counted.",
+   "console": []
   },
   {
    "id": "analyst/kpi-glossary#total-cases:0",
@@ -3713,7 +3729,7 @@
    "page": "analyst/kpi-glossary.md",
    "anchor": "dwell",
    "heading": "Dwell",
-   "text": "The median (p50) time from case creation to the first active response (investigating,\nescalated, on hold, resolved, or closed). Dwell is time to first response, not time to\ndetect.",
+   "text": "The median (p50) time from case creation, or detection when recorded, to the first\nresponse by a person: investigating, escalated, on hold, resolved or closed. An automatic\nclose is not a response, so a case only the AI agent closed is not counted. Any of these\nmoves stops it, so dwell can be shorter than MTTA. Dwell is time to first response, not\ntime to detect.",
    "console": []
   },
   {
@@ -3725,6 +3741,14 @@
    "console": [
     "settings:case_policy"
    ]
+  },
+  {
+   "id": "analyst/kpi-glossary#sla-breached:0",
+   "page": "analyst/kpi-glossary.md",
+   "anchor": "sla-breached",
+   "heading": "SLA breached",
+   "text": "The open cases past their response target. A case is at risk from 80 percent of its\ntarget and breached only once it is past the target. A case whose priority has no\ntarget is not counted. Standup, the SOC operations board, chat's past-target card, the\ncase page and Posture all count it with this one rule.",
+   "console": []
   },
   {
    "id": "analyst/kpi-glossary#noise-reduction-funnel:0",
@@ -3755,7 +3779,7 @@
    "page": "analyst/explainable-numbers.md",
    "anchor": "",
    "heading": "",
-   "text": "Most numbers in the Console can show how they were calculated. Point at a number to see\na one-line formula with the real numbers. Click it to see the whole calculation: the\ninputs and where each one came from, every arithmetic step, how the result was rounded,\nand whether the inputs were recorded when the number was computed.\n\nAn explanation only describes a number. It never changes a case, a score or a decision.\nThe automatic close or escalate decision is still made by code against the auto-close\npolicy (see Deterministic decisions).",
+   "text": "Most numbers in the Console can show how they were calculated. Point at a number to see\na one-line formula with the real numbers. Click it to see the whole calculation: the\ninputs and where each one came from, every arithmetic step, how the result was rounded,\nand whether the inputs were recorded when the number was computed.\n\nEvery calculation an explanation prints gives the result it prints. An explanation only\ndescribes a number. It never changes a case, a score or a decision.\nThe automatic close or escalate decision is still made by code against the auto-close\npolicy (see Deterministic decisions).",
    "console": []
   },
   {
@@ -3763,7 +3787,7 @@
    "page": "analyst/explainable-numbers.md",
    "anchor": "where-to-see-a-calculation",
    "heading": "Where to see a calculation",
-   "text": "On a case:\n\n- the **Risk** chip in the case header and the risk meter in the case facts' **Signal**\n  section;\n- the **AI verdict** chip, which shows how the code decided;\n- the **severity**, the **priority** and the **SLA** phrase;\n- the investigation cost in the case facts' **Record** section, which opens every AI\n  call on the case with its own rates.\n\nIn the Case Manager queue, the risk number in each row shows its formula when the mouse\nrests on it. The row stays one control: the line has no buttons, and a screen reader\nhears the number in the row's name. Open the case for the full calculation.\n\nOn the **Cyber Defence Center** and on a dashboard, the KPI figures show their formula on\nhover. On **Analytics**, many figures do, such as MTTR, the agreement rate and the FP\nrate. The response times (MTTD, Respond, MTTA, MTTR and dwell) also read the cases behind\nthe median. The **Cost** page explains its totals the same way.",
+   "text": "On a case:\n\n- the **Risk** chip in the case header and the risk meter in the case facts' **Signal**\n  section;\n- the **AI verdict** chip, which shows how the code decided;\n- the **severity**, the **priority** and the **SLA** phrase;\n- the investigation cost in the case facts' **Record** section, which opens every AI\n  call on the case with its own rates.\n\nIn the Case Manager queue, the risk number in each row shows its formula when the mouse\nrests on it. The row stays one control: the line has no buttons, and a screen reader\nhears the number in the row's name. Open the case for the full calculation.\n\nOn the **Cyber Defence Center** and on a dashboard, the KPI figures and the cells of a KPI\nstrip show their formula on hover. On **Analytics**, many figures do, such as MTTR, the\nagreement rate, the FP rate, Average risk, Incident yield, Escalation rate, Containment\nand the Posture SLA strip. The response times (MTTD, Respond, MTTA, MTTR and dwell) also\nread the cases behind the median. The **Cost** page explains its totals the same way, and\n**Team activity** explains its median time to acknowledge.\n\nOn the **Noise Reduction** flow, the Detailed view's **Reduced by** figure is\n`1 - cases that needed a human / alerts ingested`, and its explanation names both counts.\nIt is not shown while the counters cover only part of the window.",
    "console": []
   },
   {
@@ -3795,7 +3819,7 @@
    "page": "analyst/explainable-numbers.md",
    "anchor": "copy-calculation",
    "heading": "Copy calculation",
-   "text": "```text\nRisk score: Risk 39\nRisk 39.11 = (0.25 x 65.24 + 0.20 x 24 + 0.30 x 40 + 0.15 x 40 + 0.10 x 0) / 1.00.\nFormula: sum(weight x factor) / sum(weights), or / 1 when every weight is 0\nInputs:\n- Events in the scoring cluster: 12 (Recorded at scoring)\n- First to last event: 300 s (Recorded at scoring)\n- Events per minute: 12 / (300 s / 60) = 2.4 (Recorded at scoring)\n- Distinct rule types: 2 (Recorded at scoring)\n- Reputation input: 40, from enrichment (Recorded at scoring)\n- Asset criticality input: 0, no asset entry for this entity (Recorded at scoring)\n- Weights: Volume 0.25, Velocity 0.20, Reputation 0.30, Diversity 0.15, Asset criticality 0.10 (In force at scoring)\n- Rule types: ssh-bruteforce, port-scan (Recorded at scoring)\nSteps:\n- Volume: min(100, 100 x ln(1 + 12) / ln(1 + 50)) = 65.24\n- Velocity: min(100, 100 x 2.4 / 10) = 24\n- Reputation: clamp(40, 0, 100) = 40\n- Diversity: min(100, 100 x 2 / 5) = 40\n- Asset criticality: clamp(0, 0, 100) = 0\n- Weighted sum: 0.25 x 65.24 + 0.20 x 24 + 0.30 x 40 + 0.15 x 40 + 0.10 x 0 = 39.11\n- Total: 39.11 / 1.00 = 39.11\n- Shown: floor(39.11 + 0.5) = 39\nRounding: Each factor is stored with 2 decimals and the total from the unrounded factors, so a hand sum of the stored factors can differ by up to 0.01. Shown as 39 (rounded half up). Band Medium (22 to 47).\nProvenance: Weights and inputs recorded when this case was scored, 2026-11-26T09:00:00Z.\n```",
+   "text": "```text\nRisk score: Risk 39\nRisk 39.11 = (0.25 x 65.24 + 0.20 x 24 + 0.30 x 40 + 0.15 x 40 + 0.10 x 0) / 1.00.\nFormula: sum(weight x factor) / sum(weights), or / 1 when every weight is 0\nInputs:\n- Events in the scoring cluster: 12 (Recorded at scoring)\n- First to last event: 300 s (Recorded at scoring)\n- Events per minute: 12 / (300 s / 60) = 2.4 (Recorded at scoring)\n- Distinct rule types: 2 (Recorded at scoring)\n- Reputation input: 40, from enrichment (Recorded at scoring)\n- Asset criticality input: 0, no asset entry for this entity (Recorded at scoring)\n- Weights: Volume 0.25, Velocity 0.20, Reputation 0.30, Diversity 0.15, Asset criticality 0.10 (In force at scoring)\n- Rule types: ssh-bruteforce, port-scan (Recorded at scoring)\nSteps:\n- Volume: min(100, 100 x ln(1 + 12) / ln(1 + 50)) = 65.24\n- Velocity: min(100, 100 x 12 / (300 / 60) / 10) = 24\n- Reputation: clamp(40, 0, 100) = 40\n- Diversity: min(100, 100 x 2 / 5) = 40\n- Asset criticality: clamp(0, 0, 100) = 0\n- Weighted sum: 0.25 x 65.24 + 0.20 x 24 + 0.30 x 40 + 0.15 x 40 + 0.10 x 0 = 39.11\n- Total: 39.11 / 1.00 = 39.11\n- Shown: floor(39.11 + 0.5) = 39\nRounding: Each factor is stored with 2 decimals and the total from the unrounded factors, so a hand sum of the stored factors can differ by up to 0.01. Shown as 39 (rounded half up). Band Medium (22 to 47).\nProvenance: Weights and inputs recorded when this case was scored, 2026-11-26T09:00:00Z.\n```",
    "console": []
   },
   {
@@ -3811,7 +3835,18 @@
    "page": "analyst/explainable-numbers.md",
    "anchor": "the-risk-score",
    "heading": "The risk score",
-   "text": "Every case has a risk score from 0 to 100. Code computes it from the case's events; the\nAI never computes it. The score is the weighted mean of five factors, each from 0 to 100:\n\n| Factor | Default weight | How it is computed |\n| --- | --- | --- |\n| Volume | 0.25 | `min(100, 100 x ln(1 + events) / ln(1 + 50))`. It levels off near 50 events. 0 with no events. |\n| Velocity | 0.20 | `min(100, 100 x events per minute / 10)`, where events per minute is `events / (window seconds / 60)` and the window is the time from the first event to the last, at least 1 second. 0 when the cluster has fewer than 3 events. |\n| Reputation | 0.30 | The threat-intelligence reputation of the entity, kept between 0 and 100. 0 when the entity is not an IP address, enrichment is off, or it was not looked up. |\n| Diversity | 0.15 | `min(100, 100 x distinct rule types / 5)`. Full at five rule types. |\n| Asset criticality | 0.10 | The criticality you gave the asset, kept between 0 and 100. A network range that holds the IP address wins over an exact entry. 0 when the asset has no entry. |\n\nThen:\n\n`risk = (sum of weight x factor) / (sum of the weights)`\n\nWhen every weight is 0, the sum is divided by 1 and the score is 0. Change the weights\nunder **Settings → General → Detection → Risk weights** and the asset entries under\n**Settings → General → Detection → Asset criticality**.",
+   "text": "Every case has a risk score from 0 to 100. Code computes it from the case's events; the\nAI never computes it. The score is the weighted mean of five factors, each from 0 to 100:\n\n| Factor | Default weight | How it is computed |\n| --- | --- | --- |\n| Volume | 0.25 | `min(100, 100 x ln(1 + events) / ln(1 + 50))`. It levels off near 50 events. 0 with no events. |\n| Velocity | 0.20 | `min(100, 100 x events per minute / 10)`, where events per minute is `events / (window seconds / 60)` and the window is the time from the first event to the last, at least 1 second. 0 when the cluster has fewer than 3 events. |\n| Reputation | 0.30 | The threat-intelligence reputation of the entity, kept between 0 and 100. 0 when the entity is not an IP address, enrichment is off, or it was not looked up. |\n| Diversity | 0.15 | `min(100, 100 x distinct rule types / 5)`. Full at five rule types. |\n| Asset criticality | 0.10 | The criticality you gave the asset, kept between 0 and 100. A network range that holds the IP address wins over an exact entry. 0 when the asset has no entry. |\n\nThe Velocity step is written from the recorded event count and window, so its\nexpression gives its result: for 8 events over 434.875 seconds it reads\n`min(100, 100 x 8 / (434.875 / 60) / 10) = 11.04`.\n\nThen:\n\n`risk = (sum of weight x factor) / (sum of the weights)`",
+   "console": [
+    "settings:detection.detection-risk",
+    "settings:detection.detection-asset"
+   ]
+  },
+  {
+   "id": "analyst/explainable-numbers#the-risk-score:1",
+   "page": "analyst/explainable-numbers.md",
+   "anchor": "the-risk-score",
+   "heading": "The risk score",
+   "text": "When every weight is 0, the sum is divided by 1 and the score is 0. Change the weights\nunder **Settings → General → Detection → Risk weights** and the asset entries under\n**Settings → General → Detection → Asset criticality**.",
    "console": [
     "settings:detection.detection-risk",
     "settings:detection.detection-asset"
@@ -3830,7 +3865,7 @@
    "page": "analyst/explainable-numbers.md",
    "anchor": "bands",
    "heading": "Bands",
-   "text": "The band of a score is the band of the number the Console shows:\n\n| Band | Shown score |\n| --- | --- |\n| Critical | 74 to 100 |\n| High | 48 to 73 |\n| Medium | 22 to 47 |\n| Low | 0 to 21 |\n\nA score of 73.6 is shown as 74 and is Critical everywhere it appears.",
+   "text": "The band of a score is the band of the number the Console shows:\n\n| Band | Shown score |\n| --- | --- |\n| Critical | 74 to 100 |\n| High | 48 to 73 |\n| Medium | 22 to 47 |\n| Low | 0 to 21 |\n\nA score of 73.6 is shown as 74 and is Critical everywhere it appears. Urgency and the\nderived severity also use the score as shown, rounded half up, so a risk of 47.74 is\nshown as 48 and reads High everywhere, and the advisory priority and SLA target follow\nit. The automatic close decision still compares the unrounded score.",
    "console": []
   },
   {
@@ -3886,7 +3921,7 @@
    "page": "analyst/explainable-numbers.md",
    "anchor": "rounding",
    "heading": "Rounding",
-   "text": "- A score is shown as a whole number rounded half up: `floor(x + 0.5)`. 80.5 is shown as\n  81 and 47.5 as 48. The code decides on the unrounded score.\n- Each risk factor is stored with 2 decimals, and the total is computed from the\n  unrounded factors. A sum of the stored factors by hand can differ from the total by up\n  to 0.01.\n- A percentage is shown with at most one decimal: `0.9654` is shown as `96.5%`.\n- Time left on an SLA is rounded down, so \"due in 1h\" never means more than one hour\n  remains. Under a minute reads \"under 1m\".\n- An amount of a dollar or more is shown with 2 decimals, and a smaller one with 4. A\n  single AI call in the case's usage list keeps up to the ledger's 8 decimals, so a call\n  that cost a fraction of a cent still reads its real amount.",
+   "text": "- A score is shown as a whole number rounded half up: `floor(x + 0.5)`. 80.5 is shown as\n  81 and 47.5 as 48. The code decides on the unrounded score.\n- Each risk factor is stored with 2 decimals, and the total is computed from the\n  unrounded factors. A sum of the stored factors by hand can differ from the total by up\n  to 0.01. When it does, the Total step and the hover line do not print a division that\n  would not give the score: they say the score was recorded from the unrounded factors\n  and show what the stored factors give, for example \"Risk 20.81, from the unrounded\n  factors. The stored factors give (...) / 1.00 = 20.82.\"\n- A percentage is shown with at most one decimal: `0.9654` is shown as `96.5%`.\n- Time left on an SLA is rounded down, so \"due in 1h\" never means more than one hour\n  remains. Under a minute reads \"under 1m\".\n- An amount of a dollar or more is shown with 2 decimals, and a smaller one with 4. A\n  single AI call in the case's usage list keeps up to the ledger's 8 decimals, so a call\n  that cost a fraction of a cent still reads its real amount.",
    "console": []
   },
   {
@@ -5349,6 +5384,14 @@
    "console": []
   },
   {
+   "id": "administration/audit-log#spend-figures:0",
+   "page": "administration/audit-log.md",
+   "anchor": "spend-figures",
+   "heading": "Spend figures",
+   "text": "A few rows record an AI spend figure in their summary: an investigation that ran out of\ntime, the code's decision, a runbook AI request and a budget refusal. Without the\npermission to see AI spend (`cost:view`), those figures read \"hidden\" or \"(amount\nhidden)\" in the list and in the record. The same applies to a budget refusal shown on a\ncase. The stored rows never change, and every other row is shown as recorded.",
+   "console": []
+  },
+  {
    "id": "administration/audit-log#personal-data:0",
    "page": "administration/audit-log.md",
    "anchor": "personal-data",
@@ -5513,7 +5556,7 @@
    "page": "administration/authentication.md",
    "anchor": "public-routes-and-middleware",
    "heading": "Public routes and middleware",
-   "text": "The setup status, login, the deprecated refresh route, SSO initiation/callback,\nliveness, readiness, and branding bootstrap surfaces have narrowly scoped public\nbehavior. The `/api` router\notherwise applies authentication centrally, and state-changing routes add permission\nchecks.\n\nSecurity headers are enabled by default. Rate limiting is optional. The current CSRF\nmiddleware requires clients to echo the expected token; the web UI does not complete\nthat exchange automatically in version 0.2, so do not enable CSRF without validating\nthe client flow.\n\nSee Users and RBAC and Security hardening.",
+   "text": "The setup status, login, the deprecated refresh route, SSO initiation/callback,\nliveness, readiness, and branding bootstrap surfaces have narrowly scoped public\nbehavior. The `/api` router\notherwise applies authentication centrally, and routes check permissions for reads as\nwell as writes: since version 0.2 every read asks for the grant of the data it returns\n(see Read grants on every read).\n\nSecurity headers are enabled by default. Rate limiting is optional. The current CSRF\nmiddleware requires clients to echo the expected token; the web UI does not complete\nthat exchange automatically in version 0.2, so do not enable CSRF without validating\nthe client flow.\n\nSee Users and RBAC and Security hardening.",
    "console": []
   },
   {
@@ -6360,7 +6403,7 @@
    "page": "getting-started/install.md",
    "anchor": "4-verify-the-api",
    "heading": "4. Verify the API",
-   "text": "The bundled Help Center, served by the Console at /docs/0.1/.\n\nIf readiness fails, inspect the backend service logs and use the\ntroubleshooting guide:\n\n```bash\n./scripts/agentic-soc-compose.sh logs tlsoc-backend\n```",
+   "text": "The bundled Help Center, served by the Console at /docs/0.2/.\n\nIf readiness fails, inspect the backend service logs and use the\ntroubleshooting guide:\n\n```bash\n./scripts/agentic-soc-compose.sh logs tlsoc-backend\n```",
    "console": []
   },
   {
@@ -7358,7 +7401,7 @@
    "page": "operations/upgrades.md",
    "anchor": "round-14-changes",
    "heading": "Round 14 changes",
-   "text": "- **Elasticsearch audit mapping (required step).** New audit rows carry structured\n  fields (outcome, actor type, action, client, session, target, changes, request id,\n  run id), and the shipped audit template turns date detection off. On an Elasticsearch\n  state backend upgraded from an earlier build, do this **before** you start the\n  Round 14 backend: apply `deploy/mappings/tlsoc-agent-audit.template.json` as the index\n  template `tlsoc-agent-audit-template`, then roll the audit write index so new rows go\n  to an index made from it (the commands are in\n  Applying the Round 14 audit template below).\n  The shipped Elasticsearch client cannot read or extend index mappings, so the backend\n  does not do this for you: bootstrap never replaces or remaps an existing template or\n  index, changes nothing here, and logs a warning naming this step on every start.\n  The warning keeps appearing after the step is done, and on deployments first created\n  by Round 14 from their second start on, because the backend cannot read the mapping\n  to check; the subsection below says how to confirm the step instead.\n  Until the step is done, a date-like value in a new audit row (a runbook review date, a\n  runbook id such as `2026-10-28`) can map a field as a date, and later audit-first\n  writes then answer `503 audit_unavailable`. If Storage & retention is active on this",
+   "text": "- **Elasticsearch audit mapping.** New audit rows carry structured fields (outcome,\n  actor type, action, client, session, target, changes, request id, run id), and the\n  shipped audit template turns date detection off. On an Elasticsearch state backend\n  upgraded from an earlier build, bootstrap applies it itself at every start since 0.2.0,\n  with the management key's documented grants (`manage_index_templates` and `manage` on\n  `tlsoc-agent-*`). It adds the missing audit properties and `date_detection: false` to\n  the stored `tlsoc-agent-audit-template`, and keeps everything else that template holds,\n  the Storage & retention lifecycle settings included. It adds the same to every existing\n  audit index. It only adds: a property that is already mapped is left as it is, and\n  nothing is reindexed or rolled over. The manual step in\n  Applying the Round 14 audit template below is a\n  fallback, needed only when the backend logs one of these warnings:\n  - \"Audit template tlsoc-agent-audit-template could not be read\" or \"could not be\n    updated\" (the management key may not read or write templates);\n  - \"Audit index ... mapping could not be extended\";\n  - \"Audit index ... already maps ... another way\", where rolling the audit write index\n    over is enough.",
    "console": [
     "page:runbooks",
     "settings:storage"
@@ -7369,7 +7412,7 @@
    "page": "operations/upgrades.md",
    "anchor": "round-14-changes",
    "heading": "Round 14 changes",
-   "text": "Elasticsearch backend, the shipped template has no lifecycle settings, so the step\n  also takes the audit template and the new write index out of the lifecycle policy\n  until you put it back (also in the subsection below). A deployment whose audit index\n  was first created by Round 14 or later needs nothing; PostgreSQL and SQLite need\n  nothing.\n- **Settings and other changes are recorded first.** A settings save, a user or role\n  change, a source change, a runbook or dashboard change and every job file download now\n  write their audit row before the change takes effect. When the audit log cannot be\n  written, the change is not made and the request answers `503 audit_unavailable`\n  (before Round 14 a settings save went through and its audit row was best-effort).\n  Sign-ins, sign-outs and session events are never blocked. Settings saves that race\n  each other can answer `409 settings_conflict`. See the list in the\n  API reference.\n- **Client addresses in the audit log.** New rows record the client address, taken\n  from `X-Forwarded-For` only when the request came through a proxy named in the backend\n  setting `TRUSTED_PROXIES` (default `tlsoc-webui`, the bundled Web UI). A deployment\n  with another proxy or load balancer in front adds it there; see\n  Configuration.\n  The address and the user agent are personal data, kept as long as the audit log.",
+   "text": "Until the mapping is extended, a date-like value in a new audit row (a runbook review\n  date, a runbook id such as `2026-10-28`) can map a field as a date, and later\n  audit-first writes then answer `503 audit_unavailable`. A deployment whose audit index\n  was first created by Round 14 or later needs nothing; PostgreSQL and SQLite need\n  nothing.\n- **Settings and other changes are recorded first.** A settings save, a user or role\n  change, a source change, a runbook or dashboard change and every job file download now\n  write their audit row before the change takes effect. When the audit log cannot be\n  written, the change is not made and the request answers `503 audit_unavailable`\n  (before Round 14 a settings save went through and its audit row was best-effort).\n  Sign-ins, sign-outs and session events are never blocked. Settings saves that race\n  each other can answer `409 settings_conflict`. See the list in the\n  API reference.\n- **Client addresses in the audit log.** New rows record the client address, taken\n  from `X-Forwarded-For` only when the request came through a proxy named in the backend\n  setting `TRUSTED_PROXIES` (default `tlsoc-webui`, the bundled Web UI). A deployment\n  with another proxy or load balancer in front adds it there; see\n  Configuration.\n  The address and the user agent are personal data, kept as long as the audit log.",
    "console": [
     "page:runbooks",
     "settings:storage"
@@ -7435,7 +7478,7 @@
    "page": "operations/upgrades.md",
    "anchor": "round-14-changes",
    "heading": "Round 14 changes",
-   "text": "Applying the Round 14 audit template:\n\nOn an Elasticsearch state backend upgraded from an earlier build, run these before the\nRound 14 backend starts, with the management API key (its `manage_index_templates`\ncluster grant and `manage` on `tlsoc-agent-*` cover both calls). `ES_URL`, `ES_CA_CERT`\nand `TLSOC_ES_MGMT_API_KEY` stand for your cluster's URL, its CA file and the encoded\nmanagement key:\n\n```bash\ncurl --cacert \"$ES_CA_CERT\" -H \"Authorization: ApiKey $TLSOC_ES_MGMT_API_KEY\" \\\n  -X PUT \"$ES_URL/_index_template/tlsoc-agent-audit-template\" \\\n  -H 'Content-Type: application/json' \\\n  --data-binary @deploy/mappings/tlsoc-agent-audit.template.json\ncurl --cacert \"$ES_CA_CERT\" -H \"Authorization: ApiKey $TLSOC_ES_MGMT_API_KEY\" \\\n  -X POST \"$ES_URL/tlsoc-agent-audit/_rollover\"\n```\n\nThe first call replaces the stored audit template with the shipped one; the second makes\na new audit write index from it, so every row from then on is mapped with date detection\noff. Earlier indices keep their mapping.",
+   "text": "Applying the Round 14 audit template:\n\nRun these only when the backend logged one of the warnings above, with the management\nAPI key (its `manage_index_templates` cluster grant and `manage` on `tlsoc-agent-*` cover\nboth calls). A build before 0.2.0 could not apply the upgrade itself; on such a build,\nrun them before the backend starts. `ES_URL`, `ES_CA_CERT`\nand `TLSOC_ES_MGMT_API_KEY` stand for your cluster's URL, its CA file and the encoded\nmanagement key:\n\n```bash\ncurl --cacert \"$ES_CA_CERT\" -H \"Authorization: ApiKey $TLSOC_ES_MGMT_API_KEY\" \\\n  -X PUT \"$ES_URL/_index_template/tlsoc-agent-audit-template\" \\\n  -H 'Content-Type: application/json' \\\n  --data-binary @deploy/mappings/tlsoc-agent-audit.template.json\ncurl --cacert \"$ES_CA_CERT\" -H \"Authorization: ApiKey $TLSOC_ES_MGMT_API_KEY\" \\\n  -X POST \"$ES_URL/tlsoc-agent-audit/_rollover\"\n```\n\nThe first call replaces the stored audit template with the shipped one; the second makes\na new audit write index from it, so every row from then on is mapped with date detection\noff. Earlier indices keep their mapping.",
    "console": [
     "page:runbooks",
     "settings:storage"
@@ -7457,7 +7500,7 @@
    "page": "operations/upgrades.md",
    "anchor": "round-14-changes",
    "heading": "Round 14 changes",
-   "text": "- Or put the policy back afterwards: once the Round 14 backend has started, open\n  **Settings → Organization → Storage & retention** and use **Apply supported\n  lifecycle** again. That puts the policy back on the audit template and on every audit\n  index, including the one the rollover created. Until then, Storage & retention shows\n  the lifecycle as drifted rather than active.\n\n**Confirming the step.** The backend keeps logging the reminder on every start after the\nstep is done, and on deployments first created by Round 14 from their second start on,\nbecause the shipped client cannot read the mapping to check. To confirm the step, check\nthat `GET _index_template/tlsoc-agent-audit-template` shows `\"date_detection\": false`\nunder `template.mappings`, and that the audit write index shows it too:\n`GET _alias/tlsoc-agent-audit` names the index with `\"is_write_index\": true`, and\n`GET /_mapping` shows `\"date_detection\": false`. When both do, the reminder\ncan be ignored.",
+   "text": "- Or put the policy back afterwards: once the backend has started, open\n  **Settings → Organization → Storage & retention** and use **Apply supported\n  lifecycle** again. That puts the policy back on the audit template and on every audit\n  index, including the one the rollover created. Until then, Storage & retention shows\n  the lifecycle as drifted rather than active.\n\n**Confirming the upgrade.** Check that `GET _index_template/tlsoc-agent-audit-template`\nshows `\"date_detection\": false` under `template.mappings`, and that the audit write index\nshows it too: `GET _alias/tlsoc-agent-audit` names the index with\n`\"is_write_index\": true`, and `GET /_mapping` shows\n`\"date_detection\": false`. When both do, nothing more is needed, whether bootstrap or the\nmanual fallback made the change.",
    "console": [
     "page:runbooks",
     "settings:storage"
@@ -7689,7 +7732,7 @@
    "page": "operations/troubleshooting.md",
    "anchor": "changes-fail-with-audit_unavailable",
    "heading": "Changes fail with \"audit_unavailable\"",
-   "text": "- Check the audit store first: the state backend's health, its free space and the\n  management key's write rights to the `tlsoc-agent-*` indices.\n- On an Elasticsearch state backend upgraded from an earlier build, check that the\n  Round 14 audit template was applied and the audit write index rolled. Until then a\n  date-like value in an audit row can map a field as a date, and later rows with\n  ordinary text there are refused. The backend logs a warning naming the step on every\n  start. The warning keeps appearing after the step is done, and on deployments first\n  created by Round 14 from their second start on, because the backend cannot read the\n  mapping to check. The warning alone does not mean the step failed, so do not roll the\n  index again because of it. To confirm the step, check that\n  `GET _index_template/tlsoc-agent-audit-template` shows `date_detection: false`, and\n  that the write index behind `tlsoc-agent-audit` (`GET _alias/tlsoc-agent-audit`)\n  shows it too in its mapping. See\n  Applying the Round 14 audit template.\n- While the audit log cannot be written, `POST /api/setup/secrets` still applies the\n  management connection keys (`es_mgmt_api_key`, `es_url`, `es_ca_cert`), so a broken\n  audit connection stays repairable.",
+   "text": "- Check the audit store first: the state backend's health, its free space and the\n  management key's write rights to the `tlsoc-agent-*` indices.\n- On an Elasticsearch state backend upgraded from an earlier build, check that the\n  audit mapping was extended. Bootstrap does it at every start; until it is done, a\n  date-like value in an audit row can map a field as a date, and later rows with\n  ordinary text there are refused. Look in the backend log for \"Audit template\n  tlsoc-agent-audit-template could not be read\" or \"could not be updated\", \"Audit index\n  ... mapping could not be extended\", or \"Audit index ... already maps ... another way\".\n  To confirm the upgrade, check that\n  `GET _index_template/tlsoc-agent-audit-template` shows `date_detection: false`, and\n  that the write index behind `tlsoc-agent-audit` (`GET _alias/tlsoc-agent-audit`)\n  shows it too in its mapping. If one of those warnings appears, apply the fallback in\n  Applying the Round 14 audit template.\n- While the audit log cannot be written, `POST /api/setup/secrets` still applies the\n  management connection keys (`es_mgmt_api_key`, `es_url`, `es_ca_cert`), so a broken\n  audit connection stays repairable.",
    "console": []
   },
   {
@@ -8727,7 +8770,7 @@
    "page": "reference/permissions.md",
    "anchor": "case-and-operational-grants",
    "heading": "Case and operational grants",
-   "text": "`metrics:view` covers every metrics read, the operational rollup behind the Metrics page\n(`GET /api/metrics`) and the analyst feedback agreement (`GET /api/feedback/stats`)\nincluded. `cost:view` covers AI spend wherever it is shown: the Cost page and\n`GET /api/usage/summary` (one case's spend included), the usage breakdown, the spend on\nthe Executive board, chat's spending answers, the spend part of `GET /api/metrics` (left\nempty), the spent and remaining amounts of the AI budget (`GET /api/budget/status` keeps\nthe caps and settings for `models:read`), the cost and tokens on a case's agent timeline,\na case's own investigation cost (`token_cost` is `null` on every case the API returns,\nand the case page, its case facts and Entity investigation leave it out), and the\nrecorded case cost in Agent effectiveness (shown as unavailable). Since 0.2 it also\ncovers a case's AI usage list (`GET /api/cases/{case_id}/usage`), the cost values in\n**View all fields**, and the cost figures in the text of a case's timeout, decision,\nrunbook AI and budget rows, which read \"hidden\" (amounts \"(amount hidden)\") in the trace,\nthe timeline, the activity feed, the case rationale and chat answers about the case.\nTool output and log evidence are never rewritten. A role without `cost:view` still\nreads everything else on those pages.",
+   "text": "`metrics:view` covers every metrics read, the operational rollup behind the Metrics page\n(`GET /api/metrics`) and the analyst feedback agreement (`GET /api/feedback/stats`)\nincluded. `cost:view` covers AI spend wherever it is shown: the Cost page and\n`GET /api/usage/summary` (one case's spend included), the usage breakdown, the spend on\nthe Executive board, chat's spending answers, the spend part of `GET /api/metrics` (left\nempty), the spent and remaining amounts of the AI budget (`GET /api/budget/status` keeps\nthe caps and settings for `models:read`), the cost and tokens on a case's agent timeline,\na case's own investigation cost (`token_cost` is `null` on every case the API returns,\nand the case page, its case facts and Entity investigation leave it out), and the\nrecorded case cost in Agent effectiveness (shown as unavailable). Since 0.2 it also\ncovers a case's AI usage list (`GET /api/cases/{case_id}/usage`), the cost values in\n**View all fields**, and the cost figures in the text of a case's timeout, decision,\nrunbook AI and budget rows, which read \"hidden\" (amounts \"(amount hidden)\") in the trace,\nthe timeline, the activity feed, the case rationale, chat answers about the case and the\nAudit log list and record, and the figure in a budget refusal shown on a case.\nTool output and log evidence are never rewritten. A role without `cost:view` still\nreads everything else on those pages.",
    "console": []
   },
   {
@@ -8841,7 +8884,7 @@
    "page": "reference/permissions.md",
    "anchor": "inspect-and-test-access",
    "heading": "Inspect and test access",
-   "text": "- `GET /api/account/permissions` returns the current account's effective access: every\n  action the API allows it, listed as concrete actions (never `*`). The server answers it\n  with the same resolver its route checks use, so it includes the base role, every\n  assigned custom role and every deny.\n- `GET /api/roles` returns the role catalog/effective definitions.\n- `POST /api/roles/preview` validates a proposed role shape without persisting it.\n- `GET /api/roles/simulate` evaluates a role against a resource/action request.\n- `PUT /api/users/{username}/roles` changes a user's role.\n\nThe Agentic SOC Console uses permission guards for presentation, but the API is the security\nboundary. The guards read only `GET /api/account/permissions`, so the Console shows the\nactions a custom role grants (for example `runbooks:publish` or `audit:export`) and hides\nwhat a deny removes, exactly as the API decides. When that read fails, the Console hides\nevery restricted action (`super_admin` excepted) rather than guess. Non-GET routes are\nexpected to declare an authorization dependency in addition to the central authentication\ngate.\n\nObject-level scope conditions exist as an opt-in policy hook and use a fixed,\nnon-`eval` condition vocabulary. They are off by default. Built-in RBAC therefore does\nnot by itself provide tenant isolation or arbitrary row-level case segregation.",
+   "text": "- `GET /api/account/permissions` returns the current account's effective access: every\n  action the API allows it, listed as concrete actions (never `*`). The server answers it\n  with the same resolver its route checks use, so it includes the base role, every\n  assigned custom role and every deny.\n- `GET /api/roles` returns the role catalog/effective definitions.\n- `POST /api/roles/preview` validates a proposed role shape without persisting it.\n- `GET /api/roles/simulate` evaluates a role against a resource/action request.\n- `PUT /api/users/{username}/roles` changes a user's role.\n\nThe Agentic SOC Console uses permission guards for presentation, but the API is the security\nboundary. The guards read only `GET /api/account/permissions`, so the Console shows the\nactions a custom role grants (for example `runbooks:publish` or `audit:export`) and hides\nwhat a deny removes, exactly as the API decides. When that read fails, the Console hides\nevery restricted action (`super_admin` excepted) rather than guess. Behind the central\nauthentication gate, every `/api` route, reads included, declares the grant it needs or\nchecks it in the request. The only exceptions are the public paths (health, sign-in,\nsetup status, single sign-on and branding) and the reads that need only a signed-in\naccount, listed under Read grants on every read. A test\nfails the build when a new route has neither.",
    "console": []
   },
   {
@@ -8849,7 +8892,7 @@
    "page": "reference/permissions.md",
    "anchor": "inspect-and-test-access",
    "heading": "Inspect and test access",
-   "text": "See Users and RBAC,\nAPI authentication, and Security.",
+   "text": "Object-level scope conditions exist as an opt-in policy hook and use a fixed,\nnon-`eval` condition vocabulary. They are off by default. Built-in RBAC therefore does\nnot by itself provide tenant isolation or arbitrary row-level case segregation.\n\nSee Users and RBAC,\nAPI authentication, and Security.",
    "console": []
   },
   {

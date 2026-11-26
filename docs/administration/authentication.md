@@ -155,8 +155,9 @@ deployment environment when restart persistence is required.
 The setup status, login, the deprecated refresh route, SSO initiation/callback,
 liveness, readiness, and branding bootstrap surfaces have narrowly scoped public
 behavior. The `/api` router
-otherwise applies authentication centrally, and state-changing routes add permission
-checks.
+otherwise applies authentication centrally, and routes check permissions for reads as
+well as writes: since version 0.2 every read asks for the grant of the data it returns
+(see [Read grants on every read](../reference/permissions.md#read-grants-on-every-read)).
 
 Security headers are enabled by default. Rate limiting is optional. The current CSRF
 middleware requires clients to echo the expected token; the web UI does not complete

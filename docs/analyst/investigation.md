@@ -149,8 +149,11 @@ steps, and its filter offers All, Agent, Tool, Code, People and Chat. Each step'
 **Details** show what it recorded: the model, latency, tokens, cost and how the cost was
 found, and the tool input, query and output, with log values marked untrusted. A call
 shows its own cost and latency when the ledger names it, otherwise an even split, and
-the trace says when it shows only the newest records. Without `cost:view`, cost figures
-in step text read "hidden" and amounts "(amount hidden)".
+the trace says when it shows only the newest records. On a case with a very long
+history, the AI investigation tab also says when its rationale was built from the newest
+records only, for example "Built from the newest 500 of 1,200 records. The audit log has
+the rest." Without `cost:view`, cost figures in step text read "hidden" and amounts
+"(amount hidden)".
 
 The trace is diagnostic evidence, not a second decision system. Tool calls available
 to the investigator are read-only log search, cached enrichment, and knowledge

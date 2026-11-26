@@ -734,33 +734,31 @@ two new key-value namespaces, `case_files` and `auto_close_review`. The full lis
 **Round 14 (in 0.2.0).** Built during the same candidate; no database migration, index
 or table is added. The full list is in `docs/operations/upgrades.md` ("Round 14 changes").
 
-- **Audit index on Elasticsearch (required step).** New audit rows carry structured
-  fields. On an Elasticsearch state backend upgraded from an earlier build, **before**
-  starting the Round 14 backend, apply `deploy/mappings/tlsoc-agent-audit.template.json`
+- **Audit index on Elasticsearch.** New audit rows carry structured fields, and the
+  shipped audit template turns date detection off. On an Elasticsearch state backend
+  upgraded from an earlier build, bootstrap applies this upgrade itself at every start
+  since 0.2.0, with the management key's documented grants: it adds the missing audit
+  properties and `date_detection: false` to the stored `tlsoc-agent-audit-template`
+  (keeping everything else it holds, the Storage & retention lifecycle settings included)
+  and to every existing audit index. It only adds mappings; it never changes a property
+  already mapped, never reindexes and never rolls an index over. The manual step is a
+  fallback for when the backend logs that it could not: "Audit template ... could not be
+  read" or "could not be updated", "Audit index ... mapping could not be extended", or
+  "Audit index ... already maps ... another way" (a rollover of the audit write index is
+  enough for that one). The fallback applies `deploy/mappings/tlsoc-agent-audit.template.json`
   as the index template `tlsoc-agent-audit-template`
-  (`PUT _index_template/tlsoc-agent-audit-template`), then roll the audit write index
+  (`PUT _index_template/tlsoc-agent-audit-template`) and rolls the audit write index
   (`POST tlsoc-agent-audit/_rollover`); the commands are in
-  `docs/operations/upgrades.md`. Since 0.2.0 the shipped Elasticsearch client can read
-  templates and extend mappings, so bootstrap applies this additive upgrade itself; the
-  rest of this bullet applies to a build before 0.2.0, or to a management key that cannot
-  read templates. Before 0.2.0 the shipped client could not read or extend
-  index mappings, so bootstrap changed nothing here (it never remaps an existing index)
-  and logged a warning naming the step on every start. The warning keeps appearing after
-  the step is done, and on deployments first created by Round 14 from their second start
-  on, because the backend cannot read the mapping to check. To confirm the step, check
-  that `GET _index_template/tlsoc-agent-audit-template` shows `date_detection: false`
-  and that the write index behind `tlsoc-agent-audit` (`GET _alias/tlsoc-agent-audit`)
-  shows it too in its mapping. Until the step is done, a date-like value in a new audit
-  row can map a field as a date, and later audit-first writes answer
-  `503 audit_unavailable`. If Storage & retention is active on this Elasticsearch
-  backend, the shipped template has no lifecycle settings: after the Round 14 backend
-  starts, apply Storage & retention again (**Settings → Organization → Storage &
-  retention**, **Apply supported lifecycle**). That puts the policy back on the audit
-  template and on every audit index, including the one the rollover created. To keep
-  the policy through the step instead, add the stored template's two
+  `docs/operations/upgrades.md`. The shipped file has no lifecycle settings, so if
+  Storage & retention is active, apply it again afterwards (**Settings → Organization →
+  Storage & retention**, **Apply supported lifecycle**), or add the stored template's two
   `index.lifecycle.*` settings to a copy of the shipped file before the PUT (shown in
-  `docs/operations/upgrades.md`). A deployment whose audit index was first created by
-  Round 14 or later needs nothing.
+  `docs/operations/upgrades.md`). To confirm the upgrade, check that
+  `GET _index_template/tlsoc-agent-audit-template` shows `date_detection: false` and that
+  the write index behind `tlsoc-agent-audit` (`GET _alias/tlsoc-agent-audit`) shows it too
+  in its mapping. Until the mapping is extended, a date-like value in a new audit row can
+  map a field as a date, and later audit-first writes answer `503 audit_unavailable`. A
+  deployment whose audit index was first created by Round 14 or later needs nothing.
 - **Audit before visible.** Settings saves (`PUT /api/settings` and the curated settings
   routes), user, role, source, runbook and dashboard changes, and every job file
   download now write their audit row first; when the audit log cannot be written the

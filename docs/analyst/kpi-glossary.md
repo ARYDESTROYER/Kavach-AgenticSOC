@@ -80,7 +80,7 @@ of five factors (default weights):
 | --- | --- | --- |
 | Reputation | 30% (heaviest) | The worst threat-intelligence reputation among the cluster's IP addresses; 0 when there is no IP |
 | Volume | 25% | How many events fired, log-normalised so large clusters level off around 50 events |
-| Velocity | 20% | Events per minute (full near 10 per minute); 0 below three events or a sub-second window |
+| Velocity | 20% | Events per minute (full at 10 per minute); 0 below three events. A window shorter than 1 second counts as 1 second, so a fast burst of three or more events scores high |
 | Diversity | 15% | How many distinct rule types fired (maxes out at five) |
 | Asset criticality | 10% | How important the targeted asset is, from the operator's CIDR or exact-match map; 0 when uncatalogued |
 
@@ -90,10 +90,19 @@ recorded. A score is shown rounded half up, and its band is the band of the show
 number. The formula for each factor and a worked example are in
 [Explainable numbers](explainable-numbers.md#the-risk-score).
 
+An indicator's **Reputation** in a case's threat context is its reputation score from
+the providers asked. **Not checked** means no provider was asked, so there is no score,
+not a score of 0.
+
 Change the weights in **Settings → General → Detection → Risk weights** and the asset
 map in **Settings → General → Detection → Asset criticality**. The risk score only
 ranks what an analyst looks at first and decides which candidates reach investigation;
 it never closes or escalates a case on its own. It is not the model's confidence.
+
+### Average risk
+
+The mean risk score of the scored cases in the window. Its explanation names how many
+cases it divides by; a case with no risk score is not counted.
 
 ## Case volume KPIs
 
@@ -210,9 +219,11 @@ median.
 
 ### Dwell
 
-The median (p50) time from case creation to the first active response (investigating,
-escalated, on hold, resolved, or closed). Dwell is time to first response, not time to
-detect.
+The median (p50) time from case creation, or detection when recorded, to the first
+response by a person: investigating, escalated, on hold, resolved or closed. An automatic
+close is not a response, so a case only the AI agent closed is not counted. Any of these
+moves stops it, so dwell can be shorter than MTTA. Dwell is time to first response, not
+time to detect.
 
 ### SLA attainment
 
@@ -229,6 +240,13 @@ scored when its priority, as shown on the case, has a configured target and it h
 readable creation time. When no case in the window could be scored, attainment shows an
 em dash with the reason, for example "3 cases have no priority with an SLA target, so
 attainment was not measured", never 0%: 0% would claim that every scored case breached.
+
+### SLA breached
+
+The open cases past their response target. A case is at risk from 80 percent of its
+target and breached only once it is past the target. A case whose priority has no
+target is not counted. Standup, the SOC operations board, chat's past-target card, the
+case page and Posture all count it with this one rule.
 
 ## Noise reduction funnel
 

@@ -175,8 +175,8 @@ dark theme by default. Select a thumbnail to open it full size.
 <table>
   <tr>
     <td width="33%" valign="top">
-      <a href="docs/assets/screenshots/case-manager.webp"><img src="docs/assets/screenshots/case-manager.webp" width="280" alt="Case Manager with an escalated true-positive case open on its Investigation tab: the advisory AI assessment, labelled AI, gives the model's reading and findings, and the Decision card below it, labelled Code, records that code routed the case to a person."></a><br>
-      <sub><b>Case Manager.</b> The advisory AI assessment, which only recommends, sits above the decision card (Code).</sub>
+      <a href="docs/assets/screenshots/case-manager.webp"><img src="docs/assets/screenshots/case-manager.webp" width="280" alt="Case Manager with an escalated true-positive case open: the advisory AI assessment, labelled AI, gives the model's reading and findings, and the decision below it, labelled Code, records that code routed the case to a person."></a><br>
+      <sub><b>Case Manager.</b> The advisory AI assessment, which only recommends, sits above the code's decision (Code).</sub>
     </td>
     <td width="33%" valign="top">
       <a href="docs/assets/screenshots/workspace-chat.webp"><img src="docs/assets/screenshots/workspace-chat.webp" width="280" alt="Workspace Chat at the end of an answer about new cases, showing a new-cases-by-severity table with top rules, the answer's lookups, time and simulated cost, and three suggested follow-up questions."></a><br>
@@ -207,8 +207,8 @@ dark theme by default. Select a thumbnail to open it full size.
       <sub><b>Settings, Models.</b> One model per agent role.</sub>
     </td>
     <td width="33%" valign="top">
-      <a href="docs/assets/screenshots/help-center.webp"><img src="docs/assets/screenshots/help-center.webp" width="280" alt="Bundled Help Center home page with the Matched to this app note, which says documentation 0.1 describes Agentic SOC 0.1.13 and is served under /docs/0.1/, above a table of guides by goal."></a><br>
-      <sub><b>Help Center.</b> Bundled with the Console at <code>/docs/0.1/</code> and matched to the installed version.</sub>
+      <a href="docs/assets/screenshots/help-center.webp"><img src="docs/assets/screenshots/help-center.webp" width="280" alt="Bundled Help Center home page with the Matched to this app note, which names the documentation line and the running version, above a table of guides by goal."></a><br>
+      <sub><b>Help Center.</b> Bundled with the Console at <code>/docs/0.2/</code> and matched to the installed version.</sub>
     </td>
     <td width="33%" valign="top">
       <a href="docs/assets/screenshots/hero-overview-dark.webp"><img src="docs/assets/screenshots/hero-overview-dark.webp" width="280" alt="Agentic SOC Cyber Defence Center dashboard in dark mode with case KPIs, a noise reduction flow and a human versus AI chart."></a><br>

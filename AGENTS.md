@@ -744,7 +744,7 @@ webui/               PRIMARY surface: standalone Vite+React+TS+Tailwind+shadcn/R
                      Audit.tsx + components/audit/** (scopes, inspector side sheet, export
                      dialog on the audit_export job) · RuleLink + RuleSheet (one rule sheet
                      from every rule name) · Runbooks.tsx + runbooks/** (editor/, run/,
-                     shared/) + Personas.tsx + casedetail/RunbookPanel (the Runbook tab and
+                     shared/) + Personas.tsx + casedetail/RunbookPanel (the Response tab and
                      the Next step card); the Scans page is gone (`#/scans` redirects to
                      Case Manager's Closed by the AI agent filter) + Round 15:
                      TeamActivity.tsx + team/** (range control, per-day chart, person
@@ -1264,7 +1264,9 @@ the `PRE_REVAMP_ENTRY_BYTES` baseline 329,080 B that Round 15 ratcheted down, an
 400,000 B ceiling; motion remains lazy and off the entry path); eslint **0 errors, 0 warnings**; **zero new webui runtime
 deps except the deliberate lazy `motion`** (12.42.2). The 0.x line (0.1 and 0.2) adds only
 the explicitly pinned connector/SQL packaging dependencies required by its advertised
-`full` image; the `core` image remains available. Round 16 figures are recorded after its
+`full` image; the `core` image remains available. Round 16 moved the
+`PRE_REVAMP_ENTRY_BYTES` baseline to 330,068 B, the round's measured entry growth of
+988 B (Round 16 SPEC §8.1 "Entry bundle"); its other figures are recorded after its
 closing gates. `engine/case_manager.py` `decide()` stays **byte-identical** to
 the pre-Round-5 baseline `27f0983`; `engine/risk.py` / `engine/signatures.py`
 **untouched** by Round 10 (the new risk gate is routing-only, #3); every round's

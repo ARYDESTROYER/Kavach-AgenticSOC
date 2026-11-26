@@ -2003,10 +2003,13 @@ select it for the full arithmetic. The Explain kit renders it and computes nothi
 - **Hover line.** Pointer rest (300ms) or keyboard focus opens a hover card with the
   summary ("Risk 38.31 = (0.25 x 65.24 + 0.20 x 20 + ...) / 1.00. Click for inputs.") and,
   unless the summary already points at the panel like that one, "Select it for the full
-  calculation." under it. It meets WCAG 1.4.13: Escape dismisses it, the pointer can
-  move onto it, and it stays until the pointer or focus leaves (150ms grace). A touch never
-  opens it, so a tap goes straight to the panel. The trigger is the number itself, with a
-  dotted underline on hover, `cursor-help` and ", explain" in its accessible name.
+  calculation." under it. The summary prints a division only when its printed numbers
+  give the score; when the stored factors do not reproduce it, it says the score came
+  "from the unrounded factors" and prints what the stored factors give. It meets WCAG
+  1.4.13: Escape dismisses it, the pointer can move onto it, and it stays until the
+  pointer or focus leaves (150ms grace). A touch never opens it, so a tap goes straight to
+  the panel. The trigger is the number itself, with a dotted underline on hover,
+  `cursor-help` and ", explain" in its accessible name.
 - **Click panel.** A click, Enter, Space or a tap opens a popover, at most 28rem wide and
   scrolling inside the space it has, named by its title: the result as shown, the
   summary, the formula in mono, the inputs (name, value, source), the steps as a table
@@ -2160,15 +2163,22 @@ its two gradient controls; nothing on this page has a palette of its own.
   second line may count attempts. Page errors that belong to no field (a single sign-on
   callback failure, an expired enrollment) keep the top alert. A single sign-on error is a
   backend code mapped to a fixed sentence; the page never renders a query-string value
-  (B25). The session-ended notice keeps its calm info style. Fields are disabled while a
-  request runs, which takes the focus away, so a refused request puts focus back in the
-  field to fix: the password, the first code cell, the recovery code, the new password or
-  the setup password.
+  (B25). A refused sign-in, code or password change shows a fixed sentence too ("The
+  username or password is not correct.", "That code is not correct. Try again.", "Could
+  not reach the server. Try again." for a failed request or any 5xx, "Too many attempts.
+  Wait a few minutes, then try again." for a 429, "Sign in failed. Try again." for
+  anything else); the page never renders the server's raw text, except a 400 password
+  rule on the setup and forced-change steps. The session-ended notice keeps its calm info
+  style. Fields are disabled while a request runs, which takes the focus away, so a refused
+  request puts focus back in the field to fix: the password, the first code cell, the
+  recovery code, the new password or the setup password.
 - **Appearance.** One `role="group"` named "Appearance" in the top-right corner: three
   round icon buttons, "Use system theme", "Light theme" and "Dark theme", each with
-  `aria-pressed`. The pressed one is an inverted fill (`bg-foreground text-background`),
-  and under forced colours the system highlight. It delegates to `ThemeProvider.setTheme`;
-  signed-in pages use the preference layer.
+  `aria-pressed`. The first button is named "Use the organization default theme" while
+  Branding sets a light or dark default, and "Use system theme" otherwise; the pressed
+  button always matches the theme on screen. The pressed one is an inverted fill
+  (`bg-foreground text-background`), and under forced colours the system highlight. It
+  delegates to `ThemeProvider.setTheme`; signed-in pages use the preference layer.
 - **Two-factor.** Six code cells, 48px tall with 6px gaps (about 40px wide on a 320px
   phone). The cells submit once when the sixth digit arrives; "Verify and continue" stays
   for recovery codes and as a fallback. A wrong code clears the cells and focuses the

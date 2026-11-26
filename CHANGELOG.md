@@ -65,6 +65,10 @@ additive audit mapping upgrade too), and no new runtime dependency. Bug ids refe
   - New case clocks: First event and Time to detect.
   - The Cost page explains per call, per 1K tokens and tokens per call; Auto-tuning and the
     auto-close review explain their Wilson intervals; Alert reduction shows its arithmetic.
+  - On Analytics, Average risk, Incident yield, Escalation rate, Containment and the
+    Posture SLA strip open their inputs, and so do the cells of a dashboard KPI strip and
+    the Team activity median. Every calculation an explanation prints gives the result it
+    prints.
 - **Dashboard figures show the cases behind them.** `GET /api/metrics/explain` returns the
   cases behind MTTA, MTTR, dwell, MTTD, the Active risk index, the AI-verdict false positive
   rate and SLA attainment, computed from the same population with the same code as the
@@ -106,7 +110,9 @@ additive audit mapping upgrade too), and no new runtime dependency. Bug ids refe
   before it existed. **Show What's new after updates**, on the page or in
   Settings, Appearance, turns it off. Acknowledging it is audited as a preferences change. The
   release badge links to What's new for the running version, and the Help Center has a What's
-  new page generated from the same notes, which chat's product help reads.
+  new page generated from the same notes, which chat's product help reads. It lists every
+  change since 0.1.1: twelve dated updates for 0.2.0 and an entry for the 0.1 line, and
+  older updates show screenshots of the interface they describe.
 - **AI runs on the server.** `GET /api/investigations/active` (needs `cases:read`) lists the
   queued and running runs, the runs that finished in the last two minutes, how many runs on
   new events have no case yet and the investigation slots in use; the requester's name is
@@ -123,6 +129,8 @@ additive audit mapping upgrade too), and no new runtime dependency. Bug ids refe
   the internal network range that holds the entity. `GET /api/cases/{id}/rationale` adds
   `returned`, `rows_total`, `rows_total_relation` and `truncated`, and the
   `GET /api/cases/{id}/forwarding` explanation adds the routing score and the floor.
+- `GET /api/metrics` adds `avg_risk_case_count`, how many scored cases Average risk
+  divides by.
 - Release checks: `scripts/check_version.py` requires the What's new notes file for the
   current version (`docs/releases/notes/<VERSION>.json`) and the license label on all three
   images. On `main`, a `v*` tag or a pull request into `main` it also requires an empty
@@ -254,6 +262,18 @@ additive audit mapping upgrade too), and no new runtime dependency. Bug ids refe
     the case actions, feedback, comments, tags, assignment, new events attaching to a case,
     the auto-close review, the precedent ratification, the analyst-policy close and the
     candidate rebuild all hold the case's write lock.
+  - A person's close is no longer undone when the system saves a cross-source link, an
+    automation rule's result or a sent-notification record on the same case at the same
+    moment: these writers hold the same lock from their re-read to their save.
+  - Linking a case to a related case from another source no longer waits for an AI
+    investigation on that case to finish, so pushed batches and polls are not held up by
+    it.
+  - If you close a case that event detection just opened while its AI run waits for a free
+    slot, no second case is made with the same events. The run leaves your closed case as
+    it is, and the waiting run shows on that case.
+  - A case closed by a declared-benign rule keeps its links to related cases and its record
+    of sent notifications, so the related case no longer points one way only.
+  - A precedent ratification no longer brings back a case that was deleted.
   - A failed AI investigation ends its live progress with a final failed step, and a
     background job run that waits for investigation headroom shows as queued.
 - **Metrics and SLA.**
@@ -267,6 +287,14 @@ additive audit mapping upgrade too), and no new runtime dependency. Bug ids refe
   - Standup and the SOC operations SLA counts use the same priority as Metrics posture and
     stop the response clock at the first response, so a P4 case is no longer breached after
     two hours and an acknowledged case is no longer breached; chat suggestions agree [B60].
+    They also count breaches with the case page and Posture rule: a case is breached only
+    after its target, at risk from 80 percent of it, and a case whose priority has no
+    target is not counted. There is no assumed 120-minute target.
+  - Urgency and the derived severity read the risk score as shown, rounded half up, so a
+    risk from 47.5 up to 48, or from 21.5 up to 22, can move up one band, and with it the
+    advisory priority and SLA target. The automatic close decision and the risk score are
+    unchanged.
+  - Dwell reads as the first response by a person; automatic closes are not counted.
   - Top detection rules "N more rules" counts only rules with cases in the window [B68].
   - The shift brief "Needs attention" list and its Word, Excel and Markdown exports carry each
     case's created time [B39].
@@ -290,11 +318,38 @@ additive audit mapping upgrade too), and no new runtime dependency. Bug ids refe
   - Adding or deleting a screenshot reads "Screenshot added (PNG, 107 B)." or "Screenshot
     deleted." in the case activity, and deleted screenshots stay listed [B30]; choosing more
     screenshots than a case has room for lists each file that was not added [B31].
+  - On the Evidence tab, How this case was clustered lists each related case by its case
+    number, and selecting one opens that case.
+  - The case header keeps the status words whole: on a short line the owner's name and then
+    the AI verdict's words give way first.
+  - The AI investigation tab says when its rationale was built from the newest records
+    only.
+  - The AI run note in the close dialog writes the new verdict in lower case.
+  - Focus returns to the control that opened a confirmation, or to the menu button when it
+    came from a menu.
 - **Dashboards.** The KPI drill-down Source column, filter and CSV show the log source a case
   came from [B29]. A noise-flow share that mixes partial counters with case counts reads "not
   measured: partial coverage" [B64]. The Respond and MTTD descriptions name the real clock and
   the median [B66]. Latest cases labels closed cases Closed and resolved cases Resolved [B67].
   A cases reset clears the cached dashboard figures straight away.
+- **Explanations.**
+  - The risk Velocity step is written from the recorded event count and window, so its
+    expression gives its result.
+  - The risk Total step and the hover line no longer print a division that does not give
+    the score. When the stored factors do not reproduce it, they say the score was
+    recorded from the unrounded factors.
+  - Priority and severity explanations print the shown risk score and half-open band
+    ranges.
+  - Percent steps are written from the counts, so 129 / 167 reads 77.2%, and a tile that
+    shows a whole percent ends its explanation on that figure. Copied calculations end a
+    worded step with its result.
+  - The noise flow's Detailed "Reduced by" figure names its inputs (alerts ingested and
+    cases that needed a human) and is withheld while the counters cover only part of the
+    window.
+  - The Open cases explanation says the count is not limited by the time range, strip
+    counts of sources and alerts no longer say they were counted over cases, and Average
+    risk names the scored cases it divides by.
+  - An indicator that no provider checked reads "Not checked" instead of a 0% reputation.
 - **Setup, settings and administration.**
   - In Demo Mode the setup wizard shows the Demo sources as "Managed by Demo Mode" with no
     actions, and the server refuses a change to a Demo source with `409
@@ -327,6 +382,13 @@ additive audit mapping upgrade too), and no new runtime dependency. Bug ids refe
     every seeded case keeps its own events, so the Evidence tab shows them [B62].
   - Demo chat answers "Which cases need attention first?" with open cases, riskiest first
     [B41]. A seeded review never contradicts an analyst who confirmed the same close.
+  - Reinvestigate no longer turns a benign or unrelated case into the "SQL injection to
+    webshell" storyline and escalates it: the Demo model reads a case's storyline only from
+    the case's own events, never from a precedent, a memory or a runbook.
+  - An investigation you start (Reinvestigate or Investigate) takes a few seconds, so the AI
+    working chip, the queue mark, the Case Manager count and the close warning show while
+    it runs. Its pauses stay within a quarter of the run's time cap. Chat, report summaries,
+    runbook help and automatic runs are not slowed.
 - **Chat and local models.** Exported conversations name a log source under "Sources queried"
   only when a lookup read it [B38]. Deleting a conversation says "Its report stays in
   Reports" only when it has a report [B40]. A case cited under an answer's Sources shows its
@@ -342,6 +404,14 @@ additive audit mapping upgrade too), and no new runtime dependency. Bug ids refe
   Branding shows the Console's real default accents, blue and indigo [B50]. After a wrong
   recovery code, a refused password change or a refused first administrator setup, focus
   returns to the field to fix.
+- **Sign-in.** A failed sign-in shows a fixed sentence under the field, such as "The
+  username or password is not correct.", "Could not reach the server. Try again." or "Too
+  many attempts. Wait a few minutes, then try again.", and a wrong code reads "That code is
+  not correct. Try again.". The page never shows the server's raw text, a browser network
+  message or a proxy error page. Setting a first admin or a new password still shows the
+  password rule the server names. While Branding sets a light or dark default theme, the
+  first appearance button is named "Use the organization default theme", and the pressed
+  button always matches the theme on screen.
 - **What's new.** After See all changes the tracker marks the changes that were new to you,
   and closing the reopened welcome or an enlarged screenshot returns focus to what opened it.
 - **Accessibility.**
@@ -388,6 +458,7 @@ additive audit mapping upgrade too), and no new runtime dependency. Bug ids refe
   about 10 to 20 ms instead of 1.4 seconds at 2,000 chunks, with the same results and scores,
   near ties included. On PostgreSQL with pgvector, only a very large corpus is ranked in the
   database.
+- The first page load no longer carries the case page's investigation narration.
 
 #### Security
 
@@ -430,8 +501,10 @@ additive audit mapping upgrade too), and no new runtime dependency. Bug ids refe
 - Sessions and activity name each event the way the Audit log does [B55].
 - Cost figures written into audit text (the timeout row, the decision row, the runbook AI row
   and a budget refusal) are hidden from a viewer without `cost:view` in the timeline, the
-  trace, the rationale, the case activity feed and chat's case rationale. Tool output and the
-  text of other rows are shown as recorded.
+  trace, the rationale, the case activity feed, chat's case rationale and the Audit log list
+  and record, and a budget refusal's reason shown on a case reads "(amount hidden)". Tool
+  output and the text of other rows are shown as recorded.
+- The standup summary no longer shows its AI cost to people who may not see AI spend.
 - Recorded risk inputs are stored without being indexed, so a source-controlled rule value
   that looks like a date can never block later case saves on Elasticsearch.
 
@@ -447,7 +520,9 @@ additive audit mapping upgrade too), and no new runtime dependency. Bug ids refe
   change signs out other sessions; only a Super admin with a fresh sign-in can change single
   sign-on; Alt+2, Alt+4 and Alt+5 change meaning and Chat moves to Alt+6; Reinvestigate
   updates a closed case in place; the Analytics MTTR changes definition; agent-closed cases
-  stop counting as late responses; a risk score at an exact .5 boundary can move one band.
+  stop counting as late responses; a risk score at an exact .5 boundary can move one band,
+  and urgency, the derived severity and with them the advisory priority follow the shown
+  score.
 - **Elasticsearch.** Bootstrap can now read index templates through the shipped client, so an
   upgraded deployment gains the cases mappings (`risk_breakdown.inputs`, stored and never
   indexed, and `awaiting_reason`) and the Round 14 audit mapping upgrade; both only add
