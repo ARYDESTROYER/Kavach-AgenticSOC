@@ -1664,11 +1664,15 @@ async def seed_demo_investigation_audit(audit: Any, cases: Iterable[Case], usage
         return 0
     written = 0
     for fields in planned:
+        # The outcome is named at the write, as every audit writer names it, so no seeded
+        # AI row reads "Not recorded" in the audit log.
+        row = dict(fields)
+        outcome = str(row.pop("outcome", None) or "success")
         try:
-            await audit.record_strict(**fields)
+            await audit.record_strict(outcome=outcome, **row)
             written += 1
         except Exception as exc:  # noqa: BLE001 - one row never blocks the rest
-            log.warning("demo investigation row for case %s not written: %s", str(fields.get("case_id"))[:80], exc)
+            log.warning("demo investigation row for case %s not written: %s", str(row.get("case_id"))[:80], exc)
     return written
 
 
