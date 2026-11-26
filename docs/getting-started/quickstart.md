@@ -251,12 +251,11 @@ Decision lane. The close or escalate decision is made by deterministic code agai
 operator policy, never by the model. Point at the case's risk score to see its formula
 with the real numbers, and select it for the whole calculation (see
 [Explainable numbers](../analyst/explainable-numbers.md)). While the AI investigates a
-case, its header shows **AI working**. The screenshot below is from version 0.1.13, where
-the assessment and the decision card shared one tab.
+case, its header shows **AI working**.
 
 <figure markdown="span">
-[![Case Manager with an escalated true-positive case open: the advisory AI assessment, labelled AI, gives the model's reading and findings, and the decision below it, labelled Code, records that code routed the case to a person.](../assets/screenshots/case-manager.webp) ](../assets/screenshots/case-manager.webp)
-<figcaption>Case Manager: the advisory AI assessment, then the code decision.</figcaption>
+[![Case Manager with an escalated true-positive case open on its Brief tab: the Evidence lane, the AI lane, labelled AI, with the model's reading, and the Decision lane, labelled Code, which records that code routed the case to a person.](../assets/screenshots/case-manager.webp) ](../assets/screenshots/case-manager.webp)
+<figcaption>Case Manager, Brief tab: the AI's advisory reading, then the code's decision.</figcaption>
 </figure>
 
 ## Stop

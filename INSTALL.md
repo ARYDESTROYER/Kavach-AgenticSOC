@@ -2,7 +2,7 @@
 
 This guide installs **Agentic SOC 0.2.0** step by step: from a first look on a workstation,
 through the recommended Docker Compose stack and its setup wizard, to a hardened deployment.
-Every screenshot is a real capture of the 0.1.13 Console. Numbered amber outlines mark the
+Every screenshot is a real capture of the Console. Numbered amber outlines mark the
 fields and buttons each step talks about, and the table under each screenshot explains them.
 
 > [!NOTE]
@@ -447,10 +447,11 @@ later in **Settings → Account → Security & two-factor**. For an administrato
 on.*
 
 > [!NOTE]
-> If the first screen is **Welcome back** with a hint for `Admin` / `Admin@123` instead,
-> `TLSOC_AUTH_ADMIN_PASSWORD` was empty and the backend seeded its demo super administrator. Sign
-> in with it and finish the setup wizard first ([section 5.11](#511-run-the-setup-wizard)). You can
-> choose **Skip for now** on the Data sources and AI runtime stages and add them later. Settings
+> If the first screen is the sign-in page with a **Demo credentials** hint for `Admin` /
+> `Admin@123` instead, `TLSOC_AUTH_ADMIN_PASSWORD` was empty and the backend seeded its demo super
+> administrator. Sign in with it and finish the setup wizard first
+> ([section 5.11](#511-run-the-setup-wizard)). You can choose **Skip for now** on the Data
+> sources and AI runtime stages and add them later. Settings
 > opens only after **Launch Agentic SOC**. Then create your named administrator in
 > **Settings → Security & access → Users**, sign in as that account, and turn the `Admin` account
 > off with its **Active** switch. Agentic SOC never lets you remove the last active super
@@ -461,14 +462,14 @@ on.*
 Creating the administrator signs you in, so you go straight to the setup wizard. The sign-in
 screen is what you and your team see on every later visit. It has two steps.
 
-![Sign-in screen titled Welcome back with the username soc-admin entered and a Continue button.](docs/assets/screenshots/install-02a-sign-in-username.webp)
+![Sign-in screen titled Sign in to Agentic SOC with the username soc-admin entered and the Continue button.](docs/assets/screenshots/install-02a-sign-in-username.webp)
 
 *Figure 3. Sign-in, step 1.*
 
 | # | Field or button | What to do |
 | --- | --- | --- |
 | 1 | **Username** | Type your username |
-| 2 | **Continue** | Appears once a username is typed. It moves to the password step |
+| 2 | **Continue** | Moves to the password step |
 
 ![Sign-in password step for soc-admin with a masked password field, a Remember me checkbox and the Sign in button.](docs/assets/screenshots/install-02-sign-in.webp)
 

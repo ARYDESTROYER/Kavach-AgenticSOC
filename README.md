@@ -167,16 +167,16 @@ What it is not:
 
 ## Screenshots
 
-All images are real captures of version 0.1.13 (Testing). The product views use synthetic
-Demo Mode data; the setup screens in [Installation](#installation) come from a fresh
-install. The captures use the light theme except where noted; a new Console opens in the
+All images are real captures of the Console. The product views show version 0.2.0 with
+synthetic Demo Mode data; the setup screens in [Installation](#installation) come from a
+fresh install. The captures use the light theme except where noted; a new Console opens in the
 dark theme by default. Select a thumbnail to open it full size.
 
 <table>
   <tr>
     <td width="33%" valign="top">
-      <a href="docs/assets/screenshots/case-manager.webp"><img src="docs/assets/screenshots/case-manager.webp" width="280" alt="Case Manager with an escalated true-positive case open: the advisory AI assessment, labelled AI, gives the model's reading and findings, and the decision below it, labelled Code, records that code routed the case to a person."></a><br>
-      <sub><b>Case Manager.</b> The advisory AI assessment, which only recommends, sits above the code's decision (Code).</sub>
+      <a href="docs/assets/screenshots/case-manager.webp"><img src="docs/assets/screenshots/case-manager.webp" width="280" alt="Case Manager with an escalated true-positive case open on its Brief tab: the Evidence lane, the AI lane, labelled AI, with the model's reading, and the Decision lane, labelled Code, which records that code routed the case to a person."></a><br>
+      <sub><b>Case Manager.</b> On the Brief tab, the AI's advisory reading (AI) sits above the code's decision (Code).</sub>
     </td>
     <td width="33%" valign="top">
       <a href="docs/assets/screenshots/workspace-chat.webp"><img src="docs/assets/screenshots/workspace-chat.webp" width="280" alt="Workspace Chat at the end of an answer about new cases, showing a new-cases-by-severity table with top rules, the answer's lookups, time and simulated cost, and three suggested follow-up questions."></a><br>

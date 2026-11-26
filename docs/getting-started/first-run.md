@@ -9,7 +9,7 @@ This guide applies to **Agentic SOC 0.2** and is for administrators opening a ne
 Console for the first time. The console shows setup instead of the operational
 workspace until the deployment is marked complete.
 
-The screenshots on this page come from a real fresh install of 0.1.13. Numbered amber
+The screenshots on this page come from a real fresh install. Numbered amber
 badges mark the controls each step uses; select a screenshot to open it full size. The
 screenshots use the light theme; a fresh install opens in the dark theme, the
 organization default, and each user can change it under
@@ -106,7 +106,7 @@ you it says "Welcome back". When single sign-on is set up, a **Sign in with** bu
 each provider follows Continue.
 
 <figure markdown="span">
-[![Sign-in screen titled Welcome back with the username soc-admin entered and a Continue button.](../assets/screenshots/install-02a-sign-in-username.webp) ](../assets/screenshots/install-02a-sign-in-username.webp)
+[![Sign-in screen titled Sign in to Agentic SOC with the username soc-admin entered and the Continue button.](../assets/screenshots/install-02a-sign-in-username.webp) ](../assets/screenshots/install-02a-sign-in-username.webp)
 <figcaption>Sign-in, step 1: the username.</figcaption>
 </figure>
 
