@@ -275,7 +275,9 @@ describe('Login — four-mode render', () => {
   ])('keeps "Use system theme" when the organization default is %s', async (_label, extra) => {
     brandingMock.mockResolvedValue({ ...BASE_BRANDING, ...extra });
     renderLogin();
-    await screen.findByLabelText('Username');
+    // The organization name arrives with the branding, so the name below is read after
+    // the organization default is known, not before it.
+    await screen.findByRole('heading', { level: 1, name: 'Sign in to Acme SOC' });
     const group = screen.getByRole('group', { name: 'Appearance' });
     expect(within(group).getByRole('button', { name: 'Use system theme' })).toHaveAttribute(
       'aria-pressed',

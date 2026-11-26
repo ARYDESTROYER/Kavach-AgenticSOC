@@ -113,7 +113,9 @@ export const MFA_PENDING_SPENT_TEXT = 'Too many wrong codes, or the sign-in step
 function failText(err: unknown, wrong: string, setsPassword?: boolean): string {
   const status = err instanceof ApiError ? err.status : 0;
   if (!status || status >= 500) return 'Could not reach the server. Try again.';
-  if (status === 429) return 'Too many attempts. Try again in a minute.';
+  // A 429 is the rate limiter or, on the code step, a second-factor lock of 5 to 60
+  // minutes (B19), so it never promises a minute.
+  if (status === 429) return 'Too many attempts. Wait a few minutes, then try again.';
   if (setsPassword) return status === 400 ? (err as ApiError).message : wrong;
   return status === 401 ? wrong : 'Sign in failed. Try again.';
 }

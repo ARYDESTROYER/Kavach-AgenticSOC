@@ -368,6 +368,7 @@ describe('Login: a refused code or password keeps the keyboard in place', () => 
 
 describe('Login: a failure shows a fixed sentence, never the server text', () => {
   const NETWORK = 'Could not reach the server. Try again.';
+  const TOO_MANY = 'Too many attempts. Wait a few minutes, then try again.';
   const PROXY_PAGE = '<html><head><title>502 Bad Gateway</title></head></html>';
 
   /** The page holds none of the raw failure texts. */
@@ -403,8 +404,20 @@ describe('Login: a failure shows a fixed sentence, never the server text', () =>
 
   it('gives the rate limit its own fixed sentence', async () => {
     await signInAndFail(new MockApiError(429, 'rate limit exceeded'));
-    expect(await screen.findByText('Too many attempts. Try again in a minute.')).toBeInTheDocument();
+    expect(await screen.findByText(TOO_MANY)).toBeInTheDocument();
     expect(screen.queryByText('rate limit exceeded')).toBeNull();
+  });
+
+  it('never promises a minute while the code checks are locked', async () => {
+    // A locked account answers every code with a 429 for 5 to 60 minutes (B19).
+    verifyMock.mockRejectedValue(
+      new MockApiError(429, 'Too many wrong codes. Wait a few minutes, then try again.'),
+    );
+    renderLogin();
+    const cells = await toMfaStep();
+    '111111'.split('').forEach((digit, i) => fireEvent.change(cells[i], { target: { value: digit } }));
+    expect(await screen.findByText(TOO_MANY)).toBeInTheDocument();
+    expect(document.body.textContent ?? '').not.toMatch(/in a minute/);
   });
 
   it('gives an unexpected refusal one fixed sentence', async () => {
