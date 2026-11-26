@@ -1207,6 +1207,15 @@ class JobRunner:
             path, artifact_id = await self._reserve_artifact_path(
                 job, token, export.EXPORT_SUFFIXES[fmt]
             )
+            # The spend figure in a timeout, decision, runbook AI or budget refusal row
+            # follows the actor's live ``cost:view`` at run time, as ``GET /api/audit``
+            # shows it (``api.cost_text``): checked now and at every page boundary, and
+            # once withheld it stays withheld for the rest of the file. ``audit:export``
+            # alone never shows it.
+            cost_grant = job.model_copy(
+                update={"required_permissions": [JobPermission(resource="cost", action="view")]}
+            )
+            cost_shown = await self._permission_alive(cost_grant)
 
             async def ensure_capacity(nbytes: int) -> None:
                 # The data export's own rule: the write plus a megabyte of headroom,
@@ -1221,6 +1230,7 @@ class JobRunner:
                     raise
 
             async def page_boundary(done: int) -> None:
+                nonlocal cost_shown
                 await self.checkpoint(
                     job.job_id,
                     token,
@@ -1229,6 +1239,8 @@ class JobRunner:
                     unit="events",
                     emit=True,
                 )
+                if cost_shown and not await self._permission_alive(cost_grant):
+                    cost_shown = False
 
             try:
                 await ensure_capacity(0)
@@ -1239,6 +1251,7 @@ class JobRunner:
                     path=path,
                     checkpoint=page_boundary,
                     ensure_capacity=ensure_capacity,
+                    show_cost=lambda: cost_shown,
                 )
                 await self.checkpoint(
                     job.job_id,
