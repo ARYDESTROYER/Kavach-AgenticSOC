@@ -99,7 +99,7 @@ import { downloadText } from '@/lib/download';
 import { errorMessage } from '@/lib/errorMessage';
 import { humanizeToken } from '@/lib/format';
 import { cn } from '@/lib/cn';
-import type { StreamEvent } from '@/lib/useEventStream';
+import { AGENT_STEP_CHANNEL, useEventStream, type StreamEvent } from '@/lib/useEventStream';
 
 import { Button } from '@/ui/button';
 import { Label } from '@/ui/label';
@@ -171,6 +171,8 @@ import type { Navigate } from '@/soc/router';
 // `tab` deep-link key so the two lists can never drift.
 import { CASE_SECTION_TABS, CASE_TABS, isCaseTab, type CaseTab } from '@/soc/case-tabs';
 import { useAiRun } from '@/soc/investigations/useAiRun';
+// Already in this chunk through the AI investigation tab, so the tab count adds no code.
+import { traceStepCounts } from '@/soc/components/TraceTimeline';
 import { ReinvestigateDialog, reinvestigateErrorText } from '@/soc/investigations/ReinvestigateDialog';
 
 import { campaignsApi, type Campaign } from '@/soc/pages/Campaigns.api';
@@ -1101,6 +1103,78 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
     }
   }, [open, wantsTimeline, timeline, timelineLoading, timelineError, loadTimeline]);
 
+  // While an AI run is under way the open trace follows it (XFCM). A quiet re-read keeps
+  // the shown trace on screen (no skeleton, no error state), and a failed read keeps the
+  // last good trace. It runs only once a trace is loaded: the lazy load above does the
+  // first read. Its triggers: an `agent.step` or `case.investigation` frame for this case
+  // on the page's one event stream (frames within TRACE_REFRESH_MS share one re-read; a
+  // frame is never rendered, #9), a change of the run's phase, a poll every TRACE_POLL_MS
+  // for as long as the run is under way, and the run's end, whatever its outcome. The poll
+  // runs even while the stream is live: the pipeline sends its `agent.step` frames when a
+  // run starts (triage, specialist, evidence) and when it decides, and none while the
+  // investigator works, so frames alone leave the trace still for most of a run.
+  const timelineShownRef = React.useRef(false);
+  React.useEffect(() => {
+    timelineShownRef.current = timeline !== null;
+  }, [timeline]);
+  const refreshTimelineQuietly = React.useCallback(async () => {
+    if (!id || activeIdRef.current !== id || !timelineShownRef.current) return;
+    try {
+      const res = await getTimeline(id);
+      if (activeIdRef.current === id && timelineShownRef.current) setTimeline(res);
+    } catch {
+      // Keep the trace already on screen; the next frame, poll or the run's end reads again.
+    }
+  }, [id]);
+  const traceFollowsRun = open && aiRunning && wantsTimeline && timeline !== null;
+  const traceTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const onTraceFrame = React.useCallback(
+    (event: StreamEvent) => {
+      if (event.type !== AGENT_STEP_CHANNEL && event.type !== 'case.investigation') return;
+      // The page's stream hands this hook only this case's frames; checked here as well.
+      const frameCase = (event.data as { case_id?: unknown } | null)?.case_id;
+      if (frameCase !== id || traceTimer.current) return;
+      traceTimer.current = setTimeout(() => {
+        traceTimer.current = null;
+        void refreshTimelineQuietly();
+      }, TRACE_REFRESH_MS);
+    },
+    [id, refreshTimelineQuietly],
+  );
+  useEventStream(traceFollowsRun && id ? [`cases:${id}`] : [], {
+    enabled: traceFollowsRun,
+    onEvent: onTraceFrame,
+  });
+  React.useEffect(
+    () => () => {
+      if (traceTimer.current) clearTimeout(traceTimer.current);
+      traceTimer.current = null;
+    },
+    [id],
+  );
+  // A change of the run's phase (the investigation store reads it from the route).
+  const runPhase = aiRunning ? (aiRun?.phase ?? null) : null;
+  const lastRunPhase = React.useRef<string | null>(null);
+  React.useEffect(() => {
+    const before = lastRunPhase.current;
+    lastRunPhase.current = runPhase;
+    if (traceFollowsRun && runPhase && before && before !== runPhase) void refreshTimelineQuietly();
+  }, [runPhase, traceFollowsRun, refreshTimelineQuietly]);
+  // The poll for as long as the run is under way, live stream or not (see above).
+  React.useEffect(() => {
+    if (!traceFollowsRun) return undefined;
+    const timer = window.setInterval(() => void refreshTimelineQuietly(), TRACE_POLL_MS);
+    return () => window.clearInterval(timer);
+  }, [traceFollowsRun, refreshTimelineQuietly]);
+  // The run's end, whatever its outcome: a failed or timed-out run never leaves a half-way
+  // trace (a decided run's case is also read again by the Reinvestigate dialog).
+  const lastRunning = React.useRef<{ id: string | null; running: boolean }>({ id: null, running: false });
+  React.useEffect(() => {
+    const before = lastRunning.current;
+    lastRunning.current = { id: id ?? null, running: aiRunning };
+    if (open && before.id === (id ?? null) && before.running && !aiRunning) void refreshTimelineQuietly();
+  }, [id, open, aiRunning, refreshTimelineQuietly]);
+
   const loadStages = React.useCallback(async () => {
     if (!id || activeIdRef.current !== id) return;
     setStagesLoading(true);
@@ -1677,11 +1751,14 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
       }
       commitCase(next);
       setRationale(null);
-      setTimeline(null);
+      // A trace on screen stays there and is read again quietly, so the end of a run the
+      // analyst watched never blanks it to a skeleton; one not loaded loads lazily.
+      if (timelineShownRef.current) void refreshTimelineQuietly();
+      else setTimeline(null);
       setStages(null);
       void loadTriage();
     },
-    [commitCase, loadTriage, onCaseChange],
+    [commitCase, loadTriage, onCaseChange, refreshTimelineQuietly],
   );
 
   const runExport = React.useCallback(
@@ -1925,7 +2002,8 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
     actionOpenerRef.current = control;
     openAction(action);
   };
-  const traceSteps = timeline?.spans?.length ?? null;
+  // The AI's own steps (agent and tool), the same number as the trace's "N AI steps".
+  const traceAiSteps = timeline?.spans ? traceStepCounts(timeline.spans).ai : null;
   const messageCount = thread ? visibleMessageCount(thread) : null;
   const runbookData = runbooks.data;
   const runbookProgress = caseProgress(runbookData);
@@ -2466,7 +2544,9 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
                 </TabsTrigger>
                 <TabsTrigger value="investigation" className="gap-1.5" aria-keyshortcuts="Alt+3" disabled={!c}>
                   AI investigation
-                  {traceSteps ? <TabCount label="steps">{traceSteps}</TabCount> : null}
+                  {traceAiSteps ? (
+                    <TabCount label={traceAiSteps === 1 ? 'AI step' : 'AI steps'}>{traceAiSteps}</TabCount>
+                  ) : null}
                 </TabsTrigger>
                 <TabsTrigger value="runbook" className="gap-1.5" aria-keyshortcuts="Alt+4" data-tab="runbook" disabled={!c}>
                   Response
@@ -2953,7 +3033,12 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
   );
 };
 
-/** A quiet count beside a tab label ("Investigation 18"). */
+/** How long frames during an AI run wait before the trace is read again (one read each). */
+export const TRACE_REFRESH_MS = 1500;
+/** The trace's poll for as long as an AI run is under way on the open trace. */
+export const TRACE_POLL_MS = 5000;
+
+/** A quiet count beside a tab label ("AI investigation 18"). */
 const TabCount: React.FC<{ label: string; children: React.ReactNode }> = ({ label, children }) => (
   <span className="rounded-sm bg-muted px-1.5 text-2xs font-medium tabular-nums text-muted-foreground">
     <span className="sr-only">, </span>

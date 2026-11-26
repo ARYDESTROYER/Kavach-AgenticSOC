@@ -130,13 +130,14 @@ describe('the queue row mark', () => {
     expect(mark.querySelector('[data-activity="running"]')).not.toBeNull();
   });
 
-  it('takes classes for its words, so a narrow row keeps the ring alone (WP16)', async () => {
+  it('always shows its words: the ring alone is the case chat glyph (XFCM)', async () => {
     h.read.mockResolvedValue(body({ items: [view({ queued_at: new Date(T0 - 5_000).toISOString() })] }));
-    render(<AiRunMark caseId="case-1" wordsClassName="hidden @[30rem]/queue:inline" />);
+    render(<AiRunMark caseId="case-1" />);
     await settle();
     const words = screen.getByTestId('ai-run-mark-words');
     expect(words).toHaveTextContent('AI working');
-    expect(words).toHaveClass('hidden', '@[30rem]/queue:inline');
+    expect(words.className).not.toMatch(/\bhidden\b/);
+    expect(words.className).not.toMatch(/@\[/);
   });
 
   it('says "AI queued" for a run waiting for a slot, and goes when the run ends', async () => {
@@ -219,8 +220,12 @@ describe('the store and its readers', () => {
   it('renders every value as text (#9)', async () => {
     h.read.mockResolvedValue(body({ items: [view({ run_id: '<img src=x onerror=alert(1)>' })] }));
     const { container } = render(<AiRunMark caseId="case-1" />);
-    await settle();
+    // Past the 1 s hold-off, so the mark is on screen when the check runs.
+    await settle(HOLD_OFF_MS);
+    expect(screen.getByTestId('ai-run-mark')).toBeInTheDocument();
+    expect(screen.getByTestId('ai-run-mark-words')).toHaveTextContent('AI working');
     expect(container.querySelector('img')).toBeNull();
+    expect(container.innerHTML).not.toContain('onerror');
   });
 
   it('drops a frame that is not a run', async () => {

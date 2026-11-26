@@ -9,8 +9,10 @@
  *
  * One polite announcement per change, at most one every 10 s: "AI investigation running",
  * "AI investigation waiting", then "AI investigation finished: <status words>". The ring
- * stands still under reduced motion. `compact` drops the words for a narrow pane, and
- * `compact="ring"` keeps the ring alone for a phone-width line (its name still says it).
+ * stands still under reduced motion. The chip keeps its words at every width it is given;
+ * `compact` keeps the ring alone, for a strip narrower than 30rem (its name still says
+ * what it is). There is no form with a clock and no words: the ring alone is the case chat
+ * glyph, so the words are what tell the two apart.
  */
 import * as React from 'react';
 import { CheckCircle2 } from 'lucide-react';
@@ -27,7 +29,8 @@ import { useAiRun, useAiRunFinished } from './useAiRun';
 
 export interface AiRunChipProps {
   caseId: string;
-  compact?: boolean | 'ring';
+  /** The ring alone, for a strip narrower than 30rem. */
+  compact?: boolean;
 }
 
 /** How long the success tint stays after a run ends. */
@@ -102,8 +105,7 @@ export const AiRunChip: React.FC<AiRunChipProps> = ({ caseId, compact = false })
   const ended = !run;
   const label = ended ? 'AI finished' : run.state === 'running' ? 'AI working' : 'AI queued';
   const time = run?.state === 'running' ? elapsedClock(run.started_at, now) : null;
-  const visible =
-    compact === 'ring' ? null : compact ? (time ?? (ended ? 'Finished' : 'Queued')) : time ? `${label} · ${time}` : label;
+  const visible = compact ? null : time ? `${label} · ${time}` : label;
 
   return (
     <Popover open={open} onOpenChange={setOpen}>

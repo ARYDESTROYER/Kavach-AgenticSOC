@@ -8,7 +8,7 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { activityActorLabel, activityKindLabel, activityText, notifyDelivery } from '../caseActivityText';
+import { activityActorLabel, activityKindLabel, activityText, decisionRecordSentence, notifyDelivery } from '../caseActivityText';
 
 const row = (summary: string, kind = 'decision', actor = 'case_manager') => ({ summary, kind, actor });
 
@@ -495,5 +495,49 @@ describe('activityActorLabel', () => {
     expect(activityActorLabel(null)).toBe('System');
     expect(activityActorLabel('dsingh')).toBe('dsingh');
     expect(activityActorLabel('Case_Manager')).toBe('Case manager');
+  });
+});
+
+describe('decisionRecordSentence (XFCM: the Brief decision line)', () => {
+  it('says who settled the case and how, from the enum tokens only', () => {
+    expect(
+      decisionRecordSentence(
+        'verdict=TRUE_POSITIVE status=escalated decision_by=system risk=29.09 cost=0.028701 confidence=0.88 auto_close_gate=class_disabled',
+      ),
+    ).toBe('Escalated by the system.');
+    expect(
+      decisionRecordSentence('verdict=FALSE_POSITIVE status=closed decision_by=agent risk=8.2 cost=0.01 confidence=0.95 auto_close_gate=cleared'),
+    ).toBe('Closed by the AI agent.');
+  });
+
+  it('reads a row without the gate token, a withheld cost and no decider', () => {
+    expect(
+      decisionRecordSentence('verdict=TRUE_POSITIVE status=escalated decision_by=system risk=7.41 cost=0.02 confidence=0.9'),
+    ).toBe('Escalated by the system.');
+    expect(
+      decisionRecordSentence('verdict=TRUE_POSITIVE status=escalated decision_by=system risk=7.41 cost=hidden confidence=0.9 auto_close_gate=class_disabled'),
+    ).toBe('Escalated by the system.');
+    expect(
+      decisionRecordSentence('verdict=NEEDS_HUMAN status=needs_human decision_by=None risk=40 cost=0.02 confidence=0.5 auto_close_gate=not_closable'),
+    ).toBe('Left for an analyst.');
+  });
+
+  it('never names the verdict, confidence, risk, cost or gate', () => {
+    const text = decisionRecordSentence(
+      'verdict=TRUE_POSITIVE status=escalated decision_by=system risk=29.09 cost=0.028701 confidence=0.88 auto_close_gate=class_disabled',
+    );
+    expect(text).not.toMatch(/true positive|0\.88|29|0\.0287|auto-close/i);
+  });
+
+  it('returns null for anything else, prose included', () => {
+    expect(decisionRecordSentence('Escalated for a person to review.')).toBeNull();
+    expect(decisionRecordSentence('verdict=TRUE_POSITIVE status=escalated')).toBeNull();
+    expect(decisionRecordSentence('')).toBeNull();
+  });
+
+  it('never reads an inherited property as a word', () => {
+    expect(
+      decisionRecordSentence('verdict=X status=constructor decision_by=toString risk=1 cost=0 confidence=0.1'),
+    ).toBe('Constructor.');
   });
 });

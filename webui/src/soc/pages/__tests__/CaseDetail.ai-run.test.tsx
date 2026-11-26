@@ -8,8 +8,9 @@
  * - the header's verdict chip is the verdict the run replaces: dimmed, its label word
  *   dropped, named "Previous verdict" for assistive technology, and its hover line leads
  *   with "Previous verdict. The running investigation replaces it.";
- * - the run chip on a measured strip keeps the status words their room: the ring and the
- *   time below 56rem, the ring alone below 30rem;
+ * - the run chip keeps its words ("AI working · 0:38", then "AI finished") on every
+ *   measured strip of 30rem or wider, the 779px strip of Case Manager at 1440 by 900
+ *   among them, and the ring alone below 30rem (XFCM);
  * - the Signal section's event count opens the Evidence tab.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -71,7 +72,6 @@ vi.mock('@/soc/investigations/useAiRun', () => ({
 
 import { CaseDetail, REINVESTIGATE_RUNNING_HINT } from '@/soc/pages/CaseDetail';
 import {
-  META_COMPACT_RUN_PX,
   META_RING_RUN_PX,
   META_RUN_GAP,
   PREVIOUS_VERDICT_NOTE,
@@ -206,11 +206,46 @@ describe('the header verdict while an AI investigation runs', () => {
     }
   });
 
-  it('fits the "AI finished" chip of the next seconds to the strip too, so the status words stay (review)', async () => {
-    // The run just ended on this console: the chip shows its success tint for a few
-    // seconds. On a 390px phone the full "AI finished" squeezed the status words to "E".
+  it('says "AI working" with the clock on the 779px strip of Case Manager at 1440 by 900 (XFCM)', async () => {
+    h.run = running();
+    const restore = stripWidth(779);
+    try {
+      await renderLoaded();
+      const chip = await screen.findByTestId('ai-run-chip');
+      await waitFor(() => expect(chip).toHaveTextContent(/^AI working · 0:3\d$/));
+      // The status words stay whole beside it (the owner's name and the SLA make room).
+      expect(screen.getByTestId('case-detail-status')).toHaveTextContent(/^Investigating$/);
+    } finally {
+      restore();
+    }
+  });
+
+  it('says "AI queued" on a 30rem strip, and the ring alone just below it (XFCM)', async () => {
+    h.run = running('queued');
+    const restore = stripWidth(META_RING_RUN_PX);
+    try {
+      await renderLoaded();
+      const chip = await screen.findByTestId('ai-run-chip');
+      await waitFor(() => expect(chip).toHaveTextContent(/^AI queued$/));
+    } finally {
+      restore();
+    }
+    cleanup();
+    const narrow = stripWidth(META_RING_RUN_PX - 1);
+    try {
+      await renderLoaded();
+      const chip = await screen.findByTestId('ai-run-chip');
+      await waitFor(() => expect(chip).toHaveTextContent(/^$/));
+      expect(chip).toHaveAttribute('aria-label', 'AI queued. Show the AI investigation');
+    } finally {
+      narrow();
+    }
+  });
+
+  it('says "AI finished" after the run on every strip of 30rem or wider, the ring alone on a phone (XFCM)', async () => {
+    // The run just ended on this console: the chip shows its success tint for a few seconds.
     h.finished = { view: { ...running(), state: 'finished', outcome: 'decided' } as InvestigationView, at: Date.now(), active: true, shown: true };
-    const restore = stripWidth(326);
+    const phone = stripWidth(326);
     try {
       await renderLoaded();
       const chip = await screen.findByTestId('ai-run-chip');
@@ -218,38 +253,29 @@ describe('the header verdict while an AI investigation runs', () => {
       await waitFor(() => expect(chip).toHaveTextContent(/^$/));
       expect(chip).toHaveAttribute('aria-label', 'AI finished. Show the AI investigation');
     } finally {
-      restore();
+      phone();
     }
-    // In Case Manager at 1440 by 900 (a 779px strip) the verdict beside it has its label
-    // back, so the finished chip keeps its mark alone there too.
-    cleanup();
-    const desk = stripWidth(779);
-    try {
-      await renderLoaded();
-      const chip = await screen.findByTestId('ai-run-chip');
-      await waitFor(() => expect(chip).toHaveTextContent(/^$/));
-    } finally {
-      desk();
-    }
-    // A strip with room for its words keeps them.
-    cleanup();
-    const wide = stripWidth(1100);
-    try {
-      await renderLoaded();
-      expect(await screen.findByTestId('ai-run-chip')).toHaveTextContent('AI finished');
-    } finally {
-      wide();
+    for (const width of [779, 919, 1100]) {
+      cleanup();
+      const restore = stripWidth(width);
+      try {
+        await renderLoaded();
+        const chip = await screen.findByTestId('ai-run-chip');
+        await waitFor(() => expect(chip).toHaveTextContent(/^AI finished$/));
+      } finally {
+        restore();
+      }
     }
   });
 
-  it('fits the run chip to the strip so the status words keep their room', () => {
+  it('fits the run chip to the strip: its words from 30rem, the ring alone below (XFCM)', () => {
     expect(runChipFit(null)).toBe(false);
     expect(runChipFit(0)).toBe(false);
     expect(runChipFit(1100)).toBe(false);
-    expect(runChipFit(META_COMPACT_RUN_PX)).toBe(false);
-    expect(runChipFit(META_COMPACT_RUN_PX - 1)).toBe(true);
-    // 1440 by 900 in Case Manager: a 779px strip.
-    expect(runChipFit(779)).toBe(true);
+    // 1440 by 900 in Case Manager, navigation open and collapsed: 779px and 919px strips.
+    expect(runChipFit(779)).toBe(false);
+    expect(runChipFit(919)).toBe(false);
+    expect(runChipFit(META_RING_RUN_PX)).toBe(false);
     expect(runChipFit(META_RING_RUN_PX - 1)).toBe('ring');
     // 390 by 844: a 326px strip.
     expect(runChipFit(326)).toBe('ring');

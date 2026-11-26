@@ -460,12 +460,27 @@ const TRIAGE_DISPOSITION: Record<string, string> = {
  *   - a verdict but no recorded disposition (a case from before triage mapped one);
  *   - the disposition triage maps from that verdict;
  *   - any other recorded value (set on the case, not mapped from the verdict).
+ *
+ * First of all (XFCM): an analyst's classification that a later AI investigation kept
+ * while it set the status again (a close it replaced, or a closed case reinvestigated in
+ * place). The run sets `decision_by` back to the system, so the outcome of record is
+ * pending, as the ground-truth gate reads it, but the value shown is the analyst's: the
+ * newest classification entry names the case's current disposition, the same rule the
+ * backend's `standing_analyst_disposition` uses to carry it. Keyed on the history, never
+ * on an audit row, so both paths read the same.
  */
 // The wire sends null for a missing verdict, which `Case` writes as absent.
-export function pendingDispositionNote(c: { verdict?: string | null; disposition?: Disposition | null }): string {
+export function pendingDispositionNote(
+  c: { verdict?: string | null; disposition?: Disposition | null; history?: unknown },
+): string {
   const tail = 'no analyst has classified this case yet';
   const verdict = canonicalVerdict(c.verdict);
   const disposition = lower(c.disposition);
+  // The history is read loosely, as classificationEntry reads it.
+  const classified = classificationEntry(c as Pick<Case, 'history'>);
+  if (classified && disposition && disposition !== 'none' && lower(classified.disposition) === disposition) {
+    return 'Classified by an analyst before a later AI investigation set the status';
+  }
   if (!verdict) return `Not yet assessed by the AI; ${tail}`;
   if (!disposition || disposition === 'none') return `No outcome recorded yet; ${tail}`;
   if (TRIAGE_DISPOSITION[verdict] === disposition) return `Mapped from the AI verdict; ${tail}`;
