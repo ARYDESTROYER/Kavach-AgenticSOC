@@ -92,6 +92,29 @@ def test_a_user_only_a_push_source_holds_is_investigated(client, mock_provider) 
     assert response.json()["source_id"] == "qradar-users"
 
 
+def test_a_delivery_sent_twice_counts_once(client, mock_provider) -> None:
+    """A retried webhook puts the same record in the ring twice under one id. The case
+    counts it once, as push ingestion does (review fix): never 2 events and a risk
+    score read from 2."""
+    ip = "192.0.2.150"
+    _push_source(client, "qradar-retry")
+    payload = _leef(ip, "retry")
+    _deliver(client, "qradar-retry", payload)
+    _deliver(client, "qradar-retry", payload)
+    ring = client.app.state.tlsoc.ingest_service.recent_events_for_source("qradar-retry", 500)
+    assert len(ring) == 2 and len({ev.id for ev in ring}) == 1
+
+    _script_investigation(mock_provider)
+    response = client.post("/api/investigate", json={"entity": {"type": "ip", "value": ip}})
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["member_event_ids"] == [ring[0].id]
+    assert body["trigger_reason"]["n"] == 1
+    assert body["trigger_reason"]["observed_count"] == 1
+    assert body["risk_breakdown"]["inputs"]["event_count"] == 1
+
+
 def test_a_muted_push_source_is_never_read(client, mock_provider) -> None:
     ip = "192.0.2.146"
     _push_source(client, "qradar-muted", role="ignore")
@@ -106,6 +129,21 @@ def test_a_named_source_is_the_only_one_searched(client, mock_provider) -> None:
     ip = "192.0.2.147"
     _push_source(client, "qradar-named")
     _deliver(client, "qradar-named", _leef(ip, "named"))
+    pull = client.post("/api/sources", json={
+        "id": "elastic-named", "source_type": "elasticsearch",
+        "config": {"data_view_pattern": "elastic-named-*"},
+    })
+    assert pull.status_code == 200, pull.text
+
+    # A named pull source that holds nothing answers "no events": the push ring that
+    # holds the address is not searched in its place (review: the guard is pinned).
+    response = client.post("/api/investigate", json={
+        "entity": {"type": "ip", "value": ip}, "source_id": "elastic-named",
+    })
+    assert response.status_code == 400
+    assert response.json()["detail"] == f"No events found for ip {ip} in the last 365 days"
+    assert mock_provider.calls == []
+
     response = client.post("/api/investigate", json={
         "entity": {"type": "ip", "value": ip}, "source_id": "not-a-source",
     })

@@ -5,7 +5,7 @@
  * and renders the returned Case as a rich verdict card: badge row, recommended
  * action, evidence, MITRE techniques, the reproduce query, and the risk
  * breakdown. A 400 "no events" response is rendered as a neutral empty state
- * (not a scary error) with a hint to widen the lookback. Each completed run is
+ * (not a scary error) that names the widest window searched. Each completed run is
  * kept in a small per-session history (sessionStorage).
  *
  * SECURITY: every value derived from the backend (titles, summaries, entity

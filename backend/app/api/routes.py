@@ -9451,8 +9451,9 @@ def _push_ring_cluster(state: AppState, req: InvestigateRequest) -> tuple[Cluste
     same widening windows as a search. A muted (``ignore``) source is skipped, and an
     event a live suppression rule or an excluded rule matches is left out, as the
     search's scope filters leave it out. An event without a time counts as recent: it
-    is in the ring of the newest events."""
-    from ..engine.ingest import _push_source_role
+    is in the ring of the newest events. A delivery the source sent again sits in the
+    ring twice under one id; it counts once, as push ingestion correlates it."""
+    from ..engine.ingest import _push_source_role, dedup_by_id
     from ..utils import dotted_get
 
     entity = req.entity
@@ -9479,7 +9480,9 @@ def _push_ring_cluster(state: AppState, req: InvestigateRequest) -> tuple[Cluste
             continue
         if _push_source_role(src) == "ignore":
             continue
-        held = [ev for ev in ingest.recent_events_for_source(src.id, _PUSH_RING_SCAN) if kept(ev)]
+        held = dedup_by_id(
+            [ev for ev in ingest.recent_events_for_source(src.id, _PUSH_RING_SCAN) if kept(ev)]
+        )
         if not held:
             continue
         for window in windows:
