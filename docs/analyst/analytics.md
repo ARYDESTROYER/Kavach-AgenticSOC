@@ -5,13 +5,25 @@ description: Interpret posture, timing, noise reduction, ATT&CK coverage, cost, 
 
 # Analytics and standup
 
-The **Analytics** group in the navigation opens three pages, each titled by its
-navigation label: **Metrics** (`#/metrics`), **Agent effectiveness**
-(`#/effectiveness`) and **Cost** (`#/cost`). The group also opens **Team activity**
-(`#/team`, `team:view`), per-person work counts from the audit log; see
-[Team activity](team-activity.md). **Overview → Standup** holds the current
-action queue. Analytics are advisory: they describe stored cases and ingest counters but
-never feed the case decision policy.
+The **Analytics** group in the navigation opens seven pages, each titled by its
+navigation label, in this order:
+
+- **Metrics** (`#/metrics`, `metrics:view`): posture, timing, noise reduction and
+  ATT&CK coverage.
+- **Team activity** (`#/team`, `team:view`), per-person work counts from the audit log;
+  see [Team activity](team-activity.md).
+- **Agent effectiveness** (`#/effectiveness`, `metrics:view`): agent health, the
+  improvement evidence and the auto-close review.
+- **Cost** (`#/cost`, `cost:view`): the model spend ledger; see [Cost](#cost).
+- **Models** (`#/models`, `models:read`): the model catalog, routing and prices; see
+  [Models and spend controls](../administration/models-spend.md).
+- **Baseline** (`#/baseline`, `settings:read`): the learned entity and source
+  baselines; see [Tuning and baselines](../automation/tuning-baselines.md).
+- **Jobs** (`#/batchjobs`): the background jobs you started; see [Jobs](#jobs).
+
+A page shows in the navigation only for someone allowed to read it.
+**Overview → Standup** holds the current action queue. Analytics are advisory: they
+describe stored cases and ingest counters but never feed the case decision policy.
 
 Posture and ATT&CK endpoints require `metrics:view` when RBAC is enabled, and so does
 the Standup.

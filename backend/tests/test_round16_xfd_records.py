@@ -227,9 +227,11 @@ def test_the_demo_page_says_a_run_you_start_is_paced():
 
 def test_the_header_strip_order_in_the_docs_is_the_console_one():
     meta = _read(CASE_HEADER_META_TSX)
-    assert "owner: 'min-w-5 shrink-[1000000000000]'" in meta
+    assert "owner: 'min-w-5 shrink-[1000000000000000000]'" in meta
+    # XFUI3: the start of a long case number gives way after the verdict's words.
+    assert "caseNumber: 'shrink-[1000000]'" in meta
     page = _flat(_read(CASE_MANAGER_MD))
-    assert "the owner's name is shortened first, then the AI verdict's words" in page
+    assert "the owner's name is shortened first, then the AI verdict's words, then the start of a long case number" in page
 
 
 def test_the_audit_log_page_says_spend_needs_cost_view():

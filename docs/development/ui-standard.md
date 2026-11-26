@@ -686,13 +686,21 @@ the status while the case is open or its outcome once it ended, the Risk chip (i
 explanation on hover or click), the AI verdict (explained the same way) with the live AI
 run chip after it, the owner (its one editable home, opened with M), the SLA while open
 and the review chip while an auto-close review waits. As the pane narrows, items give way
-by container query, never the viewport: the Risk chip below 30rem, the verdict, the
-long severity label and the outcome's `Analyst` tag below 36rem (its word is still read
-aloud), the owner's name and the review chip below 44rem, the SLA
-below 52rem. The owner's monogram never hides. On a short line the owner's name truncates
-first, then the verdict's words (its label and confidence keep their width), and the status
-words or the outcome give way last, only once both are at their minimum: on a phone-width
-strip, where the owner's name and the verdict are already hidden, the status truncates. The
+by container query, never the viewport: the Risk chip below 30rem, the long severity
+label and the outcome's `Analyst` tag below 36rem (its word is still read aloud), the
+verdict below 40rem (below 48rem while the AI run chip shows: below those widths, beside
+the longest status words, it would sit at its floor), the owner's name and the review
+chip below 44rem, the SLA below 52rem. The owner's
+monogram never hides, and the case number never hides. On a short line the owner's name
+truncates first, then the verdict's words down to the chip's 5rem floor (its label and
+confidence keep their width), then the start of a long case number, and the status words
+or the outcome give way last, only once the others are at their minimum: on a phone-width
+strip, where the owner's name and the verdict are already hidden, the case number and then
+the status truncate. A control on the strip never shrinks to a box of no size: an item
+that no longer fits hides, so it leaves the tab order and the accessibility tree. A case
+number longer than nine characters ends in a middle ellipsis on a short line, its last six
+characters kept whole, and takes the room of 20 characters at most; its whole value is its
+hover title and what assistive technology reads. The
 outcome badge is never cut: when the outcome gives way, the `Analyst` tag drops whole first
 at any pane width (a long case number leaves the line short on a wide pane too), then the
 badge's words end in an ellipsis inside its whole border, and the whole outcome is its hover

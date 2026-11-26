@@ -254,8 +254,9 @@ or **Assign to me**; this is the one place to change it), the SLA while the case
 open, and the review chip on a case waiting for its auto-close review. In a narrow pane
 the later items hide first and the owner always stays; a hidden SLA is still in the case
 facts' **Signal** section. On a short line the owner's name is shortened first, then the
-AI verdict's words; the status words stay whole until both have given way. The tabs sit
-under it.
+AI verdict's words, then the start of a long case number; the status words stay whole
+until the others have given way. A long case number keeps its last six characters and
+shows the whole number when you point at it. The tabs sit under it.
 
 Point at the risk, the AI verdict, the severity, the priority or the SLA to see a
 one-line formula with the real numbers, and select it for the whole calculation with

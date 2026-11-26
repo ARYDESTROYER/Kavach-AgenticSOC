@@ -241,7 +241,7 @@ describe('the outcome of an ended case gives way cleanly (XFUI2)', () => {
     const tag = item.querySelector('[data-provenance="analyst"]');
     expect(tag).not.toBeNull();
     // The tag is not inside the truncating badge, never shrinks, and gives way below a
-    // 36rem pane (with the verdict and the long severity label).
+    // 36rem pane (with the long severity label).
     expect(badge.contains(tag)).toBe(false);
     expect(classesOf(tag)).toEqual(expect.arrayContaining(['hidden', 'shrink-0', '@[36rem]/case:inline-flex']));
     // Its word stays for assistive technology wherever the tag is hidden.

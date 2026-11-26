@@ -12,23 +12,33 @@
  *
  * Items hide by container query in reverse priority, so the line stays one line in a
  * narrow pane: the review chip below 44rem, the SLA below 52rem, the AI verdict below
- * 36rem and the Risk chip below 30rem. The owner control never hides (only its name,
+ * 40rem (below 48rem while the AI run chip shows) and the Risk chip below 30rem. The owner control never hides (only its name,
  * below 44rem): it is the owner's editable home and the anchor of the M shortcut. A hidden
  * SLA stays in the inspector's Signal section; the review sentence is the Brief's first
  * block. Tags, the campaign, Ask AI and the Sample mark live in the inspector.
  *
  * On a short line the status words (or the outcome) give way last (WP16): the owner's name
- * truncates first, down to its disk, then the verdict chip's words, and the status words
- * only once both are at their minimum (`META_SHRINK`). The outcome's `Analyst` tag goes
- * before its words, and its words truncate with an ellipsis, never cut (`META_OUTCOME`).
+ * truncates first, down to its disk, then the verdict chip's words, down to the chip's
+ * floor, then the start of a long case number (its end stays whole), and the status words
+ * only once all three are at their minimum (`META_SHRINK`). The outcome's `Analyst` tag
+ * goes before its words, and its words truncate with an ellipsis, never cut
+ * (`META_OUTCOME`). No item that can take focus ever shrinks to nothing: an item that no
+ * longer fits hides by container query, so it leaves the tab order and the accessibility
+ * tree with its box (XFUI3).
  *
  * While an AI run is under way the verdict chip is dimmed ("Previous verdict. The running
  * investigation replaces it." leads its hover line). The run chip keeps its words, "AI
  * working · 0:42", "AI queued" and then "AI finished", on every strip of 30rem or wider;
  * below that it shows the ring alone, the items sit closer and the status glyph gives way
  * to the ring. While the chip is on the strip, lower-priority items make room first
- * (`META_RUN_ROOM`): the verdict's label word, the owner's name below a 56rem pane, and the
- * SLA and the review chip below 64rem. The status words never vanish (`META_SHRINK`).
+ * (`META_RUN_ROOM`): the verdict's label word, the whole verdict below a 48rem pane, the
+ * owner's name below a 56rem pane, and the SLA and the review chip below 64rem. The status
+ * words never vanish (`META_SHRINK`).
+ *
+ * The case number is the line's anchor and never hides. A long one (an operator's
+ * template, or the internal id of a case without a number) ends in a middle ellipsis on a
+ * short line, its last six characters kept whole; its whole value is its hover title and
+ * what assistive technology reads (`META_CASE_NUMBER`).
  *
  * SECURITY (#9): every case-derived value (id, owner) renders as a plain text node. #3:
  * the owner edit is the existing collaboration route; nothing here changes status,
@@ -92,7 +102,9 @@ const RISK_TONE: Record<string, string> = {
  */
 export const META_HIDE = {
   risk: 'hidden @[30rem]/case:inline-flex',
-  verdict: 'hidden @[36rem]/case:inline-flex',
+  // XFUI3: from 40rem, where the verdict keeps more than its floor beside the longest
+  // status words ("Open · awaiting analyst") and severity label of the seeded Demo.
+  verdict: 'hidden @[40rem]/case:inline-flex',
   ownerName: 'hidden @[44rem]/case:inline',
   sla: 'hidden @[52rem]/case:inline-flex',
   review: 'hidden @[44rem]/case:inline-flex',
@@ -100,10 +112,17 @@ export const META_HIDE = {
 
 /**
  * Who gives way on a short line (WP16), in order: the owner's name (down to its disk), then
- * the verdict chip's words (the label and the confidence keep their width), and the status
- * words or the outcome last, so they never truncate while the owner's name or the verdict
- * could still give. On a phone-width strip the owner's name and the verdict are already
- * hidden, so there the status words are what gives.
+ * the verdict chip's words (the label and the confidence keep their width) down to the
+ * chip's floor, then the start of a long case number (XFUI3, `META_CASE_NUMBER`), and the
+ * status words or the outcome last, so they never truncate while any of the others could
+ * still give. On a phone-width strip the owner's name and the verdict are already hidden,
+ * so there the case number and then the status words are what gives.
+ *
+ * Every item that holds a control has a floor above zero (XFUI3): the owner's disk, the
+ * verdict chip at 5rem (its glyph, the first letter of its words and its confidence; the
+ * shortest chip is wider) and the case number's floor. Below the width where the verdict no
+ * longer fits it hides by container query (`META_HIDE.verdict`, `META_RUN_ROOM.verdict`),
+ * so its explain trigger is never a focusable box of no size.
  *
  * Flex shrinking is shared out in proportion to each weight, so each weight is a million
  * times the next: the share of the next item stays far below a pixel until the item before
@@ -112,18 +131,57 @@ export const META_HIDE = {
  * shortfall (CSS Flexbox 9.7) and the line would overflow.
  */
 export const META_SHRINK = {
-  owner: 'min-w-5 shrink-[1000000000000]',
-  verdict: 'min-w-0 shrink-[1000000]',
+  owner: 'min-w-5 shrink-[1000000000000000000]',
+  verdict: 'min-w-20 shrink-[1000000000000]',
   verdictChip: 'min-w-0 max-w-full overflow-hidden',
   verdictWords: 'min-w-0 truncate',
+  caseNumber: 'shrink-[1000000]',
   // A small floor: the status words truncate, but never vanish from the line.
   status: 'min-w-14 shrink',
   statusWords: 'min-w-0 truncate',
 } as const;
 
 /**
+ * How a long case number gives way (XFUI3). It is the line's anchor, so it never hides: its
+ * start truncates with an ellipsis and its last six characters (the sequence of a template
+ * such as "CASE-crowdstrike-2026-000041") stay whole, down to a floor of its first two
+ * characters, the ellipsis and the six ("CA…000041"). A number of nine characters or fewer
+ * never shrinks. A number longer than 20 characters takes the room of 20 at most, both ends
+ * kept, as the queue shows a long id, so an operator's long template never pushes the
+ * verdict down to its floor on a wide pane.
+ *
+ * The floor and the cap are set on the item in `ch` of its monospace face, plus the copy
+ * control and the gap before it, plus 1px so rounding never pushes the ellipsis one
+ * character early (which left a blank character before the kept end); every box inside
+ * may shrink (`min-w-0`), so the floor is exact. The whole value is the number's hover
+ * title and its words for assistive technology (`sr-only`), and the split words on screen
+ * are hidden from it.
+ */
+export const META_CASE_NUMBER = {
+  /** Characters kept whole at the end. */
+  tailChars: 6,
+  /** Characters of the start the floor keeps room for, the ellipsis included. */
+  headFloorChars: 3,
+  item: 'font-mono min-w-[calc(9ch+1.375rem+1px)] max-w-[calc(20ch+1.375rem+1px)] shrink-[1000000]',
+  head: 'min-w-[3ch] truncate',
+  tail: 'shrink-0',
+} as const;
+
+/**
+ * A case number split for its middle ellipsis: the start that truncates and the end kept
+ * whole, or null for a number short enough never to shrink (the floor would not be
+ * shorter than the number itself). Splits by character, never inside a surrogate pair.
+ */
+export function splitCaseNumber(value: string): { head: string; tail: string } | null {
+  const chars = Array.from(String(value ?? ''));
+  const { tailChars, headFloorChars } = META_CASE_NUMBER;
+  if (chars.length <= tailChars + headFloorChars) return null;
+  return { head: chars.slice(0, -tailChars).join(''), tail: chars.slice(-tailChars).join('') };
+}
+
+/**
  * How the outcome of an ended case gives way (XFUI2), so its badge is never cut: the
- * `Analyst` tag goes first (below a 36rem pane, with the verdict and the long severity
+ * `Analyst` tag goes first (below a 36rem pane, with the long severity
  * label, and below 64rem while the AI run chip shows), and its word stays for assistive
  * technology; then the badge's words truncate with an ellipsis, last, as the status words
  * do (`META_SHRINK.status` on the item). The item's hover title holds the whole outcome.
@@ -149,24 +207,30 @@ export const META_OUTCOME = {
     'sr-only @[36rem]/case:hidden @[36rem]/case:group-has-[[data-meta-item=ai-run]]/meta:inline @[64rem]/case:group-has-[[data-meta-item=ai-run]]/meta:hidden',
 } as const;
 
-/** While the run chip is on the strip (its `data-meta-item`), keyed with CSS `:has`. */
-const WITH_RUN_CHIP = 'group-has-[[data-meta-item=ai-run]]/meta';
-
 /**
  * Who makes room for the run chip while it is on the strip (a run under way, or the few
  * seconds of "AI finished" after one), so the chip keeps its words and the status words
  * stay whole. Lower priority gives way first: the verdict chip's label word at every
- * width, the owner's name below a 56rem pane (the monogram, the button's name and the M
- * popover stay), and the SLA and the review chip below 64rem (the SLA stays in the
- * inspector's Signal section, the review sentence in the Brief). Keyed on the chip itself,
- * so these follow it exactly. The strip carries `META_RUN_ROOM.strip`.
+ * width, the whole verdict below a 48rem pane (XFUI3: below it, beside the chip and the
+ * longest status words, the verdict would be squeezed to its floor; the verdict the run
+ * replaces stays in the decision card), the owner's name below a 56rem pane (the monogram, the button's name
+ * and the M popover stay), and the SLA and the review chip below 64rem (the SLA stays in
+ * the inspector's Signal section, the review sentence in the Brief). Keyed on the chip
+ * itself (`group-has-[[data-meta-item=ai-run]]/meta`, CSS `:has`), so these follow it
+ * exactly. The strip carries `META_RUN_ROOM.strip`. Each class is written out whole:
+ * Tailwind generates only the class names it finds whole in the source, never one put
+ * together in a template string.
  */
 export const META_RUN_ROOM = {
   strip: 'group/meta',
-  verdictLabel: `${WITH_RUN_CHIP}:hidden`,
-  ownerName: `${WITH_RUN_CHIP}:hidden @[56rem]/case:${WITH_RUN_CHIP}:inline`,
-  sla: `${WITH_RUN_CHIP}:hidden @[64rem]/case:${WITH_RUN_CHIP}:inline-flex`,
-  review: `${WITH_RUN_CHIP}:hidden @[64rem]/case:${WITH_RUN_CHIP}:inline-flex`,
+  verdict:
+    'group-has-[[data-meta-item=ai-run]]/meta:hidden @[48rem]/case:group-has-[[data-meta-item=ai-run]]/meta:inline-flex',
+  verdictLabel: 'group-has-[[data-meta-item=ai-run]]/meta:hidden',
+  ownerName:
+    'group-has-[[data-meta-item=ai-run]]/meta:hidden @[56rem]/case:group-has-[[data-meta-item=ai-run]]/meta:inline',
+  sla: 'group-has-[[data-meta-item=ai-run]]/meta:hidden @[64rem]/case:group-has-[[data-meta-item=ai-run]]/meta:inline-flex',
+  review:
+    'group-has-[[data-meta-item=ai-run]]/meta:hidden @[64rem]/case:group-has-[[data-meta-item=ai-run]]/meta:inline-flex',
 } as const;
 
 /** The verdict chip's note while an AI run is under way on the case. */
@@ -299,6 +363,7 @@ export const CaseHeaderMeta: React.FC<CaseHeaderMetaProps> = ({
   onStartReview,
 }) => {
   const displayId = caseDisplayId(c);
+  const caseNumber = splitCaseNumber(displayId);
   const severity = severityBand(c.severity_band) ?? severityBand(c.risk_score);
   const status = String(c.status || '').toLowerCase();
   const StatusGlyph = semanticIcon(status === 'reopened' ? 'investigating' : status);
@@ -358,12 +423,27 @@ export const CaseHeaderMeta: React.FC<CaseHeaderMetaProps> = ({
         '[scrollbar-width:none] [&::-webkit-scrollbar]:hidden',
       )}
     >
-      <span className="inline-flex shrink-0 items-center gap-0.5">
-        <span data-testid="case-detail-id" className="font-mono text-foreground/80">
-          {displayId}
+      {caseNumber ? (
+        // A long number: its start ends in an ellipsis on a short line, its end stays whole,
+        // and its whole value is the hover title and what assistive technology reads.
+        <span className={cn('inline-flex items-center gap-0.5', META_CASE_NUMBER.item)} data-meta-item="case-number">
+          <span data-testid="case-detail-id" title={displayId} className="flex min-w-0 font-mono text-foreground/80">
+            <span aria-hidden className="flex min-w-0">
+              <span className={META_CASE_NUMBER.head}>{caseNumber.head}</span>
+              <span className={META_CASE_NUMBER.tail}>{caseNumber.tail}</span>
+            </span>
+            <span className="sr-only">{displayId}</span>
+          </span>
+          <CopyId value={displayId} />
         </span>
-        <CopyId value={displayId} />
-      </span>
+      ) : (
+        <span className="inline-flex shrink-0 items-center gap-0.5" data-meta-item="case-number">
+          <span data-testid="case-detail-id" className="font-mono text-foreground/80">
+            {displayId}
+          </span>
+          <CopyId value={displayId} />
+        </span>
+      )}
 
       {severity ? (
         // A wrapper that never shrinks: the explain trigger inside may, and its badge
@@ -438,7 +518,7 @@ export const CaseHeaderMeta: React.FC<CaseHeaderMetaProps> = ({
 
       {c.verdict ? (
         <span
-          className={cn('items-center', META_SHRINK.verdict, META_HIDE.verdict)}
+          className={cn('items-center', META_SHRINK.verdict, META_HIDE.verdict, META_RUN_ROOM.verdict)}
           data-meta-item="verdict"
           data-previous-verdict={aiRunning ? '' : undefined}
         >

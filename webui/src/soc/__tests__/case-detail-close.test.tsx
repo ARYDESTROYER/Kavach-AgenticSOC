@@ -204,8 +204,9 @@ describe('CaseDetail: single panel-dismiss control (BUG-3)', () => {
     expect(title).not.toHaveClass('text-muted-foreground');
 
     // The machine id is a secondary mono line AFTER the title: quiet, small, untruncated
-    // (it leads the meta strip, which sets the small muted type and never wraps; the id
-    // never shrinks, Round 16).
+    // (it leads the meta strip, which sets the small muted type and never wraps; an id of
+    // nine characters or fewer never shrinks, and a longer one ends in a middle ellipsis on
+    // a short line, XFUI3).
     const id = screen.getByTestId('case-detail-id');
     expect(id).toHaveTextContent(/^TLSOC-001$/);
     expect(id).toHaveClass('font-mono');
