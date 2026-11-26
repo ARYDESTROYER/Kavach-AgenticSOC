@@ -97,7 +97,7 @@ afterEach(() => {
 
 const classesOf = (el: Element | null) => (el?.getAttribute('class') ?? '').split(/\s+/).filter(Boolean);
 
-/** A class that sets a least width above zero (`min-w-5`, `min-w-[calc(9ch+1.375rem+1px)]`). */
+/** A class that sets a least width above zero (`min-w-5`, `min-w-[calc(12ch+1.375rem+1px)]`). */
 function hasFloor(el: Element): boolean {
   return classesOf(el).some((c) => {
     const step = /^min-w-(\d+(?:\.\d+)?)$/.exec(c);
@@ -216,7 +216,7 @@ describe('a long case number ends in a middle ellipsis (XFUI3)', () => {
     expect(visual).not.toBeNull();
     const [head, tail] = Array.from(visual!.children);
     expect(head).toHaveTextContent(/^CASE-crowdstrike-falcon-prod-2026-$/);
-    expect(classesOf(head)).toEqual(expect.arrayContaining(['truncate', 'min-w-[3ch]']));
+    expect(classesOf(head)).toEqual(expect.arrayContaining(['truncate', 'min-w-[6ch]']));
     expect(tail).toHaveTextContent(/^000041$/);
     expect(classesOf(tail)).toContain('shrink-0');
     // Every box between the start and the item may shrink, so the item's floor is exact.
@@ -231,11 +231,12 @@ describe('a long case number ends in a middle ellipsis (XFUI3)', () => {
     const classes = classesOf(item);
     expect(classes).not.toContain('shrink-0');
     expect(classes).not.toContain('hidden');
-    // The floor: two characters and the ellipsis, the last six, the copy control and its gap.
+    // The floor: five characters and the ellipsis ("CASE-…"), the last six, the copy
+    // control and its gap.
     expect(classes).toEqual(
-      expect.arrayContaining(['font-mono', 'min-w-[calc(9ch+1.375rem+1px)]', 'max-w-[calc(20ch+1.375rem+1px)]']),
+      expect.arrayContaining(['font-mono', 'min-w-[calc(12ch+1.375rem+1px)]', 'max-w-[calc(20ch+1.375rem+1px)]']),
     );
-    expect(META_CASE_NUMBER.headFloorChars + META_CASE_NUMBER.tailChars).toBe(9);
+    expect(META_CASE_NUMBER.headFloorChars + META_CASE_NUMBER.tailChars).toBe(12);
     // The copy control keeps its size and still copies the whole value.
     expect(classesOf(screen.getByRole('button', { name: 'Copy case ID' }))).toContain('shrink-0');
   });
@@ -257,14 +258,30 @@ describe('a long case number ends in a middle ellipsis (XFUI3)', () => {
     expect(META_SHRINK.caseNumber).toBe('shrink-[1000000]');
   });
 
-  it('leaves a number of nine characters or fewer whole, never shrinking', () => {
+  it('leaves a number of twelve characters or fewer whole, never shrinking', () => {
     renderMeta({ case_number: 'TLSOC-001' });
     const id = screen.getByTestId('case-detail-id');
     expect(id).toHaveTextContent(/^TLSOC-001$/);
     expect(id.parentElement).toHaveClass('shrink-0');
     expect(id.querySelector('[aria-hidden="true"]')).toBeNull();
     expect(splitCaseNumber('CASE-0042')).toBeNull();
-    expect(splitCaseNumber('CASE-00042')).toEqual({ head: 'CASE', tail: '-00042' });
+    expect(splitCaseNumber('CASE-1000000')).toBeNull();
+    expect(splitCaseNumber('CASE-10000000')).toEqual({ head: 'CASE-10', tail: '000000' });
+  });
+
+  it("never cuts the default template's number, which was whole at every width before", () => {
+    // XFUI3 review: the default template is "CASE-{seq:06d}" (backend config), eleven
+    // characters, twelve past a million cases. With a floor of three characters it was
+    // split and, on a phone-width strip or beside the AI run chip at 36rem, showed
+    // "CA…000046" while the status words still had room. It keeps its old unsplit markup.
+    for (const number of ['CASE-000046', 'CASE-999999', 'CASE-1000000']) {
+      renderMeta({ case_number: number });
+      const id = screen.getByTestId('case-detail-id');
+      expect(id, number).toHaveTextContent(new RegExp(`^${number}$`));
+      expect(id.parentElement, number).toHaveClass('shrink-0');
+      expect(id.querySelector('[aria-hidden="true"]'), number).toBeNull();
+      cleanup();
+    }
   });
 
   it('ellipsises the internal id of a case without a number the same way', () => {

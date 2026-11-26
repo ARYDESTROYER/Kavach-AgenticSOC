@@ -144,11 +144,13 @@ export const META_SHRINK = {
 /**
  * How a long case number gives way (XFUI3). It is the line's anchor, so it never hides: its
  * start truncates with an ellipsis and its last six characters (the sequence of a template
- * such as "CASE-crowdstrike-2026-000041") stay whole, down to a floor of its first two
- * characters, the ellipsis and the six ("CA…000041"). A number of nine characters or fewer
- * never shrinks. A number longer than 20 characters takes the room of 20 at most, both ends
- * kept, as the queue shows a long id, so an operator's long template never pushes the
- * verdict down to its floor on a wide pane.
+ * such as "CASE-crowdstrike-2026-000041") stay whole, down to a floor of its first five
+ * characters, the ellipsis and the six ("CASE-…000041"). A number of twelve characters or
+ * fewer never shrinks, so the default template's numbers ("CASE-000046", and
+ * "CASE-1000000" past a million cases) stay whole at every width, as they did before. A
+ * number longer than 20 characters takes the room of 20 at most, both ends kept, as the
+ * queue shows a long id, so an operator's long template never pushes the verdict down to
+ * its floor on a wide pane.
  *
  * The floor and the cap are set on the item in `ch` of its monospace face, plus the copy
  * control and the gap before it, plus 1px so rounding never pushes the ellipsis one
@@ -161,9 +163,9 @@ export const META_CASE_NUMBER = {
   /** Characters kept whole at the end. */
   tailChars: 6,
   /** Characters of the start the floor keeps room for, the ellipsis included. */
-  headFloorChars: 3,
-  item: 'font-mono min-w-[calc(9ch+1.375rem+1px)] max-w-[calc(20ch+1.375rem+1px)] shrink-[1000000]',
-  head: 'min-w-[3ch] truncate',
+  headFloorChars: 6,
+  item: 'font-mono min-w-[calc(12ch+1.375rem+1px)] max-w-[calc(20ch+1.375rem+1px)] shrink-[1000000]',
+  head: 'min-w-[6ch] truncate',
   tail: 'shrink-0',
 } as const;
 

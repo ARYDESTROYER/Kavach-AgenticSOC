@@ -44,7 +44,8 @@
   "cancel": [
    "stop",
    "kill",
-   "abort"
+   "abort",
+   "abandon"
   ],
   "chat": [
    "workspace"

@@ -83,3 +83,19 @@ def test_the_release_procedure_names_the_pages_setting_as_a_github_one():
     flat = _flat(procedure)
     assert "In the GitHub repository's own settings, on its Pages page" in flat
     assert "set to **GitHub Actions**; this is a GitHub setting, not a Console one." in flat
+
+
+def test_the_layout_section_says_which_analytics_pages_share_the_time_range():
+    """The intro now names seven pages, so "Each page follows the Overview's layout" with
+    its time range read as if Models, Baseline and Jobs had one (XFUI3 review). Only the
+    pages the Analytics host renders share the range (`webui/src/soc/pages/Analytics.tsx`,
+    `useAnalyticsWindow`); Team activity has its own range control."""
+    layout = _flat(_section(_read(ANALYTICS_MD), "How the Analytics pages are laid out"))
+    assert "Each page follows the Overview's layout" not in layout
+    assert "**Metrics**, **Agent effectiveness** and **Cost** follow the Overview's layout." in layout
+    assert "The range you pick on one of these three pages is kept for the other two" in layout
+    assert "**Team activity** has its own range" in layout
+    assert "**Models**, **Baseline** and **Jobs** show the current state with no time range." in layout
+    host = _read(REPO_ROOT / "webui" / "src" / "soc" / "pages" / "Analytics.tsx")
+    for route in ("`#/metrics`", "`#/effectiveness`", "`#/cost`"):
+        assert route in host

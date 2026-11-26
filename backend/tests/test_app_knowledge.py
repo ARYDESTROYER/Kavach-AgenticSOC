@@ -1549,6 +1549,19 @@ async def test_stopping_a_source_is_not_sent_to_the_jobs_page():
     assert "page:batchjobs" not in outcome.console_links, outcome.console_links
 
 
+async def test_cancelling_a_runbook_run_keeps_the_case_manager():
+    """A runbook run is not a background job: it is abandoned from the case's Response tab
+    ("Abandon run" in Case Manager › Work the runbook). The cancel aliases alone sent
+    "Cancel a runbook run" to Analytics › Jobs first (XFUI3 review); abandon is an alias of
+    cancel too, so the runbook section answers first and its page is the destination."""
+    assert "abandon" in get_app_knowledge().aliases["cancel"]
+    outcome = await AppHelpTool().run(_ctx(_role_grants("super_admin")), query="Cancel a runbook run")
+    assert outcome.ok and outcome.citations
+    assert outcome.citations[0].title == "Case Manager › Work the runbook", [c.title for c in outcome.citations]
+    assert outcome.console_links[0] == "page:case_manager", outcome.console_links
+    assert "page:batchjobs" not in outcome.console_links, outcome.console_links
+
+
 async def test_app_help_tool_keeps_the_standup_for_a_shift_brief():
     """The shift handoff section names Overview › Standup and the console keywords name
     it too ("shift brief"), so a shift brief question keeps the Standup page."""

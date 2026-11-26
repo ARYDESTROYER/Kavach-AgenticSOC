@@ -40,15 +40,18 @@ figure. See [Explainable numbers](explainable-numbers.md).
 
 ## How the Analytics pages are laid out
 
-Each page follows the Overview's layout. The header holds the title with a help tip,
+**Metrics**, **Agent effectiveness** and **Cost** follow the Overview's layout. The
+header holds the title with a help tip,
 the time range (last 24 hours, 7 days or 30 days) and one refresh beside it, and on the
 right when the figures were last read ("Updated just now"). Below it, every module sits
 on the same tinted panel and names its window after its title ("all time", "last 7
 days", "now"). A caption always names the range of the figures on screen: while a new
 range is being read, and if it cannot be read, the page keeps the previous figures under
-their own captions and says which range it shows. The range you pick on one Analytics
-page is kept for the others until you reload the page or sign out. The navigation switches between
-the pages; there is no second row of page tabs.
+their own captions and says which range it shows. The range you pick on one of these
+three pages is kept for the other two until you reload the page or sign out. **Team
+activity** has its own range; **Models**, **Baseline** and **Jobs** show the current
+state with no time range. The navigation switches between the pages; there is no second
+row of page tabs.
 
 **Metrics** has three tabs:
 

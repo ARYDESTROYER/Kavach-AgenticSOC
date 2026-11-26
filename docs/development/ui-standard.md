@@ -695,12 +695,13 @@ monogram never hides, and the case number never hides. On a short line the owner
 truncates first, then the verdict's words down to the chip's 5rem floor (its label and
 confidence keep their width), then the start of a long case number, and the status words
 or the outcome give way last, only once the others are at their minimum: on a phone-width
-strip, where the owner's name and the verdict are already hidden, the case number and then
-the status truncate. A control on the strip never shrinks to a box of no size: an item
+strip, where the owner's name and the verdict are already hidden, a long case number and
+then the status truncate. A control on the strip never shrinks to a box of no size: an item
 that no longer fits hides, so it leaves the tab order and the accessibility tree. A case
-number longer than nine characters ends in a middle ellipsis on a short line, its last six
-characters kept whole, and takes the room of 20 characters at most; its whole value is its
-hover title and what assistive technology reads. The
+number longer than twelve characters ends in a middle ellipsis on a short line, down to its
+first five characters and its last six ("CASE-…000041"), and takes the room of 20
+characters at most; its whole value is its hover title and what assistive technology reads.
+The default template's numbers ("CASE-000046") never shrink. The
 outcome badge is never cut: when the outcome gives way, the `Analyst` tag drops whole first
 at any pane width (a long case number leaves the line short on a wide pane too), then the
 badge's words end in an ellipsis inside its whole border, and the whole outcome is its hover
