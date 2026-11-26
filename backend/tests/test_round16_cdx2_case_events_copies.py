@@ -17,6 +17,7 @@ client over the source's own data view (#1).
 
 from __future__ import annotations
 
+import fnmatch
 from typing import Any
 
 import pytest
@@ -117,6 +118,29 @@ def test_the_keyed_read_stays_on_the_read_only_log_client_and_its_data_view(clie
     assert client.get("/api/cases/case-ev-1/events").json()["returned"] == 1
     data_view = _state(client).execution_prefs.data_view_pattern
     assert calls == [data_view]
+
+
+def test_a_member_key_naming_an_index_outside_the_data_view_reads_nothing(client, monkeypatch) -> None:
+    # The keyed read narrows the source's data view and never widens it (#1): an event
+    # with the member's id, in an index the data view does not cover, stays unread.
+    outside = "tenant-b-2026.06.16"
+    _es(client).add_log(outside, make_log_event(ip="203.0.113.9", rule="other_tenant"), doc_id="ev-out")
+    _save(client, _case(member_event_ids=["ev-out"],
+                        member_event_keys=[make_cursor_event_key(outside, "ev-out")]))
+    es = _es(client)
+    calls: list[str] = []
+    real = es.search_logs
+
+    async def _spy(index, body):  # noqa: ANN001
+        calls.append(index)
+        return await real(index, body)
+
+    monkeypatch.setattr(es, "search_logs", _spy)
+    page = client.get("/api/cases/case-ev-1/events").json()
+    assert (page["available"], page["reason"], page["rows"]) == (False, "aged_out", [])
+    data_view = _state(client).execution_prefs.data_view_pattern
+    assert calls == [data_view]
+    assert not any(fnmatch.fnmatch(outside, part.strip()) for part in data_view.split(","))
 
 
 def test_a_mixed_page_reads_qualified_members_by_key_and_bare_ones_by_id(client) -> None:
