@@ -356,6 +356,14 @@ def _precedent_preview(state: AppState) -> dict[str, Any]:
     }
 
 
+class PrecedentCaseGone(LookupError):
+    """The candidate's case was deleted after the candidate list was read."""
+
+    def __init__(self, case_id: str) -> None:
+        super().__init__(f"case {case_id} was deleted")
+        self.case_id = case_id
+
+
 async def perform_precedent_candidate(
     case: Any,
     item: dict[str, Any],
@@ -374,14 +382,20 @@ async def perform_precedent_candidate(
     Round 16 (WP16): each history append re-reads the stored case and saves it under
     the case's write lock, so a person's tag, comment or close saved since the candidate
     list was read is kept (the candidate copy is then updated to what was saved). The
-    projection itself runs outside the lock.
+    projection itself runs outside the lock. A case deleted since the list was read is
+    never saved back from the candidate copy, at either append: the candidate fails with
+    :class:`PrecedentCaseGone`. Deleted before its ratification, nothing is projected for
+    it; deleted while its precedent was being projected, that projection may already be
+    written, and the candidate still fails.
     """
     async def _append_history(make_entry: Any) -> bool:
         """Append ``make_entry(stored)`` (``None`` = nothing to add) to the stored case
         under its lock; True when a row was saved."""
         async with _case_write_lock(state, case.case_id):
             stored = await state.cases.get(case.case_id)
-            target = stored if stored is not None and type(stored) is type(case) else case
+            if stored is None:
+                raise PrecedentCaseGone(case.case_id)
+            target = stored if type(stored) is type(case) else case
             entry = make_entry(target)
             if entry is None:
                 _mirror(target)

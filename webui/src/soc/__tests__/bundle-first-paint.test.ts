@@ -181,8 +181,25 @@ const HINT = 'no dist/ build present — run `vite build` first (CI/integrator d
  * allows) from 336,216 B to the integrated entry, 329,080 B with WP7 merged (WP7 itself
  * measured -4 B), so the 7,136 B the round moved out of first paint cannot be spent
  * unseen. The +1,024 B budget and the 400,000 B ceiling are unchanged.
+ *
+ * Round 16 (its SPEC §3.1 and §4.6 WP16, the one ratchet that item allows). The integrated
+ * tree 9a94df2 measured 330,279 B with `npm run build:app`, 175 B over the 330,104 B budget:
+ * +1,199 B over 329,080 B. Per file, through the source map: useEventStream.ts +2,346 (WP09's
+ * one stream per page), Login.tsx +1,404 with LoginAuthBackdrop.tsx -5,380, ThemeModePill.tsx
+ * -1,350 and ShineButton.tsx -436 (WP04's quiet sign-in), NavSidebar.tsx +958 (the AI count),
+ * router.tsx +651, investigations/count.ts +370, whats-new/WhatsNewGate.tsx +359, Wizard.tsx
+ * +355, sources-primary.ts +311, AppShell.tsx +289, semver.ts +262 with upstream-release.ts
+ * -263, registry.tsx +234, theme.tsx +202, SystemUpdateControl.tsx +161, case-tabs.ts +93,
+ * skip-link.ts +86, main.tsx +72, App.tsx +69, +372 unmapped and +34 of small drift. WP16P
+ * then moved the case page's agent-step narration (agentStepFromFrame, appendAgentStep,
+ * useAgentSteps) out of the shell's event stream module into lib/agentSteps.ts, which only the
+ * lazy case activity feed imports (useEventStream.ts -461), and the confirm provider gained
+ * its focus return (ConfirmDialog.tsx +259; main.tsx -9). Measured with `npm run build:app`:
+ * 330,068 B, 36 B inside the old budget. The baseline is set to it: 988 B above the Round 15
+ * baseline, the round's measured growth, so nothing more can be spent unseen. The +1,024 B
+ * budget and the 400,000 B ceiling are unchanged.
  */
-const PRE_REVAMP_ENTRY_BYTES = 329_080;
+const PRE_REVAMP_ENTRY_BYTES = 330_068;
 const REVAMP_ENTRY_BUDGET_BYTES = 1_024;
 
 function readHtml(): string {
@@ -562,6 +579,29 @@ describe('first-paint shell keeps the palette and Settings metadata lazy (source
     // The gate loads the host only through import() of the What's new chunk, the same
     // thunk the registry route uses.
     expect(fs.readFileSync(gate, 'utf8')).toMatch(/import\('\.\.\/pages\/WhatsNew'\)/);
+  });
+
+  it('the Explain kit and the case narration helpers stay off the first-paint graph (Round 16 §3.1)', () => {
+    const { files } = firstPaintGraph();
+    const SRC = path.join(WEBUI_ROOT, 'src');
+    const lazyDirs = [path.join(SRC, 'design-system', 'explain'), path.join(SRC, 'lib', 'explain')];
+    const lazyFiles = [path.join(SRC, 'lib', 'agentSteps.ts')];
+    // `lib/format.ts` re-exports the one rounding rule; the bundler binds a re-export at its
+    // importer, so the rounding module rides the lazy chunks that use it (the dist check
+    // above reads the built entry).
+    const reExported = [path.join(SRC, 'lib', 'explain', 'rounding.ts')];
+    const reached = [...files.keys()]
+      .filter((file) => !reExported.includes(file))
+      .filter((file) => lazyFiles.includes(file) || lazyDirs.some((dir) => file.startsWith(`${dir}${path.sep}`)))
+      .map((file) => `${path.relative(WEBUI_ROOT, file)} (imported by ${files.get(file)})`);
+    expect(reached, 'lazy-only modules on the first-paint graph').toEqual([]);
+    // The page's one event stream is a shell module; the case page's agent-step narration
+    // (parsing and buffering `agent.step` frames) is not, so no first-paint module defines it.
+    for (const file of files.keys()) {
+      expect(fs.readFileSync(file, 'utf8'), path.relative(WEBUI_ROOT, file)).not.toMatch(
+        /export function (agentStepFromFrame|appendAgentStep|useAgentSteps)\b/,
+      );
+    }
   });
 
   it('AppShell reaches the command palette only through import()', () => {

@@ -8,7 +8,9 @@ reads that show those rows (the trace, the timeline spans and their details, the
 rationale, the case activity feed and chat's case rationale) are open to every
 ``cases:read`` holder, while AI spend follows one rule,
 ``cost:view``. For a caller without it, :func:`withhold_cost_text` replaces each figure
-with plain words, so the row still reads and the amount is not shown.
+with plain words, so the row still reads and the amount is not shown. The audit log's
+list and record reads (``audit:view``) follow the same rule, and so does a budget
+refusal's reason kept in ``Case.error`` on every case read (``routes._withhold_case_spend``).
 
 Only the rows those writers make are changed (:func:`withhold_row_cost_text`, the action
 types in :data:`COST_TEXT_ACTIONS`). Every other row, and every tool output, is case

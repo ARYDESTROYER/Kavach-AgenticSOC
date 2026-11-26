@@ -68,7 +68,8 @@ export interface ConfirmDialogProps extends ConfirmOptions {
   hideConfirm?: boolean;
   /**
    * Where keyboard focus returns when the dialog closes. A controlled dialog has no
-   * trigger, so without this focus would fall back to the page body (WCAG 2.4.3).
+   * trigger, so without this focus would fall back to the page body (WCAG 2.4.3). When
+   * that element has left the page, focus goes to the routed content (`#socMain`).
    */
   returnFocusRef?: React.RefObject<HTMLElement | null>;
   /**
@@ -146,7 +147,7 @@ export function ConfirmDialog({
                 const target = returnFocusRef.current;
                 if (target) {
                   event.preventDefault();
-                  target.focus();
+                  (target.isConnected ? target : document.getElementById('socMain'))?.focus();
                 }
               }
             : undefined
@@ -226,8 +227,15 @@ const ConfirmContext = React.createContext<ConfirmFn | null>(null);
 export function ConfirmProvider({ children }: { children: React.ReactNode }) {
   const [state, setState] = React.useState<ConfirmOptions | null>(null);
   const resolver = React.useRef<((v: boolean) => void) | null>(null);
+  // Focus goes back to the control that asked once the confirm settles (WCAG 2.4.3). A
+  // menu item is gone once its menu closes, so for one the menu's trigger (the element
+  // its menu's `aria-labelledby` names) is remembered instead.
+  const origin = React.useRef<HTMLElement | null>(null);
 
   const confirm = React.useCallback<ConfirmFn>((opts) => {
+    const active = document.activeElement as HTMLElement | null;
+    const menu = active?.closest('[role=menu]');
+    origin.current = menu ? document.getElementById(menu.getAttribute('aria-labelledby') ?? '') : active;
     setState(opts);
     return new Promise<boolean>((resolve) => {
       resolver.current = resolve;
@@ -247,6 +255,7 @@ export function ConfirmProvider({ children }: { children: React.ReactNode }) {
         <ConfirmDialog
           {...state}
           open
+          returnFocusRef={origin}
           onOpenChange={(next) => {
             if (!next) settle(false);
           }}

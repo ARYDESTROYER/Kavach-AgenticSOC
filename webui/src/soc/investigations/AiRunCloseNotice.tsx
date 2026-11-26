@@ -89,7 +89,8 @@ export const AiRunCloseNotice: React.FC<AiRunCloseNoticeProps> = ({ caseIds, ope
   }
   const ended = single && watched && done?.view.run_id === watched ? done.view : null;
   if (ended || (ids.length > 1 && hadRuns)) {
-    const verdict = ended?.verdict_after ? ` The verdict is now ${verdictWords(ended.verdict_after)}.` : '';
+    // Mid-sentence, so the verdict's words are lower case ("The verdict is now false positive.").
+    const verdict = ended?.verdict_after ? ` The verdict is now ${verdictWords(ended.verdict_after).toLowerCase()}.` : '';
     const text = ended
       ? `The AI investigation finished.${verdict} Check it before you ${closes ? 'close' : 'change the status'}.`
       : `The AI investigations on the selected cases finished. Check them before you ${closes ? 'close' : 'change the status'}.`;

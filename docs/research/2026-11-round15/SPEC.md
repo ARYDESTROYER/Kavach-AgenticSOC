@@ -1003,7 +1003,8 @@ it and §1 to §7 disagree, this section wins.
   import only). The integrated tree with WP7 merged measured **329,080 B** with
   `npm run build:app`, 7,136 B under the Round 14 baseline of 336,216 B, so the baseline was
   lowered to it and those bytes cannot be spent unseen. A CI build stamps the SHA and date,
-  about +46 B.
+  about +46 B. Round 16 moved the baseline again: the current value is in the "Entry bundle"
+  item of the Round 16 SPEC §8.1.
 - **Feature response models live in their routers (WP1 to WP5, WP7).** §4.2 put the response
   models in `models.py`; none were added there (WP1 added only `FeedbackEntry.origin` and
   `FeedbackEntry.review_id`). Each feature router defines its own: `RbacStatus` and

@@ -19,10 +19,10 @@ import { existsSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { useAgentSteps } from '../agentSteps';
 import {
   AGENT_STEP_CHANNEL,
   STREAM_CHANNELS,
-  useAgentSteps,
   useEventStream,
 } from '../useEventStream';
 

@@ -36,13 +36,8 @@
  */
 import * as React from 'react';
 
-import {
-  agentStepFromFrame,
-  appendAgentStep,
-  useEventStream,
-  type AgentStep,
-  type StreamEvent,
-} from '@/lib/useEventStream';
+import { agentStepFromFrame, appendAgentStep, type AgentStep } from '@/lib/agentSteps';
+import { useEventStream, type StreamEvent } from '@/lib/useEventStream';
 import {
   Activity,
   Bell,

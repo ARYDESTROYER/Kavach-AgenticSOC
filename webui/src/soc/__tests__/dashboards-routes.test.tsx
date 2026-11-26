@@ -25,7 +25,7 @@
  *     row-level scope; permission denied; and no em dash in the board copy.
  */
 import * as React from 'react';
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 
 const toastMock = vi.hoisted(() => {
@@ -161,7 +161,17 @@ function openMore() {
   trigger.focus();
   fireEvent.keyDown(trigger, { key: 'Enter' });
 }
-const boardTitle = (name: string) => screen.findByRole('heading', { level: 1, name });
+/**
+ * A board's title. A board renders inside the lazy `BoardView` chunk, whose first import
+ * under a loaded machine can outlast the default 1 s wait (Round 16 WP16): the chunk is
+ * loaded once before the tests (`beforeAll`), and the title wait allows for a slow render.
+ */
+const BOARD_TITLE_WAIT = { timeout: 5000 };
+const boardTitle = (name: string) => screen.findByRole('heading', { level: 1, name }, BOARD_TITLE_WAIT);
+
+beforeAll(async () => {
+  await import('@/soc/dashboard/BoardView');
+});
 
 function authOff() {
   apiMocks.auth.me.mockResolvedValue({ authenticated: false, auth_enabled: false, user: null });

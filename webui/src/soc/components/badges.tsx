@@ -825,6 +825,8 @@ export interface AiVerdictChipProps {
    * Bot glyph, the chip's title and its screen-reader text keep the attribution).
    */
   labelClassName?: string;
+  /** Extra classes for the verdict words (a narrow header lets only they truncate). */
+  wordsClassName?: string;
 }
 
 /**
@@ -837,6 +839,7 @@ export function AiVerdictChip({
   className,
   labelled = true,
   labelClassName,
+  wordsClassName,
 }: AiVerdictChipProps) {
   const words = verdictWords(verdict);
   const pct = confidencePercent(confidence);
@@ -860,7 +863,7 @@ export function AiVerdictChip({
           {labelClassName ? <span className="sr-only">AI verdict</span> : null}
         </>
       ) : null}
-      <span className="font-medium">{words}</span>
+      <span className={cn('font-medium', wordsClassName)}>{words}</span>
       {hasVerdict && pct !== null ? <span className="tabular-nums text-muted-foreground">{pct}%</span> : null}
     </Badge>
   );

@@ -17,6 +17,10 @@
  * SLA stays in the inspector's Signal section; the review sentence is the Brief's first
  * block. Tags, the campaign, Ask AI and the Sample mark live in the inspector.
  *
+ * On a short line the status words (or the outcome) give way last (WP16): the owner's name
+ * truncates first, down to its disk, then the verdict chip's words, and the status words
+ * only once both are at their minimum (`META_SHRINK`).
+ *
  * While an AI run is under way the status words keep priority (WP16): the verdict chip is
  * dimmed and drops its label word ("Previous verdict. The running investigation replaces
  * it." leads its hover line), below a 56rem strip the run chip shows the ring and the time
@@ -88,6 +92,28 @@ export const META_HIDE = {
   ownerName: 'hidden @[44rem]/case:inline',
   sla: 'hidden @[52rem]/case:inline-flex',
   review: 'hidden @[44rem]/case:inline-flex',
+} as const;
+
+/**
+ * Who gives way on a short line (WP16), in order: the owner's name (down to its disk), then
+ * the verdict chip's words (the label and the confidence keep their width), and the status
+ * words or the outcome last, so they never truncate while the owner's name or the verdict
+ * could still give. On a phone-width strip the owner's name and the verdict are already
+ * hidden, so there the status words are what gives.
+ *
+ * Flex shrinking is shared out in proportion to each weight, so each weight is a million
+ * times the next: the share of the next item stays far below a pixel until the item before
+ * it reaches its minimum and stops shrinking. Every weight is at least 1, because a set of
+ * shrinking items whose weights add up to less than 1 takes only that fraction of the
+ * shortfall (CSS Flexbox 9.7) and the line would overflow.
+ */
+export const META_SHRINK = {
+  owner: 'min-w-5 shrink-[1000000000000]',
+  verdict: 'min-w-0 shrink-[1000000]',
+  verdictChip: 'min-w-0 max-w-full overflow-hidden',
+  verdictWords: 'min-w-0 truncate',
+  status: 'min-w-0 shrink',
+  statusWords: 'min-w-0 truncate',
 } as const;
 
 /** The verdict chip's note while an AI run is under way on the case. */
@@ -302,17 +328,17 @@ export const CaseHeaderMeta: React.FC<CaseHeaderMetaProps> = ({
         </span>
       ) : null}
 
-      {/* The status or outcome gives way first when the line is short (it truncates), so
-          the items after it, the owner among them, stay on screen. */}
+      {/* The status or outcome gives way last: on a short line the owner's name and then
+          the verdict chip's words go first (META_SHRINK). */}
       {showOutcome ? (
-        <span className="inline-flex min-w-0 shrink items-center overflow-hidden" data-meta-item="outcome">
+        <span className={cn('inline-flex items-center overflow-hidden', META_SHRINK.status)} data-meta-item="outcome">
           <OutcomeBadge outcome={outcome} className="max-w-full" />
         </span>
       ) : (
         <span
           data-testid="case-detail-status"
           data-meta-item="status"
-          className="inline-flex min-w-0 shrink items-center gap-1 font-medium text-foreground"
+          className={cn('inline-flex items-center gap-1 font-medium text-foreground', META_SHRINK.status)}
         >
           {/* Beside a run chip on a phone-width strip the chip's ring is the glyph. */}
           {StatusGlyph ? (
@@ -321,7 +347,7 @@ export const CaseHeaderMeta: React.FC<CaseHeaderMetaProps> = ({
               aria-hidden
             />
           ) : null}
-          <span className="min-w-0 truncate">{statusWords(c.status)}</span>
+          <span className={META_SHRINK.statusWords}>{statusWords(c.status)}</span>
         </span>
       )}
 
@@ -343,7 +369,7 @@ export const CaseHeaderMeta: React.FC<CaseHeaderMetaProps> = ({
 
       {c.verdict ? (
         <span
-          className={cn('shrink-0 items-center', META_HIDE.verdict)}
+          className={cn('items-center', META_SHRINK.verdict, META_HIDE.verdict)}
           data-meta-item="verdict"
           data-previous-verdict={aiRunning ? '' : undefined}
         >
@@ -354,8 +380,9 @@ export const CaseHeaderMeta: React.FC<CaseHeaderMetaProps> = ({
             <AiVerdictChip
               verdict={c.verdict}
               confidence={c.confidence}
-              className={cn('h-5 shrink-0', aiRunning && 'border-dashed text-muted-foreground [&>svg]:text-muted-foreground')}
+              className={cn('h-5', META_SHRINK.verdictChip, aiRunning && 'border-dashed text-muted-foreground [&>svg]:text-muted-foreground')}
               labelClassName={aiRunning ? 'hidden' : 'hidden @[48rem]/case:inline'}
+              wordsClassName={META_SHRINK.verdictWords}
             />
           </DecisionExplain>
         </span>
@@ -374,7 +401,10 @@ export const CaseHeaderMeta: React.FC<CaseHeaderMetaProps> = ({
             data-meta-item="owner"
             aria-keyshortcuts="M"
             aria-label={owner ? `${assignedToLabel(owner)}. Change owner` : 'Unassigned. Choose an owner'}
-            className="inline-flex shrink-0 items-center gap-1.5 rounded-sm text-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className={cn(
+              'inline-flex items-center gap-1.5 rounded-sm text-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+              META_SHRINK.owner,
+            )}
           >
             {owner ? (
               /* The button's label already names the owner: the disk is decorative here. */
@@ -384,7 +414,7 @@ export const CaseHeaderMeta: React.FC<CaseHeaderMetaProps> = ({
             )}
             <span
               data-testid="case-detail-owner-name"
-              className={cn('max-w-[10rem] truncate', META_HIDE.ownerName, !owner && 'text-muted-foreground')}
+              className={cn('min-w-0 max-w-[10rem] truncate', META_HIDE.ownerName, !owner && 'text-muted-foreground')}
             >
               {owner || 'Unassigned'}
             </span>
