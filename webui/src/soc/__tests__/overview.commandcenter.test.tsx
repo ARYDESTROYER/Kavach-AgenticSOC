@@ -703,4 +703,32 @@ describe('Overview — Cyber Defence Center', () => {
     expect(panel).toHaveTextContent('Counted by the server over every open case, whenever it arrived.');
     expect(panel).not.toHaveTextContent('over the cases in the window');
   });
+
+  it('a window change leaves no old figure under the new window below the strip (FXD1 review)', async () => {
+    // The 7-day read stays in flight, so the 24-hour snapshot is the one on screen.
+    fetchPostureMock.mockImplementation((hours: number) =>
+      hours === 168 ? new Promise<PostureResponse>(() => {}) : Promise.resolve(POSTURE),
+    );
+    const user = userEvent.setup();
+    render(<Overview onNavigate={vi.fn()} />);
+    const funnel = await screen.findByTestId('noise-funnel');
+    await waitFor(() => expect(within(funnel).getByTestId('noise-open-cases')).toHaveTextContent('2 open cases'));
+    const timing = screen.getByRole('region', { name: 'Response time' });
+    await waitFor(() => expect(within(timing).getByText('45m')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByTestId('deeper-summary')).toHaveTextContent('MTTA 45m'));
+
+    await user.click(screen.getByRole('button', { name: 'Last 24h, time range' }));
+    await user.click(
+      within(screen.getByRole('group', { name: /Relative time ranges/i })).getByRole('button', { name: /Last 7 days/i }),
+    );
+    await waitFor(() => expect(within(timing).getAllByText('Loading 7 days').length).toBeGreaterThan(0));
+
+    // Response time: the held figures read muted and explain nothing until 7 days arrive.
+    expect(timing.querySelectorAll('[data-pending]').length).toBe(2);
+    expect(timing.querySelector('[data-explain-trigger]')).toBeNull();
+    // The flow's open-case count belongs to the posture read: withheld, not the 24h "2".
+    expect(within(screen.getByTestId('noise-funnel')).queryByTestId('noise-open-cases')).toBeNull();
+    // The collapsed Deeper analytics line drops the held timing figures.
+    expect(screen.getByTestId('deeper-summary')).not.toHaveTextContent('MTTA');
+  });
 });

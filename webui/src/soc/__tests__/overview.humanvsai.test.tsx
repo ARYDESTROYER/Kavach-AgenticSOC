@@ -214,6 +214,20 @@ describe('Overview — Human vs AI card', () => {
     expect(HUMAN_VS_AI_HELP).toMatch(/Shares are of closed cases in this window/i);
   });
 
+  it('makes each count and share an Explain trigger over the closed cases (FXD1 human-vs-ai-shares)', async () => {
+    render(<Overview onNavigate={vi.fn()} />);
+    const card = await screen.findByTestId('human-vs-ai');
+    await waitFor(() =>
+      expect(within(card).getByTestId('human-vs-ai-ai-figure').querySelector('[data-explain-trigger]')).not.toBeNull(),
+    );
+    // The arithmetic is pinned in the builder tests; here each band carries its own.
+    const metrics = ['ai', 'human', 'system'].map(
+      (band) => within(card).getByTestId(`human-vs-ai-${band}-figure`).querySelector('[data-explain-trigger]')?.getAttribute('data-explain-metric'),
+    );
+    expect(metrics).toEqual(['close_share_ai', 'close_share_human', 'close_share_system']);
+    expect(within(card).getByTestId('human-vs-ai-ai-figure').querySelector('[data-explain-trigger]')).toHaveTextContent('660%');
+  });
+
   it('charts the agent and human series together and names the window', async () => {
     render(<Overview onNavigate={vi.fn()} />);
     const card = await screen.findByTestId('human-vs-ai');

@@ -34,6 +34,8 @@ import {
 } from '@/soc/components/KpiTile';
 
 import { ExplainTrigger } from '@/design-system/explain';
+import { explainChange } from '@/lib/explain/builders';
+import { count, plain } from '@/lib/explain/rounding';
 import type { Explanation } from '@/lib/explain/types';
 import {
   explainAlertReduction,
@@ -127,6 +129,42 @@ export function cellDelta(binding: KpiStripBinding, read: DashboardReader): KpiD
   const d = cur - prev;
   if (compared.format === 'minutes') return { value: d, label: signedDuration(d) };
   return { value: d, label: `${d > 0 ? '+' : d < 0 ? '-' : ''}${fmtNumber(Math.abs(d))}` };
+}
+
+/**
+ * The change chip explained (FXD1): the figure now and in the window just before, and
+ * the difference the chip shows ("56 cases in the last 7 days and 21 cases in the 7 days
+ * before. 56 - 21 = +35."). A count change is a difference, never a percent.
+ */
+export function cellDeltaExplanation(
+  binding: KpiStripBinding,
+  read: DashboardReader,
+  delta: KpiDelta,
+  window: { phrase: string },
+): Explanation | null {
+  const compared = COMPARED[binding.cell];
+  if (!compared) return null;
+  const posture = read({ key: 'posture' }).data;
+  const cur = getPath(posture, `compare.${compared.field}.value`);
+  const prev = getPath(posture, `compare.${compared.field}.prev`);
+  if (typeof cur !== 'number' || typeof prev !== 'number') return null;
+  const minutes = compared.format === 'minutes';
+  return explainChange({
+    metric: `${binding.cell}_change`,
+    title: binding.label,
+    shown: delta.label ?? String(delta.value),
+    kind: 'difference',
+    now: cur,
+    before: prev,
+    words: minutes ? (n) => `${plain(n, 2)} minutes` : (n) => countOf(n, 'case'),
+    term: minutes ? (n) => plain(n, 2) : (n) => count(n),
+    unit: minutes ? ' minutes' : '',
+    window: `in the ${window.phrase}`,
+    beforeWindow: `in the ${window.phrase.replace(/^last /, '')} before`,
+    rounding: minutes ? 'The chip writes the difference as a duration.' : 'Counts are whole numbers.',
+    source: 'Server comparison',
+    provenanceNote: 'Computed by the server: this window against the window of the same length just before it.',
+  });
 }
 
 /**
@@ -355,7 +393,32 @@ const CELL_CAVEATS: Readonly<Record<string, readonly string[]>> = {
  */
 export function stripCellExplanation(view: StripCellView, read: DashboardReader, phrase: string): Explanation | null {
   const { binding, result } = view;
-  if (view.gate !== 'ok' || !result || result.status !== 'value' || result.qualifier || result.value == null) return null;
+  if (view.gate !== 'ok' || !result || result.status !== 'value' || result.value == null) return null;
+  // A lower bound of a count explains what it counts and why it is a floor (FXD1); an
+  // approximation says so in its help popover.
+  if (result.qualifier === 'about') return null;
+  if (result.qualifier === 'at least') {
+    if (binding.format !== 'count') return null;
+    const noun = CELL_NOUN[binding.cell] ?? 'cases';
+    const stockWindow = binding.window === 'all' ? 'right now' : `the ${phrase}`;
+    const base = explainCount({
+      metric: binding.cell,
+      title: binding.label,
+      value: result.value,
+      noun,
+      window: stockWindow,
+      summary: `At least ${count(result.value)} ${noun}, ${stockWindow}: a lower bound. ${result.reason ?? ''}`.trim(),
+      formula: binding.definition,
+      provenanceNote: 'Counted by the server for this window, over the part it could measure.',
+      // The reason is already the summary's second sentence; the caveat says what it means.
+      caveats: [
+        result.reason
+          ? 'The true figure can be higher.'
+          : 'Part of the window was not counted, so the true figure can be higher.',
+      ],
+    });
+    return base ? { ...base, display: `at least ${count(result.value)}` } : null;
+  }
   const stock = binding.window === 'all';
   const window = stock ? 'right now' : `the ${phrase}`;
   const windowSource = stock ? 'Not limited by the time range above' : undefined;
@@ -529,6 +592,10 @@ export function KpiStripWidget(props: WidgetProps) {
         help={stripCellHelp(view)}
         helpLabel={`About ${view.binding.label}`}
         delta={delta}
+        deltaExplain={(() => {
+          const explanation = delta ? cellDeltaExplanation(view.binding, read, delta, windowInfo) : null;
+          return explanation ? (chip: React.ReactNode) => <ExplainTrigger explanation={explanation}>{chip}</ExplainTrigger> : undefined;
+        })()}
         goodDirection={view.binding.cell === 'mttr_p50' || view.binding.cell === 'mttd_p50' ? 'down' : 'none'}
         roll={false}
         size="fluid"

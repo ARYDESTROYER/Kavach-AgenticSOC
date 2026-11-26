@@ -211,6 +211,8 @@ import {
 import type { PostureResponse, StatBlock } from './Metrics.posture.api';
 import type { MttrByDecider } from '@/lib/types-metrics-explain';
 import type { Explanation } from '@/lib/explain/types';
+import { ExplainTrigger } from '@/design-system/explain';
+import { explainCloseShare } from '@/lib/explain/builders';
 import { explainCount, explainKpiShare } from '@/soc/components/metrics-explain/builders';
 import { TimingExplain } from '@/soc/components/metrics-explain/TimingExplain';
 import { GrantsUnknownNotice, isPermissionRefusal, usePageGrants } from './PageAccess';
@@ -718,6 +720,20 @@ function TrendChip({
 }
 
 /**
+ * The donut's arithmetic in one line (FXD1): the severity counts that add up to the
+ * centre number, then each legend share with the legend's own rounding (whole percents,
+ * half up), so "4 critical + 1 high = 5 cases from this window still open. 4 / 5 = 80%,
+ * 1 / 5 = 20%." reproduces the ring and its legend. Null with no case to count.
+ */
+export function snapshotFormula(counts: SevCounts, total: number, population: string): string | null {
+  const rows = SEV_ORDER.map((s) => ({ key: s, value: counts[s] })).filter((r) => r.value > 0);
+  if (!rows.length || !(total > 0)) return null;
+  const sum = rows.map((r) => `${fmtNumber(r.value)} ${SEV_LABEL[r.key].toLowerCase()}`).join(' + ');
+  const shares = rows.map((r) => `${fmtNumber(r.value)} / ${fmtNumber(total)} = ${Math.round((r.value / total) * 100)}%`).join(', ');
+  return `${sum} = ${fmtNumber(total)} ${population}. ${shares}${rows.length > 1 ? ', as whole percents' : ''}.`;
+}
+
+/**
  * A compact donut snapshot inside the shared resolved/open instrument column. The parent
  * supplies the panel boundary; this helper intentionally has no card chrome so both states
  * read as one instrument, matching the supplied command-center prototype.
@@ -738,9 +754,16 @@ function SnapshotCard({
   bound,
   roll = true,
   ringPx = SNAPSHOT_RING_PX,
+  population,
   className,
 }: {
   title: string;
+  /**
+   * What the centre number counts, for the hover line's arithmetic ("cases from this
+   * window still open"). With it, the hover card leads with the severity sum and the
+   * legend shares before the arrivals trend.
+   */
+  population?: string;
   /**
    * The window this snapshot counts ("last 24 hours"), right after the title (Round 14,
    * SPEC §4.3.2): the band caption that used to say it for the whole row is gone.
@@ -928,7 +951,19 @@ function SnapshotCard({
         // hover/focus-reachable trend card (WCAG 1.4.13 via MetricHoverTrend).
         // `h-auto`: the wrapper's default `h-full` would take the whole (stretched) card
         // and push the footnote below it.
-        <MetricHoverTrend {...trend} focusable={!onClick} side="top" className="h-auto self-start">
+        <MetricHoverTrend
+          {...trend}
+          focusable={!onClick}
+          side="top"
+          className="h-auto self-start"
+          // The centre number's own arithmetic first (FXD1): the trend below it counts
+          // arrivals per bucket, a different number.
+          preview={
+            population
+              ? { eyebrow: title, population: caption, formula: snapshotFormula(counts, total, population) ?? undefined }
+              : undefined
+          }
+        >
           {body}
         </MetricHoverTrend>
       ) : (
@@ -963,6 +998,7 @@ function TimingStat({
   dotClass,
   help,
   explain,
+  pending,
 }: {
   label: string;
   sub: string;
@@ -971,25 +1007,38 @@ function TimingStat({
   help?: string;
   /** Round 16 (WP12): wraps the shown value in its explanation (hover and click). */
   explain?: (value: React.ReactNode) => React.ReactNode;
+  /**
+   * The block belongs to the window being replaced ("Loading 7 days"): the value reads
+   * muted, its explanation is withheld and the detail line says what loads (FXD1).
+   */
+  pending?: string;
 }) {
   const available = block?.available === true;
   const value = available ? humanizeMins(block!.p50) : DASH;
   // p90 beside p50 when the posture rollup reports it (Round 12, additive): the tail is
   // what an operator is paged about, and the server already computes it.
   const p90 = p90Of(block);
-  const detail = available
-    ? `p50 · ${fmtNumber(block!.count)} sample${block!.count === 1 ? '' : 's'}${
-        p90 != null ? ` · p90 ${humanizeMins(p90)}` : ''
-      }`
-    : block?.reason || 'not measured (n/a)';
+  const detail = pending
+    ? pending
+    : available
+      ? `p50 · ${fmtNumber(block!.count)} sample${block!.count === 1 ? '' : 's'}${
+          p90 != null ? ` · p90 ${humanizeMins(p90)}` : ''
+        }`
+      : block?.reason || 'not measured (n/a)';
   return (
-    <div className="min-w-0 py-0.5" title={help}>
+    <div className="min-w-0 py-0.5" title={help} aria-busy={pending ? true : undefined}>
       <div className="flex items-center gap-1.5 text-sm font-medium text-muted-foreground">
         <span className={cn('h-1.5 w-1.5 rounded-full', dotClass)} aria-hidden />
         {label}
       </div>
-      <div className="mt-1.5 text-3xl font-semibold leading-none tabular-nums text-foreground">
-        {explain && available ? explain(value) : value}
+      <div
+        className={cn(
+          'mt-1.5 text-3xl font-semibold leading-none tabular-nums',
+          pending ? 'text-muted-foreground' : 'text-foreground',
+        )}
+        data-pending={pending ? '' : undefined}
+      >
+        {explain && available && !pending ? explain(value) : value}
       </div>
       <div className="mt-1.5 text-sm text-muted-foreground">{sub}</div>
       <div className="text-xs tabular-nums text-muted-foreground" data-timing-detail="">
@@ -3298,9 +3347,15 @@ export default function Overview({ onNavigate }: OverviewProps) {
      * A real DEGRADATION still takes the face, unconditionally: an error, or a successful
      * read of a store the server could not measure, in the server's own words. Those are
      * worth a reflow, and they are the reason this slot survives at all.
+     *
+     * A WINDOW CHANGE is the other case with nothing current to caption (FXD1): the
+     * numerals on screen are the previous window's snapshot (`postureStale`, never set by
+     * a LIVE or manual refresh of the same window). The tiles show them muted under
+     * "Loading 7 days" until the new window's read arrives, so a numeral and its
+     * caption never name two different windows.
      */
     const postureSub =
-      postureLoading && !posture
+      postureLoading && (!posture || postureStale)
         ? `Loading ${windowLabel(hours)}`
         : postureError
           ? 'Posture unavailable'
@@ -3920,9 +3975,11 @@ export default function Overview({ onNavigate }: OverviewProps) {
             ],
           }),
     };
+    // While the window changes the figures are the previous window's: no explanation
+    // names the new window over them (FXD1).
     return tiles.map((tile) => ({
       ...tile,
-      drilldown: { ...tile.drilldown, explanation: explanations[tile.testId] ?? null },
+      drilldown: { ...tile.drilldown, explanation: postureStale ? null : (explanations[tile.testId] ?? null) },
     }));
   }, [
     posture,
@@ -3930,6 +3987,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
     postureUnmeasured,
     postureLoading,
     postureError,
+    postureStale,
     humanVsAi,
     hours,
     navigate,
@@ -4115,8 +4173,16 @@ export default function Overview({ onNavigate }: OverviewProps) {
    * panel labels them as such, because the list it draws underneath reads case pages.
    */
   const kpiMetrics = React.useMemo(
-    () => kpis.map((k) => ({ key: k.testId, label: k.label, value: k.value })),
-    [kpis],
+    () =>
+      kpis.map((k) => ({
+        key: k.testId,
+        label: k.label,
+        // While the window changes the tiles hold the previous window's figures; the
+        // panel already lists the new window's cases, so its switcher says the figures
+        // are loading instead of restating the old ones under the new window (FXD1).
+        value: postureStale ? 'Loading' : k.value,
+      })),
+    [kpis, postureStale],
   );
 
   /**
@@ -4183,7 +4249,8 @@ export default function Overview({ onNavigate }: OverviewProps) {
    */
   const deeperSummary = React.useMemo(() => {
     const parts: string[] = [];
-    for (const t of timing) if (t.value !== DASH) parts.push(`${t.label} ${t.value}`);
+    // The held timing figures belong to the previous window: left out while it changes.
+    if (!postureStale) for (const t of timing) if (t.value !== DASH) parts.push(`${t.label} ${t.value}`);
     if (usageLoad.availability !== 'unavailable' && typeof usage?.total_cost === 'number') {
       parts.push(`${fmtMoney(usage.total_cost, usage.currency)} spend`);
     }
@@ -4207,7 +4274,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
       text: [...parts, ...(signature ? [signature.short] : [])].join(' · '),
       full: [...parts, ...(signature ? [signature.full] : [])].join(' · '),
     };
-  }, [timing, usage, usageLoad.availability, coverage, signatureItems]);
+  }, [timing, postureStale, usage, usageLoad.availability, coverage, signatureItems]);
 
   // ----- The header control cluster --------------------------------------- //
   const headerControls = (
@@ -4336,6 +4403,13 @@ export default function Overview({ onNavigate }: OverviewProps) {
    * its title and caption name what it holds.
    */
   const timingShown = canMetrics ? timing : [];
+  /**
+   * While the window changes, the posture figures below the strip (Response time, the
+   * Deeper analytics timing tiles and the flow's open-case count) are the previous
+   * window's too: they read muted under the same "Loading 7 days" as the strip, with no
+   * explanation, so no figure sits under a caption naming another window (FXD1).
+   */
+  const postureLoadingLabel = postureStale ? `Loading ${windowLabel(hours)}` : undefined;
   const efficiencyTileCount = timingShown.length + (canCost ? 1 : 0);
   const efficiencyShown = efficiencyTileCount > 0 || canSources;
   const efficiencyTitle = canMetrics || canCost ? 'Efficiency and cost' : 'Sources';
@@ -4517,11 +4591,15 @@ export default function Overview({ onNavigate }: OverviewProps) {
                       density="comfortable"
                       size="fluid"
                       numeral="hero"
-                      // Roll on the first load and on a window change; a refresh (LIVE or
-                      // manual) shows the new value without motion.
+                      // A refresh (LIVE or manual) shows the new value without motion. On
+                      // a window change the previous window's figures stay muted under
+                      // "Loading 7 days" (FXD1) as plain text, so the new window's
+                      // numeral mounts at its own value: a roll from the old figure would
+                      // pass through numbers no window holds, under the new caption.
                       roll={rollKpis}
+                      pending={postureStale}
                       goodDirection={kpi.goodDirection}
-                      countTo={kpi.countTo}
+                      countTo={postureStale ? undefined : kpi.countTo}
                       format={kpi.format}
                       formatCompact={fmtSnapshotCenter}
                       onClick={() => toggleKpiPanel(kpi.testId)}
@@ -4683,17 +4761,23 @@ export default function Overview({ onNavigate }: OverviewProps) {
                         <NoiseFunnel
                           data={noise}
                           onStageClick={onStageClick}
-                          openCases={{
-                            count: posture?.aging.queue_depth ?? derived.open,
-                            // `queue_depth` is COHORT-scoped (open cases that arrived in the
-                            // window), so its completeness is the window's (`#103`
-                            // `window_covered`). Without a posture rollup the fallback count is
-                            // the fetched page, whose completeness the store proves via
-                            // `window_total_exact`.
-                            partial: posture
-                              ? !postureCovered
-                              : !(caseWindow?.exact === true && caseWindow.total <= cases.length),
-                          }}
+                          // Withheld while the window changes: the held posture counts the
+                          // previous window's open cases, under this flow's new window (FXD1).
+                          openCases={
+                            postureStale
+                              ? undefined
+                              : {
+                                  count: posture?.aging.queue_depth ?? derived.open,
+                                  // `queue_depth` is COHORT-scoped (open cases that arrived in
+                                  // the window), so its completeness is the window's (`#103`
+                                  // `window_covered`). Without a posture rollup the fallback
+                                  // count is the fetched page, whose completeness the store
+                                  // proves via `window_total_exact`.
+                                  partial: posture
+                                    ? !postureCovered
+                                    : !(caseWindow?.exact === true && caseWindow.total <= cases.length),
+                                }
+                          }
                           onOpenCasesClick={onOpenCasesClick}
                           hidden={noiseHidden}
                           onToggleHidden={toggleNoiseHidden}
@@ -4742,6 +4826,20 @@ export default function Overview({ onNavigate }: OverviewProps) {
                       alertsIngested={humanVsAi.alerts}
                       crossReference={
                         crossRefs.aiAgent ? 'AI agent is the same count as Auto-closed above.' : undefined
+                      }
+                      // Each count and share explains itself over the window's closed
+                      // cases (FXD1).
+                      explainFigure={(band, figure) =>
+                        humanVsAi.totals ? (
+                          <ExplainTrigger
+                            explanation={explainCloseShare(humanVsAi.totals, band, `the last ${trendSpanLabel(hours)}`)}
+                            className="flex-wrap items-baseline gap-x-1.5"
+                          >
+                            {figure}
+                          </ExplainTrigger>
+                        ) : (
+                          figure
+                        )
                       }
                       className="h-full w-full"
                     />
@@ -4810,6 +4908,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
                         title="Open cases"
                         windowCaption={windowPhrase}
                         caption="Arrived in this window, still open"
+                        population="cases from this window still open"
                         total={derived.open}
                         delta={snapshotDeltaHonest ? countDelta(derived.open, prev?.open ?? null) : null}
                         bound={snapshotBound}
@@ -4843,6 +4942,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
                         title="Cases resolved"
                         windowCaption={windowPhrase}
                         caption="Arrived in this window, now resolved or closed"
+                        population="cases from this window now resolved or closed"
                         total={derived.resolved}
                         delta={
                           snapshotDeltaHonest ? countDelta(derived.resolved, prev?.resolved ?? null) : null
@@ -4943,6 +5043,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
                             block={mttdBlock}
                             dotClass="bg-info"
                             help={MTTD_HELP}
+                            pending={postureLoadingLabel}
                             explain={(value) => (
                               <TimingExplain
                                 metric="mttd"
@@ -4978,6 +5079,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
                             block={respondBlock}
                             dotClass="bg-success"
                             help={RESPOND_HELP}
+                            pending={postureLoadingLabel}
                             explain={(value) => (
                               <TimingExplain
                                 metric="mtta"
@@ -5117,8 +5219,11 @@ export default function Overview({ onNavigate }: OverviewProps) {
                                 size="fluid"
                                 label={s.label}
                                 value={s.value}
-                                context={measured ? s.sub : undefined}
-                                sub={measured ? undefined : s.sub}
+                                // A held figure of the previous window reads muted under
+                                // "Loading 7 days", with no explanation (FXD1).
+                                pending={postureStale}
+                                context={measured && !postureLoadingLabel ? s.sub : undefined}
+                                sub={postureLoadingLabel ?? (measured ? undefined : s.sub)}
                                 accent={s.accent}
                                 icon={Clock3}
                                 goodDirection="down"
@@ -5129,7 +5234,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
                                 }
                                 askTopic={kpiTopic(s.key)}
                                 explain={
-                                  measured
+                                  measured && !postureStale
                                     ? (numeral) => (
                                         <TimingExplain
                                           metric={s.key}

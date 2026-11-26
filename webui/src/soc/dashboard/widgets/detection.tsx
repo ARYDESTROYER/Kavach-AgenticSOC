@@ -17,7 +17,11 @@
  */
 import { CircleDashed, ShieldAlert, ShieldCheck } from 'lucide-react';
 
+import { ExplainTrigger } from '@/design-system/explain';
 import { cn } from '@/lib/cn';
+import { explainWilsonLowerBound } from '@/lib/explain/builders';
+import type { Explanation } from '@/lib/explain/types';
+import { explainKpiShare } from '@/soc/components/metrics-explain/builders';
 import { fmtNumber, humanizeToken } from '@/lib/format';
 import type { NoiseReduction, RecordedAutoCloseHealth } from '@/lib/types';
 import { alertReduction } from '@/soc/components/alert-reduction';
@@ -286,6 +290,27 @@ export function noisyRuleRows(t: TuningRecommendationsResponse, limit = 6): Nois
     });
 }
 
+/**
+ * A noisy rule's FP rate explained (FXD1): the tuner stores the Wilson 95% lower bound of
+ * the analyst-graded false positives, so "89%" beside 30 of 30 is the lower end of the
+ * range, not a ratio. Null when the graded counts are missing.
+ */
+export function noisyRuleExplanation(n: RuleNoise): Explanation | null {
+  const graded = n.analyst_samples ?? n.total;
+  if (!(graded > 0) || !Number.isFinite(n.fp)) return null;
+  return explainWilsonLowerBound({
+    metric: 'noisy_rule_fp_rate',
+    title: 'FP rate',
+    successes: n.fp,
+    n: graded,
+    stored: n.fp_rate,
+    shown: shareText(n.fp_rate),
+    successLabel: 'false positives',
+    totalLabel: 'graded cases',
+    caveats: ['Only analyst-graded cases count; the AI verdict never does.'],
+  });
+}
+
 const STATE_TONE: Readonly<Record<NoisyRuleRow['state'], { dot: string; text: string }>> = {
   applied: { dot: 'bg-success', text: 'text-success-text' },
   proposed: { dot: 'bg-info', text: 'text-info-text' },
@@ -320,7 +345,13 @@ export function NoisyRulesWidget(props: WidgetProps) {
       </span>
     </span>
   );
-  const fp = (n: RuleNoise) => shareText(n.fp_rate);
+  // The rate is the Wilson lower bound of the graded false positives (FXD1): hover names
+  // the counts and the bound, click prints the interval arithmetic.
+  const fp = (n: RuleNoise) => (
+    <ExplainTrigger explanation={noisyRuleExplanation(n)} className="justify-end">
+      {shareText(n.fp_rate)}
+    </ExplainTrigger>
+  );
   return (
     <WidgetShell
       title={title}
@@ -495,6 +526,29 @@ export function policyWords(h: RecordedAutoCloseHealth): string {
   return classes.length ? `Closes ${classes.join(' and ')}` : 'Turned off';
 }
 
+/**
+ * The auto-close rate explained (FXD1): the first decisions that closed a case over the
+ * cases decided in the window, so "68%" names its 38 of 56. Null without both counts.
+ */
+export function autoCloseRateExplanation(h: RecordedAutoCloseHealth, phrase: string): Explanation | null {
+  const closed = h.current?.auto_closed;
+  const decided = h.current?.decided;
+  if (typeof closed !== 'number' || typeof decided !== 'number') return null;
+  return explainKpiShare({
+    metric: 'auto_close_rate',
+    title: 'Auto-close rate',
+    numerator: closed,
+    denominator: decided,
+    numeratorLabel: 'closed by the AI agent on its first decision',
+    denominatorLabel: 'cases decided',
+    window: `the ${phrase}`,
+    dividedBy: 'server',
+    tileRounding: 'The panel shows a whole percent.',
+    tileWholePercent: true,
+    caveats: ['Each case counts once, by its first recorded decision in the window.'],
+  });
+}
+
 const AUTO_CLOSE_REQ: DashboardRequest = { key: 'autoClose' };
 
 export function AutoCloseHealthWidget(props: WidgetProps) {
@@ -532,7 +586,9 @@ export function AutoCloseHealthWidget(props: WidgetProps) {
             <div className="min-w-0">
               {current ? (
                 <>
-                  <div className="text-3xl font-semibold leading-none tabular-nums text-foreground">{current}</div>
+                  <div className="text-3xl font-semibold leading-none tabular-nums text-foreground">
+                    <ExplainTrigger explanation={autoCloseRateExplanation(h, windowInfo.phrase)}>{current}</ExplainTrigger>
+                  </div>
                   <div className="mt-1.5 text-sm text-muted-foreground">closed by the AI agent on its first decision</div>
                 </>
               ) : (

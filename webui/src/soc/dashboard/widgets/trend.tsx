@@ -176,6 +176,14 @@ function TrendsWidget({ title, series }: { title: string; series: 'flow' | 'aler
   const footer = [
     series === 'flow' ? 'Each case counts in the bucket it arrived in; the newest bucket is still filling.' : null,
     alertLine,
+    // The grid starts on a bucket edge before the window does; the server counts only
+    // the window's part of that first bucket (alerts by the hour, as the noise counters
+    // keep them), so the totals match the other panels.
+    trends && buckets.length > 1
+      ? series === 'flow'
+        ? 'The first bucket counts only the cases that arrived inside the window.'
+        : "The first bucket counts alerts from the window's first hour on."
+      : null,
     truncated
       ? `Counted from the newest ${fmtNumber(trends?.fetched ?? 0)} of ${countOf(trends?.store_total ?? 0, 'case')}.`
       : null,

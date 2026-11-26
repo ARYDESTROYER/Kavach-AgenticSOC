@@ -679,7 +679,12 @@ async def metrics_trends(
 
     ``bucket_minutes`` follows the frozen ladder (<=24h → 60, <=72h → 180,
     <=168h → 360, else 1440); buckets are UTC-aligned, zero-filled across the whole
-    window, newest bucket partial. Cohort counts reuse the exact
+    window, newest bucket partial. The FIRST bucket is partial too: it starts on its
+    aligned edge, before the window does, and counts only what lies inside the window
+    (the cases created from ``now - window_hours`` on, and the alert hours from the
+    hour that instant falls in, the same hours the noise funnel sums). So the buckets
+    add up to the window's own case count, the figure every other panel shows. Cohort
+    counts reuse the exact
     ``engine.metrics.quality_metrics`` field/verdict/decision_by semantics so they
     reconcile with the posture tiles; ``fp_rate`` mirrors posture's
     ``false_positive_rate`` numerator/denominator within the bucket (null when no
@@ -704,11 +709,35 @@ async def metrics_trends(
     except Exception as exc:  # noqa: BLE001 — a counter glitch degrades to null alerts
         logger.warning("trends counter read soft-failed: %s", exc)
         alert_counters = None
+    # Clip the first bucket to the window (one instant for the clip and the grid): the
+    # population reaches a bucket further back, and its cases and alert hours before
+    # the window's start would make the buckets add up to more than the window holds.
+    from .metrics_shared import _in_window
+
+    now = datetime.now(timezone.utc)
+    since = now - timedelta(hours=wh)
+    cases = await _rollup(_in_window, population.cases, since, None)
+    # The cases left out are known to lie before the window, so they leave the scope
+    # total too: a clip is never reported as a truncated read.
+    store_total = population.scope_total
+    if store_total is not None:
+        store_total = max(len(cases), int(store_total) - (len(population.cases) - len(cases)))
+    if alert_counters and isinstance(alert_counters.get("hours"), dict):
+        first_hour = int(since.timestamp() // 3600)
+        kept: dict[Any, Any] = {}
+        for key, value in alert_counters["hours"].items():
+            try:
+                if int(key) >= first_hour:
+                    kept[key] = value
+            except (TypeError, ValueError):
+                continue
+        alert_counters = {**alert_counters, "hours": kept}
     return await _rollup(
         trend_metrics,
-        population.cases,
+        cases,
         window_hours=wh,
-        store_total=population.scope_total,
+        now=now,
+        store_total=store_total,
         alert_counters=alert_counters,
     )
 

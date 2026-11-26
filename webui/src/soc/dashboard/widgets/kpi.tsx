@@ -17,6 +17,8 @@
  * here decides anything (#3).
  */
 import { ExplainTrigger } from '@/design-system/explain';
+import { explainQuotient } from '@/lib/explain/builders';
+import { plain } from '@/lib/explain/rounding';
 import type { Explanation } from '@/lib/explain/types';
 import { fmtMoney, fmtNumber } from '@/lib/format';
 import { explainKpiShare, SERVER_COUNTED } from '@/soc/components/metrics-explain/builders';
@@ -24,7 +26,7 @@ import type { UsageSummary } from '@/lib/types';
 import type { BudgetStatus } from '@/soc/pages/Models.api';
 
 import { useDashboardData, useDashboardRequest, useDashboardRequests } from '../DashboardDataProvider';
-import { bindingRequests, evaluateBinding } from './kpi-eval';
+import { bindingRequests, evaluateBinding, ratioParts } from './kpi-eval';
 import { NEEDS_HUMAN_BINDING, SPEND_PER_CASE_BINDING } from './widget-requests';
 import type { DashboardRequest } from './requests';
 import {
@@ -243,7 +245,36 @@ export function CostBudgetWidget(props: WidgetProps) {
             {perCaseText != null ? (
               <>
                 <dt className="text-muted-foreground">Per investigated case</dt>
-                <dd className="text-right tabular-nums text-foreground">{perCaseText}</dd>
+                <dd className="text-right tabular-nums text-foreground">
+                  {(() => {
+                    // The quotient explains itself (FXD1): investigation spend over the
+                    // verdicted cases of the window, the two sums the figure divides.
+                    const parts = perCase?.status === 'value' ? ratioParts(SPEND_PER_CASE_BINDING, readPerCase) : null;
+                    const explanation = parts
+                      ? explainQuotient({
+                          metric: 'spend_per_case',
+                          title: 'Spend per investigated case',
+                          numerator: parts.numerator,
+                          denominator: parts.denominator,
+                          numeratorLabel: 'investigation spend',
+                          denominatorLabel: parts.denominator === 1 ? 'verdicted case' : 'verdicted cases',
+                          numeratorTerm: (n) => `$${plain(n, 6)}`,
+                          resultTerm: (n) => `$${plain(n, 6)}`,
+                          shown: perCaseText,
+                          window: `the ${windowInfo.phrase}`,
+                          rounding: 'Amounts under $1 are shown to 4 decimals, larger ones to 2.',
+                          caveats: [SPEND_PER_CASE_BINDING.definition],
+                        })
+                      : null;
+                    return explanation ? (
+                      <ExplainTrigger explanation={explanation} className="justify-end">
+                        {perCaseText}
+                      </ExplainTrigger>
+                    ) : (
+                      perCaseText
+                    );
+                  })()}
+                </dd>
               </>
             ) : null}
           </dl>
