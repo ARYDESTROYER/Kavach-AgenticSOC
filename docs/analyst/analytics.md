@@ -409,12 +409,14 @@ count per assignee as "N awaiting".
 Every number on the Standup can be explained. Point at it for a one-line formula, or
 select it for the full calculation:
 
-- a strip count states the count now, the same count when the window began, and the
-  change ("15 - 10 = +5"). The earlier count is the cases still open now that were opened
-  before the window, so a case opened and closed since is in neither count;
+- a strip count states the count now, the "was" figure and the change ("15 - 10 =
+  +5"). The "was" figure is not a count taken when the window began: it is the same
+  count over the cases open now that were created before the window, so a case that has
+  closed since is in neither count;
 - a case's risk chip shows the weighted sum it was scored with, as in the Case Manager
   queue;
-- a case's age is the snapshot time minus when the case was detected, or created;
+- a case's age is the snapshot time minus when the case was detected, or created, shown
+  as its two largest units ("12d 4h");
 - the SLA pressure counts add up per priority ("P3 5 + P4 5 = 10"), and each "over" line
   is the response clock's elapsed minutes minus the target ("18,677.93 - 480 =
   18,197.93 minutes"), shown as its two largest units ("12d 15h over");

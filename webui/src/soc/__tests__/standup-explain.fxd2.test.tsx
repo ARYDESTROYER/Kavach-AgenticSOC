@@ -118,8 +118,19 @@ const REPORT: StandupReport = {
 describe('Standup explanations: the builders', () => {
   it('a strip count states the change from its two counts', () => {
     const e = explainStripCount('open', 'Open', { current: 15, prior: 10, delta: 5 }, 'last 24 hours');
-    expect(e.summary).toBe('Open: 15 now, 10 at the start of the last 24 hours; 15 - 10 = +5.');
+    expect(e.summary).toBe('Open: 15 now; 10 of them were created before the last 24 hours; 15 - 10 = +5.');
     expect(e.steps).toEqual([{ label: 'Change', expression: '15 - 10', result: '+5' }]);
+  });
+
+  it('never calls the "was" figure a count taken when the window began (review)', () => {
+    // The server counts today's open cases that were created before the window; a case
+    // open then and closed since is not in it, so "at the start of the window" would be
+    // a claim the figure cannot back.
+    const e = explainStripCount('sla_breached', 'SLA breached', { current: 10, prior: 10, delta: 0 }, 'last 24 hours');
+    const text = JSON.stringify(e);
+    expect(text).not.toMatch(/start of the (window|last)/);
+    expect(e.inputs.find((i) => i.key === 'before')?.label).toBe('Created before the window');
+    expect(e.caveats[0]).toMatch(/^The "was" figure is not a count taken when the window began\./);
   });
 
   it('the SLA totals add up per priority', () => {
@@ -157,6 +168,22 @@ describe('Standup explanations: the builders', () => {
       result: '17,546.1 minutes',
     });
     expect(explainQueueAge({ ...REPORT.attention_queue[0], age_from_at: null }, REPORT.generated_at)).toBeNull();
+  });
+
+  it('a queue age works its "12d 4h" from the whole minutes and their parts (review)', () => {
+    const e = explainQueueAge(REPORT.attention_queue[0], REPORT.generated_at);
+    // 17,546.1 minutes rounds to 17,546: 12 days (17,280), 4 hours (240) and 26 minutes.
+    expect(e?.steps[1]).toEqual({
+      label: 'Shown',
+      expression: '17,546.1 minutes rounds to 17,546 whole minutes: 12 days, 4 hours and 26 minutes',
+      result: '12d 4h (the two largest units)',
+    });
+    // Under a minute the row prints "<1m", and the step says so instead of "0 minutes".
+    const fresh = explainQueueAge(
+      { ...REPORT.attention_queue[0], age_minutes: 0.5, age_from_at: '2026-11-26T12:59:30+00:00' },
+      REPORT.generated_at,
+    );
+    expect(fresh?.steps[1]).toEqual({ label: 'Shown', expression: '0.5 minutes is under a minute', result: '<1m' });
   });
 });
 

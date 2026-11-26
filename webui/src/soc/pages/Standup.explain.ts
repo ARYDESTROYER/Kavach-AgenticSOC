@@ -38,9 +38,12 @@ function signed(delta: number): string {
 const SNAPSHOT_NOTE = 'Counted by the server when the shift snapshot was generated.';
 
 /**
- * One strip count against the window before: "Open: 15 now, 10 before; 15 - 10 = +5".
- * The earlier count is the server's stand-in for the window before: the same count over
- * today's open cases that were already open when the window began.
+ * One strip count against the window before: "Open: 15 now; 10 of them were created
+ * before the last 24 hours; 15 - 10 = +5". The tile's "was" figure is the server's
+ * stand-in for the window before: the same count over today's open cases that were
+ * created before the window began. It is not a count taken back then, so it never says
+ * "at the start of the window": a case that was open then and has closed since is not in
+ * it (FXD2 review).
  */
 export function explainStripCount(key: string, label: string, cell: DeltaCell, range: string): Explanation {
   const counts = STRIP_COUNTS[key] ?? 'open cases';
@@ -50,13 +53,13 @@ export function explainStripCount(key: string, label: string, cell: DeltaCell, r
     title: label,
     value: cell.current,
     display: count(cell.current),
-    summary: `${label}: ${count(cell.current)} now, ${count(cell.prior)} at the start of the ${range}; ${count(cell.current)} - ${count(cell.prior)} = ${signed(change)}.`,
+    summary: `${label}: ${count(cell.current)} now; ${count(cell.prior)} of them were created before the ${range}; ${count(cell.current)} - ${count(cell.prior)} = ${signed(change)}.`,
     formula: 'change = count now - the same count over the open cases created before the window',
     inputs: [
       { key: 'now', label: 'Now', value: count(cell.current), source: `Counted over the ${counts}` },
       {
         key: 'before',
-        label: 'At the start of the window',
+        label: 'Created before the window',
         value: count(cell.prior),
         source: `The same count over the open cases created before the ${range}`,
       },
@@ -66,7 +69,7 @@ export function explainStripCount(key: string, label: string, cell: DeltaCell, r
     provenance: 'server_computed',
     provenanceNote: SNAPSHOT_NOTE,
     caveats: [
-      'The earlier count stands in for the window before: it counts the cases still open now that were opened before the window. A case opened and closed since is in neither count.',
+      'The "was" figure is not a count taken when the window began. It counts the cases open now that were created before the window, so a case that has closed since is in neither count.',
     ],
   };
 }
@@ -148,6 +151,20 @@ function partsInWords(minutes: number): string {
   return words.length === 1 ? words[0] : `${words.slice(0, -1).join(', ')} and ${words[words.length - 1]}`;
 }
 
+/**
+ * The step that turns a number of minutes into the line's words: the whole minutes and
+ * their parts ("17,548 whole minutes: 12 days, 4 hours and 28 minutes", shown as
+ * "12d 4h"), or, under a minute, the "<1m" the line prints.
+ */
+function shownStep(from: string, minutes: number, shown: string): ExplanationStep {
+  if (minutes < 1) return { label: 'Shown', expression: `${from} is under a minute`, result: shown };
+  return {
+    label: 'Shown',
+    expression: `${from} rounds to ${count(Math.round(minutes))} whole minutes: ${partsInWords(minutes)}`,
+    result: `${shown} (the two largest units)`,
+  };
+}
+
 const ANCHOR_OF: Record<string, string> = {
   first_response_at: 'acknowledged',
   acknowledged_at: 'acknowledged',
@@ -179,15 +196,7 @@ export function explainSlaOverage(row: SlaAgingRow, label: string): Explanation 
   if (!base) return null;
   const over = slaRowOverMinutes(row);
   const shown = fmtOverage(over);
-  const steps = base.steps.map((step) =>
-    step.label === 'Shown'
-      ? {
-          label: 'Shown',
-          expression: `${minutesText(over)} rounds to ${count(Math.round(over))} whole minutes: ${partsInWords(over)}`,
-          result: `${shown} (the two largest units)`,
-        }
-      : step,
-  );
+  const steps = base.steps.map((step) => (step.label === 'Shown' ? shownStep(minutesText(over), over, shown) : step));
   const priority = row.priority_level ? `${row.priority_level} ` : '';
   return {
     ...base,
@@ -265,9 +274,12 @@ export function explainQueueAge(row: AttentionRow, generatedAt: string | null | 
     ],
     steps: [
       { label: 'Difference', expression: `${generatedAt} - ${from}`, result: minutesText(minutes) },
-      { label: 'Shown', expression: `${minutesText(minutes)}, rounded to whole minutes`, result: shown },
+      // The whole minutes the row rounds to and their parts, so "12d 4h" can be worked by
+      // hand: 17,548 minutes is 12 days, 4 hours and 28 minutes (FXD2 review). The row
+      // shows the server's age, so the parts come from it.
+      shownStep(minutesText(minutes), row.age_minutes, shown),
     ],
-    rounding: 'Rounded to whole minutes; days and hours above a day.',
+    rounding: 'Rounded to whole minutes, then shown in its two largest units (days and hours, or hours and minutes).',
     provenance: 'server_computed',
     provenanceNote: SNAPSHOT_NOTE,
     caveats: [],

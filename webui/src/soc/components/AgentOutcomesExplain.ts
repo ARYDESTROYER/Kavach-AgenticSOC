@@ -42,6 +42,16 @@ function windowInputs(shown: OutcomeShown): ExplanationInput[] {
   ];
 }
 
+/**
+ * The summary's comparison clause: "comparable prior $0.020, a change of -22.9%", or "no
+ * comparable prior figure" when the prior window has none. The tile prints a dash then;
+ * a sentence never ends on that mark (FXD2 review).
+ */
+function priorClause(shown: OutcomeShown, priorValue: unknown): string {
+  if (!finite(priorValue)) return 'no comparable prior figure';
+  return `comparable prior ${shown.prior}${shown.delta ? `, a change of ${shown.delta}` : ''}`;
+}
+
 /** A dollar amount with the 6 decimals the server keeps: "$0.015432". */
 function usd(value: number): string {
   return `$${plain(value, 6)}`;
@@ -105,7 +115,7 @@ export function explainCostOutcome(cost: AgentRecordedCaseCostOutcome, shown: Ou
     title: 'AI processing cost per case',
     value: cur.cost_per_costed_case,
     display: shown.value,
-    summary: `${usd(cur.total_cost)} of recorded model cost over ${count(cur.costed_cases)} cases = ${usd(cur.cost_per_costed_case)} per case; comparable prior ${shown.prior}${shown.delta ? `, a change of ${shown.delta}` : ''}.`,
+    summary: `${usd(cur.total_cost)} of recorded model cost over ${count(cur.costed_cases)} cases = ${usd(cur.cost_per_costed_case)} per case; ${priorClause(shown, base.cost_per_costed_case)}.`,
     formula: 'recorded cost of model calls tied to a case / cases with such a call; change = (now - prior) / prior',
     inputs: [
       { key: 'total', label: 'Recorded cost, this window', value: usd(cur.total_cost), source: `${count(cur.call_count)} model calls tied to a case` },
@@ -164,7 +174,7 @@ export function explainTimingOutcome(timing: AgentObservedTimeSavedOutcome, show
     title: 'Observed elapsed-time difference',
     value: cur.observed_difference_minutes_per_case,
     display: shown.value,
-    summary: `Median human-owned closure ${plain(cur.human_owned_closure_p50_minutes ?? 0, 1)} min - median agent closure ${plain(cur.agent_closed_p50_minutes ?? 0, 1)} min = ${plain(cur.observed_difference_minutes_per_case, 1)} min per case; comparable prior ${shown.prior}.`,
+    summary: `Median human-owned closure ${plain(cur.human_owned_closure_p50_minutes ?? 0, 1)} min - median agent closure ${plain(cur.agent_closed_p50_minutes ?? 0, 1)} min = ${plain(cur.observed_difference_minutes_per_case, 1)} min per case; ${priorClause(shown, base.observed_difference_minutes_per_case)}.`,
     formula: 'median human-owned closure time - median agent closure time; change = now - prior',
     inputs: [
       { key: 'human', label: 'Human-owned closures, this window', value: count(cur.human_owned_closure_count), source: `median ${plain(cur.human_owned_closure_p50_minutes ?? 0, 1)} minutes` },
@@ -212,7 +222,7 @@ export function explainVolumeOutcome(
     title: 'Alerts after clustering per day',
     value: cur.after_clustering_per_day,
     display: shown.value,
-    summary: `${count(cur.after_clustering_alerts ?? 0)} alerts after clustering over ${count(days.current ?? 0)} days = ${plain(cur.after_clustering_per_day, 2)} per day; comparable prior ${shown.prior}${shown.delta ? `, a change of ${shown.delta}` : ''}.`,
+    summary: `${count(cur.after_clustering_alerts ?? 0)} alerts after clustering over ${count(days.current ?? 0)} days = ${plain(cur.after_clustering_per_day, 2)} per day; ${priorClause(shown, base.after_clustering_per_day)}.`,
     formula: 'alerts left after clustering / days in the window; change = (now - prior) / prior',
     inputs: [
       { key: 'current', label: 'After clustering, this window', value: count(cur.after_clustering_alerts ?? 0), source: `of ${count(cur.ingested_alerts ?? 0)} ingested alerts` },
@@ -262,7 +272,7 @@ export function explainPositiveOutcome(positive: AgentConfirmedPositiveCaseRateO
     title: 'Confirmed-positive case share',
     value: cur.value,
     display: shown.value,
-    summary: `${count(cur.confirmed_positive_cases)} of ${count(cur.outcome_evaluable_cases)} graded cases confirmed positive = ${shown.value}; comparable prior ${shown.prior}${shown.delta ? `, a change of ${shown.delta}` : ''}.`,
+    summary: `${count(cur.confirmed_positive_cases)} of ${count(cur.outcome_evaluable_cases)} graded cases confirmed positive = ${shown.value}; ${priorClause(shown, base.value)}.`,
     formula: 'cases graded true positive or false negative / cases graded with an outcome',
     inputs: [
       { key: 'confirmed', label: 'Confirmed positive, this window', value: count(cur.confirmed_positive_cases), source: 'Latest valid grade per case' },

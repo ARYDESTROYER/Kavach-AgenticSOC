@@ -11,9 +11,10 @@ import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it } from 'vitest';
 
+import { DASH } from '@/lib/format';
 import { TooltipProvider } from '@/ui/tooltip';
 import { AgentOperationalOutcomes } from '../AgentOperationalOutcomes';
-import { explainCostOutcome, explainTimingOutcome } from '../AgentOutcomesExplain';
+import { explainCostOutcome, explainPositiveOutcome, explainTimingOutcome } from '../AgentOutcomesExplain';
 import { evidence, outcomes } from './agent-outcome-fixtures';
 
 const WINDOWS = { currentWindow: 'Nov 19 to 25, 2026', priorWindow: 'Nov 12 to 18, 2026' };
@@ -45,6 +46,23 @@ describe('the outcome explanations reproduce the tiles', () => {
       ['90.9 - 0.4', '90.5 minutes per case, shown as 1h 31m faster / case'],
       ['106 - 90.5', '15.5 minutes per case, shown as +15.5 min / case'],
     ]);
+  });
+
+  it('a missing prior reads in words, never as a dash in a sentence (review)', () => {
+    // The Demo's confirmed-positive share has no prior window: the tile prints a dash,
+    // and the summary ended on that mark. Now it says there is no prior figure.
+    const positive = outcomes().confirmed_positive_case_rate;
+    positive.current = { ...positive.current, value: 0, confirmed_positive_cases: 0, outcome_evaluable_cases: 6 };
+    positive.baseline = { ...positive.baseline, value: null, confirmed_positive_cases: 0, outcome_evaluable_cases: 0 };
+    positive.delta.percentage_points = null;
+    const e = explainPositiveOutcome(positive, { value: '0.0%', prior: DASH, ...WINDOWS });
+    expect(e?.summary).toBe('0 of 6 graded cases confirmed positive = 0.0%; no comparable prior figure.');
+    const cost = outcomes().recorded_case_cost;
+    cost.baseline = { total_cost: 0, call_count: 0, costed_cases: 0, cost_per_costed_case: null, cost_per_day: 0 };
+    cost.delta.cost_per_costed_case_relative = null;
+    const c = explainCostOutcome(cost, { value: '$0.017', prior: DASH, ...WINDOWS });
+    expect(c?.summary).toMatch(/; no comparable prior figure\.$/);
+    expect(c?.summary).not.toContain(DASH);
   });
 
   it('never prints arithmetic that disagrees with the server figure', () => {

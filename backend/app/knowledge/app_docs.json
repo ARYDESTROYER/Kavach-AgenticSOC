@@ -3472,7 +3472,15 @@
    "page": "analyst/analytics.md",
    "anchor": "standup-and-handoff",
    "heading": "Standup and handoff",
-   "text": "Its figures are the ones chat's shift report shows for the same window. **Needs human**\ncounts the open cases whose AI verdict is Needs human. **Awaiting analyst** counts the open\ncases still in the status the console shows as **Open · awaiting analyst**, the cases the\nautomation routed to a person that no one has picked up; the workload list shows that\ncount per assignee as \"N awaiting\".\n\nEvery number on the Standup can be explained. Point at it for a one-line formula, or\nselect it for the full calculation:\n\n- a strip count states the count now, the same count when the window began, and the\n  change (\"15 - 10 = +5\"). The earlier count is the cases still open now that were opened\n  before the window, so a case opened and closed since is in neither count;\n- a case's risk chip shows the weighted sum it was scored with, as in the Case Manager\n  queue;\n- a case's age is the snapshot time minus when the case was detected, or created;\n- the SLA pressure counts add up per priority (\"P3 5 + P4 5 = 10\"), and each \"over\" line\n  is the response clock's elapsed minutes minus the target (\"18,677.93 - 480 =\n  18,197.93 minutes\"), shown as its two largest units (\"12d 15h over\");\n- an analyst's open count is their escalated, awaiting-analyst and other open cases\n  added up.\n\nWriting action items or acknowledgements requires `cases:write`.",
+   "text": "Its figures are the ones chat's shift report shows for the same window. **Needs human**\ncounts the open cases whose AI verdict is Needs human. **Awaiting analyst** counts the open\ncases still in the status the console shows as **Open · awaiting analyst**, the cases the\nautomation routed to a person that no one has picked up; the workload list shows that\ncount per assignee as \"N awaiting\".\n\nEvery number on the Standup can be explained. Point at it for a one-line formula, or\nselect it for the full calculation:\n\n- a strip count states the count now, the \"was\" figure and the change (\"15 - 10 =\n  +5\"). The \"was\" figure is not a count taken when the window began: it is the same\n  count over the cases open now that were created before the window, so a case that has\n  closed since is in neither count;\n- a case's risk chip shows the weighted sum it was scored with, as in the Case Manager\n  queue;\n- a case's age is the snapshot time minus when the case was detected, or created, shown\n  as its two largest units (\"12d 4h\");\n- the SLA pressure counts add up per priority (\"P3 5 + P4 5 = 10\"), and each \"over\" line\n  is the response clock's elapsed minutes minus the target (\"18,677.93 - 480 =\n  18,197.93 minutes\"), shown as its two largest units (\"12d 15h over\");\n- an analyst's open count is their escalated, awaiting-analyst and other open cases\n  added up.",
+   "console": []
+  },
+  {
+   "id": "analyst/analytics#standup-and-handoff:2",
+   "page": "analyst/analytics.md",
+   "anchor": "standup-and-handoff",
+   "heading": "Standup and handoff",
+   "text": "Writing action items or acknowledgements requires `cases:write`.",
    "console": []
   },
   {
