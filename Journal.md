@@ -13301,3 +13301,58 @@
 - Tests: the WP17C, XFR, XFD and WP18B records, Help Center, hidden characters, release notes content, What's new and distribution contract modules: 109 passed. Corpus and release notes --check pass.
 - Status: done.
 - Next: XFUI3 after its review; then an acceptance pass of every operator ask on the integrated tree, its fixes, the records and the closing gates.
+
+
+### 2026-11-26 11:20Z - XFUI3 (sub-agent) - Meta strip give-way, case number ellipsis, phase tab focus room, knowledge leftovers
+- Context: package XFUI3, the last Round 16 polish from the XFUI2 and XFINT reviews: a verdict item that shrank to 0px with a focusable trigger, a long case number that made the meta strip scroll, a phase tab focus ring clipped by its list, and Help Center leftovers (Analytics intro, cancel aliases, the GitHub Pages path).
+- Did:
+  - CaseHeaderMeta.tsx: the verdict has a 5rem floor and hides below 40rem, or below 48rem while the AI run chip shows (measured in the seeded Demo beside the longest status words).
+  - CaseHeaderMeta.tsx: a case number over 9 characters ends in a middle ellipsis, keeps its last 6 characters, takes at most 20 characters of room, and keeps its whole value in the title and for screen readers. It gives way after the verdict words and before the status (weights 1e18, 1e12, 1e6, 1).
+  - CaseHeaderMeta.tsx: the run-room classes are written whole for Tailwind.
+  - PhaseTabs.tsx: 4px padding with a matching negative margin and scroll padding; a focused tab scrolls itself into view; the fade sits on the list edge.
+  - Docs: ui-standard and case-manager.md describe the give-way. analytics.md names the 7 Analytics pages. channels.md names the Pages source as a GitHub setting.
+  - Knowledge: cancel expands to stop, kill and abort; kill and abort expand to cancel. The app_help docstring example is updated and the corpus regenerated (1,086 chunks).
+- Tests:
+  - Every new regression test failed on the base code first: 12 + 5 + 3 + 3.
+  - Vitest: 96 files, 1,470 passed, 1 skipped.
+  - typecheck, lint, gates, check:types and build:app are clean; entry 330,122 B against a 331,092 B budget.
+  - Backend docs, knowledge, golden and records modules: 1,700 passed, then 864 passed after the corpus regeneration.
+  - check_version, check_ci_contract, check_docs and build_app_knowledge --check pass.
+  - Seeded Demo at 1440 by 900, 768 by 1024 and 390 by 844, light and dark: no strip overflow, no focusable box of no size, the phase ring has 4px of room, axe 0 serious or critical, no console errors.
+- Status: done; r16-xfui3 at 5d8e1a7, HEAD detached.
+- Next:
+  - Merge r16-xfui3.
+  - XFR owner: add the CHANGELOG lines and the SPEC 8.2 line from this report.
+  - Rerun the whole suite and test:strict on the integrated tree.
+
+### 2026-11-26 12:40Z - XFUI3 review (sub-agent) - Default case numbers whole, Analytics layout scope, abandon alias
+- Context:
+  - Adversarial review of XFUI3 (5d8e1a7 on 7b30d8c): meta strip give-way, the case number middle ellipsis, phase tab focus room, the Analytics intro, the cancel aliases and the channels.md path.
+- Did:
+  - Read the diff against the brief and SPEC sections 3, 4.1 and 4.10. decide() and risk.py are untouched.
+  - Reverted each fix once; its tests failed.
+  - Swept pane widths in the seeded Demo (private Vite cache, ports 9077 and 6077) for 8 cases, a 40-character number and a real AI run. No overflow, no focusable box of no size, nothing cut. axe 0 serious or critical at 1440x900, 768x1024 and 390x844 in both themes. Phase rings have 4px of room and no ancestor scrolls sideways.
+  - Fixed three defects, each with a test that fails without the fix:
+    - The default template's numbers ("CASE-000046") were cut to "CA…000046" on phone-width strips and beside the AI run chip. The case number floor is now 12ch and numbers of 12 characters or fewer never split; a long number floors at "CASE-…000041".
+    - analytics.md's layout section claimed the shared time range for all seven Analytics pages. It now names Metrics, Agent effectiveness and Cost, and says Team activity has its own range.
+    - "Cancel a runbook run" was sent to Analytics > Jobs. abandon is now an alias of cancel, so it cites Case Manager > Work the runbook again.
+  - Updated ui-standard and regenerated the corpus (1,086 chunks).
+- Tests:
+  - Vitest: 91 files, 1,278 passed; bundle-first-paint 28 passed, 1 skipped.
+  - typecheck, lint, gates and check:types clean.
+  - build:app entry 330,122 B against a 331,092 B budget.
+  - Backend knowledge, golden, docs and records modules: exit 0.
+  - check_version, check_ci_contract, check_docs and build_app_knowledge --check pass.
+  - Banned-character scan: 0.
+- Status: done; r16-xfui3 at 5d835f1, HEAD detached. Demo and Vite stopped.
+- Next:
+  - Merge r16-xfui3.
+  - XFR owner: add the CHANGELOG and SPEC 8.2 lines from this report.
+  - Run the whole backend suite and test:strict on the integrated tree.
+
+### 2026-11-26 12:15Z - orchestrator - XFUI3 merged; acceptance pass under way
+- Context: the last polish package of the round (XFUI3, reviewed independently), and an acceptance pass that checks each operator ask from the operator view on the integrated tree.
+- Did: merged r16-xfui3 (build 5d8e1a7, review 5d835f1), took the incoming knowledge manifest and regenerated the corpus (1,086 chunks). Started the acceptance workflow on 9343312: eight checkers (AI signals, Case Manager, sign-in, explainable numbers, records, What's new, regressions, accessibility and phone), each gap then judged by an independent skeptic.
+- Tests: on the merged tree, the XFUI3, XFD, WP17C and XFR records, app knowledge, golden set, Help Center, Round 15 records, spine guards and chat knowledge modules: 901 passed. The case detail, runbook run, close and structure Console tests: 741 passed; tsc clean.
+- Status: in progress.
+- Next: fix packages for the confirmed acceptance gaps, each reviewed; then the records, the closing gates and the pull request into Testing.
