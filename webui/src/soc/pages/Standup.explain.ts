@@ -257,9 +257,10 @@ export function explainActionItems(items: readonly ActionItem[]): Explanation {
 
 /**
  * The handoff acknowledgements (Round 16 FXF): one per person who signed off this
- * shift's handoff, newest first.
+ * shift's handoff, newest first. `shift` is the shift in words ("Swing shift, 2026-10-29,
+ * 14:00 to 22:00 UTC"), never the raw window key; empty leaves the Shift input out.
  */
-export function explainHandoffAcks(acks: readonly ShiftAck[], windowKey: string): Explanation {
+export function explainHandoffAcks(acks: readonly ShiftAck[], shift: string): Explanation {
   const people = new Set(acks.map((a) => a.user || 'operator')).size;
   return {
     metric: 'standup_handoff_acks',
@@ -271,7 +272,7 @@ export function explainHandoffAcks(acks: readonly ShiftAck[], windowKey: string)
     inputs: [
       { key: 'acks', label: 'Acknowledgements', value: count(acks.length), source: 'Handoff sign-off' },
       { key: 'people', label: 'People', value: count(people), source: 'Handoff sign-off' },
-      ...(windowKey ? [{ key: 'window', label: 'Shift', value: windowKey, source: 'The shift on screen' }] : []),
+      ...(shift ? [{ key: 'window', label: 'Shift', value: shift, source: 'The shift on screen' }] : []),
     ],
     steps: [],
     provenance: 'server_computed',

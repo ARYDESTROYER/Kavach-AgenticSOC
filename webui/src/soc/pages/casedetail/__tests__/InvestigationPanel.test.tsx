@@ -203,6 +203,12 @@ describe('InvestigationPanel: the AI lane (Round 16, D8)', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Show trace' }));
     const filter = screen.getByRole('radiogroup', { name: 'Show trace steps by' });
     expect(within(filter).getAllByRole('radio').map((r) => r.textContent)).toEqual(['All', 'Agent', 'Tool', 'Code', 'People', 'Chat', 'Runbook']);
+    // Seven filters are wider than a phone's pane: they wrap inside the rail (and every
+    // arrow key moves along the wrapped rows), so the panel never scrolls sideways.
+    expect(filter.className).toMatch(/(^|\s)flex-wrap(\s|$)/);
+    expect(filter.className).toMatch(/(^|\s)max-w-full(\s|$)/);
+    expect(filter.className).toMatch(/(^|\s)h-auto(\s|$)/);
+    expect(filter).not.toHaveAttribute('aria-orientation', 'horizontal');
     // Agent keeps the agent's own step only: no person, no chat turn.
     fireEvent.click(within(filter).getByRole('radio', { name: 'Agent' }));
     expect(screen.getByText('Thinking')).toBeInTheDocument();

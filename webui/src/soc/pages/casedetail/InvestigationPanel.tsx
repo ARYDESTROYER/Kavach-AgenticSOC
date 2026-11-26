@@ -308,6 +308,10 @@ export const InvestigationPanel: React.FC<InvestigationPanelProps> = ({
             {timeline && spans.length ? (
               <SegmentedControl<TraceActor>
                 size="sm"
+                // Seven filters do not fit a phone's pane in one row: they wrap inside
+                // the rail, so the panel never scrolls sideways.
+                orientation="both"
+                className="h-auto min-h-8 max-w-full flex-wrap"
                 aria-label="Show trace steps by"
                 value={actor}
                 onValueChange={setActor}

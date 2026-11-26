@@ -1080,7 +1080,7 @@ function AcknowledgePanel({
     <Panel
       title="Handoff sign-off"
       count={acks.length || undefined}
-      countExplain={acks.length ? explainSlot(explainHandoffAcks(acks, windowKey)) : undefined}
+      countExplain={acks.length ? explainSlot(explainHandoffAcks(acks, shiftName(windowKey)?.detail ?? '')) : undefined}
       caption="this shift"
       data-testid="standup-signoff"
     >

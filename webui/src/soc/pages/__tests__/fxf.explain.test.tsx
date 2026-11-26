@@ -50,6 +50,25 @@ describe('Brief People row after an AI run replaced a close', () => {
     expect(lastHumanAction(caseWith('open', [close, decision, reopen]))).toMatch(/^Reopened by lee, [^.]+$/);
   });
 
+  it('reads a status change to resolved (the status menu) as a close the run replaced', () => {
+    const at = iso(3);
+    const resolved = { ts: at, event: 'analyst_action', action: 'set_status', analyst: 'Admin' };
+    const c = {
+      ...caseWith('needs_human', [resolved, decision]),
+      status_history: [
+        { from_status: 'investigating', to_status: 'resolved', by: 'Admin', at },
+        { from_status: 'resolved', to_status: 'needs_human', by: 'system', at: iso(1) },
+      ],
+    } as unknown as Case;
+    expect(lastHumanAction(c)).toMatch(/^Changed the status by Admin, .+\. The AI investigation then replaced the close\.$/);
+    // A status change that did not end the case is not a close.
+    const held = {
+      ...caseWith('needs_human', [resolved, decision]),
+      status_history: [{ from_status: 'open', to_status: 'on_hold', by: 'Admin', at }],
+    } as unknown as Case;
+    expect(lastHumanAction(held)).toMatch(/^Changed the status by Admin, [^.]+$/);
+  });
+
   it('skips events that arrived between the close and the decision', () => {
     const attach = { ts: iso(2), event: 'attach', added_events: 3 };
     expect(lastHumanAction(caseWith('open', [close, attach, decision]))).toMatch(/then replaced the close\.$/);
@@ -215,9 +234,10 @@ describe('A person median, the Standup counts and the tuner z', () => {
         { user: 'lee', window: 'w', at: '', note: '' },
         { user: 'asha', window: 'w', at: '', note: '' },
       ] as Parameters<typeof explainHandoffAcks>[0],
-      '2026-11-26/day',
+      'Day shift, 2026-11-26, 06:00 to 14:00 UTC',
     );
     expect(acks.summary).toBe("2 acknowledgements of this shift's handoff, by 2 people.");
+    expect(acks.inputs.find((i) => i.key === 'window')?.value).toBe('Day shift, 2026-11-26, 06:00 to 14:00 UTC');
   });
 
   it('the noisiest rules name the z the tuner used', () => {

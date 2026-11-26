@@ -528,6 +528,24 @@ describe('Standup review fixes (Round 14 W8a)', () => {
     expect(within(signoff).getByRole('button', { name: 'Show fewer' })).toHaveAttribute('aria-expanded', 'true');
   });
 
+  it('explains the sign-off count with the shift in words, never the raw window key', async () => {
+    fetchReportMock.mockResolvedValue({
+      ...REPORT,
+      acknowledgements: [
+        { user: 'alice', window: REPORT.window, at: '2026-06-30T08:00:00Z', note: '' },
+        { user: 'bob', window: REPORT.window, at: '2026-06-30T08:05:00Z', note: '' },
+      ],
+    });
+    render(<Standup onNavigate={vi.fn()} />);
+    const signoff = await screen.findByTestId('standup-signoff');
+    const trigger = signoff.querySelector('[data-explain-metric="standup_handoff_acks"]') as HTMLElement;
+    expect(trigger).not.toBeNull();
+    await userEvent.click(trigger);
+    const panel = await screen.findByRole('dialog');
+    expect(panel).toHaveTextContent('Swing shift, 2026-06-30, 14:00 to 22:00 UTC');
+    expect(panel).not.toHaveTextContent('2026-06-30/swing');
+  });
+
   it('lists a short sign-off in full, with no toggle', async () => {
     fetchReportMock.mockResolvedValue({
       ...REPORT,
