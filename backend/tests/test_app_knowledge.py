@@ -1473,6 +1473,9 @@ def test_an_answer_never_has_an_empty_body_when_its_section_has_text():
     ("How do I export a report to Word?", "analyst_tier1", ["page:chat"]),
     # Data export keeps the questions about exporting application state.
     ("How do I export application state?", "super_admin", ["settings:data_export", "page:batchjobs"]),
+    # A running export is cancelled on the Jobs page, its best section (XFUI3); the Data
+    # export section is cited too, and the console labels name its page, so it stays second.
+    ("Cancel the export", "super_admin", ["page:batchjobs", "settings:data_export"]),
     # The case number format is set in Settings › General › Cases, even though the chat
     # export rules also talk about case IDs and formats.
     ("Change the case ID format", "super_admin", ["settings:cases"]),
@@ -1517,6 +1520,46 @@ def test_the_jobs_section_never_promises_a_partial_export_after_cancel():
     export = " ".join(" ".join(c.text.split()) for key, c in chunks.items()
                       if key.startswith("administration/settings#export-portable-application-state:"))
     assert "A cancelled or otherwise incomplete export exposes no artifact." in export
+
+
+@pytest.mark.parametrize("question", ["Cancel the export", "Kill the export job", "How do I cancel a job?"])
+async def test_cancel_kill_and_stop_reach_the_jobs_section_first(question: str):
+    """A running export is cancelled on Analytics › Jobs, so the Jobs section answers first
+    and its page is the first destination however the question says it (XFUI3). Before
+    the cancel aliases, "Cancel the export" cited Settings › Organization › Data export
+    first (10.63 against 9.08), the page where an export is started, not stopped."""
+    outcome = await AppHelpTool().run(_ctx(_role_grants("super_admin")), query=question)
+    assert outcome.ok and outcome.citations
+    assert outcome.citations[0].title == "Analytics and standup › Jobs", [c.title for c in outcome.citations]
+    assert outcome.console_links[0] == "page:batchjobs", outcome.console_links
+
+
+def test_kill_stop_and_abort_are_aliases_of_cancel():
+    """The curated aliases (XFUI3): cancel reaches the Jobs section's "stop" and "no force
+    kill", and kill and abort reach its "Cancel". "stop" is no key of its own: stopping a
+    source or an answer is not a job to cancel, so it never expands to cancel."""
+    aliases = get_app_knowledge().aliases
+    assert set(aliases["cancel"]) >= {"stop", "kill", "abort"}
+    assert "cancel" in aliases["kill"] and "cancel" in aliases["abort"]
+    assert "stop" not in aliases
+
+
+async def test_stopping_a_source_is_not_sent_to_the_jobs_page():
+    outcome = await AppHelpTool().run(_ctx(_role_grants("super_admin")), query="How do I stop a source?")
+    assert "page:batchjobs" not in outcome.console_links, outcome.console_links
+
+
+async def test_cancelling_a_runbook_run_keeps_the_case_manager():
+    """A runbook run is not a background job: it is abandoned from the case's Response tab
+    ("Abandon run" in Case Manager › Work the runbook). The cancel aliases alone sent
+    "Cancel a runbook run" to Analytics › Jobs first (XFUI3 review); abandon is an alias of
+    cancel too, so the runbook section answers first and its page is the destination."""
+    assert "abandon" in get_app_knowledge().aliases["cancel"]
+    outcome = await AppHelpTool().run(_ctx(_role_grants("super_admin")), query="Cancel a runbook run")
+    assert outcome.ok and outcome.citations
+    assert outcome.citations[0].title == "Case Manager › Work the runbook", [c.title for c in outcome.citations]
+    assert outcome.console_links[0] == "page:case_manager", outcome.console_links
+    assert "page:batchjobs" not in outcome.console_links, outcome.console_links
 
 
 async def test_app_help_tool_keeps_the_standup_for_a_shift_brief():

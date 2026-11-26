@@ -9,6 +9,11 @@
  * card carries the primary rail; in forced colours (where fills and border colours go) it
  * keeps a 2px outline, so the selection never rests on colour alone. A bar fills with Done steps only; waiting is never drawn
  * as progress. On a narrow pane the tabs scroll sideways with a fade at the edge.
+ *
+ * The list scrolls sideways, so it clips whatever lies outside it, the tabs' focus ring
+ * included: 2px of ring 2px off the tab. It reaches 4px past the tabs on every side
+ * (`PHASE_LIST_ROOM`), padding with a matching negative margin, so the ring is drawn whole
+ * while the tabs stay where they were; the fade sits on the list's own edge (XFUI3).
  */
 import * as React from 'react';
 import { Check } from 'lucide-react';
@@ -31,6 +36,21 @@ import { StepRow } from './StepRow';
  * gate measures the foreground on both selected fills in both themes.
  */
 export const PHASE_CAPTION_INK = 'text-muted-foreground group-data-[state=active]:text-foreground';
+
+/**
+ * The room the phase list keeps around its tabs for their focus ring (`ring-2` drawn
+ * `ring-offset-2` off the tab, 4px in all): 4px of padding on every side, the same negative
+ * margin so the tabs do not move, and 0.5rem more width so the right edge stays put. The
+ * same 4px of scroll padding, so a tab the arrow keys scroll into view (the tab does it on
+ * focus: the browser leaves a half-hidden tab as it is) keeps its ring inside the clip. On
+ * a narrow pane the list keeps 2rem at its end for the fade (`narrow`) and scrolls a
+ * focused tab clear of it; the fade sits on the list's edge (`fade`), over its whole height.
+ */
+export const PHASE_LIST_ROOM = {
+  list: '-m-1 w-[calc(100%+0.5rem)] p-1 scroll-px-1',
+  narrow: 'pr-8 scroll-pr-9',
+  fade: '-inset-y-1 -right-1',
+} as const;
 
 export interface PhaseTabsProps {
   /** The selected phase (controlled by the panel, defaulting to the Next step's). */
@@ -77,8 +97,10 @@ export function PhaseTabs({ phase, onPhaseChange, narrow }: PhaseTabsProps) {
           ref={listRef}
           aria-label="Phases"
           className={cn(
-            'flex h-auto w-full justify-start gap-2 overflow-x-auto rounded-none border-0 bg-transparent p-0',
-            narrow && 'pr-8',
+            'flex h-auto justify-start gap-2 overflow-x-auto rounded-none border-0 bg-transparent',
+            // Room for the tabs' focus ring inside the list's scroll clip.
+            PHASE_LIST_ROOM.list,
+            narrow && PHASE_LIST_ROOM.narrow,
           )}
         >
           {counts.map((c) => {
@@ -90,6 +112,9 @@ export function PhaseTabs({ phase, onPhaseChange, narrow }: PhaseTabsProps) {
                 value={c.phase}
                 aria-label={phaseTabName(c)}
                 data-phase={c.phase}
+                // The browser leaves a tab the arrow keys reach half out of view (or under
+                // the fade): bring the whole tab in, with its ring (the scroll padding).
+                onFocus={(event) => event.currentTarget.scrollIntoView?.({ block: 'nearest', inline: 'nearest' })}
                 className={cn(
                   'group block h-auto min-w-[8.5rem] flex-1 whitespace-normal rounded-lg border border-border px-3 py-2 text-left font-normal',
                   'hover:bg-muted/60 data-[state=active]:border-border-strong data-[state=active]:bg-accent data-[state=active]:text-foreground',
@@ -126,7 +151,10 @@ export function PhaseTabs({ phase, onPhaseChange, narrow }: PhaseTabsProps) {
         {narrow ? (
           <span
             aria-hidden
-            className="pointer-events-none absolute inset-y-0 right-0 w-8 bg-gradient-to-l from-background to-transparent"
+            className={cn(
+              'pointer-events-none absolute w-8 bg-gradient-to-l from-background to-transparent',
+              PHASE_LIST_ROOM.fade,
+            )}
           />
         ) : null}
       </div>

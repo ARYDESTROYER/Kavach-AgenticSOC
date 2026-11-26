@@ -209,12 +209,12 @@ describe('the meta strip', () => {
     // In a very narrow pane the line scrolls sideways (with no visible scrollbar).
     expect(meta).toHaveClass('h-6', 'flex-nowrap', 'whitespace-nowrap', 'overflow-x-auto');
     const item = (id: string) => meta.querySelector(`[data-meta-item="${id}"]`) as HTMLElement | null;
-    // The Risk chip from 30rem, the verdict from 36rem, the SLA from 52rem.
+    // The Risk chip from 30rem, the verdict from 40rem (XFUI3), the SLA from 52rem.
     expect(within(meta).getByTestId('case-detail-risk').closest('[data-meta-item]')).toHaveClass(
       'hidden',
       '@[30rem]/case:inline-flex',
     );
-    expect(item('verdict')).toHaveClass('hidden', '@[36rem]/case:inline-flex');
+    expect(item('verdict')).toHaveClass('hidden', '@[40rem]/case:inline-flex');
     // The owner never hides; only the name beside the monogram gives way below 44rem.
     const owner = screen.getByTestId('case-detail-owner');
     expect(owner).not.toHaveClass('hidden');

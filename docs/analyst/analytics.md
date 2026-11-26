@@ -5,13 +5,25 @@ description: Interpret posture, timing, noise reduction, ATT&CK coverage, cost, 
 
 # Analytics and standup
 
-The **Analytics** group in the navigation opens three pages, each titled by its
-navigation label: **Metrics** (`#/metrics`), **Agent effectiveness**
-(`#/effectiveness`) and **Cost** (`#/cost`). The group also opens **Team activity**
-(`#/team`, `team:view`), per-person work counts from the audit log; see
-[Team activity](team-activity.md). **Overview → Standup** holds the current
-action queue. Analytics are advisory: they describe stored cases and ingest counters but
-never feed the case decision policy.
+The **Analytics** group in the navigation opens seven pages, each titled by its
+navigation label, in this order:
+
+- **Metrics** (`#/metrics`, `metrics:view`): posture, timing, noise reduction and
+  ATT&CK coverage.
+- **Team activity** (`#/team`, `team:view`), per-person work counts from the audit log;
+  see [Team activity](team-activity.md).
+- **Agent effectiveness** (`#/effectiveness`, `metrics:view`): agent health, the
+  improvement evidence and the auto-close review.
+- **Cost** (`#/cost`, `cost:view`): the model spend ledger; see [Cost](#cost).
+- **Models** (`#/models`, `models:read`): the model catalog, routing and prices; see
+  [Models and spend controls](../administration/models-spend.md).
+- **Baseline** (`#/baseline`, `settings:read`): the learned entity and source
+  baselines; see [Tuning and baselines](../automation/tuning-baselines.md).
+- **Jobs** (`#/batchjobs`): the background jobs you started; see [Jobs](#jobs).
+
+A page shows in the navigation only for someone allowed to read it.
+**Overview → Standup** holds the current action queue. Analytics are advisory: they
+describe stored cases and ingest counters but never feed the case decision policy.
 
 Posture and ATT&CK endpoints require `metrics:view` when RBAC is enabled, and so does
 the Standup.
@@ -28,15 +40,18 @@ figure. See [Explainable numbers](explainable-numbers.md).
 
 ## How the Analytics pages are laid out
 
-Each page follows the Overview's layout. The header holds the title with a help tip,
+**Metrics**, **Agent effectiveness** and **Cost** follow the Overview's layout. The
+header holds the title with a help tip,
 the time range (last 24 hours, 7 days or 30 days) and one refresh beside it, and on the
 right when the figures were last read ("Updated just now"). Below it, every module sits
 on the same tinted panel and names its window after its title ("all time", "last 7
 days", "now"). A caption always names the range of the figures on screen: while a new
 range is being read, and if it cannot be read, the page keeps the previous figures under
-their own captions and says which range it shows. The range you pick on one Analytics
-page is kept for the others until you reload the page or sign out. The navigation switches between
-the pages; there is no second row of page tabs.
+their own captions and says which range it shows. The range you pick on one of these
+three pages is kept for the other two until you reload the page or sign out. **Team
+activity** has its own range; **Models**, **Baseline** and **Jobs** show the current
+state with no time range. The navigation switches between the pages; there is no second
+row of page tabs.
 
 **Metrics** has three tabs:
 

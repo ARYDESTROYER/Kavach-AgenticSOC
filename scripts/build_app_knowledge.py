@@ -132,6 +132,14 @@ ALIASES: dict[str, list[str]] = {
     "role": ["roles", "rbac"],
     "roles": ["rbac", "permissions"],
     "export": ["data", "archive"],
+    # A running job is cancelled ("Cancel" on its row, "Stopping…" until it stops, "no force
+    # kill"): kill, stop and abort are aliases of cancel, so "Cancel the export" and "Kill
+    # the export job" both reach Analytics › Jobs. "stop" is not a key of its own: "stop a
+    # source" or "stop the answer" is not a job to cancel. A runbook run is abandoned
+    # ("Abandon run"), not cancelled, so abandon keeps "Cancel a runbook run" on its case.
+    "cancel": ["stop", "kill", "abort", "abandon"],
+    "kill": ["cancel"],
+    "abort": ["cancel"],
     "backup": ["export", "restore"],
     "upgrade": ["upgrades", "update"],
     "update": ["upgrades", "release"],

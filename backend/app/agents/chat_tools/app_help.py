@@ -210,8 +210,9 @@ def _destinations(hits: list[tuple[Any, float]], query: str, knowledge: Any) -> 
        question ("CSV", "export", "log") never lends its page on its own: "How do I
        export a chart as CSV?" cites chat's Export section first and the audit log's
        Exporting section third, and the audit log is not where a chart is exported;
-       "Kill the export job" keeps Analytics › Jobs, which both the Data export section
-       and the console keywords name.
+       "Cancel the export" cites the Analytics page's Jobs section first and keeps
+       Settings › Organization › Data export too, which both the Data export section
+       and the console labels name.
     3. When nothing matched yet, the other cited sections' breadcrumbs ("Where are
        runbooks?" cites a section of the runbooks page only as its second hit)."""
     labelled = [t.id for t in search_targets(query, knowledge=knowledge)]

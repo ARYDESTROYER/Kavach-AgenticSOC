@@ -164,8 +164,9 @@ Every release starts with a candidate commit on `Testing`:
 The Documentation workflow validates `Testing` and `main`, but publication is gated
 on the exact annotated `vX.Y.Z` tag. Its tag must match `VERSION` and resolve to the
 current `origin/main` commit. Configure the `github-pages` environment to admit the
-`v*` release-tag pattern, and keep **Settings → Pages → Source** set to **GitHub
-Actions**. A `main` push alone must never move the public Stable aliases.
+`v*` release-tag pattern. In the GitHub repository's own settings, on its Pages page,
+keep the build and deployment source set to **GitHub Actions**; this is a GitHub setting,
+not a Console one. A `main` push alone must never move the public Stable aliases.
 
 Use an annotated tag and verify it before pushing:
 
