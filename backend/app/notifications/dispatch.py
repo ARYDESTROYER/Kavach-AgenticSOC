@@ -21,6 +21,7 @@ decision is produced solely by ``decide()``; this module only OBSERVES the saved
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import logging
 import time
@@ -45,6 +46,19 @@ TRIGGER_NEEDS_HUMAN = "needs_human"
 TRIGGER_CLOSED = "closed"
 TRIGGER_MANUAL = "manual"
 TRIGGER_TEST = "test"
+
+
+def _case_write_lock(case_lock: Any, case_id: Any) -> Any:
+    """The case's write lock from ``case_lock`` (``case_id -> lock``) for the
+    ``notifications_sent`` re-read and save, or a no-op context without one, without a
+    case id, or when the lookup fails (Round 16 cross-cutting review)."""
+    if case_lock is None or not case_id:
+        return contextlib.nullcontext()
+    try:
+        return case_lock(str(case_id))
+    except Exception as exc:  # noqa: BLE001 - a lock lookup never blocks the record
+        logger.debug("case lock unavailable for %s: %s", case_id, exc)
+        return contextlib.nullcontext()
 
 
 def _val(obj: Any, name: str, default: Any = None) -> Any:
@@ -624,7 +638,9 @@ class NotificationService:
             await self._audit_send(_val(case, "case_id", "") or "", rec, trigger)
         return sent
 
-    async def notify(self, case: Any, *, save=None, fetch=None) -> list[dict[str, Any]]:
+    async def notify(
+        self, case: Any, *, save=None, fetch=None, case_lock=None,
+    ) -> list[dict[str, Any]]:
         """Evaluate triggers for a freshly-saved case and dispatch all matches.
 
         Fire-and-forget: catches everything. When ``save`` is provided (a coroutine
@@ -633,7 +649,14 @@ class NotificationService:
         scheduled as a DETACHED task, so the ``case`` snapshot it holds may be stale by
         the time it saves; when ``fetch`` (a coroutine ``case_id -> case``) is provided we
         RE-FETCH the case and append ``notifications_sent`` onto the FRESH doc, so a
-        concurrent analyst edit (comment/status/assign) is not clobbered (audit #28)."""
+        concurrent analyst edit (comment/status/assign) is not clobbered (audit #28).
+
+        With ``case_lock`` (``case_id -> lock``, the pipeline's per-case write lock),
+        that re-fetch, the append and the save hold the lock, and only they do: every
+        send has finished before it is taken. A person's action holds the same lock
+        across its own read and save, so a close made between the re-fetch and the save
+        is never erased (Round 16 cross-cutting review). The detached task holds no
+        other lock, so it takes this one alone."""
         all_sent: list[dict[str, Any]] = []
         try:
             prefs = self._safe_prefs()
@@ -647,20 +670,20 @@ class NotificationService:
                 all_sent.extend(await self.dispatch(case, trig))
             if all_sent:
                 try:
-                    target = case
-                    if fetch is not None:
-                        cid = _val(case, "case_id", None) or _val(case, "id", None)
-                        if cid:
+                    cid = _val(case, "case_id", None) or _val(case, "id", None)
+                    async with _case_write_lock(case_lock, cid):
+                        target = case
+                        if fetch is not None and cid:
                             fresh = await fetch(cid)
                             if fresh is not None:
                                 target = fresh  # merge onto the latest, not our stale snapshot
-                    existing = list(_val(target, "notifications_sent", []) or [])
-                    if isinstance(target, dict):
-                        target["notifications_sent"] = existing + all_sent
-                    else:
-                        target.notifications_sent = existing + all_sent
-                    if save is not None:
-                        await save(target)
+                        existing = list(_val(target, "notifications_sent", []) or [])
+                        if isinstance(target, dict):
+                            target["notifications_sent"] = existing + all_sent
+                        else:
+                            target.notifications_sent = existing + all_sent
+                        if save is not None:
+                            await save(target)
                 except Exception as exc:  # noqa: BLE001
                     logger.debug("persist notifications_sent failed: %s", exc)
         except Exception as exc:  # noqa: BLE001

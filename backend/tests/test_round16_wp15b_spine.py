@@ -460,8 +460,9 @@ async def test_b08_the_pipeline_passes_the_store_read(app_state, monkeypatch) ->
     seen: dict[str, Any] = {}
 
     class _Automation:
-        async def run(self, case, prefs, *, save, fetch=None):
+        async def run(self, case, prefs, *, save, fetch=None, case_lock=None):
             seen["fetch"] = fetch
+            seen["case_lock"] = case_lock
             return case
 
     monkeypatch.setattr(app_state.pipeline, "automation", _Automation(), raising=False)
@@ -469,6 +470,8 @@ async def test_b08_the_pipeline_passes_the_store_read(app_state, monkeypatch) ->
                 entity=Entity(type=EntityType.IP, value="192.0.2.81"))
     await app_state.pipeline._maybe_automate(case, Preferences())  # noqa: SLF001
     assert seen["fetch"] is not None
+    # The cross-cutting review: the re-read and the save hold the shared case lock.
+    assert seen["case_lock"] == app_state.pipeline.case_lock
 
 
 # --------------------------------------------------------------------------- #
