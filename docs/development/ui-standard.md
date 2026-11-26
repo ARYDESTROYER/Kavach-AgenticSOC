@@ -2252,8 +2252,12 @@ its two gradient controls; nothing on this page has a palette of its own.
   its `auto` ring; `outline-none` is a permanent transparent outline that forced colours
   paints). On this page the QR code sits centred above the steps, the secret wraps
   instead of being cut off, and the code field and "Verify and sign in" use the sign-in
-  grammar (a 44px field with 16px phone text, a full-width 44px button). "Back to sign
-  in" is left aligned with everything else.
+  grammar (a 44px field with 16px phone text, a full-width 44px button). A refused code
+  shows under the code field as the page's field error (the field `aria-invalid` and
+  described by it, focus kept in it), never in the card's alert above the QR code, which
+  sat off screen on a phone and pushed the field down. Its sections keep the page's 16px
+  rhythm, not the Settings card's 20px. "Back to sign in" is left aligned with everything
+  else.
 - **Loading.** The page waits for the setup status, the single sign-on providers, the
   branding and the Remember me chunk before it paints the form, so nothing flashes or pops
   in. Meanwhile the final shell is in place: the canvas, the appearance group and the

@@ -14,7 +14,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 
-const { brandingMock, setupStatusMock, ssoMock, loginMock, verifyMock, changeMock, enrollSetupMock } =
+const { brandingMock, setupStatusMock, ssoMock, loginMock, verifyMock, changeMock, enrollSetupMock, enrollConfirmMock } =
   vi.hoisted(() => ({
     brandingMock: vi.fn(),
     setupStatusMock: vi.fn(),
@@ -23,6 +23,7 @@ const { brandingMock, setupStatusMock, ssoMock, loginMock, verifyMock, changeMoc
     verifyMock: vi.fn(),
     changeMock: vi.fn(),
     enrollSetupMock: vi.fn(),
+    enrollConfirmMock: vi.fn(),
   }));
 
 vi.mock('@/lib/api', () => {
@@ -54,7 +55,7 @@ vi.mock('@/lib/api', () => {
           verify: (t: string, c: string) => verifyMock(t, c),
           disable: ok({}),
           enrollSetup: (t: string) => enrollSetupMock(t),
-          enrollConfirm: ok({}),
+          enrollConfirm: (t: string, c: string) => enrollConfirmMock(t, c),
         },
         sso: { providers: () => ssoMock(), authorize: ok({ auth_url: 'https://idp/' }) },
       },
@@ -127,6 +128,7 @@ beforeEach(() => {
   verifyMock.mockReset();
   changeMock.mockReset().mockResolvedValue({ ok: true });
   enrollSetupMock.mockReset();
+  enrollConfirmMock.mockReset().mockResolvedValue({});
 });
 
 afterEach(() => {
@@ -177,6 +179,31 @@ describe('Login: mandated two-factor setup (enroll-heading-focus-box, enroll-ste
     const back = screen.getByRole('button', { name: 'Back to sign in' });
     expect(back.closest('.text-center')).toBeNull();
     expect(back).toHaveClass('min-h-11', 'sm:min-h-0');
+  });
+
+  it('shows a refused code under the code field, never above the QR code (review)', async () => {
+    // The card's top alert sat above the QR code: on a phone it was off screen while
+    // the code field was in view, and it pushed the field being retyped down.
+    enrollConfirmMock.mockRejectedValue(new MockApiError(401, 'invalid code'));
+    renderLogin();
+    const field = await toEnrollStep();
+    fireEvent.click(screen.getByRole('checkbox', { name: /I have saved my recovery codes/ }));
+    field.focus();
+    fireEvent.change(field, { target: { value: '000000' } });
+    fireEvent.submit(field.closest('form') as HTMLFormElement);
+    const message = await screen.findByText('That code did not work. Enter the current code from your app.');
+    const region = message.closest('[role="alert"]') as HTMLElement;
+    expect(region).toHaveAttribute('id', 'login-error');
+    expect(region).toHaveClass('login-field-error', 'text-critical-text');
+    // Under the field and above the button, in the code form.
+    expect(field.compareDocumentPosition(region) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    const verify = screen.getByRole('button', { name: 'Verify and sign in' });
+    expect(region.compareDocumentPosition(verify) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(field.closest('form')).toContainElement(region);
+    expect(screen.getAllByText('That code did not work. Enter the current code from your app.')).toHaveLength(1);
+    expect(field).toHaveAttribute('aria-invalid', 'true');
+    expect(field).toHaveAttribute('aria-describedby', 'login-error');
+    await waitFor(() => expect(field).toHaveFocus());
   });
 });
 
@@ -300,6 +327,18 @@ describe('Login: one rhythm (step-rhythm-off-grid)', () => {
     await toMfaStep();
     expect(container.querySelector('form')).toHaveClass('space-y-4');
     expect(container.innerHTML).not.toMatch(/space-y-5|mb-5|mt-3\b/);
+  });
+
+  it('keeps the mandated two-factor setup on the same 16px rhythm (review)', async () => {
+    // ui-standard: rows sit on one 16px rhythm in every mode. The setup step's sections
+    // (the QR code, the steps, the recovery codes and the code form) used the Settings
+    // card's 20px spacing.
+    const { container } = renderLogin();
+    await toEnrollStep();
+    const step = container.querySelector('[data-login-step^="mfa-enroll-required"]') as HTMLElement;
+    expect(step).not.toBeNull();
+    expect(step.innerHTML).not.toMatch(/space-y-5|gap-5/);
+    expect(step.querySelector('.space-y-4')).not.toBeNull();
   });
 
   it('puts the single sign-on Remember me row 16px under Continue', async () => {

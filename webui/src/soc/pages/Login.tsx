@@ -74,6 +74,8 @@ import { Label } from '@/ui/label';
 import { Alert, AlertDescription } from '@/ui/alert';
 import {
   asLoginLayout,
+  FieldError,
+  LOGIN_ERROR_ID as ERROR_ID,
   LoginTextInput,
   OtpInput,
   PasswordInput,
@@ -102,8 +104,6 @@ const LINK_BUTTON =
   'h-auto min-h-11 p-0 text-xs font-normal text-muted-foreground underline-offset-2 hover:text-foreground hover:underline sm:min-h-0';
 /** The primary and single sign-on actions: full width and 44px, like the fields. */
 const ACTION_BUTTON = 'h-11 w-full';
-/** The inline error region's id: the field it belongs to points `aria-describedby` here. */
-const ERROR_ID = 'login-error';
 /** Why the code step went back to the password: its pending token is spent or lapsed. */
 export const MFA_PENDING_SPENT_TEXT = 'Too many wrong codes, or the sign-in step timed out. Sign in again.';
 /**
@@ -173,27 +173,6 @@ const appearance = (
   { mode: 'light', label: 'Light theme', Icon: Sun },
   { mode: 'dark', label: 'Dark theme', Icon: Moon },
 ];
-
-/**
- * The inline error under the field it belongs to: one line in the critical text
- * colour, an optional quieter second line, announced when it appears.
- */
-function FieldError({ message, detail }: { message: string | null; detail?: string | null }) {
-  if (!message) return null;
-  return (
-    <div
-      id={ERROR_ID}
-      role="alert"
-      className="login-field-error flex items-start gap-2 text-base text-critical-text"
-    >
-      <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
-      <div className="min-w-0 break-words">
-        <p>{message}</p>
-        {detail ? <p className="mt-0.5 text-xs text-muted-foreground">{detail}</p> : null}
-      </div>
-    </div>
-  );
-}
 
 // The OOBE password policy MIRRORS the server-side gate in routes_setup.py
 // (min length + not equal to the username + not a trivially-common password) so the
