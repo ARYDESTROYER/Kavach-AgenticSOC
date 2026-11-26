@@ -136,10 +136,13 @@ export function explainChange(input: ChangeExplainInput): Explanation | null {
     if (printed !== input.shown) {
       steps.push({ label: 'Shown', expression: `${printed}, as the chip writes it`, result: input.shown });
     }
+    // A chip that writes the difference in another form (a duration) says both, so the
+    // hover line never equates minutes with "+1h 5m" without saying which is which.
+    const result = printed === input.shown ? input.shown : `${printed}, shown ${input.shown}`;
     return {
       ...base,
       value: diff,
-      summary: `${lead} ${term(now)} - ${term(before)} = ${input.shown}.`,
+      summary: `${lead} ${term(now)} - ${term(before)} = ${result}.`,
       formula: 'now - before',
       steps,
       caveats: input.caveats ?? [],
@@ -310,20 +313,44 @@ export function explainRowSum(input: {
   /** What one row is ("model"). */
   rowNoun: string;
   window: string;
+  /** Where the window comes from (default "The time range above"). */
+  windowSource?: string;
   source: string;
   rounding: string;
+  /**
+   * How far the rows may fall from the total because the server rounds each row on its
+   * own (for spend, half a millionth per row). Within it the sum is still printed, with
+   * the residue said; beyond it the rows do not reach the total. Default: exact.
+   */
+  tolerance?: number;
+  /** Why the rows can fall short of the total ("The summary lists at most 10 models."). */
+  shortfall?: string;
   caveats?: string[];
 }): Explanation | null {
   const { rows, total, term } = input;
   if (!Number.isFinite(total)) return null;
   const sum = rows.reduce((a, r) => a + (Number.isFinite(r.value) ? r.value : 0), 0);
-  const adds = Math.abs(sum - total) <= Math.max(1e-9, Math.abs(total) * 1e-9);
+  const diff = Math.abs(sum - total);
+  const exact = diff <= Math.max(1e-9, Math.abs(total) * 1e-9);
+  const adds = exact || diff <= (input.tolerance ?? 0) + 1e-12;
   const terms = rows.map((r) => term(r.value)).join(' + ');
   const nouns = `${rows.length} ${input.rowNoun}${rows.length === 1 ? '' : 's'}`;
   const caveats = [...(input.caveats ?? [])];
-  if (rows.length && !adds) caveats.unshift(`The ${nouns} add up to ${term(sum)}; the total the server returned is ${term(total)}.`);
+  if (rows.length && !adds) {
+    const why = input.shortfall ? ` ${input.shortfall}` : '';
+    caveats.unshift(`The ${nouns} listed add up to ${term(sum)}; the total the server returned is ${term(total)}.${why}`);
+  } else if (rows.length && !exact) {
+    caveats.unshift(
+      `The server rounds each row and the total on their own, so the rows add up to ${term(sum)} against its total of ${term(total)}.`,
+    );
+  }
   const steps: ExplanationStep[] = rows.length && adds ? [{ label: 'Sum', expression: terms, result: term(sum) }] : [];
-  steps.push({ label: 'Shown', expression: `${term(total)}, rounded`, result: input.shown });
+  if (rows.length && adds && !exact) {
+    steps.push({ label: 'Server total', expression: 'the total the server returned', result: term(total) });
+  }
+  if (term(total) !== input.shown) {
+    steps.push({ label: 'Shown', expression: `${term(total)}, rounded`, result: input.shown });
+  }
   return {
     metric: input.metric,
     title: input.title,
@@ -338,7 +365,7 @@ export function explainRowSum(input: {
     formula: `sum of the ${input.rowNoun} rows`,
     inputs: [
       ...rows.map((r, i) => ({ key: `row_${i}`, label: r.label, value: term(r.value), source: input.source })),
-      { key: 'window', label: 'Window', value: input.window, source: 'The time range above' },
+      { key: 'window', label: 'Window', value: input.window, source: input.windowSource ?? 'The time range above' },
     ],
     steps,
     rounding: input.rounding,
@@ -420,19 +447,32 @@ export function explainWilsonLowerBound(input: {
   if (!base || !interval || !Number.isFinite(input.stored)) return null;
   const stored = `${plain(input.stored * 100, 2)}%`;
   const caveats = [...(input.caveats ?? [])];
-  if (Math.abs(interval.low - input.stored) > 0.0001) {
+  const range = z === 1.96 ? '95% range' : `range at z = ${trimmed(z)}`;
+  const counts = `${count(input.successes)} ${input.successLabel} in ${count(input.n)} ${input.totalLabel}`;
+  // A stored bound these counts do not give is never presented as their 95% bound: the
+  // hover line says what the counts give and that the figure is the stored one.
+  const matches = Math.abs(interval.low - input.stored) <= 0.0001;
+  if (!matches) {
     caveats.unshift(
       `These counts give ${plain(interval.low * 100, 2)}%; the stored ${stored} may come from an earlier evaluation or another confidence level.`,
     );
   }
-  const range = z === 1.96 ? '95% range' : `range at z = ${trimmed(z)}`;
+  const steps = matches
+    ? [...base.steps, { label: 'Shown', expression: `${stored}, to a whole percent`, result: input.shown }]
+    : [
+        ...base.steps,
+        { label: 'Stored', expression: 'the lower bound the tuner stored', result: stored },
+        { label: 'Shown', expression: `${stored}, to a whole percent`, result: input.shown },
+      ];
   return {
     ...base,
     metric: input.metric,
     title: input.title,
     value: input.stored,
     display: input.shown,
-    summary: `${input.shown} is the lower end of the ${range} for ${count(input.successes)} ${input.successLabel} in ${count(input.n)} ${input.totalLabel} (${stored}).`,
+    summary: matches
+      ? `${input.shown} is the lower end of the ${range} for ${counts} (${stored}).`
+      : `${input.shown} is the lower bound the tuner stored (${stored}). The ${range} for ${counts} starts at ${plain(interval.low * 100, 2)}%.`,
     inputs: base.inputs.map((i) =>
       i.key === 'successes'
         ? { ...i, label: capitalise(input.successLabel), source: 'This rule' }
@@ -440,7 +480,7 @@ export function explainWilsonLowerBound(input: {
           ? { ...i, label: capitalise(input.totalLabel), source: 'This rule' }
           : i,
     ),
-    steps: [...base.steps, { label: 'Shown', expression: `${stored}, to a whole percent`, result: input.shown }],
+    steps,
     rounding: 'The bound is stored with 4 decimals and shown as a whole percent.',
     caveats: [
       `It is a lower bound, not the observed ratio (${count(input.successes)} / ${count(input.n)} = ${percentOf(input.successes / input.n)}).`,

@@ -132,8 +132,11 @@ rollup rather than the bounded case list. They are keyed to the selected window 
 comparison mode. When the range changes, the Console keeps the last successful posture
 snapshot visible instead of blanking the tiles, but those figures belong to the old
 range: they turn grey under "Loading 7 days" (the new range), their explanations are
-withheld, and the new range's figures replace them when they arrive. A figure and its
-caption never name two different ranges. A refresh of the same range, a Live tick or the
+withheld, and the new range's figures replace them when they arrive. The same holds below
+the strip: Response time and the Deeper analytics timing figures turn grey under the same
+caption, the flow's open-case count is left out, and a tile's drill-down shows "Loading"
+in place of the old figures. A figure and its caption never name two different ranges. A refresh
+of the same range, a Live tick or the
 refresh button, is not captioned, because the figures on screen are still a real
 measurement of that range. The green Live dot says the page refreshes itself, and the
 refresh button spins while a reload you pressed is in flight. A **first** load, with

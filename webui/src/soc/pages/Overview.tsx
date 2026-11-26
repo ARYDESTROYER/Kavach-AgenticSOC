@@ -998,6 +998,7 @@ function TimingStat({
   dotClass,
   help,
   explain,
+  pending,
 }: {
   label: string;
   sub: string;
@@ -1006,25 +1007,38 @@ function TimingStat({
   help?: string;
   /** Round 16 (WP12): wraps the shown value in its explanation (hover and click). */
   explain?: (value: React.ReactNode) => React.ReactNode;
+  /**
+   * The block belongs to the window being replaced ("Loading 7 days"): the value reads
+   * muted, its explanation is withheld and the detail line says what loads (FXD1).
+   */
+  pending?: string;
 }) {
   const available = block?.available === true;
   const value = available ? humanizeMins(block!.p50) : DASH;
   // p90 beside p50 when the posture rollup reports it (Round 12, additive): the tail is
   // what an operator is paged about, and the server already computes it.
   const p90 = p90Of(block);
-  const detail = available
-    ? `p50 · ${fmtNumber(block!.count)} sample${block!.count === 1 ? '' : 's'}${
-        p90 != null ? ` · p90 ${humanizeMins(p90)}` : ''
-      }`
-    : block?.reason || 'not measured (n/a)';
+  const detail = pending
+    ? pending
+    : available
+      ? `p50 · ${fmtNumber(block!.count)} sample${block!.count === 1 ? '' : 's'}${
+          p90 != null ? ` · p90 ${humanizeMins(p90)}` : ''
+        }`
+      : block?.reason || 'not measured (n/a)';
   return (
-    <div className="min-w-0 py-0.5" title={help}>
+    <div className="min-w-0 py-0.5" title={help} aria-busy={pending ? true : undefined}>
       <div className="flex items-center gap-1.5 text-sm font-medium text-muted-foreground">
         <span className={cn('h-1.5 w-1.5 rounded-full', dotClass)} aria-hidden />
         {label}
       </div>
-      <div className="mt-1.5 text-3xl font-semibold leading-none tabular-nums text-foreground">
-        {explain && available ? explain(value) : value}
+      <div
+        className={cn(
+          'mt-1.5 text-3xl font-semibold leading-none tabular-nums',
+          pending ? 'text-muted-foreground' : 'text-foreground',
+        )}
+        data-pending={pending ? '' : undefined}
+      >
+        {explain && available && !pending ? explain(value) : value}
       </div>
       <div className="mt-1.5 text-sm text-muted-foreground">{sub}</div>
       <div className="text-xs tabular-nums text-muted-foreground" data-timing-detail="">
@@ -4159,8 +4173,16 @@ export default function Overview({ onNavigate }: OverviewProps) {
    * panel labels them as such, because the list it draws underneath reads case pages.
    */
   const kpiMetrics = React.useMemo(
-    () => kpis.map((k) => ({ key: k.testId, label: k.label, value: k.value })),
-    [kpis],
+    () =>
+      kpis.map((k) => ({
+        key: k.testId,
+        label: k.label,
+        // While the window changes the tiles hold the previous window's figures; the
+        // panel already lists the new window's cases, so its switcher says the figures
+        // are loading instead of restating the old ones under the new window (FXD1).
+        value: postureStale ? 'Loading' : k.value,
+      })),
+    [kpis, postureStale],
   );
 
   /**
@@ -4227,7 +4249,8 @@ export default function Overview({ onNavigate }: OverviewProps) {
    */
   const deeperSummary = React.useMemo(() => {
     const parts: string[] = [];
-    for (const t of timing) if (t.value !== DASH) parts.push(`${t.label} ${t.value}`);
+    // The held timing figures belong to the previous window: left out while it changes.
+    if (!postureStale) for (const t of timing) if (t.value !== DASH) parts.push(`${t.label} ${t.value}`);
     if (usageLoad.availability !== 'unavailable' && typeof usage?.total_cost === 'number') {
       parts.push(`${fmtMoney(usage.total_cost, usage.currency)} spend`);
     }
@@ -4251,7 +4274,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
       text: [...parts, ...(signature ? [signature.short] : [])].join(' · '),
       full: [...parts, ...(signature ? [signature.full] : [])].join(' · '),
     };
-  }, [timing, usage, usageLoad.availability, coverage, signatureItems]);
+  }, [timing, postureStale, usage, usageLoad.availability, coverage, signatureItems]);
 
   // ----- The header control cluster --------------------------------------- //
   const headerControls = (
@@ -4380,6 +4403,13 @@ export default function Overview({ onNavigate }: OverviewProps) {
    * its title and caption name what it holds.
    */
   const timingShown = canMetrics ? timing : [];
+  /**
+   * While the window changes, the posture figures below the strip (Response time, the
+   * Deeper analytics timing tiles and the flow's open-case count) are the previous
+   * window's too: they read muted under the same "Loading 7 days" as the strip, with no
+   * explanation, so no figure sits under a caption naming another window (FXD1).
+   */
+  const postureLoadingLabel = postureStale ? `Loading ${windowLabel(hours)}` : undefined;
   const efficiencyTileCount = timingShown.length + (canCost ? 1 : 0);
   const efficiencyShown = efficiencyTileCount > 0 || canSources;
   const efficiencyTitle = canMetrics || canCost ? 'Efficiency and cost' : 'Sources';
@@ -4731,17 +4761,23 @@ export default function Overview({ onNavigate }: OverviewProps) {
                         <NoiseFunnel
                           data={noise}
                           onStageClick={onStageClick}
-                          openCases={{
-                            count: posture?.aging.queue_depth ?? derived.open,
-                            // `queue_depth` is COHORT-scoped (open cases that arrived in the
-                            // window), so its completeness is the window's (`#103`
-                            // `window_covered`). Without a posture rollup the fallback count is
-                            // the fetched page, whose completeness the store proves via
-                            // `window_total_exact`.
-                            partial: posture
-                              ? !postureCovered
-                              : !(caseWindow?.exact === true && caseWindow.total <= cases.length),
-                          }}
+                          // Withheld while the window changes: the held posture counts the
+                          // previous window's open cases, under this flow's new window (FXD1).
+                          openCases={
+                            postureStale
+                              ? undefined
+                              : {
+                                  count: posture?.aging.queue_depth ?? derived.open,
+                                  // `queue_depth` is COHORT-scoped (open cases that arrived in
+                                  // the window), so its completeness is the window's (`#103`
+                                  // `window_covered`). Without a posture rollup the fallback
+                                  // count is the fetched page, whose completeness the store
+                                  // proves via `window_total_exact`.
+                                  partial: posture
+                                    ? !postureCovered
+                                    : !(caseWindow?.exact === true && caseWindow.total <= cases.length),
+                                }
+                          }
                           onOpenCasesClick={onOpenCasesClick}
                           hidden={noiseHidden}
                           onToggleHidden={toggleNoiseHidden}
@@ -5007,6 +5043,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
                             block={mttdBlock}
                             dotClass="bg-info"
                             help={MTTD_HELP}
+                            pending={postureLoadingLabel}
                             explain={(value) => (
                               <TimingExplain
                                 metric="mttd"
@@ -5042,6 +5079,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
                             block={respondBlock}
                             dotClass="bg-success"
                             help={RESPOND_HELP}
+                            pending={postureLoadingLabel}
                             explain={(value) => (
                               <TimingExplain
                                 metric="mtta"
@@ -5181,8 +5219,11 @@ export default function Overview({ onNavigate }: OverviewProps) {
                                 size="fluid"
                                 label={s.label}
                                 value={s.value}
-                                context={measured ? s.sub : undefined}
-                                sub={measured ? undefined : s.sub}
+                                // A held figure of the previous window reads muted under
+                                // "Loading 7 days", with no explanation (FXD1).
+                                pending={postureStale}
+                                context={measured && !postureLoadingLabel ? s.sub : undefined}
+                                sub={postureLoadingLabel ?? (measured ? undefined : s.sub)}
                                 accent={s.accent}
                                 icon={Clock3}
                                 goodDirection="down"
@@ -5193,7 +5234,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
                                 }
                                 askTopic={kpiTopic(s.key)}
                                 explain={
-                                  measured
+                                  measured && !postureStale
                                     ? (numeral) => (
                                         <TimingExplain
                                           metric={s.key}

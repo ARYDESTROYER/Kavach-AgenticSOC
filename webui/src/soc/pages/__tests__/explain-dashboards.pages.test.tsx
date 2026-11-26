@@ -31,6 +31,11 @@ describe('compareChipExplanation', () => {
     expect(exp?.summary).toBe('42 minutes in the last 24 hours and 60 minutes in the 24 hours before. (42 - 60) / 60 x 100 = -30%.');
   });
 
+  it('a title with brackets makes a clean metric id (review fix)', () => {
+    const exp = compareChipExplanation({ value: 4.5, prev: 7, delta_pct: -35.7 }, 'MTTA (p50)', 'minutes', 168);
+    expect(exp?.metric).toBe('mtta_p50_change');
+  });
+
   it('no chip, no explanation', () => {
     expect(compareChipExplanation(undefined, 'FP rate', 'rate', 168)).toBeNull();
     expect(compareChipExplanation({ value: 0.5, prev: 0.5, delta_pct: 0 }, 'FP rate', 'rate', 168)).toBeNull();
@@ -62,6 +67,32 @@ describe('costTotalExplanations', () => {
   it('Today is the UTC day by surface, not the range', () => {
     expect(lines.today?.summary).toMatch(/^\$0\.0500 = \$0\.05 over 1 surface, today, from midnight UTC\.$/);
     expect(lines.today?.caveats).toContain('Today is the calendar day in UTC, not the range above.');
+    // Its window is the calendar day, never "the time range above" (review fix).
+    expect(lines.today?.inputs.find((i) => i.key === 'window')?.source).toBe('The calendar day in UTC');
+    expect(lines.total?.inputs.find((i) => i.key === 'window')?.source).toBe('The time range above');
+  });
+
+  it('rows the server rounded on their own still print their sum (review fix)', () => {
+    // Each row and the total are rounded to 6 decimals on their own: 0.1000004 and
+    // 0.0362194 are stored as 0.1 and 0.036219, their total 0.1362198 as 0.13622.
+    const rounded = { ...data, total_cost: 0.13622, by_model: [
+      { key: 'model-a', cost: 0.1, tokens: 1000, calls: 2 },
+      { key: 'model-b', cost: 0.036219, tokens: 500, calls: 1 },
+    ] };
+    const exp = costTotalExplanations({ data: rounded, currency: 'USD', caption: 'last 7 days' }).total;
+    expect(exp?.summary).toBe('$0.1362 = $0.1 + $0.036219 over 2 models, last 7 days.');
+    expect(exp?.steps.map((s) => s.label)).toEqual(['Sum', 'Server total', 'Shown']);
+    expect(exp?.steps[0].result).toBe('$0.136219');
+    expect(exp?.caveats[0]).toContain('rounds each row and the total on their own');
+  });
+
+  it('a total the listed models do not reach says the list is capped (review fix)', () => {
+    const capped = { ...data, total_cost: 0.5 };
+    const exp = costTotalExplanations({ data: capped, currency: 'USD', caption: 'last 7 days' }).total;
+    expect(exp?.steps.map((s) => s.label)).toEqual(['Shown']);
+    expect(exp?.caveats[0]).toBe(
+      'The 2 models listed add up to $0.136281; the total the server returned is $0.5. The usage summary lists at most 10 models, the most expensive first.',
+    );
   });
 
   it('the change chip is the second half of the range against the first', () => {

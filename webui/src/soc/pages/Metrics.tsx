@@ -611,7 +611,8 @@ export function compareChipExplanation(
   const caption = windowCaption(hours);
   const rate = kind === 'rate';
   return explainChange({
-    metric: `${title.toLowerCase().replace(/[^a-z0-9]+/g, '_')}_change`,
+    // "MTTA (p50)" is `mtta_p50_change`: no doubled or trailing separator.
+    metric: `${title.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '')}_change`,
     title,
     shown: view.label,
     kind: 'relative',

@@ -202,6 +202,11 @@ export function costTotalExplanations(input: {
   const calls = num(data?.call_count);
   const today = num(data?.today_cost);
   const todayRows = groupRows(data?.today_by_surface);
+  // The server rounds each row's spend and the total to 6 decimals on their own, so
+  // their sums can part by half a millionth per row; that residue is said, not hidden.
+  const spendTolerance = (rows: readonly unknown[]) => rows.length * 5e-7;
+  // The summary lists the most expensive models first and at most 10 of them.
+  const modelShortfall = 'The usage summary lists at most 10 models, the most expensive first.';
   let change: Explanation | null = null;
   if (input.hourly && input.shownDelta) {
     const halves = spendHalves(input.hourly);
@@ -236,6 +241,8 @@ export function costTotalExplanations(input: {
           window: caption,
           source: 'Usage summary, by model',
           rounding: amountRounding,
+          tolerance: spendTolerance(models),
+          shortfall: modelShortfall,
         })
       : null,
     tokens: data
@@ -250,6 +257,7 @@ export function costTotalExplanations(input: {
           window: caption,
           source: 'Usage summary, by model',
           rounding: 'From 1,000 tokens the tile shows thousands (K).',
+          shortfall: modelShortfall,
         })
       : null,
     calls: data
@@ -264,6 +272,7 @@ export function costTotalExplanations(input: {
           window: caption,
           source: 'Usage summary, by model',
           rounding: 'Calls are whole numbers.',
+          shortfall: modelShortfall,
         })
       : null,
     today: data
@@ -276,8 +285,11 @@ export function costTotalExplanations(input: {
           term: money,
           rowNoun: 'surface',
           window: 'today, from midnight UTC',
+          // Today is the calendar day, never the range above (its own window source).
+          windowSource: 'The calendar day in UTC',
           source: 'Usage summary, today by surface',
           rounding: amountRounding,
+          tolerance: spendTolerance(todayRows),
           caveats: ['Today is the calendar day in UTC, not the range above.'],
         })
       : null,

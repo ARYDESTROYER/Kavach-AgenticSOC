@@ -76,6 +76,29 @@ describe('explainChange', () => {
     expect(exp?.value).toBe(35);
   });
 
+  it('a difference the chip writes as a duration names both forms (review fix)', () => {
+    const exp = explainChange({
+      metric: 'mttr_p50_change',
+      title: 'MTTR p50',
+      shown: '+1h 5m',
+      kind: 'difference',
+      now: 70,
+      before: 5,
+      words: (n) => `${plain(n, 2)} minutes`,
+      term: (n) => plain(n, 2),
+      unit: ' minutes',
+      window: 'in the last 30 days',
+      beforeWindow: 'in the 30 days before',
+      rounding: 'The chip writes the difference as a duration.',
+      source: 'Server comparison',
+      provenanceNote: 'Computed by the server.',
+    });
+    expect(exp?.summary).toBe(
+      '70 minutes in the last 30 days and 5 minutes in the 30 days before. 70 - 5 = +65 minutes, shown +1h 5m.',
+    );
+    expect(exp?.steps.at(-1)).toEqual({ label: 'Shown', expression: '+65 minutes, as the chip writes it', result: '+1h 5m' });
+  });
+
   it('a relative change from zero says there is nothing to divide by', () => {
     const exp = explainChange({
       metric: 'cost_change',
@@ -159,7 +182,33 @@ describe('explainRowSum', () => {
   it('a total the rows do not reach says so instead of printing a wrong sum', () => {
     const exp = explainRowSum({ ...base, total: 0.2, shown: '$0.2000' });
     expect(exp?.steps.map((s) => s.label)).toEqual(['Shown']);
-    expect(exp?.caveats[0]).toBe('The 2 models add up to $0.136281; the total the server returned is $0.2.');
+    expect(exp?.caveats[0]).toBe('The 2 models listed add up to $0.136281; the total the server returned is $0.2.');
+  });
+
+  it('a rounding residue within the tolerance keeps the sum and says why (review fix)', () => {
+    const exp = explainRowSum({ ...base, total: 0.136282, tolerance: 1e-6 });
+    expect(exp?.summary).toBe('$0.1363 = $0.100062 + $0.036219 over 2 models, last 7 days.');
+    expect(exp?.steps).toEqual([
+      { label: 'Sum', expression: '$0.100062 + $0.036219', result: '$0.136281' },
+      { label: 'Server total', expression: 'the total the server returned', result: '$0.136282' },
+      { label: 'Shown', expression: '$0.136282, rounded', result: '$0.1363' },
+    ]);
+    // Without the tolerance the same residue is a total the rows do not reach.
+    expect(explainRowSum({ ...base, total: 0.136282 })?.steps.map((s) => s.label)).toEqual(['Shown']);
+  });
+
+  it('a window source and a total already in its shown form (review fix)', () => {
+    const exp = explainRowSum({
+      ...base,
+      rows: [{ label: 'a', value: 24 }, { label: 'b', value: 1 }],
+      total: 25,
+      shown: '25',
+      term: count,
+      windowSource: 'The calendar day in UTC',
+    });
+    expect(exp?.inputs.at(-1)?.source).toBe('The calendar day in UTC');
+    // "25, rounded" giving 25 says nothing: no Shown step.
+    expect(exp?.steps).toEqual([{ label: 'Sum', expression: '24 + 1', result: '25' }]);
   });
 });
 
@@ -224,5 +273,13 @@ describe('explainWilsonLowerBound', () => {
   it('a stored bound the counts do not give says so', () => {
     const exp = explainWilsonLowerBound({ ...input, stored: 0.5, shown: '50%' });
     expect(exp?.caveats[1]).toBe('These counts give 88.65%; the stored 50% may come from an earlier evaluation or another confidence level.');
+    // The hover line never calls the stored figure the 95% bound of these counts (review fix).
+    expect(exp?.summary).toBe(
+      '50% is the lower bound the tuner stored (50%). The 95% range for 30 false positives in 30 graded cases starts at 88.65%.',
+    );
+    expect(exp?.steps.slice(-2)).toEqual([
+      { label: 'Stored', expression: 'the lower bound the tuner stored', result: '50%' },
+      { label: 'Shown', expression: '50%, to a whole percent', result: '50%' },
+    ]);
   });
 });

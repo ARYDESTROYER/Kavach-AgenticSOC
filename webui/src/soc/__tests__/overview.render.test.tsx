@@ -1206,6 +1206,32 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
     expect(within(timingRegion).queryByText('45m')).toBeNull();
   });
 
+  it('a drill-down opened while the window changes does not restate the old figures (FXD1 review)', async () => {
+    const requests: Array<{ hours: number; resolve: (value: PostureResponse) => void }> = [];
+    fetchPostureMock.mockImplementation(
+      (hours: number) => new Promise<PostureResponse>((resolve) => requests.push({ hours, resolve })),
+    );
+    const user = userEvent.setup();
+    render(<Overview onNavigate={vi.fn()} />);
+    await screen.findByTestId('page-hero');
+    await waitFor(() => expect(requests).toHaveLength(1));
+    requests[0].resolve({ ...POSTURE_CMP, quality: { ...POSTURE_CMP.quality, terminal_cases: 25 } });
+    await waitFor(() => expect(within(screen.getByTestId('kpi-resolved-closed')).getByText('25')).toBeInTheDocument());
+
+    await user.click(screen.getByRole('button', { name: 'Last 24h, time range' }));
+    await user.click(
+      within(screen.getByRole('group', { name: /Relative time ranges/i })).getByRole('button', { name: /Last 7 days/i }),
+    );
+    await waitFor(() => expect(within(screen.getByTestId('kpi-resolved-closed')).getByText('Loading 7 days')).toBeInTheDocument());
+
+    // The panel lists the new window's cases, so its switcher names no 24h numeral.
+    await user.click(screen.getByTestId('kpi-resolved-closed'));
+    await screen.findByTestId('kpi-drilldown');
+    const entry = screen.getByTestId('kpi-drilldown-metric-resolved-closed');
+    expect(entry).toHaveTextContent('Loading');
+    expect(entry).not.toHaveTextContent('25');
+  });
+
   it('mounts the instrument band: Human vs AI + two donut snapshots + latest cases', async () => {
     render(<Overview onNavigate={vi.fn()} />);
     await screen.findByTestId('page-hero');

@@ -105,6 +105,8 @@ describe('strip cell explanations', () => {
     expect(exp?.display).toBe('at least 167');
     expect(exp?.summary).toBe(`At least 167 alerts, the last 24 hours: a lower bound. ${reason}`);
     expect(exp?.inputs[0]).toMatchObject({ label: 'Counted alerts', value: '167' });
-    expect(exp?.caveats).toEqual([reason]);
+    // The reason is said once, in the summary; the caveat says what it means (review fix).
+    expect(exp?.caveats).toEqual(['The true figure can be higher.']);
+    expect([exp?.summary, ...(exp?.caveats ?? [])].join(' ').split(reason)).toHaveLength(2);
   });
 });

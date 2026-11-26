@@ -410,7 +410,12 @@ export function stripCellExplanation(view: StripCellView, read: DashboardReader,
       summary: `At least ${count(result.value)} ${noun}, ${stockWindow}: a lower bound. ${result.reason ?? ''}`.trim(),
       formula: binding.definition,
       provenanceNote: 'Counted by the server for this window, over the part it could measure.',
-      caveats: [result.reason ?? 'Part of the window was not counted, so the true figure can be higher.'],
+      // The reason is already the summary's second sentence; the caveat says what it means.
+      caveats: [
+        result.reason
+          ? 'The true figure can be higher.'
+          : 'Part of the window was not counted, so the true figure can be higher.',
+      ],
     });
     return base ? { ...base, display: `at least ${count(result.value)}` } : null;
   }

@@ -283,14 +283,18 @@ investigation cost. You need the **View cost** permission to see cost figures.
   gives each legend share, for example `4 critical + 1 high = 5`, then `4 / 5 = 80%`.
 - **Noisiest rules.** The FP rate is the lower end of the 95% Wilson range for the
   analyst-graded false positives, not their ratio. 30 false positives in 30 graded cases
-  reads 89%, not 100%.
+  reads 89%, not 100%. When the stored rate is not what the counts give, the explanation
+  calls it the stored bound and says what the counts give instead.
 - **Auto-close health.** The rate is the cases the AI agent closed on its first decision
   out of the cases decided in the window, shown as a whole percent: 31 of 38 is 81.6%,
   shown 82%.
 - **Spend per investigated case.** Investigation spend divided by the verdicted cases of
   the window. Chat, standup and report spend are left out.
 - **Cost totals.** Total cost, Tokens and LLM calls are the sums of the per-model rows.
-  **Today** is today's calls by surface, from midnight UTC, not the range above.
+  The server rounds each row and the total on their own, so a difference of a millionth
+  is shown as a step, not hidden. The summary lists at most 10 models, the most expensive
+  first; when more models were used, the explanation says the rows fall short of the
+  total. **Today** is today's calls by surface, from midnight UTC, not the range above.
 - **SLA breaches and at risk.** The panel counts the cases opened in the window, and its
   "met" figure opens the attainment's counts. When none of them breached or came close,
   it says so and says how many open cases from earlier are past their response target,
