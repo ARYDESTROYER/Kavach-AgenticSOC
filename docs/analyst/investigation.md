@@ -26,6 +26,16 @@ The configured lookback begins at `now-24h` by default. If it finds no events, t
 manual path can widen through seven days, 30 days, and one year before returning a
 no-events result. Queries remain scoped to connected log sources.
 
+The run searches the main log source first. When that source holds nothing for the
+entity, it looks further, one source at a time: in Demo Mode the other Demo sources,
+otherwise the recent events each push source delivered (its live tail, up to the last
+500 events, held in memory and lost on restart). Other pull sources are not searched.
+A push source set to ignore is never read, and a record the source delivered twice
+counts once. Each source is read through its own field mapping, so an address a QRadar
+LEEF record carries in `src` is found as the **Logs** page shows it. The first source
+with matching events is the one the case is built from. When nothing matches anywhere,
+the page says so and names the widest window searched: the last 365 days.
+
 Manual investigation requires `cases:reinvestigate` when RBAC is enabled.
 
 ## Re-investigate a case

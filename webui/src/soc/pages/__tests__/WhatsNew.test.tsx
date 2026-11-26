@@ -253,7 +253,7 @@ describe('the release tracker', () => {
 
   it('turns the welcome off and on with the personal switch', async () => {
     render(<WhatsNew />);
-    const toggle = screen.getByRole('switch', { name: 'Show after updates' });
+    const toggle = screen.getByRole('switch', { name: "Show What's new after updates" });
     expect(toggle).toBeChecked();
     await userEvent.click(toggle);
     expect(state.patchMisc).toHaveBeenCalledWith({ whats_new_auto: false });

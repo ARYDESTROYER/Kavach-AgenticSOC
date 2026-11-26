@@ -7,7 +7,10 @@ written by the Console through ``PUT /api/prefs/user``, which audits it.
 An account created after an update must not be welcomed to changes that predate it, so
 every path that creates an account (``POST /api/users``, the create branch of single
 sign-on provisioning and ``POST /api/setup/account``) stamps the marker with the newest
-update id bundled with this build, through :func:`stamp_new_account`. The id comes from
+update id bundled with this build, through :func:`stamp_new_account`. So does the
+startup seed of the built-in admin (``AppState.seed_users``), but only on an installation
+whose setup is already complete: before setup completes (a fresh installation, or the
+local demo) that account keeps the welcome. The id comes from
 ``whats_new_latest.json``, which ``scripts/build_release_notes.py`` writes from
 ``docs/releases/notes/`` and checks with ``--check``; the wheel and the image ship it.
 

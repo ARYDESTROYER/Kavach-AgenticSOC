@@ -2627,11 +2627,12 @@ def _top_n(lowered: str, default: int = 10) -> int:
 
 
 #: The AI agent (or automation) closing cases: "auto-closed", "closed automatically",
-#: "did the AI close".
+#: "did the AI close", and the passive "closed by the AI agent" (FXE).
 _AUTO_CLOSE_RE = re.compile(
     r"\bauto[- ]?clos\w*|\bclosed automatically\b|\bautomatically closed\b|"
     r"\b(?:the )?(?:ai|agent|agents|model|llm)\b(?:\s+\w+){0,2}?\s+(?:close|closed|closes|resolve|resolved|"
-    r"resolves)\b")
+    r"resolves)\b|"
+    r"\b(?:closed|resolved) by (?:the |an? )?(?:ai|agents?|model|llm|automation)\b")
 #: A question for a share rather than a count ("what percentage", "what share",
 #: "what proportion", "how much of"). "Share" counts only as the noun ("what share of",
 #: "the share"), never the verb ("share the auto-closed cases with me" wants the cases).

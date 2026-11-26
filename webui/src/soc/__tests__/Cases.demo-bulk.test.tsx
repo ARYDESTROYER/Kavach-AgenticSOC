@@ -111,6 +111,10 @@ describe('Cases bulk bar in Demo Mode', () => {
     const note = await screen.findByTestId('cases-bulk-demo-note');
     expect(note).toHaveTextContent('Bulk changes are off in Demo Mode.');
     const bar = screen.getByRole('region', { name: 'Bulk actions' });
+    // The note takes its own line above the controls, so it never widens their row and
+    // pushes Close and Clear off screen (FXE).
+    expect(note.className).toMatch(/\bbasis-full\b/);
+    expect(bar.firstElementChild?.firstElementChild).toBe(note);
     await waitFor(() =>
       expect(bar.querySelector('button[disabled]')).not.toBeNull(),
     );

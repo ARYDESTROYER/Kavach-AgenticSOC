@@ -140,24 +140,46 @@ describe('Cases bulk actions (W7c)', () => {
     expect(within(bar).getByText('1 selected')).toBeInTheDocument();
   });
 
-  it('does not wrap the bulk bar onto multiple lines and reserves bottom space (#3)', async () => {
+  it('keeps every bulk control on screen and reserves bottom space (#3, FXE)', async () => {
     renderCases();
     await waitFor(() => expect(screen.getByText('Alpha')).toBeInTheDocument());
     fireEvent.click(screen.getByLabelText('Select all cases on this page'));
 
     const bar = await screen.findByRole('region', { name: /bulk actions/i });
-    // The Card is the bar's only child: assert it carries flex-nowrap +
-    // overflow-x-auto and NOT flex-wrap (regression guard for the wrap glitch).
+    // The bar hugs its content up to its ceiling (`w-max`), never the half-width a
+    // `left: 50%` box would wrap at (the old wrap glitch, #3). Past the ceiling the
+    // controls wrap onto a second row; no sideways scroll hides Close and Clear (FXE).
+    expect(bar.className).toMatch(/\bw-max\b/);
     const card = bar.firstElementChild as HTMLElement;
-    expect(card.className).toMatch(/flex-nowrap/);
-    expect(card.className).toMatch(/overflow-x-auto/);
-    expect(card.className).not.toMatch(/flex-wrap\b/);
+    expect(card.className).toMatch(/\bflex-wrap\b/);
+    expect(card.className).not.toMatch(/overflow-x-auto/);
+    expect(card.className).not.toMatch(/flex-nowrap/);
 
     // The page root (PageContainer, which owns the page rhythm since Round 14) reserves
     // bottom space while the bar is visible so the fixed pill never covers the last
     // rows or the pager.
     const pageRoot = card.closest('body')?.querySelector('.page-rhythm');
     expect(pageRoot?.className).toMatch(/pb-28/);
+  });
+
+  it('centres the bulk bar on the main column, never over the navigation rail (FXE)', async () => {
+    // A main column that starts after a 240 px rail on a 1440 px screen.
+    const main = document.createElement('main');
+    main.id = 'socMain';
+    main.getBoundingClientRect = () =>
+      ({ left: 240, width: 1200, right: 1440, top: 0, bottom: 900, height: 900, x: 240, y: 0, toJSON: () => ({}) }) as DOMRect;
+    document.body.appendChild(main);
+    try {
+      renderCases();
+      await waitFor(() => expect(screen.getByText('Alpha')).toBeInTheDocument());
+      fireEvent.click(screen.getByLabelText('Select all cases on this page'));
+      const bar = await screen.findByRole('region', { name: /bulk actions/i });
+      // Centred on the column (240 + 1200 / 2), at most the column less a 16 px gutter each side.
+      await waitFor(() => expect(bar.style.left).toBe('840px'));
+      expect(bar.style.maxWidth).toBe('1168px');
+    } finally {
+      main.remove();
+    }
   });
 
   it('renders Acknowledge as the primary (filled) CTA, not the muted/secondary style (#3)', async () => {

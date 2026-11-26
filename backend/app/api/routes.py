@@ -2623,6 +2623,12 @@ async def investigate(
             detail="The selected source is not an enabled queryable pull source",
         )
     cluster, widest = await _cluster_for_request(state, body, query_source=query_source)
+    if cluster is None and body.entity is not None and not body.source_id:
+        # No source was named and the default one holds nothing: look in the other
+        # sources the Logs page shows, so a push source's entity is found too (FXE).
+        found = await _cluster_from_other_sources(state, body, tried=query_source)
+        if found is not None:
+            cluster, widest, query_source = found
     if cluster is None:
         # NEUTRAL, specific detail so the FE shows an empty-state, not a scary error.
         detail = _no_events_detail(body, widest)
@@ -9408,6 +9414,102 @@ async def _cluster_for_request(
     return cluster, window
 
 
+#: The events of a push source's live-tail ring an entity lookup reads: the whole ring
+#: (``IngestService`` keeps the last 500 events of each source).
+_PUSH_RING_SCAN = 500
+#: The most member events one manual investigation takes, as the pull entity query does.
+_ENTITY_MEMBERS_MAX = 200
+
+
+async def _cluster_from_other_sources(
+    state: AppState, req: InvestigateRequest, *, tried: Any = None,
+) -> tuple[Cluster, str, Any] | None:
+    """An entity the default source does not hold, looked up in the other sources the
+    Logs page shows (FXE): each other Demo source while Demo Mode is on, else each
+    enabled push source's live-tail ring. The first source with events in the widening
+    windows wins, so the case stays single-source like every other case. Returns
+    ``(cluster, window, query_source)``; a push source has no search of its own, so its
+    query source is ``None``, as push ingestion investigates it. Read-only (#1)."""
+    if req.entity is None:
+        return None
+    if getattr(state, "demo_active", False):
+        from ..engine.demo_sources import DEMO_SOURCE_SPECS
+
+        for spec in DEMO_SOURCE_SPECS.values():
+            adapter = state.demo_source_connector(spec.source_id)
+            if adapter is None or adapter is tried:
+                continue
+            cluster, window = await _cluster_for_request(state, req, query_source=adapter)
+            if cluster is not None:
+                return cluster, window, adapter
+        return None
+    found = _push_ring_cluster(state, req)
+    return (found[0], found[1], None) if found is not None else None
+
+
+def _push_ring_cluster(state: AppState, req: InvestigateRequest) -> tuple[Cluster, str] | None:
+    """The entity's events in an enabled push source's live-tail ring, read with that
+    source's own field mapping (the normalised value the Logs page shows), walking the
+    same widening windows as a search. A muted (``ignore``) source is skipped, and an
+    event a live suppression rule or an excluded rule matches is left out, as the
+    search's scope filters leave it out. An event without a time counts as recent: it
+    is in the ring of the newest events. A delivery the source sent again sits in the
+    ring twice under one id; it counts once, as push ingestion correlates it."""
+    from ..engine.ingest import _push_source_role, dedup_by_id
+    from ..utils import dotted_get
+
+    entity = req.entity
+    if entity is None or entity.type not in (EntityType.IP, EntityType.USER, EntityType.HOST):
+        return None
+    ingest = getattr(state, "ingest_service", None)
+    if ingest is None:
+        return None
+    prefs = state.execution_prefs
+    registry = get_registry()
+    windows = _widen_windows(req.lookback or prefs.investigate_lookback)
+    live_rules = [rule for rule in prefs.suppression_rules if rule.is_live()]
+    excluded = set(prefs.excluded_rules or ())
+
+    def kept(ev: RawEvent) -> bool:
+        if ev.entity_value(entity.type) != entity.value:
+            return False
+        if ev.rule and ev.rule in excluded:
+            return False
+        return not any(str(dotted_get(ev.source, rule.field)) == rule.value for rule in live_rules)
+
+    for src in prefs.sources:
+        if not src.enabled or not registry.is_receiver(src.source_type):
+            continue
+        if _push_source_role(src) == "ignore":
+            continue
+        held = dedup_by_id(
+            [ev for ev in ingest.recent_events_for_source(src.id, _PUSH_RING_SCAN) if kept(ev)]
+        )
+        if not held:
+            continue
+        for window in windows:
+            floor = relative_to_millis(window)
+            members = [ev for ev in held if ev.timestamp_millis <= 0 or ev.timestamp_millis >= floor]
+            if members:
+                cluster = cluster_from_events(entity.type, entity.value, members[:_ENTITY_MEMBERS_MAX])
+                cluster.trigger_reason = _manual_trigger_reason(cluster, window)
+                return cluster, window
+    return None
+
+
+def _window_words(window: str) -> str:
+    """A trailing window in words: ``now-365d`` reads "the last 365 days", never the raw
+    token (FXE). Anything else is returned as it is."""
+    import re
+
+    from ..models import humanise_relative_window
+
+    match = re.fullmatch(r"now-(\d+)([mhdw])", str(window or "").strip())
+    if match is None:
+        return str(window)
+    return f"the {humanise_relative_window(int(match.group(1)), match.group(2))}"
+
+
 async def _cluster_for_case(
     state: AppState,
     case,
@@ -9438,7 +9540,7 @@ def _no_events_detail(req: InvestigateRequest, widest: str) -> str:
     if req.entity:
         return (
             f"No events found for {req.entity.type.value} {req.entity.value} "
-            f"in the last {widest}"
+            f"in {_window_words(widest)}"
         )
     if req.event_ids:
         return "No events found for the selected document ids"

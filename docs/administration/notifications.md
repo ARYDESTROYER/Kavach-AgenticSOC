@@ -46,10 +46,13 @@ Its row opens Inbox. The top-bar bell keeps the name **Notifications**. **What's
 lists every release with its highlights and screenshots, newest first, and opens the
 release's notes; the same notes are in the Help Center under
 [What's new](../releases/whats-new.md). After an update, a short welcome shows once when
-a person signs in; **Show What's new after updates** under **Settings → Account →
-Appearance** turns it off for that person. With sign-in turned off, everyone shares one
-set of preferences, so the welcome shows once per installation. A new account starts
-with the current release marked as seen.
+a person signs in; **Show What's new after updates**, on the **What's new** page or under
+**Settings → Account → Appearance**, turns it off for that person. With sign-in turned
+off, everyone shares one set of preferences, so the welcome shows once per installation.
+A new account starts with the current release marked as seen. So does the built-in
+`Admin` account the backend creates when sign-in is turned on after setup is complete.
+Before setup completes (a fresh installation, or the local demo) it is not marked, so
+its first sign-in shows the welcome once.
 
 AI investigations add Inbox items too: the person who started a run gets one when it
 finishes, and a person whose close the run replaced gets one that says so. Runs started
