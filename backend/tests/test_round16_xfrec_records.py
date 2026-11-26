@@ -9,10 +9,18 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
+import subprocess
 from pathlib import Path
 
+import pytest
+
 import app
+from app.agents.chat_tools.app_help import AppHelpTool
+from app.agents.chat_tools.base import ChatToolContext
 from app.api.routes_triage import RUNBOOK_AI_KIND
+from app.config import Preferences
+from app.knowledge import console_grant_pairs
 from app.engine.case_cluster import window_words
 from app.utils import relative_to_millis, now_utc, to_millis
 
@@ -35,6 +43,11 @@ AI_RUN_TEXT_TS = WEBUI / "soc" / "investigations" / "aiRunText.ts"
 AI_RUN_CHIP_TSX = WEBUI / "soc" / "investigations" / "AiRunChip.tsx"
 REMEMBER_TSX = WEBUI / "soc" / "components" / "auth" / "RememberMeControls.tsx"
 APP_SHELL_TSX = WEBUI / "soc" / "AppShell.tsx"
+LOGIN_TSX = WEBUI / "soc" / "pages" / "Login.tsx"
+MFA_CARD_TSX = WEBUI / "soc" / "components" / "MfaSetupCard.tsx"
+REGISTRY_TSX = WEBUI / "soc" / "registry.tsx"
+SHIFT_WIDGET_TSX = WEBUI / "soc" / "dashboard" / "widgets" / "shift.tsx"
+RUN_DEMO_SH = REPO_ROOT / "scripts" / "run-demo.sh"
 ACTIVITY_TEXT_TS = WEBUI / "soc" / "components" / "caseActivityText.ts"
 TRACE_TSX = WEBUI / "soc" / "components" / "TraceTimeline.tsx"
 OVERVIEW_PANEL_TSX = WEBUI / "soc" / "pages" / "casedetail" / "OverviewPanel.tsx"
@@ -209,3 +222,88 @@ def test_the_release_tracker_figure_count_in_the_changelog_matches_the_notes() -
     highlights = [h for update in notes["updates"] for h in update["highlights"]]
     shots = sum(1 for h in highlights if h.get("screenshot"))
     assert f"{shots} of the {len(highlights)} highlights of 0.2.0 have a screenshot" in _flat(_round16_changelog())
+
+
+# --------------------------------------------------------------------------- #
+# XFREC review: each record below was checked against the code it names, and the
+# check is kept, so the record cannot drift from it again.
+# --------------------------------------------------------------------------- #
+def test_the_changelog_names_entity_investigation_as_the_console_does() -> None:
+    """The navigation names the page Entity investigation, so the release notes do too,
+    never "the Investigate page"."""
+    assert "label: 'Entity investigation'" in _read(REGISTRY_TSX)
+    changelog = _flat(_round16_changelog())
+    assert "Investigate page" not in changelog
+    assert "Opening a case or Investigate no" not in changelog
+    assert "Run investigation on Entity investigation) gets a toast" in changelog
+
+
+def _super_admin_context() -> ChatToolContext:
+    from app.rbac.policy import can
+
+    grants = frozenset(pair for pair in console_grant_pairs() if can("super_admin", *pair))
+    return ChatToolContext(prefs=Preferences(), grants=grants, app_version=app.__version__)
+
+
+async def test_every_export_question_the_changelog_names_reaches_jobs_first() -> None:
+    """Each question the CHANGELOG says chat's product help sends to Analytics → Jobs has
+    the Jobs page as its first destination. "Abort the export" was named too, but it
+    cites Settings › Data export first in a near tie, so it is not claimed."""
+    changelog = _flat(_round16_changelog())
+    match = re.search(r"Chat's product help sends (.+?) to Analytics → Jobs", changelog)
+    assert match, "the CHANGELOG no longer names the questions sent to Analytics → Jobs"
+    questions = re.findall(r'"([^"]+)"', match.group(1))
+    assert questions
+    for question in questions:
+        outcome = await AppHelpTool().run(_super_admin_context(), query=question)
+        assert outcome.ok and outcome.console_links, question
+        assert outcome.console_links[0] == "page:batchjobs", (question, outcome.console_links)
+
+
+def test_the_sign_in_phone_target_record_matches_the_setup_card() -> None:
+    """The sign-in record names the phone targets FXC raised to 44 px. While the required
+    two-factor setup's Copy and Download buttons stay 32 px, the CHANGELOG does not say
+    every phone target is 44 px and the Help Center lists them as a limit; once they are
+    raised, the limit goes."""
+    assert "inline-flex h-11 w-11 items-center justify-center rounded-full" in _read(LOGIN_TSX)
+    changelog = _flat(_round16_changelog())
+    assert "the appearance buttons and the password reveal button are at least 44 px tall" in changelog
+    assert "Every phone target is at least 44 px tall" not in changelog
+    small = 'className="h-8 gap-1.5"' in _read(MFA_CARD_TSX)
+    limits = _flat(_read(KNOWN_LIMITS))
+    if small:
+        assert "the Copy, Copy all and Download buttons are smaller than 44 px on a phone" in limits
+    else:
+        assert "Copy, Copy all and Download buttons are smaller than 44 px" not in limits, (
+            "the setup card's buttons were raised: take the limit out of known-limitations.md "
+            "and SPEC 8.3")
+
+
+def test_the_sla_widget_record_says_where_its_link_goes() -> None:
+    """The SLA widget's empty state links to the Standup, which lists the open breaches;
+    there is no case filter for SLA breaches, so the record does not promise one."""
+    assert "label: 'View the open breaches', page: 'standup'" in _read(SHIFT_WIDGET_TSX)
+    changelog = _flat(_round16_changelog())
+    assert "View the open breaches opens the Standup, which lists them." in changelog
+    assert "past their response target, with a link to them" not in changelog
+
+
+def test_the_demo_banner_prints_the_zero_dollar_mock_literally() -> None:
+    """The run-demo.sh banner is an unquoted heredoc, so a bare "$0" printed the script's
+    own name ("forced ./scripts/run-demo.sh mock LLM"). It is escaped and prints "$0"."""
+    bash = shutil.which("bash")
+    if bash is None:
+        pytest.skip("bash is not installed")
+    match = re.search(r"^cat <<BANNER\n.*?^BANNER$", _read(RUN_DEMO_SH), re.MULTILINE | re.DOTALL)
+    assert match, "run-demo.sh has no BANNER heredoc"
+    env = {
+        "PATH": "/usr/bin:/bin", "DEMO_BIND_HOST": "127.0.0.1", "WEBUI_PORT": "5173",
+        "BACKEND_PORT": "8088", "ADMIN_USER": "Admin", "ADMIN_PASS": "demo", "DEMO_MODE": "seeded",
+        "TLSOC_VERSION": "0.2.0", "TLSOC_RELEASE_CHANNEL": "Testing", "SOURCE_BRANCH": "Testing",
+    }
+    banner = subprocess.run(
+        [bash, "-c", match.group(0), "./scripts/run-demo.sh"],
+        capture_output=True, text=True, env=env, timeout=30, check=True,
+    ).stdout
+    assert "(forced $0 mock LLM)" in banner, banner
+    assert "run-demo.sh mock LLM" not in banner

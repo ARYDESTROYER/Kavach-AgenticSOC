@@ -57,18 +57,18 @@ additive audit mapping upgrade too), and no new runtime dependency. Bug ids refe
     case's live narration ends with "Investigation finished". The open trace updates every
     few seconds while the run is under way and does not blank when it ends, and the tab's
     count is the AI's own steps, the same number as the trace's "N AI steps".
-- **Notices when a run ends.** The person who started a manual run (Reinvestigate, or the
-  Investigate page) gets a toast and an Inbox item when it finishes. A person whose close an
-  AI run replaced gets an Inbox item, and the change is recorded as a `case.close_replaced`
-  audit row. When that close was made on the case you are looking at, while the run was
-  queued or running, the page says so in a warning: "The AI investigation replaced your
-  close of CASE-0042. Status: Open · awaiting analyst. Your disposition and note are kept."
-  A close made before you reinvestigated the case is not replaced, so the finish message
-  gives the new status. The Brief's People lane then adds "The AI investigation then
-  replaced the close.", also after a move to Resolved from the status menu. The end of a
-  run is said once: when the finish message or the close dialog says it, the header chip
-  does not say it again. The notices name the needs-human verdict "Needs human review", as
-  the case does.
+- **Notices when a run ends.** The person who started a manual run (Reinvestigate, or Run
+  investigation on Entity investigation) gets a toast and an Inbox item when it finishes. A
+  person whose close an AI run replaced gets an Inbox item, and the change is recorded as a
+  `case.close_replaced` audit row. When that close was made on the case you are looking at,
+  while the run was queued or running, the page says so in a warning: "The AI investigation
+  replaced your close of CASE-0042. Status: Open · awaiting analyst. Your disposition and
+  note are kept." The Brief's People lane says it too: "The AI investigation then replaced
+  the close.", also after a move to Resolved from the status menu. A close made before you
+  reinvestigated the case is not replaced, so the finish message gives the new status. The
+  end of a run is said once: when the finish message or the case's own close or status
+  dialog says it, the header chip does not say it again. The notices name the needs-human
+  verdict "Needs human review", as the case does.
 - **Every number explains itself.** Hover a risk score, verdict, severity, priority, SLA,
   cost or dashboard figure for a one-line formula with the real numbers. Click it, press
   Enter or Space, or tap it for the full calculation: inputs, each step, rounding, where the
@@ -263,8 +263,9 @@ additive audit mapping upgrade too), and no new runtime dependency. Bug ids refe
   - The column is top aligned, so a step change or an error grows the page downward and
     never moves the heading or the field you are retyping. The forced password change shows
     its errors under its fields.
-  - Every phone target is at least 44 px tall, Back and Use line up with the column's right
-    edge, and every step keeps one 16 px rhythm.
+  - On a phone the text links, Back, the Demo Use button, the appearance buttons and the
+    password reveal button are at least 44 px tall, Back and Use line up with the column's
+    right edge, and every step keeps one 16 px rhythm.
   - "Verify and continue" and "Set password & continue" stay enabled, and an empty submit
     says what is missing under the field: "Enter the 6-digit code.", "Enter a recovery
     code." or "Enter a new password.".
@@ -287,7 +288,7 @@ additive audit mapping upgrade too), and no new runtime dependency. Bug ids refe
   `409 open_case_exists` with that case's id, and the bulk reinvestigate job fails that item
   with the same reason. A second request while a run on the case, or on its events, is queued
   or running answers `409 investigation_running`.
-- A run started from the Investigate page counts as a manual run of the person who asked.
+- A run started from Entity investigation counts as a manual run of the person who asked.
 - **The Notifications navigation group is now Communication** (its id stays `notifications`).
   The top-bar bell is still Notifications.
 - **Risk and scores.** Every shown score is rounded half up and coloured by the band of the
@@ -320,11 +321,12 @@ additive audit mapping upgrade too), and no new runtime dependency. Bug ids refe
   section of each case's Evidence tab.
 - Dependabot: the four action bumps from `main` are applied on `Testing`, version updates
   target `Testing`, and the Python base image stays on 3.11.
-- **Screenshots.** The README, INSTALL and Help Center screenshots were captured again for
-  0.2.0, among them the create-admin and second-factor pages and the Case Manager Brief with
-  its Assessment lane, and their alt text and captions match. The pages no longer say their
-  images come from 0.1.13. The 60 review-only release captures moved under `docs/research/`,
-  out of the Help Center bundle.
+- **Screenshots.** Seventeen README, INSTALL and Help Center screenshots were captured again
+  for 0.2.0, among them the create-admin and second-factor pages and the Case Manager Brief
+  with its Assessment lane, and their alt text and captions match. The setup wizard's step
+  images still match 0.2.0 and were kept. The pages no longer say their images come from
+  0.1.13. The 60 review-only release captures moved under `docs/research/`, out of the Help
+  Center bundle.
 
 #### Fixed
 
@@ -334,7 +336,7 @@ additive audit mapping upgrade too), and no new runtime dependency. Bug ids refe
     and escalation stay [B04].
   - One more event no longer sends a candidate a person escalated, acknowledged or put on
     hold to an automatic investigation that could close it as the agent. A person can still
-    ask for the AI from the case or the Investigate page [B05].
+    ask for the AI from the case or from Entity investigation [B05].
   - The deferred drain and the bulk reinvestigate job rebuild a case the way the Reinvestigate
     button does, so one case gets one risk score, and a case whose events aged out no longer
     fails in the job [B06].
@@ -407,8 +409,8 @@ additive audit mapping upgrade too), and no new runtime dependency. Bug ids refe
     [B27].
   - Change owner and Edit tags in Take action stay open instead of closing at once [B28];
     Edit tags and T open the tag editor even when its section of the case facts is folded.
-  - Opening a case or Investigate no longer reads the settings without `settings:read`, so
-    those visits no longer write an Access denied row.
+  - Opening a case or Entity investigation no longer reads the settings without
+    `settings:read`, so those visits no longer write an Access denied row.
   - Risk factor explanations no longer pair the case's current event count with the count used
     at scoring, and the risk arithmetic reproduces the stored score [B13, with B62].
   - The SLA countdown no longer rounds up the time left [B32].
@@ -472,8 +474,8 @@ additive audit mapping upgrade too), and no new runtime dependency. Bug ids refe
     total matches the other panels (56, not 57, in the seeded Demo).
     `GET /api/metrics/trends` clips that bucket; its shape is unchanged.
   - SLA breaches and at risk says it counts the cases opened in the window. With none, it
-    says how many open cases from earlier are past their response target, with a link to
-    them.
+    says how many open cases from earlier are past their response target, and View the open
+    breaches opens the Standup, which lists them.
 - **Cases and Entity investigation.**
   - The Cases bulk bar keeps every action on screen. It is centred on the page beside the
     navigation rail and never covers it, its actions wrap onto a second row instead of
@@ -567,10 +569,10 @@ additive audit mapping upgrade too), and no new runtime dependency. Bug ids refe
   Reports" only when it has a report [B40]. A case cited under an answer's Sources shows its
   case number, and an Add to case comment uses it too [B42]. A local model URL typed with a
   trailing `/v1` works for chat, streamed chat and embeddings instead of calling
-  `/v1/v1/...`. Chat's product help sends "Kill the export job", "Cancel the export" and
-  "Abort the export" to Analytics → Jobs and says how to cancel, and "Cancel a runbook run"
-  to the case's runbook. The Help Center's Analytics page has a Jobs section and names all
-  seven pages the Analytics group opens, and which three share the time range.
+  `/v1/v1/...`. Chat's product help sends "Kill the export job" and "Cancel the export" to
+  Analytics → Jobs and says how to cancel, and "Cancel a runbook run" to the case's runbook.
+  The Help Center's Analytics page has a Jobs section and names all seven pages the
+  Analytics group opens, and which three share the time range.
 - **Release and Help Center.** The top bar no longer offers "Enable updates" on SQLite or
   Elasticsearch deployments, which show "Updates unavailable" [B52]. The Help Center always
   links the published Stable documentation [B54]. Closing the System update panel returns
@@ -590,9 +592,9 @@ additive audit mapping upgrade too), and no new runtime dependency. Bug ids refe
   characters." or "Could not change the password.". Single sign-on buttons for an unnamed
   Google or Microsoft provider read "Sign in with Google" or "Sign in with Microsoft", never
   the internal id: `GET /api/auth/sso/providers` returns the stored display name, empty when
-  none is set, and a long provider name wraps. While Branding sets a light or dark default theme, the
-  first appearance button is named "Use the organization default theme", and the pressed
-  button always matches the theme on screen. Setting up two-factor, at sign-in or in
+  none is set, and a long provider name wraps. While Branding sets a light or dark default
+  theme, the first appearance button is named "Use the organization default theme", and the
+  pressed button always matches the theme on screen. Setting up two-factor, at sign-in or in
   Settings, and turning it off show a fixed sentence too, such as "That code did not work.
   Enter the current code from your app.", never the server's own text.
 - **What's new.** After See all changes the tracker marks the changes that were new to you,
