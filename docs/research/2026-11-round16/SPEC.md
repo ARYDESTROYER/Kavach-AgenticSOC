@@ -3339,6 +3339,12 @@ WP19 is recorded with the release preparation.
 - **The case facts at 1440 px.** With the navigation expanded, the acceptance pass measured the
   detail pane at 819 px, 13 px short of the 52rem the case facts column needs, so the facts
   open as a sheet until the navigation is collapsed or the queue folded.
+- **Three accessibility findings.** The closing sweep (A11Y, §8.2) left `empty-table-header`
+  (minor) on the row-action column of seven tables (Intelligence, Knowledge, Models, Sessions &
+  activity, Users, Roles and the administrator's sessions), `heading-order` (moderate) from
+  `AlertTitle`'s `h5` in three places (Settings, Demo; the Reinvestigate dialog; the close
+  dialog while a run works), and `region` (moderate) on hover content that a scroll opens in a
+  portal outside the landmarks. Each needs a change across several pages or a shared primitive.
 
 ### 8.4 Verification record
 

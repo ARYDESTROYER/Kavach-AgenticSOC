@@ -649,6 +649,18 @@ not affected.
   facts column needs, so the facts open as a side sheet. Collapse the navigation or fold the
   queue with `[` to show them beside the tabs.
 
+### Three accessibility findings remain
+
+The closing accessibility check of 0.2.0 left three findings that are not serious:
+
+- Seven tables, among them Users, Models and Roles & permissions, have a column of row
+  actions with no header text, so a screen reader reads an empty column header there.
+- The title of an alert is a level 5 heading, so a heading level is skipped in the Demo
+  section of Settings, in the Reinvestigate dialog and in the close dialog while an AI run
+  works.
+- A hover card or tooltip that opens while the page scrolls, such as a trend card on
+  Overview, sits outside the page's landmark regions.
+
 ### Screenshots are checked, not decoded
 
 The server never decodes a screenshot's pixels and has no image library. It accepts PNG,

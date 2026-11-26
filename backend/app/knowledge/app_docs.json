@@ -10071,6 +10071,14 @@
    "console": []
   },
   {
+   "id": "releases/known-limitations#three-accessibility-findings-remain:0",
+   "page": "releases/known-limitations.md",
+   "anchor": "three-accessibility-findings-remain",
+   "heading": "Three accessibility findings remain",
+   "text": "The closing accessibility check of 0.2.0 left three findings that are not serious:\n\n- Seven tables, among them Users, Models and Roles & permissions, have a column of row\n  actions with no header text, so a screen reader reads an empty column header there.\n- The title of an alert is a level 5 heading, so a heading level is skipped in the Demo\n  section of Settings, in the Reinvestigate dialog and in the close dialog while an AI run\n  works.\n- A hover card or tooltip that opens while the page scrolls, such as a trend card on\n  Overview, sits outside the page's landmark regions.",
+   "console": []
+  },
+  {
    "id": "releases/known-limitations#screenshots-are-checked-not-decoded:0",
    "page": "releases/known-limitations.md",
    "anchor": "screenshots-are-checked-not-decoded",
