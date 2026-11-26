@@ -224,8 +224,13 @@ describe('Metrics posture (Round 3 / F5)', () => {
       [2, '1 escalated case of 10 cases = 10%, the last 7 days.'],
       [3, '6 resolved or closed cases of 10 cases = 60%, the last 7 days.'],
     ];
+    // The change chips carry their own explanations; this test reads the shares.
+    const shares = () =>
+      within(quality)
+        .getAllByRole('button', { name: /, explain$/ })
+        .filter((el) => !el.getAttribute('data-explain-metric')?.endsWith('_change'));
     for (const [index, summary] of cases) {
-      const trigger = within(quality).getAllByRole('button', { name: /, explain$/ })[index];
+      const trigger = shares()[index];
       await user.click(trigger);
       const panel = await screen.findByRole('dialog');
       expect(panel).toHaveTextContent(summary);
@@ -233,7 +238,7 @@ describe('Metrics posture (Round 3 / F5)', () => {
       await user.keyboard('{Escape}');
     }
     // FP rate, Incident yield, Escalation rate, Containment and Automation rate: five shares.
-    expect(within(quality).getAllByRole('button', { name: /, explain$/ })).toHaveLength(5);
+    expect(shares()).toHaveLength(5);
   });
 
   it('explains the Posture SLA strip: attainment, the counts and the at-risk sum', async () => {

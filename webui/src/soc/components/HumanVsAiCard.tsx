@@ -138,6 +138,13 @@ export interface HumanVsAiCardProps {
    * it is withheld with the counts while they are stale.
    */
   crossReference?: string;
+  /**
+   * An explanation slot for one band's count and share (like `KpiTile` `explain`): given
+   * the band and the rendered figure, it returns the node shown in its place, typically
+   * the figure inside an Explain trigger. Applied only while the shares are shown. The
+   * card imports nothing from the Explain kit, so the kit stays in the caller's chunk.
+   */
+  explainFigure?: (band: 'ai' | 'human' | 'system', figure: React.ReactNode) => React.ReactNode;
   className?: string;
 }
 
@@ -224,6 +231,7 @@ export function HumanVsAiCard({
   stale = false,
   alertsIngested,
   crossReference,
+  explainFigure,
   className,
 }: HumanVsAiCardProps) {
   // A stale partition belongs to the previous window; `windowLabel` already names the
@@ -318,10 +326,17 @@ export function HumanVsAiCard({
                 className="flex min-w-0 flex-wrap items-baseline gap-x-1.5"
                 data-testid={`human-vs-ai-${band.key}-figure`}
               >
-                <span className="text-3xl font-semibold leading-none tabular-nums text-foreground">
-                  {count}
-                </span>
-                <span className="text-xs tabular-nums text-muted-foreground">{pct}</span>
+                {(() => {
+                  const figure = (
+                    <>
+                      <span className="text-3xl font-semibold leading-none tabular-nums text-foreground">
+                        {count}
+                      </span>
+                      <span className="text-xs tabular-nums text-muted-foreground">{pct}</span>
+                    </>
+                  );
+                  return explainFigure && shown && shares ? explainFigure(band.key, figure) : figure;
+                })()}
               </div>
             </li>
           );

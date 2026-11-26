@@ -31,11 +31,14 @@ rests on it. The row stays one control: the line has no buttons, and a screen re
 hears the number in the row's name. Open the case for the full calculation.
 
 On the **Cyber Defence Center** and on a dashboard, the KPI figures and the cells of a KPI
-strip show their formula on hover. On **Analytics**, many figures do, such as MTTR, the
-agreement rate, the FP rate, Average risk, Incident yield, Escalation rate, Containment
-and the Posture SLA strip. The response times (MTTD, Respond, MTTA, MTTR and dwell) also
-read the cases behind the median. The **Cost** page explains its totals the same way, and
-**Team activity** explains its median time to acknowledge.
+strip show their formula on hover, and so do the change chips beside them, the **Human
+vs AI** counts and shares, and the donut snapshots. On **Analytics**, many figures do,
+such as MTTR, the agreement rate, the FP rate, Average risk, Incident yield, Escalation
+rate, Containment, the Posture SLA strip and the change chip of each. The response times
+(MTTD, Respond, MTTA, MTTR and dwell) also read the cases behind the median. The **Cost**
+page explains its totals, its change chip and its averages the same way, and **Team
+activity** explains its median time to acknowledge. [Dashboard figures](#dashboard-figures)
+below lists what each one prints.
 
 On the **Noise Reduction** flow, the Detailed view's **Reduced by** figure is
 `1 - cases that needed a human / alerts ingested`, and its explanation names both counts.
@@ -264,6 +267,39 @@ came from: the price catalog, an operator price override, a self-hosted model (f
 the mock provider or Demo Mode. When a call's recorded cost differs from what its rates
 give, the call says so. Case chat is counted on its own line and is never part of the
 investigation cost. You need the **View cost** permission to see cost figures.
+
+## Dashboard figures
+
+- **Change chips.** A chip beside a rate or a time, such as `+108.9%`, is a relative
+  change: `(now - before) / before x 100`. A rate that goes from 33.33% to 69.64% reads
+  +108.9%, not +36.3 percentage points. The explanation names both values and both
+  windows. A chip beside a count, such as `+8`, is the difference of the two counts. On
+  **Cost**, the chip compares the second half of the range with the first.
+- **Human vs AI.** Each count and share is out of the closed cases that arrived in the
+  window. The shares are whole percents that add up to 100: each share is rounded down,
+  and the points left go to the largest fractions. 45 of 62 is 72.58%, shown 73%. A strip
+  beside the card can show the same count out of the decided cases, a different base.
+- **Donut snapshots.** The hover line adds the severity counts to the centre number and
+  gives each legend share, for example `4 critical + 1 high = 5`, then `4 / 5 = 80%`.
+- **Noisiest rules.** The FP rate is the lower end of the 95% Wilson range for the
+  analyst-graded false positives, not their ratio. 30 false positives in 30 graded cases
+  reads 89%, not 100%.
+- **Auto-close health.** The rate is the cases the AI agent closed on its first decision
+  out of the cases decided in the window, shown as a whole percent: 31 of 38 is 81.6%,
+  shown 82%.
+- **Spend per investigated case.** Investigation spend divided by the verdicted cases of
+  the window. Chat, standup and report spend are left out.
+- **Cost totals.** Total cost, Tokens and LLM calls are the sums of the per-model rows.
+  **Today** is today's calls by surface, from midnight UTC, not the range above.
+- **SLA breaches and at risk.** The panel counts the cases opened in the window, and its
+  "met" figure opens the attainment's counts. When none of them breached or came close,
+  it says so and says how many open cases from earlier are past their response target,
+  with a link to them in Standup.
+- **Trends.** A trend's buckets start on a bucket edge, before the window does. The first
+  bucket counts only the cases that arrived inside the window, and alerts from the
+  window's first hour on, so the chart's total matches the other panels.
+- **Lower bounds.** A strip cell that reads "at least" explains what it counts and why
+  part of the window was not counted.
 
 ## Rounding
 

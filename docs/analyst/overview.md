@@ -130,12 +130,14 @@ successful read: it never moves past the oldest data on screen.
 AI-verdict FP rate, Resolved or closed and Auto-closed come from the server posture
 rollup rather than the bounded case list. They are keyed to the selected window and
 comparison mode. When the range changes, the Console keeps the last successful posture
-snapshot visible instead of blanking the tiles. It no longer captions those numerals
-`Loading …` while a refresh is in flight: on a Live dashboard that fired on every tick,
-and the numbers being captioned were a real measurement, not a placeholder. The green
-Live dot says the page refreshes itself, and the refresh button spins while a reload you
-pressed is in flight. A **first** load, with nothing yet to show, still says so on the
-tiles. The superseded request
+snapshot visible instead of blanking the tiles, but those figures belong to the old
+range: they turn grey under "Loading 7 days" (the new range), their explanations are
+withheld, and the new range's figures replace them when they arrive. A figure and its
+caption never name two different ranges. A refresh of the same range, a Live tick or the
+refresh button, is not captioned, because the figures on screen are still a real
+measurement of that range. The green Live dot says the page refreshes itself, and the
+refresh button spins while a reload you pressed is in flight. A **first** load, with
+nothing yet to show, says so on the tiles. The superseded request
 is cancelled, and a response is published only if its echoed `window_hours` still
 matches the active selector, so a slower earlier request can never repaint either
 tile beneath a newer range. The retained snapshot is always labelled as refreshing,

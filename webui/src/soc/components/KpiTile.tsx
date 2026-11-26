@@ -515,6 +515,18 @@ export interface KpiTileProps {
    * text beside it).
    */
   explain?: (numeral: React.ReactNode) => React.ReactNode;
+  /**
+   * The change chip's explanation slot, like `explain`: given the rendered chip, it
+   * returns the node shown in its place (the chip inside an Explain trigger that names
+   * both values and the arithmetic). Applied only to a tile that is not itself a button.
+   */
+  deltaExplain?: (chip: React.ReactNode) => React.ReactNode;
+  /**
+   * The numeral belongs to a reading that is being replaced (the window changed and its
+   * read has not arrived): it is shown muted and the tile is marked busy, so an old
+   * figure never reads as the new window's. Pair it with a `sub` that says what loads.
+   */
+  pending?: boolean;
   className?: string;
 }
 
@@ -716,6 +728,8 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
       pressed,
       breakBefore = false,
       explain,
+      deltaExplain,
+      pending = false,
       className,
     },
     ref,
@@ -1028,14 +1042,17 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
         </span>
       </span>
     ) : null;
+    // The chip's explanation, when the caller gives one: never inside a tile that is
+    // itself a button (a trigger inside a button is invalid).
+    const shownChip = deltaChip && deltaExplain && !clickable ? deltaExplain(deltaChip) : deltaChip;
     // The comparison words: muted, not a chip, and their own flex item, so the numeral
     // row puts them beside the chip when they fit and under it when they do not. A
     // whitespace text node keeps the figure and the words apart in the text content (a
     // flex container lays no box out for it).
     const deltaNode =
-      deltaChip && deltaPeriod ? (
+      shownChip && deltaPeriod ? (
         <>
-          {deltaChip}{' '}
+          {shownChip}{' '}
           <span
             aria-hidden
             data-kpi-delta-period=""
@@ -1045,7 +1062,7 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
           </span>
         </>
       ) : (
-        deltaChip
+        shownChip
       );
 
     // The in-place partition ("of which"): a real definition list so each band is a
@@ -1238,18 +1255,23 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
               // ("2h 14m") may still take a second line, and only after the smallest step.
               'min-w-0 max-w-full break-normal',
               sizeClass,
-              hero
-                ? // HERO numerals are ink, and colour is a FLAG: only a critical tile that
-                  // actually counts something turns red. A green "resolved" or a red zero
-                  // would be colour saying nothing the number does not. Every strip-chrome
-                  // tile follows this rule (Round 14, page strips).
-                  accent === 'critical' && flagCount !== null && flagCount > 0
-                  ? ACCENT_TEXT.critical
-                  : 'text-foreground'
-                : strip && (accent === 'critical' || accent === 'success')
-                  ? ACCENT_TEXT[accent]
-                  : 'text-foreground',
+              // A numeral being replaced reads muted (the token stays AA on the card),
+              // never in ink or a flag colour that would claim it as current.
+              pending
+                ? 'text-muted-foreground'
+                : hero
+                  ? // HERO numerals are ink, and colour is a FLAG: only a critical tile that
+                    // actually counts something turns red. A green "resolved" or a red zero
+                    // would be colour saying nothing the number does not. Every strip-chrome
+                    // tile follows this rule (Round 14, page strips).
+                    accent === 'critical' && flagCount !== null && flagCount > 0
+                    ? ACCENT_TEXT.critical
+                    : 'text-foreground'
+                  : strip && (accent === 'critical' || accent === 'success')
+                    ? ACCENT_TEXT[accent]
+                    : 'text-foreground',
             )}
+            data-pending={pending ? '' : undefined}
             // WITHHELD arm of the bound grammar: there is no numeral to prefix, so the
             // em dash itself is the mark. The exact sentence is still announced by the
             // `sr-only` sibling below — `title` is the mouse affordance, never the only one.
@@ -1389,6 +1411,7 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
           onClick={onClick}
           aria-haspopup={ariaHasPopup}
           aria-pressed={pressed}
+          aria-busy={pending || undefined}
           data-testid={kpiTestId}
           data-kpi-break={breakBefore && !needsCellRoot ? '' : undefined}
           className={cn(
@@ -1467,6 +1490,7 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
     return (
       <div
         ref={ref as React.Ref<HTMLDivElement>}
+        aria-busy={pending || undefined}
         data-testid={kpiTestId}
         data-kpi-break={breakBefore ? '' : undefined}
         // A static hero tile takes the same full-height column as a clickable one, so its

@@ -211,6 +211,8 @@ import {
 import type { PostureResponse, StatBlock } from './Metrics.posture.api';
 import type { MttrByDecider } from '@/lib/types-metrics-explain';
 import type { Explanation } from '@/lib/explain/types';
+import { ExplainTrigger } from '@/design-system/explain';
+import { explainCloseShare } from '@/lib/explain/builders';
 import { explainCount, explainKpiShare } from '@/soc/components/metrics-explain/builders';
 import { TimingExplain } from '@/soc/components/metrics-explain/TimingExplain';
 import { GrantsUnknownNotice, isPermissionRefusal, usePageGrants } from './PageAccess';
@@ -718,6 +720,20 @@ function TrendChip({
 }
 
 /**
+ * The donut's arithmetic in one line (FXD1): the severity counts that add up to the
+ * centre number, then each legend share with the legend's own rounding (whole percents,
+ * half up), so "4 critical + 1 high = 5 cases from this window still open. 4 / 5 = 80%,
+ * 1 / 5 = 20%." reproduces the ring and its legend. Null with no case to count.
+ */
+export function snapshotFormula(counts: SevCounts, total: number, population: string): string | null {
+  const rows = SEV_ORDER.map((s) => ({ key: s, value: counts[s] })).filter((r) => r.value > 0);
+  if (!rows.length || !(total > 0)) return null;
+  const sum = rows.map((r) => `${fmtNumber(r.value)} ${SEV_LABEL[r.key].toLowerCase()}`).join(' + ');
+  const shares = rows.map((r) => `${fmtNumber(r.value)} / ${fmtNumber(total)} = ${Math.round((r.value / total) * 100)}%`).join(', ');
+  return `${sum} = ${fmtNumber(total)} ${population}. ${shares}${rows.length > 1 ? ', as whole percents' : ''}.`;
+}
+
+/**
  * A compact donut snapshot inside the shared resolved/open instrument column. The parent
  * supplies the panel boundary; this helper intentionally has no card chrome so both states
  * read as one instrument, matching the supplied command-center prototype.
@@ -738,9 +754,16 @@ function SnapshotCard({
   bound,
   roll = true,
   ringPx = SNAPSHOT_RING_PX,
+  population,
   className,
 }: {
   title: string;
+  /**
+   * What the centre number counts, for the hover line's arithmetic ("cases from this
+   * window still open"). With it, the hover card leads with the severity sum and the
+   * legend shares before the arrivals trend.
+   */
+  population?: string;
   /**
    * The window this snapshot counts ("last 24 hours"), right after the title (Round 14,
    * SPEC §4.3.2): the band caption that used to say it for the whole row is gone.
@@ -928,7 +951,19 @@ function SnapshotCard({
         // hover/focus-reachable trend card (WCAG 1.4.13 via MetricHoverTrend).
         // `h-auto`: the wrapper's default `h-full` would take the whole (stretched) card
         // and push the footnote below it.
-        <MetricHoverTrend {...trend} focusable={!onClick} side="top" className="h-auto self-start">
+        <MetricHoverTrend
+          {...trend}
+          focusable={!onClick}
+          side="top"
+          className="h-auto self-start"
+          // The centre number's own arithmetic first (FXD1): the trend below it counts
+          // arrivals per bucket, a different number.
+          preview={
+            population
+              ? { eyebrow: title, population: caption, formula: snapshotFormula(counts, total, population) ?? undefined }
+              : undefined
+          }
+        >
           {body}
         </MetricHoverTrend>
       ) : (
@@ -3298,9 +3333,15 @@ export default function Overview({ onNavigate }: OverviewProps) {
      * A real DEGRADATION still takes the face, unconditionally: an error, or a successful
      * read of a store the server could not measure, in the server's own words. Those are
      * worth a reflow, and they are the reason this slot survives at all.
+     *
+     * A WINDOW CHANGE is the other case with nothing current to caption (FXD1): the
+     * numerals on screen are the previous window's snapshot (`postureStale`, never set by
+     * a LIVE or manual refresh of the same window). The tiles show them muted under
+     * "Loading 7 days" until the new window's read arrives, so a numeral and its
+     * caption never name two different windows.
      */
     const postureSub =
-      postureLoading && !posture
+      postureLoading && (!posture || postureStale)
         ? `Loading ${windowLabel(hours)}`
         : postureError
           ? 'Posture unavailable'
@@ -3920,9 +3961,11 @@ export default function Overview({ onNavigate }: OverviewProps) {
             ],
           }),
     };
+    // While the window changes the figures are the previous window's: no explanation
+    // names the new window over them (FXD1).
     return tiles.map((tile) => ({
       ...tile,
-      drilldown: { ...tile.drilldown, explanation: explanations[tile.testId] ?? null },
+      drilldown: { ...tile.drilldown, explanation: postureStale ? null : (explanations[tile.testId] ?? null) },
     }));
   }, [
     posture,
@@ -3930,6 +3973,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
     postureUnmeasured,
     postureLoading,
     postureError,
+    postureStale,
     humanVsAi,
     hours,
     navigate,
@@ -4517,11 +4561,15 @@ export default function Overview({ onNavigate }: OverviewProps) {
                       density="comfortable"
                       size="fluid"
                       numeral="hero"
-                      // Roll on the first load and on a window change; a refresh (LIVE or
-                      // manual) shows the new value without motion.
+                      // A refresh (LIVE or manual) shows the new value without motion. On
+                      // a window change the previous window's figures stay muted under
+                      // "Loading 7 days" (FXD1) as plain text, so the new window's
+                      // numeral mounts at its own value: a roll from the old figure would
+                      // pass through numbers no window holds, under the new caption.
                       roll={rollKpis}
+                      pending={postureStale}
                       goodDirection={kpi.goodDirection}
-                      countTo={kpi.countTo}
+                      countTo={postureStale ? undefined : kpi.countTo}
                       format={kpi.format}
                       formatCompact={fmtSnapshotCenter}
                       onClick={() => toggleKpiPanel(kpi.testId)}
@@ -4743,6 +4791,20 @@ export default function Overview({ onNavigate }: OverviewProps) {
                       crossReference={
                         crossRefs.aiAgent ? 'AI agent is the same count as Auto-closed above.' : undefined
                       }
+                      // Each count and share explains itself over the window's closed
+                      // cases (FXD1).
+                      explainFigure={(band, figure) =>
+                        humanVsAi.totals ? (
+                          <ExplainTrigger
+                            explanation={explainCloseShare(humanVsAi.totals, band, `the last ${trendSpanLabel(hours)}`)}
+                            className="flex-wrap items-baseline gap-x-1.5"
+                          >
+                            {figure}
+                          </ExplainTrigger>
+                        ) : (
+                          figure
+                        )
+                      }
                       className="h-full w-full"
                     />
                   </div>
@@ -4810,6 +4872,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
                         title="Open cases"
                         windowCaption={windowPhrase}
                         caption="Arrived in this window, still open"
+                        population="cases from this window still open"
                         total={derived.open}
                         delta={snapshotDeltaHonest ? countDelta(derived.open, prev?.open ?? null) : null}
                         bound={snapshotBound}
@@ -4843,6 +4906,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
                         title="Cases resolved"
                         windowCaption={windowPhrase}
                         caption="Arrived in this window, now resolved or closed"
+                        population="cases from this window now resolved or closed"
                         total={derived.resolved}
                         delta={
                           snapshotDeltaHonest ? countDelta(derived.resolved, prev?.resolved ?? null) : null

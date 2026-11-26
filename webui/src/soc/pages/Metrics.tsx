@@ -73,12 +73,15 @@ import {
   fetchMitreCoverage,
   fetchPosture,
   navigatorLayerUrl,
+  type CompareBlock,
   type MitreCoverageResponse,
   type PostureResponse,
   type SlaBreachRow,
 } from './Metrics.posture.api';
 import { deltaView, ratioPct } from './posture.format';
 import { ExplainTrigger } from '@/design-system/explain';
+import { explainChange } from '@/lib/explain/builders';
+import { plain } from '@/lib/explain/rounding';
 import type { Explanation } from '@/lib/explain/types';
 import type { FeedbackAgreementFields, MetricsExplainFields, MttrByDecider } from '@/lib/types-metrics-explain';
 import {
@@ -586,6 +589,48 @@ export function agreementContext(fb: Metrics['feedback'] | undefined, population
 function explainSlot(explanation: Explanation | null | undefined): ((numeral: React.ReactNode) => React.ReactNode) | undefined {
   if (!explanation) return undefined;
   return (numeral) => <ExplainTrigger explanation={explanation}>{numeral}</ExplainTrigger>;
+}
+
+/**
+ * A Performance change chip explained (FXD1): both values of the posture comparison, the
+ * window of each, and the relative change the server rounded, so "+108.9%" beside a rate
+ * reads as relative to the earlier rate, never as percentage points. Null when the chip
+ * is not shown or a value is missing.
+ */
+export function compareChipExplanation(
+  block: CompareBlock | undefined,
+  title: string,
+  kind: 'rate' | 'minutes',
+  hours: number,
+): Explanation | null {
+  const view = deltaView(block);
+  if (!block || !view.show) return null;
+  const now = typeof block.value === 'number' ? block.value : null;
+  const before = typeof block.prev === 'number' ? block.prev : null;
+  if (now === null || before === null) return null;
+  const caption = windowCaption(hours);
+  const rate = kind === 'rate';
+  return explainChange({
+    metric: `${title.toLowerCase().replace(/[^a-z0-9]+/g, '_')}_change`,
+    title,
+    shown: view.label,
+    kind: 'relative',
+    now,
+    before,
+    words: rate ? (n) => `${plain(n * 100, 2)}%` : (n) => `${plain(n, 2)} minutes`,
+    term: rate ? (n) => plain(n * 100, 2) : (n) => plain(n, 2),
+    window: `in the ${caption}`,
+    beforeWindow: `in the ${caption.replace(/^last /, '')} before`,
+    ofPercent: rate,
+    rounding: 'The server divides the two values as shown and rounds the change to one decimal.',
+    source: 'Server comparison',
+    provenanceNote: 'Computed by the server: this window against the window of the same length just before it.',
+  });
+}
+
+function chipSlot(explanation: Explanation | null): ((chip: React.ReactNode) => React.ReactNode) | undefined {
+  if (!explanation) return undefined;
+  return (chip) => <ExplainTrigger explanation={explanation}>{chip}</ExplainTrigger>;
 }
 
 function OperationalTab({ data, rag, memory, openByVerdict, loading, failed, hours, onNavigate }: OperationalTabProps) {
@@ -1324,6 +1369,7 @@ function PerformanceTab({
               }
               goodDirection="down"
               delta={dv.show && typeof dv.value === 'number' ? { value: dv.value, label: dv.label, period: 'vs the previous window' } : undefined}
+              deltaExplain={chipSlot(t.cmp ? compareChipExplanation(compare?.[t.cmp], t.label, 'minutes', hours) : null)}
               testId={`timing-${t.key}`}
             />
           );
@@ -1374,6 +1420,7 @@ function PerformanceTab({
           value={ratioPct(quality.false_positive_rate)}
           context={`${fmtNumber(quality.false_positive_cases)} of ${fmtNumber(quality.verdicted_cases)} verdicted`}
           delta={deltaView(compare?.false_positive_rate)}
+          deltaExplanation={compareChipExplanation(compare?.false_positive_rate, 'FP rate', 'rate', hours)}
           goodDirection="down"
           explanation={explainKpiShare({
             metric: 'fp_rate',
@@ -1396,6 +1443,7 @@ function PerformanceTab({
           value={ratioPct(quality.alert_to_incident_ratio)}
           context={`${fmtNumber(quality.true_positive_cases)} true positives`}
           delta={deltaView(compare?.alert_to_incident_ratio)}
+          deltaExplanation={compareChipExplanation(compare?.alert_to_incident_ratio, 'Incident yield', 'rate', hours)}
           goodDirection="none"
           explanation={explainKpiShare({
             metric: 'incident_yield',
@@ -1416,6 +1464,7 @@ function PerformanceTab({
           value={ratioPct(quality.escalation_rate)}
           context={`${fmtNumber(quality.escalated_cases)} escalated`}
           delta={deltaView(compare?.escalation_rate)}
+          deltaExplanation={compareChipExplanation(compare?.escalation_rate, 'Escalation rate', 'rate', hours)}
           goodDirection="down"
           explanation={explainKpiShare({
             metric: 'escalation_rate',
@@ -1454,6 +1503,7 @@ function PerformanceTab({
           value={ratioPct(quality.automation_rate)}
           context={`${fmtNumber(quality.auto_closed_cases)} closed by the agent`}
           delta={deltaView(compare?.automation_rate)}
+          deltaExplanation={compareChipExplanation(compare?.automation_rate, 'Automation rate', 'rate', hours)}
           explanation={explainKpiShare({
             metric: 'automation_rate',
             title: 'Automation rate',
@@ -1487,6 +1537,7 @@ function QualityTile({
   delta,
   goodDirection,
   explanation,
+  deltaExplanation,
 }: {
   label: string;
   value: string;
@@ -1496,6 +1547,8 @@ function QualityTile({
   goodDirection?: KpiGoodDirection;
   /** Round 16 (WP12): the share's arithmetic, on hover and click. */
   explanation?: Explanation | null;
+  /** The change chip's arithmetic (FXD1). */
+  deltaExplanation?: Explanation | null;
 }) {
   return (
     <KpiTile
@@ -1504,6 +1557,7 @@ function QualityTile({
       context={context}
       goodDirection={goodDirection}
       explain={explainSlot(explanation)}
+      deltaExplain={chipSlot(deltaExplanation ?? null)}
       delta={delta && delta.show && typeof delta.value === 'number' ? { value: delta.value, label: delta.label } : undefined}
     />
   );

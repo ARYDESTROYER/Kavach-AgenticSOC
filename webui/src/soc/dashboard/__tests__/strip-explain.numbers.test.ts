@@ -85,11 +85,26 @@ describe('strip cell explanations', () => {
     expect(exp?.steps).toEqual([]);
   });
 
-  it('a cell with no figure, a lower bound or no access has no explanation', () => {
+  it('a cell with no figure, an approximation or no access has no explanation', () => {
     const binding = cell('executive', 'cases');
     expect(stripCellExplanation(view(binding, null), read, 'last 7 days')).toBeNull();
     expect(stripCellExplanation(view(binding, { ...measured(0, ''), status: 'not_measured', value: null }), read, 'last 7 days')).toBeNull();
-    expect(stripCellExplanation(view(binding, measured(38, '38', { qualifier: 'at least' })), read, 'last 7 days')).toBeNull();
     expect(stripCellExplanation(view(binding, measured(38, '38'), 'denied'), read, 'last 7 days')).toBeNull();
+    const rate = cell('detection', 'alert_reduction');
+    expect(stripCellExplanation(view(rate, measured(77.2, '77%', { qualifier: 'about', reason: 'Part of the window was not counted.' })), read, 'last 24 hours')).toBeNull();
+  });
+
+  it('a lower-bound count explains what it counts and why it is a floor (FXD1 board-figures-unexplained)', () => {
+    // The Detection strip's "at least 167" alerts: the counters missed part of the window.
+    const reason = 'Alert counting started part way through this window.';
+    const exp = stripCellExplanation(
+      view(cell('detection', 'alerts_ingested'), measured(167, '167', { qualifier: 'at least', reason })),
+      read,
+      'last 24 hours',
+    );
+    expect(exp?.display).toBe('at least 167');
+    expect(exp?.summary).toBe(`At least 167 alerts, the last 24 hours: a lower bound. ${reason}`);
+    expect(exp?.inputs[0]).toMatchObject({ label: 'Counted alerts', value: '167' });
+    expect(exp?.caveats).toEqual([reason]);
   });
 });

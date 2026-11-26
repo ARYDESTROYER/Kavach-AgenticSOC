@@ -4159,7 +4159,12 @@ export interface paths {
          *
          *     ``bucket_minutes`` follows the frozen ladder (<=24h → 60, <=72h → 180,
          *     <=168h → 360, else 1440); buckets are UTC-aligned, zero-filled across the whole
-         *     window, newest bucket partial. Cohort counts reuse the exact
+         *     window, newest bucket partial. The FIRST bucket is partial too: it starts on its
+         *     aligned edge, before the window does, and counts only what lies inside the window
+         *     (the cases created from ``now - window_hours`` on, and the alert hours from the
+         *     hour that instant falls in, the same hours the noise funnel sums). So the buckets
+         *     add up to the window's own case count, the figure every other panel shows. Cohort
+         *     counts reuse the exact
          *     ``engine.metrics.quality_metrics`` field/verdict/decision_by semantics so they
          *     reconcile with the posture tiles; ``fp_rate`` mirrors posture's
          *     ``false_positive_rate`` numerator/denominator within the bucket (null when no
