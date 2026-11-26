@@ -308,38 +308,36 @@ export function PersonSheet({
               {person.daily.length === 0 ? (
                 <p className={NOTE}>Nothing recorded in this window.</p>
               ) : (
-                <div className="overflow-x-auto">
-                  <Table aria-label={`Work per day, days in ${timezone}`}>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead className={FIRST_CELL}>Day</TableHead>
-                        {DAY_COLUMNS.map(([id, header], index) => (
-                          <TableHead
+                <Table aria-label={`Work per day, days in ${timezone}`} scrollLabel={`Work per day, days in ${timezone}`}>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className={FIRST_CELL}>Day</TableHead>
+                      {DAY_COLUMNS.map(([id, header], index) => (
+                        <TableHead
+                          key={id}
+                          className={cn('whitespace-nowrap text-right', index === DAY_COLUMNS.length - 1 && LAST_CELL)}
+                        >
+                          {header}
+                        </TableHead>
+                      ))}
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {[...person.daily].reverse().map((day) => (
+                      <TableRow key={day.date}>
+                        <TableCell className={cn('whitespace-nowrap', FIRST_CELL)}>{dayLabel(day.date, now)}</TableCell>
+                        {DAY_COLUMNS.map(([id, , kinds], index) => (
+                          <TableCell
                             key={id}
-                            className={cn('whitespace-nowrap text-right', index === DAY_COLUMNS.length - 1 && LAST_CELL)}
+                            className={cn('text-right tabular-nums', index === DAY_COLUMNS.length - 1 && LAST_CELL)}
                           >
-                            {header}
-                          </TableHead>
+                            {fmtNumber(kinds.reduce((sum, k) => sum + (day.counts[k] ?? 0), 0))}
+                          </TableCell>
                         ))}
                       </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {[...person.daily].reverse().map((day) => (
-                        <TableRow key={day.date}>
-                          <TableCell className={cn('whitespace-nowrap', FIRST_CELL)}>{dayLabel(day.date, now)}</TableCell>
-                          {DAY_COLUMNS.map(([id, , kinds], index) => (
-                            <TableCell
-                              key={id}
-                              className={cn('text-right tabular-nums', index === DAY_COLUMNS.length - 1 && LAST_CELL)}
-                            >
-                              {fmtNumber(kinds.reduce((sum, k) => sum + (day.counts[k] ?? 0), 0))}
-                            </TableCell>
-                          ))}
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
-                </div>
+                    ))}
+                  </TableBody>
+                </Table>
               )}
             </section>
 

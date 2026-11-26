@@ -757,6 +757,49 @@ describe('leaving the Markdown when it does not read', () => {
 });
 
 describe('focus', () => {
+  // B77 (Round 16): an open from the library, Back or Forward removes the link that was used,
+  // so the editor lands on its heading once that heading shows, and only then.
+  it('lands on the heading once it shows after an open from the library', async () => {
+    let resolve: (detail: ReturnType<typeof makeDetail>) => void = () => undefined;
+    mocks.getRunbookDetail.mockImplementation(() => new Promise((r) => (resolve = r)));
+    renderEditor({ landOnHeading: true });
+    // Loading: nothing to land on yet, and the loading header is not the page's heading.
+    expect(document.activeElement).toBe(document.body);
+    await act(async () => resolve(makeDetail()));
+    const heading = await screen.findByRole('heading', { level: 1, name: 'Password spray response' });
+    await waitFor(() => expect(document.activeElement).toBe(heading));
+  });
+
+  it('lands on the heading of a new runbook opened from the library', async () => {
+    renderEditor({ runbookId: 'new', initialDetail: null, landOnHeading: true });
+    const heading = await screen.findByRole('heading', { level: 1, name: 'New runbook' });
+    await waitFor(() => expect(document.activeElement).toBe(heading));
+  });
+
+  it('lands on the "not found" heading when the runbook opened is gone', async () => {
+    mocks.getRunbookDetail.mockRejectedValue(new ApiError(404, 'runbook_not_found', { error: 'runbook_not_found' }));
+    renderEditor({ landOnHeading: true });
+    const heading = await screen.findByRole('heading', { level: 1, name: 'Runbook not found' });
+    await waitFor(() => expect(document.activeElement).toBe(heading));
+  });
+
+  it('moves nothing on a first view, and never takes focus from a control', async () => {
+    renderEditor();
+    await screen.findByRole('heading', { level: 1, name: 'Password spray response' });
+    expect(document.activeElement).toBe(document.body);
+
+    const outside = document.createElement('button');
+    document.body.appendChild(outside);
+    outside.focus();
+    try {
+      renderEditor({ runbookId: 'other', landOnHeading: true });
+      await waitFor(() => expect(screen.getAllByRole('heading', { level: 1, name: 'Password spray response' })).toHaveLength(2));
+      expect(document.activeElement).toBe(outside);
+    } finally {
+      outside.remove();
+    }
+  });
+
   it('returns focus to History when its sheet closes', async () => {
     mocks.getRunbookVersion.mockResolvedValue(makeVersion(1, 'published'));
     renderEditor();

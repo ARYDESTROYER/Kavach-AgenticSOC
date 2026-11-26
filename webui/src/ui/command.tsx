@@ -83,8 +83,12 @@ const CommandSeparator = React.forwardRef<
   React.ElementRef<typeof CommandPrimitive.Separator>,
   React.ComponentPropsWithoutRef<typeof CommandPrimitive.Separator>
 >(({ className, ...props }, ref) => (
+  // A visual divider only. cmdk sets `role="separator"` after the caller's props, and a
+  // listbox may own only options and groups (axe aria-required-children), so the divider
+  // leaves the accessibility tree; the group headings carry the structure.
   <CommandPrimitive.Separator
     ref={ref}
+    aria-hidden
     className={cn('-mx-1 h-px bg-border', className)}
     {...props}
   />

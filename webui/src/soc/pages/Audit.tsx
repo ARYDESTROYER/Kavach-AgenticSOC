@@ -67,6 +67,7 @@ import {
   type AuditView,
 } from '@/soc/components/audit/audit-model';
 import { useDemo } from '@/soc/demo';
+import { useElementWidth } from '@/soc/hooks/useElementWidth';
 import { useMediaQuery } from '@/soc/hooks/useMediaQuery';
 import { pageHash, useRoute, type Navigate } from '@/soc/router';
 
@@ -215,6 +216,14 @@ function AuditLog({ onNavigate }: AuditProps) {
   const phone = useMediaQuery('(max-width: 639.98px)');
   const wide = useMediaQuery('(min-width: 1280px)');
   const layout: AuditTableLayout = phone ? 'phone' : wide ? 'wide' : 'medium';
+  // The table follows the width the list really has, not the viewport: from 768 px the docked
+  // rail takes 240 px of it (B72). Medium needs its 656 px of fixed columns plus a 160 px
+  // Summary, wide its 832 px plus 160. The viewport decides until the first measurement; the
+  // control band and the inspector keep the viewport's `phone` and `wide`.
+  const [listPanel, setListPanel] = React.useState<HTMLElement | null>(null);
+  const listWidth = useElementWidth(listPanel);
+  const tableLayout: AuditTableLayout =
+    listWidth == null ? layout : listWidth < 816 ? 'phone' : listWidth < 992 ? 'medium' : 'wide';
   const canExport = useCan('audit', 'export');
   const canFullExport = useCan('data_export', 'export');
   const canOpenCase = useCan('cases', 'read');
@@ -770,10 +779,10 @@ function AuditLog({ onNavigate }: AuditProps) {
     body = (
       <>
         {loadError}
-        <Panel as="div" padding="none" aria-busy={stale || undefined} className={cn(stale && 'opacity-70')}>
+        <Panel ref={setListPanel} as="div" padding="none" aria-busy={stale || undefined} className={cn(stale && 'opacity-70')}>
           <AuditTable
             items={items}
-            layout={layout}
+            layout={tableLayout}
             zone={zone}
             onZoneChange={changeZone}
             order={order}

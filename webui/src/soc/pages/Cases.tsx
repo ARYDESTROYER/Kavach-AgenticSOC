@@ -2527,7 +2527,7 @@ const BulkActionBar: React.FC<{
                 Assign
               </Button>
             </PopoverTrigger>
-            <PopoverContent className="w-60" side="top">
+            <PopoverContent aria-label="Assign" className="w-60" side="top">
               <div className="space-y-2">
                 <label
                   htmlFor="bulk-assignee"
@@ -2567,7 +2567,7 @@ const BulkActionBar: React.FC<{
                 Add tag
               </Button>
             </PopoverTrigger>
-            <PopoverContent className="w-60" side="top">
+            <PopoverContent aria-label="Add tag" className="w-60" side="top">
               <div className="space-y-2">
                 <label
                   htmlFor="bulk-tag"

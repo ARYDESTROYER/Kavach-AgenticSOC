@@ -436,7 +436,7 @@ export function NotificationBell({
           ) : null}
         </Button>
       </PopoverTrigger>
-      <PopoverContent align="end" className="w-80 p-0" sideOffset={8}>
+      <PopoverContent align="end" aria-label="Notifications" className="w-80 p-0" sideOffset={8}>
         <div className="flex items-center justify-between gap-2 px-3 py-2.5">
           <p className="flex items-center gap-1.5 text-sm font-semibold text-foreground">
             <Bell className="h-3.5 w-3.5 text-muted-foreground" aria-hidden />

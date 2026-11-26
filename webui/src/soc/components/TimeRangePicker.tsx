@@ -478,7 +478,7 @@ export function TimeRangePicker({
             )}
           </Button>
         </PopoverTrigger>
-        <PopoverContent align="start" className="w-64 p-3">
+        <PopoverContent align="start" aria-label="Time range" className="w-64 p-3">
           <div className="mb-2 text-xs font-medium text-muted-foreground">Quick ranges</div>
           {/* A labelled GROUP of plain buttons, NOT a listbox/option composite (each
               button is its own tab stop with Enter/Space activation and there is no

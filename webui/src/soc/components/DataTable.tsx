@@ -729,6 +729,29 @@ export function DataTable<T>({
 
   const fadeRight = useOverflowRight(scrollEl, [rows, displayColumns, showEmptyState]);
 
+  // A pinned leading column would cover the control keyboard focus scrolls into view (WCAG
+  // 2.2 SC 2.4.11, technique C43; the band rule PageHeader follows vertically). Pad the
+  // scroller's inline start by the pinned cells' right edge, checkbox column included, so the
+  // browser stops the scroll short of them. The pinned cell keeps its place at any
+  // scrollLeft, so its rect relative to the scroller is stable (offsetLeft is not).
+  React.useLayoutEffect(() => {
+    if (!stickyFirstColumn || !scrollEl) return undefined;
+    const lead = scrollEl.querySelector<HTMLElement>('thead th[data-sticky-lead]');
+    if (!lead) return undefined;
+    const apply = () => {
+      const edge = lead.getBoundingClientRect().right - scrollEl.getBoundingClientRect().left - scrollEl.clientLeft;
+      scrollEl.style.setProperty('scroll-padding-inline-start', `${Math.max(0, Math.round(edge))}px`);
+    };
+    apply();
+    const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(apply) : null;
+    observer?.observe(lead);
+    observer?.observe(scrollEl);
+    return () => {
+      observer?.disconnect();
+      scrollEl.style.removeProperty('scroll-padding-inline-start');
+    };
+  }, [stickyFirstColumn, scrollEl, displayColumns, selectable]);
+
   // The leading/trailing cell of every row: the panel inset when the table bleeds to a
   // panel edge, so the first column lines up with the panel title.
   const firstDataIndex = 0;
@@ -805,6 +828,7 @@ export function DataTable<T>({
                       key={col.id}
                       scope="col"
                       density={density}
+                      data-sticky-lead={stickyCell || undefined}
                       style={col.width ? { width: cssLength(col.width) } : undefined}
                       className={cn(
                         // Header typography (12px medium, sentence case, muted) comes

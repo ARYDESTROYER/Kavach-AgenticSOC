@@ -170,7 +170,7 @@ export function AutoCloseReviewBody({ data }: { data: AutoCloseReviewMetrics }) 
         </div>
       </dl>
       {data.by_rule.length ? (
-        <Table aria-label="Auto-close review by rule" containerClassName="pb-1">
+        <Table aria-label="Auto-close review by rule" scrollLabel="Auto-close review by rule" containerClassName="pb-1">
           <TableHeader>
             <TableRow>
               <TableHead density="compact">Rule</TableHead>

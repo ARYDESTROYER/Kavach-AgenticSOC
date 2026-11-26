@@ -191,7 +191,7 @@ export const SavedViewsBar: React.FC<SavedViewsBarProps> = ({
             Save view
           </Button>
         </PopoverTrigger>
-        <PopoverContent className="w-64" align="start">
+        <PopoverContent aria-label="Save view" className="w-64" align="start">
           <div className="space-y-2">
             <label htmlFor="saved-view-name" className="block text-xs font-medium text-muted-foreground">
               Name this view
