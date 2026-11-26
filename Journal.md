@@ -12889,3 +12889,48 @@
 - Tests: on the merged tree, the WP16C test files 664 passed; typecheck, lint and design gates clean; bundle-first-paint fails only on the entry budget.
 - Status: done, with the entry budget open.
 - Next: WP16P (entry trim and post-integration fixes) and, in parallel, the cross-cutting review finders.
+
+
+### 2026-11-26 12:00Z - XFB sub-agent - Cross-cutting review backend fixes (spine and security)
+- Context: package XFB of Round 16. Fix the confirmed backend findings of the cross-cutting review of the integrated tree (brief xcut-fix-backend.md).
+- Did:
+  - The cross-source link write, threshold automation and the notifier now hold the case write lock from their re-read to their save. They never hold it during a send.
+  - ThresholdAutomation.run and NotificationService.notify gained a case_lock keyword. The pipeline and the Demo HITL seed pass the shared lock.
+  - The link write takes the case lock alone. It no longer waits for a run on the linked case.
+  - The event-detection re-entry and the Demo event batch pass known_case_id. The D10 re-read now covers the drain and detection triggers, so a close made during the gate wait mints no second case. handle_clusters is unchanged.
+  - The analyst-policy close carries notifications_sent and the three cross-source link fields.
+  - GET /api/standup returns cost null without cost:view.
+  - decide() and risk.py are untouched; no model call was added.
+  - Commit 0b4cd6d on r16-xfb.
+- Tests:
+  - New test_round16_xfb_crosscut.py (14 tests). Extended the carry test and the B08 stub.
+  - 12 tests fail with the app changes reverted. The two guards were proven by partial reverts.
+  - Full backend suite: 13,758 passed, 29 skipped, 5 sandbox-only environment failures. Those pass with the proxy and AWS variables unset.
+  - ruff fatal clean; check_version, check_ci_contract, check_docs and build_app_knowledge --check pass.
+- Status: done.
+- Next: the records package amends the SPEC lock wording for B09, WP08 (_reenter_detections passes known_case_id; the re-read covers drain and detection) and WP15B (the policy builder carries notifications_sent and the links). It also adds the CHANGELOG Fixed lines.
+
+### 2026-11-26 15:30Z - XFB review sub-agent - Adversarial review of the cross-cutting backend fixes
+- Context: independent review of package XFB (r16-xfb from 9a94df2) against the cross-cutting brief, the skeptics' corrected fixes and the Round 16 SPEC (B08, B09, WP08 D10 and the case lock, D11).
+- Did:
+  - Checked the lock design. Automation takes the case lock inside the signature lock. The notifier, the link write and the Demo seed take it alone. No writer holds it during a send. No path waits for a signature lock or the review store lock while it holds a case lock. Every save under a signature lock re-reads under the case lock, so moving the link write is safe.
+  - Re-proved all regressions by reverting each fix and wiring line one at a time.
+  - Fixed the drift in the generated API types: the standup docstring is the OpenAPI description. Regenerated openapi.json and api-types.gen.ts.
+  - Corrected two stale link-lock comments (ingest, poller) and the CaseLocks lock-order note.
+  - Made the policy carry assertion check a non-empty record.
+  - decide() and risk.py are untouched; no model call was added.
+  - Commits b56b587 and 375e2c4 on r16-xfb.
+- Tests:
+  - Spine modules pass.
+  - Full backend suite: 13,758 passed, 29 skipped, 5 sandbox-only failures. Those pass with the proxy and AWS variables unset.
+  - ruff fatal clean; check_version, check_ci_contract, check_docs and build_app_knowledge --check pass.
+  - check:types, typecheck and gates pass.
+- Status: done.
+- Next: the records package amends the SPEC lock wording for B09, section 2, Appendix C C10 and the WP08 case-lock and re-entry bullets. It also writes the CHANGELOG Fixed lines from this report.
+
+### 2026-11-26 06:20Z - orchestrator - XFB merged into the Round 16 branch
+- Context: cross-cutting review of the integrated tree, backend fix package XFB (spine and security findings).
+- Did: merged r16-xfb (0b4cd6d, b56b587, 375e2c4) into claude/round16 as 5514f23. decide() and risk.py unchanged.
+- Tests: the package's whole backend suite (13,758 passed, 29 skipped, 5 sandbox-only environment failures); the reviewer re-proved 11 regressions by single reverts; check:types clean after the regeneration.
+- Status: done.
+- Next: merge WP16P, XFDEMO, XFNUM, XFSIGN, XFCM, WP17A, WP18B and WP18C as their reviews finish; then the docs fix package, the full gates, WP17B screenshots, WP19.
