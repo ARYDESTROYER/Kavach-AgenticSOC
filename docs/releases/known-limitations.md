@@ -575,7 +575,15 @@ A provider's default role and each group mapping must be a built-in role, and a 
 role name is refused when the provider is saved. Mapping a group to a custom role is in
 the backlog. A provider saved before 0.2.0 with a custom role value is kept as stored
 until it is next changed. Give an SSO user custom-role grants on their account after
-their first sign-in.
+their first sign-in. A generic OIDC provider saved with no display name shows its id on its
+sign-in button; give it a display name.
+
+### Two-factor setup screens differ
+
+The optional **Secure your account** step of the first-run setup keeps the Settings card
+layout: the QR code beside the text, a secret that is cut off, and a smaller code field. In
+the required two-factor setup on the sign-in page, the "I have saved my recovery codes" box
+and the Copy, Copy all and Download buttons are smaller than 44 px on a phone.
 
 ### Cost figures in recorded text follow cost:view, but search still matches them
 
@@ -601,6 +609,45 @@ The seeded Demo runs with the tenant's asset criticality map, which is normally 
 its user and host cases score about 10 to 40 and their impact reads low. A Demo asset map
 would raise about half of the seeded scores by some 9 points and change two seeded
 cases; it is not shipped.
+
+### The Demo does not show every live behaviour
+
+- A change to the auto-close policy in **Settings** changes the sentence in a case's
+  Decision lane, but the Demo keeps deciding with its own policy, so the two disagree until
+  you undo the change.
+- The Demo runs every AI investigation at once, without the investigation slots, so "AI
+  queued" and the queue's notice about waiting runs never show there.
+- The seeded cases were decided without a recorded gate, so their decision explanations use
+  today's thresholds until you reinvestigate a case.
+
+### Entity investigation searches one pull source
+
+With no source named, **Run investigation** on Entity investigation searches the main log
+source first, then, in Demo Mode, the other Demo sources, or otherwise the recent events each
+push source delivered (up to its last 500, held in memory). Other pull sources are not
+searched, so name the source when the entity's events are in one of them. The first source
+with matching events builds the case, even when a later source matches in a shorter window.
+
+### A lookback in months is read as minutes
+
+A lookback written with an upper-case `M` for months, such as `now-1M`, is searched as one
+minute, while the case's sentence says "in the last month". Write months as days (`now-30d`).
+The default lookback and the widening windows (24 hours, 7 days, 30 days and 365 days) are
+not affected.
+
+### Small gaps in AI run signals and explanations
+
+- In a bulk close or status dialog, the end of an AI run on the case you are looking at is
+  announced twice: once by the dialog's note and once by the case header's chip.
+- Chat answers and the knowledge text show a case's trigger sentence as it was stored, so a
+  severity range with the same number at both ends reads as a range there. The Console reads
+  it as one value.
+- The auto-close review medians on Agent effectiveness show no worked median, and the
+  explanation of why a case was investigated still names the feed setting `severity_floor`
+  in the engine's spelling.
+- At 1440 px with the navigation expanded, the case page is a little narrower than the case
+  facts column needs, so the facts open as a side sheet. Collapse the navigation or fold the
+  queue with `[` to show them beside the tabs.
 
 ### Screenshots are checked, not decoded
 

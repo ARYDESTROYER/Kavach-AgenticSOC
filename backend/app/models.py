@@ -1738,8 +1738,9 @@ class TraceSpan(BaseModel):
     id: str = Field(default_factory=lambda: new_id("span-"))
     case_id: str = ""
     step_index: int = 0
-    # invoke_agent | chat | execute_tool | decision | person | system (Round 16: a
-    # person's row and a deterministic actor's row, ``routes_triage._span_kind``)
+    # invoke_agent | chat | runbook_ai | execute_tool | decision | person | system
+    # (Round 16: a person's row, a deterministic actor's row and runbook AI help,
+    # ``routes_triage._span_kind``)
     kind: str = ""
     name: str = ""
     ts: str = Field(default_factory=iso_now)

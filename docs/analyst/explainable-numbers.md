@@ -37,8 +37,10 @@ such as MTTR, the agreement rate, the FP rate, Average risk, Incident yield, Esc
 rate, Containment, the Posture SLA strip and the change chip of each. The response times
 (MTTD, Respond, MTTA, MTTR and dwell) also read the cases behind the median. The **Cost**
 page explains its totals, its change chip and its averages the same way, and **Team
-activity** explains its median time to acknowledge. [Dashboard figures](#dashboard-figures)
-below lists what each one prints.
+activity** explains its median time to acknowledge, overall and for each person. The
+**Standup** explains every figure, and on **Agent effectiveness** each outcome tile and each
+comparison figure works its calculation when the server sends its counts.
+[Dashboard figures](#dashboard-figures) below lists what each one prints.
 
 On the **Noise Reduction** flow, the Detailed view's **Reduced by** figure is
 `1 - cases that needed a human / alerts ingested`, and its explanation names both counts.
@@ -222,6 +224,14 @@ decision. A case decided earlier has no recorded thresholds, so the panel uses t
 policy and says so. If the newest investigation run failed, the panel says the code
 routed the case to a person.
 
+The AI confidence is reported by the AI with its verdict; when the decision recorded its
+gate, the panel names the run whose verdict it compared. **Why was this investigated?**
+prints the routing score with two decimals and works it as the weighted sum of the
+available factors divided by their weights, for example
+`(0.25 x 58.56 + 0.20 x 9.69 + 0.15 x 20) / 0.60 = 32.63`. It uses today's settings, so it
+can differ from what happened when the case was investigated. The score is compared with
+the floor unrounded, so it is never shown as a whole number.
+
 ## SLA clocks
 
 The SLA phrase in the case header explains its clock: the priority and its target, when
@@ -236,7 +246,9 @@ the clock started, the first human response, the time elapsed and the state.
 - The resolution clock stops when the case is first resolved or closed, and runs again if
   the case is reopened.
 - A running clock is **at risk** from 80% of its target and **breached** once it is past
-  the target.
+  the target. A running clock's panel shows **Time left** (the target minus the time
+  elapsed, rounded down as the due line shows it), and a breached clock's **Over by** (the
+  time elapsed minus the target).
 
 The default targets are:
 
@@ -273,8 +285,9 @@ investigation cost. You need the **View cost** permission to see cost figures.
 - **Change chips.** A chip beside a rate or a time, such as `+108.9%`, is a relative
   change: `(now - before) / before x 100`. A rate that goes from 33.33% to 69.64% reads
   +108.9%, not +36.3 percentage points. The explanation names both values and both
-  windows. A chip beside a count, such as `+8`, is the difference of the two counts. On
-  **Cost**, the chip compares the second half of the range with the first.
+  windows, and a rate's chip also prints the counts behind both, such as "69.64% (39 of 56
+  verdicted cases)". A chip beside a count, such as `+8`, is the difference of the two
+  counts. On **Cost**, the chip compares the second half of the range with the first.
 - **Human vs AI.** Each count and share is out of the closed cases that arrived in the
   window. The shares are whole percents that add up to 100: each share is rounded down,
   and the points left go to the largest fractions. 45 of 62 is 72.58%, shown 73%. A strip
@@ -283,8 +296,9 @@ investigation cost. You need the **View cost** permission to see cost figures.
   gives each legend share, for example `4 critical + 1 high = 5`, then `4 / 5 = 80%`.
 - **Noisiest rules.** The FP rate is the lower end of the 95% Wilson range for the
   analyst-graded false positives, not their ratio. 30 false positives in 30 graded cases
-  reads 89%, not 100%. When the stored rate is not what the counts give, the explanation
-  calls it the stored bound and says what the counts give instead.
+  reads 89%, not 100%. The explanation names the z the tuner uses, 1.96 (95%) unless an
+  administrator changed it. When the stored rate is not what the counts give, the
+  explanation calls it the stored bound and says what the counts give instead.
 - **Auto-close health.** The rate is the cases the AI agent closed on its first decision
   out of the cases decided in the window, shown as a whole percent: 31 of 38 is 81.6%,
   shown 82%.
@@ -316,6 +330,8 @@ investigation cost. You need the **View cost** permission to see cost figures.
   and show what the stored factors give, for example "Risk 20.81, from the unrounded
   factors. The stored factors give (...) / 1.00 = 20.82."
 - A percentage is shown with at most one decimal: `0.9654` is shown as `96.5%`.
+- A percentile step prints its operands with enough decimals that the printed sum gives
+  the printed result.
 - Time left on an SLA is rounded down, so "due in 1h" never means more than one hour
   remains. Under a minute reads "under 1m".
 - An amount of a dollar or more is shown with 2 decimals, and a smaller one with 4. A

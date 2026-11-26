@@ -221,6 +221,14 @@ Repro: seeded Demo, light theme, open
 the Runbooks merge. Screenshots: `defect-response-phase-contrast-390-light.png` and
 `case-runbook-1440-light.png`.
 
+**Fixed after this receipt.** XFUI2 (`be6f00b`, review `f910caa`) raised the selected phase
+caption to the foreground ink (`PHASE_CAPTION_INK` in `PhaseTabs.tsx`): 12.36:1 in light and
+11.13:1 in dark on the panel's selected fill. Contrast-gate bar 6, text on a selected fill,
+measures the foreground on `--accent` and `--panel-accent` in both themes, so the pair cannot
+regress. After the fix, the XFUI2 build and its independent review each ran axe on the
+Response tab and the case header in light and dark at 1440, 768 and 390 px and found 0 serious
+or critical issues. The review rerun below was made before the fix and saw the same node.
+
 ## 9. Overflow and console errors
 
 - **Horizontal overflow**: none. On all 54 rows of the page sweep and the 12 sign-in rows,
