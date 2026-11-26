@@ -195,7 +195,7 @@ const HINT = 'no dist/ build present — run `vite build` first (CI/integrator d
  * useAgentSteps) out of the shell's event stream module into lib/agentSteps.ts, which only the
  * lazy case activity feed imports (useEventStream.ts -461), and the confirm provider gained
  * its focus return (ConfirmDialog.tsx +259; main.tsx -9). Measured with `npm run build:app`:
- * 330,068 B, 36 B inside the old budget. The baseline is set to it: 988 B above the Round 15
+ * 330,068 B, 36 B inside the old budget. The baseline was set to it: 988 B above the Round 15
  * baseline, the round's measured growth, so nothing more can be spent unseen. The +1,024 B
  * budget and the 400,000 B ceiling are unchanged.
  *

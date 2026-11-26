@@ -311,3 +311,47 @@ def test_the_demo_banner_prints_the_zero_dollar_mock_literally() -> None:
     ).stdout
     assert "(forced $0 mock LLM)" in banner, banner
     assert "run-demo.sh mock LLM" not in banner
+
+
+# --------------------------------------------------------------------------- #
+# Closing records review: the A11Y records say what its receipt and its code say.
+# --------------------------------------------------------------------------- #
+CASE_USAGE_TSX = WEBUI / "soc" / "pages" / "casedetail" / "records" / "CaseUsageButton.tsx"
+THEME_CSS = WEBUI / "styles" / "theme.css"
+UI_STANDARD_MD = DOCS / "development" / "ui-standard.md"
+
+
+def test_the_a11y_records_count_findings_and_name_what_they_changed() -> None:
+    """The receipt counts one run per rule, surface, theme and width, so A11Y's six serious
+    findings are more than six runs: SPEC 8.6 counts findings, and the top bar one was found
+    while capturing a fix, not by the after sweep's scrolled pass. The material rule and the
+    review's fixes in WP12's Metrics.tsx and in MitreHeatmap.tsx sit outside their owners, so
+    the A11Y line names them as deviations, as every later package line does. The AI calls
+    list opens in a popover from the investigation cost, so the CHANGELOG does not call it a
+    sheet. ui-standard.md names the material's re-point that theme.css makes."""
+    receipt = _flat(_read(ACCEPTANCE / "a11y-closing-sweep.md"))
+    assert "each run is one rule on one surface" in receipt
+    assert "found while capturing finding 1" in receipt
+    spec = _read(SPEC)
+    acceptance = _flat(_section(spec, "8.6 Acceptance pass"))
+    assert "It fixed all six serious findings" in acceptance
+    assert "found while capturing a fix" in acceptance
+    assert "serious runs it found" not in acceptance
+    assert "one in the scrolled pass" not in acceptance
+    assert "A11Y runs the closing sweep" not in acceptance
+    per_package = _flat(_section(spec, "8.2 Per package"))
+    start = per_package.index("- **A11Y, closing accessibility and phone sweep**")
+    a11y = per_package[start:per_package.index("WP19 is recorded", start)]
+    deviations = a11y[a11y.index("Deviations:"):]
+    for name in ("scrolled pass", "`theme.css`", "`Metrics.tsx`", "`MitreHeatmap.tsx`"):
+        assert name in deviations, name
+    assert "from '@/ui/popover'" in _read(CASE_USAGE_TSX)
+    changelog = _flat(_round16_changelog())
+    assert "usage sheet" not in changelog
+    assert "When a case's investigation cost opens its AI calls" in changelog
+    theme = _read(THEME_CSS)
+    rule = theme[theme.index(".glass-surface,\n  .material-surface {"):]
+    assert "--warning-text: var(--panel-warning-text);" in rule[: rule.index("}")]
+    standard = _flat(_read(UI_STANDARD_MD))
+    assert ("On a material the semantic tints (`--<axis>-text`) resolve to the grouped panel's "
+            "stronger inks (`--panel-<axis>-text`) in `theme.css`") in standard

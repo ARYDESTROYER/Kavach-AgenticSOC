@@ -3229,15 +3229,18 @@ reverting.
   `--panel-<axis>-text` (the top bar chips read 4.49:1 with content scrolled beneath); and
   Sessions & activity shows a plain sentence per known action, never the raw audit detail. The
   review re-checked the four fixes live and opened the 13 in-page tabs per combination that the
-  sweep did not open. It found three more serious runs, all already on the base tree, each fixed
-  with a regression test that failed first: the Sessions & activity Activity table uses a fixed
-  layout (Where 30%, When 6rem) instead of scrolling with nothing focusable at 390; the Metrics
-  percentile table passes `scrollLabel`; and the MITRE heatmap chip is `bg-background/90` in
-  every engine (its muted count read 3.12:1 in dark and 3.54:1 in light under the 70% fill).
-  Left, each a change across several pages or a shared primitive: `empty-table-header` (minor,
-  7 tables), `heading-order` from `AlertTitle`'s `h5` (moderate, 3 places), and `region` on
-  hover content opened by scrolling (moderate). The entry stays 318,008 B stamped. Receipt:
-  `acceptance/a11y-closing-sweep.md`.
+  sweep did not open. It found three more serious findings, all already on the base tree, each
+  fixed with a regression test that failed first: the Sessions & activity Activity table uses a
+  fixed layout (Where 30%, When 6rem) instead of scrolling with nothing focusable at 390; the
+  Metrics percentile table passes `scrollLabel`; and the MITRE heatmap chip is
+  `bg-background/90` in every engine (its muted count read 3.12:1 in dark and 3.54:1 in light
+  under the 70% fill). Left, each a change across several pages or a shared primitive:
+  `empty-table-header` (minor, 7 tables), `heading-order` from `AlertTitle`'s `h5` (moderate, 3
+  places), and `region` on hover content opened by scrolling (moderate). The entry stays
+  318,008 B stamped. Deviations: the scrolled pass, which the brief did not ask for; the
+  material rule in `theme.css`, outside its §4.10 hunks; every disabled number field now shows
+  the muted fill; and the review's one-line fixes in `Metrics.tsx` (WP12's) and
+  `MitreHeatmap.tsx`. Receipt: `acceptance/a11y-closing-sweep.md`.
 
 WP19 is recorded with the release preparation.
 
@@ -3482,7 +3485,7 @@ fixing it, and each reviewed independently (§8.2):
 | FXE | 3 regressions and 3 What's new gaps |
 
 The fourth What's new gap, most 0.2.0 highlights without a screenshot, went to WP17D. FXF then
-took what the fix-package reviews left, and A11Y runs the closing sweep. The sign-in checker's
+took what the fix-package reviews left, and A11Y ran the closing sweep. The sign-in checker's
 one limitation, the warning dialog's duration, was resolved by the D6 amendment; three others
 are now in §8.3 (the case facts at 1440 px, "AI queued" in the Demo, and seeded decisions
 without a recorded gate).
@@ -3505,9 +3508,9 @@ checker's cause or fix:
 
 A11Y, the closing accessibility and phone sweep, then ran the check the accessibility checker
 had not finished: 75 surfaces in both themes at both widths, then 13 more in-page tabs per
-combination in its review. It fixed all six serious runs it found (two in every combination,
-one in the scrolled pass and three in the review's tab pass) and left three moderate or minor
-findings that span several pages (§8.2).
+combination in its review. It fixed all six serious findings: two in every combination, one
+with content scrolled under the top bar, found while capturing a fix, and three in the review's
+tab pass. It left three moderate or minor findings that span several pages (§8.2).
 
 ---
 

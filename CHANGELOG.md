@@ -629,8 +629,9 @@ additive audit mapping upgrade too), and no new runtime dependency. Bug ids refe
     contrast gate now measures text on a selected fill in both themes.
   - A disabled number field uses the muted fill and text colours instead of fading, so its
     unit ("min", "%") keeps 4.5:1 in both themes.
-  - In a case's usage sheet, the list of AI calls is a named region a keyboard can focus and
-    scroll while it scrolls. The percentile table on Metrics, Performance is one too.
+  - When a case's investigation cost opens its AI calls, a list too long to fit is a named
+    region a keyboard can focus and scroll. The percentile table on Metrics, Performance is one
+    too.
   - Coloured chips on the top bar and on sticky bars, such as the Demo chip, the release badge
     and status badges, keep 4.5:1 with any content scrolled beneath them.
   - On Metrics, Posture, each MITRE heatmap cell prints its technique id and count on a 90%
