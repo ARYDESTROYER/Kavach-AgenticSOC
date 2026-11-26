@@ -12956,3 +12956,105 @@
 - Tests: on the merged tree, the records, docs and knowledge tests 740 passed, 1 skipped; build_app_knowledge --check and check_docs pass.
 - Status: done.
 - Next: WP16P (its section 8.1 text merges with this one), the fix packages, WP18C, the docs fix package.
+
+
+### 2026-11-26 06:20Z - WP16P (WP16 integration, last part) - entry budget and post-integration fixes
+- Context: SPEC 4.6 WP16 "Budget" and the 12 post-integration items, on r16-wp16p from 9a94df2.
+- Did:
+  - Entry budget:
+    - The merged entry was 330,279 B, 175 B over budget. Per-file deltas against 3cfd5c0 come from the source map.
+    - The agent-step narration moved from useEventStream.ts to lib/agentSteps.ts, which only the lazy case activity feed imports (-461 B).
+    - Final entry 330,068 B, and PRE_REVAMP_ENTRY_BYTES is set to it. The record is in Round 16 SPEC 8.1 "Entry bundle"; Round 15 8.1 points to it, and test_docs_round12_records reads Round 16.
+    - A source guard keeps the Explain kit and the narration off first paint.
+  - Fixes:
+    - Confirm focus returns to the control that asked, or the menu trigger, or #socMain.
+    - The AI run note writes the verdict in lower case.
+    - GET /api/audit and Case.error follow cost:view for spend figures.
+    - A deleted case is never saved back by a precedent candidate.
+    - The AI investigation tab notes a rationale built from only the newest records.
+    - The header meta strip gives way in order: owner name, then verdict words, then status words. AiVerdictChip gains an optional wordsClassName.
+    - ui-standard records the C43 sticky-column rule, and a docs test pins the api.md path count.
+    - AgentEffectiveness.fold and dashboards-routes waits are hardened. Item 6 needed no change.
+- Tests:
+  - Backend 13,751 passed, 29 skipped, 5 sandbox-only failures (55 of 55 pass with the proxy and AWS variables unset).
+  - test:strict at load 15: 9,513 passed, 25 failed (21 timeouts). The 18 failing files then passed alone: 300 of 300, zero stderr.
+  - lint, typecheck, gates, check:types, build, docs:check, check_version, check_ci_contract, check_docs, build_app_knowledge --check and ruff fatal pass.
+  - Each fix's test fails on the base source.
+- Status: done; commit 7a31bda on r16-wp16p, worktree detached.
+- Next:
+  - The audit_export job still writes spend text for an exporter without cost:view.
+  - Round 16 SPEC 8.1 will need a merge with WP18B's 8.1 text.
+  - WP18 records the cost-text rule for the audit log and Case.error.
+
+### 2026-11-26 05:40Z - XFDEMO agent - Demo storyline from the case's own cluster, paced Demo runs
+- Context: Round 16 cross-cutting review, two seeded Demo findings (demo-storyline-from-precedents, demo-run-under-hold-off), per the corrected fixes in the XFDEMO brief.
+- Did:
+  - The Demo provider now reads an investigation prompt's storyline only from the case's own cluster block: the render_cluster heading through the sample events. New constant CLUSTER_CONTEXT_HEADING in agents/prompts.py, shared by render_cluster and the resolver; SAMPLE_EVENTS_HEADING is a prefix constant held by a test. A retrieved precedent, memory or runbook can no longer turn a case into another storyline.
+  - New DEMO_INVESTIGATION_STEP_DELAY_S (2 s, read at call time). It pauses each router, investigator and formatter answer of a manual or job run in Demo Mode, so a run takes about 8 s and the AI working signals show. Automatic, drain and detection runs, calls outside a run, and chat, report and runbook prompts never wait. conftest sets the delay to 0.
+  - New tests in backend/tests/test_round16_xfdemo.py.
+  - No model call, no new ledger row, KV untouched; decide() and risk.py unchanged.
+- Tests:
+  - XFDEMO file 22 passed; both fixes proved by reverting (6 and 7 tests fail).
+  - Full backend suite: 13,766 passed, 29 skipped, 5 sandbox-only environment failures (55 of 55 pass with proxy and AWS variables unset).
+  - ruff fatal clean; check_version, check_ci_contract, check_docs and build_app_knowledge --check pass.
+  - Seeded Demo with Playwright at 1440 by 900, light and dark: chip with clock 0:00 to 0:07, queue row mark, navigation count 1, popover, then AI finished. A close during the run returned in 0.03 s.
+- Status: done. Committed on r16-xfdemo as 0eb619b; worktree detached.
+- Next:
+  - WP18: add the CHANGELOG Fixed lines and the demo.md sentence.
+  - SPEC 5.3 capture list: screenshot 1's band line needs the live Demo.
+  - The popover holds on "Looking up evidence" for most of a Demo run, because all model calls sit in the evidence phase.
+
+### 2026-11-26 05:30Z - XFNUM builder - every printed number gives its printed result
+- Context: cross-cutting review package XFNUM, ten confirmed numbers and explainability findings (xcut-fix-numbers.md, skeptic corrected fixes), on r16-xfnum from 9a94df2.
+- Did:
+  - Backend, shift_report.sla_aging: uses the shared metrics.sla_case_reading rule (breached over target, at risk from 0.8, no target means not counted). The invented 120-minute target is gone, and warn_fraction defaults to SLA_AT_RISK_FRACTION.
+  - Backend, priority: urgency and derived severity band the shown risk integer, rounded half up, and return display.
+  - Backend, metrics: the dwell population names a person's first response, and avg_risk_case_count is added to GET /api/metrics.
+  - Console, risk explanation: the Velocity step uses the recorded count and window. The Total step and the hover line print a division only when the stored factors give the score.
+  - Console, triage explanation: prints the shown integer and half-open ranges.
+  - Console, noise Detailed headline: names its inputs and is explained, withheld under partial coverage.
+  - Console, copy: dwell says by a person; Open cases says not limited by the time range; an unchecked indicator reads Not checked.
+  - Console, new explanations: Average risk, Incident yield, Escalation rate, Containment, the Posture SLA strip, dashboard strip cells and the Team activity median.
+  - Tests: a property test over the 77 seeded Demo cases, and band-edge backend tests.
+- Tests: targeted backend and Vitest files pass. Revert proofs failed as expected (26 backend tests, 48 property tests). typecheck, lint, gates, check:types, check_version, check_ci_contract, check_docs and the knowledge check pass. The full pytest run did not finish before the report, and test:strict and the entry measurement were not run.
+- Status: done, with the full-suite gates open (commit 90fc872, worktree detached).
+- Next: run the full backend suite, test:strict and build:app on the merged tree, and check that the entry is not above the base (330,279 B at 9a94df2). Set Standup.report.api.ts warn_fraction 0.75 to 0.8. Amend the Round 13 SPEC-chat "three quarters" note. Add avg_risk_case_count to types.ts.
+
+### 2026-11-26 06:45Z - XFSIGN agent - Sign-in failure sentences, organization default Appearance name, related cases by number
+- Context: cross-cutting review findings login-raw-error, signin-system-theme-mislabel and cluster-related-internal-ids (brief xcut-fix-signin.md), on branch r16-xfsign from 9a94df2.
+- Did: Login.tsx now has a failText helper. The sign-in page never renders the server's text: a 401 reads "The username or password is not correct." or "That code is not correct. Try again."; a failed fetch, proxy page or 5xx reads "Could not reach the server. Try again."; a 429 reads "Too many attempts. Try again in a minute."; anything else reads "Sign in failed. Try again.". The setup and forced-change steps keep a 400 password rule. A single sign-on start failure uses the existing fallback sentence. The first Appearance button is named "Use the organization default theme" while Branding sets a light or dark default; the theme control is inlined. threat_context carries case_number on related rows, with one bounded, fail-open store read. ClusterFormationDiagram lists related cases by case number as links that open the case. Tests were added to the sign-in suites, the diagram test and test_threat_context.py.
+- Tests: the regressions failed before the fix (Vitest 15, backend 3, diagram 1). Backend: 13,747 passed, 29 skipped, 5 sandbox environment failures. test:strict: 9,537 passed, 4 failed (the bundle budget was already red at the base; 3 load timeouts pass alone). Lint, gates, check:types, the full build, check_version, check_ci_contract, check_docs and the knowledge check pass. Entry with build:app: 330,279 B before, 330,261 B after.
+- Status: done; commit 4b20fa2 on r16-xfsign, branch detached.
+- Next: WP18 writes the CHANGELOG and first-run.md lines from the report. WP16 updates the ui-standard Identity surfaces Errors and Appearance bullets and the WP04 SPEC Appearance amendment, then regenerates the knowledge corpus. The MfaSetupCard raw code errors during mandated enrollment are left for that file's owner.
+
+### 2026-11-26 05:50Z - WP17A sub-agent - What's new notes content for 0.2.0 and the 0.1.1 entry
+- Context: Round 16 SPEC 4.7 WP17, notes half; [wn] section 6 backfill plan. Branch r16-wp17a from 9a94df2.
+- Did: filled docs/releases/notes/0.2.0.json with 12 dated updates from 2026-08-05 to this release, newest first. The newest update keeps id 0.2.0.2026-12 and a null date. It holds 11 highlights: the AI indicator, the clearer Case Manager, the six tabs (Alt+2, Alt+4 and Alt+5 changed, Chat on Alt+6), explainable numbers, What's new and Communication, the sign-in page, case records, the repository step, the access fixes, the bug fixes and the license. Added four updates the backfill table had missed (22 Aug, 9 Sep, 11 Nov, 13 Nov). Checked every wording, page, permission and help anchor against the merged code and Help Center. Added docs/releases/notes/0.1.1.json without screenshots. Copied 11 reused screenshots into docs/assets/releases/0.2.0/. Regenerated the release notes outputs and the knowledge corpus, rewording two auto-close phrases to keep chat's golden recall. Wrote the WP17B capture plan (wp17-captures.md in the round16 build scratchpad).
+- Tests: build_release_notes --check, check_version, check_docs, check_ci_contract, build_app_knowledge --check, docs bundle and typecheck pass. Knowledge, docs records, release guard and What's new backend tests pass, and the What's new Vitest files pass (92 passed). Full backend run: 13,778 collected, 5 sandbox-only failures plus 1 security test that passes alone. test:strict under load: 10 timeouts in 7 files, all passing when rerun at 2 workers.
+- Status: done, commit d97cd71 on r16-wp17a (detached).
+- Next: WP17B captures the newest update's light and dark images and sets featured per the plan, keeping case-tabs inside the first five. WP07's owner should fix the generator intro ("Settings, Appearance" should be "Settings, Account, Appearance") and the page keeping the selected release when the link has no v.
+
+### 2026-11-26 05:55Z - WP18C (sub-agent) - Help Center pages for Round 16 and Explainable numbers
+- Context: SPEC 4.7 WP18, Help Center half (6.1), from build/helpcenter-parts.md and carry.md, checked against the merged code at 9a94df2.
+- Did:
+  - New docs/analyst/explainable-numbers.md with a mkdocs nav line: hover line, panel, Copy calculation (exact builder text), risk factors and weights, a worked example (12 events, 300 s, 2 rule types, reputation 40 gives 39.11, shown 39, Medium), bands, the decision gate, SLA clocks and default targets, cost rates, rounding, provenance and "not recorded".
+  - Case Manager: AI run chip, popover, queue mark, nav count, queue notice; close during a run; Reinvestigate that does not wait; keys ], W, ?; Hide the queue; every record of a case.
+  - Updated cases, investigation, collaboration, overview, analytics, the KPI glossary (SLA clock, MTTR median, Show all), dashboards, chat, first-run (sign-in, What's new, Demo sources), quickstart, getting-started index (keyboard).
+  - Updated authentication (refresh honesty, SSO linking, Super admin rule, built-in roles), users-rbac and permissions (read grants, cost text rule), customization and settings (one theme default, Back guard, Demo jobs), notifications (Communication), models-spend (local endpoints).
+  - Updated deterministic-decisions (recorded gate and inputs), state-audit-cost (rate fields), api (AI runs, case records, explained numbers, 0.2 refusals and deprecations; path count line left to WP16P), configuration, security, health-backup.
+  - Updated upgrades (0.2.0 notes, audit.id widening and its pre-step, rolling back from 0.2.0), known-limitations (process-local runs, Chat sixth tab, 500-event push look-back, rollback losses including the two documentation-only ones, column widening, SSO custom roles, cost text, Demo asset map; v0.1.1 rehearsal "Recorded at release preparation."), channels, index, approvals, runbooks, audit-log, sources.
+  - Regenerated the knowledge corpus. Moved and reworded new text so the app-help retrieval and chat golden-set tests stay green.
+- Tests:
+  - Docs, records, knowledge, version and changelog subset: 995 passed, 1 skipped.
+  - Full backend suite, once. The 13 golden-set failures were fixed in the docs; the rerun of the golden set, knowledge tests and starters test gave 816 passed. The 5 sandbox-only environment failures pass with proxy and AWS variables unset.
+  - check_docs (90 pages), build_app_knowledge --check, check_version, check_ci_contract, the MkDocs strict docs:bundle and docs:check all clean.
+  - Banned character scan: 0.
+- Status: done. Commit c58dddf on r16-wp18c, detached.
+- Next: WP19 records the v0.1.1 rehearsal result and the audit.id widening timings in known-limitations and upgrades. WP17 refreshes the screenshots and alt text that still show 0.1.13.
+
+### 2026-11-26 07:40Z - orchestrator - WP16P, XFDEMO, XFNUM, XFSIGN, WP17A and WP18C merged
+- Context: a second container restart (2026-11-26) stopped the reviews of WP16P, WP17A, WP18C, XFDEMO, XFNUM and XFSIGN at their final full-suite gates, and the XFCM build at its package gates. Each review had finished reading, revert-proofing and its live checks.
+- Did: saved each branch's uncommitted work as a commit and named it from the reviewer's own record (WP16P review: the precedent acknowledgement test and the accurate PrecedentCaseGone text; XFSIGN review: the rate-limit sentence without a duration and a branding-aware test wait). Merged r16-wp16p (SPEC 8.1 conflict resolved: WP16P's Entry bundle item replaces the placeholder in WP18B's text), r16-xfdemo, r16-xfnum, r16-xfsign, r16-wp17a and r16-wp18c (knowledge manifest regenerated, 1,079 chunks). Started the XFCM review from its saved build, and the docs and records follow-up XFD with the audit export fix XFB2.
+- Tests: on the merged tree, check_docs (90 pages), build_app_knowledge --check, check_version, build_release_notes --check and check_ci_contract pass; the records tests pass; the whole backend suite and test:strict run once on the integrated tree next.
+- Status: in progress.
+- Next: merge XFCM, XFD and XFB2; the full gates; WP17B screenshots; WP19.
