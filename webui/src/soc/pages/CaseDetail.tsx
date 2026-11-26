@@ -1636,7 +1636,13 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
                         .then((current) => {
                           if (!caseIsTerminal(current.status)) {
                             syncCase(current);
-                            toast.message('The AI investigation already reopened this case.');
+                            // A person's reopen records the analyst as the decider; the AI
+                            // run that replaced the close records the case policy's.
+                            toast.message(
+                              String(current.decision_by ?? '').toLowerCase() === 'analyst'
+                                ? 'This case was already reopened.'
+                                : 'The AI investigation already reopened this case.',
+                            );
                             return undefined;
                           }
                           return api
@@ -2588,7 +2594,9 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
                 </TabsTrigger>
                 <TabsTrigger value="collab" className="gap-1.5" aria-keyshortcuts="Alt+5" disabled={!c}>
                   Activity
-                  {messageCount ? <TabCount label="messages">{messageCount}</TabCount> : null}
+                  {messageCount ? (
+                    <TabCount label={messageCount === 1 ? 'message' : 'messages'}>{messageCount}</TabCount>
+                  ) : null}
                 </TabsTrigger>
                 <TabsTrigger value="chat" aria-keyshortcuts="Alt+6" disabled={!c}>
                   Chat

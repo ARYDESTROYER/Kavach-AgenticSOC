@@ -94,6 +94,46 @@ describe('underline tabs that scroll (FXA1)', () => {
     expect(list).toHaveAttribute('data-overflow', 'end');
   });
 
+  it('never pull a list the person scrolled back when a count changes, only on a new selection (FXA1 review)', async () => {
+    layout();
+    // A live count on the AI tab (a run under way) changes the triggers' text.
+    const Live: React.FC<{ value: string; count: number }> = ({ value, count }) => (
+      <Tabs value={value}>
+        <TabsList variant="underline" aria-label="Case sections">
+          {TABS.map((tab) => (
+            <TabsTrigger key={tab} value={tab} data-value={tab}>
+              {tab}
+              {tab === 'ai' ? <span> {count}</span> : null}
+            </TabsTrigger>
+          ))}
+        </TabsList>
+      </Tabs>
+    );
+    const { rerender } = render(<Live value="brief" count={1} />);
+    const list = screen.getByRole('tablist');
+    expect(list.scrollLeft).toBe(0);
+    // A count change while the list is where the reveal left it keeps the tab in view.
+    rerender(<Live value="brief" count={2} />);
+    await act(async () => {});
+    expect(list.scrollLeft).toBe(0);
+
+    // The person swipes the list to its end to reach Chat.
+    list.scrollLeft = 180;
+    list.dispatchEvent(new Event('scroll'));
+    expect(list).toHaveAttribute('data-overflow', 'start');
+    // The run adds a step: the list stays where the person put it.
+    rerender(<Live value="brief" count={3} />);
+    await act(async () => {});
+    expect(list.scrollLeft).toBe(180);
+    expect(list).toHaveAttribute('data-overflow', 'start');
+
+    // A new selection still brings its tab into view.
+    rerender(<Live value="evidence" count={3} />);
+    await act(async () => {});
+    // Evidence spans 80 to 160: its left edge clear of the 24 px fade.
+    expect(list.scrollLeft).toBe(80 - 24);
+  });
+
   it('leave a list that fits, and a boxed list, exactly as they were', () => {
     render(<Strip value="chat" />);
     const list = screen.getByRole('tablist');

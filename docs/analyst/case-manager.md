@@ -529,7 +529,8 @@ run's result replaces a close you make now (see
   misclick, reopen and close it again with the right disposition. If an AI
   investigation that was running when you closed the case has since replaced your close,
   the notice goes away, and **Reopen** changes nothing: it says "The AI investigation
-  already reopened this case."
+  already reopened this case." If someone else reopened it first, it says "This case was
+  already reopened."
 
 ## Select cases and run bulk work
 

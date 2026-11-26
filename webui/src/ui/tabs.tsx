@@ -58,11 +58,16 @@ const EDGE_FADE_PX = 24;
  * selected trigger, clear of the fade, inside it (never `scrollIntoView`, which would also
  * scroll the page and any framed board around it); and each edge that has more tabs past
  * it fades out (a mask, so it works on any surface), marked `data-overflow` (`start`,
- * `end` or `both`). A list that fits is left exactly as it was.
+ * `end` or `both`). A list that fits is left exactly as it was. A label or count that
+ * changes (a live AI step count) keeps the selected tab in view only while the person has
+ * not scrolled the list since: it never pulls a list they swiped back under their finger.
  */
 function useUnderlineOverflow(list: HTMLElement | null, enabled: boolean): void {
   React.useLayoutEffect(() => {
     if (!list || !enabled) return undefined;
+    // The trigger the list last brought into view, and where that left the list.
+    let shown: Element | null = null;
+    let placed = Number.NaN;
     const paint = () => {
       const room = list.scrollWidth - list.clientWidth;
       const start = room > 1 && list.scrollLeft > 1;
@@ -88,12 +93,19 @@ function useUnderlineOverflow(list: HTMLElement | null, enabled: boolean): void 
           list.scrollLeft += right - list.clientWidth + EDGE_FADE_PX;
         }
       }
+      shown = active;
+      placed = list.scrollLeft;
       paint();
     };
     reveal();
     list.addEventListener('scroll', paint, { passive: true });
-    // A new selection, or a tab whose label or count changed width.
-    const selection = new MutationObserver(reveal);
+    // A new selection always; a tab whose label or count changed width only while the
+    // list is still where the last reveal left it (the person has not scrolled it since).
+    const selection = new MutationObserver(() => {
+      const active = list.querySelector('[role="tab"][data-state="active"]');
+      if (active !== shown || Math.abs(list.scrollLeft - placed) <= 1) reveal();
+      else paint();
+    });
     selection.observe(list, {
       subtree: true,
       childList: true,

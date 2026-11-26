@@ -232,6 +232,37 @@ describe('CaseDetail: feedback-into-close (two separate POSTs, #3)', () => {
     toastMock.success.mockReset();
   });
 
+  it('never credits the AI with a reopen a person made elsewhere (FXA1 review)', async () => {
+    getCase.mockResolvedValue({ ...BASE_CASE, verdict: 'needs_human' });
+    caseActionExec.mockResolvedValueOnce({ ...BASE_CASE, verdict: 'needs_human', status: 'closed', disposition: 'false_positive' });
+    caseFeedback.mockResolvedValue(null);
+    toastMock.success.mockReset();
+    toastMock.success.mockReturnValue('close-toast');
+    toastMock.message.mockReset();
+
+    renderWithProviders(<CaseDetail caseId="case-91" onClose={vi.fn()} />);
+    const dialog = await openCloseDialogAndPick(/False positive/i);
+    const submit = within(dialog).getByRole('button', { name: /^close case/i });
+    await waitFor(() => expect(submit).not.toBeDisabled());
+    fireEvent.click(submit);
+    await waitFor(() => expect(toastMock.success).toHaveBeenCalled());
+    const [, options] = toastMock.success.mock.calls[0] as [string, { action?: { onClick: () => void } }];
+
+    // A teammate (or this person in another tab) reopened it: the analyst is the decider.
+    getCase.mockResolvedValue({
+      ...BASE_CASE,
+      verdict: 'needs_human',
+      status: 'open',
+      decision_by: 'analyst',
+      disposition: 'false_positive',
+    });
+    options!.action!.onClick();
+    await waitFor(() => expect(toastMock.message).toHaveBeenCalledWith('This case was already reopened.'));
+    expect(toastMock.message).not.toHaveBeenCalledWith('The AI investigation already reopened this case.');
+    expect(caseActionExec).toHaveBeenCalledTimes(1);
+    toastMock.success.mockReset();
+  });
+
   it('posts NO grade when an analyst settles a Needs-human case without grading it (Agreement stays honest)', async () => {
     getCase.mockResolvedValue({ ...BASE_CASE, verdict: 'NEEDS_HUMAN' });
     caseActionExec.mockResolvedValue({ ...BASE_CASE, verdict: 'NEEDS_HUMAN', status: 'closed', disposition: 'false_positive' });
