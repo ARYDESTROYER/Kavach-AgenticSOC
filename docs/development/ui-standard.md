@@ -222,8 +222,9 @@ alpha hairline variants (`border-border/70` and the like), through the
 `--border-alpha-floor` the `border` colour carries — secondary text strengthens (and
 is never weaker than muted text), and materials turn solid with a defined bottom rule
 instead of the scroll-edge fade. The sign-in page has no rule of its own: it paints only
-Console tokens, so its field edges, text and focus ring strengthen with the rest of the
-Console (see Identity surfaces).
+Console tokens, so its hairlines and secondary text change with the rest of the Console.
+Its field edges and focus ring stay as they are, already at least 3:1 (see Identity
+surfaces).
 
 ## Page anatomy
 
@@ -713,7 +714,7 @@ secondary detail behind a disclosure rather than a nested card. The parts of one
 are set apart by space under a smaller heading, never by a second hairline that would
 read as a sibling section. A link to a section holds it at the top of the pane while the
 content above it loads, and lets go when the analyst scrolls. A fact has one home: a
-tab never repeats the verdict, confidence, risk, status or owner the header and rail
+tab never repeats the verdict, confidence, risk, status or owner the header and inspector
 already show. The **Brief** opens with the review sentence on a review sample and, on an
 open case, the runbook's next step as one 48px row, then four lanes, each tagged with who
 wrote it: Evidence (source: the trigger sentence and one quiet line of events, entity,
@@ -770,8 +771,9 @@ Never "Investigating" alone: that is the acknowledged status a person sets. Ever
 one store (`soc/investigations/store.ts`, a lazy chunk), fed by
 `GET /api/investigations/active`, the `case.investigation` frames of the
 `investigations` topic on the page's one event stream, and the `202` of a Reinvestigate.
-A run shows only after a 1 s hold-off, because most runs end at once and a mark that
-flashes helps nobody, and its elapsed time is counted in the browser's clock. Frames and
+A run shows only once it is 1 s old, because most runs end at once and a mark that
+flashes helps nobody (a run the server says began earlier shows at once), and its elapsed
+time is counted in the browser's clock. Frames and
 views carry ids, enums, times and counts only; a requester's name is plain text, and only
 a viewer who may manage users sees it.
 
@@ -796,8 +798,8 @@ a viewer who may manage users sees it.
   line, "AI is investigating 2 new alerts. They join the queue when the investigation
   finishes.", and nothing at 0.
 - **Navigation count.** The Case Manager item carries how many cases the AI investigates
-  now: a numeric badge after the label in the drawer and on the rail icon's corner ("9+"
-  above nine), with the hidden text "AI investigating 2 cases" joined to the item's
+  now: the number after the label in the drawer, and a badge on the rail icon's corner
+  ("9+" above nine), with the hidden text "AI investigating 2 cases" joined to the item's
   description. Only a viewer who may read cases loads it. The number lives in the
   entry-safe `investigations/count.ts`; the store itself loads after first paint.
 - **Close dialog notes.** The close, bulk close and status change dialogs say before you
@@ -806,8 +808,8 @@ a viewer who may manage users sees it.
   status you set now"), and for a selection "2 of the selected cases have an AI
   investigation running." The note is a polite status, never an alert, and it never blocks
   the submit. A run that finishes while the dialog is open turns it into an info note that
-  says the investigation finished, names the new verdict and asks you to check it before
-  you close.
+  says the investigation finished, names the new verdict when there is one and asks you to
+  check it before you close (or change the status).
 - **Reinvestigate** never blocks: the dialog closes on the `202` and the header chip shows
   at once. A second request while a run is queued or running answers with a toast, and the
   case is read again when its run finishes.
@@ -1469,8 +1471,9 @@ own page instead.
 - **What's new** is a quiet dialog shown once per newest release-notes update id, only
   inside the Console (never over sign-in, setup, a forced password change or the wizard),
   and never blocking: 40rem wide on the shared scrim (full screen below 640px), focus on
-  its title, at most five highlights (an area tile, a title and one line), a screenshot as
-  the hero only when a row is pressed, and nothing that moves on its own. Any close writes
+  its title, at most five highlights (an area tile, a title and one line), the first
+  screenshot among them as the hero (when two or more have one, pressing a row shows its
+  screenshot instead), and nothing that moves on its own. Any close writes
   the marker once (`misc.whats_new_seen`, an audited preference); closing an automatic
   dialog returns focus to the main landmark, a re-open to the control that opened it. A
   highlight that needs a grant the viewer lacks stays on the Communication page only.
