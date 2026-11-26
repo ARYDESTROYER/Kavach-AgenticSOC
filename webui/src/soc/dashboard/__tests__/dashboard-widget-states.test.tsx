@@ -476,7 +476,7 @@ describe('the queue and the SLA list state their real totals', () => {
         attention_queue: queue,
         sla_aging: {
           enabled: true,
-          warn_fraction: 0.75,
+          warn_fraction: 0.8,
           totals: { open: 140, breached: 1, about_to_breach: 0 },
           breached: [{ case_id: 'late', display_id: 'CASE-000999', priority_level: 'P4', age_minutes: 270, target_minutes: 240, overdue_minutes: 30, assignee: 'ana' }],
           about_to_breach: [],

@@ -11,9 +11,9 @@ description: Every Agentic SOC release with its highlights, newest first.
 Every Agentic SOC release with its highlights, newest first. The same notes ship
 with the Console: open **Communication → What's new**. After a release is
 installed, the Console shows a short welcome once you sign in. Turn it off with
-**Show What's new after updates** in Settings, Appearance. With sign-in turned
-off, everyone shares one set of preferences, so the welcome shows once per
-installation.
+**Show What's new after updates** in **Settings → Account → Appearance**. With
+sign-in turned off, everyone shares one set of preferences, so the welcome shows
+once per installation.
 
 Each release record holds the full notes and the known limits of that release.
 

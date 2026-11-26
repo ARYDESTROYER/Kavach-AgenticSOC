@@ -80,9 +80,10 @@ and the case page, its case facts and Entity investigation leave it out), and th
 recorded case cost in Agent effectiveness (shown as unavailable). Since 0.2 it also
 covers a case's AI usage list (`GET /api/cases/{case_id}/usage`), the cost values in
 **View all fields**, and the cost figures in the text of a case's timeout, decision,
-runbook AI and budget rows, which read "hidden" (amounts "(amount hidden)") in the trace,
-the timeline, the activity feed, the case rationale, chat answers about the case and the
-Audit log list and record, the figure in a budget refusal shown on a case, and the
+runbook AI and budget rows and of a replay experiment's spend row, which read "hidden"
+(amounts "(amount hidden)") in the trace, the timeline, the activity feed, the case
+rationale, chat answers about the case, the Audit log list and record and an audit log
+export, the figure in a budget refusal shown on a case, and the
 Standup summary's AI cost (`GET /api/standup` returns `cost` as `null`).
 Tool output and log evidence are never rewritten. A role without `cost:view` still
 reads everything else on those pages.

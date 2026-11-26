@@ -708,7 +708,7 @@ function OperationalTab({ data, rag, memory, openByVerdict, loading, failed, hou
           explain={explainSlot(
             explainAverageRisk({
               mean: data.avg_risk_score,
-              scoredCases: (data as Metrics & { avg_risk_case_count?: number }).avg_risk_case_count,
+              scoredCases: data.avg_risk_case_count,
               population,
             }),
           )}

@@ -13,9 +13,12 @@ list and record reads (``audit:view``) follow the same rule, and so does a budge
 refusal's reason kept in ``Case.error`` on every case read (``routes._withhold_case_spend``).
 
 Only the rows those writers make are changed (:func:`withhold_row_cost_text`, the action
-types in :data:`COST_TEXT_ACTIONS`). Every other row, and every tool output, is case
-evidence and is shown as it was recorded: a log line such as ``awk '{print $1}'`` or
-``amount=$500`` is never rewritten.
+types in :data:`COST_TEXT_ACTIONS`, and the replay experiment's one spend row, a ``job``
+row that reads ``replay experiment job=... spend_usd=0.001234 bound_usd=5.000000``,
+whose figures read ``spend_usd=hidden`` and ``bound_usd=hidden``). Every other row, and
+every tool output, is case evidence and is shown as it was recorded: a log line such as
+``awk '{print $1}'`` or ``amount=$500`` is never rewritten, and neither is any other
+``job`` row (its lifecycle transitions name no spend).
 
 Read-time display only: the stored audit rows never change (#2), and nothing here is
 read by ``decide()`` (#3).
@@ -30,6 +33,10 @@ from typing import Any
 _COST_ASSIGNMENT = re.compile(r"(?i)\b(cost)\s*=\s*\$?\s*-?\d[\d,]*(?:\.\d+)?(?:e[-+]?\d+)?")
 #: ``$1.2345``, ``$ 10.00``, ``-$0.5``.
 _DOLLAR_AMOUNT = re.compile(r"-?\$\s?\d[\d,]*(?:\.\d+)?(?:e[-+]?\d+)?")
+#: ``spend_usd=0.001234``, ``bound_usd=5.000000``: the replay spend row's figures.
+_SPEND_ASSIGNMENT = re.compile(
+    r"(?i)\b(spend_usd|bound_usd)\s*=\s*\$?\s*-?\d[\d,]*(?:\.\d+)?(?:e[-+]?\d+)?"
+)
 
 #: What a withheld figure reads as.
 COST_HIDDEN = "hidden"
@@ -52,17 +59,43 @@ def withhold_cost_text(text: Any) -> Any:
 COST_TEXT_ACTIONS: frozenset[str] = frozenset({"error", "decision", "prompt"})
 
 
+#: The action type and the opening words of the replay experiment's spend row
+#: (``engine/replay/job.py`` ``_audit_spend``): the one ``job`` row that names a spend.
+#: Every other ``job`` row is a lifecycle transition (``job=... kind=... transition=...``).
+#: The replay job's cancel message (``replay spend bound $... reached``) is kept in the
+#: job's own record for the person who ran it and is written to no audit row.
+REPLAY_SPEND_ACTION = "job"
+REPLAY_SPEND_LEAD = "replay experiment job="
+
+
+def withhold_replay_spend_text(text: Any) -> Any:
+    """``text`` with the replay spend row's figures replaced: ``spend_usd=0.001234``
+    reads ``spend_usd=hidden``, ``bound_usd=5.0`` reads ``bound_usd=hidden`` and any
+    ``$`` amount reads ``(amount hidden)``. A value that is not a string is returned as
+    it is."""
+    if not isinstance(text, str) or not text:
+        return text
+    out = _SPEND_ASSIGNMENT.sub(lambda m: f"{m.group(1)}={COST_HIDDEN}", text)
+    return withhold_cost_text(out)
+
+
 def withhold_row_cost_text(action_type: Any, text: Any) -> Any:
     """A row's ``result_summary`` with its cost figures withheld when the row is one a
-    spend writer makes (:data:`COST_TEXT_ACTIONS`); any other row's text is returned as
-    it is, so evidence that happens to hold a ``$`` or ``cost=`` is never changed."""
+    spend writer makes (:data:`COST_TEXT_ACTIONS`, or the replay experiment's spend row);
+    any other row's text is returned as it is, so evidence that happens to hold a ``$``,
+    a ``cost=`` or a ``spend_usd=`` is never changed."""
     kind = str(getattr(action_type, "value", action_type) or "").strip().lower()
+    if kind == REPLAY_SPEND_ACTION:
+        if isinstance(text, str) and text.startswith(REPLAY_SPEND_LEAD):
+            return withhold_replay_spend_text(text)
+        return text
     if kind not in COST_TEXT_ACTIONS:
         return text
     return withhold_cost_text(text)
 
 
 __all__ = [
-    "AMOUNT_HIDDEN", "COST_HIDDEN", "COST_TEXT_ACTIONS", "withhold_cost_text",
+    "AMOUNT_HIDDEN", "COST_HIDDEN", "COST_TEXT_ACTIONS", "REPLAY_SPEND_ACTION",
+    "REPLAY_SPEND_LEAD", "withhold_cost_text", "withhold_replay_spend_text",
     "withhold_row_cost_text",
 ]

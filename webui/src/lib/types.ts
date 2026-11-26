@@ -3888,6 +3888,11 @@ export interface StandupResponse {
   window_hours?: number;
   summary?: string;
   aggregate?: Record<string, unknown>;
+  /**
+   * The summary's AI spend in USD. It follows `cost:view` (Round 16): without the grant
+   * the key stays and reads `null`. Absent when the Standup is turned off.
+   */
+  cost?: number | null;
   [key: string]: unknown;
 }
 
@@ -4083,6 +4088,12 @@ export interface Metrics {
   playbook_usage: Record<string, number>;
   /** Mean normalised risk score (0..100). */
   avg_risk_score: number;
+  /**
+   * How many scored cases `avg_risk_score` divides by (Round 16, additive). The server
+   * does not send the sum, so Average risk explains itself as the mean over this count.
+   * Optional so an older backend reads as unknown.
+   */
+  avg_risk_case_count?: number;
   /**
    * Active Risk Index (Round-7; additive) — the canonical top-right instrument on the
    * Cyber Defence Center. The mean deterministic `risk_score` over NON-TERMINAL

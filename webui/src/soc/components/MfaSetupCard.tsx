@@ -39,6 +39,9 @@
  * server mints the session + cookie and `onComplete` receives the verify-shaped
  * LoginResult. A rejected/expired pending token surfaces via `onPendingExpired`.
  *
+ * ERRORS (Round 16): a failure shows a fixed sentence chosen by its status
+ * (`mfaFailText`), as the sign-in page's `failText` does, never the server's own text.
+ *
  * All values shown here are the user's own enrollment data (trusted), but the secret
  * + recovery codes are sensitive — they are shown only transiently and never persisted
  * client-side beyond the component's state.
@@ -174,6 +177,28 @@ function CopyButton({ text, label = 'Copy' }: { text: string; label?: string }) 
   );
 }
 
+/**
+ * The fixed sentence for a failed step. The server's text only picks the sentence (a lapsed
+ * setup, an account set in the environment, a turn-off on an account whose two-factor is
+ * already off) and is never shown. A wrong code answers 400,
+ * or 401 at sign-in (`pending`); any other 401 is a fresh sign-in that did not happen.
+ */
+function mfaFailText(err: unknown, step: 'setup' | 'confirm' | 'disable', pending: boolean): string {
+  const status = err instanceof ApiError ? err.status : -1;
+  const said = err instanceof ApiError ? err.message ?? '' : '';
+  if (status === 0 || status >= 500) return 'Could not reach the server. Try again.';
+  if (status === 429) return 'Too many attempts. Wait a few minutes, then try again.';
+  if (status === 409) return 'Two-factor is already on for this account.';
+  if (status === 400 && /environment/i.test(said)) return 'This account is set by the server and cannot use two-factor.';
+  if (status === 400 && /no pending/i.test(said)) return 'This setup has ended. Start again.';
+  if (status === 400 && /not enabled/i.test(said)) return 'Two-factor is already off for this account.';
+  if (step !== 'setup' && (status === 400 || (status === 401 && pending))) {
+    return step === 'disable' ? 'That code did not work. Enter a current code or a recovery code.' : 'That code did not work. Enter the current code from your app.';
+  }
+  if (status === 401) return 'Sign in again, then try again.';
+  return step === 'setup' ? 'Could not start two-factor setup.' : step === 'confirm' ? 'Could not confirm the code.' : 'Could not turn off two-factor.';
+}
+
 /** A busy submit looks unavailable but keeps focus (see the module comment). */
 const BUSY_INERT = 'aria-disabled:cursor-not-allowed aria-disabled:opacity-50';
 
@@ -243,7 +268,7 @@ export function MfaSetupCard({
       if (isPendingRejected(e, 'setup')) {
         onPendingExpired?.();
       } else {
-        setError(e instanceof ApiError ? e.message : 'Could not start two-factor setup.');
+        setError(mfaFailText(e, 'setup', !!pendingToken));
       }
     } finally {
       setBusy(false);
@@ -319,7 +344,7 @@ export function MfaSetupCard({
         onPendingExpired?.();
       } else {
         refocusOnError.current = true;
-        setError(err instanceof ApiError ? err.message : 'Could not confirm the code.');
+        setError(mfaFailText(err, 'confirm', !!pendingToken));
       }
     } finally {
       setBusy(false);
@@ -338,7 +363,7 @@ export function MfaSetupCard({
       onChanged?.();
     } catch (err) {
       refocusOnError.current = true;
-      setError(err instanceof ApiError ? err.message : 'Could not turn off two-factor.');
+      setError(mfaFailText(err, 'disable', false));
     } finally {
       setBusy(false);
     }

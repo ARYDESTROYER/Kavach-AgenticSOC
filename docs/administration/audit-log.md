@@ -204,7 +204,9 @@ the failure row that follows it in time has the same request id, and **see the n
 record** opens it. A link to a record that is not in the current store says "This record is
 not in the current store."; one that could not be read offers **Retry**.
 
-Every value is shown as plain text, exactly as stored. Values are cleaned when a row is
+Every value is shown as plain text, exactly as stored. Without `cost:view`, the spend
+figure in the few rows that record one reads hidden on the page too (see
+[Spend figures](#spend-figures)). Values are cleaned when a row is
 written: names, ids and labels lose control characters (an actor keeps at most 160
 characters, and a name made only of such characters is recorded as U+FFFD), and
 summaries, queries and tool input lose NUL characters, so what was attempted is still
@@ -267,7 +269,14 @@ otherwise narrow the filters. Nothing is ever cut off silently.
   full-width forms) is written with a leading apostrophe, so a spreadsheet shows it as
   text and never runs it. The CSV and copied data of chat answers and reports use the
   same rule.
-- **JSON Lines** writes each stored record unchanged, one per line.
+- **JSON Lines** writes each stored record unchanged, one per line, apart from a hidden
+  spend figure (below).
+- Without `cost:view`, the file hides the spend figure in the timeout, decision, runbook
+  AI, budget refusal and replay spend rows (`cost=hidden`, `spend_usd=hidden`,
+  `bound_usd=hidden`, `(amount hidden)`) in both formats, as the audit log page does, and
+  the Export menu and dialog say so. The rest of each record is written as stored. The
+  grant is checked when the export runs and again as it reads. The full application
+  export keeps every row as stored.
 - Audit exports are not available in Demo Mode: the Export menu says so and stays
   disabled until Demo Mode is turned off.
 - A finished audit export offers **Open audit log** in **Jobs**, in the Inbox and on its
@@ -315,10 +324,13 @@ changed.
 ### Spend figures
 
 A few rows record an AI spend figure in their summary: an investigation that ran out of
-time, the code's decision, a runbook AI request and a budget refusal. Without the
-permission to see AI spend (`cost:view`), those figures read "hidden" or "(amount
-hidden)" in the list and in the record. The same applies to a budget refusal shown on a
-case. The stored rows never change, and every other row is shown as recorded.
+time, the code's decision, a runbook AI request, a budget refusal and a replay
+experiment's spend row (its `spend_usd` and `bound_usd`). Without the permission to see
+AI spend (`cost:view`), those figures read "hidden" or "(amount hidden)" in the list, in
+the record and in an audit log export. The same applies to a budget refusal shown on a
+case. The stored rows never change, and every other row is shown as recorded. A search
+still matches the stored text, so searching for a cost figure can show that a row holds
+it (see [Known limitations](../releases/known-limitations.md)).
 
 ### Personal data
 

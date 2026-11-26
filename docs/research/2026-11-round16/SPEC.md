@@ -2525,6 +2525,9 @@ limits stated in the receipt.
   an additive bootstrap exception (the `risk_breakdown.inputs` mapping, §3.4; WP15B and WP18).
 - `AGENTS.md` §5 "This is an additive 0.1.13 contract" and the other current-version sentences:
   reworded for 0.2.0 (§3.8).
+- WP08's Inbox notices ([ai] §4.5 copy): the notices about an AI investigation name the
+  NEEDS_HUMAN verdict "Needs human review", the case's own word, instead of "Needs a person"
+  (XFCM, §8.5).
 
 ---
 
@@ -2569,8 +2572,9 @@ logic.
 Recorded by WP18B from the package reports, their independent reviews, the Journal and the code
 as built on `claude/round16` at `9a94df2` (WP16C merged). XFD then added, on `5f00529`, WP16P
 (the entry trim and the post-integration items), WP17A, WP18B, WP18C, the cross-cutting review
-(§8.5) and the fix packages merged by then, from their reports and reviews. XFCM, WP17B and WP19
-land after that and add to it where the placeholders below say so. Where this section and §1 to
+(§8.5) and the fix packages merged by then, from their reports and reviews. XFR then added
+XFCM, XFB2 and XFR itself on `f309c9c`. WP17B and WP19 land after that and add to it where the
+placeholders below say so. Where this section and §1 to
 §7 disagree, this section wins.
 
 ### 8.1 Contract resolutions
@@ -2918,7 +2922,44 @@ reverting.
   read"; and the sign-in errors bullet of `ui-standard.md` names the setup and
   forced-change sentences.
 
-XFCM, WP17B and WP19 are recorded with the closing gates.
+- **XFCM, Case Manager and AI signals** (`9fd0944`, review `0399c5c`): the queue row always
+  says "AI working" or "AI queued" (in a queue narrower than 30rem the status words and the
+  outcome badge give way), the header chip keeps its words from a 30rem strip while the
+  verdict's label, the owner's name and the SLA make room, a cut queue status word carries
+  its whole value as a title, the Decision lane's sentence from the enum tokens with the raw
+  record in Policy inputs, the policy's own record on a person's close, the AI investigation
+  tab counting the AI's own steps, the open trace re-read on the run's frames, phase changes
+  and its end, the analyst classification a later run kept in the Cases outcome note, "Needs
+  human review" in the Inbox, the #9 `AiRunMark` test past its hold-off and the motion rule
+  in `ui-standard.md`. Review fixes: at the 340 px default queue the severity word and its
+  dot give way too, so the run's words no longer run under the owner monogram; the trace
+  poll runs for the whole run, since the pipeline sends no frame while the investigator
+  works; and the trace on screen stays when the Reinvestigate dialog reads the case at the
+  run's end.
+- **XFB2, audit log export spend** (`fbe055b`, review `436cb4b`): the `audit_export` job asks
+  for the actor's live `cost:view` before the read and at every page boundary, and without it
+  withholds the four spend rows' figures through `api/cost_text.py` in both formats; once
+  withheld, a figure stays withheld for the rest of the file. Review fixes: an end-to-end test
+  that the full application export keeps those rows as stored while the same person's audit
+  log export and page hide them, and the export module docstring.
+- **XFR, final follow-ups** (on `f309c9c`): the export menu and dialog say the file hides AI
+  spend for a person without `cost:view` and no longer call JSON Lines records unchanged; the
+  replay experiment's spend row (`spend_usd=`, `bound_usd=`) joins the narrow cost text rule
+  for `GET /api/audit`, the record read and the export; the two-factor card shows a fixed
+  sentence per status, never the server's text; the Standup page's empty SLA block carries
+  the server's 0.8 at-risk share; `types.ts` declares `avg_risk_case_count` and the nullable
+  `StandupResponse.cost`, and Average risk reads it without a local cast; the
+  `ThreatContextPanel` comments name the Evidence tab and the clustering links; and the What's
+  new generator's intro names Settings → Account → Appearance. Deviation: the replay job's
+  cancel message is written to no audit row (a tripped replay proves it), so it stays in the
+  job's own record, shown only to the person who ran it, beside the bound they set and the
+  report's spend. Review fixes: a turn-off on an account whose two-factor is already off
+  says "Two-factor is already off for this account." instead of calling the code wrong; the
+  CHANGELOG and `USAGE.md` name Settings → Account → Appearance for the What's new switch;
+  and the CHANGELOG says the AI run signals once, in the Added entry, instead of again as a
+  Changed entry.
+
+WP17B and WP19 are recorded with the closing gates.
 
 ### 8.3 Known limitations
 
@@ -2979,6 +3020,11 @@ XFCM, WP17B and WP19 are recorded with the closing gates.
   the verdict gives way, by the give-way order.
 - **Lineage rows.** The Noise Reduction lineage view's cross-source related rows still carry no
   case number.
+- **Queue status words.** At the default 340 px queue the status words in a row can be cut
+  short; the whole word shows on hover, in the row's accessible name and in the case header.
+- **Search matches hidden spend.** A person without `cost:view` can still search
+  `GET /api/audit`, or an audit log export, by free text such as a cost figure, so a matching
+  row shows that the hidden figure exists.
 
 ### 8.4 Verification record
 
@@ -3021,9 +3067,9 @@ The six refuted findings, and why:
   Operator and repository docs use "Round N" as an established convention, and a records test
   requires it.
 
-Six fix packages took the confirmed findings and the two refuted ones done anyway. Each fix
-ships with a regression test that failed before it, and each package was reviewed
-independently (§8.2):
+Six fix packages took the confirmed findings and the two refuted ones done anyway, and two more
+took what their reviews left (XFB2 and XFR). Each fix ships with a regression test that failed
+before it, and each package was reviewed independently (§8.2):
 
 - **XFB, spine and security.** The cross-source link write, threshold automation and the
   notifier re-read and save under the case lock, so none of them undoes a person's close; the
@@ -3044,7 +3090,7 @@ independently (§8.2):
 - **XFSIGN, sign-in and clustering.** A fixed sentence for every sign-in failure, the
   organization default name on the first Appearance button, and related cases listed by case
   number as links.
-- **XFCM, Case Manager and AI signals** (in review when this was written). The AI run row mark
+- **XFCM, Case Manager and AI signals.** The AI run row mark
   and header chip words, the cut queue status, the Decision lane's raw record, the AI
   investigation tab count, the trace frozen during a run, the outcome after a replaced close,
   the Brief's repeated outcome, the motion rule in `ui-standard.md`, the verdict word and the
@@ -3058,6 +3104,12 @@ independently (§8.2):
   the demo tour, Branding as the one theme default in USAGE, the Response tab in AGENTS, and
   the second route that answers the two `409` codes in the API reference. It also folded the
   packages merged after WP18B into the CHANGELOG, the Help Center and this §8.
+- **XFB2, audit log export spend.** The XFD review found that the `audit_export` job still
+  wrote the spend text the Audit log page withholds; the export now follows the same
+  `cost:view` rule in both formats.
+- **XFR, final follow-ups.** The review leftovers of XFD and XFB2: the export dialog's wording,
+  the replay spend row, the two-factor card's sentences, the Standup at-risk share, two client
+  type fields, a stale panel comment and the What's new intro, with the XFCM and XFB2 records.
 
 ---
 

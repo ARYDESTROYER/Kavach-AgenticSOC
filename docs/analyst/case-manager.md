@@ -172,9 +172,10 @@ case sit side by side.
 You can see when an AI investigation is running on a case, and you can keep working
 while it runs.
 
-- In the case header, a chip shows **AI working** with the time since the run started,
-  or **AI queued** while it waits for a free investigation slot. Select the chip, or
-  press **W**, to see:
+- In the case header, a chip shows a turning ring with **AI working** and the time since
+  the run started ("AI working · 0:42"), or **AI queued** while it waits for a free
+  investigation slot. On a phone the chip shows the ring alone; its name still says what
+  it is. Select the chip, or press **W**, to see:
   - the step the run is on;
   - who or what started it. This is one of "You started it", "Started by" and the
     person's name (shown only to people who manage accounts), "Started by a person",
@@ -186,8 +187,12 @@ while it runs.
 - While the run works, the AI verdict chip is dimmed: it is the previous verdict, and
   the running investigation replaces it. **Reinvestigate** in **Take action** is
   unavailable, with the reason "An AI investigation is already running."
-- In the queue, the row shows **AI working** or **AI queued** beside its status, and the
+- In the queue, the row shows the same ring with **AI working** or **AI queued** at
+  every queue width. In a narrow queue the status, the outcome and the severity word step
+  aside for them; the case header still shows the status and the severity. The
   **Case Manager** item in the navigation shows how many cases the AI is investigating.
+- On the **AI investigation** tab the trace updates every few seconds while the run is
+  under way.
 - Above the queue, a line says how many new alerts the AI is investigating, for example
   "AI is investigating 3 new alerts. They join the queue when the investigation
   finishes."
@@ -297,9 +302,9 @@ offer **Ask AI**, which opens a Workspace chat about that value (see
 
 | Tab | Key | Purpose |
 | --- | --- | --- |
-| Brief | Alt+1 | The case at a glance, top to bottom: the review note on a case waiting for its auto-close review; the runbook's **Next step** row on an open case with a runbook; then four lanes, each tagged with where it comes from; Evidence, AI and People link to the tabs that hold their detail. **Evidence** (SIEM) says why the detection fired, with one line of counts and times. **AI** gives the model's summary and its recommended action (on a case that ended, the recommendation it made at triage, folded). **Decision** (Code; named **Analyst resolved** and tagged Analyst when a person settled the case, or **Analyst policy** when an operator's declared-benign policy closed it) gives the decision line, the auto-close reading, the authority sentence, **Policy inputs** and **Automation applied**. **People** (Analyst) gives the runbook progress, the discussion and files, and the last human action. Last, **How this case was built** folds the six-stage input-to-decision story (Risk Assigned shows the arithmetic with the weights and event count of the scoring run, or with today's weights, said so, for a case scored before 0.2; Decision shows the decision recorded at the time; only the final marker pulses) |
+| Brief | Alt+1 | The case at a glance, top to bottom: the review note on a case waiting for its auto-close review; the runbook's **Next step** row on an open case with a runbook; then four lanes, each tagged with where it comes from; Evidence, AI and People link to the tabs that hold their detail. **Evidence** (SIEM) says why the detection fired, with one line of counts and times. **AI** gives the model's summary and its recommended action (on a case that ended, the recommendation it made at triage, folded). **Decision** (Code; named **Analyst resolved** and tagged Analyst when a person settled the case, or **Analyst policy** when an operator's declared-benign policy closed it) gives the decision line (who settled the case and how, for example "Escalated by the system."; on a case a person settled, what the policy recorded before them), the auto-close reading, the authority sentence, **Policy inputs** and **Automation applied**. **People** (Analyst) gives the runbook progress, the discussion and files, and the last human action. Last, **How this case was built** folds the six-stage input-to-decision story (Risk Assigned shows the arithmetic with the weights and event count of the scoring run, or with today's weights, said so, for a case scored before 0.2; Decision shows the decision recorded at the time; only the final marker pulses) |
 | Evidence | Alt+2 | What the sources said: **What happened** (why the detection fired and the source evidence, shown as untrusted data), **Entities** (the primary entity with its scope, type and enrichment, to copy or ask about), **Threat context** (IOC reputation, MITRE ATT&CK mapping, and the redacted persisted alert → correlation cluster → opened case explanation), then the related cases (grouped across sources, never merged), the signature's anomaly baseline when it has one, and the case's raw events (see [Every record of a case](#every-record-of-a-case)) |
-| AI investigation | Alt+3 | The AI's work only, under one advisory line: **AI assessment** (the model's reasoning, what it found and ruled out, the reproduction query, and the full assessment evidence one click away), the detailed **Investigation inputs**, the **Investigation trace** (folded; **Show trace**, a filter by All, Agent, Tool, Code, People or Chat, and **Jump to decision**; each step's **Details** show what it recorded), and earlier gradings of the AI |
+| AI investigation | Alt+3 | The AI's work only, under one advisory line: **AI assessment** (the model's reasoning, what it found and ruled out, the reproduction query, and the full assessment evidence one click away), the detailed **Investigation inputs**, the **Investigation trace** (folded; **Show trace**, a filter by All, Agent, Tool, Code, People or Chat, and **Jump to decision**; each step's **Details** show what it recorded), and earlier gradings of the AI. The number on the tab counts the AI's own steps, the same number as the trace's "N AI steps" |
 | Response | Alt+4 | For people who can read runbooks, the runbook on the case: its strip, progress, Next step card and phases (see [Work the runbook](#work-the-runbook)), then **Other tasks**, the case's free-form tasks. Everyone else sees the tasks alone, under **Tasks** |
 | Activity | Alt+5 | **Discussion**, the case thread with reactions; **Files**, the screenshots on the case; and **History**, every lifecycle change with who made it, when, why and the actions taken, with the full activity feed behind **Show all activity**. While the AI works on the case, its live steps read "Investigation in progress", then "Investigation finished". The owner is changed in the case header, not here |
 | Chat | Alt+6 | Case-scoped use of the shared AI Analyst chat engine; its transcript stays when you switch tabs. Asked about the runbook, it names the same next step as the Next step card, by the same rule |

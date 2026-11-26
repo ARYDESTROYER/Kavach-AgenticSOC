@@ -20,6 +20,11 @@
  * Focus: the dialog opens from a menu item, so the menu does not take focus back to its
  * trigger; the dialog focuses itself, then the chosen format once the count is in, and
  * on closing hands focus to the Export button (SPEC §3.3).
+ *
+ * AI spend: for a person without `cost:view`, the file hides the spend figure of the
+ * timeout, decision, runbook AI, budget refusal and replay spend rows, as this page does
+ * (`api/cost_text.py`). The menu and the dialog then never say a JSON Lines record is
+ * written unchanged; the dialog says the figures read hidden.
  */
 import * as React from 'react';
 import { ChevronDown, Download, ExternalLink, FileJson, FileSpreadsheet, ShieldCheck } from 'lucide-react';
@@ -31,6 +36,7 @@ import { errorMessage } from '@/lib/errorMessage';
 import type { BackgroundJob } from '@/lib/types';
 import type { AuditCount, AuditExportJobParams } from '@/lib/types-audit';
 import { Callout, LoadingState } from '@/design-system';
+import { useCan } from '@/soc/components/Can';
 import { Button } from '@/ui/button';
 import {
   Dialog,
@@ -75,6 +81,14 @@ import {
 
 /* -------------------------------------------------------------------- the menu -- */
 
+/** What a JSON Lines record holds: unchanged, unless the person may not see AI spend. */
+function jsonLinesText(canViewCost: boolean): string {
+  return canViewCost ? 'Each stored record unchanged, one per line' : 'Each stored record, one per line, with AI spend hidden';
+}
+
+/** Said in the dialog to a person without `cost:view`. */
+const SPEND_HIDDEN_IN_FILE = 'You do not have access to AI spend, so the file hides its figures, as this page does.';
+
 export interface AuditExportMenuProps {
   /** Why the export items are unavailable (an empty view, Demo Mode), or null. */
   disabledReason: string | null;
@@ -93,6 +107,7 @@ export const AuditExportMenu = React.forwardRef<HTMLButtonElement, AuditExportMe
   ref,
 ) {
   const disabled = disabledReason !== null;
+  const canViewCost = useCan('cost', 'view');
   // A pick opens the dialog: the closing menu must not pull focus back to its trigger,
   // behind the dialog's overlay.
   const opening = React.useRef(false);
@@ -133,7 +148,7 @@ export const AuditExportMenu = React.forwardRef<HTMLButtonElement, AuditExportMe
           <FileJson className="mt-0.5 size-4" aria-hidden />
           <span className="flex flex-col">
             <span>Export JSON Lines (for a SIEM)</span>
-            <span className="text-xs text-muted-foreground">Each stored record unchanged, one per line</span>
+            <span className="text-xs text-muted-foreground">{jsonLinesText(canViewCost)}</span>
           </span>
         </DropdownMenuItem>
         {showFullExport ? (
@@ -234,6 +249,7 @@ export function AuditExportDialog({
   onOpenJobs,
   returnFocusRef,
 }: AuditExportDialogProps) {
+  const canViewCost = useCan('cost', 'view');
   const [range, setRange] = React.useState<AbsoluteRange | null>(null);
   const [count, setCount] = React.useState<CountState>({ phase: 'counting' });
   const [narrowed, setNarrowed] = React.useState(false);
@@ -572,7 +588,7 @@ export function AuditExportDialog({
                 <RadioGroupItem id="audit-export-jsonl" value="jsonl" className="mt-0.5" />
                 <span className="flex flex-col">
                   <span className="text-sm font-medium text-foreground">JSON Lines (for a SIEM)</span>
-                  <span className="text-xs font-normal text-muted-foreground">Each stored record unchanged, one per line.</span>
+                  <span className="text-xs font-normal text-muted-foreground">{jsonLinesText(canViewCost)}.</span>
                 </span>
               </Label>
             </RadioGroup>
@@ -591,6 +607,7 @@ export function AuditExportDialog({
                 addresses.
               </span>
             </p>
+            {canViewCost ? null : <p>{SPEND_HIDDEN_IN_FILE}</p>}
           </div>
         ) : null}
 

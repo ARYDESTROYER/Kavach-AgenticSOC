@@ -466,5 +466,28 @@ class CheckModeTests(ReleaseNotesTestCase):
         self.assertEqual(latest["latest_update_id"], loaded.latest)
 
 
+
+class IntroTests(unittest.TestCase):
+    def test_the_intro_names_where_the_switch_really_is(self) -> None:
+        """The page says where **Show What's new after updates** is, as the Console
+        builds it: the Appearance section of the Account group of Settings."""
+        webui = notes.ROOT / "webui" / "src" / "soc"
+        meta = (webui / "pages" / "settings" / "settings-sections-meta.ts").read_text(encoding="utf-8")
+        section = meta[meta.index("id: 'customization',"):]
+        section = section[: section.index("},")]
+        group = section.split("group: '", 1)[1].split("'", 1)[0]
+        title = section.split("title: '", 1)[1].split("'", 1)[0]
+        label = meta.split(f"{{ id: '{group}', label: '", 1)[1].split("'", 1)[0]
+        host = (webui / "components" / "CustomizationSection.tsx").read_text(encoding="utf-8")
+        self.assertIn("Show What&apos;s new after updates", host)
+        self.assertEqual((label, title), ("Account", "Appearance"))
+        page = notes.doc_output(notes.load_notes(notes.Context.load(notes.ROOT)))
+        intro = page[page.index("# What's new"): page.index("## Agentic SOC")]
+        self.assertIn(
+            f"**Show What's new after updates** in **Settings → {label} → {title}**",
+            " ".join(intro.split()),
+        )
+        self.assertNotIn("Settings, Appearance", intro)
+
 if __name__ == "__main__":
     unittest.main()

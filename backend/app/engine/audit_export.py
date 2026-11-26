@@ -56,7 +56,8 @@ submit route and the durable job share:
 * **Spend figures.** The file follows ``cost:view`` as ``GET /api/audit`` does
   (Round 16, :mod:`app.api.cost_text`). For a person without it at run time, the spend
   figure a timeout, budget refusal, case manager or runbook AI row put into its
-  ``result_summary`` reads ``cost=hidden`` or ``(amount hidden)`` in both formats;
+  ``result_summary`` reads ``cost=hidden`` or ``(amount hidden)`` in both formats, and
+  the replay experiment's spend row reads ``spend_usd=hidden bound_usd=hidden``;
   every other field, and every other row, is written as stored, so evidence such as
   ``amount=$5000`` is never changed. The job checks the grant before the read and
   again at every page boundary; once withheld, a figure stays withheld for the rest of
@@ -579,8 +580,8 @@ def csv_line(
 
 def withheld_cost(doc: Mapping[str, Any]) -> Mapping[str, Any]:
     """``doc`` as a person without ``cost:view`` reads it: the spend figure a timeout,
-    budget refusal, case manager or runbook AI row put into its ``result_summary``
-    withheld (:func:`app.api.cost_text.withhold_row_cost_text`, the rule
+    budget refusal, case manager, runbook AI or replay spend row put into its
+    ``result_summary`` withheld (:func:`app.api.cost_text.withhold_row_cost_text`, the rule
     ``GET /api/audit`` follows). Every other field, and every other row, is returned as
     stored; ``doc`` itself is never changed."""
     summary = doc.get("result_summary")

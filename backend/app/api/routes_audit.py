@@ -1251,10 +1251,10 @@ _AUDIT_VIEW = require_permission("audit", "view")
 
 def _withhold_cost(records: list[AuditRecord], show_cost: bool) -> list[AuditRecord]:
     """The records as a caller without ``cost:view`` reads them (Round 16, WP16): the
-    spend figure a timeout, budget refusal, case manager or runbook AI row put into its
-    ``result_summary`` reads ``hidden`` (``api.cost_text``), as on the case trace. Every
-    other field, and every other row, is shown as recorded. Read-time display only: the
-    stored rows never change (#2)."""
+    spend figure a timeout, budget refusal, case manager, runbook AI or replay spend row
+    put into its ``result_summary`` reads ``hidden`` (``api.cost_text``), as on the case
+    trace. Every other field, and every other row, is shown as recorded. Read-time
+    display only: the stored rows never change (#2)."""
     if show_cost:
         return records
     out: list[AuditRecord] = []

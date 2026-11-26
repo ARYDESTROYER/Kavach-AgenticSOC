@@ -247,7 +247,7 @@ export const SHIFT_REPORT = {
   ],
   sla_aging: {
     enabled: true,
-    warn_fraction: 0.75,
+    warn_fraction: 0.8,
     totals: { open: 15, breached: 1, about_to_breach: 0 },
     breached: [{ case_id: 'c-5', display_id: 'CASE-000005', priority_level: '', age_minutes: 1754, target_minutes: 120, overdue_minutes: 1634, assignee: 'sgupta' }],
     about_to_breach: [],
