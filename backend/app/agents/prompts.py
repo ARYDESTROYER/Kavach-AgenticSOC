@@ -57,6 +57,17 @@ RUNBOOK_HEADING = (
 PRECEDENT_OPEN = "<<<PRECEDENT>>>"
 PRECEDENT_CLOSE = "<<<END_PRECEDENT>>>"
 
+#: The heading that opens the case's own cluster block in :func:`render_cluster`.
+#: The Demo provider reads a Demo storyline only from the text between this heading
+#: and the end of the sample events, so a memory, precedent, runbook or retrieved
+#: chunk naming another storyline's rule never changes a Demo verdict. One constant,
+#: so the prompt and that reader cannot drift.
+CLUSTER_CONTEXT_HEADING = "## Investigation context (deterministic, computed in code)"
+#: How the sample events heading in :func:`render_cluster` starts (its tail states the
+#: evidence projection). The cluster block ends at the next heading after it; a test
+#: holds the prompt to this text.
+SAMPLE_EVENTS_HEADING = "## Sample events"
+
 # Generous safety-net cap for ``fence_block`` — a whole structured payload (a tool
 # observation, an event JSON, the standup aggregate) rather than a single leaf value.
 _FENCE_BLOCK_MAX_CHARS = 16000
@@ -516,7 +527,7 @@ def render_cluster(cluster: Cluster, enrichment: EnrichmentResult | None,
     if runbook_block:
         lines.append(runbook_block)
         lines.append("")
-    lines.append("## Investigation context (deterministic, computed in code)")
+    lines.append(CLUSTER_CONTEXT_HEADING)
     lines.append(f"- entity: {cluster.entity.type.value} = {fence(cluster.entity.value)}")
     lines.append(f"- grouped_by: {cluster.group_by.value}")
     lines.append(f"- event_count: {cluster.count}")

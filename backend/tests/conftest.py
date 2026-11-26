@@ -129,6 +129,19 @@ def _no_outbound_network(request: pytest.FixtureRequest, monkeypatch: pytest.Mon
 
 
 @pytest.fixture(autouse=True)
+def _demo_investigation_pace_off(monkeypatch: pytest.MonkeyPatch):
+    """Autouse: no Demo investigation pause in the suite (Round 16 XFDEMO).
+
+    In Demo Mode an investigation a person or a job starts waits a moment before each
+    model step, so the Console can show the run. The wait is read at call time, so
+    setting it to 0 here keeps every test fast. A test of the pause sets its own small
+    value."""
+    from app.llm import providers
+
+    monkeypatch.setattr(providers, "DEMO_INVESTIGATION_STEP_DELAY_S", 0)
+
+
+@pytest.fixture(autouse=True)
 def _reset_case_page_cache():
     """Autouse: clear the shared short-TTL case-page cache between tests.
 
