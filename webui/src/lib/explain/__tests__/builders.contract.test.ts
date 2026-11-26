@@ -88,7 +88,7 @@ describe('the risk explanation', () => {
     const byLabel = Object.fromEntries((exp?.steps ?? []).map((s) => [s.label, s]));
     expect(byLabel.Volume.expression).toBe('min(100, 100 x ln(1 + 40) / ln(1 + 50))');
     expect(byLabel.Volume.result).toBe('94.45');
-    expect(byLabel.Velocity.expression).toBe('min(100, 100 x 20 / 10)');
+    expect(byLabel.Velocity.expression).toBe('min(100, 100 x 40 / (120 / 60) / 10)');
     expect(byLabel.Velocity.result).toBe('100 (capped from 200)');
     expect(byLabel.Diversity.expression).toBe('min(100, 100 x 3 / 5)');
     expect(exp?.inputs.find((i) => i.key === 'asset_value')?.value).toBe('60, exact entry for this entity');
@@ -184,7 +184,41 @@ describe('priority and severity', () => {
   it('the surprising P3 says why: no asset entry', () => {
     const exp = explainPriority(chips(0, 81.11, 'P3', 'low', 'high'));
     expect(exp?.summary).toBe(
-      'P3 = matrix[impact low, urgency high]. Impact low: Asset criticality 0 < 22 for 10.0.4.12 (no asset entry). Urgency high: Risk 81.11 >= 48.',
+      'P3 = matrix[impact low, urgency high]. Impact low: Asset criticality 0 < 22 for 10.0.4.12 (no asset entry). Urgency high: Risk 81 (81.11 rounded half up) >= 48.',
+    );
+  });
+
+  it('urgency reads the shown risk integer, never "47.74 is from 22 to 47" (urgency-band-raw-vs-shown-risk)', () => {
+    const exp = explainPriority(chips(0, 47.74, 'P3', 'low', 'high'));
+    expect(exp?.summary).toBe(
+      'P3 = matrix[impact low, urgency high]. Impact low: Asset criticality 0 < 22 for 10.0.4.12 (no asset entry). Urgency high: Risk 48 (47.74 rounded half up) >= 48.',
+    );
+    expect(explanationText(exp!)).not.toContain('is from 22 to 47');
+    const medium = explainPriority(chips(30, 21.5, 'P4', 'medium', 'medium'));
+    expect(medium?.summary).toContain('Urgency medium: Risk 22 (21.5 rounded half up) is at least 22 and under 48.');
+    expect(medium?.summary).toContain('Impact medium: Asset criticality 30 is at least 22 and under 48');
+  });
+
+  it('a non-integer criticality is never claimed to sit in "22 to 47"', () => {
+    const exp = explainPriority(chips(47.6, 10, 'P3', 'medium', 'low'));
+    expect(exp?.summary).toContain('Asset criticality 47.6 is at least 22 and under 48');
+    const edge = explainPriority(chips(47.996, 10, 'P3', 'medium', 'low'));
+    expect(edge?.summary).toContain('Asset criticality 47.996 is at least 22 and under 48');
+  });
+
+  it('a derived severity names the shown integer it bands', () => {
+    const c = chips(0, 47.74, 'P3', 'low', 'high');
+    c.severity = { band: 'high', value: 47.74, raw: null, source: 'derived', inputs: {} } as unknown as TriageChips['severity'];
+    expect(explainSeverity(c)?.summary).toBe(
+      'High severity: the source reported none, so it is derived from the risk score 48 (47.74 rounded half up), in the High (48 to 73) band.',
+    );
+  });
+
+  it('a source severity that projects to a non-integer reads a half-open range', () => {
+    const c = chips(0, 10, 'P4', 'low', 'low');
+    c.severity = { band: 'medium', value: 47.6, raw: 47.6, source: 'source_asserted', inputs: {}, scale_max: 100 } as unknown as TriageChips['severity'];
+    expect(explainSeverity(c)?.summary).toBe(
+      'Medium severity: the source reported 47.6 on a 0 to 100 scale; 47.6 / 100 x 100 = 47.6, in the Medium (at least 22 and under 48) band.',
     );
   });
 

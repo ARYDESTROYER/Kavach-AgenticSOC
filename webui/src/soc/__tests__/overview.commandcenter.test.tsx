@@ -685,4 +685,22 @@ describe('Overview — Cyber Defence Center', () => {
     expect(within(card).queryByText('No trend data yet.')).toBeNull();
     expect(screen.queryByTestId('metric-trend-card')).toBeNull();
   });
+
+  it('never says the open cases stock is limited to the time range (numbers review)', async () => {
+    const user = userEvent.setup();
+    fetchPostureMock.mockResolvedValue({
+      ...POSTURE,
+      open_now: { count: 2, window_exempt: true, as_of: '2026-07-01T08:00:00Z', complete: true, reason: '' },
+    });
+    render(<Overview onNavigate={vi.fn()} />);
+    await screen.findByTestId('noise-funnel');
+    await user.click(await screen.findByTestId('kpi-open-cases'));
+    const dialog = await screen.findByRole('dialog');
+    await user.click(within(dialog).getByRole('button', { name: 'Show the calculation' }));
+    const panel = within(dialog).getByTestId('explain-panel');
+    expect(within(panel).getByTestId('explain-inputs')).toHaveTextContent('Not limited by the time range above');
+    expect(within(panel).getByTestId('explain-inputs')).not.toHaveTextContent('The time range above');
+    expect(panel).toHaveTextContent('Counted by the server over every open case, whenever it arrived.');
+    expect(panel).not.toHaveTextContent('over the cases in the window');
+  });
 });

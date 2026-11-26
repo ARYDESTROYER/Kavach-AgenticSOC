@@ -405,7 +405,16 @@ describe('Metrics Operational tab (§4.9.4)', () => {
     // population since WP12, D10) and an explain trigger on a figure that has one.
     expect(within(strip).queryByRole('link')).toBeNull();
     const buttons = within(strip).queryAllByRole('button');
-    expect(buttons.map((b) => b.getAttribute('aria-label'))).toEqual(['About Needs human', 'About MTTR', 'About Agreement rate']);
+    // Average risk carries its help and its explanation (numbers review): the explain
+    // trigger is named by its text, ", explain".
+    expect(buttons.map((b) => b.getAttribute('aria-label'))).toEqual([
+      'About Needs human',
+      'About MTTR',
+      'About Agreement rate',
+      'About Average risk',
+      null,
+    ]);
+    expect(within(strip).getByRole('button', { name: /, explain$/ })).toBeInTheDocument();
   });
 
   it('shows a dash, not a count, when the open-by-verdict read is refused', async () => {

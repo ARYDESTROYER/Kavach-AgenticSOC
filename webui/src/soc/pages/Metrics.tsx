@@ -81,7 +81,15 @@ import { deltaView, ratioPct } from './posture.format';
 import { ExplainTrigger } from '@/design-system/explain';
 import type { Explanation } from '@/lib/explain/types';
 import type { FeedbackAgreementFields, MetricsExplainFields, MttrByDecider } from '@/lib/types-metrics-explain';
-import { explainAgreement, explainKpiShare } from '@/soc/components/metrics-explain/builders';
+import {
+  explainAgreement,
+  explainAverageRisk,
+  explainCount,
+  explainKpiShare,
+  explainSlaAtRisk,
+  slaAttainmentInitial,
+} from '@/soc/components/metrics-explain/builders';
+import { MetricExplain } from '@/soc/components/metrics-explain/MetricExplain';
 import { TimingExplain } from '@/soc/components/metrics-explain/TimingExplain';
 import {
   AnalyticsWindowPicker,
@@ -695,7 +703,15 @@ function OperationalTab({ data, rag, memory, openByVerdict, loading, failed, hou
           label="Average risk"
           value={typeof data.avg_risk_score === 'number' ? String(Math.round(data.avg_risk_score)) : DASH}
           context={`0 to 100, ${population}`}
+          help={`Mean risk score of the scored cases, ${population}. Cases without a score are left out.`}
           testId="risk"
+          explain={explainSlot(
+            explainAverageRisk({
+              mean: data.avg_risk_score,
+              scoredCases: (data as Metrics & { avg_risk_case_count?: number }).avg_risk_case_count,
+              population,
+            }),
+          )}
         />
       </KpiStrip>
 
@@ -1273,7 +1289,7 @@ function PerformanceTab({
       key: 'dwell',
       label: 'Dwell (p50)',
       block: lifecycle.dwell_minutes,
-      help: 'Median time from case creation to the first response. It is time to first response, not time to detect.',
+      help: 'Median time from case creation to the first response by a person. Automatic closes are not counted. It is time to first response, not time to detect.',
     },
   ];
 
@@ -1372,12 +1388,26 @@ function PerformanceTab({
             caveats: ['Cases an analyst rule policy closed are left out: no model ran on them.'],
           })}
         />
+        {/* The three shares over the agent-worked cohort (`quality.total_cases`, never
+            the posture `case_count`), explained like FP rate (numbers review). */}
         <QualityTile
           label="Incident yield"
           value={ratioPct(quality.alert_to_incident_ratio)}
           context={`${fmtNumber(quality.true_positive_cases)} true positives`}
           delta={deltaView(compare?.alert_to_incident_ratio)}
           goodDirection="none"
+          explanation={explainKpiShare({
+            metric: 'incident_yield',
+            title: 'Incident yield',
+            numerator: quality.true_positive_cases,
+            denominator: quality.total_cases,
+            numeratorLabel: 'true positive verdicts',
+            denominatorLabel: 'cases',
+            window: hours > 0 ? `the ${caption}` : 'all time',
+            dividedBy: 'server',
+            tileRounding: 'The tile shows a whole percent.',
+            caveats: ['Cases an analyst rule policy closed are left out: no model ran on them.'],
+          })}
         />
         <QualityTile
           label="Escalation rate"
@@ -1385,11 +1415,35 @@ function PerformanceTab({
           context={`${fmtNumber(quality.escalated_cases)} escalated`}
           delta={deltaView(compare?.escalation_rate)}
           goodDirection="down"
+          explanation={explainKpiShare({
+            metric: 'escalation_rate',
+            title: 'Escalation rate',
+            numerator: quality.escalated_cases,
+            denominator: quality.total_cases,
+            numeratorLabel: 'escalated cases',
+            denominatorLabel: 'cases',
+            window: hours > 0 ? `the ${caption}` : 'all time',
+            dividedBy: 'server',
+            tileRounding: 'The tile shows a whole percent.',
+            caveats: ['Cases an analyst rule policy closed are left out: no model ran on them.', 'A case counts once if it was ever escalated.'],
+          })}
         />
         <QualityTile
           label="Containment"
           value={ratioPct(quality.containment_rate)}
           context={`${fmtNumber(quality.terminal_cases)} worked to close`}
+          explanation={explainKpiShare({
+            metric: 'containment_rate',
+            title: 'Containment',
+            numerator: quality.terminal_cases,
+            denominator: quality.total_cases,
+            numeratorLabel: 'resolved or closed cases',
+            denominatorLabel: 'cases',
+            window: hours > 0 ? `the ${caption}` : 'all time',
+            dividedBy: 'server',
+            tileRounding: 'The tile shows a whole percent.',
+            caveats: ['Cases an analyst rule policy closed are left out: no model ran on them.'],
+          })}
         />
         <QualityTile
           label="Automation rate"
@@ -1756,13 +1810,48 @@ function PostureTab({
       ) : sla?.enabled ? (
         <>
           <StripPanel title="SLA attainment" caption={caption} data-testid="posture-sla">
+            {/* Every figure explains itself (numbers review): Attainment reads its own
+                explanation on open, the same one the Executive board shows. */}
             <KpiTile
               label="Attainment"
               // null = nothing in the window could be scored: a dash, never "0%".
               value={ratioPct(typeof sla.attainment_pct === 'number' ? sla.attainment_pct / 100 : null)}
               context={typeof sla.attainment_pct === 'number' ? 'met their target' : sla.attainment_reason || 'not measured'}
+              explain={
+                typeof sla.attainment_pct === 'number'
+                  ? (numeral) => (
+                      <MetricExplain
+                        metric="sla_attainment"
+                        title="SLA attainment"
+                        windowHours={hours}
+                        initial={slaAttainmentInitial(
+                          ratioPct(sla.attainment_pct! / 100),
+                          hours > 0 ? `the ${caption}` : 'all time',
+                        )}
+                      >
+                        {numeral}
+                      </MetricExplain>
+                    )
+                  : undefined
+              }
             />
-            <KpiTile label="Evaluated" value={fmtNumber(sla.evaluated)} context="cases with a target" />
+            <KpiTile
+              label="Evaluated"
+              value={fmtNumber(sla.evaluated)}
+              context="cases with a target"
+              explain={explainSlot(
+                explainCount({
+                  metric: 'sla_evaluated',
+                  title: 'Evaluated',
+                  value: sla.evaluated,
+                  noun: 'cases',
+                  window: hours > 0 ? `the ${caption}` : 'all time',
+                  summary: `${fmtNumber(sla.evaluated ?? 0)} cases created in ${hours > 0 ? `the ${caption}` : 'all time'} have a priority with an SLA target.`,
+                  formula: 'count of cases whose priority has an SLA target',
+                  caveats: ['A case whose priority has no target, or no readable creation time, is not evaluated.'],
+                }),
+              )}
+            />
             <KpiTile
               label="Response breached"
               value={fmtNumber(sla.response_breached)}
@@ -1770,6 +1859,18 @@ function PostureTab({
               format={fmtNumber}
               accent="critical"
               context="past the response target"
+              explain={explainSlot(
+                explainCount({
+                  metric: 'sla_response_breached',
+                  title: 'Response breached',
+                  value: sla.response_breached,
+                  noun: 'cases',
+                  window: hours > 0 ? `the ${caption}` : 'all time',
+                  summary: `${fmtNumber(sla.response_breached ?? 0)} evaluated cases took longer than their response target.`,
+                  formula: 'count of evaluated cases whose first response came after the response target, or that still wait for one past it',
+                  caveats: ['A response stops the clock, so a late response stays late by the same amount.'],
+                }),
+              )}
             />
             <KpiTile
               label="Resolve breached"
@@ -1778,11 +1879,30 @@ function PostureTab({
               format={fmtNumber}
               accent="critical"
               context="past the resolve target"
+              explain={explainSlot(
+                explainCount({
+                  metric: 'sla_resolve_breached',
+                  title: 'Resolve breached',
+                  value: sla.resolve_breached,
+                  noun: 'cases',
+                  window: hours > 0 ? `the ${caption}` : 'all time',
+                  summary: `${fmtNumber(sla.resolve_breached ?? 0)} evaluated cases took longer than their resolve target.`,
+                  formula: 'count of evaluated cases resolved or closed after the resolve target, or still open past it',
+                  caveats: [],
+                }),
+              )}
             />
             <KpiTile
               label="At risk"
               value={fmtNumber((sla.response_at_risk ?? 0) + (sla.resolve_at_risk ?? 0))}
               context="close to a target"
+              explain={explainSlot(
+                explainSlaAtRisk({
+                  responseAtRisk: sla.response_at_risk,
+                  resolveAtRisk: sla.resolve_at_risk,
+                  window: hours > 0 ? `the ${caption}` : 'all time',
+                }),
+              )}
             />
           </StripPanel>
           <BreachingPanel sla={sla} caption={caption} onNavigate={onNavigate} />

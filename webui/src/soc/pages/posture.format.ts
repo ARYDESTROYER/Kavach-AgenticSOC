@@ -40,8 +40,9 @@ interface LifecycleMetricCopy {
  * anchor when populated) to a status-history transition, and reports p50 / p90 / mean:
  *   • MTTA  → first ACK transition (investigating / escalated / on-hold).
  *   • MTTR  → first TERMINAL transition (resolved / closed).
- *   • Dwell → first RESPONSE transition (investigating / escalated / on-hold /
- *             resolved / closed) — i.e. time-to-first-response.
+ *   • Dwell → first human RESPONSE transition (investigating, escalated, on hold,
+ *             resolved or closed, by a person; automatic closes are not counted),
+ *             that is time to first response.
  *
  * ⚠ Dwell is deliberately NOT labelled "MTTD" (mean-time-to-detect): we do not measure
  * log-arrival→detection latency, so surfacing it as detection time would be dishonest.
@@ -61,7 +62,7 @@ export const LIFECYCLE_METRICS: Record<LifecycleMetricKey, LifecycleMetricCopy> 
   dwell: {
     label: 'Dwell',
     sub: 'Time to first response',
-    help: 'Median (p50) time from case creation — or detection when known — to the first active response (investigating, escalated, on-hold, resolved, or closed). This is time-to-first-response, not time-to-detect.',
+    help: 'Median (p50) time from case creation (or detection when known) to the first response by a person (investigating, escalated, on hold, resolved or closed). Automatic closes are not counted. This is time to first response, not time to detect.',
   },
 };
 

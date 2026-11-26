@@ -364,7 +364,7 @@ describe('Response timing', () => {
     expect(help.mttr).toMatch(/^Median time from case creation, or detection when known, to the case first being resolved or closed\./);
     // Dwell: creation (or detection) to the first RESPONSE, never first event to resolution.
     expect(help.dwell).toMatch(
-      /^Median time from case creation, or detection when known, to the first response \(investigating, escalated, on hold, resolved or closed\)\. This is time to first response, not time to detect\./,
+      /^Median time from case creation, or detection when known, to the first response by a person \(investigating, escalated, on hold, resolved or closed\)\. Automatic closes are not counted\. This is time to first response, not time to detect\./,
     );
     expect(help.dwell).not.toMatch(/first event to resolution/);
     for (const t of TIMINGS) expect(t.help, t.key).not.toMatch(/[\u2013\u2014]/);

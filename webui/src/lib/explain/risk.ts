@@ -14,7 +14,7 @@
 import type { Case, RiskBreakdown, RiskInputs, RiskWeightsSnapshot } from '@/lib/types';
 import type { StageRiskCalculation, TriageChips } from '@/soc/pages/CaseDetail.api';
 
-import { displayBand, displayScore, fixed, trimmed } from './rounding';
+import { displayBand, displayScore, fixed, plain, trimmed } from './rounding';
 import type { Explanation, ExplanationInput, ExplanationStep } from './types';
 
 export const RISK_FACTOR_KEYS = ['volume', 'velocity', 'reputation', 'diversity', 'asset_criticality'] as const;
@@ -140,8 +140,58 @@ function weightedTerms(weights: Record<RiskFactorKey, number>, factors: Record<R
   return RISK_FACTOR_KEYS.map((key) => `${weightText(weights[key])} x ${trimmed(factors[key])}`).join(' + ');
 }
 
-function weightedSum(weights: Record<RiskFactorKey, number>, factors: Record<RiskFactorKey, number>): number {
-  return RISK_FACTOR_KEYS.reduce((sum, key) => sum + weights[key] * factors[key], 0);
+/**
+ * Exact decimal arithmetic on the PRINTED operands, so a printed "=" holds for a person
+ * doing the sum by hand. A weight prints with at most 4 decimals and a stored factor
+ * with 2 (`weightText`, `trimmed`), so their products are exact in millionths; binary
+ * floating point is not (0.25 x 35.26 + 9 + 3 is 20.814999... there, 20.815 by hand).
+ */
+const scaledInt = (value: number, digits: number): number => Math.round(value * 10 ** digits);
+
+/** Integer division rounded half up, for a non-negative numerator and a positive divisor. */
+function divHalfUp(numerator: number, divisor: number): number {
+  const doubled = 2 * numerator + divisor;
+  let q = Math.floor(doubled / (2 * divisor));
+  if ((q + 1) * 2 * divisor <= doubled) q += 1;
+  if (q * 2 * divisor > doubled) q -= 1;
+  return q;
+}
+
+/** A count of hundredths as the explanation prints a 2-decimal number. */
+const centsText = (cents: number): string => trimmed(cents / 100);
+
+interface StoredSum {
+  /** The weighted sum of the printed weights and factors, in millionths (exact). */
+  micros: number;
+  /** That sum rounded half up to hundredths: the Weighted sum step's result. */
+  cents: number;
+  /** The printed denominator in hundredths ("1.00" is 100). */
+  denominatorCents: number;
+  /** The printed terms divided by the printed denominator, in hundredths. */
+  fromTermsCents: number;
+  /** The printed (rounded) sum divided by the printed denominator, in hundredths. */
+  fromSumCents: number;
+}
+
+function storedSum(
+  weights: Record<RiskFactorKey, number>,
+  factors: Record<RiskFactorKey, number>,
+  denominator: number,
+): StoredSum | null {
+  const micros = RISK_FACTOR_KEYS.reduce(
+    (sum, key) => sum + scaledInt(Number(weightText(weights[key]).replace(/,/g, '')), 4) * scaledInt(factors[key], 2),
+    0,
+  );
+  const denominatorCents = scaledInt(Number(fixed(denominator).replace(/,/g, '')), 2);
+  if (micros < 0 || denominatorCents <= 0 || !Number.isSafeInteger(micros)) return null;
+  const cents = divHalfUp(micros, 10_000);
+  return {
+    micros,
+    cents,
+    denominatorCents,
+    fromTermsCents: divHalfUp(micros, 100 * denominatorCents),
+    fromSumCents: divHalfUp(cents * 100, denominatorCents),
+  };
 }
 
 function memberCount(caseRecord: Pick<Case, 'member_event_keys' | 'member_event_ids'> | null | undefined): number | null {
@@ -162,13 +212,23 @@ export function memberCountNote(current: number | null, scored: number | null): 
     : `The case now holds ${plural(current, 'event')}; the score was computed from the events in its scoring run.`;
 }
 
-/** The hover line for a score with recorded inputs (the contract's worked example). */
+/**
+ * The hover line for a score with recorded inputs (the contract's worked example). It
+ * prints "Risk X = (terms) / weights" only when those printed terms give X. When the
+ * stored 2-decimal factors give a different hundredth, it says the score comes from the
+ * unrounded factors and prints what the stored ones give, so no "=" is false.
+ */
 export function riskHoverLine(score: number, breakdown: RiskBreakdown): string | null {
   const inputs = recordedInputs(breakdown);
   const factors = storedFactors(breakdown);
   if (!inputs || !factors) return null;
   const denominator = inputs.zero_weight_fallback ? 1 : inputs.total_weight;
-  return `Risk ${trimmed(score)} = (${weightedTerms(inputs.weights, factors)}) / ${fixed(denominator)}. Click for inputs.`;
+  const terms = weightedTerms(inputs.weights, factors);
+  const sum = storedSum(inputs.weights, factors, denominator);
+  if (!sum || sum.fromTermsCents === scaledInt(score, 2)) {
+    return `Risk ${trimmed(score)} = (${terms}) / ${fixed(denominator)}. Click for inputs.`;
+  }
+  return `Risk ${trimmed(score)}, from the unrounded factors. The stored factors give (${terms}) / ${fixed(denominator)} = ${centsText(sum.fromTermsCents)}. Click for inputs.`;
 }
 
 function factorSteps(inputs: RiskInputs, factors: Record<RiskFactorKey, number>): ExplanationStep[] {
@@ -186,10 +246,13 @@ function factorSteps(inputs: RiskInputs, factors: Record<RiskFactorKey, number>)
       result: trimmed(factors.velocity),
     });
   } else {
+    // Written from the recorded count and the full-precision window, so the printed
+    // expression gives the stored factor: a per-minute rate rounded to 2 decimals does
+    // not (1.1 x 10 is 11.00, while 8 / (434.875 / 60) x 10 is 11.04).
     const raw = (100 * inputs.rate_per_minute) / refs.velocity;
     steps.push({
       label: RISK_FACTOR_LABELS.velocity,
-      expression: `min(100, 100 x ${trimmed(inputs.rate_per_minute)} / ${trimmed(refs.velocity)})`,
+      expression: `min(100, 100 x ${inputs.event_count} / (${plain(inputs.effective_window_seconds, 3)} / 60) / ${plain(refs.velocity)})`,
       result: raw > 100 ? `${trimmed(factors.velocity)} (capped from ${trimmed(raw)})` : trimmed(factors.velocity),
     });
   }
@@ -211,12 +274,34 @@ function factorSteps(inputs: RiskInputs, factors: Record<RiskFactorKey, number>)
   return steps;
 }
 
+/**
+ * The Total step of a recorded score. "<sum> / <weights>" is printed only when those
+ * printed numbers give the recorded score. When the stored 2-decimal factors round to a
+ * different sum (20.815 shows as 20.82, while the score is 20.81 from the unrounded
+ * factors), the step says where the total comes from instead of printing a division
+ * that does not hold.
+ */
+function totalStep(sum: StoredSum | null, numerator: number, denominator: number, score: number): ExplanationStep {
+  const shownSum = sum ? centsText(sum.cents) : trimmed(numerator);
+  const agrees = sum ? sum.fromSumCents === scaledInt(score, 2) : trimmed(numerator / denominator) === trimmed(score);
+  const fromStored = sum ? centsText(sum.fromTermsCents) : trimmed(numerator / denominator);
+  return {
+    label: 'Total',
+    expression: agrees
+      ? `${shownSum} / ${fixed(denominator)}`
+      : `Recorded at scoring from the unrounded factors. The stored factors give ${fromStored}.`,
+    result: trimmed(score),
+  };
+}
+
 function recordedInputRows(inputs: RiskInputs): ExplanationInput[] {
   const source = 'Recorded at scoring';
+  // Seconds with millisecond precision (3 decimals is exact), so the rate row's own
+  // division reproduces its printed result.
   const window =
     inputs.span_seconds < inputs.effective_window_seconds
-      ? `${trimmed(inputs.span_seconds)} s, counted as ${trimmed(inputs.effective_window_seconds)} s (the floor is 1 s)`
-      : `${trimmed(inputs.span_seconds)} s`;
+      ? `${trimmed(inputs.span_seconds, 3)} s, counted as ${trimmed(inputs.effective_window_seconds, 3)} s (the floor is 1 s)`
+      : `${trimmed(inputs.span_seconds, 3)} s`;
   const rows: ExplanationInput[] = [
     { key: 'event_count', label: 'Events in the scoring cluster', value: inputs.event_count.toLocaleString('en-US'), source },
     { key: 'span_seconds', label: 'First to last event', value: window, source },
@@ -226,7 +311,7 @@ function recordedInputRows(inputs: RiskInputs): ExplanationInput[] {
       value:
         inputs.rate_per_minute === null
           ? 'Not used (fewer than 3 events)'
-          : `${inputs.event_count.toLocaleString('en-US')} / (${trimmed(inputs.effective_window_seconds)} s / 60) = ${trimmed(inputs.rate_per_minute)}`,
+          : `${inputs.event_count.toLocaleString('en-US')} / (${trimmed(inputs.effective_window_seconds, 3)} s / 60) = ${trimmed(inputs.rate_per_minute, 4)}`,
       source,
     },
     { key: 'rule_type_count', label: 'Distinct rule types', value: String(inputs.rule_type_count), source },
@@ -296,12 +381,13 @@ function baseRiskExplanation(source: RiskExplainSource): Explanation | null {
 
   if (inputs && factors && source.breakdown) {
     const denominator = inputs.zero_weight_fallback ? 1 : inputs.total_weight;
-    const numerator = weightedSum(inputs.weights, factors);
-    const fromStored = numerator / denominator;
+    const numerator = RISK_FACTOR_KEYS.reduce((total, key) => total + inputs.weights[key] * factors[key], 0);
+    const sum = storedSum(inputs.weights, factors, denominator);
+    const fromStored = sum ? sum.fromTermsCents / 100 : numerator / denominator;
     const caveats: string[] = [];
     const note = memberCountNote(source.memberCount ?? null, inputs.event_count);
     if (note) caveats.push(note);
-    if (Math.abs(fromStored - score) > 0.01) {
+    if (Math.abs(fromStored - score) > 0.01 + 1e-9) {
       caveats.push(
         `The stored factors with the recorded weights give ${trimmed(fromStored)}, not the stored ${trimmed(score)}.`,
       );
@@ -316,9 +402,9 @@ function baseRiskExplanation(source: RiskExplainSource): Explanation | null {
         {
           label: 'Weighted sum',
           expression: weightedTerms(inputs.weights, factors),
-          result: trimmed(numerator),
+          result: sum ? centsText(sum.cents) : trimmed(numerator),
         },
-        { label: 'Total', expression: `${trimmed(numerator)} / ${fixed(denominator)}`, result: trimmed(score) },
+        totalStep(sum, numerator, denominator, score),
         { label: 'Shown', expression: `floor(${trimmed(score)} + 0.5)`, result: String(shown) },
       ],
       rounding: `${RECORDED_ROUNDING} ${bandLine}`,
@@ -349,9 +435,14 @@ function baseRiskExplanation(source: RiskExplainSource): Explanation | null {
     if (memberNote) caveats.push(memberNote);
     return {
       ...base,
-      summary: `Risk ${trimmed(score)} = (${terms}) / ${weightText(calculation.denominator)}${
-        recorded ? '' : ', with today\'s weights'
-      }. Click for details.`,
+      summary:
+        trimmed(calculation.calculated_score) === trimmed(score)
+          ? `Risk ${trimmed(score)} = (${terms}) / ${weightText(calculation.denominator)}${
+              recorded ? '' : ', with today\'s weights'
+            }. Click for details.`
+          : `Risk ${trimmed(score)} is the recorded score. ${
+              recorded ? 'The stored factors give' : 'Today\'s weights give'
+            } (${terms}) / ${weightText(calculation.denominator)} = ${trimmed(calculation.calculated_score)}. Click for details.`,
       inputs: calculation.factors.map((f) => ({
         key: f.factor,
         label: f.label || RISK_FACTOR_LABELS[f.factor as RiskFactorKey] || f.factor,

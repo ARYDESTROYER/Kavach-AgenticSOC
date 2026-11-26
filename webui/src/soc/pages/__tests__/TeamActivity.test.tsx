@@ -16,6 +16,7 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 
 import type { PersonActivity, TeamActivity, TeamEvents } from '@/lib/types-team';
 
@@ -179,6 +180,17 @@ describe('Team activity', () => {
     expect(names[2]).toContain('Not attributed');
     // The zone is named in the help tip, never as a header description.
     expect(screen.queryByText(/Days are calendar days in Asia\/Kolkata/)).toBeNull();
+  });
+
+  it('explains the median time to acknowledge with its cases (numbers review)', async () => {
+    const user = userEvent.setup();
+    renderPage();
+    const strip = await screen.findByTestId('team-kpis');
+    const trigger = within(strip).getByRole('button', { name: /^7m\s*, explain$/ });
+    await user.click(trigger);
+    const panel = await screen.findByRole('dialog');
+    expect(panel).toHaveTextContent('Median 7m over 3 cases a person first acknowledged');
+    expect(panel).toHaveTextContent('the time at rank 2 of 3 sorted times');
   });
 
   it('sorts by a column without ever moving Not attributed off the end', () => {

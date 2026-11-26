@@ -31,6 +31,7 @@ import type { PersonActivity, TeamActivity as TeamActivityData, TeamKind } from 
 import { Badge } from '@/ui/badge';
 import { Button } from '@/ui/button';
 import { Callout, LoadingState, Panel } from '@/design-system';
+import { ExplainTrigger } from '@/design-system/explain';
 import { useOptionalAuth } from '@/soc/auth';
 import { Unauthorized } from '@/soc/components/Can';
 import { ChartCard } from '@/soc/components/ChartCard';
@@ -38,6 +39,7 @@ import { DataTable, TruncatedText, type DataTableColumn, type SortState } from '
 import { EmptyState } from '@/soc/components/EmptyState';
 import { KpiStrip } from '@/soc/components/KpiStrip';
 import { KpiTile } from '@/soc/components/KpiTile';
+import { explainTeamAckMedian } from '@/soc/components/metrics-explain/builders';
 import { LoadError } from '@/soc/components/LoadError';
 import { PageContainer } from '@/soc/components/PageContainer';
 import { PageHeader } from '@/soc/components/PageHeader';
@@ -278,6 +280,18 @@ function bulkContext(count: number, bulk: number, range: TeamRange): string {
   return bulk ? `${fmtNumber(bulk)} in bulk actions` : 'one at a time';
 }
 
+/** The median's explanation on hover and click (numbers review); none when not measured. */
+function ackExplainSlot(
+  medianSeconds: number | null,
+  samples: number,
+  window: string,
+): ((numeral: React.ReactNode) => React.ReactNode) | undefined {
+  const shown = fmtSeconds(medianSeconds);
+  const explanation = shown ? explainTeamAckMedian({ medianSeconds, samples, shown, window }) : null;
+  if (!explanation) return undefined;
+  return (numeral) => <ExplainTrigger explanation={explanation}>{numeral}</ExplainTrigger>;
+}
+
 function ackContext(data: TeamActivityData): string {
   const team = data.team;
   if (team.ack_status === 'too_many_cases') return 'too many cases to measure';
@@ -395,6 +409,7 @@ function TeamView() {
             label="Median time to acknowledge"
             value={team.median_ack_seconds === null ? 'Not measured' : (fmtSeconds(team.median_ack_seconds) ?? 'Not measured')}
             context={ackContext(data)}
+            explain={ackExplainSlot(team.median_ack_seconds, team.ack_samples, rangeCaption(range))}
           />
         </KpiStrip>
         <ChartCard title="Work per day" caption={`${rangeCaption(range)}, days in ${data.timezone}`}>

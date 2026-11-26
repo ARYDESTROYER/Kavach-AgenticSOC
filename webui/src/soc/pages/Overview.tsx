@@ -3860,6 +3860,9 @@ export default function Overview({ onNavigate }: OverviewProps) {
         value: openNowCount,
         noun: 'open cases',
         window: 'Now, any arrival date',
+        // A stock measured now, never limited to the window (numbers review).
+        windowSource: 'Not limited by the time range above',
+        provenanceNote: 'Counted by the server over every open case, whenever it arrived.',
         summary: `${fmtNumber(openNowCount)} cases are open now, whenever they arrived.`,
         formula: 'count of cases that are not resolved or closed, all time',
         caveats: openNowComplete ? [] : ['The store held more cases than were read, so this is a lower bound.'],

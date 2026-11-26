@@ -372,9 +372,15 @@ def severity_band_from_events(case: Case, prefs: Preferences | None = None) -> d
     # No source severity — fall back to the deterministic risk total (clearly flagged
     # as DERIVED, never claimed to be source-asserted).
     mag = max(0.0, min(100.0, float(case.risk_score)))
+    # The band reads the SHOWN risk integer (rounded half up), so a risk of 47.74,
+    # shown as 48 and banded High on the risk chip, is a High derived severity too
+    # (Round 16 D4, R7). A source-asserted severity above stays on its projection:
+    # that number is the source's rating, not the shown risk score.
+    display = round_half_up(mag)
     return {
-        "band": _severity_band_from_magnitude(mag),
+        "band": _severity_band_from_magnitude(float(display)),
         "value": round(mag, 2),
+        "display": display,
         "raw": None,
         "source": _SRC_DERIVED,
         "scale_max": DEFAULT_SEVERITY_SCALE_MAX,
@@ -444,14 +450,20 @@ def urgency_band(case: Case, prefs: Preferences) -> dict[str, Any]:
 
     Urgency answers "how fast must someone act", which the deterministic ``risk_score``
     already captures (volume/velocity/reputation/diversity); an escalated case is
-    treated as at least HIGH urgency. Returns ``{band, value (0-100), escalated}``.
-    This is advisory: it never gates the decision."""
+    treated as at least HIGH urgency. Returns ``{band, value (0-100), display,
+    escalated}``. This is advisory: it never gates the decision.
+
+    The band reads ``display``, the SHOWN risk integer (rounded half up), the same
+    integer the risk chip bands (Round 16 D4, R7). A risk of 47.74 shows as 48 and is
+    High urgency, never Medium beside a "Risk 48" High chip. ``value`` keeps the
+    unrounded score for the explanation."""
     mag = max(0.0, min(100.0, float(case.risk_score)))
+    display = round_half_up(mag)
     escalated = bool(case.escalation_level and case.escalation_level > 0)
-    band = _band_from_magnitude(mag)
+    band = _band_from_magnitude(float(display))
     if escalated and band != _HIGH:
         band = _HIGH
-    return {"band": band, "value": round(mag, 2), "escalated": escalated}
+    return {"band": band, "value": round(mag, 2), "display": display, "escalated": escalated}
 
 
 def derive_priority(impact: str, urgency: str, matrix: PriorityMatrix) -> dict[str, Any]:

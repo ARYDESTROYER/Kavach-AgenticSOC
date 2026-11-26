@@ -331,7 +331,9 @@ def test_without_prefs_sla_aging_keeps_its_earlier_buckets() -> None:
     case = _case(created=NOW - timedelta(hours=3), priority=None)
     aging = shift_report.sla_aging([case], sla, now=NOW)
     assert set(aging["by_priority"]) == {"unprioritized"}
-    assert aging["breached"][0]["target_minutes"] == shift_report._DEFAULT_RESPONSE_MINUTES
+    # No level means no target: the case is counted open, never as a breach of an
+    # invented 120-minute target (Round 16 numbers review, standup-sla-rules-diverge).
+    assert aging["totals"]["breached"] == 0 and aging["breached"] == []
 
 
 # The chat starter "past target" counts and the Standup count, on one population.

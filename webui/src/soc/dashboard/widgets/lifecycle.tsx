@@ -76,7 +76,7 @@ export const TIMINGS: ReadonlyArray<{ key: TimingCell['key']; field: 'mttd_minut
     field: 'dwell_minutes',
     label: 'Dwell time',
     help:
-      'Median time from case creation, or detection when known, to the first response (investigating, escalated, on hold, resolved or closed). This is time to first response, not time to detect.',
+      'Median time from case creation, or detection when known, to the first response by a person (investigating, escalated, on hold, resolved or closed). Automatic closes are not counted. This is time to first response, not time to detect.',
   },
 ];
 

@@ -96,7 +96,8 @@ function fixture(overrides: Partial<NoiseReduction> = {}): NoiseReduction {
         label: 'Needs human',
         source: 'cases',
         deterministic: true,
-        total: 5,
+        // overall_pct 96 is 1 - 40 / 1,000: the server's rule, so Detailed reproduces.
+        total: 40,
         by_severity: { high: 3, medium: 2 },
       },
       {
@@ -381,6 +382,45 @@ describe('NoiseFunnel', () => {
     expect(screen.getAllByText('Closed by analyst policy').length).toBeGreaterThan(0);
   });
 
+  it('the Detailed headline names its own inputs and explains them (noise-detailed-headline-irreproducible)', async () => {
+    const user = userEvent.setup();
+    render(
+      <NoiseFunnel
+        data={withStageTotals({ ingested: 167, needs_human: 4, escalated: 7, closed: 2, cases: 38, clustered: 38 })}
+        animate={false}
+        variant="flat"
+      />,
+    );
+    await user.click(screen.getByRole('radio', { name: 'Detailed' }));
+    const inputs = screen.getByTestId('noise-detailed-inputs');
+    expect(inputs).toHaveTextContent(/167 alerts ingested\s*→\s*4 cases needed a human/);
+    expect(inputs).not.toHaveTextContent(/closed by a human/);
+    const trigger = within(screen.getByTestId('noise-detailed-headline')).getByRole('button', { name: /, explain$/ });
+    await user.click(trigger);
+    const panel = await screen.findByRole('dialog');
+    expect(panel).toHaveTextContent('1 - 4 needed a human / 167 alerts ingested = 97.6%');
+    expect(panel).toHaveTextContent('100 x (1 - 4 / 167)');
+    expect(panel).toHaveTextContent('Needs a human stage');
+  });
+
+  it('withholds the Detailed headline under partial coverage', async () => {
+    const user = userEvent.setup();
+    render(
+      <NoiseFunnel
+        data={fixture({ counters: { available: true, since: '2026-07-05T00:00:00Z', incomplete: true } })}
+        animate={false}
+        variant="flat"
+      />,
+    );
+    await user.click(screen.getByRole('radio', { name: 'Detailed' }));
+    const headline = screen.getByTestId('noise-detailed-headline');
+    expect(headline).toHaveTextContent(/Reduced by\s*\u2014/);
+    expect(headline).not.toHaveTextContent('96%');
+    expect(screen.getByTestId('noise-detailed-inputs')).toHaveTextContent('Not measured: partial coverage.');
+    expect(within(headline).queryByRole('button', { name: /, explain$/ })).toBeNull();
+    expect(screen.getByTestId('noise-coverage-warning')).toBeInTheDocument();
+  });
+
   it('restores the exact Testing presentation when toggled to Detailed', async () => {
     const user = userEvent.setup();
     const view = render(<NoiseFunnel data={fixture()} animate={false} variant="flat" />);
@@ -395,9 +435,8 @@ describe('NoiseFunnel', () => {
       'true',
     );
     expect(detailed).toHaveTextContent(/Reduced by\s*96%/i);
-    expect(detailed).toHaveTextContent(
-      /1,000 events ingested\s*→\s*7 cases closed by a human/i,
-    );
+    // The headline's own inputs: its numerator is the Needs a human stage.
+    expect(detailed).toHaveTextContent(/1,000 alerts ingested\s*→\s*40 cases needed a human/i);
     const legacyBand = within(detailed).getByTestId('noise-flow-band');
     expect(legacyBand).toHaveClass('hidden', 'h-36', 'lg:block', 'lg:h-44');
     const legacySvg = legacyBand.querySelector('svg');
