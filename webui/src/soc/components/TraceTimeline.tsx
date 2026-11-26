@@ -194,12 +194,16 @@ export function traceCutText(data: TimelineResponse): string | null {
 
 /* ----------------------------------------------------------- span details -- */
 
-/** Whether a span carries anything for its Details disclosure. */
+/**
+ * Whether a span carries anything for its Details disclosure. The decision step always
+ * does: its Details say code made it with no model call, even when no gate was recorded.
+ */
 function hasDetails(span: TraceSpan): boolean {
   const d = span.detail;
   const model = typeof span.payload_ref?.model === 'string' && span.payload_ref.model;
   return Boolean(
-    model ||
+    span.kind === 'decision' ||
+      model ||
       (typeof span.latency_ms === 'number' && span.latency_ms > 0) ||
       span.cost_basis ||
       (d &&

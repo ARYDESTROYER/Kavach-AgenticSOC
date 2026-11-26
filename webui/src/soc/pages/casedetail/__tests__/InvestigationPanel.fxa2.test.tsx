@@ -84,4 +84,18 @@ describe('the AI investigation trace (FXA2)', () => {
     expect(filteredTraceCountText(1, 1)).toBe('1 of 1 step');
     expect(filteredTraceCountText(1200, 1500)).toBe('1,200 of 1,500 steps');
   });
+
+  it('says nothing beside the heading when the trace failed to load', () => {
+    // FXA2 review: an open trace that failed read "Loads when opened" beside its error.
+    render(<InvestigationPanel {...props({ timeline: null, timelineError: new Error('boom') })} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Show trace' }));
+    expect(screen.getByTestId('investigation-trace-counts')).toBeEmptyDOMElement();
+    expect(screen.getByText('Could not load the timeline')).toBeInTheDocument();
+    expect(screen.queryByText('Loads when opened')).toBeNull();
+  });
+
+  it('still says the trace loads when opened before anyone asked for it', () => {
+    render(<InvestigationPanel {...props({ timeline: null })} />);
+    expect(screen.getByTestId('investigation-trace-counts')).toHaveTextContent('Loads when opened');
+  });
 });

@@ -279,12 +279,15 @@ export const InvestigationPanel: React.FC<InvestigationPanelProps> = ({
             >
               Investigation trace
             </h2>
+            {/* A failed load says so below, with Retry: no count and no "Loads when opened". */}
             <span className="text-xs tabular-nums text-muted-foreground" data-testid="investigation-trace-counts">
               {timeline
                 ? traceCountsText(spans)
                 : timelineLoading
                   ? 'Loading…'
-                  : 'Loads when opened'}
+                  : timelineError
+                    ? null
+                    : 'Loads when opened'}
             </span>
             <div className="ml-auto flex flex-wrap items-center gap-2">
               {hasDecisionStep ? (

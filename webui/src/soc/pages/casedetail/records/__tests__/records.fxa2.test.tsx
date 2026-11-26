@@ -94,8 +94,8 @@ describe('where a price came from', () => {
   it('says when a catalog price was estimated or a default', () => {
     expect(priceBasisWords('catalog', 'exact')).toBe('Catalog price');
     expect(priceBasisWords('catalog')).toBe('Catalog price');
-    expect(priceBasisWords('catalog', 'heuristic')).toBe('Estimated from the model family price.');
-    expect(priceBasisWords('catalog', 'default')).toBe('Default price. This model is not in the price table.');
+    expect(priceBasisWords('catalog', 'heuristic')).toBe('Estimated from the model family price');
+    expect(priceBasisWords('catalog', 'default')).toBe('Default price for a model not in the price table');
     expect(priceBasisWords('demo_simulated', 'zero')).toBe('Simulated Demo price');
     expect(priceBasisWords('overlay', 'default')).toBe('Price override set by an administrator');
   });
@@ -104,8 +104,17 @@ describe('where a price came from', () => {
     const guessed = usageRow({ model: 'gpt-7-ultra', pricing_source: 'default', input_rate_per_million: 1, output_rate_per_million: 3 });
     const dialog = await openSheet(async () => page([guessed], { pipeline: 0.0029, chat: 0, other: 0 }), 0.0029);
     const [row] = await within(dialog).findAllByTestId('case-usage-row');
-    expect(within(row).getByText('Default price. This model is not in the price table.')).toBeInTheDocument();
+    expect(within(row).getByText('Default price for a model not in the price table')).toBeInTheDocument();
     expect(within(row).queryByText('Catalog price')).toBeNull();
+  });
+
+  it('reads as one phrase when the call also wrote to the cache', async () => {
+    // FXA2 review: the price words joined ", cache kept for 5m" after a closing period.
+    const cached = usageRow({ pricing_source: 'heuristic', cache_write_tokens: 400, cache_write_ttl: '5m' });
+    const dialog = await openSheet(async () => page([cached], { pipeline: 0.0055, chat: 0, other: 0 }), 0.0055);
+    const [row] = await within(dialog).findAllByTestId('case-usage-row');
+    expect(within(row).getByText('Estimated from the model family price, cache kept for 5m')).toBeInTheDocument();
+    expect(row.textContent).not.toContain('., ');
   });
 });
 

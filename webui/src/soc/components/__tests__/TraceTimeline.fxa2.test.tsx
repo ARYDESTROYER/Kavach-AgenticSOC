@@ -107,6 +107,14 @@ describe('the investigation trace (FXA2)', () => {
     expect(details).not.toHaveTextContent("this call's own ledger row");
   });
 
+  it('says so for a decision that recorded no gate too, as the seeded Demo cases do', () => {
+    // FXA2 review: without a cost basis or a detail, the decision step offered no Details.
+    render(<TraceTimeline data={data([{ ...decision, detail: null }])} presentation="case-manager" />);
+    const step = document.querySelector('[data-trace-kind="decision"]') as HTMLElement;
+    fireEvent.click(within(step).getByRole('button', { name: 'Details' }));
+    expect(within(step).getByTestId('trace-span-details')).toHaveTextContent(DECISION_COST_WORDS);
+  });
+
   it('shows the header count the caller gives, and none for null', () => {
     const spans = [span({ step_index: 0 }), decision];
     const { rerender } = render(<TraceTimeline data={data(spans)} presentation="case-manager" countsText={null} />);

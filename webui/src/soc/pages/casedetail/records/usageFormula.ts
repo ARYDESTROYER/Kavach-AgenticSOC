@@ -87,11 +87,12 @@ export const PRICE_BASIS_WORDS: Record<string, string> = {
 /**
  * How a catalog price was found when the price table did not name the model
  * (`pricing_source`, recorded by the gateway beside the rates): the model family's
- * price, or the default price for a model the table does not know.
+ * price, or the default price for a model the table does not know. Phrases without a
+ * closing period, like `PRICE_BASIS_WORDS`, so the usage row can add ", cache kept for 5m".
  */
 export const CATALOG_PRICING_SOURCE_WORDS: Record<string, string> = {
-  heuristic: 'Estimated from the model family price.',
-  default: 'Default price. This model is not in the price table.',
+  heuristic: 'Estimated from the model family price',
+  default: 'Default price for a model not in the price table',
 };
 
 /**
